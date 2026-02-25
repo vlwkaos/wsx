@@ -1,5 +1,6 @@
 // Layout orchestration
 
+pub mod ansi;
 pub mod workspace_tree;
 pub mod preview;
 pub mod input;
@@ -21,6 +22,20 @@ use crate::ui::{
     workspace_tree::{compute_scroll, render_tree},
 };
 
+/// Center a popup of given size within `area`.
+pub fn popup_center(area: Rect, w: u16, h: u16) -> Rect {
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    Rect::new(x, y, w, h)
+}
+
+/// Place a popup in the upper third of `area`.
+pub fn popup_upper(area: Rect, w: u16, h: u16) -> Rect {
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + area.height / 3;
+    Rect::new(x, y, w, h)
+}
+
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
@@ -36,17 +51,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let visible_height = chunks[0].height.saturating_sub(2) as usize;
     app.tree_scroll = compute_scroll(app.tree_selected, visible_height, app.tree_scroll);
 
-    render_tree(frame, chunks[0], &app.workspace, app.tree_selected, app.tree_scroll);
+    let is_move_mode = matches!(app.mode, Mode::Move { .. });
+    render_tree(frame, chunks[0], &app.workspace, app.tree_selected, app.tree_scroll, is_move_mode);
 
     // Preview
     let sel = app.current_selection();
     match &sel {
         Selection::Session(pi, wi, si) => {
             let (pi, wi, si) = (*pi, *wi, *si);
-            if let Some(sess) = app.workspace.projects.get(pi)
-                .and_then(|p| p.worktrees.get(wi))
-                .and_then(|w| w.sessions.get(si))
-            {
+            if let Some(sess) = app.workspace.session(pi, wi, si) {
                 let sess = sess.clone();
                 render_session_preview(frame, chunks[1], &sess);
             } else {
@@ -78,6 +91,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_status_bar(frame, status_area, app);
     render_overlay(frame, main_area, app);
+    if app.loading {
+        render_loading(frame, main_area);
+    }
 }
 
 fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -99,7 +115,7 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
             }
         }
         Mode::Help => render_help(frame, area),
-        Mode::Normal => {}
+        Mode::Normal | Mode::Move { .. } => {}
     }
 }
 
@@ -109,61 +125,63 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         Mode::Input { .. } => "INPUT",
         Mode::Confirm { .. } => "CONFIRM",
         Mode::Config { .. } => "CONFIG",
+        Mode::Move { .. } => "MOVE",
         Mode::Help => "HELP",
     };
 
     let sel = app.current_selection();
-    let hints = match &app.mode {
-        Mode::Normal => match sel {
-            Selection::Project(_) => "j/k:nav  Enter:toggle  w:worktree  d:del  c:clean  e:config",
-            Selection::Worktree(_, _) => "j/k:nav  Enter:toggle  s:session  o:run  N:alias  d:del  e:config",
-            Selection::Session(_, _, _) => "j/k:nav  Enter:attach  N:rename  d:kill",
-            Selection::None => "p:add project",
-        },
-        Mode::Input { .. } => "Enter:confirm  Esc:cancel",
-        Mode::Confirm { .. } => "y:yes  n:no",
-        Mode::Config { .. } => "Esc:close",
-        Mode::Help => "Esc/q:close",
-    };
-
-    let common = "  R:refresh  ?:help  q:quit";
-    let full_hints = if matches!(app.mode, Mode::Normal) {
-        format!("{}{}", hints, common)
-    } else {
-        hints.to_string()
+    let hints: String = match &app.mode {
+        Mode::Normal => {
+            let global = "n:next-alert  e:config  ?:help  q:quit";
+            match sel {
+                Selection::Project(_) =>
+                    format!("Enter:toggle  m:move  w:worktree  d:del  c:clean-merged  ·  {}", global),
+                Selection::Worktree(_, _) =>
+                    format!("Enter:toggle  s:session  o:run  r:alias  d:del  ·  w:worktree  c:clean-merged  ·  {}", global),
+                Selection::Session(_, _, _) =>
+                    format!("Enter:attach  r:rename  d:kill  ·  s:session  o:run  ·  w:worktree  c:clean-merged  ·  {}", global),
+                Selection::None => "p:add project".to_string(),
+            }
+        }
+        Mode::Input { .. } => "Enter:confirm  Esc:cancel".to_string(),
+        Mode::Confirm { .. } => "y:yes  n:no".to_string(),
+        Mode::Config { .. } => "e:edit .gtrignore  Esc:close".to_string(),
+        Mode::Move { .. } => "j/k:move up/down  Enter/Esc:done".to_string(),
+        Mode::Help => "Esc/q:close".to_string(),
     };
 
     let msg = app.status_message.as_deref().unwrap_or("");
-    let (mode_fg, mode_bg) = if app.loading {
-        (Color::Black, Color::Magenta)
+    let mode_text = format!(" [{}] ", mode_label);
+    let right = if !msg.is_empty() {
+        Span::styled(format!(" {}", msg), Style::default().fg(Color::Cyan))
     } else {
-        (Color::Black, Color::Yellow)
-    };
-    let mode_text = if app.loading {
-        " [WORKING…] ".to_string()
-    } else {
-        format!(" [{}] ", mode_label)
+        Span::styled(format!(" {}", hints), Style::default().fg(Color::Gray))
     };
     let spans = vec![
-        Span::styled(mode_text, Style::default().fg(mode_fg).bg(mode_bg).bold()),
-        Span::styled(format!(" {}", full_hints), Style::default().fg(Color::Gray).bg(Color::Black)),
-        if msg.is_empty() {
-            Span::raw("")
-        } else {
-            Span::styled(format!("  {}", msg), Style::default().fg(Color::Cyan).bg(Color::Black))
-        },
+        Span::styled(mode_text, Style::default().fg(Color::Black).bg(Color::Yellow).bold()),
+        right,
     ];
 
     let para = Paragraph::new(Line::from(spans));
     frame.render_widget(para, area);
 }
 
+fn render_loading(frame: &mut Frame, area: Rect) {
+    let popup = popup_center(area, 20, 3);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta));
+    let para = Paragraph::new("  ⏳ Working…")
+        .block(block)
+        .style(Style::default().fg(Color::Magenta).bold());
+    frame.render_widget(para, popup);
+}
+
 fn render_help(frame: &mut Frame, area: Rect) {
     let width = area.width.min(64).max(40);
     let height = area.height.min(28).max(12);
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let popup = Rect::new(x, y, width, height);
+    let popup = popup_center(area, width, height);
 
     frame.render_widget(Clear, popup);
 
@@ -175,24 +193,27 @@ fn render_help(frame: &mut Frame, area: Rect) {
         "\n",
         " Project\n",
         "  p             Add project (path: prompt)\n",
+        "  m             Move project (reorder list)\n",
         "  d             Unregister project\n",
-        "  c             Clean merged worktrees\n",
+        "  c             Clean merged worktrees (batch)\n",
         "  e             View .gtrconfig\n",
         "\n",
         " Worktree\n",
         "  w             Add worktree (branch: prompt)\n",
         "  s             New persistent session (optional init command)\n",
         "  o             Open ephemeral run (session dies on exit, attaches)\n",
-        "  N             Set alias\n",
+        "  r             Set alias\n",
         "  d             Delete worktree + kill all sessions\n",
+        "  c             Clean this worktree if merged\n",
         "  e             View .gtrconfig\n",
         "\n",
         " Session\n",
         "  Enter         Attach\n",
-        "  N             Rename\n",
+        "  r             Rename\n",
         "  d             Kill session\n",
         "\n",
         " Global\n",
+        "  n             Jump to next session needing attention (⊙)\n",
         "  R             Refresh\n",
         "  ?             Help\n",
         "  q             Quit\n",

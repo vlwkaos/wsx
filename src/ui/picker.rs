@@ -5,6 +5,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, List, ListItem, ListState},
 };
+use crate::ui::popup_center;
 
 pub struct PickerState {
     pub title: String,
@@ -44,9 +45,7 @@ impl PickerState {
 pub fn render_picker(frame: &mut Frame, area: Rect, state: &mut PickerState) {
     let width = area.width.min(60).max(30);
     let height = area.height.min(20).max(6);
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let popup = Rect::new(x, y, width, height);
+    let popup = popup_center(area, width, height);
 
     frame.render_widget(Clear, popup);
 

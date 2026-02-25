@@ -5,13 +5,12 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use crate::model::workspace::ProjectConfig;
+use crate::ui::popup_center;
 
 pub fn render_config_modal(frame: &mut Frame, area: Rect, config: &ProjectConfig, project_name: &str) {
     let width = area.width.min(60).max(40);
     let height = area.height.min(16).max(8);
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let popup = Rect::new(x, y, width, height);
+    let popup = popup_center(area, width, height);
 
     frame.render_widget(Clear, popup);
 
@@ -31,7 +30,7 @@ pub fn render_config_modal(frame: &mut Frame, area: Rect, config: &ProjectConfig
         lines.push(Line::from(Span::styled(format!("  {}", inc), Style::default().fg(Color::Green))));
     }
     if config.copy_includes.is_empty() {
-        lines.push(Line::from(Span::styled("  (none)", Style::default().fg(Color::DarkGray))));
+        lines.push(Line::from(Span::styled("  (none)", Style::default().fg(Color::Gray))));
     }
 
     lines.push(Line::from(Span::styled("copy.exclude:", Style::default().fg(Color::Gray))));
@@ -41,8 +40,8 @@ pub fn render_config_modal(frame: &mut Frame, area: Rect, config: &ProjectConfig
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Edit .gtrconfig to change.  [Esc] close",
-        Style::default().fg(Color::DarkGray),
+        "e: edit .gtrignore  Esc: close",
+        Style::default().fg(Color::Gray),
     )));
 
     let block = Block::default()

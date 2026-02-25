@@ -4,13 +4,11 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Paragraph},
 };
+use crate::ui::popup_upper;
 
 pub fn render_confirm(frame: &mut Frame, area: Rect, message: &str) {
     let width = 60_u16.min(area.width);
-    let height = 6_u16;
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + area.height / 3;
-    let popup = Rect::new(x, y, width, height);
+    let popup = popup_upper(area, width, 6);
 
     frame.render_widget(Clear, popup);
 

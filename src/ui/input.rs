@@ -6,6 +6,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
+use crate::ui::popup_upper;
 
 pub struct InputState {
     pub buffer: String,
@@ -191,9 +192,7 @@ fn display_path(path: &PathBuf, prefer_tilde: bool) -> String {
 
 pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &str) {
     let width = area.width.min(60);
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + area.height / 3;
-    let popup = Rect::new(x, y, width, 3);
+    let popup = popup_upper(area, width, 3);
 
     frame.render_widget(Clear, popup);
 
@@ -214,7 +213,7 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
         let drop_h = max_show as u16 + 2;
         let drop_y = popup.y + 3;
         if drop_y + drop_h <= area.y + area.height {
-            let drop = Rect::new(x, drop_y, width, drop_h);
+            let drop = Rect::new(popup.x, drop_y, width, drop_h);
             frame.render_widget(Clear, drop);
 
             let items: Vec<ListItem> = state.completions.iter().take(max_show).enumerate()
@@ -223,14 +222,14 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
                     let style = if selected {
                         Style::default().fg(Color::Black).bg(Color::Cyan)
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        Style::default().fg(Color::Gray)
                     };
                     ListItem::new(format!(" {} ", s)).style(style)
                 })
                 .collect();
 
             let list = List::new(items)
-                .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)));
+                .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Gray)));
             frame.render_widget(list, drop);
         }
     }
