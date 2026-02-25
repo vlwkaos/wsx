@@ -4,6 +4,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState},
 };
+use crate::app::IDLE_SECS;
 use crate::model::workspace::{FlatEntry, WorkspaceState, flatten_tree};
 
 pub fn render_tree(
@@ -12,6 +13,7 @@ pub fn render_tree(
     workspace: &WorkspaceState,
     selected: usize,
     scroll_offset: usize,
+    is_move_mode: bool,
 ) {
     let flat = flatten_tree(workspace);
 
@@ -34,19 +36,39 @@ pub fn render_tree(
             let sess_badge = if !wt.sessions.is_empty() {
                 format!(" [{}s]", wt.sessions.len())
             } else { String::new() };
-            let label = if let Some(alias) = &wt.alias {
-                format!("  {} {}{}{}{} ({})", expand_icon, main_mark, alias, activity, sess_badge, wt.name)
+            let display = if let Some(alias) = &wt.alias {
+                format!("{} ({})", alias, wt.name)
+            } else if wt.is_main {
+                wt.branch.clone()
             } else {
-                format!("  {} {}{}{}{}", expand_icon, main_mark, wt.name, activity, sess_badge)
+                wt.name.clone()
             };
+            let label = format!(" {} {}{}{}{}", expand_icon, main_mark, display, activity, sess_badge);
             ListItem::new(label).style(Style::default().fg(Color::White))
         }
         FlatEntry::Session { project_idx, worktree_idx, session_idx } => {
             let sess = &workspace.projects[*project_idx].worktrees[*worktree_idx].sessions[*session_idx];
-            let dot = if sess.has_activity { " ●" } else { "" };
-            let ext = if !sess.is_wsx_owned { " ~" } else { "" };
-            let label = format!("    ○ {}{}{}", sess.name, dot, ext);
-            ListItem::new(label).style(Style::default().fg(Color::DarkGray))
+            let elapsed = sess.last_activity.map(|t| t.elapsed());
+            let active = elapsed.map(|e| e.as_secs() < IDLE_SECS).unwrap_or(false);
+            let (icon, icon_color) = if sess.has_activity {
+                ("●", Color::Yellow)
+            } else if active {
+                ("◉", Color::Green)
+            } else if sess.was_active {
+                ("⊙", Color::Rgb(255, 160, 60))   // orange — finished, needs attention
+            } else {
+                ("○", Color::Gray)                 // never seen active, neutral
+            };
+            let idle_str = match elapsed {
+                Some(e) if e.as_secs() >= IDLE_SECS => format!("  {}", fmt_idle(e)),
+                _ => String::new(),
+            };
+            let line = Line::from(vec![
+                Span::raw("  "),
+                Span::styled(icon, Style::default().fg(icon_color)),
+                Span::raw(format!(" {}{}", sess.display_name, idle_str)),
+            ]);
+            ListItem::new(line)
         }
     }).collect();
 
@@ -55,17 +77,29 @@ pub fn render_tree(
         list_state.select(Some(selected.min(flat.len().saturating_sub(1))));
     }
 
+    let (block_title, highlight_bg) = if is_move_mode {
+        (" Workspaces — MOVE ", Color::Green)
+    } else {
+        (" Workspaces ", Color::Yellow)
+    };
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Workspaces ")
+                .title(block_title)
                 .title_style(Style::default().bold()),
         )
-        .highlight_style(Style::default().fg(Color::Black).bg(Color::Yellow).bold())
-        .highlight_symbol("► ");
+        .highlight_style(Style::default().fg(Color::Black).bg(highlight_bg).bold())
+        .highlight_symbol("");
 
     frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+fn fmt_idle(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    if s < 60 { format!("{}s", s) }
+    else if s < 3600 { format!("{}m", s / 60) }
+    else { format!("{}h", s / 3600) }
 }
 
 /// Compute scroll offset to keep selected item visible.

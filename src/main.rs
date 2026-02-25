@@ -3,6 +3,7 @@
 
 mod action;
 mod app;
+mod cache;
 mod config;
 mod event;
 mod git;

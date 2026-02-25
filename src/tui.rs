@@ -4,7 +4,11 @@
 use anyhow::Result;
 use crossterm::{
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        disable_raw_mode, enable_raw_mode,
+        BeginSynchronizedUpdate, EndSynchronizedUpdate,
+        EnterAlternateScreen, LeaveAlternateScreen,
+    },
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::{self, Stdout};
@@ -18,6 +22,17 @@ pub fn init() -> Result<Tui> {
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
+}
+
+/// Draw with synchronized output to prevent terminal from rendering partial frames.
+pub fn draw_sync<F>(terminal: &mut Tui, f: F) -> Result<()>
+where
+    F: FnOnce(&mut ratatui::Frame),
+{
+    execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+    terminal.draw(f)?;
+    execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
+    Ok(())
 }
 
 pub fn restore(terminal: &mut Tui) -> Result<()> {

@@ -5,6 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use crate::model::workspace::{Project, SessionInfo, WorktreeInfo};
+use crate::ui::ansi;
 
 pub fn render_worktree_preview(
     frame: &mut Frame,
@@ -19,14 +20,14 @@ pub fn render_worktree_preview(
 
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("Branch:  ", Style::default().fg(Color::Gray)),
-            Span::styled(worktree.branch.clone(), Style::default().fg(Color::Cyan).bold()),
+            Span::styled("Branch:  ", Style::default().fg(Color::Rgb(120, 120, 140))),
+            Span::styled(worktree.branch.clone(), Style::default().fg(Color::Rgb(100, 200, 255)).bold()),
         ]),
         Line::from(vec![
-            Span::styled("Path:    ", Style::default().fg(Color::Gray)),
+            Span::styled("Path:    ", Style::default().fg(Color::Rgb(120, 120, 140))),
             Span::styled(
                 worktree.path.to_string_lossy().to_string(),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Rgb(200, 200, 210)),
             ),
         ]),
     ];
@@ -39,39 +40,38 @@ pub fn render_worktree_preview(
             )));
         }
         if !info.modified_files.is_empty() {
-            lines.push(Line::from(Span::styled("Modified:", Style::default().fg(Color::Gray))));
+            lines.push(Line::from(Span::styled("Modified:", Style::default().fg(Color::Rgb(120, 120, 140)))));
             for f in info.modified_files.iter().take(5) {
                 lines.push(Line::from(Span::styled(
                     format!("  {}", f),
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(Color::Rgb(255, 100, 100)),
                 )));
             }
         }
         if !info.recent_commits.is_empty() {
-            lines.push(Line::from(Span::styled("Commits:", Style::default().fg(Color::Gray))));
+            lines.push(Line::from(Span::styled("Commits:", Style::default().fg(Color::Rgb(120, 120, 140)))));
             for c in &info.recent_commits {
-                lines.push(Line::from(Span::styled(
-                    format!("  {} {}", c.hash, c.message),
-                    Style::default().fg(Color::White),
-                )));
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {} ", c.hash), Style::default().fg(Color::Rgb(255, 180, 80))),
+                    Span::styled(c.message.clone(), Style::default().fg(Color::Rgb(210, 210, 220))),
+                ]));
             }
         }
     } else {
         lines.push(Line::from(Span::styled(
             "(loading git info...)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         )));
     }
 
     if !worktree.sessions.is_empty() {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("Sessions:", Style::default().fg(Color::Gray))));
+        lines.push(Line::from(Span::styled("Sessions:", Style::default().fg(Color::Rgb(120, 120, 140)))));
         for s in &worktree.sessions {
             let dot = if s.has_activity { " ●" } else { "" };
-            let owned = if s.is_wsx_owned { "" } else { " [external]" };
             lines.push(Line::from(Span::styled(
-                format!("  {}{}{}", s.name, dot, owned),
-                Style::default().fg(Color::Green),
+                format!("  {}{}", s.display_name, dot),
+                Style::default().fg(Color::Rgb(100, 220, 130)),
             )));
         }
     }
@@ -88,13 +88,13 @@ pub fn render_session_preview(
     let activity = if session.has_activity { " ●" } else { "" };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {}{} ", session.name, activity))
+        .title(format!(" {}{} ", session.display_name, activity))
         .title_style(Style::default().bold());
 
-    let content = session.pane_capture.as_deref().unwrap_or("(no capture)");
-    let para = Paragraph::new(content)
-        .block(block)
-        .style(Style::default().fg(Color::DarkGray));
+    let text = session.pane_capture.as_deref()
+        .map(ansi::parse)
+        .unwrap_or_else(|| "(no capture)".into());
+    let para = Paragraph::new(text).block(block);
     frame.render_widget(para, area);
 }
 
@@ -104,7 +104,7 @@ pub fn render_project_preview(frame: &mut Frame, area: Rect, project: &Project) 
             Span::styled("Path:  ", Style::default().fg(Color::Gray)),
             Span::styled(
                 project.path.to_string_lossy().to_string(),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::White),
             ),
         ]),
         Line::from(vec![
@@ -126,13 +126,13 @@ pub fn render_project_preview(frame: &mut Frame, area: Rect, project: &Project) 
             ),
             Span::styled(
                 format!("  ({} session{}){}", sess_count, if sess_count == 1 { "" } else { "s" }, activity),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             ),
         ]));
     }
 
     if project.worktrees.is_empty() {
-        lines.push(Line::from(Span::styled("  (no worktrees)", Style::default().fg(Color::DarkGray))));
+        lines.push(Line::from(Span::styled("  (no worktrees)", Style::default().fg(Color::Gray))));
     }
 
     let block = Block::default()
@@ -147,9 +147,9 @@ pub fn render_empty_preview(frame: &mut Frame, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Preview ")
-        .title_style(Style::default().fg(Color::DarkGray));
+        .title_style(Style::default().fg(Color::Gray));
     let para = Paragraph::new("Select a project, worktree, or session")
-        .style(Style::default().fg(Color::DarkGray))
+        .style(Style::default().fg(Color::Gray))
         .block(block);
     frame.render_widget(para, area);
 }
