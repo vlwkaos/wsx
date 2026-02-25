@@ -24,10 +24,12 @@ pub struct ProjectConfig {
 
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
-    pub name: String,
-    pub is_wsx_owned: bool,
+    pub name: String,         // full tmux session name
+    pub display_name: String, // shown in UI (strips wt_slug prefix)
     pub has_activity: bool,
     pub pane_capture: Option<String>,
+    pub last_activity: Option<std::time::Instant>,
+    pub was_active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -113,8 +115,24 @@ impl WorkspaceState {
         Self { projects: Vec::new() }
     }
 
-    pub fn get_selection(&self, flat_idx: usize) -> Selection {
-        let flat = flatten_tree(self);
+    pub fn worktree(&self, pi: usize, wi: usize) -> Option<&WorktreeInfo> {
+        self.projects.get(pi)?.worktrees.get(wi)
+    }
+
+    pub fn worktree_mut(&mut self, pi: usize, wi: usize) -> Option<&mut WorktreeInfo> {
+        self.projects.get_mut(pi)?.worktrees.get_mut(wi)
+    }
+
+    pub fn session(&self, pi: usize, wi: usize, si: usize) -> Option<&SessionInfo> {
+        self.projects.get(pi)?.worktrees.get(wi)?.sessions.get(si)
+    }
+
+    pub fn session_mut(&mut self, pi: usize, wi: usize, si: usize) -> Option<&mut SessionInfo> {
+        self.projects.get_mut(pi)?.worktrees.get_mut(wi)?.sessions.get_mut(si)
+    }
+
+    /// Resolve flat index to Selection using a pre-computed flat slice.
+    pub fn get_selection(&self, flat_idx: usize, flat: &[FlatEntry]) -> Selection {
         match flat.get(flat_idx) {
             Some(FlatEntry::Project { idx }) => Selection::Project(*idx),
             Some(FlatEntry::Worktree { project_idx, worktree_idx }) => {
