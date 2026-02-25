@@ -75,10 +75,11 @@ pub fn refresh_workspace(
                         let display_name = name.strip_prefix(&prefix)
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| name.clone());
-                        let (pane_capture, prev_was_active) = prev
-                            .and_then(|(_, _, panes)| panes.get(name))
+                        let prev_pane = prev.and_then(|(_, _, panes)| panes.get(name));
+                        let (pane_capture, prev_was_active) = prev_pane
                             .map(|(p, wa)| (p.clone(), *wa))
                             .unwrap_or((None, false));
+                        let first_encounter = prev.is_none();
                         let status = activity.get(name.as_str());
                         let has_activity = status.map(|s| s.has_bell).unwrap_or(false);
                         let last_activity = status
@@ -87,7 +88,10 @@ pub fn refresh_workspace(
                         let currently_active = last_activity
                             .map(|t| t.elapsed().as_secs() < IDLE_SECS)
                             .unwrap_or(false);
-                        let was_active = prev_was_active || currently_active;
+                        // Seed was_active on first encounter so sessions active before
+                        // wsx launched still show ⊙ (needs attention).
+                        let was_active = prev_was_active || currently_active
+                            || (first_encounter && last_activity.is_some());
                         SessionInfo {
                             name: name.clone(),
                             display_name,
