@@ -2,9 +2,10 @@
 // ref: git-worktree(1) — https://git-scm.com/docs/git-worktree
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use anyhow::{bail, Context, Result};
 use crate::model::workspace::WorktreeInfo;
+use super::git_cmd;
 
 pub struct WorktreeEntry {
     pub name: String,
@@ -15,8 +16,8 @@ pub struct WorktreeEntry {
 
 /// List worktrees via `git worktree list --porcelain`.
 pub fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeEntry>> {
-    let output = Command::new("git")
-        .args(["-C", &repo_path.to_string_lossy(), "worktree", "list", "--porcelain"])
+    let output = git_cmd(repo_path)
+        .args(["worktree", "list", "--porcelain"])
         .output()
         .context("git worktree list failed")?;
     parse_porcelain_output(&String::from_utf8_lossy(&output.stdout), repo_path)
@@ -84,7 +85,7 @@ pub fn to_worktree_infos(
             is_main: e.is_main,
             alias,
             sessions: Vec::new(),
-            expanded: false,
+            expanded: true,
             git_info: None,
         }
     }).collect()
@@ -97,9 +98,8 @@ pub fn create_worktree(repo_path: &Path, branch: &str, base_branch: &str) -> Res
     let slug = branch.replace('/', "-");
     let wt_path = parent.join(format!("{}-{}", repo_name, slug));
 
-    let status = Command::new("git")
+    let status = git_cmd(repo_path)
         .args([
-            "-C", &repo_path.to_string_lossy(),
             "worktree", "add",
             "-b", branch,
             &wt_path.to_string_lossy(),
@@ -116,9 +116,8 @@ pub fn create_worktree(repo_path: &Path, branch: &str, base_branch: &str) -> Res
 
 /// `git worktree remove --force {path}` then `git branch -d {branch}`
 pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
-    let status = Command::new("git")
+    let status = git_cmd(repo_path)
         .args([
-            "-C", &repo_path.to_string_lossy(),
             "worktree", "remove", "--force",
             &worktree_path.to_string_lossy(),
         ])
@@ -130,8 +129,8 @@ pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, branch: &str) -> 
     if !status.success() { bail!("git worktree remove exited {}", status); }
 
     // Best-effort branch deletion
-    let _ = Command::new("git")
-        .args(["-C", &repo_path.to_string_lossy(), "branch", "-d", branch])
+    let _ = git_cmd(repo_path)
+        .args(["branch", "-d", branch])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
@@ -141,8 +140,8 @@ pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, branch: &str) -> 
 
 /// Delete worktrees whose branches are merged into default_branch.
 pub fn clean_merged(repo_path: &Path, default_branch: &str) -> Result<Vec<String>> {
-    let output = Command::new("git")
-        .args(["-C", &repo_path.to_string_lossy(), "branch", "--merged", default_branch])
+    let output = git_cmd(repo_path)
+        .args(["branch", "--merged", default_branch])
         .output()
         .context("git branch --merged failed")?;
 
@@ -168,12 +167,8 @@ pub fn clean_merged(repo_path: &Path, default_branch: &str) -> Result<Vec<String
 
 /// Check if branch is an ancestor of default_branch (i.e., merged).
 pub fn is_branch_merged(repo_path: &Path, branch: &str, default_branch: &str) -> bool {
-    Command::new("git")
-        .args([
-            "-C", &repo_path.to_string_lossy(),
-            "merge-base", "--is-ancestor",
-            branch, default_branch,
-        ])
+    git_cmd(repo_path)
+        .args(["merge-base", "--is-ancestor", branch, default_branch])
         .status()
         .map(|s| s.success())
         .unwrap_or(false)

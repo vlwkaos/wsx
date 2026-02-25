@@ -1,8 +1,8 @@
 // Git info via CLI — branch, commits, modified files, ahead/behind
 
 use std::path::Path;
-use std::process::Command;
 use crate::model::workspace::{CommitSummary, GitInfo};
+use super::git_cmd;
 
 pub fn get_git_info(worktree_path: &Path, _default_branch: &str) -> Option<GitInfo> {
     // require a valid branch (confirms we're in a real worktree)
@@ -13,18 +13,15 @@ pub fn get_git_info(worktree_path: &Path, _default_branch: &str) -> Option<GitIn
     Some(GitInfo { recent_commits, modified_files, ahead, behind })
 }
 
-fn current_branch(path: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .args(["-C", &path.to_string_lossy(), "branch", "--show-current"])
-        .output().ok()?;
+pub fn current_branch(path: &Path) -> Option<String> {
+    let out = git_cmd(path).args(["branch", "--show-current"]).output().ok()?;
     let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if branch.is_empty() { None } else { Some(branch) }
 }
 
 fn recent_commits(path: &Path, n: usize) -> Vec<CommitSummary> {
-    let Ok(out) = Command::new("git")
-        .args(["-C", &path.to_string_lossy(), "log", "--oneline", &format!("-{}", n)])
-        .output() else { return vec![] };
+    let Ok(out) = git_cmd(path).args(["log", "--oneline", &format!("-{}", n)]).output()
+    else { return vec![] };
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|line| {
@@ -37,9 +34,7 @@ fn recent_commits(path: &Path, n: usize) -> Vec<CommitSummary> {
 }
 
 fn modified_files(path: &Path) -> Vec<String> {
-    let Ok(out) = Command::new("git")
-        .args(["-C", &path.to_string_lossy(), "status", "--short"])
-        .output() else { return vec![] };
+    let Ok(out) = git_cmd(path).args(["status", "--short"]).output() else { return vec![] };
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|line| if line.len() > 3 { Some(line[3..].trim().to_string()) } else { None })
@@ -48,9 +43,10 @@ fn modified_files(path: &Path) -> Vec<String> {
 }
 
 fn ahead_behind(path: &Path) -> (usize, usize) {
-    let Ok(out) = Command::new("git")
-        .args(["-C", &path.to_string_lossy(), "rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
-        .output() else { return (0, 0) };
+    let Ok(out) = git_cmd(path)
+        .args(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
+        .output()
+    else { return (0, 0) };
     let text = String::from_utf8_lossy(&out.stdout);
     let mut parts = text.split_whitespace();
     let ahead = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);

@@ -2,12 +2,13 @@
 // ref: tmux(1)
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use anyhow::{bail, Result};
+use super::{tmux_cmd, tmux_silent};
 
 /// Check if tmux is available.
 pub fn is_available() -> bool {
-    Command::new("tmux").arg("-V").stdout(Stdio::null()).stderr(Stdio::null())
+    tmux_cmd(&["-V"]).stdout(Stdio::null()).stderr(Stdio::null())
         .status().map(|s| s.success()).unwrap_or(false)
 }
 
@@ -18,8 +19,7 @@ pub fn is_inside_tmux() -> bool {
 
 /// Return (session_name, session_path) pairs for all active sessions.
 pub fn list_sessions_with_paths() -> Vec<(String, PathBuf)> {
-    let Ok(output) = Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_name}:#{session_path}"])
+    let Ok(output) = tmux_cmd(&["list-sessions", "-F", "#{session_name}:#{session_path}"])
         .output()
     else { return vec![] };
 
@@ -37,16 +37,13 @@ pub fn list_sessions_with_paths() -> Vec<(String, PathBuf)> {
 
 /// Return true if a named session exists.
 pub fn session_exists(name: &str) -> bool {
-    Command::new("tmux").args(["has-session", "-t", name])
-        .stdout(Stdio::null()).stderr(Stdio::null())
+    tmux_silent(&["has-session", "-t", name])
         .status().map(|s| s.success()).unwrap_or(false)
 }
 
 /// Create a new session with starting directory, detached.
 pub fn create_session(name: &str, start_dir: &Path) -> Result<()> {
-    let status = Command::new("tmux")
-        .args(["new-session", "-d", "-s", name, "-c", &start_dir.to_string_lossy()])
-        .stdout(Stdio::null()).stderr(Stdio::null())
+    let status = tmux_silent(&["new-session", "-d", "-s", name, "-c", &start_dir.to_string_lossy()])
         .status()?;
     if !status.success() { bail!("tmux new-session failed for {}", name); }
     Ok(())
@@ -54,9 +51,7 @@ pub fn create_session(name: &str, start_dir: &Path) -> Result<()> {
 
 /// Create an ephemeral session that runs a command directly (dies on exit).
 pub fn create_ephemeral_session(name: &str, start_dir: &Path, command: &str) -> Result<()> {
-    let status = Command::new("tmux")
-        .args(["new-session", "-d", "-s", name, "-c", &start_dir.to_string_lossy(), command])
-        .stdout(Stdio::null()).stderr(Stdio::null())
+    let status = tmux_silent(&["new-session", "-d", "-s", name, "-c", &start_dir.to_string_lossy(), command])
         .status()?;
     if !status.success() { bail!("tmux new-session (ephemeral) failed for {}", name); }
     Ok(())
@@ -64,17 +59,13 @@ pub fn create_ephemeral_session(name: &str, start_dir: &Path, command: &str) -> 
 
 /// Kill a session by name.
 pub fn kill_session(name: &str) -> Result<()> {
-    Command::new("tmux").args(["kill-session", "-t", name])
-        .stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+    tmux_silent(&["kill-session", "-t", name]).status()?;
     Ok(())
 }
 
 /// Rename a tmux session.
 pub fn rename_session(old_name: &str, new_name: &str) -> Result<()> {
-    let status = Command::new("tmux")
-        .args(["rename-session", "-t", old_name, new_name])
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status()?;
+    let status = tmux_silent(&["rename-session", "-t", old_name, new_name]).status()?;
     if !status.success() { bail!("tmux rename-session failed"); }
     Ok(())
 }
@@ -92,18 +83,27 @@ pub enum AttachCommand {
     Attach(String),
 }
 
+/// Enable mouse support on a session (best-effort, non-fatal).
+pub fn enable_mouse(session: &str) {
+    let _ = tmux_silent(&["set-option", "-t", session, "mouse", "on"]).status();
+}
+
 /// switch-client (inside tmux path).
 pub fn switch_client(name: &str) -> Result<()> {
-    let status = Command::new("tmux").args(["switch-client", "-t", name])
-        .stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+    let status = tmux_silent(&["switch-client", "-t", name]).status()?;
     if !status.success() { bail!("tmux switch-client failed for {}", name); }
+    Ok(())
+}
+
+/// attach-session (outside tmux path) — takes over the terminal.
+pub fn attach_foreground(name: &str) -> Result<()> {
+    tmux_cmd(&["attach-session", "-t", name]).status()?;
     Ok(())
 }
 
 /// Send keys to a session's active pane.
 pub fn send_keys(session: &str, keys: &str) -> Result<()> {
-    Command::new("tmux").args(["send-keys", "-t", session, keys, "Enter"])
-        .stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+    tmux_silent(&["send-keys", "-t", session, keys, "Enter"]).status()?;
     Ok(())
 }
 

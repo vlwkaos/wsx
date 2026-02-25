@@ -1,10 +1,9 @@
 // tmux capture-pane for preview panel
 
-use std::process::Command;
+use super::tmux_cmd;
 
 pub fn capture_pane(session_name: &str) -> Option<String> {
-    let output = Command::new("tmux")
-        .args(["capture-pane", "-t", session_name, "-p"])
+    let output = tmux_cmd(&["capture-pane", "-t", session_name, "-p", "-e"])
         .output().ok()?;
     if output.status.success() {
         Some(String::from_utf8_lossy(&output.stdout).into_owned())
