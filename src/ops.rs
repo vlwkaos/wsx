@@ -2,17 +2,152 @@
 // These take explicit arguments rather than &mut App so they can be
 // tested and reasoned about independently of the TUI state machine.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Result};
 
 use crate::{
     config::global::GlobalConfig,
-    git::worktree as git_worktree,
+    git::{info as git_info, worktree as git_worktree},
     hooks,
-    model::workspace::{Project, ProjectConfig, WorkspaceState},
-    tmux::session,
+    model::workspace::{Project, ProjectConfig, SessionInfo, WorkspaceState, WorktreeInfo},
+    tmux::{monitor::SessionStatus, session},
 };
+
+pub const IDLE_SECS: u64 = 5;
+
+// ── Refresh helpers ───────────────────────────────────────────────────────────
+
+fn unix_ts_to_instant(unix_ts: u64) -> Option<Instant> {
+    let now_unix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let secs_ago = now_unix.saturating_sub(unix_ts);
+    Instant::now().checked_sub(Duration::from_secs(secs_ago))
+}
+
+/// Rebuild all worktrees + sessions for every project from live data.
+pub fn refresh_workspace(
+    workspace: &mut WorkspaceState,
+    config: &GlobalConfig,
+    sessions_with_paths: &[(String, PathBuf)],
+    activity: &HashMap<String, SessionStatus>,
+) {
+    let aliases_by_path: Vec<(PathBuf, HashMap<String, String>)> =
+        config.projects.iter()
+            .map(|e| (e.path.clone(), e.aliases.clone()))
+            .collect();
+
+    for i in 0..workspace.projects.len() {
+        let path = workspace.projects[i].path.clone();
+        let proj_name = workspace.projects[i].name.clone();
+        let aliases = aliases_by_path.iter()
+            .find(|(p, _)| p == &path)
+            .map(|(_, a)| a.clone())
+            .unwrap_or_default();
+
+        type PaneSnap = HashMap<String, (Option<String>, bool)>;
+        let snapshot: HashMap<PathBuf, (Option<crate::model::workspace::GitInfo>, bool, PaneSnap)> =
+            workspace.projects[i].worktrees.iter()
+                .map(|w| {
+                    let panes = w.sessions.iter()
+                        .map(|s| (s.name.clone(), (s.pane_capture.clone(), s.was_active)))
+                        .collect();
+                    (w.path.clone(), (w.git_info.clone(), w.expanded, panes))
+                })
+                .collect();
+
+        if let Ok(entries) = git_worktree::list_worktrees(&path) {
+            let mut new_worktrees = Vec::new();
+            for entry in entries {
+                let alias = aliases.get(&entry.branch).cloned();
+                let wt_path = entry.path.clone();
+                let prev = snapshot.get(&entry.path);
+
+                let wt_slug = alias.as_deref()
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|| entry.branch.replace('/', "-"));
+                let prefix = format!("{}-{}-", proj_name, wt_slug);
+
+                let sessions: Vec<SessionInfo> = sessions_with_paths.iter()
+                    .filter(|(_, sp)| sp == &wt_path)
+                    .map(|(name, _)| {
+                        let display_name = name.strip_prefix(&prefix)
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| name.clone());
+                        let (pane_capture, prev_was_active) = prev
+                            .and_then(|(_, _, panes)| panes.get(name))
+                            .map(|(p, wa)| (p.clone(), *wa))
+                            .unwrap_or((None, false));
+                        let status = activity.get(name.as_str());
+                        let has_activity = status.map(|s| s.has_bell).unwrap_or(false);
+                        let last_activity = status
+                            .filter(|s| s.last_activity_ts > 0)
+                            .and_then(|s| unix_ts_to_instant(s.last_activity_ts));
+                        let currently_active = last_activity
+                            .map(|t| t.elapsed().as_secs() < IDLE_SECS)
+                            .unwrap_or(false);
+                        let was_active = prev_was_active || currently_active;
+                        SessionInfo {
+                            name: name.clone(),
+                            display_name,
+                            has_activity,
+                            pane_capture,
+                            last_activity,
+                            was_active,
+                        }
+                    })
+                    .collect();
+
+                let (git_info, expanded) = prev
+                    .map(|(gi, exp, _)| (gi.clone(), *exp))
+                    .unwrap_or((None, true));
+
+                new_worktrees.push(WorktreeInfo {
+                    name: entry.name,
+                    branch: entry.branch,
+                    path: entry.path,
+                    is_main: entry.is_main,
+                    alias,
+                    sessions,
+                    expanded,
+                    git_info,
+                });
+            }
+            workspace.projects[i].worktrees = new_worktrees;
+        }
+    }
+}
+
+/// Update session activity state from live tmux data. Returns true if any field changed.
+pub fn update_activity(
+    workspace: &mut WorkspaceState,
+    activity: &HashMap<String, SessionStatus>,
+) -> bool {
+    let mut changed = false;
+    for project in &mut workspace.projects {
+        for wt in &mut project.worktrees {
+            for sess in &mut wt.sessions {
+                if let Some(status) = activity.get(&sess.name) {
+                    let old_bell = sess.has_activity;
+                    sess.has_activity = status.has_bell;
+                    sess.last_activity = Some(status.last_activity_ts)
+                        .filter(|&ts| ts > 0)
+                        .and_then(|ts| unix_ts_to_instant(ts));
+                    let currently_active = sess.last_activity
+                        .map(|t| t.elapsed().as_secs() < IDLE_SECS)
+                        .unwrap_or(false);
+                    let old_was = sess.was_active;
+                    sess.was_active |= currently_active;
+                    if sess.has_activity != old_bell || sess.was_active != old_was {
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    changed
+}
 
 // ── Workspace loading ─────────────────────────────────────────────────────────
 
@@ -55,14 +190,7 @@ pub fn expand_path(s: &str) -> PathBuf {
 }
 
 pub fn detect_default_branch(path: &std::path::Path) -> String {
-    let out = std::process::Command::new("git")
-        .args(["-C", &path.to_string_lossy(), "branch", "--show-current"])
-        .output();
-    if let Ok(o) = out {
-        let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        if !b.is_empty() { return b; }
-    }
-    "main".to_string()
+    git_info::current_branch(path).unwrap_or_else(|| "main".into())
 }
 
 // ── Project registration ──────────────────────────────────────────────────────
@@ -151,20 +279,33 @@ pub fn delete_worktree(
 // ── Session operations ────────────────────────────────────────────────────────
 
 /// Create a named tmux session at `wt_path` and optionally send an initial command.
-/// Returns the session name that was created.
+/// Returns (tmux_name, display_name). Tmux name is prefixed with `{proj_name}-{wt_slug}-`;
+/// display_name is the user-visible part (what the user typed).
 pub fn create_session(
     proj_name: &str,
     wt_slug: &str,
     wt_path: &PathBuf,
+    session_name: Option<String>,
     command: Option<String>,
-) -> Result<String> {
-    let base_name = format!("wsx_{}_{}", proj_name, wt_slug);
-    let name = session::unique_session_name(&base_name);
-    session::create_session(&name, wt_path)?;
+) -> Result<(String, String)> {
+    // display name priority: explicit > command first word > proj_name
+    let base_display = match &session_name {
+        Some(n) if !n.is_empty() => n.clone(),
+        _ => match &command {
+            Some(cmd) => cmd.split_whitespace().next().unwrap_or(proj_name).to_string(),
+            None => proj_name.to_string(),
+        },
+    };
+    let base_tmux = format!("{}-{}-{}", proj_name, wt_slug, base_display);
+    let tmux_name = session::unique_session_name(&base_tmux);
+    // strip "{proj_name}-{wt_slug}-" prefix to get display name
+    let prefix_len = proj_name.len() + 1 + wt_slug.len() + 1;
+    let display_name = tmux_name[prefix_len..].to_string();
+    session::create_session(&tmux_name, wt_path)?;
     if let Some(cmd) = command {
-        session::send_keys(&name, &cmd)?;
+        session::send_keys(&tmux_name, &cmd)?;
     }
-    Ok(name)
+    Ok((tmux_name, display_name))
 }
 
 /// Kill a tmux session by name.
@@ -185,7 +326,7 @@ pub fn create_ephemeral_session(
     wt_path: &PathBuf,
     command: &str,
 ) -> Result<String> {
-    let base_name = format!("wsx_{}_{}_run", proj_name, wt_slug);
+    let base_name = format!("{}-{}-run", proj_name, wt_slug);
     let name = session::unique_session_name(&base_name);
     session::create_ephemeral_session(&name, wt_path, command)?;
     Ok(name)
