@@ -55,38 +55,40 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_tree(frame, chunks[0], &app.workspace, app.tree_selected, app.tree_scroll, is_move_mode);
 
     // Preview
-    let sel = app.current_selection();
-    match &sel {
+    let preview_area = chunks[1];
+    match app.current_selection() {
         Selection::Session(pi, wi, si) => {
-            let (pi, wi, si) = (*pi, *wi, *si);
-            if let Some(sess) = app.workspace.session(pi, wi, si) {
-                let sess = sess.clone();
-                render_session_preview(frame, chunks[1], &sess);
+            if let Some((sess, title)) = app.workspace.projects.get(pi).and_then(|p| {
+                let wt = p.worktrees.get(wi)?;
+                let sess = wt.sessions.get(si)?;
+                let title = format!("{} › {} › {}", p.name, wt.display_name(), sess.display_name);
+                Some((sess.clone(), title))
+            }) {
+                render_session_preview(frame, preview_area, &sess, &title);
             } else {
-                render_empty_preview(frame, chunks[1]);
+                render_empty_preview(frame, preview_area);
             }
         }
         Selection::Worktree(pi, wi) => {
-            let (pi, wi) = (*pi, *wi);
-            let data = app.workspace.projects.get(pi).map(|p| {
-                (p.clone(), p.worktrees.get(wi).cloned())
-            });
-            if let Some((project, Some(worktree))) = data {
-                render_worktree_preview(frame, chunks[1], &project, &worktree);
+            if let Some((project, worktree, title)) = app.workspace.projects.get(pi)
+                .and_then(|p| p.worktrees.get(wi).map(|wt| {
+                    let title = format!("{} › {}", p.name, wt.display_name());
+                    (p.clone(), wt.clone(), title)
+                }))
+            {
+                render_worktree_preview(frame, preview_area, &project, &worktree, &title);
             } else {
-                render_empty_preview(frame, chunks[1]);
+                render_empty_preview(frame, preview_area);
             }
         }
         Selection::Project(pi) => {
-            let pi = *pi;
-            if let Some(project) = app.workspace.projects.get(pi) {
-                let project = project.clone();
-                render_project_preview(frame, chunks[1], &project);
+            if let Some(project) = app.workspace.projects.get(pi).cloned() {
+                render_project_preview(frame, preview_area, &project);
             } else {
-                render_empty_preview(frame, chunks[1]);
+                render_empty_preview(frame, preview_area);
             }
         }
-        Selection::None => render_empty_preview(frame, chunks[1]),
+        Selection::None => render_empty_preview(frame, preview_area),
     }
 
     render_status_bar(frame, status_area, app);
@@ -132,22 +134,22 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let sel = app.current_selection();
     let hints: String = match &app.mode {
         Mode::Normal => {
-            let global = "n:next-alert  e:config  ?:help  q:quit";
+            let global = "(n)ext (N)prev pending  (e)config  (?)help  (q)uit";
             match sel {
                 Selection::Project(_) =>
-                    format!("Enter:toggle  m:move  w:worktree  d:del  c:clean-merged  ·  {}", global),
+                    format!("(m)ove  (w)orktree  (d)el  (c)lean  ·  {}", global),
                 Selection::Worktree(_, _) =>
-                    format!("Enter:toggle  s:session  o:run  r:alias  d:del  ·  w:worktree  c:clean-merged  ·  {}", global),
+                    format!("(s)ession  (o)run  (r)alias  (d)el  ·  (w)orktree  (c)lean  ·  {}", global),
                 Selection::Session(_, _, _) =>
-                    format!("Enter:attach  r:rename  d:kill  ·  s:session  o:run  ·  w:worktree  c:clean-merged  ·  {}", global),
-                Selection::None => "p:add project".to_string(),
+                    format!("(r)ename  (d)kill  (x)dismiss  ·  (s)ession  (o)run  ·  (w)orktree  (c)lean  ·  {}", global),
+                Selection::None => "(p) add project".to_string(),
             }
         }
-        Mode::Input { .. } => "Enter:confirm  Esc:cancel".to_string(),
-        Mode::Confirm { .. } => "y:yes  n:no".to_string(),
-        Mode::Config { .. } => "e:edit .gtrignore  Esc:close".to_string(),
-        Mode::Move { .. } => "j/k:move up/down  Enter/Esc:done".to_string(),
-        Mode::Help => "Esc/q:close".to_string(),
+        Mode::Input { .. } => "Esc: cancel".to_string(),
+        Mode::Confirm { .. } => "(y)es  (n)o".to_string(),
+        Mode::Config { .. } => "(e)dit .gtrignore  Esc: close".to_string(),
+        Mode::Move { .. } => "(j/k) reorder  Esc: done".to_string(),
+        Mode::Help => "Esc: close".to_string(),
     };
 
     let msg = app.status_message.as_deref().unwrap_or("");
@@ -211,9 +213,10 @@ fn render_help(frame: &mut Frame, area: Rect) {
         "  Enter         Attach\n",
         "  r             Rename\n",
         "  d             Kill session\n",
+        "  x             Dismiss ● (suppress running-app notification) / toggle ⊘ mute\n",
         "\n",
         " Global\n",
-        "  n             Jump to next session needing attention (⊙)\n",
+        "  n / N         Jump to next / prev session needing attention (●)\n",
         "  R             Refresh\n",
         "  ?             Help\n",
         "  q             Quit\n",

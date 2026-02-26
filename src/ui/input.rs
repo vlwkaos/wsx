@@ -128,6 +128,28 @@ impl InputState {
 
 // ── Completion logic ──────────────────────────────────────────────────────────
 
+/// Subsequence fuzzy match. Returns score if all query chars appear in order
+/// in target (case-insensitive). Higher score = better match.
+fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
+    if query.is_empty() { return Some(0); }
+    let q: Vec<char> = query.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let t: Vec<char> = target.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let mut qi = 0;
+    let mut score = 0i32;
+    let mut consecutive = 0i32;
+    for (ti, &tc) in t.iter().enumerate() {
+        if qi < q.len() && tc == q[qi] {
+            consecutive += 1;
+            score += 1 + consecutive; // base + consecutive bonus
+            if ti == 0 { score += 4; } // prefix match bonus
+            qi += 1;
+        } else {
+            consecutive = 0;
+        }
+    }
+    if qi == q.len() { Some(score) } else { None }
+}
+
 fn path_completions(input: &str) -> Vec<String> {
     let (expanded, tilde) = expand_input(input);
 
@@ -143,19 +165,24 @@ fn path_completions(input: &str) -> Vec<String> {
 
     let Ok(rd) = std::fs::read_dir(&parent) else { return vec![] };
 
-    let mut results: Vec<String> = rd
+    let mut scored: Vec<(i32, String)> = rd
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_dir())
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
             if name.starts_with('.') && !prefix.starts_with('.') { return None; }
-            if !name.starts_with(&prefix) { return None; }
-            Some(display_path(&parent.join(&name), tilde))
+            let score = fuzzy_score(&prefix, &name)?;
+            Some((score, display_path(&parent.join(&name), tilde)))
         })
         .collect();
 
-    results.sort();
-    results
+    if prefix.is_empty() {
+        scored.sort_by(|a, b| a.1.cmp(&b.1));
+    } else {
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    }
+
+    scored.into_iter().map(|(_, path)| path).collect()
 }
 
 fn expand_input(input: &str) -> (PathBuf, bool) {
@@ -209,7 +236,7 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
     frame.set_cursor_position((cursor_x.min(popup.x + popup.width - 2), popup.y + 1));
 
     if !state.completions.is_empty() {
-        let max_show = 6usize.min(state.completions.len());
+        let max_show = 10usize.min(state.completions.len());
         let drop_h = max_show as u16 + 2;
         let drop_y = popup.y + 3;
         if drop_y + drop_h <= area.y + area.height {

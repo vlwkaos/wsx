@@ -21,8 +21,7 @@ pub fn render_tree(
         FlatEntry::Project { idx } => {
             let p = &workspace.projects[*idx];
             let icon = if p.expanded { "▼" } else { "▶" };
-            let wt_count = p.worktrees.len();
-            let label = format!("{} {} ({})", icon, p.name, wt_count);
+            let label = format!("{} {} [{}]", icon, p.name, p.worktrees.len());
             ListItem::new(label).style(Style::default().fg(Color::Cyan).bold())
         }
         FlatEntry::Worktree { project_idx, worktree_idx } => {
@@ -34,7 +33,7 @@ pub fn render_tree(
             let has_activity = wt.sessions.iter().any(|s| s.has_activity);
             let activity = if has_activity { " ●" } else { "" };
             let sess_badge = if !wt.sessions.is_empty() {
-                format!(" [{}s]", wt.sessions.len())
+                format!(" [{}]", wt.sessions.len())
             } else { String::new() };
             let display = if let Some(alias) = &wt.alias {
                 format!("{} ({})", alias, wt.name)
@@ -50,14 +49,16 @@ pub fn render_tree(
             let sess = &workspace.projects[*project_idx].worktrees[*worktree_idx].sessions[*session_idx];
             let elapsed = sess.last_activity.map(|t| t.elapsed());
             let active = elapsed.map(|e| e.as_secs() < IDLE_SECS).unwrap_or(false);
-            let (icon, icon_color) = if sess.has_activity {
-                ("●", Color::Yellow)
+            let (icon, icon_color) = if sess.muted {
+                ("⊘", Color::DarkGray)             // muted — no activity tracking
+            } else if sess.has_activity {
+                ("●", Color::Yellow)               // tmux bell — needs attention
             } else if active {
-                ("◉", Color::Green)
-            } else if sess.was_active {
-                ("⊙", Color::Rgb(255, 160, 60))   // orange — finished, needs attention
+                ("◉", Color::Green)                // actively outputting
+            } else if sess.has_running_app && !sess.running_app_suppressed {
+                ("●", Color::Yellow)               // app open but quiet — needs attention
             } else {
-                ("○", Color::Gray)                 // never seen active, neutral
+                ("○", Color::Gray)                 // truly idle
             };
             let idle_str = match elapsed {
                 Some(e) if e.as_secs() >= IDLE_SECS => format!("  {}", fmt_idle(e)),
@@ -66,7 +67,7 @@ pub fn render_tree(
             let line = Line::from(vec![
                 Span::raw("  "),
                 Span::styled(icon, Style::default().fg(icon_color)),
-                Span::raw(format!(" {}{}", sess.display_name, idle_str)),
+                Span::styled(format!(" {}{}", sess.display_name, idle_str), Style::default().fg(Color::Rgb(210, 200, 185))),
             ]);
             ListItem::new(line)
         }
@@ -104,10 +105,11 @@ fn fmt_idle(d: std::time::Duration) -> String {
 
 /// Compute scroll offset to keep selected item visible.
 pub fn compute_scroll(selected: usize, visible_height: usize, current_offset: usize) -> usize {
+    let lookahead = (visible_height * 2 / 3).max(1);
     if selected < current_offset {
         selected
-    } else if selected >= current_offset + visible_height {
-        selected.saturating_sub(visible_height - 1)
+    } else if selected >= current_offset + lookahead {
+        selected.saturating_sub(lookahead - 1)
     } else {
         current_offset
     }

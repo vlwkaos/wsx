@@ -12,10 +12,11 @@ pub fn render_worktree_preview(
     area: Rect,
     project: &Project,
     worktree: &WorktreeInfo,
+    title: &str,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {} ", worktree.display_name()))
+        .title(format!(" {} ", title))
         .title_style(Style::default().bold());
 
     let mut lines = vec![
@@ -84,11 +85,12 @@ pub fn render_session_preview(
     frame: &mut Frame,
     area: Rect,
     session: &SessionInfo,
+    title: &str,
 ) {
     let activity = if session.has_activity { " ●" } else { "" };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {}{} ", session.display_name, activity))
+        .title(format!(" {}{} ", title, activity))
         .title_style(Style::default().bold());
 
     let text = session.pane_capture.as_deref()
@@ -139,6 +141,7 @@ pub fn render_project_preview(frame: &mut Frame, area: Rect, project: &Project) 
         .borders(Borders::ALL)
         .title(format!(" {} ", project.name))
         .title_style(Style::default().bold());
+
     let para = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
     frame.render_widget(para, area);
 }
