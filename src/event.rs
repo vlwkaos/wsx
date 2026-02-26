@@ -52,7 +52,6 @@ fn translate_key(key: KeyEvent) -> Action {
         (KeyModifiers::NONE, KeyCode::Char('p')) => Action::AddProject,
         (KeyModifiers::NONE, KeyCode::Char('w')) => Action::AddWorktree,
         (KeyModifiers::NONE, KeyCode::Char('s')) => Action::AddSession,
-        (KeyModifiers::NONE, KeyCode::Char('o')) => Action::OpenRun,
         (KeyModifiers::NONE, KeyCode::Char('d')) => Action::Delete,
         (KeyModifiers::NONE, KeyCode::Char('c')) => Action::Clean,
         (KeyModifiers::NONE, KeyCode::Char('e')) => Action::Edit,

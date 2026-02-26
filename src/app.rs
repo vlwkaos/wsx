@@ -83,7 +83,6 @@ pub enum InputContext {
     AddWorktree { project_idx: usize },
     AddSession { project_idx: usize, worktree_idx: usize },
     AddSessionCmd { project_idx: usize, worktree_idx: usize, session_name: String },
-    OpenRun { project_idx: usize, worktree_idx: usize },
     SetAlias { project_idx: usize, worktree_idx: usize },
     RenameSession { project_idx: usize, worktree_idx: usize, session_idx: usize },
 }
@@ -95,7 +94,6 @@ impl InputContext {
             InputContext::AddWorktree { .. } => "Add Worktree",
             InputContext::AddSession { .. } => "New Session — name",
             InputContext::AddSessionCmd { .. } => "New Session — command",
-            InputContext::OpenRun { .. } => "Open (ephemeral run)",
             InputContext::SetAlias { .. } => "Set Alias",
             InputContext::RenameSession { .. } => "Rename Session",
         }
@@ -463,7 +461,7 @@ impl App {
 
         match &self.mode {
             Mode::Normal => self.dispatch_normal(action, terminal)?,
-            Mode::Input { .. } => self.dispatch_input(action, terminal)?,
+            Mode::Input { .. } => self.dispatch_input(action)?,
             Mode::Confirm { .. } => self.dispatch_confirm(action, terminal)?,
             Mode::Help => {
                 if matches!(action, Action::InputEscape | Action::Quit | Action::Help) {
@@ -486,7 +484,6 @@ impl App {
             Action::AddProject => self.action_add_project()?,
             Action::AddWorktree => self.action_add_worktree()?,
             Action::AddSession => self.action_add_session()?,
-            Action::OpenRun => self.action_open_run()?,
             Action::Delete => self.action_delete()?,
             Action::Clean => self.action_clean()?,
             Action::Edit => self.action_edit()?,
@@ -533,13 +530,13 @@ impl App {
         Ok(())
     }
 
-    fn dispatch_input(&mut self, action: Action, terminal: &mut Tui) -> Result<()> {
+    fn dispatch_input(&mut self, action: Action) -> Result<()> {
         match action {
             Action::InputEscape | Action::Quit => {
                 self.mode = Mode::Normal;
             }
             Action::Select => {
-                self.confirm_input(terminal)?;
+                self.confirm_input()?;
             }
             Action::InputChar(c) => {
                 if let Mode::Input { state, .. } = &mut self.mode {
@@ -752,21 +749,6 @@ impl App {
         Ok(())
     }
 
-    fn action_open_run(&mut self) -> Result<()> {
-        let (pi, wi) = match self.current_selection() {
-            Selection::Worktree(pi, wi) | Selection::Session(pi, wi, _) => (pi, wi),
-            _ => {
-                self.set_status("Select a worktree first");
-                return Ok(());
-            }
-        };
-        self.mode = Mode::Input {
-            context: InputContext::OpenRun { project_idx: pi, worktree_idx: wi },
-            state: InputState::new("run: "),
-        };
-        Ok(())
-    }
-
     fn action_delete(&mut self) -> Result<()> {
         match self.current_selection() {
             Selection::Session(pi, wi, si) => {
@@ -973,7 +955,7 @@ impl App {
 
     // ── Input confirm ─────────────────────────────────────────────────────────
 
-    fn confirm_input(&mut self, terminal: &mut Tui) -> Result<()> {
+    fn confirm_input(&mut self) -> Result<()> {
         let mode = std::mem::replace(&mut self.mode, Mode::Normal);
         if let Mode::Input { context, state } = mode {
             let value = state.value().trim().to_string();
@@ -999,9 +981,6 @@ impl App {
                 InputContext::AddSessionCmd { project_idx, worktree_idx, session_name } => {
                     let cmd = if value.is_empty() { None } else { Some(value) };
                     self.do_create_session(project_idx, worktree_idx, session_name, cmd)?;
-                }
-                InputContext::OpenRun { project_idx, worktree_idx } => {
-                    if !value.is_empty() { self.do_open_run(project_idx, worktree_idx, value, terminal)?; }
                 }
                 InputContext::SetAlias { project_idx, worktree_idx } => {
                     self.do_apply_alias(project_idx, worktree_idx, value)?;
@@ -1066,7 +1045,7 @@ impl App {
         let (proj_name, wt_path, wt_slug) = {
             let p = &self.workspace.projects[pi];
             let wt = &p.worktrees[wi];
-            (p.name.clone(), wt.path.clone(), wt.session_slug())
+            (p.name.clone(), wt.path.clone(), wt.session_slug(&p.name))
         };
         let explicit_name = if session_name.is_empty() { None } else { Some(session_name) };
         let (_tmux_name, display_name) = ops::create_session(&proj_name, &wt_slug, &wt_path, explicit_name, command)?;
@@ -1077,16 +1056,6 @@ impl App {
             wt.expanded = true;
         }
         Ok(())
-    }
-
-    fn do_open_run(&mut self, pi: usize, wi: usize, command: String, terminal: &mut Tui) -> Result<()> {
-        let (proj_name, wt_path, wt_slug) = {
-            let p = &self.workspace.projects[pi];
-            let wt = &p.worktrees[wi];
-            (p.name.clone(), wt.path.clone(), wt.session_slug())
-        };
-        let name = ops::create_ephemeral_session(&proj_name, &wt_slug, &wt_path, &command)?;
-        self.attach_to_session(&name, terminal)
     }
 
     fn do_delete_worktree(&mut self, pi: usize, wi: usize) -> Result<()> {
@@ -1133,35 +1102,11 @@ impl App {
     fn do_apply_alias(&mut self, pi: usize, wi: usize, alias: String) -> Result<()> {
         let branch = self.workspace.projects[pi].worktrees[wi].branch.clone();
         let proj_path = self.workspace.projects[pi].path.clone();
-        let proj_name = self.workspace.projects[pi].name.clone();
-        let old_slug = self.workspace.projects[pi].worktrees[wi].session_slug();
 
         ops::set_alias(&mut self.config, &proj_path, &branch, &alias);
         self.config.save()?;
 
         let new_alias = if alias.is_empty() { None } else { Some(alias.clone()) };
-        let new_slug = match new_alias.as_deref() {
-            Some(a) => a.to_owned(),
-            None => branch.replace('/', "-"),
-        };
-
-        // Rename tmux sessions so the prefix stays consistent after refresh
-        if old_slug != new_slug {
-            let sessions: Vec<(String, String)> = self.workspace.projects[pi].worktrees[wi]
-                .sessions.iter()
-                .map(|s| (s.name.clone(), s.display_name.clone()))
-                .collect();
-            for (old_name, display_name) in sessions {
-                let new_name = format!("{}-{}-{}", proj_name, new_slug, display_name);
-                if ops::rename_session(&old_name, &new_name).is_ok() {
-                    if let Some(sess) = self.workspace.projects[pi].worktrees[wi]
-                        .sessions.iter_mut().find(|s| s.name == old_name)
-                    {
-                        sess.name = new_name;
-                    }
-                }
-            }
-        }
 
         let wt = &mut self.workspace.projects[pi].worktrees[wi];
         wt.alias = new_alias;
@@ -1177,7 +1122,7 @@ impl App {
     fn do_rename_session(&mut self, pi: usize, wi: usize, si: usize, new_name: String) -> Result<()> {
         let old_tmux_name = self.workspace.projects[pi].worktrees[wi].sessions[si].name.clone();
         let proj_name = self.workspace.projects[pi].name.clone();
-        let wt_slug = self.workspace.projects[pi].worktrees[wi].session_slug();
+        let wt_slug = self.workspace.projects[pi].worktrees[wi].session_slug(&proj_name);
         let new_tmux_name = format!("{}-{}-{}", proj_name, wt_slug, new_name);
         ops::rename_session(&old_tmux_name, &new_tmux_name)?;
         let sess = &mut self.workspace.projects[pi].worktrees[wi].sessions[si];

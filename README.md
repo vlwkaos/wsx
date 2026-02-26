@@ -71,7 +71,6 @@ Mouse clicks also work: click a tree row to select it, click the preview pane to
 | `p` | Add project |
 | `w` | New worktree (branch prompt) |
 | `s` | New persistent session |
-| `o` | Open ephemeral session (exits on detach) |
 | `m` | Reorder project or session |
 | `r` | Set alias |
 | `d` | Delete |

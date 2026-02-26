@@ -49,14 +49,6 @@ pub fn create_session(name: &str, start_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Create an ephemeral session that runs a command directly (dies on exit).
-pub fn create_ephemeral_session(name: &str, start_dir: &Path, command: &str) -> Result<()> {
-    let status = tmux_silent(&["new-session", "-d", "-s", name, "-c", &start_dir.to_string_lossy(), command])
-        .status()?;
-    if !status.success() { bail!("tmux new-session (ephemeral) failed for {}", name); }
-    Ok(())
-}
-
 /// Kill a session by name.
 pub fn kill_session(name: &str) -> Result<()> {
     tmux_silent(&["kill-session", "-t", name]).status()?;
