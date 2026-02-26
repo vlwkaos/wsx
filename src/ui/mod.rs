@@ -136,7 +136,7 @@ fn get_mode_label(app: &App) -> &'static str {
 }
 
 fn build_hints(app: &App) -> String {
-    let global = "(/)search  (n)ext (N)prev pending  (e)config  (?)help  (q)uit";
+    let global = "(/)search  (a)ctive  (n)ext (N)prev pending  (e)config  (?)help  (q)uit";
     match &app.mode {
         Mode::Normal => match app.current_selection() {
             Selection::Project(_) =>
@@ -215,11 +215,19 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let badge_width = mode_text.len();
     let badge_style = Style::default().fg(Color::Black).bg(Color::Yellow).bold();
 
+    let ver = concat!(" v", env!("CARGO_PKG_VERSION"), " ");
+    let ver_style = Style::default().fg(Color::DarkGray);
+
     let msg = app.status_message.as_deref().unwrap_or("");
     if !msg.is_empty() {
+        let left = format!(" {}", msg);
+        let left_len = badge_width + left.len();
+        let pad = (area.width as usize).saturating_sub(left_len + ver.len());
         let spans = vec![
             Span::styled(mode_text, badge_style),
-            Span::styled(format!(" {}", msg), Style::default().fg(Color::Cyan)),
+            Span::styled(left, Style::default().fg(Color::Cyan)),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(ver, ver_style),
         ];
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
@@ -232,9 +240,14 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     if hint_lines.len() <= 1 || area.height < 2 {
         let text = hint_lines.first().map(|s| s.as_str()).unwrap_or(&hints);
+        let left = format!(" {}", text);
+        let left_len = badge_width + left.len();
+        let pad = (area.width as usize).saturating_sub(left_len + ver.len());
         let spans = vec![
             Span::styled(mode_text, badge_style),
-            Span::styled(format!(" {}", text), hint_style),
+            Span::styled(left, hint_style),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(ver, ver_style),
         ];
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     } else {
@@ -243,11 +256,24 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(mode_text, badge_style),
             Span::styled(format!(" {}", hint_lines[0]), hint_style),
         ])];
-        for hl in &hint_lines[1..] {
-            text_lines.push(Line::from(vec![
-                Span::raw(indent.clone()),
-                Span::styled(format!(" {}", hl), hint_style),
-            ]));
+        let last = hint_lines.len() - 1;
+        for (i, hl) in hint_lines[1..].iter().enumerate() {
+            let left = format!(" {}", hl);
+            if i + 1 == last {
+                let left_len = badge_width + left.len();
+                let pad = (area.width as usize).saturating_sub(left_len + ver.len());
+                text_lines.push(Line::from(vec![
+                    Span::raw(indent.clone()),
+                    Span::styled(left, hint_style),
+                    Span::raw(" ".repeat(pad)),
+                    Span::styled(ver, ver_style),
+                ]));
+            } else {
+                text_lines.push(Line::from(vec![
+                    Span::raw(indent.clone()),
+                    Span::styled(left, hint_style),
+                ]));
+            }
         }
         frame.render_widget(Paragraph::new(Text::from(text_lines)), area);
     }
