@@ -1,4 +1,6 @@
 /target/
+*.tar.gz
+*.sha256
 *.pem
 *.key
 *.p12
