@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use crate::model::workspace::{SessionInfo, WorkspaceState};
+use crate::model::workspace::{session_display_name_from_tmux, SessionInfo, WorkspaceState};
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct WorkspaceCache {
@@ -66,11 +66,14 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> usize {
                 wt.expanded = expanded;
             }
             if let Some(names) = cache.sessions.get(&key) {
-                let prefix = format!("{}-{}-", project.name, wt.session_slug());
                 wt.sessions = names.iter().map(|name| {
-                    let display_name = name.strip_prefix(&prefix)
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| name.clone());
+                    let display_name = session_display_name_from_tmux(
+                        name,
+                        &project.name,
+                        &wt.path,
+                        &wt.branch,
+                        wt.alias.as_deref(),
+                    );
                     SessionInfo {
                         name: name.clone(),
                         display_name,

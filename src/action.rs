@@ -9,7 +9,6 @@ pub enum Action {
     AddProject,
     AddWorktree,
     AddSession,
-    OpenRun,
     Delete,
     Clean,
     Edit,

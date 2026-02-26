@@ -12,7 +12,10 @@ use crate::{
     config::global::GlobalConfig,
     git::{info as git_info, worktree as git_worktree},
     hooks,
-    model::workspace::{GitInfo, Project, ProjectConfig, SessionInfo, WorkspaceState, WorktreeInfo},
+    model::workspace::{
+        session_display_name_from_tmux,
+        GitInfo, Project, ProjectConfig, SessionInfo, WorkspaceState, WorktreeInfo,
+    },
     tmux::{monitor::SessionStatus, session},
 };
 
@@ -69,12 +72,6 @@ pub fn refresh_workspace(
                 let wt_path = entry.path.clone();
                 let prev = snapshot.get(&entry.path);
 
-                let wt_slug = match alias.as_deref() {
-                    Some(a) => a.to_owned(),
-                    None => entry.branch.replace('/', "-"),
-                };
-                let prefix = format!("{}-{}-", proj_name, wt_slug);
-
                 let prev_order: &[String] = prev
                     .map(|(_, _, _, order)| order.as_slice())
                     .unwrap_or(&[]);
@@ -82,9 +79,13 @@ pub fn refresh_workspace(
                 let mut sessions: Vec<SessionInfo> = sessions_with_paths.iter()
                     .filter(|(_, sp)| sp == &wt_path)
                     .map(|(name, _)| {
-                        let display_name = name.strip_prefix(&prefix)
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| name.clone());
+                        let display_name = session_display_name_from_tmux(
+                            name,
+                            &proj_name,
+                            &wt_path,
+                            &entry.branch,
+                            alias.as_deref(),
+                        );
                         let prev_pane = prev.and_then(|(_, _, panes, _)| panes.get(name));
                         let (pane_capture, prev_suppressed, muted) = prev_pane
                             .map(|(p, s, m)| (p.clone(), *s, *m))
@@ -344,20 +345,6 @@ pub fn delete_session(name: &str) -> Result<()> {
 /// Rename a tmux session from `old_name` to `new_name`.
 pub fn rename_session(old_name: &str, new_name: &str) -> Result<()> {
     session::rename_session(old_name, new_name)
-}
-
-/// Create an ephemeral tmux session for a one-off run command.
-/// Returns the session name.
-pub fn create_ephemeral_session(
-    proj_name: &str,
-    wt_slug: &str,
-    wt_path: &PathBuf,
-    command: &str,
-) -> Result<String> {
-    let base_name = format!("{}-{}-run", proj_name, wt_slug);
-    let name = session::unique_session_name(&base_name);
-    session::create_ephemeral_session(&name, wt_path, command)?;
-    Ok(name)
 }
 
 // ── Alias operations ──────────────────────────────────────────────────────────

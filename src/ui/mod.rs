@@ -142,7 +142,7 @@ fn build_hints(app: &App) -> String {
             Selection::Project(_) =>
                 format!("(m)ove  (w)orktree  (d)el  (c)lean  ·  {}", global),
             Selection::Worktree(_, _) =>
-                format!("(s)ession  (o)run  (r)alias  (d)el  ·  (w)orktree  (c)lean  ·  {}", global),
+                format!("(s)ession  (r)alias  (d)el  ·  (w)orktree  (c)lean  ·  {}", global),
             Selection::Session(pi, wi, si) => {
                 let active = app.workspace.projects.get(pi)
                     .and_then(|p| p.worktrees.get(wi))
@@ -150,7 +150,7 @@ fn build_hints(app: &App) -> String {
                     .map(|s| s.last_activity.map(|t| t.elapsed().as_secs() < crate::app::IDLE_SECS).unwrap_or(false))
                     .unwrap_or(false);
                 let dismiss = if active { "" } else { "(x)dismiss  ·  " };
-                format!("(m)ove  (r)ename  (d)kill  ·  {}(C-a d)detach  ·  (s)ession  (o)run  ·  (w)orktree  (c)lean  ·  {}", dismiss, global)
+                format!("(m)ove  (r)ename  (d)kill  ·  {}(C-a d)detach  ·  (s)ession  ·  (w)orktree  (c)lean  ·  {}", dismiss, global)
             }
             Selection::None => "(p) add project".to_string(),
         },
@@ -288,7 +288,6 @@ fn render_help(frame: &mut Frame, area: Rect) {
         " Worktree\n",
         "  w             Add worktree (branch: prompt)\n",
         "  s             New persistent session (optional init command)\n",
-        "  o             Open ephemeral run (session dies on exit, attaches)\n",
         "  r             Set alias\n",
         "  d             Delete worktree + kill all sessions\n",
         "  c             Clean this worktree if merged\n",
