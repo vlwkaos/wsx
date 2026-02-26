@@ -39,8 +39,9 @@ pub fn popup_upper(area: Rect, w: u16, h: u16) -> Rect {
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
-    let main_area = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(1));
-    let status_area = Rect::new(area.x, area.y + area.height.saturating_sub(1), area.width, 1);
+    let sb_height = status_bar_height(app, area.width);
+    let main_area = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(sb_height));
+    let status_area = Rect::new(area.x, area.y + area.height.saturating_sub(sb_height), area.width, sb_height);
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -51,6 +52,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let visible_height = chunks[0].height.saturating_sub(2) as usize;
     app.tree_visible_height = visible_height;
     app.tree_scroll = compute_scroll(app.tree_selected, visible_height, app.tree_scroll);
+    app.tree_area = chunks[0];
+    app.preview_area = chunks[1];
 
     let is_move_mode = matches!(app.mode, Mode::Move { .. });
     render_tree(frame, chunks[0], &app.workspace, app.tree_selected, app.tree_scroll, is_move_mode);
@@ -122,6 +125,74 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
+fn get_mode_label(app: &App) -> &'static str {
+    match &app.mode {
+        Mode::Normal => "NORMAL",
+        Mode::Input { .. } => "INPUT",
+        Mode::Confirm { .. } => "CONFIRM",
+        Mode::Config { .. } => "CONFIG",
+        Mode::Move { .. } => "MOVE",
+        Mode::Help => "HELP",
+        Mode::Search { .. } => "SEARCH",
+    }
+}
+
+fn build_hints(app: &App) -> String {
+    let global = "(/)search  (n)ext (N)prev pending  (e)config  (?)help  (q)uit";
+    match &app.mode {
+        Mode::Normal => match app.current_selection() {
+            Selection::Project(_) =>
+                format!("(m)ove  (w)orktree  (d)el  (c)lean  ·  {}", global),
+            Selection::Worktree(_, _) =>
+                format!("(s)ession  (o)run  (r)alias  (d)el  ·  (w)orktree  (c)lean  ·  {}", global),
+            Selection::Session(_, _, _) =>
+                format!("(r)ename  (d)kill  (x)dismiss  ·  C-a d: detach  ·  (s)ession  (o)run  ·  (w)orktree  (c)lean  ·  {}", global),
+            Selection::None => "(p) add project".to_string(),
+        },
+        Mode::Input { .. } => "Esc: cancel".to_string(),
+        Mode::Confirm { .. } => "(y)es  (n)o".to_string(),
+        Mode::Config { .. } => "(e)dit .gtrignore  Esc: close".to_string(),
+        Mode::Move { .. } => "(j/k) reorder  Esc: done".to_string(),
+        Mode::Help => "Esc: close".to_string(),
+        Mode::Search { .. } => unreachable!(),
+    }
+}
+
+// Split hints at "  ·  " scope separators to fit within `available_width` chars per line.
+fn wrap_hints(hints: &str, available_width: usize) -> Vec<String> {
+    let groups: Vec<&str> = hints.split("  ·  ").collect();
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for group in &groups {
+        if current.is_empty() {
+            current = group.to_string();
+        } else {
+            let candidate = format!("{}  ·  {}", current, group);
+            if candidate.len() <= available_width {
+                current = candidate;
+            } else {
+                lines.push(current);
+                current = group.to_string();
+            }
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn status_bar_height(app: &App, width: u16) -> u16 {
+    if matches!(app.mode, Mode::Search { .. }) || app.status_message.is_some() {
+        return 1;
+    }
+    let label = get_mode_label(app);
+    let badge_width = label.len() + 4; // " [LABEL] "
+    let available = (width as usize).saturating_sub(badge_width + 1);
+    let lines = wrap_hints(&build_hints(app), available);
+    (lines.len() as u16).max(1)
+}
+
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     // Search mode gets its own full-bar treatment
     if let Mode::Search { query, .. } = &app.mode {
@@ -134,52 +205,49 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let mode_label = match &app.mode {
-        Mode::Normal => "NORMAL",
-        Mode::Input { .. } => "INPUT",
-        Mode::Confirm { .. } => "CONFIRM",
-        Mode::Config { .. } => "CONFIG",
-        Mode::Move { .. } => "MOVE",
-        Mode::Help => "HELP",
-        Mode::Search { .. } => unreachable!(),
-    };
-
-    let sel = app.current_selection();
-    let hints: String = match &app.mode {
-        Mode::Normal => {
-            let global = "(/)search  (n)ext (N)prev pending  (e)config  (?)help  (q)uit";
-            match sel {
-                Selection::Project(_) =>
-                    format!("(m)ove  (w)orktree  (d)el  (c)lean  ·  {}", global),
-                Selection::Worktree(_, _) =>
-                    format!("(s)ession  (o)run  (r)alias  (d)el  ·  (w)orktree  (c)lean  ·  {}", global),
-                Selection::Session(_, _, _) =>
-                    format!("(r)ename  (d)kill  (x)dismiss  ·  (s)ession  (o)run  ·  (w)orktree  (c)lean  ·  {}", global),
-                Selection::None => "(p) add project".to_string(),
-            }
-        }
-        Mode::Input { .. } => "Esc: cancel".to_string(),
-        Mode::Confirm { .. } => "(y)es  (n)o".to_string(),
-        Mode::Config { .. } => "(e)dit .gtrignore  Esc: close".to_string(),
-        Mode::Move { .. } => "(j/k) reorder  Esc: done".to_string(),
-        Mode::Help => "Esc: close".to_string(),
-        Mode::Search { .. } => unreachable!(),
-    };
+    let label = get_mode_label(app);
+    let mode_text = format!(" [{}] ", label);
+    let badge_width = mode_text.len();
 
     let msg = app.status_message.as_deref().unwrap_or("");
-    let mode_text = format!(" [{}] ", mode_label);
-    let right = if !msg.is_empty() {
-        Span::styled(format!(" {}", msg), Style::default().fg(Color::Cyan))
-    } else {
-        Span::styled(format!(" {}", hints), Style::default().fg(Color::Gray))
-    };
-    let spans = vec![
-        Span::styled(mode_text, Style::default().fg(Color::Black).bg(Color::Yellow).bold()),
-        right,
-    ];
+    if !msg.is_empty() {
+        let spans = vec![
+            Span::styled(mode_text, Style::default().fg(Color::Black).bg(Color::Yellow).bold()),
+            Span::styled(format!(" {}", msg), Style::default().fg(Color::Cyan)),
+        ];
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
+    }
 
-    let para = Paragraph::new(Line::from(spans));
-    frame.render_widget(para, area);
+    let hints = build_hints(app);
+    let available = (area.width as usize).saturating_sub(badge_width + 1);
+    let hint_lines = wrap_hints(&hints, available);
+
+    if hint_lines.len() <= 1 || area.height < 2 {
+        let text = hint_lines.first().map(|s| s.as_str()).unwrap_or(&hints);
+        let spans = vec![
+            Span::styled(mode_text, Style::default().fg(Color::Black).bg(Color::Yellow).bold()),
+            Span::styled(format!(" {}", text), Style::default().fg(Color::Gray)),
+        ];
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    } else {
+        let indent = " ".repeat(badge_width);
+        let mut text_lines: Vec<Line> = Vec::new();
+        for (i, hl) in hint_lines.iter().enumerate() {
+            if i == 0 {
+                text_lines.push(Line::from(vec![
+                    Span::styled(mode_text.clone(), Style::default().fg(Color::Black).bg(Color::Yellow).bold()),
+                    Span::styled(format!(" {}", hl), Style::default().fg(Color::Gray)),
+                ]));
+            } else {
+                text_lines.push(Line::from(vec![
+                    Span::raw(indent.clone()),
+                    Span::styled(format!(" {}", hl), Style::default().fg(Color::Gray)),
+                ]));
+            }
+        }
+        frame.render_widget(Paragraph::new(Text::from(text_lines)), area);
+    }
 }
 
 fn render_loading(frame: &mut Frame, area: Rect) {
@@ -196,7 +264,7 @@ fn render_loading(frame: &mut Frame, area: Rect) {
 
 fn render_help(frame: &mut Frame, area: Rect) {
     let width = area.width.min(64).max(40);
-    let height = area.height.min(28).max(12);
+    let height = area.height.min(40).max(12);
     let popup = popup_center(area, width, height);
 
     frame.render_widget(Clear, popup);
@@ -228,6 +296,10 @@ fn render_help(frame: &mut Frame, area: Rect) {
         "  r             Rename\n",
         "  d             Kill session\n",
         "  x             Dismiss ● (suppress running-app notification) / toggle ⊘ mute\n",
+        "\n",
+        " Inside Session (tmux)\n",
+        "  Ctrl+a d      Detach (return to wsx)\n",
+        "  Ctrl+a ?      tmux help\n",
         "\n",
         " Global\n",
         "  n / N         Jump to next / prev session needing attention (●)\n",

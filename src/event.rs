@@ -1,4 +1,4 @@
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use std::time::Duration;
 use anyhow::Result;
 use crate::action::Action;
@@ -9,6 +9,7 @@ pub fn poll_event(timeout: Duration, in_input: bool) -> Result<Option<Action>> {
             Event::Key(key) => {
                 if in_input { translate_input_key(key) } else { translate_key(key) }
             }
+            Event::Mouse(mouse) => translate_mouse(mouse),
             _ => Action::None,
         };
         Ok(Some(action))
@@ -27,6 +28,13 @@ fn translate_input_key(key: KeyEvent) -> Action {
         KeyCode::Down => Action::NavigateDown,
         KeyCode::Up => Action::NavigateUp,
         KeyCode::Char(c) => Action::InputChar(c),
+        _ => Action::None,
+    }
+}
+
+fn translate_mouse(mouse: MouseEvent) -> Action {
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => Action::MouseClick { col: mouse.column, row: mouse.row },
         _ => Action::None,
     }
 }

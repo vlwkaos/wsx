@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
+use ratatui::layout::Rect;
+
 use crate::{
     action::Action,
     config::global::GlobalConfig,
@@ -108,6 +110,8 @@ pub struct App {
     pub tree_selected: usize,
     pub tree_scroll: usize,
     pub tree_visible_height: usize,
+    pub tree_area: Rect,
+    pub preview_area: Rect,
     pub mode: Mode,
     pub config: GlobalConfig,
     pub status_message: Option<String>,
@@ -133,6 +137,8 @@ impl App {
             tree_selected,
             tree_scroll: 0,
             tree_visible_height: 20,
+            tree_area: Rect::default(),
+            preview_area: Rect::default(),
             mode: Mode::Normal,
             config,
             status_message: None,
@@ -476,7 +482,34 @@ impl App {
             Action::SearchStart => {
                 self.mode = Mode::Search { query: String::new(), match_idx: 0 };
             }
+            Action::MouseClick { col, row } => self.handle_mouse_click(col, row, terminal)?,
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_mouse_click(&mut self, col: u16, row: u16, terminal: &mut Tui) -> Result<()> {
+        let ta = self.tree_area;
+        let pa = self.preview_area;
+        if col >= ta.x && col < ta.x + ta.width && row >= ta.y && row < ta.y + ta.height {
+            // Content starts after top border (y+1), ends before bottom border (y+height-1)
+            let content_top = ta.y + 1;
+            let content_bottom = ta.y + ta.height.saturating_sub(1);
+            if row >= content_top && row < content_bottom {
+                let flat_idx = (row - content_top) as usize + self.tree_scroll;
+                if flat_idx < self.flat().len() {
+                    if flat_idx == self.tree_selected {
+                        self.action_select(terminal)?;
+                    } else {
+                        self.tree_selected = flat_idx;
+                        self.update_scroll();
+                    }
+                }
+            }
+        } else if col >= pa.x && col < pa.x + pa.width && row >= pa.y && row < pa.y + pa.height {
+            if matches!(self.current_selection(), Selection::Session(..)) {
+                self.action_select(terminal)?;
+            }
         }
         Ok(())
     }
