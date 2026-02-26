@@ -96,7 +96,9 @@ pub fn render_session_preview(
     let text = session.pane_capture.as_deref()
         .map(ansi::parse)
         .unwrap_or_else(|| "(no capture)".into());
-    let para = Paragraph::new(text).block(block);
+    let inner_h = area.height.saturating_sub(2) as usize; // minus borders
+    let scroll = text.lines.len().saturating_sub(inner_h) as u16;
+    let para = Paragraph::new(text).block(block).scroll((scroll, 0));
     frame.render_widget(para, area);
 }
 
