@@ -1,7 +1,7 @@
 // Startup cache — persists last known sessions + expand state.
 // Loaded before first refresh_all() so the tree is populated immediately.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,12 @@ pub struct WorkspaceCache {
     pub project_expanded: HashMap<String, bool>,
     /// last cursor position in the flat tree
     pub tree_selected: usize,
+    /// session names where the user dismissed the running-app notification
+    #[serde(default)]
+    pub suppressed_sessions: HashSet<String>,
+    /// session names the user has muted (no activity updates, shown as ⊘)
+    #[serde(default)]
+    pub muted_sessions: HashSet<String>,
 }
 
 impl WorkspaceCache {
@@ -60,13 +66,21 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> usize {
                 wt.expanded = expanded;
             }
             if let Some(names) = cache.sessions.get(&key) {
-                wt.sessions = names.iter().map(|name| SessionInfo {
-                    name: name.clone(),
-                    display_name: name.clone(), // recomputed on next refresh_all()
-                    has_activity: false,
-                    pane_capture: None,
-                    last_activity: None,
-                    was_active: false,
+                let prefix = format!("{}-{}-", project.name, wt.session_slug());
+                wt.sessions = names.iter().map(|name| {
+                    let display_name = name.strip_prefix(&prefix)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| name.clone());
+                    SessionInfo {
+                        name: name.clone(),
+                        display_name,
+                        has_activity: false,
+                        pane_capture: None,
+                        last_activity: None,
+                        has_running_app: false,
+                        running_app_suppressed: cache.suppressed_sessions.contains(name),
+                        muted: cache.muted_sessions.contains(name),
+                    }
                 }).collect();
             }
         }
@@ -85,6 +99,14 @@ pub fn save_cache(workspace: &WorkspaceState, tree_selected: usize) {
             let key = wt.path.to_string_lossy().to_string();
             cache.sessions.insert(key.clone(), wt.sessions.iter().map(|s| s.name.clone()).collect());
             cache.worktree_expanded.insert(key, wt.expanded);
+            for s in &wt.sessions {
+                if s.running_app_suppressed {
+                    cache.suppressed_sessions.insert(s.name.clone());
+                }
+                if s.muted {
+                    cache.muted_sessions.insert(s.name.clone());
+                }
+            }
         }
     }
     cache.save();

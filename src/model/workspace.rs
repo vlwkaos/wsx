@@ -29,7 +29,9 @@ pub struct SessionInfo {
     pub has_activity: bool,
     pub pane_capture: Option<String>,
     pub last_activity: Option<std::time::Instant>,
-    pub was_active: bool,
+    pub has_running_app: bool,       // foreground process is not a bare shell
+    pub running_app_suppressed: bool, // user dismissed the running-app notification
+    pub muted: bool,                 // user silenced — no activity updates, shown as ⊘
 }
 
 #[derive(Debug, Clone)]
@@ -50,9 +52,10 @@ impl WorktreeInfo {
     }
 
     pub fn session_slug(&self) -> String {
-        self.alias.as_deref()
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| self.branch.replace('/', "-"))
+        match self.alias.as_deref() {
+            Some(a) => a.to_owned(),
+            None => self.branch.replace('/', "-"),
+        }
     }
 }
 

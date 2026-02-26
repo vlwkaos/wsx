@@ -12,11 +12,15 @@ use crate::{
     config::global::GlobalConfig,
     git::{info as git_info, worktree as git_worktree},
     hooks,
-    model::workspace::{Project, ProjectConfig, SessionInfo, WorkspaceState, WorktreeInfo},
+    model::workspace::{GitInfo, Project, ProjectConfig, SessionInfo, WorkspaceState, WorktreeInfo},
     tmux::{monitor::SessionStatus, session},
 };
 
-pub const IDLE_SECS: u64 = 5;
+// (pane_capture, running_app_suppressed, muted)
+type PaneSnap = HashMap<String, (Option<String>, bool, bool)>;
+type WorktreeSnap = HashMap<PathBuf, (Option<GitInfo>, bool, PaneSnap)>;
+
+pub const IDLE_SECS: u64 = 3;
 
 // ── Refresh helpers ───────────────────────────────────────────────────────────
 
@@ -46,12 +50,11 @@ pub fn refresh_workspace(
             .map(|(_, a)| a.clone())
             .unwrap_or_default();
 
-        type PaneSnap = HashMap<String, (Option<String>, bool)>;
-        let snapshot: HashMap<PathBuf, (Option<crate::model::workspace::GitInfo>, bool, PaneSnap)> =
+        let snapshot: WorktreeSnap =
             workspace.projects[i].worktrees.iter()
                 .map(|w| {
                     let panes = w.sessions.iter()
-                        .map(|s| (s.name.clone(), (s.pane_capture.clone(), s.was_active)))
+                        .map(|s| (s.name.clone(), (s.pane_capture.clone(), s.running_app_suppressed, s.muted)))
                         .collect();
                     (w.path.clone(), (w.git_info.clone(), w.expanded, panes))
                 })
@@ -64,9 +67,10 @@ pub fn refresh_workspace(
                 let wt_path = entry.path.clone();
                 let prev = snapshot.get(&entry.path);
 
-                let wt_slug = alias.as_deref()
-                    .map(|a| a.to_string())
-                    .unwrap_or_else(|| entry.branch.replace('/', "-"));
+                let wt_slug = match alias.as_deref() {
+                    Some(a) => a.to_owned(),
+                    None => entry.branch.replace('/', "-"),
+                };
                 let prefix = format!("{}-{}-", proj_name, wt_slug);
 
                 let sessions: Vec<SessionInfo> = sessions_with_paths.iter()
@@ -76,29 +80,36 @@ pub fn refresh_workspace(
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| name.clone());
                         let prev_pane = prev.and_then(|(_, _, panes)| panes.get(name));
-                        let (pane_capture, prev_was_active) = prev_pane
-                            .map(|(p, wa)| (p.clone(), *wa))
-                            .unwrap_or((None, false));
-                        let first_encounter = prev.is_none();
-                        let status = activity.get(name.as_str());
-                        let has_activity = status.map(|s| s.has_bell).unwrap_or(false);
-                        let last_activity = status
-                            .filter(|s| s.last_activity_ts > 0)
-                            .and_then(|s| unix_ts_to_instant(s.last_activity_ts));
-                        let currently_active = last_activity
-                            .map(|t| t.elapsed().as_secs() < IDLE_SECS)
-                            .unwrap_or(false);
-                        // Seed was_active on first encounter so sessions active before
-                        // wsx launched still show ⊙ (needs attention).
-                        let was_active = prev_was_active || currently_active
-                            || (first_encounter && last_activity.is_some());
+                        let (pane_capture, prev_suppressed, muted) = prev_pane
+                            .map(|(p, s, m)| (p.clone(), *s, *m))
+                            .unwrap_or((None, false, false));
+                        // Muted sessions skip all activity tracking.
+                        let (has_activity, has_running_app, last_activity, running_app_suppressed) =
+                            if muted {
+                                (false, false, None, false)
+                            } else {
+                                let status = activity.get(name.as_str());
+                                let has_activity = status.map(|s| s.has_bell).unwrap_or(false);
+                                let has_running_app = status.map(|s| s.has_running_app).unwrap_or(false);
+                                let last_activity = status
+                                    .filter(|s| s.last_activity_ts > 0)
+                                    .and_then(|s| unix_ts_to_instant(s.last_activity_ts));
+                                let currently_active = last_activity
+                                    .map(|t| t.elapsed().as_secs() < IDLE_SECS)
+                                    .unwrap_or(false);
+                                // Reset suppressed when new activity arrives.
+                                let running_app_suppressed = if currently_active { false } else { prev_suppressed };
+                                (has_activity, has_running_app, last_activity, running_app_suppressed)
+                            };
                         SessionInfo {
                             name: name.clone(),
                             display_name,
                             has_activity,
                             pane_capture,
                             last_activity,
-                            was_active,
+                            has_running_app,
+                            running_app_suppressed,
+                            muted,
                         }
                     })
                     .collect();
@@ -132,18 +143,22 @@ pub fn update_activity(
     for project in &mut workspace.projects {
         for wt in &mut project.worktrees {
             for sess in &mut wt.sessions {
+                if sess.muted { continue; }
                 if let Some(status) = activity.get(&sess.name) {
                     let old_bell = sess.has_activity;
+                    let old_running = sess.has_running_app;
                     sess.has_activity = status.has_bell;
+                    sess.has_running_app = status.has_running_app;
                     sess.last_activity = Some(status.last_activity_ts)
                         .filter(|&ts| ts > 0)
                         .and_then(|ts| unix_ts_to_instant(ts));
                     let currently_active = sess.last_activity
                         .map(|t| t.elapsed().as_secs() < IDLE_SECS)
                         .unwrap_or(false);
-                    let old_was = sess.was_active;
-                    sess.was_active |= currently_active;
-                    if sess.has_activity != old_bell || sess.was_active != old_was {
+                    if currently_active { sess.running_app_suppressed = false; }
+                    if sess.has_activity != old_bell
+                        || sess.has_running_app != old_running
+                    {
                         changed = true;
                     }
                 }
