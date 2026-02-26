@@ -19,6 +19,7 @@ pub enum Action {
     NextAttention,
     PrevAttention,
     DismissAttention,
+    NextActive,
     EnterMove,
     JumpProjectDown,
     JumpProjectUp,

@@ -65,6 +65,7 @@ fn translate_key(key: KeyEvent) -> Action {
         (KeyModifiers::NONE, KeyCode::Char('m')) => Action::EnterMove,
         (KeyModifiers::CONTROL, KeyCode::Char('d')) => Action::JumpProjectDown,
         (KeyModifiers::CONTROL, KeyCode::Char('u')) => Action::JumpProjectUp,
+        (KeyModifiers::NONE, KeyCode::Char('a')) => Action::NextActive,
         (KeyModifiers::NONE, KeyCode::Char('/')) => Action::SearchStart,
         (KeyModifiers::NONE, KeyCode::Esc) => Action::InputEscape,
         (KeyModifiers::NONE, KeyCode::Backspace) => Action::InputBackspace,
