@@ -25,7 +25,8 @@ pub fn render_tree(
             ListItem::new(label).style(Style::default().fg(Color::Cyan).bold())
         }
         FlatEntry::Worktree { project_idx, worktree_idx } => {
-            let wt = &workspace.projects[*project_idx].worktrees[*worktree_idx];
+            let p = &workspace.projects[*project_idx];
+            let wt = &p.worktrees[*worktree_idx];
             let main_mark = if wt.is_main { "*" } else { "" };
             let expand_icon = if !wt.sessions.is_empty() {
                 if wt.expanded { "▾" } else { "▸" }
@@ -35,12 +36,14 @@ pub fn render_tree(
             let sess_badge = if !wt.sessions.is_empty() {
                 format!(" [{}]", wt.sessions.len())
             } else { String::new() };
+            let proj_prefix = format!("{}-", p.name);
+            let short_name = wt.name.strip_prefix(&proj_prefix).unwrap_or(&wt.name);
             let display = if let Some(alias) = &wt.alias {
-                format!("{} ({})", alias, wt.name)
+                format!("{} ({})", alias, short_name)
             } else if wt.is_main {
                 wt.branch.clone()
             } else {
-                wt.name.clone()
+                short_name.to_string()
             };
             let label = format!(" {} {}{}{}{}", expand_icon, main_mark, display, activity, sess_badge);
             ListItem::new(label).style(Style::default().fg(Color::White))

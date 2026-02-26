@@ -106,6 +106,7 @@ pub enum PendingAction {
     DeleteProject { project_idx: usize },
     DeleteWorktree { project_idx: usize, worktree_idx: usize },
     DeleteSession { project_idx: usize, worktree_idx: usize, session_idx: usize },
+    CreateWorktree { project_idx: usize, branch: String },
 }
 
 // ── App ──────────────────────────────────────────────────────────────────────
@@ -979,7 +980,13 @@ impl App {
             match context {
                 InputContext::AddProject => self.do_register_project(ops::expand_path(&value))?,
                 InputContext::AddWorktree { project_idx } => {
-                    if !value.is_empty() { self.do_create_worktree(project_idx, value)?; }
+                    if !value.is_empty() {
+                        self.mode = Mode::Confirm {
+                            message: format!("Create worktree '{}'?", value),
+                            pending: PendingAction::CreateWorktree { project_idx, branch: value },
+                        };
+                        return Ok(());
+                    }
                 }
                 InputContext::AddSession { project_idx, worktree_idx } => {
                     // Step 1: got name, now ask for command
@@ -1019,6 +1026,9 @@ impl App {
                 }
                 PendingAction::DeleteSession { project_idx, worktree_idx, session_idx } => {
                     self.do_delete_session(project_idx, worktree_idx, session_idx)
+                }
+                PendingAction::CreateWorktree { project_idx, branch } => {
+                    self.do_create_worktree(project_idx, branch)
                 }
             };
             self.loading = false;
@@ -1123,12 +1133,38 @@ impl App {
     fn do_apply_alias(&mut self, pi: usize, wi: usize, alias: String) -> Result<()> {
         let branch = self.workspace.projects[pi].worktrees[wi].branch.clone();
         let proj_path = self.workspace.projects[pi].path.clone();
+        let proj_name = self.workspace.projects[pi].name.clone();
+        let old_slug = self.workspace.projects[pi].worktrees[wi].session_slug();
 
         ops::set_alias(&mut self.config, &proj_path, &branch, &alias);
         self.config.save()?;
 
+        let new_alias = if alias.is_empty() { None } else { Some(alias.clone()) };
+        let new_slug = match new_alias.as_deref() {
+            Some(a) => a.to_owned(),
+            None => branch.replace('/', "-"),
+        };
+
+        // Rename tmux sessions so the prefix stays consistent after refresh
+        if old_slug != new_slug {
+            let sessions: Vec<(String, String)> = self.workspace.projects[pi].worktrees[wi]
+                .sessions.iter()
+                .map(|s| (s.name.clone(), s.display_name.clone()))
+                .collect();
+            for (old_name, display_name) in sessions {
+                let new_name = format!("{}-{}-{}", proj_name, new_slug, display_name);
+                if ops::rename_session(&old_name, &new_name).is_ok() {
+                    if let Some(sess) = self.workspace.projects[pi].worktrees[wi]
+                        .sessions.iter_mut().find(|s| s.name == old_name)
+                    {
+                        sess.name = new_name;
+                    }
+                }
+            }
+        }
+
         let wt = &mut self.workspace.projects[pi].worktrees[wi];
-        wt.alias = if alias.is_empty() { None } else { Some(alias.clone()) };
+        wt.alias = new_alias;
 
         self.set_status(if alias.is_empty() {
             format!("Alias cleared for '{}'", branch)
