@@ -14,6 +14,16 @@ fn is_shell(cmd: &str) -> bool {
     matches!(cmd.trim(), "bash" | "zsh" | "sh" | "fish" | "csh" | "tcsh" | "ksh" | "dash" | "elvish")
 }
 
+// Passive watchers/servers — continuously running but not "needing attention".
+fn is_passive(cmd: &str) -> bool {
+    matches!(cmd.trim(),
+        // output viewers
+        "watch" | "tail" | "less" | "more" | "man" | "top" | "htop" | "btop" | "bat" |
+        // dev servers / watch-mode runtimes
+        "node" | "dotenvx" | "bun"
+    )
+}
+
 /// Single tmux call: returns bell flag, last window_activity timestamp, and foreground
 /// process per session. has_running_app is true if any window's active pane is not a shell.
 pub fn session_activity() -> HashMap<String, SessionStatus> {
@@ -40,7 +50,7 @@ pub fn session_activity() -> HashMap<String, SessionStatus> {
         });
         entry.has_bell |= has_bell;
         if ts > entry.last_activity_ts { entry.last_activity_ts = ts; }
-        if !cmd.is_empty() && !is_shell(cmd) { entry.has_running_app = true; }
+        if !cmd.is_empty() && !is_shell(cmd) && !is_passive(cmd) { entry.has_running_app = true; }
     }
     result
 }
