@@ -493,6 +493,7 @@ impl App {
             Action::NextAttention => self.action_next_attention(1),
             Action::PrevAttention => self.action_next_attention(-1),
             Action::DismissAttention => self.action_dismiss_attention(),
+            Action::NextActive => self.action_next_active(),
             Action::EnterMove => self.action_enter_move(),
             Action::JumpProjectDown => self.jump_project(1),
             Action::JumpProjectUp => self.jump_project(-1),
@@ -633,7 +634,6 @@ impl App {
             .collect()
     }
 
-    /// Move cursor to first match; exit search when narrowed to one result.
     fn search_apply(&mut self) {
         let query = match &self.mode {
             Mode::Search { query, .. } => query.clone(),
@@ -643,9 +643,6 @@ impl App {
         if matches.is_empty() { return; }
         self.tree_selected = matches[0];
         self.update_scroll();
-        if matches.len() == 1 {
-            self.mode = Mode::Normal;
-        }
     }
 
     /// Enter: cycle to next match. Exits search when wrapping back to start.
@@ -855,6 +852,36 @@ impl App {
         };
         self.mode = Mode::Config { project_idx: pi };
         Ok(())
+    }
+
+    fn active_candidates(&self) -> Vec<usize> {
+        self.flat().iter().enumerate()
+            .filter_map(|(i, entry)| {
+                let FlatEntry::Session { project_idx: pi, worktree_idx: wi, session_idx: si } = entry else {
+                    return None;
+                };
+                let sess = self.workspace.session(*pi, *wi, *si)?;
+                let active = sess.last_activity
+                    .map(|t| t.elapsed().as_secs() < IDLE_SECS)
+                    .unwrap_or(false);
+                if active { Some(i) } else { None }
+            })
+            .collect()
+    }
+
+    fn action_next_active(&mut self) {
+        let candidates = self.active_candidates();
+        if candidates.is_empty() {
+            self.set_status("No active sessions");
+            return;
+        }
+        let next = candidates.iter()
+            .find(|&&i| i > self.tree_selected)
+            .or_else(|| candidates.first())
+            .copied()
+            .unwrap_or(candidates[0]);
+        self.tree_selected = next;
+        self.update_scroll();
     }
 
     fn attention_candidates(&self) -> Vec<usize> {
