@@ -1,1 +1,9 @@
 /target/
+*.pem
+*.key
+*.p12
+*.pfx
+*.asc
+.env*
+*secret*
+*credential*
