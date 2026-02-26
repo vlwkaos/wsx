@@ -3,6 +3,8 @@
 TUI workspace manager for git worktrees and tmux sessions.
 
 <!-- screenshot -->
+![Screen Recording 2026-02-26 at 2 56 14 PM](https://github.com/user-attachments/assets/793536c2-44e9-4efe-8b77-b0ab8b049c50)
+
 
 ## The core idea
 
