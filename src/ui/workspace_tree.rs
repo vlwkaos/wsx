@@ -21,7 +21,8 @@ pub fn render_tree(
         FlatEntry::Project { idx } => {
             let p = &workspace.projects[*idx];
             let icon = if p.expanded { "▼" } else { "▶" };
-            let label = format!("{} {} [{}]", icon, p.name, p.worktrees.len());
+            let count = if p.expanded { String::new() } else { format!(" [{}]", p.worktrees.len()) };
+            let label = format!("{} {}{}", icon, p.name, count);
             ListItem::new(label).style(Style::default().fg(Color::Cyan).bold())
         }
         FlatEntry::Worktree { project_idx, worktree_idx } => {
@@ -33,7 +34,9 @@ pub fn render_tree(
             } else { " " };
             let has_activity = wt.sessions.iter().any(|s| s.has_activity);
             let activity = if has_activity { " ●" } else { "" };
-            let sess_badge = if !wt.sessions.is_empty() {
+            let dirty = wt.git_info.as_ref().map(|g| !g.modified_files.is_empty()).unwrap_or(false);
+            let dirty_mark = if dirty { " ✎" } else { "" };
+            let sess_badge = if !wt.sessions.is_empty() && !wt.expanded {
                 format!(" [{}]", wt.sessions.len())
             } else { String::new() };
             let proj_prefix = format!("{}-", p.name);
@@ -45,7 +48,7 @@ pub fn render_tree(
             } else {
                 short_name.to_string()
             };
-            let label = format!(" {} {}{}{}{}", expand_icon, main_mark, display, activity, sess_badge);
+            let label = format!(" {} {}{}{}{}{}", expand_icon, main_mark, display, dirty_mark, activity, sess_badge);
             ListItem::new(label).style(Style::default().fg(Color::White))
         }
         FlatEntry::Session { project_idx, worktree_idx, session_idx } => {
