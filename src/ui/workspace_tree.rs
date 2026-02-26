@@ -98,9 +98,11 @@ pub fn render_tree(
 
 fn fmt_idle(d: std::time::Duration) -> String {
     let s = d.as_secs();
-    if s < 60 { format!("{}s", s) }
-    else if s < 3600 { format!("{}m", s / 60) }
-    else { format!("{}h", s / 3600) }
+    match s {
+        s if s < 60   => format!("{}s", s),
+        s if s < 3600 => format!("{}m", s / 60),
+        s             => format!("{}h", s / 3600),
+    }
 }
 
 /// Compute scroll offset to keep selected item visible.
