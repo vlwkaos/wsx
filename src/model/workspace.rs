@@ -52,10 +52,11 @@ impl WorktreeInfo {
     }
 
     pub fn session_slug(&self) -> String {
-        match self.alias.as_deref() {
+        let raw = match self.alias.as_deref() {
             Some(a) => a.to_owned(),
             None => self.branch.replace('/', "-"),
-        }
+        };
+        raw.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
     }
 }
 
