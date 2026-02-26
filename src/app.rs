@@ -719,7 +719,13 @@ impl App {
             session::set_session_opt(&name, "status-right", &label);
         }
 
-        self.attach_to_session(&name, terminal)
+        self.attach_to_session(&name, terminal)?;
+
+        // Invalidate git info so it's re-fetched after returning from the session.
+        if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
+            wt.git_info = None;
+        }
+        Ok(())
     }
 
     fn action_add_project(&mut self) -> Result<()> {
