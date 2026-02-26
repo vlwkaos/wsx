@@ -95,7 +95,9 @@ pub fn to_worktree_infos(
 pub fn create_worktree(repo_path: &Path, branch: &str, base_branch: &str) -> Result<PathBuf> {
     let parent = repo_path.parent().context("repo has no parent dir")?;
     let repo_name = repo_path.file_name().context("repo has no name")?.to_string_lossy();
-    let slug = branch.replace('/', "-");
+    let slug = branch
+        .replace('/', "-")
+        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.', "-");
     let wt_path = parent.join(format!("{}-{}", repo_name, slug));
 
     let status = git_cmd(repo_path)
