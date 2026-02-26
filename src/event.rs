@@ -27,6 +27,8 @@ fn translate_input_key(key: KeyEvent) -> Action {
         KeyCode::Tab => Action::InputTab,
         KeyCode::Down => Action::NavigateDown,
         KeyCode::Up => Action::NavigateUp,
+        KeyCode::Left => Action::NavigateLeft,
+        KeyCode::Right => Action::NavigateRight,
         KeyCode::Char(c) => Action::InputChar(c),
         _ => Action::None,
     }
@@ -39,7 +41,6 @@ fn translate_mouse(mouse: MouseEvent) -> Action {
     }
 }
 
-/// Normal mode: chars are commands.
 fn translate_key(key: KeyEvent) -> Action {
     match (key.modifiers, key.code) {
         (KeyModifiers::NONE, KeyCode::Char('q')) => Action::Quit,

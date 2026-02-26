@@ -74,6 +74,23 @@ impl InputState {
         }
     }
 
+    pub fn cursor_left(&mut self) {
+        if self.cursor > 0 {
+            self.cursor = self.buffer[..self.cursor]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+        }
+    }
+
+    pub fn cursor_right(&mut self) {
+        if self.cursor < self.buffer.len() {
+            let c = self.buffer[self.cursor..].chars().next().unwrap();
+            self.cursor += c.len_utf8();
+        }
+    }
+
     pub fn value(&self) -> &str {
         &self.buffer
     }
@@ -82,11 +99,11 @@ impl InputState {
     pub fn select_next(&mut self) {
         if self.completions.is_empty() { return; }
         let next = match self.completion_idx {
-            None => Some(0),
-            Some(i) => Some((i + 1) % self.completions.len()),
+            None => 0,
+            Some(i) => (i + 1) % self.completions.len(),
         };
-        self.completion_idx = next;
-        self.buffer = self.completions[next.unwrap()].clone();
+        self.completion_idx = Some(next);
+        self.buffer = self.completions[next].clone();
         self.cursor = self.buffer.len();
         self.maybe_drill_down();
     }
@@ -186,13 +203,11 @@ fn path_completions(input: &str) -> Vec<String> {
 }
 
 fn expand_input(input: &str) -> (PathBuf, bool) {
-    if input.starts_with("~/") {
-        if let Some(home) = dirs::home_dir() {
+    if let Some(home) = dirs::home_dir() {
+        if input.starts_with("~/") {
             return (home.join(&input[2..]), true);
         }
-    }
-    if input == "~" {
-        if let Some(home) = dirs::home_dir() {
+        if input == "~" {
             return (home, true);
         }
     }
