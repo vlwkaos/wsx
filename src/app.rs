@@ -146,15 +146,16 @@ impl App {
         self.status_message_expires = Some(Instant::now() + Duration::from_secs(4));
     }
 
-    fn invalidate_flat(&mut self) {
-        self.flat_dirty = true;
-    }
-
     fn ensure_flat(&mut self) {
         if self.flat_dirty {
             self.cached_flat = flatten_tree(&self.workspace);
             self.flat_dirty = false;
         }
+    }
+
+    fn rebuild_flat(&mut self) {
+        self.flat_dirty = true;
+        self.ensure_flat();
     }
 
     fn flat(&self) -> &[FlatEntry] {
@@ -219,8 +220,7 @@ impl App {
         let sessions_with_paths = session::list_sessions_with_paths();
         let activity = monitor::session_activity();
         ops::refresh_workspace(&mut self.workspace, &self.config, &sessions_with_paths, &activity);
-        self.invalidate_flat();
-        self.ensure_flat();
+        self.rebuild_flat();
         self.clamp_selected();
         crate::cache::save_cache(&self.workspace, self.tree_selected);
         Ok(())
@@ -240,22 +240,19 @@ impl App {
             _ => return,
         };
 
-        let needs_git = self.workspace.worktree(pi, wi)
-            .map(|w| w.git_info.is_none())
-            .unwrap_or(false);
+        let git_fetch = self.workspace.worktree(pi, wi)
+            .filter(|w| w.git_info.is_none())
+            .map(|w| w.path.clone());
 
-        if needs_git {
-            let wt_path = self.workspace.worktree(pi, wi).map(|w| w.path.clone());
+        if let Some(path) = git_fetch {
             let default_branch = self.workspace.projects.get(pi)
                 .map(|p| p.default_branch.clone())
                 .unwrap_or_else(|| "main".to_string());
 
-            if let Some(path) = wt_path {
-                if let Some(gi) = git_info::get_git_info(&path, &default_branch) {
-                    if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
-                        wt.git_info = Some(gi);
-                        self.needs_redraw = true;
-                    }
+            if let Some(gi) = git_info::get_git_info(&path, &default_branch) {
+                if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
+                    wt.git_info = Some(gi);
+                    self.needs_redraw = true;
                 }
             }
         }
@@ -315,15 +312,13 @@ impl App {
         match entry {
             Some(FlatEntry::Project { idx }) => {
                 self.workspace.projects[idx].expanded = false;
-                self.invalidate_flat();
-                self.ensure_flat();
+                self.rebuild_flat();
                 self.clamp_selected();
             }
             Some(FlatEntry::Worktree { project_idx: pi, worktree_idx: wi }) => {
                 if self.workspace.projects[pi].worktrees[wi].expanded {
                     self.workspace.projects[pi].worktrees[wi].expanded = false;
-                    self.invalidate_flat();
-                    self.ensure_flat();
+                    self.rebuild_flat();
                     self.clamp_selected();
                 } else {
                     // Jump to parent project
@@ -351,8 +346,7 @@ impl App {
             Some(FlatEntry::Project { idx: pi }) => {
                 if !self.workspace.projects[pi].expanded {
                     self.workspace.projects[pi].expanded = true;
-                    self.invalidate_flat();
-                    self.ensure_flat();
+                    self.rebuild_flat();
                 } else if !self.workspace.projects[pi].worktrees.is_empty() {
                     self.tree_selected += 1;
                     self.update_scroll();
@@ -361,14 +355,32 @@ impl App {
             Some(FlatEntry::Worktree { project_idx: pi, worktree_idx: wi }) => {
                 if !self.workspace.projects[pi].worktrees[wi].expanded {
                     self.workspace.projects[pi].worktrees[wi].expanded = true;
-                    self.invalidate_flat();
-                    self.ensure_flat();
+                    self.rebuild_flat();
                 } else if !self.workspace.projects[pi].worktrees[wi].sessions.is_empty() {
                     self.tree_selected += 1;
                     self.update_scroll();
                 }
             }
             _ => {}
+        }
+    }
+
+    fn jump_project(&mut self, dir: isize) {
+        let flat = self.flat();
+        let current = self.tree_selected;
+        let target = if dir > 0 {
+            flat.iter().enumerate()
+                .find(|(i, e)| *i > current && matches!(e, FlatEntry::Project { .. }))
+                .map(|(i, _)| i)
+        } else {
+            flat.iter().enumerate()
+                .rev()
+                .find(|(i, e)| *i < current && matches!(e, FlatEntry::Project { .. }))
+                .map(|(i, _)| i)
+        };
+        if let Some(pos) = target {
+            self.tree_selected = pos;
+            self.update_scroll();
         }
     }
 
@@ -447,8 +459,12 @@ impl App {
             Action::SetAlias => self.action_set_alias()?,
             Action::Refresh => self.refresh_all()?,
             Action::Help => { self.mode = Mode::Help; }
-            Action::NextAttention => self.action_next_attention(),
+            Action::NextAttention => self.action_next_attention(1),
+            Action::PrevAttention => self.action_next_attention(-1),
+            Action::DismissAttention => self.action_dismiss_attention(),
             Action::EnterMove => self.action_enter_move(),
+            Action::JumpProjectDown => self.jump_project(1),
+            Action::JumpProjectUp => self.jump_project(-1),
             _ => {}
         }
         Ok(())
@@ -507,14 +523,12 @@ impl App {
             }
             Selection::Project(pi) => {
                 self.workspace.projects[pi].expanded = !self.workspace.projects[pi].expanded;
-                self.invalidate_flat();
-                self.ensure_flat();
+                self.rebuild_flat();
                 self.clamp_selected();
             }
             Selection::Worktree(pi, wi) => {
                 self.workspace.projects[pi].worktrees[wi].expanded = !self.workspace.projects[pi].worktrees[wi].expanded;
-                self.invalidate_flat();
-                self.ensure_flat();
+                self.rebuild_flat();
                 self.clamp_selected();
             }
             Selection::None => {}
@@ -534,11 +548,6 @@ impl App {
     }
 
     fn attach_session(&mut self, pi: usize, wi: usize, si: usize, terminal: &mut Tui) -> Result<()> {
-        // Clear was_active so the "needs attention" marker resets after visiting
-        if let Some(s) = self.workspace.session_mut(pi, wi, si) {
-            s.was_active = false;
-        }
-
         let name = self.workspace.session(pi, wi, si).map(|s| s.name.clone());
 
         let Some(name) = name else {
@@ -663,46 +672,36 @@ impl App {
                 }
                 ops::delete_worktree(&repo, &wt_path, &branch, &session_names)?;
                 self.workspace.projects[pi].worktrees.remove(wi);
-                self.invalidate_flat();
-                self.ensure_flat();
+                self.rebuild_flat();
                 self.clamp_selected();
                 self.set_status(format!("Cleaned: {}", branch));
             }
-            sel => {
-                let pi = match sel {
-                    Selection::Project(pi) | Selection::Session(pi, _, _) => Some(pi),
-                    Selection::None => None,
-                    Selection::Worktree(_, _) => unreachable!(),
+            Selection::Project(pi) | Selection::Session(pi, _, _) => {
+                let (path, branch) = {
+                    let p = &self.workspace.projects[pi];
+                    (p.path.clone(), p.default_branch.clone())
                 };
-                match pi {
-                    Some(pi) => {
-                        let (path, branch) = {
-                            let p = &self.workspace.projects[pi];
-                            (p.path.clone(), p.default_branch.clone())
-                        };
-                        let removed = git_worktree::clean_merged(&path, &branch)?;
-                        self.set_status(if removed.is_empty() {
-                            "No merged worktrees to clean".into()
-                        } else {
-                            format!("Cleaned: {}", removed.join(", "))
-                        });
-                        self.refresh_all()?;
-                    }
-                    None => {
-                        let snapshots: Vec<_> = self.workspace.projects
-                            .iter()
-                            .map(|p| (p.path.clone(), p.default_branch.clone()))
-                            .collect();
-                        let mut total = 0usize;
-                        for (path, branch) in snapshots {
-                            if let Ok(r) = git_worktree::clean_merged(&path, &branch) {
-                                total += r.len();
-                            }
-                        }
-                        self.set_status(format!("Cleaned {} merged worktrees", total));
-                        self.refresh_all()?;
+                let removed = git_worktree::clean_merged(&path, &branch)?;
+                self.set_status(if removed.is_empty() {
+                    "No merged worktrees to clean".into()
+                } else {
+                    format!("Cleaned: {}", removed.join(", "))
+                });
+                self.refresh_all()?;
+            }
+            Selection::None => {
+                let snapshots: Vec<_> = self.workspace.projects
+                    .iter()
+                    .map(|p| (p.path.clone(), p.default_branch.clone()))
+                    .collect();
+                let mut total = 0usize;
+                for (path, branch) in snapshots {
+                    if let Ok(r) = git_worktree::clean_merged(&path, &branch) {
+                        total += r.len();
                     }
                 }
+                self.set_status(format!("Cleaned {} merged worktrees", total));
+                self.refresh_all()?;
             }
         }
         Ok(())
@@ -720,45 +719,72 @@ impl App {
         Ok(())
     }
 
-    fn action_next_attention(&mut self) {
-        // collect flat indices of sessions in ⊙ state (was_active, currently idle)
-        let candidates: Vec<usize> = self.flat().iter().enumerate()
+    fn attention_candidates(&self) -> Vec<usize> {
+        self.flat().iter().enumerate()
             .filter_map(|(i, entry)| {
                 let FlatEntry::Session { project_idx: pi, worktree_idx: wi, session_idx: si } = entry else {
                     return None;
                 };
-                let sess = self.workspace.projects.get(*pi)
-                    .and_then(|p| p.worktrees.get(*wi))
-                    .and_then(|w| w.sessions.get(*si))?;
+                let sess = self.workspace.session(*pi, *wi, *si)?;
                 let currently_active = sess.last_activity
                     .map(|t| t.elapsed().as_secs() < IDLE_SECS)
                     .unwrap_or(false);
-                if sess.was_active && !currently_active { Some(i) } else { None }
+                let needs_attention = !sess.muted && !currently_active
+                    && sess.has_running_app && !sess.running_app_suppressed;
+                if needs_attention { Some(i) } else { None }
             })
-            .collect();
+            .collect()
+    }
+
+    fn action_next_attention(&mut self, dir: isize) {
+        let candidates = self.attention_candidates();
 
         if candidates.is_empty() {
             self.set_status("No sessions need attention");
             return;
         }
 
-        // next candidate after current position, wrapping
-        let next = candidates.iter()
-            .find(|&&i| i > self.tree_selected)
-            .or_else(|| candidates.first())
-            .copied()
-            .unwrap();
+        let next = if dir >= 0 {
+            candidates.iter()
+                .find(|&&i| i > self.tree_selected)
+                .or_else(|| candidates.first())
+                .copied()
+                .unwrap()
+        } else {
+            candidates.iter().rev()
+                .find(|&&i| i < self.tree_selected)
+                .or_else(|| candidates.last())
+                .copied()
+                .unwrap()
+        };
 
         // ensure parent project + worktree are expanded so the session is visible
         if let Some(FlatEntry::Session { project_idx: pi, worktree_idx: wi, .. }) = self.flat().get(next).cloned() {
             self.workspace.projects[pi].expanded = true;
             self.workspace.projects[pi].worktrees[wi].expanded = true;
-            self.invalidate_flat();
-            self.ensure_flat();
+            self.rebuild_flat();
         }
 
         self.tree_selected = next;
         self.update_scroll();
+    }
+
+    fn action_dismiss_attention(&mut self) {
+        if let Selection::Session(pi, wi, si) = self.current_selection() {
+            if let Some(sess) = self.workspace.session_mut(pi, wi, si) {
+                if sess.has_running_app && !sess.running_app_suppressed {
+                    sess.running_app_suppressed = true;
+                    self.set_status("Dismissed");
+                    return;
+                }
+                // Idle session — toggle mute
+                sess.muted = !sess.muted;
+                let msg = if sess.muted { "Muted" } else { "Unmuted" };
+                self.set_status(msg);
+                return;
+            }
+        }
+        self.set_status("No session selected");
     }
 
     fn action_set_alias(&mut self) -> Result<()> {
@@ -847,8 +873,7 @@ impl App {
     fn do_register_project(&mut self, path: PathBuf) -> Result<()> {
         let project = ops::register_project(path, &mut self.config)?;
         self.workspace.projects.push(project);
-        self.invalidate_flat();
-        self.ensure_flat();
+        self.rebuild_flat();
         self.config.save()?;
         self.set_status("Project registered");
         Ok(())
@@ -904,8 +929,7 @@ impl App {
         };
         ops::delete_worktree(&repo, &path, &branch, &session_names)?;
         self.workspace.projects[pi].worktrees.remove(wi);
-        self.invalidate_flat();
-        self.ensure_flat();
+        self.rebuild_flat();
         self.clamp_selected();
         self.set_status(format!("Deleted: {}", branch));
         Ok(())
@@ -917,8 +941,7 @@ impl App {
             (p.name.clone(), p.path.clone())
         };
         self.workspace.projects.remove(pi);
-        self.invalidate_flat();
-        self.ensure_flat();
+        self.rebuild_flat();
         ops::unregister_project(&path, &mut self.config);
         self.config.save()?;
         self.clamp_selected();
@@ -932,8 +955,7 @@ impl App {
         let display_name = sess.display_name.clone();
         ops::delete_session(&tmux_name)?;
         self.workspace.projects[pi].worktrees[wi].sessions.remove(si);
-        self.invalidate_flat();
-        self.ensure_flat();
+        self.rebuild_flat();
         self.clamp_selected();
         self.set_status(format!("Killed session: {}", display_name));
         Ok(())
@@ -987,8 +1009,7 @@ impl App {
         if new_pi >= len { return; }
         self.workspace.projects.swap(pi, new_pi);
         self.mode = Mode::Move { project_idx: new_pi };
-        self.invalidate_flat();
-        self.ensure_flat();
+        self.rebuild_flat();
         if let Some(pos) = self.flat().iter().position(|e| matches!(e, FlatEntry::Project { idx } if *idx == new_pi)) {
             self.tree_selected = pos;
             self.update_scroll();
