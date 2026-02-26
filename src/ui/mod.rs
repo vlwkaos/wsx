@@ -150,7 +150,7 @@ fn build_hints(app: &App) -> String {
                     .map(|s| s.last_activity.map(|t| t.elapsed().as_secs() < crate::app::IDLE_SECS).unwrap_or(false))
                     .unwrap_or(false);
                 let dismiss = if active { "" } else { "(x)dismiss  ·  " };
-                format!("(m)ove  (r)ename  (d)kill  ·  {}(C-a d)detach  ·  (s)ession  ·  (w)orktree  (c)lean  ·  {}", dismiss, global)
+                format!("(m)ove  (r)ename  (d)kill  ·  {}(S)send cmd  (C)ctrl-c  ·  (C-a d)detach  ·  (s)ession  ·  (w)orktree  (c)lean  ·  {}", dismiss, global)
             }
             Selection::None => "(p) add project".to_string(),
         },

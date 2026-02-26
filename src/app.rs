@@ -85,6 +85,7 @@ pub enum InputContext {
     AddSessionCmd { project_idx: usize, worktree_idx: usize, session_name: String },
     SetAlias { project_idx: usize, worktree_idx: usize },
     RenameSession { project_idx: usize, worktree_idx: usize, session_idx: usize },
+    SendCommand { session_name: String },
 }
 
 impl InputContext {
@@ -96,6 +97,7 @@ impl InputContext {
             InputContext::AddSessionCmd { .. } => "New Session — command",
             InputContext::SetAlias { .. } => "Set Alias",
             InputContext::RenameSession { .. } => "Rename Session",
+            InputContext::SendCommand { .. } => "Send Command",
         }
     }
 }
@@ -494,6 +496,8 @@ impl App {
             Action::PrevAttention => self.action_next_attention(-1),
             Action::DismissAttention => self.action_dismiss_attention(),
             Action::NextActive => self.action_next_active(),
+            Action::SendCommand => self.action_send_command(),
+            Action::SendCtrlC => self.action_send_ctrl_c()?,
             Action::EnterMove => self.action_enter_move(),
             Action::JumpProjectDown => self.jump_project(1),
             Action::JumpProjectUp => self.jump_project(-1),
@@ -705,6 +709,16 @@ impl App {
             return Ok(());
         };
 
+        let proj = &self.workspace.projects[pi];
+        let wt = &proj.worktrees[wi];
+        let alias = wt.alias.as_deref().unwrap_or(&wt.branch);
+        session::set_session_opt(&name, "@wsx_project", &proj.name);
+        session::set_session_opt(&name, "@wsx_alias", alias);
+        if !session::user_has_tmux_config() {
+            let label = format!(" {}/{} ", proj.name, alias);
+            session::set_session_opt(&name, "status-right", &label);
+        }
+
         self.attach_to_session(&name, terminal)
     }
 
@@ -869,6 +883,27 @@ impl App {
             .collect()
     }
 
+    fn action_send_command(&mut self) {
+        if let Selection::Session(pi, wi, si) = self.current_selection() {
+            if let Some(sess) = self.workspace.session(pi, wi, si) {
+                let name = sess.name.clone();
+                self.mode = Mode::Input {
+                    context: InputContext::SendCommand { session_name: name },
+                    state: InputState::new("cmd: "),
+                };
+            }
+        }
+    }
+
+    fn action_send_ctrl_c(&mut self) -> Result<()> {
+        if let Selection::Session(pi, wi, si) = self.current_selection() {
+            if let Some(sess) = self.workspace.session(pi, wi, si) {
+                session::send_ctrl_c(&sess.name)?;
+            }
+        }
+        Ok(())
+    }
+
     fn action_next_active(&mut self) {
         let candidates = self.active_candidates();
         if candidates.is_empty() {
@@ -1014,6 +1049,9 @@ impl App {
                 }
                 InputContext::RenameSession { project_idx, worktree_idx, session_idx } => {
                     if !value.is_empty() { self.do_rename_session(project_idx, worktree_idx, session_idx, value)?; }
+                }
+                InputContext::SendCommand { session_name } => {
+                    if !value.is_empty() { session::send_keys(&session_name, &value)?; }
                 }
             }
         }

@@ -76,7 +76,7 @@ pub enum AttachCommand {
 }
 
 /// Returns true if the user has a tmux config file (~/.tmux.conf or XDG path).
-fn user_has_tmux_config() -> bool {
+pub fn user_has_tmux_config() -> bool {
     let xdg = std::env::var("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".config"));
@@ -107,9 +107,20 @@ pub fn attach_foreground(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Send keys to a session's active pane.
+/// Set a session-local option (readable as #{@key} in status formats).
+pub fn set_session_opt(session: &str, key: &str, value: &str) {
+    let _ = tmux_silent(&["set-option", "-t", session, key, value]).status();
+}
+
+/// Send keys to a session's active pane, followed by Enter.
 pub fn send_keys(session: &str, keys: &str) -> Result<()> {
     tmux_silent(&["send-keys", "-t", session, keys, "Enter"]).status()?;
+    Ok(())
+}
+
+/// Send Ctrl+C to a session's active pane (no Enter).
+pub fn send_ctrl_c(session: &str) -> Result<()> {
+    tmux_silent(&["send-keys", "-t", session, "C-c"]).status()?;
     Ok(())
 }
 
