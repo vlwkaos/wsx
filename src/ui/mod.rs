@@ -10,7 +10,7 @@ pub mod config_modal;
 
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 use crate::app::{App, Mode};
 use crate::model::workspace::Selection;
@@ -136,7 +136,7 @@ fn get_mode_label(app: &App) -> &'static str {
 }
 
 fn build_hints(app: &App) -> String {
-    let global = "(/)search  (a)ctive  (n)ext (N)prev pending  (e)config  (?)help  (q)uit";
+    let global = "(/)search  (a)ctive  ·  (n)ext (N)prev pending  ·  (e)config  (?)help";
     match &app.mode {
         Mode::Normal => match app.current_selection() {
             Selection::Project(_) =>
@@ -172,7 +172,7 @@ fn wrap_hints(hints: &str, available_width: usize) -> Vec<String> {
         if current.is_empty() {
             current = group.to_string();
         } else {
-            let candidate = format!("{}  ·  {}", current, group);
+            let candidate = format!("{}  {}", current, group);
             if candidate.len() <= available_width {
                 current = candidate;
             } else {
@@ -298,48 +298,132 @@ fn render_help(frame: &mut Frame, area: Rect) {
 
     frame.render_widget(Clear, popup);
 
-    let text = concat!(
-        " Navigation\n",
-        "  j/k / ↑↓     Navigate tree\n",
-        "  h/l / ←→     Collapse/expand\n",
-        "  Enter         Project/Worktree: toggle  |  Session: attach\n",
-        "\n",
-        " Project\n",
-        "  p             Add project (path: prompt)\n",
-        "  m             Move project (reorder list)\n",
-        "  d             Unregister project\n",
-        "  c             Clean merged worktrees (batch)\n",
-        "  e             View .gtrconfig\n",
-        "\n",
-        " Worktree\n",
-        "  w             Add worktree (branch: prompt)\n",
-        "  s             New persistent session (optional init command)\n",
-        "  r             Set alias\n",
-        "  d             Delete worktree + kill all sessions\n",
-        "  c             Clean this worktree if merged\n",
-        "  e             View .gtrconfig\n",
-        "\n",
-        " Session\n",
-        "  Enter         Attach\n",
-        "  r             Rename\n",
-        "  d             Kill session\n",
-        "  x             Dismiss ● (suppress running-app notification) / toggle ⊘ mute\n",
-        "\n",
-        " Inside Session (tmux)\n",
-        "  Ctrl+a d      Detach (return to wsx)\n",
-        "  Ctrl+a ?      tmux help\n",
-        "\n",
-        " Global\n",
-        "  n / N         Jump to next / prev session needing attention (●)\n",
-        "  R             Refresh\n",
-        "  ?             Help\n",
-        "  q             Quit\n",
-    );
+    const ENTRIES: &[&str] = &[
+        " Navigation",
+        "  j/k / ↑↓     Navigate tree",
+        "  h/l / ←→     Collapse/expand",
+        "  Enter         Project/Worktree: toggle  |  Session: attach",
+        "",
+        " Project",
+        "  p             Add project (path: prompt)",
+        "  m             Move project (reorder list)",
+        "  d             Unregister project",
+        "  c             Clean merged worktrees (batch)",
+        "  e             View .gtrconfig",
+        "",
+        " Worktree",
+        "  w             Add worktree (branch: prompt)",
+        "  s             New persistent session (optional init command)",
+        "  r             Set alias",
+        "  d             Delete worktree + kill all sessions",
+        "  c             Clean this worktree if merged",
+        "  e             View .gtrconfig",
+        "",
+        " Session",
+        "  Enter         Attach",
+        "  S             Send command to session",
+        "  C             Send Ctrl+C to session",
+        "  r             Rename",
+        "  d             Kill session",
+        "  x             Dismiss ● (suppress running-app notification) / toggle ⊘ mute",
+        "",
+        " Inside Session (tmux)",
+        "  Ctrl+a d      Detach (return to wsx)",
+        "  Ctrl+a ?      tmux help",
+        "",
+        " Global",
+        "  [ / ]         Jump to prev / next project",
+        "  a             Jump to next active session (◉)",
+        "  n / N         Jump to next / prev session needing attention (●)",
+        "  R             Refresh",
+        "  ?             Help",
+        "  q             Quit",
+    ];
+
+    let inner_width = (width as usize).saturating_sub(2);
+    let lines: Vec<Line> = ENTRIES.iter().flat_map(|entry| {
+        help_wrap_line(entry, inner_width)
+    }).collect();
 
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Help ")
         .border_style(Style::default().fg(Color::Cyan));
-    let para = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
+    let para = Paragraph::new(lines).block(block);
     frame.render_widget(para, popup);
+}
+
+/// Wrap a help entry, indenting continuation lines to align with the description column.
+fn help_wrap_line(line: &str, width: usize) -> Vec<Line<'static>> {
+    // Find where the description starts: first run of 2+ spaces after a non-space char
+    // (following the 2-char indent). Key lines look like "  key     description".
+    let desc_col = if line.starts_with("  ") && !line[2..].starts_with(' ') {
+        let rest = &line[2..];
+        let mut found = None;
+        let mut in_spaces = false;
+        let mut space_start = 0;
+        for (i, c) in rest.char_indices() {
+            if c == ' ' {
+                if !in_spaces { space_start = i; in_spaces = true; }
+            } else {
+                if in_spaces && i - space_start >= 2 {
+                    found = Some(i);
+                    break;
+                }
+                in_spaces = false;
+            }
+        }
+        found.map(|i| 2 + i) // byte offset of description start
+    } else {
+        None
+    };
+
+    let Some(desc_byte) = desc_col else {
+        return vec![Line::from(line.to_owned())];
+    };
+
+    // Measure key column display width (chars, treating all as 1-wide)
+    let key_display: usize = line[..desc_byte].chars().count();
+    let desc_text = &line[desc_byte..];
+    let desc_width = width.saturating_sub(key_display);
+
+    if desc_text.len() <= desc_width {
+        return vec![Line::from(line.to_owned())];
+    }
+
+    // Word-wrap the description
+    let indent = " ".repeat(key_display);
+    let key_part = line[..desc_byte].to_owned();
+    let mut result = Vec::new();
+    let mut remaining = desc_text;
+    let mut first = true;
+
+    while !remaining.is_empty() {
+        let avail = if first { desc_width } else { width.saturating_sub(key_display) };
+        let (chunk, rest) = split_at_word(remaining, avail);
+        if first {
+            result.push(Line::from(format!("{}{}", key_part, chunk)));
+            first = false;
+        } else {
+            result.push(Line::from(format!("{}{}", indent, chunk)));
+        }
+        remaining = rest.trim_start();
+    }
+    result
+}
+
+/// Split `s` at a word boundary no longer than `max_chars`. Returns (chunk, remainder).
+fn split_at_word(s: &str, max_chars: usize) -> (&str, &str) {
+    let char_count = s.chars().count();
+    if char_count <= max_chars {
+        return (s, "");
+    }
+    // Find byte offset of max_chars-th char
+    let end_byte = s.char_indices().nth(max_chars).map(|(i, _)| i).unwrap_or(s.len());
+    // Walk back to last space
+    if let Some(space) = s[..end_byte].rfind(' ') {
+        (&s[..space], &s[space..])
+    } else {
+        (&s[..end_byte], &s[end_byte..])
+    }
 }
