@@ -113,11 +113,12 @@ fn fmt_idle(d: std::time::Duration) -> String {
 
 /// Compute scroll offset to keep selected item visible.
 pub fn compute_scroll(selected: usize, visible_height: usize, current_offset: usize) -> usize {
-    let lookahead = (visible_height * 2 / 3).max(1);
-    if selected < current_offset {
-        selected
-    } else if selected >= current_offset + lookahead {
-        selected.saturating_sub(lookahead - 1)
+    let up_pad   = (visible_height / 4).max(1); // scroll up when cursor within top 1/4
+    let down_pad = (visible_height * 3 / 4).max(1); // scroll down when cursor past 3/4
+    if selected < current_offset + up_pad {
+        selected.saturating_sub(up_pad - 1)
+    } else if selected >= current_offset + down_pad {
+        selected.saturating_sub(down_pad - 1)
     } else {
         current_offset
     }
