@@ -18,7 +18,8 @@ use crate::{
 
 // (pane_capture, running_app_suppressed, muted)
 type PaneSnap = HashMap<String, (Option<String>, bool, bool)>;
-type WorktreeSnap = HashMap<PathBuf, (Option<GitInfo>, bool, PaneSnap)>;
+// session_order preserves user-defined sort across refresh
+type WorktreeSnap = HashMap<PathBuf, (Option<GitInfo>, bool, PaneSnap, Vec<String>)>;
 
 pub const IDLE_SECS: u64 = 3;
 
@@ -56,7 +57,8 @@ pub fn refresh_workspace(
                     let panes = w.sessions.iter()
                         .map(|s| (s.name.clone(), (s.pane_capture.clone(), s.running_app_suppressed, s.muted)))
                         .collect();
-                    (w.path.clone(), (w.git_info.clone(), w.expanded, panes))
+                    let order = w.sessions.iter().map(|s| s.name.clone()).collect();
+                    (w.path.clone(), (w.git_info.clone(), w.expanded, panes, order))
                 })
                 .collect();
 
@@ -73,13 +75,17 @@ pub fn refresh_workspace(
                 };
                 let prefix = format!("{}-{}-", proj_name, wt_slug);
 
-                let sessions: Vec<SessionInfo> = sessions_with_paths.iter()
+                let prev_order: &[String] = prev
+                    .map(|(_, _, _, order)| order.as_slice())
+                    .unwrap_or(&[]);
+
+                let mut sessions: Vec<SessionInfo> = sessions_with_paths.iter()
                     .filter(|(_, sp)| sp == &wt_path)
                     .map(|(name, _)| {
                         let display_name = name.strip_prefix(&prefix)
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| name.clone());
-                        let prev_pane = prev.and_then(|(_, _, panes)| panes.get(name));
+                        let prev_pane = prev.and_then(|(_, _, panes, _)| panes.get(name));
                         let (pane_capture, prev_suppressed, muted) = prev_pane
                             .map(|(p, s, m)| (p.clone(), *s, *m))
                             .unwrap_or((None, false, false));
@@ -113,9 +119,12 @@ pub fn refresh_workspace(
                         }
                     })
                     .collect();
+                sessions.sort_by_key(|s| {
+                    prev_order.iter().position(|n| n == &s.name).unwrap_or(usize::MAX)
+                });
 
                 let (git_info, expanded) = prev
-                    .map(|(gi, exp, _)| (gi.clone(), *exp))
+                    .map(|(gi, exp, _, _)| (gi.clone(), *exp))
                     .unwrap_or((None, true));
 
                 new_worktrees.push(WorktreeInfo {
