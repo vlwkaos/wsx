@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 
 use crate::{
     action::Action,
@@ -65,6 +65,11 @@ pub enum Mode {
     },
     Move {
         project_idx: usize,
+    },
+    MoveSession {
+        project_idx: usize,
+        worktree_idx: usize,
+        session_idx: usize,
     },
     Help,
     Search {
@@ -441,6 +446,20 @@ impl App {
             return Ok(());
         }
 
+        if let Mode::MoveSession { project_idx, worktree_idx, session_idx } = &self.mode {
+            let (pi, wi, si) = (*project_idx, *worktree_idx, *session_idx);
+            match action {
+                Action::NavigateDown => self.move_session(pi, wi, si, 1),
+                Action::NavigateUp => self.move_session(pi, wi, si, -1),
+                Action::Select | Action::InputEscape | Action::Quit | Action::EnterMove => {
+                    crate::cache::save_cache(&self.workspace, self.tree_selected);
+                    self.mode = Mode::Normal;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         match &self.mode {
             Mode::Normal => self.dispatch_normal(action, terminal)?,
             Mode::Input { .. } => self.dispatch_input(action, terminal)?,
@@ -451,7 +470,7 @@ impl App {
                 }
             }
             Mode::Search { .. } => self.dispatch_search(action, terminal)?,
-            Mode::Config { .. } | Mode::Move { .. } => unreachable!(),
+            Mode::Config { .. } | Mode::Move { .. } | Mode::MoveSession { .. } => unreachable!(),
         }
         Ok(())
     }
@@ -489,12 +508,11 @@ impl App {
     }
 
     fn handle_mouse_click(&mut self, col: u16, row: u16, terminal: &mut Tui) -> Result<()> {
-        let ta = self.tree_area;
-        let pa = self.preview_area;
-        if col >= ta.x && col < ta.x + ta.width && row >= ta.y && row < ta.y + ta.height {
+        let pos = Position { x: col, y: row };
+        if self.tree_area.contains(pos) {
             // Content starts after top border (y+1), ends before bottom border (y+height-1)
-            let content_top = ta.y + 1;
-            let content_bottom = ta.y + ta.height.saturating_sub(1);
+            let content_top = self.tree_area.y + 1;
+            let content_bottom = self.tree_area.y + self.tree_area.height.saturating_sub(1);
             if row >= content_top && row < content_bottom {
                 let flat_idx = (row - content_top) as usize + self.tree_scroll;
                 if flat_idx < self.flat().len() {
@@ -506,7 +524,7 @@ impl App {
                     }
                 }
             }
-        } else if col >= pa.x && col < pa.x + pa.width && row >= pa.y && row < pa.y + pa.height {
+        } else if self.preview_area.contains(pos) {
             if matches!(self.current_selection(), Selection::Session(..)) {
                 self.action_select(terminal)?;
             }
@@ -530,6 +548,16 @@ impl App {
             Action::InputBackspace => {
                 if let Mode::Input { state, .. } = &mut self.mode {
                     state.backspace();
+                }
+            }
+            Action::NavigateLeft => {
+                if let Mode::Input { state, .. } = &mut self.mode {
+                    state.cursor_left();
+                }
+            }
+            Action::NavigateRight => {
+                if let Mode::Input { state, .. } = &mut self.mode {
+                    state.cursor_right();
                 }
             }
             Action::InputTab | Action::NavigateDown => {
@@ -589,10 +617,8 @@ impl App {
                 self.workspace.projects[*idx].name.to_lowercase(),
             FlatEntry::Worktree { project_idx: pi, worktree_idx: wi } => {
                 let wt = &self.workspace.projects[*pi].worktrees[*wi];
-                let mut s = wt.branch.to_lowercase();
-                if let Some(a) = &wt.alias { s.push(' '); s.push_str(&a.to_lowercase()); }
-                s.push(' '); s.push_str(&wt.name.to_lowercase());
-                s
+                let alias = wt.alias.as_deref().unwrap_or("");
+                format!("{} {} {}", wt.branch, alias, wt.name).to_lowercase()
             }
             FlatEntry::Session { project_idx: pi, worktree_idx: wi, session_idx: si } =>
                 self.workspace.projects[*pi].worktrees[*wi].sessions[*si]
@@ -901,6 +927,10 @@ impl App {
     fn action_dismiss_attention(&mut self) {
         if let Selection::Session(pi, wi, si) = self.current_selection() {
             if let Some(sess) = self.workspace.session_mut(pi, wi, si) {
+                let active = sess.last_activity
+                    .map(|t| t.elapsed().as_secs() < IDLE_SECS)
+                    .unwrap_or(false);
+                if active { return; }
                 if sess.has_running_app && !sess.running_app_suppressed {
                     sess.running_app_suppressed = true;
                     self.set_status("Dismissed");
@@ -1124,11 +1154,16 @@ impl App {
     // ── Move project ──────────────────────────────────────────────────────────
 
     fn action_enter_move(&mut self) {
-        if let Selection::Project(pi) = self.current_selection() {
-            self.mode = Mode::Move { project_idx: pi };
-            self.set_status("MOVE: j/k to reorder  Enter/Esc to confirm");
-        } else {
-            self.set_status("Select a project to move");
+        match self.current_selection() {
+            Selection::Project(pi) => {
+                self.mode = Mode::Move { project_idx: pi };
+                self.set_status("MOVE: j/k to reorder  Enter/Esc to confirm");
+            }
+            Selection::Session(pi, wi, si) => {
+                self.mode = Mode::MoveSession { project_idx: pi, worktree_idx: wi, session_idx: si };
+                self.set_status("MOVE: j/k to reorder  Enter/Esc to confirm");
+            }
+            _ => self.set_status("Select a project or session to move"),
         }
     }
 
@@ -1151,6 +1186,22 @@ impl App {
 
     fn move_project_up(&mut self, pi: usize) {
         if pi > 0 { self.move_project(pi, -1); }
+    }
+
+    fn move_session(&mut self, pi: usize, wi: usize, si: usize, delta: isize) {
+        let new_si = (si as isize + delta) as usize;
+        let sessions = &mut self.workspace.projects[pi].worktrees[wi].sessions;
+        if new_si >= sessions.len() { return; }
+        sessions.swap(si, new_si);
+        self.mode = Mode::MoveSession { project_idx: pi, worktree_idx: wi, session_idx: new_si };
+        self.rebuild_flat();
+        if let Some(pos) = self.flat().iter().position(|e| {
+            matches!(e, FlatEntry::Session { project_idx: p, worktree_idx: w, session_idx: s }
+                if *p == pi && *w == wi && *s == new_si)
+        }) {
+            self.tree_selected = pos;
+            self.update_scroll();
+        }
     }
 
     fn sync_config_project_order(&mut self) {

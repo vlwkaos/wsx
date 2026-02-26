@@ -48,17 +48,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Length(36), Constraint::Min(0)])
         .split(main_area);
 
-    // Update scroll to match visible height
     let visible_height = chunks[0].height.saturating_sub(2) as usize;
     app.tree_visible_height = visible_height;
     app.tree_scroll = compute_scroll(app.tree_selected, visible_height, app.tree_scroll);
     app.tree_area = chunks[0];
     app.preview_area = chunks[1];
 
-    let is_move_mode = matches!(app.mode, Mode::Move { .. });
+    let is_move_mode = matches!(app.mode, Mode::Move { .. } | Mode::MoveSession { .. });
     render_tree(frame, chunks[0], &app.workspace, app.tree_selected, app.tree_scroll, is_move_mode);
 
-    // Preview
     let preview_area = chunks[1];
     match app.current_selection() {
         Selection::Session(pi, wi, si) => {
@@ -121,7 +119,7 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
             }
         }
         Mode::Help => render_help(frame, area),
-        Mode::Normal | Mode::Move { .. } | Mode::Search { .. } => {}
+        Mode::Normal | Mode::Move { .. } | Mode::MoveSession { .. } | Mode::Search { .. } => {}
     }
 }
 
@@ -131,7 +129,7 @@ fn get_mode_label(app: &App) -> &'static str {
         Mode::Input { .. } => "INPUT",
         Mode::Confirm { .. } => "CONFIRM",
         Mode::Config { .. } => "CONFIG",
-        Mode::Move { .. } => "MOVE",
+        Mode::Move { .. } | Mode::MoveSession { .. } => "MOVE",
         Mode::Help => "HELP",
         Mode::Search { .. } => "SEARCH",
     }
@@ -145,14 +143,21 @@ fn build_hints(app: &App) -> String {
                 format!("(m)ove  (w)orktree  (d)el  (c)lean  ·  {}", global),
             Selection::Worktree(_, _) =>
                 format!("(s)ession  (o)run  (r)alias  (d)el  ·  (w)orktree  (c)lean  ·  {}", global),
-            Selection::Session(_, _, _) =>
-                format!("(r)ename  (d)kill  (x)dismiss  ·  C-a d: detach  ·  (s)ession  (o)run  ·  (w)orktree  (c)lean  ·  {}", global),
+            Selection::Session(pi, wi, si) => {
+                let active = app.workspace.projects.get(pi)
+                    .and_then(|p| p.worktrees.get(wi))
+                    .and_then(|w| w.sessions.get(si))
+                    .map(|s| s.last_activity.map(|t| t.elapsed().as_secs() < crate::app::IDLE_SECS).unwrap_or(false))
+                    .unwrap_or(false);
+                let dismiss = if active { "" } else { "(x)dismiss  ·  " };
+                format!("(m)ove  (r)ename  (d)kill  ·  {}(C-a d)detach  ·  (s)ession  (o)run  ·  (w)orktree  (c)lean  ·  {}", dismiss, global)
+            }
             Selection::None => "(p) add project".to_string(),
         },
         Mode::Input { .. } => "Esc: cancel".to_string(),
         Mode::Confirm { .. } => "(y)es  (n)o".to_string(),
         Mode::Config { .. } => "(e)dit .gtrignore  Esc: close".to_string(),
-        Mode::Move { .. } => "(j/k) reorder  Esc: done".to_string(),
+        Mode::Move { .. } | Mode::MoveSession { .. } => "(j/k) reorder  Esc: done".to_string(),
         Mode::Help => "Esc: close".to_string(),
         Mode::Search { .. } => unreachable!(),
     }
@@ -208,11 +213,12 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let label = get_mode_label(app);
     let mode_text = format!(" [{}] ", label);
     let badge_width = mode_text.len();
+    let badge_style = Style::default().fg(Color::Black).bg(Color::Yellow).bold();
 
     let msg = app.status_message.as_deref().unwrap_or("");
     if !msg.is_empty() {
         let spans = vec![
-            Span::styled(mode_text, Style::default().fg(Color::Black).bg(Color::Yellow).bold()),
+            Span::styled(mode_text, badge_style),
             Span::styled(format!(" {}", msg), Style::default().fg(Color::Cyan)),
         ];
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -222,29 +228,26 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let hints = build_hints(app);
     let available = (area.width as usize).saturating_sub(badge_width + 1);
     let hint_lines = wrap_hints(&hints, available);
+    let hint_style = Style::default().fg(Color::Gray);
 
     if hint_lines.len() <= 1 || area.height < 2 {
         let text = hint_lines.first().map(|s| s.as_str()).unwrap_or(&hints);
         let spans = vec![
-            Span::styled(mode_text, Style::default().fg(Color::Black).bg(Color::Yellow).bold()),
-            Span::styled(format!(" {}", text), Style::default().fg(Color::Gray)),
+            Span::styled(mode_text, badge_style),
+            Span::styled(format!(" {}", text), hint_style),
         ];
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     } else {
         let indent = " ".repeat(badge_width);
-        let mut text_lines: Vec<Line> = Vec::new();
-        for (i, hl) in hint_lines.iter().enumerate() {
-            if i == 0 {
-                text_lines.push(Line::from(vec![
-                    Span::styled(mode_text.clone(), Style::default().fg(Color::Black).bg(Color::Yellow).bold()),
-                    Span::styled(format!(" {}", hl), Style::default().fg(Color::Gray)),
-                ]));
-            } else {
-                text_lines.push(Line::from(vec![
-                    Span::raw(indent.clone()),
-                    Span::styled(format!(" {}", hl), Style::default().fg(Color::Gray)),
-                ]));
-            }
+        let mut text_lines: Vec<Line> = vec![Line::from(vec![
+            Span::styled(mode_text, badge_style),
+            Span::styled(format!(" {}", hint_lines[0]), hint_style),
+        ])];
+        for hl in &hint_lines[1..] {
+            text_lines.push(Line::from(vec![
+                Span::raw(indent.clone()),
+                Span::styled(format!(" {}", hl), hint_style),
+            ]));
         }
         frame.render_widget(Paragraph::new(Text::from(text_lines)), area);
     }
