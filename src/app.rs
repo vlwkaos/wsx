@@ -103,6 +103,7 @@ pub struct App {
     pub workspace: WorkspaceState,
     pub tree_selected: usize,
     pub tree_scroll: usize,
+    pub tree_visible_height: usize,
     pub mode: Mode,
     pub config: GlobalConfig,
     pub status_message: Option<String>,
@@ -127,6 +128,7 @@ impl App {
             workspace,
             tree_selected,
             tree_scroll: 0,
+            tree_visible_height: 20,
             mode: Mode::Normal,
             config,
             status_message: None,
@@ -385,7 +387,8 @@ impl App {
     }
 
     fn update_scroll(&mut self) {
-        let visible = 20usize;
+        // tree_visible_height is set each frame from actual terminal size; fall back to 20
+        let visible = self.tree_visible_height.max(1);
         self.tree_scroll = crate::ui::workspace_tree::compute_scroll(
             self.tree_selected, visible, self.tree_scroll,
         );

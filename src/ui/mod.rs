@@ -49,6 +49,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Update scroll to match visible height
     let visible_height = chunks[0].height.saturating_sub(2) as usize;
+    app.tree_visible_height = visible_height;
     app.tree_scroll = compute_scroll(app.tree_selected, visible_height, app.tree_scroll);
 
     let is_move_mode = matches!(app.mode, Mode::Move { .. });
