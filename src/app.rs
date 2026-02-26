@@ -65,6 +65,10 @@ pub enum Mode {
         project_idx: usize,
     },
     Help,
+    Search {
+        query: String,
+        match_idx: usize,
+    },
 }
 
 pub enum InputContext {
@@ -173,7 +177,7 @@ impl App {
                 self.needs_redraw = false;
             }
 
-            let in_input = matches!(self.mode, Mode::Input { .. });
+            let in_input = matches!(self.mode, Mode::Input { .. } | Mode::Search { .. });
             if let Some(action) = poll_event(Duration::from_millis(TICK_MS), in_input)? {
                 if action == Action::Quit && matches!(self.mode, Mode::Normal) {
                     crate::cache::save_cache(&self.workspace, self.tree_selected);
@@ -440,6 +444,7 @@ impl App {
                     self.mode = Mode::Normal;
                 }
             }
+            Mode::Search { .. } => self.dispatch_search(action, terminal)?,
             Mode::Config { .. } | Mode::Move { .. } => unreachable!(),
         }
         Ok(())
@@ -468,6 +473,9 @@ impl App {
             Action::EnterMove => self.action_enter_move(),
             Action::JumpProjectDown => self.jump_project(1),
             Action::JumpProjectUp => self.jump_project(-1),
+            Action::SearchStart => {
+                self.mode = Mode::Search { query: String::new(), match_idx: 0 };
+            }
             _ => {}
         }
         Ok(())
@@ -517,6 +525,91 @@ impl App {
         Ok(())
     }
 
+    fn dispatch_search(&mut self, action: Action, _terminal: &mut Tui) -> Result<()> {
+        match action {
+            Action::InputEscape | Action::Quit => {
+                self.mode = Mode::Normal;
+            }
+            Action::InputChar(c) => {
+                if let Mode::Search { ref mut query, ref mut match_idx } = self.mode {
+                    query.push(c);
+                    *match_idx = 0;
+                }
+                self.search_apply();
+            }
+            Action::InputBackspace => {
+                if let Mode::Search { ref mut query, ref mut match_idx } = self.mode {
+                    query.pop();
+                    *match_idx = 0;
+                }
+                self.search_apply();
+            }
+            Action::Select => self.search_advance(),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn search_text(&self, entry: &FlatEntry) -> String {
+        match entry {
+            FlatEntry::Project { idx } =>
+                self.workspace.projects[*idx].name.to_lowercase(),
+            FlatEntry::Worktree { project_idx: pi, worktree_idx: wi } => {
+                let wt = &self.workspace.projects[*pi].worktrees[*wi];
+                let mut s = wt.branch.to_lowercase();
+                if let Some(a) = &wt.alias { s.push(' '); s.push_str(&a.to_lowercase()); }
+                s.push(' '); s.push_str(&wt.name.to_lowercase());
+                s
+            }
+            FlatEntry::Session { project_idx: pi, worktree_idx: wi, session_idx: si } =>
+                self.workspace.projects[*pi].worktrees[*wi].sessions[*si]
+                    .display_name.to_lowercase(),
+        }
+    }
+
+    fn search_matches(&self, query: &str) -> Vec<usize> {
+        if query.is_empty() { return vec![]; }
+        let q = query.to_lowercase();
+        self.flat().iter().enumerate()
+            .filter(|(_, e)| self.search_text(e).contains(&q))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Move cursor to first match; exit search when narrowed to one result.
+    fn search_apply(&mut self) {
+        let query = match &self.mode {
+            Mode::Search { query, .. } => query.clone(),
+            _ => return,
+        };
+        let matches = self.search_matches(&query);
+        if matches.is_empty() { return; }
+        self.tree_selected = matches[0];
+        self.update_scroll();
+        if matches.len() == 1 {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    /// Enter: cycle to next match. Exits search when wrapping back to start.
+    fn search_advance(&mut self) {
+        let (query, match_idx) = match &self.mode {
+            Mode::Search { query, match_idx } => (query.clone(), *match_idx),
+            _ => return,
+        };
+        let matches = self.search_matches(&query);
+        if matches.is_empty() {
+            self.mode = Mode::Normal;
+            return;
+        }
+        let next = (match_idx + 1) % matches.len();
+        if let Mode::Search { ref mut match_idx, .. } = self.mode {
+            *match_idx = next;
+        }
+        self.tree_selected = matches[next];
+        self.update_scroll();
+    }
+
     // ── Actions ───────────────────────────────────────────────────────────────
 
     fn action_select(&mut self, terminal: &mut Tui) -> Result<()> {
@@ -540,7 +633,7 @@ impl App {
     }
 
     fn attach_to_session(&self, name: &str, terminal: &mut Tui) -> Result<()> {
-        session::enable_mouse(name);
+        session::apply_session_defaults(name);
         match session::attach_session_cmd(name) {
             session::AttachCommand::SwitchClient(n) => session::switch_client(&n)?,
             session::AttachCommand::Attach(n) => {

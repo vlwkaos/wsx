@@ -23,6 +23,7 @@ pub enum Action {
     EnterMove,
     JumpProjectDown,
     JumpProjectUp,
+    SearchStart,
     InputChar(char),
     InputBackspace,
     InputTab,

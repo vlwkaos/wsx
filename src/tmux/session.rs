@@ -83,9 +83,23 @@ pub enum AttachCommand {
     Attach(String),
 }
 
-/// Enable mouse support on a session (best-effort, non-fatal).
-pub fn enable_mouse(session: &str) {
+/// Returns true if the user has a tmux config file (~/.tmux.conf or XDG path).
+fn user_has_tmux_config() -> bool {
+    let xdg = std::env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".config"));
+    dirs::home_dir().map(|h| h.join(".tmux.conf").exists()).unwrap_or(false)
+        || xdg.join("tmux/tmux.conf").exists()
+}
+
+/// Apply wsx runtime defaults to a session if the user has no tmux config.
+/// Best-effort, non-fatal. Skipped when user config exists (let it take over).
+pub fn apply_session_defaults(session: &str) {
     let _ = tmux_silent(&["set-option", "-t", session, "mouse", "on"]).status();
+    if !user_has_tmux_config() {
+        let _ = tmux_silent(&["set-option", "-t", session, "prefix", "C-a"]).status();
+        let _ = tmux_silent(&["bind-key", "-T", "prefix", "a", "send-prefix"]).status();
+    }
 }
 
 /// switch-client (inside tmux path).

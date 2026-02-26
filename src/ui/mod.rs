@@ -118,11 +118,22 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
             }
         }
         Mode::Help => render_help(frame, area),
-        Mode::Normal | Mode::Move { .. } => {}
+        Mode::Normal | Mode::Move { .. } | Mode::Search { .. } => {}
     }
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
+    // Search mode gets its own full-bar treatment
+    if let Mode::Search { query, .. } = &app.mode {
+        let spans = vec![
+            Span::styled(" [/] ", Style::default().fg(Color::Black).bg(Color::Cyan).bold()),
+            Span::styled(format!(" {}_", query), Style::default().fg(Color::White)),
+            Span::styled("  Enter: next  Esc: exit", Style::default().fg(Color::DarkGray)),
+        ];
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
+    }
+
     let mode_label = match &app.mode {
         Mode::Normal => "NORMAL",
         Mode::Input { .. } => "INPUT",
@@ -130,12 +141,13 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         Mode::Config { .. } => "CONFIG",
         Mode::Move { .. } => "MOVE",
         Mode::Help => "HELP",
+        Mode::Search { .. } => unreachable!(),
     };
 
     let sel = app.current_selection();
     let hints: String = match &app.mode {
         Mode::Normal => {
-            let global = "(n)ext (N)prev pending  (e)config  (?)help  (q)uit";
+            let global = "(/)search  (n)ext (N)prev pending  (e)config  (?)help  (q)uit";
             match sel {
                 Selection::Project(_) =>
                     format!("(m)ove  (w)orktree  (d)el  (c)lean  ·  {}", global),
@@ -151,6 +163,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         Mode::Config { .. } => "(e)dit .gtrignore  Esc: close".to_string(),
         Mode::Move { .. } => "(j/k) reorder  Esc: done".to_string(),
         Mode::Help => "Esc: close".to_string(),
+        Mode::Search { .. } => unreachable!(),
     };
 
     let msg = app.status_message.as_deref().unwrap_or("");
