@@ -28,6 +28,17 @@ Press `n` to jump to the next session with a `●` indicator, `N` for previous. 
 
 Once you've handled a session, `x` dismisses the indicator (or mutes the session entirely with a second press). Active sessions (`◉`) can't be dismissed — there's nothing to dismiss yet.
 
+## Guide
+
+| | |
+|---|---|
+| **Project config** `.gtrconfig` at the repo root configures worktree setup — run a post-create command, copy env files into new worktrees automatically. Press `e` to view it. | <!-- screenshot --> |
+| **Create a worktree** Select a project and press `w`. Enter a branch name. The worktree appears in the tree immediately. | <!-- screenshot --> |
+| **Create sessions** Select a worktree and press `s`. Create one session per context — e.g. `shell`, `claude`, `codex`, `build`. Each is a persistent tmux session; closing your terminal doesn't kill it. | <!-- screenshot --> |
+| **Iterate pending** Press `n` to jump to the next `●` session. No scanning — just step through whatever needs attention and handle it. `x` dismisses the indicator; press again to mute with `⊘`. | <!-- screenshot --> |
+| **Monitor active** Press `a` to cycle through `◉` sessions — ones that are actively producing output right now. Useful for keeping an eye on running builds or agents. | <!-- screenshot --> |
+| **Detach to return** Inside a session, press `Ctrl+a d` to detach. wsx resumes and the session keeps running in the background. This is the primary way to move between sessions. | <!-- screenshot --> |
+
 ## Install
 
 ```sh
