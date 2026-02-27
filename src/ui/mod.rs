@@ -1,25 +1,28 @@
 // Layout orchestration
 
 pub mod ansi;
-pub mod workspace_tree;
-pub mod preview;
+pub mod config_modal;
+pub mod confirm;
 pub mod input;
 pub mod picker;
-pub mod confirm;
-pub mod config_modal;
+pub mod preview;
+pub mod workspace_tree;
 
-use ratatui::{
-    prelude::*,
-    widgets::{Block, Borders, Clear, Paragraph},
-};
 use crate::app::{App, Mode};
 use crate::model::workspace::Selection;
 use crate::ui::{
-    confirm::render_confirm,
     config_modal::render_config_modal,
+    confirm::render_confirm,
     input::render_input,
-    preview::{render_empty_preview, render_project_preview, render_session_preview, render_worktree_preview},
+    preview::{
+        render_empty_preview, render_project_preview, render_session_preview,
+        render_worktree_preview,
+    },
     workspace_tree::{compute_scroll, render_tree},
+};
+use ratatui::{
+    prelude::*,
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 
 /// Center a popup of given size within `area`.
@@ -40,8 +43,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
     let sb_height = status_bar_height(app, area.width);
-    let main_area = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(sb_height));
-    let status_area = Rect::new(area.x, area.y + area.height.saturating_sub(sb_height), area.width, sb_height);
+    let main_area = Rect::new(
+        area.x,
+        area.y,
+        area.width,
+        area.height.saturating_sub(sb_height),
+    );
+    let status_area = Rect::new(
+        area.x,
+        area.y + area.height.saturating_sub(sb_height),
+        area.width,
+        sb_height,
+    );
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -55,7 +68,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     app.preview_area = chunks[1];
 
     let is_move_mode = matches!(app.mode, Mode::Move { .. } | Mode::MoveSession { .. });
-    render_tree(frame, chunks[0], &app.workspace, app.tree_selected, app.tree_scroll, is_move_mode);
+    render_tree(
+        frame,
+        chunks[0],
+        &app.workspace,
+        app.tree_selected,
+        app.tree_scroll,
+        is_move_mode,
+    );
 
     let preview_area = chunks[1];
     match app.current_selection() {
@@ -72,13 +92,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             }
         }
         Selection::Worktree(pi, wi) => {
-            if let Some((project, worktree, title)) = app.workspace.projects.get(pi)
-                .and_then(|p| p.worktrees.get(wi).map(|wt| {
+            if let Some((worktree, title)) = app.workspace.projects.get(pi).and_then(|p| {
+                p.worktrees.get(wi).map(|wt| {
                     let title = format!("{} › {}", p.name, wt.display_name());
-                    (p.clone(), wt.clone(), title)
-                }))
-            {
-                render_worktree_preview(frame, preview_area, &project, &worktree, &title);
+                    (wt.clone(), title)
+                })
+            }) {
+                render_worktree_preview(frame, preview_area, &worktree, &title);
             } else {
                 render_empty_preview(frame, preview_area);
             }
@@ -139,15 +159,23 @@ fn build_hints(app: &App) -> String {
     let global = "(/)search  (a)ctive  ·  (n)ext (N)prev pending  ·  (e)config  (?)help";
     match &app.mode {
         Mode::Normal => match app.current_selection() {
-            Selection::Project(_) =>
-                format!("(m)ove  (w)orktree  (d)el  (c)lean  ·  {}", global),
-            Selection::Worktree(_, _) =>
-                format!("(s)ession  (r)alias  (d)el  ·  (w)orktree  (c)lean  ·  {}", global),
+            Selection::Project(_) => format!("(m)ove  (w)orktree  (d)el  (c)lean  ·  {}", global),
+            Selection::Worktree(_, _) => format!(
+                "(s)ession  (r)alias  (d)el  ·  (w)orktree  (c)lean  ·  {}",
+                global
+            ),
             Selection::Session(pi, wi, si) => {
-                let active = app.workspace.projects.get(pi)
+                let active = app
+                    .workspace
+                    .projects
+                    .get(pi)
                     .and_then(|p| p.worktrees.get(wi))
                     .and_then(|w| w.sessions.get(si))
-                    .map(|s| s.last_activity.map(|t| t.elapsed().as_secs() < crate::app::IDLE_SECS).unwrap_or(false))
+                    .map(|s| {
+                        s.last_activity
+                            .map(|t| t.elapsed().as_secs() < crate::app::IDLE_SECS)
+                            .unwrap_or(false)
+                    })
                     .unwrap_or(false);
                 let dismiss = if active { "" } else { "(x)dismiss  ·  " };
                 format!("(m)ove  (r)ename  (d)kill  ·  {}(S)send cmd  (C)ctrl-c  ·  (C-a d)detach  ·  (s)ession  ·  (w)orktree  (c)lean  ·  {}", dismiss, global)
@@ -202,9 +230,15 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     // Search mode gets its own full-bar treatment
     if let Mode::Search { query, .. } = &app.mode {
         let spans = vec![
-            Span::styled(" [/] ", Style::default().fg(Color::Black).bg(Color::Cyan).bold()),
+            Span::styled(
+                " [/] ",
+                Style::default().fg(Color::Black).bg(Color::Cyan).bold(),
+            ),
             Span::styled(format!(" {}_", query), Style::default().fg(Color::White)),
-            Span::styled("  Enter: next  Esc: exit", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "  Enter: next  Esc: exit",
+                Style::default().fg(Color::DarkGray),
+            ),
         ];
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
@@ -341,9 +375,10 @@ fn render_help(frame: &mut Frame, area: Rect) {
     ];
 
     let inner_width = (width as usize).saturating_sub(2);
-    let lines: Vec<Line> = ENTRIES.iter().flat_map(|entry| {
-        help_wrap_line(entry, inner_width)
-    }).collect();
+    let lines: Vec<Line> = ENTRIES
+        .iter()
+        .flat_map(|entry| help_wrap_line(entry, inner_width))
+        .collect();
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -364,7 +399,10 @@ fn help_wrap_line(line: &str, width: usize) -> Vec<Line<'static>> {
         let mut space_start = 0;
         for (i, c) in rest.char_indices() {
             if c == ' ' {
-                if !in_spaces { space_start = i; in_spaces = true; }
+                if !in_spaces {
+                    space_start = i;
+                    in_spaces = true;
+                }
             } else {
                 if in_spaces && i - space_start >= 2 {
                     found = Some(i);
@@ -399,7 +437,11 @@ fn help_wrap_line(line: &str, width: usize) -> Vec<Line<'static>> {
     let mut first = true;
 
     while !remaining.is_empty() {
-        let avail = if first { desc_width } else { width.saturating_sub(key_display) };
+        let avail = if first {
+            desc_width
+        } else {
+            width.saturating_sub(key_display)
+        };
         let (chunk, rest) = split_at_word(remaining, avail);
         if first {
             result.push(Line::from(format!("{}{}", key_part, chunk)));
@@ -419,7 +461,11 @@ fn split_at_word(s: &str, max_chars: usize) -> (&str, &str) {
         return (s, "");
     }
     // Find byte offset of max_chars-th char
-    let end_byte = s.char_indices().nth(max_chars).map(|(i, _)| i).unwrap_or(s.len());
+    let end_byte = s
+        .char_indices()
+        .nth(max_chars)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
     // Walk back to last space
     if let Some(space) = s[..end_byte].rfind(' ') {
         (&s[..space], &s[space..])
