@@ -1,11 +1,11 @@
 // Worktree CRUD — all via git CLI
 // ref: git-worktree(1) — https://git-scm.com/docs/git-worktree
 
+use super::git_cmd;
+use crate::model::workspace::WorktreeInfo;
+use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use anyhow::{bail, Context, Result};
-use crate::model::workspace::WorktreeInfo;
-use super::git_cmd;
 
 pub struct WorktreeEntry {
     pub name: String,
@@ -34,7 +34,12 @@ fn parse_porcelain_output(output: &str, repo_path: &Path) -> Result<Vec<Worktree
             if let Some(path) = current_path.take() {
                 let branch = current_branch.take().unwrap_or_else(|| "HEAD".to_string());
                 let name = derive_name(&path, &branch, first);
-                entries.push(WorktreeEntry { name, path, branch, is_main: first });
+                entries.push(WorktreeEntry {
+                    name,
+                    path,
+                    branch,
+                    is_main: first,
+                });
                 first = false;
             }
         } else if let Some(p) = line.strip_prefix("worktree ") {
@@ -49,7 +54,12 @@ fn parse_porcelain_output(output: &str, repo_path: &Path) -> Result<Vec<Worktree
     if let Some(path) = current_path {
         let branch = current_branch.unwrap_or_else(|| "HEAD".to_string());
         let name = derive_name(&path, &branch, first);
-        entries.push(WorktreeEntry { name, path, branch, is_main: first });
+        entries.push(WorktreeEntry {
+            name,
+            path,
+            branch,
+            is_main: first,
+        });
     }
 
     if entries.is_empty() {
@@ -65,7 +75,9 @@ fn parse_porcelain_output(output: &str, repo_path: &Path) -> Result<Vec<Worktree
 }
 
 fn derive_name(path: &Path, branch: &str, is_main: bool) -> String {
-    if is_main { return "main".to_string(); }
+    if is_main {
+        return "main".to_string();
+    }
     path.file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| branch.replace('/', "-"))
@@ -76,34 +88,45 @@ pub fn to_worktree_infos(
     entries: Vec<WorktreeEntry>,
     aliases: &std::collections::HashMap<String, String>,
 ) -> Vec<WorktreeInfo> {
-    entries.into_iter().map(|e| {
-        let alias = aliases.get(&e.branch).cloned();
-        WorktreeInfo {
-            name: e.name,
-            branch: e.branch,
-            path: e.path,
-            is_main: e.is_main,
-            alias,
-            sessions: Vec::new(),
-            expanded: true,
-            git_info: None,
-        }
-    }).collect()
+    entries
+        .into_iter()
+        .map(|e| {
+            let alias = aliases.get(&e.branch).cloned();
+            WorktreeInfo {
+                name: e.name,
+                branch: e.branch,
+                path: e.path,
+                is_main: e.is_main,
+                alias,
+                sessions: Vec::new(),
+                expanded: true,
+                git_info: None,
+                fetch_failed: false,
+                last_fetched: None,
+            }
+        })
+        .collect()
 }
 
 /// `git worktree add -b {branch} {path} {base_branch}`
 pub fn create_worktree(repo_path: &Path, branch: &str, base_branch: &str) -> Result<PathBuf> {
     let parent = repo_path.parent().context("repo has no parent dir")?;
-    let repo_name = repo_path.file_name().context("repo has no name")?.to_string_lossy();
-    let slug = branch
-        .replace('/', "-")
-        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.', "-");
+    let repo_name = repo_path
+        .file_name()
+        .context("repo has no name")?
+        .to_string_lossy();
+    let slug = branch.replace('/', "-").replace(
+        |c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '.',
+        "-",
+    );
     let wt_path = parent.join(format!("{}-{}", repo_name, slug));
 
     let status = git_cmd(repo_path)
         .args([
-            "worktree", "add",
-            "-b", branch,
+            "worktree",
+            "add",
+            "-b",
+            branch,
             &wt_path.to_string_lossy(),
             base_branch,
         ])
@@ -112,7 +135,9 @@ pub fn create_worktree(repo_path: &Path, branch: &str, base_branch: &str) -> Res
         .status()
         .context("git worktree add failed")?;
 
-    if !status.success() { bail!("git worktree add exited {}", status); }
+    if !status.success() {
+        bail!("git worktree add exited {}", status);
+    }
     Ok(wt_path)
 }
 
@@ -120,7 +145,9 @@ pub fn create_worktree(repo_path: &Path, branch: &str, base_branch: &str) -> Res
 pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
     let status = git_cmd(repo_path)
         .args([
-            "worktree", "remove", "--force",
+            "worktree",
+            "remove",
+            "--force",
             &worktree_path.to_string_lossy(),
         ])
         .stdout(Stdio::null())
@@ -128,7 +155,9 @@ pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, branch: &str) -> 
         .status()
         .context("git worktree remove failed")?;
 
-    if !status.success() { bail!("git worktree remove exited {}", status); }
+    if !status.success() {
+        bail!("git worktree remove exited {}", status);
+    }
 
     // Best-effort branch deletion
     let _ = git_cmd(repo_path)
