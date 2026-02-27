@@ -30,14 +30,15 @@ Once you've handled a session, `x` dismisses the indicator (or mutes the session
 
 ## Guide
 
-| | |
+| Feature | Screenshot |
 |---|---|
-| **Project config** `.gtrconfig` at the repo root configures worktree setup — run a post-create command, copy env files into new worktrees automatically. Press `e` to view it. | <!-- screenshot --> |
-| **Create a worktree** Select a project and press `w`. Enter a branch name. The worktree appears in the tree immediately. | <!-- screenshot --> |
-| **Create sessions** Select a worktree and press `s`. Create one session per context — e.g. `shell`, `claude`, `codex`, `build`. Each is a persistent tmux session; closing your terminal doesn't kill it. | <!-- screenshot --> |
-| **Iterate pending** Press `n` to jump to the next `●` session. No scanning — just step through whatever needs attention and handle it. `x` dismisses the indicator; press again to mute with `⊘`. | <!-- screenshot --> |
-| **Monitor active** Press `a` to cycle through `◉` sessions — ones that are actively producing output right now. Useful for keeping an eye on running builds or agents. | <!-- screenshot --> |
-| **Detach to return** Inside a session, press `Ctrl+a d` to detach. wsx resumes and the session keeps running in the background. This is the primary way to move between sessions. | <!-- screenshot --> |
+| **Project config** `.gtrconfig` at the repo root configures worktree setup — run a post-create command, copy env files into new worktrees automatically. Press `e` to view it. | <img width="473" height="245" alt="image" src="https://github.com/user-attachments/assets/41a1ef82-9ebb-49aa-993e-4ae9f1ea0a83" /> |
+| **Create a project** Press `p`. Prompt will popup for a project directory. Suggestion per directory is supported. | <img width="457" height="221" alt="image" src="https://github.com/user-attachments/assets/b6c0c7bf-7252-4281-bee4-8dfa4c8d4529" /> |
+| **Create a worktree** Select a project and press `w`. Enter a branch name. The worktree appears in the tree immediately. | <img width="459" height="52" alt="image" src="https://github.com/user-attachments/assets/8280c712-29a1-43d6-8504-0c7161ab9b86" /> <img width="264" height="90" alt="image" src="https://github.com/user-attachments/assets/c8183cf6-4de8-414a-88e2-1ceac1722080" /> |
+| **Create sessions** Select a worktree and press `s`. Create one session per context — e.g. `shell`, `claude`, `codex`, `build`. If you skip naming, it will automatically use the command you entered. <br> Each is a persistent tmux session; closing your terminal doesn't kill it. You can press `d` for deletion and `r` for renaming. | <img width="270" height="68" alt="image" src="https://github.com/user-attachments/assets/41569337-057f-44b8-bd39-8f1d2ffa6a1f" /> |
+| **Iterate pending** Press `n` to jump to the next yellow `●` session. No scanning — just step through whatever needs attention and handle it. `x` dismisses the indicator; press again to mute with `⊘`. <br><br> Similarly you can **Monitor active** by pressing `a` to cycle through green `◉` sessions — ones that are actively producing output right now. Useful for keeping an eye on running builds or agents. | ![Screen Recording 2026-02-27 at 9 35 16 AM](https://github.com/user-attachments/assets/46c6b7be-34b2-4f73-b959-6205d81d1a66) |
+| *Send command without entering session*. Sometimes entering the session itself is a bit tedious. You can `S`(Shift+s) to send command directly or `C`(Shift+c) to send Ctrl+C sig. This is useful for closing watcher or runner directly on wsx screen | <img width="464" height="57" alt="image" src="https://github.com/user-attachments/assets/6d466d85-4d92-44c7-abe8-93ec4337f480" /> |
+| **Detach to return** Inside a session, press `Ctrl+a d` to detach. wsx resumes and the session keeps running in the background. This is the primary way to move between sessions. | (empty) |
 
 ## Install
 
