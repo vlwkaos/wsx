@@ -29,9 +29,9 @@ pub struct SessionInfo {
     pub has_activity: bool,
     pub pane_capture: Option<String>,
     pub last_activity: Option<std::time::Instant>,
-    pub has_running_app: bool,       // foreground process is not a bare shell
+    pub has_running_app: bool, // foreground process is not a bare shell
     pub running_app_suppressed: bool, // user dismissed the running-app notification
-    pub muted: bool,                 // user silenced — no activity updates, shown as ⊘
+    pub muted: bool,           // user silenced — no activity updates, shown as ⊘
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +44,8 @@ pub struct WorktreeInfo {
     pub sessions: Vec<SessionInfo>,
     pub expanded: bool,
     pub git_info: Option<GitInfo>,
+    pub fetch_failed: bool,
+    pub last_fetched: Option<std::time::Instant>,
 }
 
 impl WorktreeInfo {
@@ -185,6 +187,7 @@ pub struct GitInfo {
     pub modified_files: Vec<String>,
     pub ahead: usize,
     pub behind: usize,
+    pub remote_branch: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -196,9 +199,18 @@ pub struct CommitSummary {
 /// Flat tree entry for rendering and 3-level navigation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlatEntry {
-    Project { idx: usize },
-    Worktree { project_idx: usize, worktree_idx: usize },
-    Session { project_idx: usize, worktree_idx: usize, session_idx: usize },
+    Project {
+        idx: usize,
+    },
+    Worktree {
+        project_idx: usize,
+        worktree_idx: usize,
+    },
+    Session {
+        project_idx: usize,
+        worktree_idx: usize,
+        session_idx: usize,
+    },
 }
 
 /// Flatten workspace into visible tree entries based on expand state.
@@ -208,7 +220,10 @@ pub fn flatten_tree(workspace: &WorkspaceState) -> Vec<FlatEntry> {
         result.push(FlatEntry::Project { idx: pi });
         if project.expanded {
             for (wi, wt) in project.worktrees.iter().enumerate() {
-                result.push(FlatEntry::Worktree { project_idx: pi, worktree_idx: wi });
+                result.push(FlatEntry::Worktree {
+                    project_idx: pi,
+                    worktree_idx: wi,
+                });
                 if wt.expanded {
                     for (si, _) in wt.sessions.iter().enumerate() {
                         result.push(FlatEntry::Session {
@@ -235,7 +250,9 @@ pub enum Selection {
 
 impl WorkspaceState {
     pub fn empty() -> Self {
-        Self { projects: Vec::new() }
+        Self {
+            projects: Vec::new(),
+        }
     }
 
     pub fn worktree(&self, pi: usize, wi: usize) -> Option<&WorktreeInfo> {
@@ -251,19 +268,27 @@ impl WorkspaceState {
     }
 
     pub fn session_mut(&mut self, pi: usize, wi: usize, si: usize) -> Option<&mut SessionInfo> {
-        self.projects.get_mut(pi)?.worktrees.get_mut(wi)?.sessions.get_mut(si)
+        self.projects
+            .get_mut(pi)?
+            .worktrees
+            .get_mut(wi)?
+            .sessions
+            .get_mut(si)
     }
 
     /// Resolve flat index to Selection using a pre-computed flat slice.
     pub fn get_selection(&self, flat_idx: usize, flat: &[FlatEntry]) -> Selection {
         match flat.get(flat_idx) {
             Some(FlatEntry::Project { idx }) => Selection::Project(*idx),
-            Some(FlatEntry::Worktree { project_idx, worktree_idx }) => {
-                Selection::Worktree(*project_idx, *worktree_idx)
-            }
-            Some(FlatEntry::Session { project_idx, worktree_idx, session_idx }) => {
-                Selection::Session(*project_idx, *worktree_idx, *session_idx)
-            }
+            Some(FlatEntry::Worktree {
+                project_idx,
+                worktree_idx,
+            }) => Selection::Worktree(*project_idx, *worktree_idx),
+            Some(FlatEntry::Session {
+                project_idx,
+                worktree_idx,
+                session_idx,
+            }) => Selection::Session(*project_idx, *worktree_idx, *session_idx),
             None => Selection::None,
         }
     }

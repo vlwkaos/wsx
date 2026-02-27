@@ -1,7 +1,9 @@
 // App state machine and event loop.
 // ref: ratatui app patterns — https://ratatui.rs/concepts/application-patterns/
 
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -13,7 +15,7 @@ use crate::{
     config::global::GlobalConfig,
     event::poll_event,
     git::{info as git_info, worktree as git_worktree},
-    model::workspace::{FlatEntry, Selection, WorkspaceState, flatten_tree},
+    model::workspace::{flatten_tree, FlatEntry, Selection, WorkspaceState},
     ops,
     tmux::{capture, monitor, session},
     tui::{self, Tui},
@@ -29,7 +31,10 @@ struct Timer {
 
 impl Timer {
     fn new(interval_ms: u64) -> Self {
-        Self { last: Instant::now(), interval: Duration::from_millis(interval_ms) }
+        Self {
+            last: Instant::now(),
+            interval: Duration::from_millis(interval_ms),
+        }
     }
 
     fn ready(&mut self) -> bool {
@@ -46,6 +51,7 @@ const TICK_MS: u64 = 100;
 const CAPTURE_INTERVAL_MS: u64 = 500;
 const RESCAN_INTERVAL_MS: u64 = 2000;
 const ACTIVITY_INTERVAL_MS: u64 = 1000;
+const FETCH_INTERVAL_SECS: u64 = 60;
 pub use ops::IDLE_SECS;
 
 // ── Modes ─────────────────────────────────────────────────────────────────────
@@ -80,12 +86,30 @@ pub enum Mode {
 
 pub enum InputContext {
     AddProject,
-    AddWorktree { project_idx: usize },
-    AddSession { project_idx: usize, worktree_idx: usize },
-    AddSessionCmd { project_idx: usize, worktree_idx: usize, session_name: String },
-    SetAlias { project_idx: usize, worktree_idx: usize },
-    RenameSession { project_idx: usize, worktree_idx: usize, session_idx: usize },
-    SendCommand { session_name: String },
+    AddWorktree {
+        project_idx: usize,
+    },
+    AddSession {
+        project_idx: usize,
+        worktree_idx: usize,
+    },
+    AddSessionCmd {
+        project_idx: usize,
+        worktree_idx: usize,
+        session_name: String,
+    },
+    SetAlias {
+        project_idx: usize,
+        worktree_idx: usize,
+    },
+    RenameSession {
+        project_idx: usize,
+        worktree_idx: usize,
+        session_idx: usize,
+    },
+    SendCommand {
+        session_name: String,
+    },
 }
 
 impl InputContext {
@@ -103,10 +127,22 @@ impl InputContext {
 }
 
 pub enum PendingAction {
-    DeleteProject { project_idx: usize },
-    DeleteWorktree { project_idx: usize, worktree_idx: usize },
-    DeleteSession { project_idx: usize, worktree_idx: usize, session_idx: usize },
-    CreateWorktree { project_idx: usize, branch: String },
+    DeleteProject {
+        project_idx: usize,
+    },
+    DeleteWorktree {
+        project_idx: usize,
+        worktree_idx: usize,
+    },
+    DeleteSession {
+        project_idx: usize,
+        worktree_idx: usize,
+        session_idx: usize,
+    },
+    CreateWorktree {
+        project_idx: usize,
+        branch: String,
+    },
 }
 
 // ── App ──────────────────────────────────────────────────────────────────────
@@ -129,6 +165,9 @@ pub struct App {
     activity_timer: Timer,
     cached_flat: Vec<FlatEntry>,
     flat_dirty: bool,
+    fetch_tx: mpsc::Sender<(PathBuf, bool)>,
+    fetch_rx: mpsc::Receiver<(PathBuf, bool)>,
+    fetch_pending: HashSet<PathBuf>,
 }
 
 impl App {
@@ -137,6 +176,7 @@ impl App {
         let mut workspace = ops::load_workspace(&config);
         let tree_selected = crate::cache::apply_cache(&mut workspace);
         let cached_flat = flatten_tree(&workspace);
+        let (fetch_tx, fetch_rx) = mpsc::channel();
 
         Ok(Self {
             workspace,
@@ -156,6 +196,9 @@ impl App {
             activity_timer: Timer::new(ACTIVITY_INTERVAL_MS),
             cached_flat,
             flat_dirty: false,
+            fetch_tx,
+            fetch_rx,
+            fetch_pending: HashSet::new(),
         })
     }
 
@@ -207,6 +250,11 @@ impl App {
     }
 
     fn tick(&mut self) -> Result<()> {
+        // Drain completed background fetches.
+        while let Ok((path, success)) = self.fetch_rx.try_recv() {
+            self.apply_fetch_result(path, success);
+        }
+
         if let Some(expires) = self.status_message_expires {
             if Instant::now() >= expires {
                 self.status_message = None;
@@ -234,10 +282,35 @@ impl App {
         Ok(())
     }
 
+    fn apply_fetch_result(&mut self, path: PathBuf, success: bool) {
+        let completed_at = Instant::now();
+        self.fetch_pending.remove(&path);
+
+        for project in &mut self.workspace.projects {
+            for wt in &mut project.worktrees {
+                if wt.path == path {
+                    wt.fetch_failed = !success;
+                    // Throttle fetch attempts after both success and failure.
+                    wt.last_fetched = Some(completed_at);
+                    if success {
+                        wt.git_info = None; // invalidate so ahead/behind re-reads
+                    }
+                    self.needs_redraw = true;
+                    return;
+                }
+            }
+        }
+    }
+
     pub fn refresh_all(&mut self) -> Result<()> {
         let sessions_with_paths = session::list_sessions_with_paths();
         let activity = monitor::session_activity();
-        ops::refresh_workspace(&mut self.workspace, &self.config, &sessions_with_paths, &activity);
+        ops::refresh_workspace(
+            &mut self.workspace,
+            &self.config,
+            &sessions_with_paths,
+            &activity,
+        );
         self.rebuild_flat();
         self.clamp_selected();
         crate::cache::save_cache(&self.workspace, self.tree_selected);
@@ -258,12 +331,17 @@ impl App {
             _ => return,
         };
 
-        let git_fetch = self.workspace.worktree(pi, wi)
+        let git_fetch = self
+            .workspace
+            .worktree(pi, wi)
             .filter(|w| w.git_info.is_none())
             .map(|w| w.path.clone());
 
         if let Some(path) = git_fetch {
-            let default_branch = self.workspace.projects.get(pi)
+            let default_branch = self
+                .workspace
+                .projects
+                .get(pi)
                 .map(|p| p.default_branch.clone())
                 .unwrap_or_else(|| "main".to_string());
 
@@ -273,6 +351,24 @@ impl App {
                     self.needs_redraw = true;
                 }
             }
+        }
+
+        // Trigger background git fetch if stale or never fetched.
+        let fetch_info = self.workspace.worktree(pi, wi).map(|wt| {
+            let stale = wt
+                .last_fetched
+                .map(|t| t.elapsed().as_secs() >= FETCH_INTERVAL_SECS)
+                .unwrap_or(true);
+            let in_flight = self.fetch_pending.contains(&wt.path);
+            (stale && !in_flight, wt.path.clone())
+        });
+        if let Some((true, path)) = fetch_info {
+            self.fetch_pending.insert(path.clone());
+            let tx = self.fetch_tx.clone();
+            std::thread::spawn(move || {
+                let ok = git_info::git_fetch(&path);
+                let _ = tx.send((path, ok));
+            });
         }
 
         // Capture pane for selected session
@@ -296,7 +392,8 @@ impl App {
     }
 
     pub fn current_selection(&self) -> Selection {
-        self.workspace.get_selection(self.tree_selected, self.flat())
+        self.workspace
+            .get_selection(self.tree_selected, self.flat())
     }
 
     fn clamp_selected(&mut self) {
@@ -370,11 +467,17 @@ impl App {
                     self.update_scroll();
                 }
             }
-            Some(FlatEntry::Worktree { project_idx: pi, worktree_idx: wi }) => {
+            Some(FlatEntry::Worktree {
+                project_idx: pi,
+                worktree_idx: wi,
+            }) => {
                 if !self.workspace.projects[pi].worktrees[wi].expanded {
                     self.workspace.projects[pi].worktrees[wi].expanded = true;
                     self.rebuild_flat();
-                } else if !self.workspace.projects[pi].worktrees[wi].sessions.is_empty() {
+                } else if !self.workspace.projects[pi].worktrees[wi]
+                    .sessions
+                    .is_empty()
+                {
                     self.tree_selected += 1;
                     self.update_scroll();
                 }
@@ -387,11 +490,13 @@ impl App {
         let flat = self.flat();
         let current = self.tree_selected;
         let target = if dir > 0 {
-            flat.iter().enumerate()
+            flat.iter()
+                .enumerate()
                 .find(|(i, e)| *i > current && matches!(e, FlatEntry::Project { .. }))
                 .map(|(i, _)| i)
         } else {
-            flat.iter().enumerate()
+            flat.iter()
+                .enumerate()
                 .rev()
                 .find(|(i, e)| *i < current && matches!(e, FlatEntry::Project { .. }))
                 .map(|(i, _)| i)
@@ -406,7 +511,9 @@ impl App {
         // tree_visible_height is set each frame from actual terminal size; fall back to 20
         let visible = self.tree_visible_height.max(1);
         self.tree_scroll = crate::ui::workspace_tree::compute_scroll(
-            self.tree_selected, visible, self.tree_scroll,
+            self.tree_selected,
+            visible,
+            self.tree_scroll,
         );
     }
 
@@ -420,7 +527,11 @@ impl App {
             if matches!(action, Action::InputEscape | Action::Quit | Action::Help) {
                 self.mode = Mode::Normal;
             } else if action == Action::Edit {
-                let path = self.workspace.projects.get(pi).map(|p| p.path.join(".gtrignore"));
+                let path = self
+                    .workspace
+                    .projects
+                    .get(pi)
+                    .map(|p| p.path.join(".gtrignore"));
                 if let Some(path) = path {
                     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
                     tui::with_raw_mode_disabled(terminal, || {
@@ -447,7 +558,12 @@ impl App {
             return Ok(());
         }
 
-        if let Mode::MoveSession { project_idx, worktree_idx, session_idx } = &self.mode {
+        if let Mode::MoveSession {
+            project_idx,
+            worktree_idx,
+            session_idx,
+        } = &self.mode
+        {
             let (pi, wi, si) = (*project_idx, *worktree_idx, *session_idx);
             match action {
                 Action::NavigateDown => self.move_session(pi, wi, si, 1),
@@ -491,7 +607,9 @@ impl App {
             Action::Edit => self.action_edit()?,
             Action::SetAlias => self.action_set_alias()?,
             Action::Refresh => self.refresh_all()?,
-            Action::Help => { self.mode = Mode::Help; }
+            Action::Help => {
+                self.mode = Mode::Help;
+            }
             Action::NextAttention => self.action_next_attention(1),
             Action::PrevAttention => self.action_next_attention(-1),
             Action::DismissAttention => self.action_dismiss_attention(),
@@ -502,7 +620,10 @@ impl App {
             Action::JumpProjectDown => self.jump_project(1),
             Action::JumpProjectUp => self.jump_project(-1),
             Action::SearchStart => {
-                self.mode = Mode::Search { query: String::new(), match_idx: 0 };
+                self.mode = Mode::Search {
+                    query: String::new(),
+                    match_idx: 0,
+                };
             }
             Action::MouseClick { col, row } => self.handle_mouse_click(col, row, terminal)?,
             _ => {}
@@ -564,12 +685,20 @@ impl App {
                 }
             }
             Action::InputTab | Action::NavigateDown => {
-                if let Mode::Input { context: InputContext::AddProject, state } = &mut self.mode {
+                if let Mode::Input {
+                    context: InputContext::AddProject,
+                    state,
+                } = &mut self.mode
+                {
                     state.select_next();
                 }
             }
             Action::NavigateUp => {
-                if let Mode::Input { context: InputContext::AddProject, state } = &mut self.mode {
+                if let Mode::Input {
+                    context: InputContext::AddProject,
+                    state,
+                } = &mut self.mode
+                {
                     state.select_prev();
                 }
             }
@@ -595,14 +724,22 @@ impl App {
                 self.mode = Mode::Normal;
             }
             Action::InputChar(c) => {
-                if let Mode::Search { ref mut query, ref mut match_idx } = self.mode {
+                if let Mode::Search {
+                    ref mut query,
+                    ref mut match_idx,
+                } = self.mode
+                {
                     query.push(c);
                     *match_idx = 0;
                 }
                 self.search_apply();
             }
             Action::InputBackspace => {
-                if let Mode::Search { ref mut query, ref mut match_idx } = self.mode {
+                if let Mode::Search {
+                    ref mut query,
+                    ref mut match_idx,
+                } = self.mode
+                {
                     query.pop();
                     *match_idx = 0;
                 }
@@ -616,23 +753,33 @@ impl App {
 
     fn search_text(&self, entry: &FlatEntry) -> String {
         match entry {
-            FlatEntry::Project { idx } =>
-                self.workspace.projects[*idx].name.to_lowercase(),
-            FlatEntry::Worktree { project_idx: pi, worktree_idx: wi } => {
+            FlatEntry::Project { idx } => self.workspace.projects[*idx].name.to_lowercase(),
+            FlatEntry::Worktree {
+                project_idx: pi,
+                worktree_idx: wi,
+            } => {
                 let wt = &self.workspace.projects[*pi].worktrees[*wi];
                 let alias = wt.alias.as_deref().unwrap_or("");
                 format!("{} {} {}", wt.branch, alias, wt.name).to_lowercase()
             }
-            FlatEntry::Session { project_idx: pi, worktree_idx: wi, session_idx: si } =>
-                self.workspace.projects[*pi].worktrees[*wi].sessions[*si]
-                    .display_name.to_lowercase(),
+            FlatEntry::Session {
+                project_idx: pi,
+                worktree_idx: wi,
+                session_idx: si,
+            } => self.workspace.projects[*pi].worktrees[*wi].sessions[*si]
+                .display_name
+                .to_lowercase(),
         }
     }
 
     fn search_matches(&self, query: &str) -> Vec<usize> {
-        if query.is_empty() { return vec![]; }
+        if query.is_empty() {
+            return vec![];
+        }
         let q = query.to_lowercase();
-        self.flat().iter().enumerate()
+        self.flat()
+            .iter()
+            .enumerate()
             .filter(|(_, e)| self.search_text(e).contains(&q))
             .map(|(i, _)| i)
             .collect()
@@ -644,7 +791,9 @@ impl App {
             _ => return,
         };
         let matches = self.search_matches(&query);
-        if matches.is_empty() { return; }
+        if matches.is_empty() {
+            return;
+        }
         self.tree_selected = matches[0];
         self.update_scroll();
     }
@@ -661,7 +810,10 @@ impl App {
             return;
         }
         let next = (match_idx + 1) % matches.len();
-        if let Mode::Search { ref mut match_idx, .. } = self.mode {
+        if let Mode::Search {
+            ref mut match_idx, ..
+        } = self.mode
+        {
             *match_idx = next;
         }
         self.tree_selected = matches[next];
@@ -681,7 +833,8 @@ impl App {
                 self.clamp_selected();
             }
             Selection::Worktree(pi, wi) => {
-                self.workspace.projects[pi].worktrees[wi].expanded = !self.workspace.projects[pi].worktrees[wi].expanded;
+                self.workspace.projects[pi].worktrees[wi].expanded =
+                    !self.workspace.projects[pi].worktrees[wi].expanded;
                 self.rebuild_flat();
                 self.clamp_selected();
             }
@@ -701,7 +854,13 @@ impl App {
         Ok(())
     }
 
-    fn attach_session(&mut self, pi: usize, wi: usize, si: usize, terminal: &mut Tui) -> Result<()> {
+    fn attach_session(
+        &mut self,
+        pi: usize,
+        wi: usize,
+        si: usize,
+        terminal: &mut Tui,
+    ) -> Result<()> {
         let name = self.workspace.session(pi, wi, si).map(|s| s.name.clone());
 
         let Some(name) = name else {
@@ -738,7 +897,9 @@ impl App {
 
     fn action_add_worktree(&mut self) -> Result<()> {
         let pi = match self.current_selection() {
-            Selection::Project(pi) | Selection::Worktree(pi, _) | Selection::Session(pi, _, _) => pi,
+            Selection::Project(pi) | Selection::Worktree(pi, _) | Selection::Session(pi, _, _) => {
+                pi
+            }
             Selection::None => {
                 self.set_status("Select a project first (press p to add one)");
                 return Ok(());
@@ -760,7 +921,10 @@ impl App {
             }
         };
         self.mode = Mode::Input {
-            context: InputContext::AddSession { project_idx: pi, worktree_idx: wi },
+            context: InputContext::AddSession {
+                project_idx: pi,
+                worktree_idx: wi,
+            },
             state: InputState::new("name (optional): "),
         };
         Ok(())
@@ -769,10 +933,16 @@ impl App {
     fn action_delete(&mut self) -> Result<()> {
         match self.current_selection() {
             Selection::Session(pi, wi, si) => {
-                let display_name = self.workspace.projects[pi].worktrees[wi].sessions[si].display_name.clone();
+                let display_name = self.workspace.projects[pi].worktrees[wi].sessions[si]
+                    .display_name
+                    .clone();
                 self.mode = Mode::Confirm {
                     message: format!("Kill session '{}'?", display_name),
-                    pending: PendingAction::DeleteSession { project_idx: pi, worktree_idx: wi, session_idx: si },
+                    pending: PendingAction::DeleteSession {
+                        project_idx: pi,
+                        worktree_idx: wi,
+                        session_idx: si,
+                    },
                 };
             }
             Selection::Worktree(pi, wi) => {
@@ -789,11 +959,17 @@ impl App {
                 let msg = if merged {
                     format!("Delete worktree '{}'?", wt.name)
                 } else {
-                    format!("Delete UNMERGED worktree '{}'? Changes will be lost!", wt.name)
+                    format!(
+                        "Delete UNMERGED worktree '{}'? Changes will be lost!",
+                        wt.name
+                    )
                 };
                 self.mode = Mode::Confirm {
                     message: msg,
-                    pending: PendingAction::DeleteWorktree { project_idx: pi, worktree_idx: wi },
+                    pending: PendingAction::DeleteWorktree {
+                        project_idx: pi,
+                        worktree_idx: wi,
+                    },
                 };
             }
             Selection::Project(pi) => {
@@ -815,7 +991,14 @@ impl App {
                     let p = &self.workspace.projects[pi];
                     let wt = &p.worktrees[wi];
                     let names: Vec<String> = wt.sessions.iter().map(|s| s.name.clone()).collect();
-                    (p.path.clone(), wt.path.clone(), wt.branch.clone(), p.default_branch.clone(), wt.is_main, names)
+                    (
+                        p.path.clone(),
+                        wt.path.clone(),
+                        wt.branch.clone(),
+                        p.default_branch.clone(),
+                        wt.is_main,
+                        names,
+                    )
                 };
                 if is_main {
                     self.set_status("Cannot clean main worktree");
@@ -845,7 +1028,9 @@ impl App {
                 self.refresh_all()?;
             }
             Selection::None => {
-                let snapshots: Vec<_> = self.workspace.projects
+                let snapshots: Vec<_> = self
+                    .workspace
+                    .projects
                     .iter()
                     .map(|p| (p.path.clone(), p.default_branch.clone()))
                     .collect();
@@ -864,7 +1049,9 @@ impl App {
 
     fn action_edit(&mut self) -> Result<()> {
         let pi = match self.current_selection() {
-            Selection::Project(pi) | Selection::Worktree(pi, _) | Selection::Session(pi, _, _) => pi,
+            Selection::Project(pi) | Selection::Worktree(pi, _) | Selection::Session(pi, _, _) => {
+                pi
+            }
             Selection::None => {
                 self.set_status("Select a project or worktree");
                 return Ok(());
@@ -875,16 +1062,28 @@ impl App {
     }
 
     fn active_candidates(&self) -> Vec<usize> {
-        self.flat().iter().enumerate()
+        self.flat()
+            .iter()
+            .enumerate()
             .filter_map(|(i, entry)| {
-                let FlatEntry::Session { project_idx: pi, worktree_idx: wi, session_idx: si } = entry else {
+                let FlatEntry::Session {
+                    project_idx: pi,
+                    worktree_idx: wi,
+                    session_idx: si,
+                } = entry
+                else {
                     return None;
                 };
                 let sess = self.workspace.session(*pi, *wi, *si)?;
-                let active = sess.last_activity
+                let active = sess
+                    .last_activity
                     .map(|t| t.elapsed().as_secs() < IDLE_SECS)
                     .unwrap_or(false);
-                if active { Some(i) } else { None }
+                if active {
+                    Some(i)
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -916,7 +1115,8 @@ impl App {
             self.set_status("No active sessions");
             return;
         }
-        let next = candidates.iter()
+        let next = candidates
+            .iter()
             .find(|&&i| i > self.tree_selected)
             .or_else(|| candidates.first())
             .copied()
@@ -926,18 +1126,32 @@ impl App {
     }
 
     fn attention_candidates(&self) -> Vec<usize> {
-        self.flat().iter().enumerate()
+        self.flat()
+            .iter()
+            .enumerate()
             .filter_map(|(i, entry)| {
-                let FlatEntry::Session { project_idx: pi, worktree_idx: wi, session_idx: si } = entry else {
+                let FlatEntry::Session {
+                    project_idx: pi,
+                    worktree_idx: wi,
+                    session_idx: si,
+                } = entry
+                else {
                     return None;
                 };
                 let sess = self.workspace.session(*pi, *wi, *si)?;
-                let currently_active = sess.last_activity
+                let currently_active = sess
+                    .last_activity
                     .map(|t| t.elapsed().as_secs() < IDLE_SECS)
                     .unwrap_or(false);
-                let needs_attention = !sess.muted && !currently_active
-                    && sess.has_running_app && !sess.running_app_suppressed;
-                if needs_attention { Some(i) } else { None }
+                let needs_attention = !sess.muted
+                    && !currently_active
+                    && sess.has_running_app
+                    && !sess.running_app_suppressed;
+                if needs_attention {
+                    Some(i)
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -951,13 +1165,16 @@ impl App {
         }
 
         let next = if dir >= 0 {
-            candidates.iter()
+            candidates
+                .iter()
                 .find(|&&i| i > self.tree_selected)
                 .or_else(|| candidates.first())
                 .copied()
                 .unwrap()
         } else {
-            candidates.iter().rev()
+            candidates
+                .iter()
+                .rev()
                 .find(|&&i| i < self.tree_selected)
                 .or_else(|| candidates.last())
                 .copied()
@@ -965,7 +1182,12 @@ impl App {
         };
 
         // ensure parent project + worktree are expanded so the session is visible
-        if let Some(FlatEntry::Session { project_idx: pi, worktree_idx: wi, .. }) = self.flat().get(next).cloned() {
+        if let Some(FlatEntry::Session {
+            project_idx: pi,
+            worktree_idx: wi,
+            ..
+        }) = self.flat().get(next).cloned()
+        {
             self.workspace.projects[pi].expanded = true;
             self.workspace.projects[pi].worktrees[wi].expanded = true;
             self.rebuild_flat();
@@ -978,10 +1200,13 @@ impl App {
     fn action_dismiss_attention(&mut self) {
         if let Selection::Session(pi, wi, si) = self.current_selection() {
             if let Some(sess) = self.workspace.session_mut(pi, wi, si) {
-                let active = sess.last_activity
+                let active = sess
+                    .last_activity
                     .map(|t| t.elapsed().as_secs() < IDLE_SECS)
                     .unwrap_or(false);
-                if active { return; }
+                if active {
+                    return;
+                }
                 if sess.has_running_app && !sess.running_app_suppressed {
                     sess.running_app_suppressed = true;
                     self.set_status("Dismissed");
@@ -1001,16 +1226,27 @@ impl App {
         match self.current_selection() {
             Selection::Worktree(pi, wi) => {
                 let current = self.workspace.projects[pi].worktrees[wi]
-                    .alias.clone().unwrap_or_default();
+                    .alias
+                    .clone()
+                    .unwrap_or_default();
                 self.mode = Mode::Input {
-                    context: InputContext::SetAlias { project_idx: pi, worktree_idx: wi },
+                    context: InputContext::SetAlias {
+                        project_idx: pi,
+                        worktree_idx: wi,
+                    },
                     state: InputState::with_value("alias: ", current),
                 };
             }
             Selection::Session(pi, wi, si) => {
-                let current = self.workspace.projects[pi].worktrees[wi].sessions[si].display_name.clone();
+                let current = self.workspace.projects[pi].worktrees[wi].sessions[si]
+                    .display_name
+                    .clone();
                 self.mode = Mode::Input {
-                    context: InputContext::RenameSession { project_idx: pi, worktree_idx: wi, session_idx: si },
+                    context: InputContext::RenameSession {
+                        project_idx: pi,
+                        worktree_idx: wi,
+                        session_idx: si,
+                    },
                     state: InputState::with_value("name: ", current),
                 };
             }
@@ -1033,31 +1269,56 @@ impl App {
                     if !value.is_empty() {
                         self.mode = Mode::Confirm {
                             message: format!("Create worktree '{}'?", value),
-                            pending: PendingAction::CreateWorktree { project_idx, branch: value },
+                            pending: PendingAction::CreateWorktree {
+                                project_idx,
+                                branch: value,
+                            },
                         };
                         return Ok(());
                     }
                 }
-                InputContext::AddSession { project_idx, worktree_idx } => {
+                InputContext::AddSession {
+                    project_idx,
+                    worktree_idx,
+                } => {
                     // Step 1: got name, now ask for command
                     self.mode = Mode::Input {
-                        context: InputContext::AddSessionCmd { project_idx, worktree_idx, session_name: value },
+                        context: InputContext::AddSessionCmd {
+                            project_idx,
+                            worktree_idx,
+                            session_name: value,
+                        },
                         state: InputState::new("command (optional): "),
                     };
                     return Ok(());
                 }
-                InputContext::AddSessionCmd { project_idx, worktree_idx, session_name } => {
+                InputContext::AddSessionCmd {
+                    project_idx,
+                    worktree_idx,
+                    session_name,
+                } => {
                     let cmd = if value.is_empty() { None } else { Some(value) };
                     self.do_create_session(project_idx, worktree_idx, session_name, cmd)?;
                 }
-                InputContext::SetAlias { project_idx, worktree_idx } => {
+                InputContext::SetAlias {
+                    project_idx,
+                    worktree_idx,
+                } => {
                     self.do_apply_alias(project_idx, worktree_idx, value)?;
                 }
-                InputContext::RenameSession { project_idx, worktree_idx, session_idx } => {
-                    if !value.is_empty() { self.do_rename_session(project_idx, worktree_idx, session_idx, value)?; }
+                InputContext::RenameSession {
+                    project_idx,
+                    worktree_idx,
+                    session_idx,
+                } => {
+                    if !value.is_empty() {
+                        self.do_rename_session(project_idx, worktree_idx, session_idx, value)?;
+                    }
                 }
                 InputContext::SendCommand { session_name } => {
-                    if !value.is_empty() { session::send_keys(&session_name, &value)?; }
+                    if !value.is_empty() {
+                        session::send_keys(&session_name, &value)?;
+                    }
                 }
             }
         }
@@ -1071,15 +1332,19 @@ impl App {
             tui::draw_sync(terminal, |frame| ui::render(frame, self))?;
             let result = match pending {
                 PendingAction::DeleteProject { project_idx } => self.do_delete_project(project_idx),
-                PendingAction::DeleteWorktree { project_idx, worktree_idx } => {
-                    self.do_delete_worktree(project_idx, worktree_idx)
-                }
-                PendingAction::DeleteSession { project_idx, worktree_idx, session_idx } => {
-                    self.do_delete_session(project_idx, worktree_idx, session_idx)
-                }
-                PendingAction::CreateWorktree { project_idx, branch } => {
-                    self.do_create_worktree(project_idx, branch)
-                }
+                PendingAction::DeleteWorktree {
+                    project_idx,
+                    worktree_idx,
+                } => self.do_delete_worktree(project_idx, worktree_idx),
+                PendingAction::DeleteSession {
+                    project_idx,
+                    worktree_idx,
+                    session_idx,
+                } => self.do_delete_session(project_idx, worktree_idx, session_idx),
+                PendingAction::CreateWorktree {
+                    project_idx,
+                    branch,
+                } => self.do_create_worktree(project_idx, branch),
             };
             self.loading = false;
             result?;
@@ -1101,9 +1366,14 @@ impl App {
     fn do_create_worktree(&mut self, pi: usize, branch: String) -> Result<()> {
         let (repo_path, default_branch, proj_config) = {
             let p = &self.workspace.projects[pi];
-            (p.path.clone(), p.default_branch.clone(), p.config.clone().unwrap_or_default())
+            (
+                p.path.clone(),
+                p.default_branch.clone(),
+                p.config.clone().unwrap_or_default(),
+            )
         };
-        let (_wt_path, warning) = ops::create_worktree(&repo_path, &default_branch, &proj_config, &branch)?;
+        let (_wt_path, warning) =
+            ops::create_worktree(&repo_path, &default_branch, &proj_config, &branch)?;
         if let Some(w) = warning {
             self.set_status(w);
         }
@@ -1112,14 +1382,25 @@ impl App {
         Ok(())
     }
 
-    fn do_create_session(&mut self, pi: usize, wi: usize, session_name: String, command: Option<String>) -> Result<()> {
+    fn do_create_session(
+        &mut self,
+        pi: usize,
+        wi: usize,
+        session_name: String,
+        command: Option<String>,
+    ) -> Result<()> {
         let (proj_name, wt_path, wt_slug) = {
             let p = &self.workspace.projects[pi];
             let wt = &p.worktrees[wi];
             (p.name.clone(), wt.path.clone(), wt.session_slug(&p.name))
         };
-        let explicit_name = if session_name.is_empty() { None } else { Some(session_name) };
-        let (_tmux_name, display_name) = ops::create_session(&proj_name, &wt_slug, &wt_path, explicit_name, command)?;
+        let explicit_name = if session_name.is_empty() {
+            None
+        } else {
+            Some(session_name)
+        };
+        let (_tmux_name, display_name) =
+            ops::create_session(&proj_name, &wt_slug, &wt_path, explicit_name, command)?;
         self.set_status(format!("Session '{}' created", display_name));
         self.refresh_all()?;
         // Auto-expand the worktree so the new session is visible
@@ -1163,7 +1444,9 @@ impl App {
         let tmux_name = sess.name.clone();
         let display_name = sess.display_name.clone();
         ops::delete_session(&tmux_name)?;
-        self.workspace.projects[pi].worktrees[wi].sessions.remove(si);
+        self.workspace.projects[pi].worktrees[wi]
+            .sessions
+            .remove(si);
         self.rebuild_flat();
         self.clamp_selected();
         self.set_status(format!("Killed session: {}", display_name));
@@ -1177,7 +1460,11 @@ impl App {
         ops::set_alias(&mut self.config, &proj_path, &branch, &alias);
         self.config.save()?;
 
-        let new_alias = if alias.is_empty() { None } else { Some(alias.clone()) };
+        let new_alias = if alias.is_empty() {
+            None
+        } else {
+            Some(alias.clone())
+        };
 
         let wt = &mut self.workspace.projects[pi].worktrees[wi];
         wt.alias = new_alias;
@@ -1190,8 +1477,16 @@ impl App {
         Ok(())
     }
 
-    fn do_rename_session(&mut self, pi: usize, wi: usize, si: usize, new_name: String) -> Result<()> {
-        let old_tmux_name = self.workspace.projects[pi].worktrees[wi].sessions[si].name.clone();
+    fn do_rename_session(
+        &mut self,
+        pi: usize,
+        wi: usize,
+        si: usize,
+        new_name: String,
+    ) -> Result<()> {
+        let old_tmux_name = self.workspace.projects[pi].worktrees[wi].sessions[si]
+            .name
+            .clone();
         let proj_name = self.workspace.projects[pi].name.clone();
         let wt_slug = self.workspace.projects[pi].worktrees[wi].session_slug(&proj_name);
         let new_tmux_name = format!("{}-{}-{}", proj_name, wt_slug, new_name);
@@ -1212,7 +1507,11 @@ impl App {
                 self.set_status("MOVE: j/k to reorder  Enter/Esc to confirm");
             }
             Selection::Session(pi, wi, si) => {
-                self.mode = Mode::MoveSession { project_idx: pi, worktree_idx: wi, session_idx: si };
+                self.mode = Mode::MoveSession {
+                    project_idx: pi,
+                    worktree_idx: wi,
+                    session_idx: si,
+                };
                 self.set_status("MOVE: j/k to reorder  Enter/Esc to confirm");
             }
             _ => self.set_status("Select a project or session to move"),
@@ -1222,30 +1521,48 @@ impl App {
     fn move_project(&mut self, pi: usize, delta: isize) {
         let new_pi = (pi as isize + delta) as usize;
         let len = self.workspace.projects.len();
-        if new_pi >= len { return; }
+        if new_pi >= len {
+            return;
+        }
         self.workspace.projects.swap(pi, new_pi);
-        self.mode = Mode::Move { project_idx: new_pi };
+        self.mode = Mode::Move {
+            project_idx: new_pi,
+        };
         self.rebuild_flat();
-        if let Some(pos) = self.flat().iter().position(|e| matches!(e, FlatEntry::Project { idx } if *idx == new_pi)) {
+        if let Some(pos) = self
+            .flat()
+            .iter()
+            .position(|e| matches!(e, FlatEntry::Project { idx } if *idx == new_pi))
+        {
             self.tree_selected = pos;
             self.update_scroll();
         }
     }
 
     fn move_project_down(&mut self, pi: usize) {
-        if pi + 1 < self.workspace.projects.len() { self.move_project(pi, 1); }
+        if pi + 1 < self.workspace.projects.len() {
+            self.move_project(pi, 1);
+        }
     }
 
     fn move_project_up(&mut self, pi: usize) {
-        if pi > 0 { self.move_project(pi, -1); }
+        if pi > 0 {
+            self.move_project(pi, -1);
+        }
     }
 
     fn move_session(&mut self, pi: usize, wi: usize, si: usize, delta: isize) {
         let new_si = (si as isize + delta) as usize;
         let sessions = &mut self.workspace.projects[pi].worktrees[wi].sessions;
-        if new_si >= sessions.len() { return; }
+        if new_si >= sessions.len() {
+            return;
+        }
         sessions.swap(si, new_si);
-        self.mode = Mode::MoveSession { project_idx: pi, worktree_idx: wi, session_idx: new_si };
+        self.mode = Mode::MoveSession {
+            project_idx: pi,
+            worktree_idx: wi,
+            session_idx: new_si,
+        };
         self.rebuild_flat();
         if let Some(pos) = self.flat().iter().position(|e| {
             matches!(e, FlatEntry::Session { project_idx: p, worktree_idx: w, session_idx: s }
@@ -1257,8 +1574,17 @@ impl App {
     }
 
     fn sync_config_project_order(&mut self) {
-        let ordered: Vec<_> = self.workspace.projects.iter()
-            .filter_map(|wp| self.config.projects.iter().find(|c| c.path == wp.path).cloned())
+        let ordered: Vec<_> = self
+            .workspace
+            .projects
+            .iter()
+            .filter_map(|wp| {
+                self.config
+                    .projects
+                    .iter()
+                    .find(|c| c.path == wp.path)
+                    .cloned()
+            })
             .collect();
         self.config.projects = ordered;
     }

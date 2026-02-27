@@ -13,8 +13,8 @@ use crate::{
     git::{info as git_info, worktree as git_worktree},
     hooks,
     model::workspace::{
-        session_display_name_from_tmux,
-        GitInfo, Project, ProjectConfig, SessionInfo, WorkspaceState, WorktreeInfo,
+        session_display_name_from_tmux, GitInfo, Project, ProjectConfig, SessionInfo,
+        WorkspaceState, WorktreeInfo,
     },
     tmux::{monitor::SessionStatus, session},
 };
@@ -22,14 +22,26 @@ use crate::{
 // (pane_capture, running_app_suppressed, muted)
 type PaneSnap = HashMap<String, (Option<String>, bool, bool)>;
 // session_order preserves user-defined sort across refresh
-type WorktreeSnap = HashMap<PathBuf, (Option<GitInfo>, bool, PaneSnap, Vec<String>)>;
+type WorktreeSnap = HashMap<PathBuf, WorktreeSnapEntry>;
+
+struct WorktreeSnapEntry {
+    git_info: Option<GitInfo>,
+    expanded: bool,
+    panes: PaneSnap,
+    session_order: Vec<String>,
+    last_fetched: Option<Instant>,
+    fetch_failed: bool,
+}
 
 pub const IDLE_SECS: u64 = 3;
 
 // ── Refresh helpers ───────────────────────────────────────────────────────────
 
 fn unix_ts_to_instant(unix_ts: u64) -> Option<Instant> {
-    let now_unix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let secs_ago = now_unix.saturating_sub(unix_ts);
     Instant::now().checked_sub(Duration::from_secs(secs_ago))
 }
@@ -41,29 +53,49 @@ pub fn refresh_workspace(
     sessions_with_paths: &[(String, PathBuf)],
     activity: &HashMap<String, SessionStatus>,
 ) {
-    let aliases_by_path: Vec<(PathBuf, HashMap<String, String>)> =
-        config.projects.iter()
-            .map(|e| (e.path.clone(), e.aliases.clone()))
-            .collect();
+    let aliases_by_path: Vec<(PathBuf, HashMap<String, String>)> = config
+        .projects
+        .iter()
+        .map(|e| (e.path.clone(), e.aliases.clone()))
+        .collect();
 
     for i in 0..workspace.projects.len() {
         let path = workspace.projects[i].path.clone();
         let proj_name = workspace.projects[i].name.clone();
-        let aliases = aliases_by_path.iter()
+        let aliases = aliases_by_path
+            .iter()
             .find(|(p, _)| p == &path)
             .map(|(_, a)| a.clone())
             .unwrap_or_default();
 
-        let snapshot: WorktreeSnap =
-            workspace.projects[i].worktrees.iter()
-                .map(|w| {
-                    let panes = w.sessions.iter()
-                        .map(|s| (s.name.clone(), (s.pane_capture.clone(), s.running_app_suppressed, s.muted)))
-                        .collect();
-                    let order = w.sessions.iter().map(|s| s.name.clone()).collect();
-                    (w.path.clone(), (w.git_info.clone(), w.expanded, panes, order))
-                })
-                .collect();
+        let snapshot: WorktreeSnap = workspace.projects[i]
+            .worktrees
+            .iter()
+            .map(|w| {
+                let panes = w
+                    .sessions
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.name.clone(),
+                            (s.pane_capture.clone(), s.running_app_suppressed, s.muted),
+                        )
+                    })
+                    .collect();
+                let order = w.sessions.iter().map(|s| s.name.clone()).collect();
+                (
+                    w.path.clone(),
+                    WorktreeSnapEntry {
+                        git_info: w.git_info.clone(),
+                        expanded: w.expanded,
+                        panes,
+                        session_order: order,
+                        last_fetched: w.last_fetched,
+                        fetch_failed: w.fetch_failed,
+                    },
+                )
+            })
+            .collect();
 
         if let Ok(entries) = git_worktree::list_worktrees(&path) {
             let mut new_worktrees = Vec::new();
@@ -73,10 +105,11 @@ pub fn refresh_workspace(
                 let prev = snapshot.get(&entry.path);
 
                 let prev_order: &[String] = prev
-                    .map(|(_, _, _, order)| order.as_slice())
+                    .map(|snap| snap.session_order.as_slice())
                     .unwrap_or(&[]);
 
-                let mut sessions: Vec<SessionInfo> = sessions_with_paths.iter()
+                let mut sessions: Vec<SessionInfo> = sessions_with_paths
+                    .iter()
                     .filter(|(_, sp)| sp == &wt_path)
                     .map(|(name, _)| {
                         let display_name = session_display_name_from_tmux(
@@ -86,7 +119,7 @@ pub fn refresh_workspace(
                             &entry.branch,
                             alias.as_deref(),
                         );
-                        let prev_pane = prev.and_then(|(_, _, panes, _)| panes.get(name));
+                        let prev_pane = prev.and_then(|snap| snap.panes.get(name));
                         let (pane_capture, prev_suppressed, muted) = prev_pane
                             .map(|(p, s, m)| (p.clone(), *s, *m))
                             .unwrap_or((None, false, false));
@@ -97,7 +130,8 @@ pub fn refresh_workspace(
                             } else {
                                 let status = activity.get(name.as_str());
                                 let has_activity = status.map(|s| s.has_bell).unwrap_or(false);
-                                let has_running_app = status.map(|s| s.has_running_app).unwrap_or(false);
+                                let has_running_app =
+                                    status.map(|s| s.has_running_app).unwrap_or(false);
                                 let last_activity = status
                                     .filter(|s| s.last_activity_ts > 0)
                                     .and_then(|s| unix_ts_to_instant(s.last_activity_ts));
@@ -105,8 +139,17 @@ pub fn refresh_workspace(
                                     .map(|t| t.elapsed().as_secs() < IDLE_SECS)
                                     .unwrap_or(false);
                                 // Reset suppressed when new activity arrives.
-                                let running_app_suppressed = if currently_active { false } else { prev_suppressed };
-                                (has_activity, has_running_app, last_activity, running_app_suppressed)
+                                let running_app_suppressed = if currently_active {
+                                    false
+                                } else {
+                                    prev_suppressed
+                                };
+                                (
+                                    has_activity,
+                                    has_running_app,
+                                    last_activity,
+                                    running_app_suppressed,
+                                )
                             };
                         SessionInfo {
                             name: name.clone(),
@@ -121,12 +164,22 @@ pub fn refresh_workspace(
                     })
                     .collect();
                 sessions.sort_by_key(|s| {
-                    prev_order.iter().position(|n| n == &s.name).unwrap_or(usize::MAX)
+                    prev_order
+                        .iter()
+                        .position(|n| n == &s.name)
+                        .unwrap_or(usize::MAX)
                 });
 
-                let (git_info, expanded) = prev
-                    .map(|(gi, exp, _, _)| (gi.clone(), *exp))
-                    .unwrap_or((None, true));
+                let (git_info, expanded, last_fetched, fetch_failed) = prev
+                    .map(|snap| {
+                        (
+                            snap.git_info.clone(),
+                            snap.expanded,
+                            snap.last_fetched,
+                            snap.fetch_failed,
+                        )
+                    })
+                    .unwrap_or((None, true, None, false));
 
                 new_worktrees.push(WorktreeInfo {
                     name: entry.name,
@@ -137,6 +190,8 @@ pub fn refresh_workspace(
                     sessions,
                     expanded,
                     git_info,
+                    fetch_failed,
+                    last_fetched,
                 });
             }
             workspace.projects[i].worktrees = new_worktrees;
@@ -153,7 +208,9 @@ pub fn update_activity(
     for project in &mut workspace.projects {
         for wt in &mut project.worktrees {
             for sess in &mut wt.sessions {
-                if sess.muted { continue; }
+                if sess.muted {
+                    continue;
+                }
                 if let Some(status) = activity.get(&sess.name) {
                     let old_bell = sess.has_activity;
                     let old_running = sess.has_running_app;
@@ -162,13 +219,14 @@ pub fn update_activity(
                     sess.last_activity = Some(status.last_activity_ts)
                         .filter(|&ts| ts > 0)
                         .and_then(|ts| unix_ts_to_instant(ts));
-                    let currently_active = sess.last_activity
+                    let currently_active = sess
+                        .last_activity
                         .map(|t| t.elapsed().as_secs() < IDLE_SECS)
                         .unwrap_or(false);
-                    if currently_active { sess.running_app_suppressed = false; }
-                    if sess.has_activity != old_bell
-                        || sess.has_running_app != old_running
-                    {
+                    if currently_active {
+                        sess.running_app_suppressed = false;
+                    }
+                    if sess.has_activity != old_bell || sess.has_running_app != old_running {
                         changed = true;
                     }
                 }
@@ -185,10 +243,14 @@ pub fn load_workspace(config: &GlobalConfig) -> WorkspaceState {
         return WorkspaceState::empty();
     }
 
-    let projects = config.projects.iter()
+    let projects = config
+        .projects
+        .iter()
         .filter_map(|entry| {
             let path = &entry.path;
-            if !path.exists() { return None; }
+            if !path.exists() {
+                return None;
+            }
 
             let default_branch = detect_default_branch(path);
             let proj_config = crate::config::project::load_project_config(path);
@@ -226,22 +288,28 @@ pub fn detect_default_branch(path: &std::path::Path) -> String {
 
 /// Register a new project at `path`. Returns the constructed `Project` and
 /// mutates `config` (caller must call `config.save()`).
-pub fn register_project(
-    path: PathBuf,
-    config: &mut GlobalConfig,
-) -> Result<Project> {
-    if path.as_os_str().is_empty() { bail!("empty path"); }
-    if !path.exists() { bail!("path does not exist: {}", path.display()); }
-    if !path.join(".git").exists() { bail!("not a git repository: {}", path.display()); }
+pub fn register_project(path: PathBuf, config: &mut GlobalConfig) -> Result<Project> {
+    if path.as_os_str().is_empty() {
+        bail!("empty path");
+    }
+    if !path.exists() {
+        bail!("path does not exist: {}", path.display());
+    }
+    if !path.join(".git").exists() {
+        bail!("not a git repository: {}", path.display());
+    }
 
-    let name = path.file_name()
+    let name = path
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
     let default_branch = detect_default_branch(&path);
     let proj_config = crate::config::project::load_project_config(&path);
     let entries = git_worktree::list_worktrees(&path).unwrap_or_default();
-    let aliases = config.projects.iter()
+    let aliases = config
+        .projects
+        .iter()
         .find(|e| e.path == path)
         .map(|e| e.aliases.clone())
         .unwrap_or_default();
@@ -321,7 +389,11 @@ pub fn create_session(
     let base_display = match &session_name {
         Some(n) if !n.is_empty() => n.clone(),
         _ => match &command {
-            Some(cmd) => cmd.split_whitespace().next().unwrap_or(proj_name).to_string(),
+            Some(cmd) => cmd
+                .split_whitespace()
+                .next()
+                .unwrap_or(proj_name)
+                .to_string(),
             None => proj_name.to_string(),
         },
     };
@@ -350,11 +422,6 @@ pub fn rename_session(old_name: &str, new_name: &str) -> Result<()> {
 // ── Alias operations ──────────────────────────────────────────────────────────
 
 /// Persist an alias for a branch in the global config. Caller must call `config.save()`.
-pub fn set_alias(
-    config: &mut GlobalConfig,
-    proj_path: &PathBuf,
-    branch: &str,
-    alias: &str,
-) {
+pub fn set_alias(config: &mut GlobalConfig, proj_path: &PathBuf, branch: &str, alias: &str) {
     config.set_alias(proj_path, branch, alias);
 }
