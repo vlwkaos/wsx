@@ -52,6 +52,7 @@ const CAPTURE_INTERVAL_MS: u64 = 500;
 const RESCAN_INTERVAL_MS: u64 = 2000;
 const ACTIVITY_INTERVAL_MS: u64 = 1000;
 const FETCH_INTERVAL_SECS: u64 = 60;
+const GIT_LOCAL_INTERVAL_MS: u64 = 3000;
 pub use ops::IDLE_SECS;
 
 // ── Modes ─────────────────────────────────────────────────────────────────────
@@ -182,6 +183,7 @@ pub struct App {
     capture_timer: Timer,
     rescan_timer: Timer,
     activity_timer: Timer,
+    git_local_timer: Timer,
     cached_flat: Vec<FlatEntry>,
     flat_dirty: bool,
     fetch_tx: mpsc::Sender<(PathBuf, bool)>,
@@ -213,6 +215,7 @@ impl App {
             capture_timer: Timer::new(CAPTURE_INTERVAL_MS),
             rescan_timer: Timer::new(RESCAN_INTERVAL_MS),
             activity_timer: Timer::new(ACTIVITY_INTERVAL_MS),
+            git_local_timer: Timer::new(GIT_LOCAL_INTERVAL_MS),
             cached_flat,
             flat_dirty: false,
             fetch_tx,
@@ -269,7 +272,6 @@ impl App {
     }
 
     fn tick(&mut self) -> Result<()> {
-        // Drain completed background fetches.
         while let Ok((path, success)) = self.fetch_rx.try_recv() {
             self.apply_fetch_result(path, success);
         }
@@ -291,6 +293,18 @@ impl App {
         } else if self.activity_timer.ready() {
             if self.refresh_activity() {
                 self.needs_redraw = true;
+            }
+        }
+
+        if self.git_local_timer.ready() {
+            // Invalidate git_info for the selected worktree so local changes
+            // (modified files, ahead/behind) are re-read on the next capture tick.
+            if let Selection::Worktree(pi, wi) | Selection::Session(pi, wi, _) =
+                self.current_selection()
+            {
+                if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
+                    wt.git_info = None;
+                }
             }
         }
 
