@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.1] - 2026-02-28
+
+### Bug Fixes
+
+- Refresh local diff indicator (`*`) every 3s for the selected worktree — previously cached until a fetch or session attach ([`5ce6565`](https://github.com/vlwkaos/wsx/commit/5ce6565))
+
+### Other
+
+- Add MIT license ([`2bb7529`](https://github.com/vlwkaos/wsx/commit/2bb7529))
+- Add `cargo install wsx` to README install instructions ([`bf4d5ce`](https://github.com/vlwkaos/wsx/commit/bf4d5ce))
+
+---
+
 ## [0.8.0] - 2026-02-28
 
 ### Features
