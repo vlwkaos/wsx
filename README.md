@@ -46,13 +46,18 @@ Remote state is fetched in the background and updates silently. The preview pane
 
 ## Install
 
+**macOS (Homebrew)**
 ```sh
 brew tap vlwkaos/tap
 brew install wsx
 ```
 
-Or build from source:
+**macOS / Linux (cargo)**
+```sh
+cargo install wsx
+```
 
+**Build from source**
 ```sh
 cargo install --path .
 ```
@@ -91,6 +96,7 @@ Mouse clicks work: click a row to select, click the preview to attach.
 | `m` | Reorder project or session |
 | `r` | Set alias |
 | `d` | Delete |
+| `g` | Git popup (pull / push / rebase / merge) |
 | `c` | Clean merged worktrees |
 | `e` | View `.gtrconfig` |
 | `S` | Send command to session |
