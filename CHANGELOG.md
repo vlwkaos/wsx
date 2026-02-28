@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.0] - 2026-02-28
+
+### Features
+
+- Add git popup (`g` key on a worktree) with pull, push, pull-rebase, merge-from, and merge-into operations; `p`/`P` run immediately, `r`/`m`/`M` prompt for a branch pre-filled with the project default ([`ab298d1`](https://github.com/vlwkaos/wsx/commit/ab298d1))
+
+---
+
 ## [0.7.0] - 2026-02-27
 
 ### Features
