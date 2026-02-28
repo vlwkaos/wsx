@@ -69,6 +69,7 @@ fn translate_key(key: KeyEvent) -> Action {
         (KeyModifiers::SHIFT, KeyCode::Char('S')) | (KeyModifiers::NONE, KeyCode::Char('S')) => Action::SendCommand,
         (KeyModifiers::SHIFT, KeyCode::Char('C')) | (KeyModifiers::NONE, KeyCode::Char('C')) => Action::SendCtrlC,
         (KeyModifiers::NONE, KeyCode::Char('/')) => Action::SearchStart,
+        (KeyModifiers::NONE, KeyCode::Char('g')) => Action::GitPopup,
         (KeyModifiers::NONE, KeyCode::Esc) => Action::InputEscape,
         (KeyModifiers::NONE, KeyCode::Backspace) => Action::InputBackspace,
         _ => Action::None,

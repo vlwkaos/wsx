@@ -14,7 +14,7 @@ use crate::{
     action::Action,
     config::global::GlobalConfig,
     event::poll_event,
-    git::{info as git_info, worktree as git_worktree},
+    git::{info as git_info, ops as git_ops, worktree as git_worktree},
     model::workspace::{flatten_tree, FlatEntry, Selection, WorkspaceState},
     ops,
     tmux::{capture, monitor, session},
@@ -82,6 +82,10 @@ pub enum Mode {
         query: String,
         match_idx: usize,
     },
+    GitPopup {
+        project_idx: usize,
+        worktree_idx: usize,
+    },
 }
 
 pub enum InputContext {
@@ -110,6 +114,18 @@ pub enum InputContext {
     SendCommand {
         session_name: String,
     },
+    GitPullRebase {
+        project_idx: usize,
+        worktree_idx: usize,
+    },
+    GitMergeFrom {
+        project_idx: usize,
+        worktree_idx: usize,
+    },
+    GitMergeInto {
+        project_idx: usize,
+        worktree_idx: usize,
+    },
 }
 
 impl InputContext {
@@ -122,6 +138,9 @@ impl InputContext {
             InputContext::SetAlias { .. } => "Set Alias",
             InputContext::RenameSession { .. } => "Rename Session",
             InputContext::SendCommand { .. } => "Send Command",
+            InputContext::GitPullRebase { .. } => "Pull Rebase — branch",
+            InputContext::GitMergeFrom { .. } => "Merge From — branch",
+            InputContext::GitMergeInto { .. } => "Merge Into — branch",
         }
     }
 }
@@ -232,7 +251,7 @@ impl App {
                 self.needs_redraw = false;
             }
 
-            let in_input = matches!(self.mode, Mode::Input { .. } | Mode::Search { .. });
+            let in_input = matches!(self.mode, Mode::Input { .. } | Mode::Search { .. } | Mode::GitPopup { .. });
             if let Some(action) = poll_event(Duration::from_millis(TICK_MS), in_input)? {
                 if action == Action::Quit && matches!(self.mode, Mode::Normal) {
                     crate::cache::save_cache(&self.workspace, self.tree_selected);
@@ -577,9 +596,14 @@ impl App {
             return Ok(());
         }
 
+        if let Mode::GitPopup { project_idx, worktree_idx } = &self.mode {
+            let (pi, wi) = (*project_idx, *worktree_idx);
+            return self.dispatch_git_popup(pi, wi, action, terminal);
+        }
+
         match &self.mode {
             Mode::Normal => self.dispatch_normal(action, terminal)?,
-            Mode::Input { .. } => self.dispatch_input(action)?,
+            Mode::Input { .. } => self.dispatch_input(action, terminal)?,
             Mode::Confirm { .. } => self.dispatch_confirm(action, terminal)?,
             Mode::Help => {
                 if matches!(action, Action::InputEscape | Action::Quit | Action::Help) {
@@ -587,7 +611,7 @@ impl App {
                 }
             }
             Mode::Search { .. } => self.dispatch_search(action, terminal)?,
-            Mode::Config { .. } | Mode::Move { .. } | Mode::MoveSession { .. } => unreachable!(),
+            Mode::Config { .. } | Mode::Move { .. } | Mode::MoveSession { .. } | Mode::GitPopup { .. } => unreachable!(),
         }
         Ok(())
     }
@@ -625,6 +649,7 @@ impl App {
                     match_idx: 0,
                 };
             }
+            Action::GitPopup => self.action_git_popup(),
             Action::MouseClick { col, row } => self.handle_mouse_click(col, row, terminal)?,
             _ => {}
         }
@@ -656,13 +681,13 @@ impl App {
         Ok(())
     }
 
-    fn dispatch_input(&mut self, action: Action) -> Result<()> {
+    fn dispatch_input(&mut self, action: Action, terminal: &mut Tui) -> Result<()> {
         match action {
             Action::InputEscape | Action::Quit => {
                 self.mode = Mode::Normal;
             }
             Action::Select => {
-                self.confirm_input()?;
+                self.confirm_input(terminal)?;
             }
             Action::InputChar(c) => {
                 if let Mode::Input { state, .. } = &mut self.mode {
@@ -1259,7 +1284,7 @@ impl App {
 
     // ── Input confirm ─────────────────────────────────────────────────────────
 
-    fn confirm_input(&mut self) -> Result<()> {
+    fn confirm_input(&mut self, terminal: &mut Tui) -> Result<()> {
         let mode = std::mem::replace(&mut self.mode, Mode::Normal);
         if let Mode::Input { context, state } = mode {
             let value = state.value().trim().to_string();
@@ -1318,6 +1343,24 @@ impl App {
                 InputContext::SendCommand { session_name } => {
                     if !value.is_empty() {
                         session::send_keys(&session_name, &value)?;
+                    }
+                }
+                InputContext::GitPullRebase { project_idx, worktree_idx } => {
+                    if !value.is_empty() {
+                        self.do_git_pull_rebase(project_idx, worktree_idx, value, terminal)?;
+                        return Ok(());
+                    }
+                }
+                InputContext::GitMergeFrom { project_idx, worktree_idx } => {
+                    if !value.is_empty() {
+                        self.do_git_merge_from(project_idx, worktree_idx, value, terminal)?;
+                        return Ok(());
+                    }
+                }
+                InputContext::GitMergeInto { project_idx, worktree_idx } => {
+                    if !value.is_empty() {
+                        self.do_git_merge_into(project_idx, worktree_idx, value, terminal)?;
+                        return Ok(());
                     }
                 }
             }
@@ -1588,4 +1631,173 @@ impl App {
             .collect();
         self.config.projects = ordered;
     }
+
+    // ── Git popup ─────────────────────────────────────────────────────────────
+
+    fn action_git_popup(&mut self) {
+        let (pi, wi) = match self.current_selection() {
+            Selection::Worktree(pi, wi) | Selection::Session(pi, wi, _) => (pi, wi),
+            _ => {
+                self.set_status("Select a worktree");
+                return;
+            }
+        };
+        self.mode = Mode::GitPopup { project_idx: pi, worktree_idx: wi };
+    }
+
+    fn dispatch_git_popup(
+        &mut self,
+        pi: usize,
+        wi: usize,
+        action: Action,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        match action {
+            Action::InputChar('p') => self.do_git_pull(pi, wi, terminal)?,
+            Action::InputChar('P') => self.do_git_push(pi, wi, terminal)?,
+            Action::InputChar('r') => {
+                let default = self.workspace.projects[pi].default_branch.clone();
+                self.mode = Mode::Input {
+                    context: InputContext::GitPullRebase { project_idx: pi, worktree_idx: wi },
+                    state: InputState::with_value("branch: ", default),
+                };
+            }
+            Action::InputChar('m') => {
+                let default = self.workspace.projects[pi].default_branch.clone();
+                self.mode = Mode::Input {
+                    context: InputContext::GitMergeFrom { project_idx: pi, worktree_idx: wi },
+                    state: InputState::with_value("branch: ", default),
+                };
+            }
+            Action::InputChar('M') => {
+                let default = self.workspace.projects[pi].default_branch.clone();
+                self.mode = Mode::Input {
+                    context: InputContext::GitMergeInto { project_idx: pi, worktree_idx: wi },
+                    state: InputState::with_value("branch: ", default),
+                };
+            }
+            Action::InputEscape | Action::Quit => self.mode = Mode::Normal,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn git_worktree_path(&self, pi: usize, wi: usize) -> Option<std::path::PathBuf> {
+        self.workspace.projects.get(pi)?.worktrees.get(wi).map(|wt| wt.path.clone())
+    }
+
+    fn invalidate_git_info(&mut self, pi: usize, wi: usize) {
+        if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
+            wt.git_info = None;
+        }
+    }
+
+    fn do_git_pull(&mut self, pi: usize, wi: usize, terminal: &mut Tui) -> Result<()> {
+        let path = match self.git_worktree_path(pi, wi) {
+            Some(p) => p,
+            None => { self.set_status("Worktree not found"); return Ok(()); }
+        };
+        self.loading = true;
+        tui::draw_sync(terminal, |frame| ui::render(frame, self))?;
+        let result = git_ops::pull(&path);
+        self.loading = false;
+        self.mode = Mode::Normal;
+        self.invalidate_git_info(pi, wi);
+        match result {
+            Ok(msg) => self.set_status(format!("pull: {}", first_line(&msg))),
+            Err(e) => self.set_status(format!("pull failed: {}", e)),
+        }
+        Ok(())
+    }
+
+    fn do_git_push(&mut self, pi: usize, wi: usize, terminal: &mut Tui) -> Result<()> {
+        let path = match self.git_worktree_path(pi, wi) {
+            Some(p) => p,
+            None => { self.set_status("Worktree not found"); return Ok(()); }
+        };
+        self.loading = true;
+        tui::draw_sync(terminal, |frame| ui::render(frame, self))?;
+        let result = git_ops::push(&path);
+        self.loading = false;
+        self.mode = Mode::Normal;
+        self.invalidate_git_info(pi, wi);
+        match result {
+            Ok(msg) => self.set_status(format!("push: {}", first_line(&msg))),
+            Err(e) => self.set_status(format!("push failed: {}", e)),
+        }
+        Ok(())
+    }
+
+    fn do_git_pull_rebase(
+        &mut self,
+        pi: usize,
+        wi: usize,
+        branch: String,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        let path = match self.git_worktree_path(pi, wi) {
+            Some(p) => p,
+            None => { self.set_status("Worktree not found"); return Ok(()); }
+        };
+        self.loading = true;
+        tui::draw_sync(terminal, |frame| ui::render(frame, self))?;
+        let result = git_ops::pull_rebase(&path, &branch);
+        self.loading = false;
+        self.invalidate_git_info(pi, wi);
+        match result {
+            Ok(msg) => self.set_status(format!("rebase: {}", first_line(&msg))),
+            Err(e) => self.set_status(format!("rebase failed: {}", e)),
+        }
+        Ok(())
+    }
+
+    fn do_git_merge_from(
+        &mut self,
+        pi: usize,
+        wi: usize,
+        branch: String,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        let path = match self.git_worktree_path(pi, wi) {
+            Some(p) => p,
+            None => { self.set_status("Worktree not found"); return Ok(()); }
+        };
+        self.loading = true;
+        tui::draw_sync(terminal, |frame| ui::render(frame, self))?;
+        let result = git_ops::merge_from(&path, &branch);
+        self.loading = false;
+        self.invalidate_git_info(pi, wi);
+        match result {
+            Ok(msg) => self.set_status(format!("merge: {}", first_line(&msg))),
+            Err(e) => self.set_status(format!("merge failed: {}", e)),
+        }
+        Ok(())
+    }
+
+    fn do_git_merge_into(
+        &mut self,
+        pi: usize,
+        wi: usize,
+        branch: String,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        let path = match self.git_worktree_path(pi, wi) {
+            Some(p) => p,
+            None => { self.set_status("Worktree not found"); return Ok(()); }
+        };
+        self.loading = true;
+        tui::draw_sync(terminal, |frame| ui::render(frame, self))?;
+        let result = git_ops::merge_into(&path, &branch);
+        self.loading = false;
+        self.invalidate_git_info(pi, wi);
+        match result {
+            Ok(msg) => self.set_status(msg),
+            Err(e) => self.set_status(format!("merge failed: {}", e)),
+        }
+        Ok(())
+    }
+}
+
+fn first_line(s: &str) -> &str {
+    s.lines().next().unwrap_or(s)
 }
