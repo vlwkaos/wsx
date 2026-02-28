@@ -2,6 +2,12 @@
 name = "wsx"
 version = "0.8.0"
 edition = "2021"
+description = "TUI workspace manager — git worktrees + tmux sessions in one tree"
+license = "MIT"
+repository = "https://github.com/vlwkaos/wsx"
+readme = "README.md"
+keywords = ["tui", "git", "tmux", "worktree", "workspace"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "wsx"

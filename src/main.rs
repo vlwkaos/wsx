@@ -20,7 +20,7 @@ use app::App;
 fn main() -> Result<()> {
     // Require tmux
     if !tmux::session::is_available() {
-        eprintln!("wsx requires tmux. Install it with: brew install tmux");
+        eprintln!("wsx requires tmux — https://github.com/tmux/tmux/wiki/Installing");
         std::process::exit(1);
     }
 
