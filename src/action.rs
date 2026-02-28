@@ -26,6 +26,7 @@ pub enum Action {
     JumpProjectDown,
     JumpProjectUp,
     SearchStart,
+    GitPopup,
     InputChar(char),
     InputBackspace,
     InputTab,

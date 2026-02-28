@@ -1,5 +1,6 @@
 pub mod worktree;
 pub mod info;
+pub mod ops;
 
 use std::path::Path;
 use std::process::Command;

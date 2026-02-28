@@ -3,6 +3,7 @@
 pub mod ansi;
 pub mod config_modal;
 pub mod confirm;
+pub mod git_popup;
 pub mod input;
 pub mod picker;
 pub mod preview;
@@ -13,6 +14,7 @@ use crate::model::workspace::Selection;
 use crate::ui::{
     config_modal::render_config_modal,
     confirm::render_confirm,
+    git_popup::render_git_popup,
     input::render_input,
     preview::{
         render_empty_preview, render_project_preview, render_session_preview,
@@ -139,6 +141,15 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
             }
         }
         Mode::Help => render_help(frame, area),
+        Mode::GitPopup { project_idx: pi, .. } => {
+            let def = app
+                .workspace
+                .projects
+                .get(*pi)
+                .map(|p| p.default_branch.clone())
+                .unwrap_or_else(|| "main".to_string());
+            render_git_popup(frame, area, &def);
+        }
         Mode::Normal | Mode::Move { .. } | Mode::MoveSession { .. } | Mode::Search { .. } => {}
     }
 }
@@ -152,6 +163,7 @@ fn get_mode_label(app: &App) -> &'static str {
         Mode::Move { .. } | Mode::MoveSession { .. } => "MOVE",
         Mode::Help => "HELP",
         Mode::Search { .. } => "SEARCH",
+        Mode::GitPopup { .. } => "GIT",
     }
 }
 
@@ -188,6 +200,9 @@ fn build_hints(app: &App) -> String {
         Mode::Move { .. } | Mode::MoveSession { .. } => "(j/k) reorder  Esc: done".to_string(),
         Mode::Help => "Esc: close".to_string(),
         Mode::Search { .. } => unreachable!(),
+        Mode::GitPopup { .. } => {
+            "(p)ull  (P)ush  (r)pull-rebase  (m)erge-from  (M)erge-into  Esc: close".to_string()
+        }
     }
 }
 
