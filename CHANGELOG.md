@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.2] - 2026-03-01
+
+### Bug Fixes
+
+- Git status indicators (`↑N`/`↓N`/`*`) no longer flicker every 3s — redraws are skipped when git info is unchanged ([`11330c6`](https://github.com/vlwkaos/wsx/commit/11330c6))
+- Git indicators stay visible after detaching from a session — previously cleared to blank while the refresh was in flight ([`2644f5a`](https://github.com/vlwkaos/wsx/commit/2644f5a))
+- Initial git info load is now async, preventing the event loop from blocking on git CLI calls at first worktree selection ([`11330c6`](https://github.com/vlwkaos/wsx/commit/11330c6))
+- Idle timer in session list now updates every 1s instead of every 2s ([`11330c6`](https://github.com/vlwkaos/wsx/commit/11330c6))
+- Fix potential panic on non-ASCII branch names in git popup ([`36e96f9`](https://github.com/vlwkaos/wsx/commit/36e96f9))
+
+---
+
 ## [0.8.1] - 2026-02-28
 
 ### Bug Fixes
