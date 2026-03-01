@@ -8,11 +8,7 @@ pub fn render_git_popup(frame: &mut Frame, area: Rect, default_branch: &str) {
     let popup = popup_center(area, 36, 9);
     frame.render_widget(Clear, popup);
 
-    let def = if default_branch.len() > 10 {
-        &default_branch[..10]
-    } else {
-        default_branch
-    };
+    let def: String = default_branch.chars().take(10).collect();
 
     let lines = vec![
         Line::from(""),
