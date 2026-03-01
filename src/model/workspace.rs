@@ -181,7 +181,7 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GitInfo {
     pub recent_commits: Vec<CommitSummary>,
     pub modified_files: Vec<String>,
@@ -190,7 +190,7 @@ pub struct GitInfo {
     pub remote_branch: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CommitSummary {
     pub hash: String,
     pub message: String,
