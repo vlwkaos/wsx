@@ -301,24 +301,14 @@ impl App {
             self.activity_timer.last = Instant::now(); // rescan subsumes activity check
             self.needs_redraw = true;
         } else if self.activity_timer.ready() {
-            if self.refresh_activity() {
-                self.needs_redraw = true;
-            }
+            self.refresh_activity();
+            self.needs_redraw = true;
         }
 
         if self.git_local_timer.ready() {
-            if let Selection::Worktree(pi, wi) | Selection::Session(pi, wi, _) =
-                self.current_selection()
-            {
-                let path_opt = self.workspace.worktree(pi, wi).map(|w| w.path.clone());
-                let default_branch = self
-                    .workspace
-                    .projects
-                    .get(pi)
-                    .map(|p| p.default_branch.clone())
-                    .unwrap_or_else(|| "main".to_string());
-                if let Some(path) = path_opt {
-                    self.spawn_git_local(path, default_branch);
+            if let Some((pi, wi)) = self.selected_worktree_indices() {
+                if let Some(path) = self.workspace.worktree(pi, wi).map(|w| w.path.clone()) {
+                    self.spawn_git_local(path, self.default_branch_for_project(pi));
                 }
             }
         }
@@ -346,19 +336,23 @@ impl App {
         let completed_at = Instant::now();
         self.fetch_pending.remove(&path);
 
-        for project in &mut self.workspace.projects {
+        let mut spawn_branch: Option<String> = None;
+        'outer: for project in &mut self.workspace.projects {
             for wt in &mut project.worktrees {
                 if wt.path == path {
                     wt.fetch_failed = !success;
                     // Throttle fetch attempts after both success and failure.
                     wt.last_fetched = Some(completed_at);
                     if success {
-                        self.spawn_git_local(path, project.default_branch.clone());
+                        spawn_branch = Some(project.default_branch.clone());
                     }
                     self.needs_redraw = true;
-                    return;
+                    break 'outer;
                 }
             }
+        }
+        if let Some(branch) = spawn_branch {
+            self.spawn_git_local(path, branch);
         }
     }
 
@@ -368,8 +362,10 @@ impl App {
             for project in &mut self.workspace.projects {
                 for wt in &mut project.worktrees {
                     if wt.path == path {
-                        wt.git_info = Some(gi);
-                        self.needs_redraw = true;
+                        if wt.git_info.as_ref() != Some(&gi) {
+                            wt.git_info = Some(gi);
+                            self.needs_redraw = true;
+                        }
                         return;
                     }
                 }
@@ -393,18 +389,18 @@ impl App {
         Ok(())
     }
 
-    fn refresh_activity(&mut self) -> bool {
+    fn refresh_activity(&mut self) {
         let activity = monitor::session_activity();
-        ops::update_activity(&mut self.workspace, &activity)
+        let _ = ops::update_activity(&mut self.workspace, &activity);
     }
 
     fn refresh_captures(&mut self) {
         let sel = self.current_selection();
 
         // Load git info when a worktree or session is selected
-        let (pi, wi) = match sel {
-            Selection::Worktree(pi, wi) | Selection::Session(pi, wi, _) => (pi, wi),
-            _ => return,
+        let (pi, wi) = match self.selected_worktree_indices() {
+            Some(indices) => indices,
+            None => return,
         };
 
         let git_fetch = self
@@ -414,19 +410,7 @@ impl App {
             .map(|w| w.path.clone());
 
         if let Some(path) = git_fetch {
-            let default_branch = self
-                .workspace
-                .projects
-                .get(pi)
-                .map(|p| p.default_branch.clone())
-                .unwrap_or_else(|| "main".to_string());
-
-            if let Some(gi) = git_info::get_git_info(&path, &default_branch) {
-                if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
-                    wt.git_info = Some(gi);
-                    self.needs_redraw = true;
-                }
-            }
+            self.spawn_git_local(path, self.default_branch_for_project(pi));
         }
 
         // Trigger background git fetch if stale or never fetched.
@@ -470,6 +454,21 @@ impl App {
     pub fn current_selection(&self) -> Selection {
         self.workspace
             .get_selection(self.tree_selected, self.flat())
+    }
+
+    fn selected_worktree_indices(&self) -> Option<(usize, usize)> {
+        match self.current_selection() {
+            Selection::Worktree(pi, wi) | Selection::Session(pi, wi, _) => Some((pi, wi)),
+            _ => None,
+        }
+    }
+
+    fn default_branch_for_project(&self, project_idx: usize) -> String {
+        self.workspace
+            .projects
+            .get(project_idx)
+            .map(|p| p.default_branch.clone())
+            .unwrap_or_else(|| "main".to_string())
     }
 
     fn clamp_selected(&mut self) {
@@ -1263,18 +1262,6 @@ impl App {
                 .unwrap()
         };
 
-        // ensure parent project + worktree are expanded so the session is visible
-        if let Some(FlatEntry::Session {
-            project_idx: pi,
-            worktree_idx: wi,
-            ..
-        }) = self.flat().get(next).cloned()
-        {
-            self.workspace.projects[pi].expanded = true;
-            self.workspace.projects[pi].worktrees[wi].expanded = true;
-            self.rebuild_flat();
-        }
-
         self.tree_selected = next;
         self.update_scroll();
     }
@@ -1619,7 +1606,11 @@ impl App {
     }
 
     fn move_project(&mut self, pi: usize, delta: isize) {
-        let new_pi = (pi as isize + delta) as usize;
+        let new_pi = pi as isize + delta;
+        if new_pi < 0 {
+            return;
+        }
+        let new_pi = new_pi as usize;
         let len = self.workspace.projects.len();
         if new_pi >= len {
             return;
@@ -1652,7 +1643,11 @@ impl App {
     }
 
     fn move_session(&mut self, pi: usize, wi: usize, si: usize, delta: isize) {
-        let new_si = (si as isize + delta) as usize;
+        let new_si = si as isize + delta;
+        if new_si < 0 {
+            return;
+        }
+        let new_si = new_si as usize;
         let sessions = &mut self.workspace.projects[pi].worktrees[wi].sessions;
         if new_si >= sessions.len() {
             return;
