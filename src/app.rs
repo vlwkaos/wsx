@@ -15,7 +15,7 @@ use crate::{
     config::global::GlobalConfig,
     event::poll_event,
     git::{info as git_info, ops as git_ops, worktree as git_worktree},
-    model::workspace::{flatten_tree, FlatEntry, Selection, WorkspaceState},
+    model::workspace::{flatten_tree, FlatEntry, GitInfo, Selection, WorkspaceState},
     ops,
     tmux::{capture, monitor, session},
     tui::{self, Tui},
@@ -186,6 +186,9 @@ pub struct App {
     git_local_timer: Timer,
     cached_flat: Vec<FlatEntry>,
     flat_dirty: bool,
+    git_local_tx: mpsc::Sender<(PathBuf, Option<GitInfo>)>,
+    git_local_rx: mpsc::Receiver<(PathBuf, Option<GitInfo>)>,
+    git_local_pending: HashSet<PathBuf>,
     fetch_tx: mpsc::Sender<(PathBuf, bool)>,
     fetch_rx: mpsc::Receiver<(PathBuf, bool)>,
     fetch_pending: HashSet<PathBuf>,
@@ -197,6 +200,7 @@ impl App {
         let mut workspace = ops::load_workspace(&config);
         let tree_selected = crate::cache::apply_cache(&mut workspace);
         let cached_flat = flatten_tree(&workspace);
+        let (git_local_tx, git_local_rx) = mpsc::channel();
         let (fetch_tx, fetch_rx) = mpsc::channel();
 
         Ok(Self {
@@ -218,6 +222,9 @@ impl App {
             git_local_timer: Timer::new(GIT_LOCAL_INTERVAL_MS),
             cached_flat,
             flat_dirty: false,
+            git_local_tx,
+            git_local_rx,
+            git_local_pending: HashSet::new(),
             fetch_tx,
             fetch_rx,
             fetch_pending: HashSet::new(),
@@ -275,6 +282,9 @@ impl App {
         while let Ok((path, success)) = self.fetch_rx.try_recv() {
             self.apply_fetch_result(path, success);
         }
+        while let Ok((path, info)) = self.git_local_rx.try_recv() {
+            self.apply_git_local_result(path, info);
+        }
 
         if let Some(expires) = self.status_message_expires {
             if Instant::now() >= expires {
@@ -297,13 +307,18 @@ impl App {
         }
 
         if self.git_local_timer.ready() {
-            // Invalidate git_info for the selected worktree so local changes
-            // (modified files, ahead/behind) are re-read on the next capture tick.
             if let Selection::Worktree(pi, wi) | Selection::Session(pi, wi, _) =
                 self.current_selection()
             {
-                if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
-                    wt.git_info = None;
+                let path_opt = self.workspace.worktree(pi, wi).map(|w| w.path.clone());
+                let default_branch = self
+                    .workspace
+                    .projects
+                    .get(pi)
+                    .map(|p| p.default_branch.clone())
+                    .unwrap_or_else(|| "main".to_string());
+                if let Some(path) = path_opt {
+                    self.spawn_git_local(path, default_branch);
                 }
             }
         }
@@ -313,6 +328,18 @@ impl App {
         }
 
         Ok(())
+    }
+
+    fn spawn_git_local(&mut self, path: PathBuf, default_branch: String) {
+        if self.git_local_pending.contains(&path) {
+            return;
+        }
+        self.git_local_pending.insert(path.clone());
+        let tx = self.git_local_tx.clone();
+        std::thread::spawn(move || {
+            let info = git_info::get_git_info(&path, &default_branch);
+            let _ = tx.send((path, info));
+        });
     }
 
     fn apply_fetch_result(&mut self, path: PathBuf, success: bool) {
@@ -326,13 +353,29 @@ impl App {
                     // Throttle fetch attempts after both success and failure.
                     wt.last_fetched = Some(completed_at);
                     if success {
-                        wt.git_info = None; // invalidate so ahead/behind re-reads
+                        self.spawn_git_local(path, project.default_branch.clone());
                     }
                     self.needs_redraw = true;
                     return;
                 }
             }
         }
+    }
+
+    fn apply_git_local_result(&mut self, path: PathBuf, info: Option<GitInfo>) {
+        self.git_local_pending.remove(&path);
+        if let Some(gi) = info {
+            for project in &mut self.workspace.projects {
+                for wt in &mut project.worktrees {
+                    if wt.path == path {
+                        wt.git_info = Some(gi);
+                        self.needs_redraw = true;
+                        return;
+                    }
+                }
+            }
+        }
+        // if info is None, leave existing git_info unchanged — old value stays visible
     }
 
     pub fn refresh_all(&mut self) -> Result<()> {
