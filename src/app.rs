@@ -961,10 +961,11 @@ impl App {
 
         self.attach_to_session(&name, terminal)?;
 
-        // Invalidate git info so it's re-fetched after returning from the session.
-        if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
-            wt.git_info = None;
-        }
+        // Trigger a refresh after returning, but keep old git_info visible until result arrives.
+        self.spawn_git_local(
+            self.workspace.worktree(pi, wi).map(|w| w.path.clone()).unwrap_or_default(),
+            self.default_branch_for_project(pi),
+        );
         Ok(())
     }
 
