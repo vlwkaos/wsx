@@ -9,7 +9,7 @@ pub mod picker;
 pub mod preview;
 pub mod workspace_tree;
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, SPINNER_FRAMES};
 use crate::model::workspace::Selection;
 use crate::ui::{
     config_modal::render_config_modal,
@@ -117,9 +117,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_status_bar(frame, status_area, app);
     render_overlay(frame, main_area, app);
-    if app.loading {
-        render_loading(frame, main_area);
-    }
     if app.cache_paused {
         render_cache_conflict(frame, main_area);
     }
@@ -144,7 +141,9 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
             }
         }
         Mode::Help => render_help(frame, area),
-        Mode::GitPopup { project_idx: pi, .. } => {
+        Mode::GitPopup {
+            project_idx: pi, ..
+        } => {
             let def = app
                 .workspace
                 .projects
@@ -267,19 +266,27 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let badge_width = mode_text.len();
     let badge_style = Style::default().fg(Color::Black).bg(Color::Yellow).bold();
 
-    let ver = concat!(" v", env!("CARGO_PKG_VERSION"), " ");
-    let ver_style = Style::default().fg(Color::DarkGray);
+    // Right corner: spinner when jobs running, version otherwise
+    let (right_text, right_style) = if app.is_busy() {
+        let frame = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+        let labels: Vec<&str> = app.jobs.iter().map(|j| j.label.as_str()).collect();
+        let text = format!(" {} {} ", frame, labels.join(" · "));
+        (text, Style::default().fg(Color::Cyan).bold())
+    } else {
+        let ver = format!(" v{} ", env!("CARGO_PKG_VERSION"));
+        (ver, Style::default().fg(Color::DarkGray))
+    };
 
     let msg = app.status_message.as_deref().unwrap_or("");
     if !msg.is_empty() {
         let left = format!(" {}", msg);
         let left_len = badge_width + left.len();
-        let pad = (area.width as usize).saturating_sub(left_len + ver.len());
+        let pad = (area.width as usize).saturating_sub(left_len + right_text.len());
         let spans = vec![
             Span::styled(mode_text, badge_style),
             Span::styled(left, Style::default().fg(Color::Cyan)),
             Span::raw(" ".repeat(pad)),
-            Span::styled(ver, ver_style),
+            Span::styled(right_text, right_style),
         ];
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
@@ -294,12 +301,12 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         let text = hint_lines.first().map(|s| s.as_str()).unwrap_or(&hints);
         let left = format!(" {}", text);
         let left_len = badge_width + left.len();
-        let pad = (area.width as usize).saturating_sub(left_len + ver.len());
+        let pad = (area.width as usize).saturating_sub(left_len + right_text.len());
         let spans = vec![
             Span::styled(mode_text, badge_style),
             Span::styled(left, hint_style),
             Span::raw(" ".repeat(pad)),
-            Span::styled(ver, ver_style),
+            Span::styled(right_text, right_style),
         ];
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     } else {
@@ -313,12 +320,12 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             let left = format!(" {}", hl);
             if i + 1 == last {
                 let left_len = badge_width + left.len();
-                let pad = (area.width as usize).saturating_sub(left_len + ver.len());
+                let pad = (area.width as usize).saturating_sub(left_len + right_text.len());
                 text_lines.push(Line::from(vec![
                     Span::raw(indent.clone()),
                     Span::styled(left, hint_style),
                     Span::raw(" ".repeat(pad)),
-                    Span::styled(ver, ver_style),
+                    Span::styled(right_text.clone(), right_style),
                 ]));
             } else {
                 text_lines.push(Line::from(vec![
@@ -354,17 +361,6 @@ fn render_cache_conflict(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(text), inner);
 }
 
-fn render_loading(frame: &mut Frame, area: Rect) {
-    let popup = popup_center(area, 20, 3);
-    frame.render_widget(Clear, popup);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta));
-    let para = Paragraph::new("  ⏳ Working…")
-        .block(block)
-        .style(Style::default().fg(Color::Magenta).bold());
-    frame.render_widget(para, popup);
-}
 
 fn render_help(frame: &mut Frame, area: Rect) {
     let width = area.width.min(64).max(40);
