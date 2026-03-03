@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.0] - 2026-03-04
+
+### Features
+
+- Background thread execution for clean, delete/create worktree, and all git ops (pull/push/rebase/merge) — UI stays responsive during long operations ([`d6638e6`](https://github.com/vlwkaos/wsx/commit/d6638e6))
+- Braille spinner in the status bar right corner replaces the version badge while a job runs — key hints remain fully visible ([`d6638e6`](https://github.com/vlwkaos/wsx/commit/d6638e6))
+- Up/Down arrow navigation in the Send Command (`S`) input recalls previously sent commands, capped at 50 entries ([`c629e8d`](https://github.com/vlwkaos/wsx/commit/c629e8d))
+
+### Bug Fixes
+
+- Batch clean (`c` on project or root) now kills associated tmux sessions for removed worktrees — previously only single-worktree clean did this ([`d6638e6`](https://github.com/vlwkaos/wsx/commit/d6638e6))
+
+---
+
 ## [0.8.3] - 2026-03-03
 
 ### Features
