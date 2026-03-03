@@ -48,11 +48,10 @@ impl Timer {
 }
 
 const TICK_MS: u64 = 100;
-const CAPTURE_INTERVAL_MS: u64 = 500;
-const RESCAN_INTERVAL_MS: u64 = 2000;
+const FAST_INTERVAL_MS: u64 = 500;
 const ACTIVITY_INTERVAL_MS: u64 = 1000;
+const SLOW_INTERVAL_MS: u64 = 3000;
 const FETCH_INTERVAL_SECS: u64 = 60;
-const GIT_LOCAL_INTERVAL_MS: u64 = 3000;
 pub use ops::IDLE_SECS;
 
 // ── Modes ─────────────────────────────────────────────────────────────────────
@@ -180,10 +179,9 @@ pub struct App {
     status_message_expires: Option<Instant>,
     pub loading: bool,
     needs_redraw: bool,
-    capture_timer: Timer,
-    rescan_timer: Timer,
+    fast_timer: Timer,
     activity_timer: Timer,
-    git_local_timer: Timer,
+    slow_timer: Timer,
     cached_flat: Vec<FlatEntry>,
     flat_dirty: bool,
     git_local_tx: mpsc::Sender<(PathBuf, Option<GitInfo>)>,
@@ -216,10 +214,9 @@ impl App {
             status_message_expires: None,
             loading: false,
             needs_redraw: true,
-            capture_timer: Timer::new(CAPTURE_INTERVAL_MS),
-            rescan_timer: Timer::new(RESCAN_INTERVAL_MS),
+            fast_timer: Timer::new(FAST_INTERVAL_MS),
             activity_timer: Timer::new(ACTIVITY_INTERVAL_MS),
-            git_local_timer: Timer::new(GIT_LOCAL_INTERVAL_MS),
+            slow_timer: Timer::new(SLOW_INTERVAL_MS),
             cached_flat,
             flat_dirty: false,
             git_local_tx,
@@ -253,8 +250,55 @@ impl App {
         &self.cached_flat
     }
 
+    /// Fetch git_info for every worktree in parallel, then block until all threads join.
+    /// Called once at startup so the first render already has correct `*` indicators.
+    fn load_git_info_blocking(&mut self) {
+        let targets: Vec<(PathBuf, String)> = self
+            .workspace
+            .projects
+            .iter()
+            .flat_map(|p| {
+                let branch = p.default_branch.clone();
+                p.worktrees
+                    .iter()
+                    .map(move |w| (w.path.clone(), branch.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        let handles: Vec<_> = targets
+            .into_iter()
+            .map(|(path, branch)| {
+                std::thread::spawn(move || {
+                    let info = git_info::get_git_info(&path, &branch);
+                    (path, info)
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            if let Ok((path, Some(gi))) = handle.join() {
+                let mut gi = Some(gi);
+                'outer: for project in &mut self.workspace.projects {
+                    for wt in &mut project.worktrees {
+                        if wt.path == path {
+                            wt.git_info = gi.take();
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub fn run(&mut self, terminal: &mut Tui) -> Result<()> {
+        // Populate git_info for all worktrees before first render so indicators are
+        // correct immediately. Parallel threads; blocks until all complete or 2s elapses.
+        self.load_git_info_blocking();
         loop {
+            // Drain async results every iteration so they're never blocked by UI events.
+            self.drain_async_results();
+
             if self.needs_redraw {
                 self.ensure_flat();
                 tui::draw_sync(terminal, |frame| ui::render(frame, self))?;
@@ -271,20 +315,22 @@ impl App {
                 if let Err(e) = self.dispatch(action, terminal) {
                     self.set_status(format!("Error: {}", e));
                 }
-            } else {
-                self.tick()?;
             }
+            self.tick()?;
         }
         Ok(())
     }
 
-    fn tick(&mut self) -> Result<()> {
+    fn drain_async_results(&mut self) {
         while let Ok((path, success)) = self.fetch_rx.try_recv() {
             self.apply_fetch_result(path, success);
         }
         while let Ok((path, info)) = self.git_local_rx.try_recv() {
             self.apply_git_local_result(path, info);
         }
+    }
+
+    fn tick(&mut self) -> Result<()> {
 
         if let Some(expires) = self.status_message_expires {
             if Instant::now() >= expires {
@@ -294,10 +340,11 @@ impl App {
             }
         }
 
-        if self.rescan_timer.ready() {
+        if self.slow_timer.ready() {
             if let Err(e) = self.refresh_all() {
                 self.set_status(format!("Refresh error: {}", e));
             }
+            self.spawn_git_local_for_all();
             self.activity_timer.last = Instant::now(); // rescan subsumes activity check
             self.needs_redraw = true;
         } else if self.activity_timer.ready() {
@@ -305,15 +352,7 @@ impl App {
             self.needs_redraw = true;
         }
 
-        if self.git_local_timer.ready() {
-            if let Some((pi, wi)) = self.selected_worktree_indices() {
-                if let Some(path) = self.workspace.worktree(pi, wi).map(|w| w.path.clone()) {
-                    self.spawn_git_local(path, self.default_branch_for_project(pi));
-                }
-            }
-        }
-
-        if self.capture_timer.ready() {
+        if self.fast_timer.ready() {
             self.refresh_captures();
         }
 
@@ -330,6 +369,25 @@ impl App {
             let info = git_info::get_git_info(&path, &default_branch);
             let _ = tx.send((path, info));
         });
+    }
+
+    /// Kick off async git_info refresh for all worktrees (periodic timer path).
+    fn spawn_git_local_for_all(&mut self) {
+        let targets: Vec<(PathBuf, String)> = self
+            .workspace
+            .projects
+            .iter()
+            .flat_map(|p| {
+                let branch = p.default_branch.clone();
+                p.worktrees
+                    .iter()
+                    .map(move |w| (w.path.clone(), branch.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for (path, branch) in targets {
+            self.spawn_git_local(path, branch);
+        }
     }
 
     fn apply_fetch_result(&mut self, path: PathBuf, success: bool) {
@@ -403,13 +461,9 @@ impl App {
             None => return,
         };
 
-        let git_fetch = self
-            .workspace
-            .worktree(pi, wi)
-            .filter(|w| w.git_info.is_none())
-            .map(|w| w.path.clone());
-
-        if let Some(path) = git_fetch {
+        // Refresh git_info for selected worktree on every fast tick.
+        if let Some(wt) = self.workspace.worktree(pi, wi) {
+            let path = wt.path.clone();
             self.spawn_git_local(path, self.default_branch_for_project(pi));
         }
 
