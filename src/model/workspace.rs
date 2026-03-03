@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -46,6 +47,19 @@ pub struct WorktreeInfo {
     pub git_info: Option<GitInfo>,
     pub fetch_failed: bool,
     pub last_fetched: Option<std::time::Instant>,
+}
+
+impl Project {
+    /// Maps branch name -> list of tmux session names for all worktrees.
+    pub fn branch_session_names(&self) -> HashMap<String, Vec<String>> {
+        self.worktrees
+            .iter()
+            .map(|wt| {
+                let sessions = wt.sessions.iter().map(|s| s.name.clone()).collect();
+                (wt.branch.clone(), sessions)
+            })
+            .collect()
+    }
 }
 
 impl WorktreeInfo {

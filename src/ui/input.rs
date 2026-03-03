@@ -2,11 +2,11 @@
 
 use std::path::PathBuf;
 
+use crate::ui::popup_upper;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
-use crate::ui::popup_upper;
 
 pub struct InputState {
     pub buffer: String,
@@ -14,7 +14,9 @@ pub struct InputState {
     pub prompt: String,
     pub completions: Vec<String>,
     pub completion_idx: Option<usize>,
-    typed: String,     // last text the user typed (before completion navigation)
+    history: Vec<String>,
+    history_idx: Option<usize>,
+    typed: String, // last text the user typed (before completion navigation)
     path_mode: bool,
 }
 
@@ -34,6 +36,12 @@ impl InputState {
         Self::make(prompt.into(), value, false)
     }
 
+    pub fn with_history(prompt: impl Into<String>, history: Vec<String>) -> Self {
+        let mut s = Self::make(prompt.into(), String::new(), false);
+        s.history = history;
+        s
+    }
+
     fn make(prompt: String, value: String, path_mode: bool) -> Self {
         let cursor = value.len();
         Self {
@@ -42,6 +50,8 @@ impl InputState {
             prompt,
             completions: vec![],
             completion_idx: None,
+            history: vec![],
+            history_idx: None,
             typed: value,
             path_mode,
         }
@@ -97,7 +107,9 @@ impl InputState {
 
     /// Move selection down; wraps around. Tab calls this too.
     pub fn select_next(&mut self) {
-        if self.completions.is_empty() { return; }
+        if self.completions.is_empty() {
+            return;
+        }
         let next = match self.completion_idx {
             None => 0,
             Some(i) => (i + 1) % self.completions.len(),
@@ -110,7 +122,9 @@ impl InputState {
 
     /// Move selection up. At index 0, goes back to typed text.
     pub fn select_prev(&mut self) {
-        if self.completions.is_empty() { return; }
+        if self.completions.is_empty() {
+            return;
+        }
         let prev = match self.completion_idx {
             None => Some(self.completions.len().saturating_sub(1)),
             Some(0) => None,
@@ -123,6 +137,45 @@ impl InputState {
         };
         self.cursor = self.buffer.len();
         self.maybe_drill_down();
+    }
+
+    /// Navigate to older history entries. Index 0 is the most recent entry.
+    pub fn history_prev(&mut self) {
+        if self.history.is_empty() || !self.completions.is_empty() {
+            return;
+        }
+        let next_idx = match self.history_idx {
+            None => {
+                self.typed = self.buffer.clone();
+                0
+            }
+            Some(i) => (i + 1).min(self.history.len().saturating_sub(1)),
+        };
+        self.history_idx = Some(next_idx);
+        let hist_pos = self.history.len() - 1 - next_idx;
+        self.buffer = self.history[hist_pos].clone();
+        self.cursor = self.buffer.len();
+    }
+
+    /// Navigate toward newer history entries, then back to the current typed text.
+    pub fn history_next(&mut self) {
+        if self.history.is_empty() || !self.completions.is_empty() {
+            return;
+        }
+        let Some(idx) = self.history_idx else {
+            return;
+        };
+
+        if idx == 0 {
+            self.history_idx = None;
+            self.buffer = self.typed.clone();
+        } else {
+            let next_idx = idx - 1;
+            self.history_idx = Some(next_idx);
+            let hist_pos = self.history.len() - 1 - next_idx;
+            self.buffer = self.history[hist_pos].clone();
+        }
+        self.cursor = self.buffer.len();
     }
 
     /// If the current buffer ends with '/' and has only one child match,
@@ -148,7 +201,9 @@ impl InputState {
 /// Subsequence fuzzy match. Returns score if all query chars appear in order
 /// in target (case-insensitive). Higher score = better match.
 fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
-    if query.is_empty() { return Some(0); }
+    if query.is_empty() {
+        return Some(0);
+    }
     let q: Vec<char> = query.chars().map(|c| c.to_ascii_lowercase()).collect();
     let t: Vec<char> = target.chars().map(|c| c.to_ascii_lowercase()).collect();
     let mut qi = 0;
@@ -158,13 +213,19 @@ fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
         if qi < q.len() && tc == q[qi] {
             consecutive += 1;
             score += 1 + consecutive; // base + consecutive bonus
-            if ti == 0 { score += 4; } // prefix match bonus
+            if ti == 0 {
+                score += 4;
+            } // prefix match bonus
             qi += 1;
         } else {
             consecutive = 0;
         }
     }
-    if qi == q.len() { Some(score) } else { None }
+    if qi == q.len() {
+        Some(score)
+    } else {
+        None
+    }
 }
 
 fn path_completions(input: &str) -> Vec<String> {
@@ -173,21 +234,29 @@ fn path_completions(input: &str) -> Vec<String> {
     let (parent, prefix) = if input.ends_with('/') {
         (expanded.clone(), String::new())
     } else {
-        let p = expanded.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| expanded.clone());
-        let pfx = expanded.file_name()
+        let p = expanded
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| expanded.clone());
+        let pfx = expanded
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         (p, pfx)
     };
 
-    let Ok(rd) = std::fs::read_dir(&parent) else { return vec![] };
+    let Ok(rd) = std::fs::read_dir(&parent) else {
+        return vec![];
+    };
 
     let mut scored: Vec<(i32, String)> = rd
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_dir())
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') && !prefix.starts_with('.') { return None; }
+            if name.starts_with('.') && !prefix.starts_with('.') {
+                return None;
+            }
             let score = fuzzy_score(&prefix, &name)?;
             Some((score, display_path(&parent.join(&name), tilde)))
         })
@@ -211,7 +280,10 @@ fn expand_input(input: &str) -> (PathBuf, bool) {
             return (home, true);
         }
     }
-    (PathBuf::from(if input.is_empty() { "." } else { input }), false)
+    (
+        PathBuf::from(if input.is_empty() { "." } else { input }),
+        false,
+    )
 }
 
 fn display_path(path: &PathBuf, prefer_tilde: bool) -> String {
@@ -258,7 +330,11 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
             let drop = Rect::new(popup.x, drop_y, width, drop_h);
             frame.render_widget(Clear, drop);
 
-            let items: Vec<ListItem> = state.completions.iter().take(max_show).enumerate()
+            let items: Vec<ListItem> = state
+                .completions
+                .iter()
+                .take(max_show)
+                .enumerate()
                 .map(|(i, s)| {
                     let selected = state.completion_idx == Some(i);
                     let style = if selected {
@@ -270,8 +346,11 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
                 })
                 .collect();
 
-            let list = List::new(items)
-                .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Gray)));
+            let list = List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Gray)),
+            );
             frame.render_widget(list, drop);
         }
     }
