@@ -331,7 +331,6 @@ impl App {
     }
 
     fn tick(&mut self) -> Result<()> {
-
         if let Some(expires) = self.status_message_expires {
             if Instant::now() >= expires {
                 self.status_message = None;
@@ -455,10 +454,8 @@ impl App {
     fn refresh_captures(&mut self) {
         let sel = self.current_selection();
 
-        // Load git info when a worktree or session is selected
-        let (pi, wi) = match self.selected_worktree_indices() {
-            Some(indices) => indices,
-            None => return,
+        let Some((pi, wi)) = self.selected_worktree_indices() else {
+            return;
         };
 
         // Refresh git_info for selected worktree on every fast tick.
@@ -1602,14 +1599,8 @@ impl App {
         ops::set_alias(&mut self.config, &proj_path, &branch, &alias);
         self.config.save()?;
 
-        let new_alias = if alias.is_empty() {
-            None
-        } else {
-            Some(alias.clone())
-        };
-
         let wt = &mut self.workspace.projects[pi].worktrees[wi];
-        wt.alias = new_alias;
+        wt.alias = (!alias.is_empty()).then(|| alias.clone());
 
         self.set_status(if alias.is_empty() {
             format!("Alias cleared for '{}'", branch)
@@ -1799,38 +1790,49 @@ impl App {
         }
     }
 
-    fn do_git_pull(&mut self, pi: usize, wi: usize, terminal: &mut Tui) -> Result<()> {
-        let path = match self.git_worktree_path(pi, wi) {
-            Some(p) => p,
-            None => { self.set_status("Worktree not found"); return Ok(()); }
+    /// Show loading spinner, run `op`, hide spinner, invalidate git info.
+    /// Returns the success message, or None if the worktree wasn't found or the op failed
+    /// (sets a status message in both failure cases).
+    fn run_git_op(
+        &mut self,
+        pi: usize,
+        wi: usize,
+        terminal: &mut Tui,
+        op_name: &str,
+        op: impl FnOnce(&std::path::Path) -> anyhow::Result<String>,
+    ) -> Result<Option<String>> {
+        let Some(path) = self.git_worktree_path(pi, wi) else {
+            self.set_status("Worktree not found");
+            return Ok(None);
         };
         self.loading = true;
         tui::draw_sync(terminal, |frame| ui::render(frame, self))?;
-        let result = git_ops::pull(&path);
+        let result = op(&path);
         self.loading = false;
-        self.mode = Mode::Normal;
         self.invalidate_git_info(pi, wi);
         match result {
-            Ok(msg) => self.set_status(format!("pull: {}", first_line(&msg))),
-            Err(e) => self.set_status(format!("pull failed: {}", e)),
+            Ok(msg) => Ok(Some(msg)),
+            Err(e) => {
+                self.set_status(format!("{} failed: {}", op_name, e));
+                Ok(None)
+            }
+        }
+    }
+
+    fn do_git_pull(&mut self, pi: usize, wi: usize, terminal: &mut Tui) -> Result<()> {
+        let msg = self.run_git_op(pi, wi, terminal, "pull", |p| git_ops::pull(p))?;
+        self.mode = Mode::Normal;
+        if let Some(msg) = msg {
+            self.set_status(format!("pull: {}", first_line(&msg)));
         }
         Ok(())
     }
 
     fn do_git_push(&mut self, pi: usize, wi: usize, terminal: &mut Tui) -> Result<()> {
-        let path = match self.git_worktree_path(pi, wi) {
-            Some(p) => p,
-            None => { self.set_status("Worktree not found"); return Ok(()); }
-        };
-        self.loading = true;
-        tui::draw_sync(terminal, |frame| ui::render(frame, self))?;
-        let result = git_ops::push(&path);
-        self.loading = false;
+        let msg = self.run_git_op(pi, wi, terminal, "push", |p| git_ops::push(p))?;
         self.mode = Mode::Normal;
-        self.invalidate_git_info(pi, wi);
-        match result {
-            Ok(msg) => self.set_status(format!("push: {}", first_line(&msg))),
-            Err(e) => self.set_status(format!("push failed: {}", e)),
+        if let Some(msg) = msg {
+            self.set_status(format!("push: {}", first_line(&msg)));
         }
         Ok(())
     }
@@ -1842,18 +1844,9 @@ impl App {
         branch: String,
         terminal: &mut Tui,
     ) -> Result<()> {
-        let path = match self.git_worktree_path(pi, wi) {
-            Some(p) => p,
-            None => { self.set_status("Worktree not found"); return Ok(()); }
-        };
-        self.loading = true;
-        tui::draw_sync(terminal, |frame| ui::render(frame, self))?;
-        let result = git_ops::pull_rebase(&path, &branch);
-        self.loading = false;
-        self.invalidate_git_info(pi, wi);
-        match result {
-            Ok(msg) => self.set_status(format!("rebase: {}", first_line(&msg))),
-            Err(e) => self.set_status(format!("rebase failed: {}", e)),
+        let msg = self.run_git_op(pi, wi, terminal, "rebase", |p| git_ops::pull_rebase(p, &branch))?;
+        if let Some(msg) = msg {
+            self.set_status(format!("rebase: {}", first_line(&msg)));
         }
         Ok(())
     }
@@ -1865,18 +1858,9 @@ impl App {
         branch: String,
         terminal: &mut Tui,
     ) -> Result<()> {
-        let path = match self.git_worktree_path(pi, wi) {
-            Some(p) => p,
-            None => { self.set_status("Worktree not found"); return Ok(()); }
-        };
-        self.loading = true;
-        tui::draw_sync(terminal, |frame| ui::render(frame, self))?;
-        let result = git_ops::merge_from(&path, &branch);
-        self.loading = false;
-        self.invalidate_git_info(pi, wi);
-        match result {
-            Ok(msg) => self.set_status(format!("merge: {}", first_line(&msg))),
-            Err(e) => self.set_status(format!("merge failed: {}", e)),
+        let msg = self.run_git_op(pi, wi, terminal, "merge", |p| git_ops::merge_from(p, &branch))?;
+        if let Some(msg) = msg {
+            self.set_status(format!("merge: {}", first_line(&msg)));
         }
         Ok(())
     }
@@ -1888,18 +1872,9 @@ impl App {
         branch: String,
         terminal: &mut Tui,
     ) -> Result<()> {
-        let path = match self.git_worktree_path(pi, wi) {
-            Some(p) => p,
-            None => { self.set_status("Worktree not found"); return Ok(()); }
-        };
-        self.loading = true;
-        tui::draw_sync(terminal, |frame| ui::render(frame, self))?;
-        let result = git_ops::merge_into(&path, &branch);
-        self.loading = false;
-        self.invalidate_git_info(pi, wi);
-        match result {
-            Ok(msg) => self.set_status(msg),
-            Err(e) => self.set_status(format!("merge failed: {}", e)),
+        let msg = self.run_git_op(pi, wi, terminal, "merge", |p| git_ops::merge_into(p, &branch))?;
+        if let Some(msg) = msg {
+            self.set_status(msg);
         }
         Ok(())
     }

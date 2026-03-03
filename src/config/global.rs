@@ -5,10 +5,18 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+fn default_exclude_worktree_paths() -> Vec<String> {
+    vec![".claude/worktrees".to_string()]
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct GlobalConfig {
     #[serde(default)]
     pub projects: Vec<ProjectEntry>,
+    /// Worktree paths containing any of these substrings are hidden.
+    /// Defaults to [".claude/worktrees"] to exclude Claude agent worktrees.
+    #[serde(default = "default_exclude_worktree_paths")]
+    pub exclude_worktree_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -45,6 +53,11 @@ impl GlobalConfig {
         let text = toml::to_string_pretty(self)?;
         std::fs::write(&path, text)?;
         Ok(())
+    }
+
+    pub fn is_worktree_excluded(&self, path: &PathBuf) -> bool {
+        let path_str = path.to_string_lossy();
+        self.exclude_worktree_paths.iter().any(|pat| path_str.contains(pat.as_str()))
     }
 
     pub fn add_project(&mut self, name: String, path: PathBuf) {
