@@ -164,6 +164,40 @@ pub enum PendingAction {
     },
 }
 
+// ── Background jobs ───────────────────────────────────────────────────────────
+
+pub struct BgJob {
+    pub label: String,
+}
+
+pub enum BgOutcome {
+    WorktreeRemoved {
+        project_idx: usize,
+        worktree_idx: usize,
+        wt_path: std::path::PathBuf,
+        label: String,
+    },
+    ProjectsCleaned {
+        sessions_to_kill: Vec<String>,
+        msg: String,
+    },
+    GitOp {
+        pi: usize,
+        wi: usize,
+        msg: String,
+    },
+    WorktreeCreated {
+        label: String,
+    },
+}
+
+struct BgResult {
+    label: String,
+    outcome: Result<BgOutcome>,
+}
+
+pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 // ── App ──────────────────────────────────────────────────────────────────────
 
 pub struct App {
@@ -175,9 +209,13 @@ pub struct App {
     pub preview_area: Rect,
     pub mode: Mode,
     pub config: GlobalConfig,
+    send_command_history: Vec<String>,
     pub status_message: Option<String>,
     status_message_expires: Option<Instant>,
-    pub loading: bool,
+    pub jobs: Vec<BgJob>,
+    pub spinner_frame: usize,
+    bg_tx: mpsc::Sender<BgResult>,
+    bg_rx: mpsc::Receiver<BgResult>,
     needs_redraw: bool,
     fast_timer: Timer,
     activity_timer: Timer,
@@ -207,6 +245,7 @@ impl App {
             .unwrap_or_else(|| raw_selected.min(cached_flat.len().saturating_sub(1)));
         let (git_local_tx, git_local_rx) = mpsc::channel();
         let (fetch_tx, fetch_rx) = mpsc::channel();
+        let (bg_tx, bg_rx) = mpsc::channel();
 
         Ok(Self {
             workspace,
@@ -217,9 +256,13 @@ impl App {
             preview_area: Rect::default(),
             mode: Mode::Normal,
             config,
+            send_command_history: vec![],
             status_message: None,
             status_message_expires: None,
-            loading: false,
+            jobs: vec![],
+            spinner_frame: 0,
+            bg_tx,
+            bg_rx,
             needs_redraw: true,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
             activity_timer: Timer::new(ACTIVITY_INTERVAL_MS),
@@ -240,6 +283,71 @@ impl App {
     fn set_status(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
         self.status_message_expires = Some(Instant::now() + Duration::from_secs(4));
+    }
+
+    pub fn is_busy(&self) -> bool {
+        !self.jobs.is_empty()
+    }
+
+    fn spawn_bg<F>(&mut self, label: impl Into<String>, f: F)
+    where
+        F: FnOnce() -> Result<BgOutcome> + Send + 'static,
+    {
+        let label = label.into();
+        self.jobs.push(BgJob { label: label.clone() });
+        self.needs_redraw = true;
+        let tx = self.bg_tx.clone();
+        std::thread::spawn(move || {
+            let outcome = f();
+            let _ = tx.send(BgResult { label, outcome });
+        });
+    }
+
+    fn apply_bg_result(&mut self, result: BgResult) {
+        self.jobs.retain(|j| j.label != result.label);
+        self.needs_redraw = true;
+        match result.outcome {
+            Err(e) => {
+                self.set_status(format!("{}: {}", result.label, e));
+            }
+            Ok(BgOutcome::WorktreeRemoved { project_idx: pi, worktree_idx: wi, wt_path, label }) => {
+                // Search by path in case indices shifted due to a refresh
+                let found = self.workspace.projects.iter().enumerate().find_map(|(p, proj)| {
+                    proj.worktrees
+                        .iter()
+                        .enumerate()
+                        .find(|(_, wt)| wt.path == wt_path)
+                        .map(|(w, _)| (p, w))
+                });
+                let (p, w) = found.unwrap_or((pi, wi));
+                if p < self.workspace.projects.len()
+                    && w < self.workspace.projects[p].worktrees.len()
+                {
+                    self.workspace.projects[p].worktrees.remove(w);
+                    self.rebuild_flat();
+                    self.clamp_selected();
+                }
+                self.set_status(label);
+            }
+            Ok(BgOutcome::ProjectsCleaned { sessions_to_kill, msg }) => {
+                for sess in sessions_to_kill {
+                    let _ = session::kill_session(&sess);
+                }
+                let _ = self.refresh_all();
+                self.set_status(msg);
+            }
+            Ok(BgOutcome::GitOp { pi, wi, msg }) => {
+                self.invalidate_git_info(pi, wi);
+                let path = self.git_worktree_path(pi, wi).unwrap_or_default();
+                let branch = self.default_branch_for_project(pi);
+                self.spawn_git_local(path, branch);
+                self.set_status(msg);
+            }
+            Ok(BgOutcome::WorktreeCreated { label }) => {
+                let _ = self.refresh_all();
+                self.set_status(label);
+            }
+        }
     }
 
     fn ensure_flat(&mut self) {
@@ -313,7 +421,10 @@ impl App {
                 self.needs_redraw = false;
             }
 
-            let in_input = matches!(self.mode, Mode::Input { .. } | Mode::Search { .. } | Mode::GitPopup { .. });
+            let in_input = matches!(
+                self.mode,
+                Mode::Input { .. } | Mode::Search { .. } | Mode::GitPopup { .. }
+            );
             if let Some(action) = poll_event(Duration::from_millis(TICK_MS), in_input)? {
                 if self.cache_paused {
                     if action == Action::Quit {
@@ -343,6 +454,9 @@ impl App {
         while let Ok((path, info)) = self.git_local_rx.try_recv() {
             self.apply_git_local_result(path, info);
         }
+        while let Ok(result) = self.bg_rx.try_recv() {
+            self.apply_bg_result(result);
+        }
     }
 
     fn tick(&mut self) -> Result<()> {
@@ -369,6 +483,10 @@ impl App {
 
         if self.fast_timer.ready() {
             self.refresh_captures();
+            if !self.jobs.is_empty() {
+                self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+                self.needs_redraw = true;
+            }
         }
 
         Ok(())
@@ -448,12 +566,16 @@ impl App {
     }
 
     pub fn flush_cache(&self) {
-        if self.cache_paused { return; }
+        if self.cache_paused {
+            return;
+        }
         crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat());
     }
 
     fn check_cache_conflict(&mut self) {
-        if self.cache_paused { return; }
+        if self.cache_paused {
+            return;
+        }
         let current = crate::cache::cache_mtime();
         if current.is_some() && current != self.cache_mtime {
             self.cache_paused = true;
@@ -759,7 +881,11 @@ impl App {
             return Ok(());
         }
 
-        if let Mode::GitPopup { project_idx, worktree_idx } = &self.mode {
+        if let Mode::GitPopup {
+            project_idx,
+            worktree_idx,
+        } = &self.mode
+        {
             let (pi, wi) = (*project_idx, *worktree_idx);
             return self.dispatch_git_popup(pi, wi, action, terminal);
         }
@@ -774,7 +900,10 @@ impl App {
                 }
             }
             Mode::Search { .. } => self.dispatch_search(action, terminal)?,
-            Mode::Config { .. } | Mode::Move { .. } | Mode::MoveSession { .. } | Mode::GitPopup { .. } => unreachable!(),
+            Mode::Config { .. }
+            | Mode::Move { .. }
+            | Mode::MoveSession { .. }
+            | Mode::GitPopup { .. } => unreachable!(),
         }
         Ok(())
     }
@@ -872,7 +1001,7 @@ impl App {
                     state.cursor_right();
                 }
             }
-            Action::InputTab | Action::NavigateDown => {
+            Action::InputTab => {
                 if let Mode::Input {
                     context: InputContext::AddProject,
                     state,
@@ -881,13 +1010,22 @@ impl App {
                     state.select_next();
                 }
             }
+            Action::NavigateDown => {
+                if let Mode::Input { context, state } = &mut self.mode {
+                    match context {
+                        InputContext::AddProject => state.select_next(),
+                        InputContext::SendCommand { .. } => state.history_next(),
+                        _ => {}
+                    }
+                }
+            }
             Action::NavigateUp => {
-                if let Mode::Input {
-                    context: InputContext::AddProject,
-                    state,
-                } = &mut self.mode
-                {
-                    state.select_prev();
+                if let Mode::Input { context, state } = &mut self.mode {
+                    match context {
+                        InputContext::AddProject => state.select_prev(),
+                        InputContext::SendCommand { .. } => state.history_prev(),
+                        _ => {}
+                    }
                 }
             }
             _ => {}
@@ -895,9 +1033,9 @@ impl App {
         Ok(())
     }
 
-    fn dispatch_confirm(&mut self, action: Action, terminal: &mut Tui) -> Result<()> {
+    fn dispatch_confirm(&mut self, action: Action, _terminal: &mut Tui) -> Result<()> {
         match action {
-            Action::ConfirmYes | Action::Select => self.confirm_action(terminal)?,
+            Action::ConfirmYes | Action::Select => self.confirm_action()?,
             Action::NextAttention | Action::InputEscape | Action::Quit => {
                 self.mode = Mode::Normal;
             }
@@ -1070,7 +1208,10 @@ impl App {
 
         // Trigger a refresh after returning, but keep old git_info visible until result arrives.
         self.spawn_git_local(
-            self.workspace.worktree(pi, wi).map(|w| w.path.clone()).unwrap_or_default(),
+            self.workspace
+                .worktree(pi, wi)
+                .map(|w| w.path.clone())
+                .unwrap_or_default(),
             self.default_branch_for_project(pi),
         );
         Ok(())
@@ -1174,6 +1315,10 @@ impl App {
     }
 
     fn action_clean(&mut self) -> Result<()> {
+        if self.is_busy() {
+            self.set_status("Operation in progress");
+            return Ok(());
+        }
         match self.current_selection() {
             Selection::Worktree(pi, wi) => {
                 let (repo, wt_path, branch, default_branch, is_main, session_names) = {
@@ -1197,40 +1342,54 @@ impl App {
                     self.set_status(format!("'{}' not merged into {}", branch, default_branch));
                     return Ok(());
                 }
-                ops::delete_worktree(&repo, &wt_path, &branch, &session_names)?;
-                self.workspace.projects[pi].worktrees.remove(wi);
-                self.rebuild_flat();
-                self.clamp_selected();
-                self.set_status(format!("Cleaned: {}", branch));
+                let label = format!("Cleaned: {}", branch);
+                self.spawn_bg(format!("clean {}", branch), move || {
+                    ops::delete_worktree(&repo, &wt_path, &branch, &session_names)?;
+                    Ok(BgOutcome::WorktreeRemoved { project_idx: pi, worktree_idx: wi, wt_path, label })
+                });
             }
             Selection::Project(pi) | Selection::Session(pi, _, _) => {
-                let (path, branch) = {
+                let (path, default_branch, branch_sessions) = {
                     let p = &self.workspace.projects[pi];
-                    (p.path.clone(), p.default_branch.clone())
+                    (p.path.clone(), p.default_branch.clone(), p.branch_session_names())
                 };
-                let removed = git_worktree::clean_merged(&path, &branch)?;
-                self.set_status(if removed.is_empty() {
-                    "No merged worktrees to clean".into()
-                } else {
-                    format!("Cleaned: {}", removed.join(", "))
+                self.spawn_bg("clean project", move || {
+                    let removed = git_worktree::clean_merged(&path, &default_branch)?;
+                    let sessions_to_kill: Vec<String> = removed
+                        .iter()
+                        .flat_map(|b| branch_sessions.get(b).cloned().unwrap_or_default())
+                        .collect();
+                    let msg = if removed.is_empty() {
+                        "No merged worktrees to clean".into()
+                    } else {
+                        format!("Cleaned: {}", removed.join(", "))
+                    };
+                    Ok(BgOutcome::ProjectsCleaned { sessions_to_kill, msg })
                 });
-                self.refresh_all()?;
             }
             Selection::None => {
                 let snapshots: Vec<_> = self
                     .workspace
                     .projects
                     .iter()
-                    .map(|p| (p.path.clone(), p.default_branch.clone()))
+                    .map(|p| (p.path.clone(), p.default_branch.clone(), p.branch_session_names()))
                     .collect();
-                let mut total = 0usize;
-                for (path, branch) in snapshots {
-                    if let Ok(r) = git_worktree::clean_merged(&path, &branch) {
-                        total += r.len();
+                self.spawn_bg("clean all", move || {
+                    let mut sessions_to_kill = Vec::new();
+                    let mut total = 0usize;
+                    for (path, branch, branch_sessions) in &snapshots {
+                        if let Ok(removed) = git_worktree::clean_merged(path, branch) {
+                            for b in &removed {
+                                if let Some(s) = branch_sessions.get(b) {
+                                    sessions_to_kill.extend(s.iter().cloned());
+                                }
+                            }
+                            total += removed.len();
+                        }
                     }
-                }
-                self.set_status(format!("Cleaned {} merged worktrees", total));
-                self.refresh_all()?;
+                    let msg = format!("Cleaned {} merged worktrees", total);
+                    Ok(BgOutcome::ProjectsCleaned { sessions_to_kill, msg })
+                });
             }
         }
         Ok(())
@@ -1283,7 +1442,7 @@ impl App {
                 let name = sess.name.clone();
                 self.mode = Mode::Input {
                     context: InputContext::SendCommand { session_name: name },
-                    state: InputState::new("cmd: "),
+                    state: InputState::with_history("cmd: ", self.send_command_history.clone()),
                 };
             }
         }
@@ -1436,7 +1595,7 @@ impl App {
 
     // ── Input confirm ─────────────────────────────────────────────────────────
 
-    fn confirm_input(&mut self, terminal: &mut Tui) -> Result<()> {
+    fn confirm_input(&mut self, _terminal: &mut Tui) -> Result<()> {
         let mode = std::mem::replace(&mut self.mode, Mode::Normal);
         if let Mode::Input { context, state } = mode {
             let value = state.value().trim().to_string();
@@ -1495,23 +1654,39 @@ impl App {
                 InputContext::SendCommand { session_name } => {
                     if !value.is_empty() {
                         session::send_keys(&session_name, &value)?;
+                        if self.send_command_history.last() != Some(&value) {
+                            self.send_command_history.push(value);
+                            if self.send_command_history.len() > 50 {
+                                let overflow = self.send_command_history.len() - 50;
+                                self.send_command_history.drain(0..overflow);
+                            }
+                        }
                     }
                 }
-                InputContext::GitPullRebase { project_idx, worktree_idx } => {
+                InputContext::GitPullRebase {
+                    project_idx,
+                    worktree_idx,
+                } => {
                     if !value.is_empty() {
-                        self.do_git_pull_rebase(project_idx, worktree_idx, value, terminal)?;
+                        self.do_git_pull_rebase(project_idx, worktree_idx, value)?;
                         return Ok(());
                     }
                 }
-                InputContext::GitMergeFrom { project_idx, worktree_idx } => {
+                InputContext::GitMergeFrom {
+                    project_idx,
+                    worktree_idx,
+                } => {
                     if !value.is_empty() {
-                        self.do_git_merge_from(project_idx, worktree_idx, value, terminal)?;
+                        self.do_git_merge_from(project_idx, worktree_idx, value)?;
                         return Ok(());
                     }
                 }
-                InputContext::GitMergeInto { project_idx, worktree_idx } => {
+                InputContext::GitMergeInto {
+                    project_idx,
+                    worktree_idx,
+                } => {
                     if !value.is_empty() {
-                        self.do_git_merge_into(project_idx, worktree_idx, value, terminal)?;
+                        self.do_git_merge_into(project_idx, worktree_idx, value)?;
                         return Ok(());
                     }
                 }
@@ -1520,29 +1695,55 @@ impl App {
         Ok(())
     }
 
-    fn confirm_action(&mut self, terminal: &mut Tui) -> Result<()> {
+    fn confirm_action(&mut self) -> Result<()> {
+        if self.is_busy() {
+            self.set_status("Operation in progress");
+            return Ok(());
+        }
         let mode = std::mem::replace(&mut self.mode, Mode::Normal);
         if let Mode::Confirm { pending, .. } = mode {
-            self.loading = true;
-            tui::draw_sync(terminal, |frame| ui::render(frame, self))?;
-            let result = match pending {
-                PendingAction::DeleteProject { project_idx } => self.do_delete_project(project_idx),
-                PendingAction::DeleteWorktree {
-                    project_idx,
-                    worktree_idx,
-                } => self.do_delete_worktree(project_idx, worktree_idx),
+            match pending {
+                PendingAction::DeleteProject { project_idx } => {
+                    self.do_delete_project(project_idx)?;
+                }
                 PendingAction::DeleteSession {
                     project_idx,
                     worktree_idx,
                     session_idx,
-                } => self.do_delete_session(project_idx, worktree_idx, session_idx),
+                } => {
+                    self.do_delete_session(project_idx, worktree_idx, session_idx)?;
+                }
+                PendingAction::DeleteWorktree {
+                    project_idx: pi,
+                    worktree_idx: wi,
+                } => {
+                    let (repo, wt_path, branch, session_names) = {
+                        let p = &self.workspace.projects[pi];
+                        let wt = &p.worktrees[wi];
+                        let names: Vec<String> = wt.sessions.iter().map(|s| s.name.clone()).collect();
+                        (p.path.clone(), wt.path.clone(), wt.branch.clone(), names)
+                    };
+                    let label = format!("Deleted: {}", branch);
+                    self.spawn_bg(format!("delete {}", branch), move || {
+                        ops::delete_worktree(&repo, &wt_path, &branch, &session_names)?;
+                        Ok(BgOutcome::WorktreeRemoved { project_idx: pi, worktree_idx: wi, wt_path, label })
+                    });
+                }
                 PendingAction::CreateWorktree {
-                    project_idx,
+                    project_idx: pi,
                     branch,
-                } => self.do_create_worktree(project_idx, branch),
-            };
-            self.loading = false;
-            result?;
+                } => {
+                    let (repo_path, default_branch, proj_config) = {
+                        let p = &self.workspace.projects[pi];
+                        (p.path.clone(), p.default_branch.clone(), p.config.clone().unwrap_or_default())
+                    };
+                    let label = format!("Created worktree: {}", branch);
+                    self.spawn_bg(format!("create {}", branch), move || {
+                        ops::create_worktree(&repo_path, &default_branch, &proj_config, &branch)?;
+                        Ok(BgOutcome::WorktreeCreated { label })
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -1555,25 +1756,6 @@ impl App {
         self.rebuild_flat();
         self.config.save()?;
         self.set_status("Project registered");
-        Ok(())
-    }
-
-    fn do_create_worktree(&mut self, pi: usize, branch: String) -> Result<()> {
-        let (repo_path, default_branch, proj_config) = {
-            let p = &self.workspace.projects[pi];
-            (
-                p.path.clone(),
-                p.default_branch.clone(),
-                p.config.clone().unwrap_or_default(),
-            )
-        };
-        let (_wt_path, warning) =
-            ops::create_worktree(&repo_path, &default_branch, &proj_config, &branch)?;
-        if let Some(w) = warning {
-            self.set_status(w);
-        }
-        self.refresh_all()?;
-        self.set_status(format!("Created worktree: {}", branch));
         Ok(())
     }
 
@@ -1602,21 +1784,6 @@ impl App {
         if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
             wt.expanded = true;
         }
-        Ok(())
-    }
-
-    fn do_delete_worktree(&mut self, pi: usize, wi: usize) -> Result<()> {
-        let (repo, path, branch, session_names) = {
-            let p = &self.workspace.projects[pi];
-            let wt = &p.worktrees[wi];
-            let names: Vec<String> = wt.sessions.iter().map(|s| s.name.clone()).collect();
-            (p.path.clone(), wt.path.clone(), wt.branch.clone(), names)
-        };
-        ops::delete_worktree(&repo, &path, &branch, &session_names)?;
-        self.workspace.projects[pi].worktrees.remove(wi);
-        self.rebuild_flat();
-        self.clamp_selected();
-        self.set_status(format!("Deleted: {}", branch));
         Ok(())
     }
 
@@ -1796,7 +1963,10 @@ impl App {
                 return;
             }
         };
-        self.mode = Mode::GitPopup { project_idx: pi, worktree_idx: wi };
+        self.mode = Mode::GitPopup {
+            project_idx: pi,
+            worktree_idx: wi,
+        };
     }
 
     fn dispatch_git_popup(
@@ -1804,29 +1974,38 @@ impl App {
         pi: usize,
         wi: usize,
         action: Action,
-        terminal: &mut Tui,
+        _terminal: &mut Tui,
     ) -> Result<()> {
         match action {
-            Action::InputChar('p') => self.do_git_pull(pi, wi, terminal)?,
-            Action::InputChar('P') => self.do_git_push(pi, wi, terminal)?,
+            Action::InputChar('p') => self.do_git_pull(pi, wi),
+            Action::InputChar('P') => self.do_git_push(pi, wi),
             Action::InputChar('r') => {
                 let default = self.workspace.projects[pi].default_branch.clone();
                 self.mode = Mode::Input {
-                    context: InputContext::GitPullRebase { project_idx: pi, worktree_idx: wi },
+                    context: InputContext::GitPullRebase {
+                        project_idx: pi,
+                        worktree_idx: wi,
+                    },
                     state: InputState::with_value("branch: ", default),
                 };
             }
             Action::InputChar('m') => {
                 let default = self.workspace.projects[pi].default_branch.clone();
                 self.mode = Mode::Input {
-                    context: InputContext::GitMergeFrom { project_idx: pi, worktree_idx: wi },
+                    context: InputContext::GitMergeFrom {
+                        project_idx: pi,
+                        worktree_idx: wi,
+                    },
                     state: InputState::with_value("branch: ", default),
                 };
             }
             Action::InputChar('M') => {
                 let default = self.workspace.projects[pi].default_branch.clone();
                 self.mode = Mode::Input {
-                    context: InputContext::GitMergeInto { project_idx: pi, worktree_idx: wi },
+                    context: InputContext::GitMergeInto {
+                        project_idx: pi,
+                        worktree_idx: wi,
+                    },
                     state: InputState::with_value("branch: ", default),
                 };
             }
@@ -1837,7 +2016,12 @@ impl App {
     }
 
     fn git_worktree_path(&self, pi: usize, wi: usize) -> Option<std::path::PathBuf> {
-        self.workspace.projects.get(pi)?.worktrees.get(wi).map(|wt| wt.path.clone())
+        self.workspace
+            .projects
+            .get(pi)?
+            .worktrees
+            .get(wi)
+            .map(|wt| wt.path.clone())
     }
 
     fn invalidate_git_info(&mut self, pi: usize, wi: usize) {
@@ -1846,92 +2030,48 @@ impl App {
         }
     }
 
-    /// Show loading spinner, run `op`, hide spinner, invalidate git info.
-    /// Returns the success message, or None if the worktree wasn't found or the op failed
-    /// (sets a status message in both failure cases).
-    fn run_git_op(
-        &mut self,
-        pi: usize,
-        wi: usize,
-        terminal: &mut Tui,
-        op_name: &str,
-        op: impl FnOnce(&std::path::Path) -> anyhow::Result<String>,
-    ) -> Result<Option<String>> {
+    /// Spawn a background git operation. Closes the current popup mode immediately.
+    fn spawn_git_op<F>(&mut self, pi: usize, wi: usize, op_name: &str, f: F)
+    where
+        F: FnOnce(&std::path::Path) -> anyhow::Result<String> + Send + 'static,
+    {
+        if self.is_busy() {
+            self.set_status("Operation in progress");
+            return;
+        }
         let Some(path) = self.git_worktree_path(pi, wi) else {
             self.set_status("Worktree not found");
-            return Ok(None);
+            return;
         };
-        self.loading = true;
-        tui::draw_sync(terminal, |frame| ui::render(frame, self))?;
-        let result = op(&path);
-        self.loading = false;
-        self.invalidate_git_info(pi, wi);
-        match result {
-            Ok(msg) => Ok(Some(msg)),
-            Err(e) => {
-                self.set_status(format!("{} failed: {}", op_name, e));
-                Ok(None)
-            }
-        }
-    }
-
-    fn do_git_pull(&mut self, pi: usize, wi: usize, terminal: &mut Tui) -> Result<()> {
-        let msg = self.run_git_op(pi, wi, terminal, "pull", |p| git_ops::pull(p))?;
         self.mode = Mode::Normal;
-        if let Some(msg) = msg {
-            self.set_status(format!("pull: {}", first_line(&msg)));
-        }
+        let label = op_name.to_string();
+        self.spawn_bg(label.clone(), move || {
+            let out = f(&path).map_err(|e| anyhow::anyhow!("{} failed: {}", label, e))?;
+            let msg = format!("{}: {}", label, first_line(&out));
+            Ok(BgOutcome::GitOp { pi, wi, msg })
+        });
+    }
+
+    fn do_git_pull(&mut self, pi: usize, wi: usize) {
+        self.spawn_git_op(pi, wi, "pull", |p| git_ops::pull(p));
+    }
+
+    fn do_git_push(&mut self, pi: usize, wi: usize) {
+        self.spawn_git_op(pi, wi, "push", |p| git_ops::push(p));
+    }
+
+    fn do_git_pull_rebase(&mut self, pi: usize, wi: usize, branch: String) -> Result<()> {
+        self.spawn_git_op(pi, wi, "rebase", move |p| git_ops::pull_rebase(p, &branch));
         Ok(())
     }
 
-    fn do_git_push(&mut self, pi: usize, wi: usize, terminal: &mut Tui) -> Result<()> {
-        let msg = self.run_git_op(pi, wi, terminal, "push", |p| git_ops::push(p))?;
-        self.mode = Mode::Normal;
-        if let Some(msg) = msg {
-            self.set_status(format!("push: {}", first_line(&msg)));
-        }
+    fn do_git_merge_from(&mut self, pi: usize, wi: usize, branch: String) -> Result<()> {
+        self.spawn_git_op(pi, wi, "merge", move |p| git_ops::merge_from(p, &branch));
         Ok(())
     }
 
-    fn do_git_pull_rebase(
-        &mut self,
-        pi: usize,
-        wi: usize,
-        branch: String,
-        terminal: &mut Tui,
-    ) -> Result<()> {
-        let msg = self.run_git_op(pi, wi, terminal, "rebase", |p| git_ops::pull_rebase(p, &branch))?;
-        if let Some(msg) = msg {
-            self.set_status(format!("rebase: {}", first_line(&msg)));
-        }
-        Ok(())
-    }
-
-    fn do_git_merge_from(
-        &mut self,
-        pi: usize,
-        wi: usize,
-        branch: String,
-        terminal: &mut Tui,
-    ) -> Result<()> {
-        let msg = self.run_git_op(pi, wi, terminal, "merge", |p| git_ops::merge_from(p, &branch))?;
-        if let Some(msg) = msg {
-            self.set_status(format!("merge: {}", first_line(&msg)));
-        }
-        Ok(())
-    }
-
-    fn do_git_merge_into(
-        &mut self,
-        pi: usize,
-        wi: usize,
-        branch: String,
-        terminal: &mut Tui,
-    ) -> Result<()> {
-        let msg = self.run_git_op(pi, wi, terminal, "merge", |p| git_ops::merge_into(p, &branch))?;
-        if let Some(msg) = msg {
-            self.set_status(msg);
-        }
+    fn do_git_merge_into(&mut self, pi: usize, wi: usize, branch: String) -> Result<()> {
+        self.spawn_git_op(pi, wi, "merge-into", move |p| git_ops::merge_into(p, &branch));
         Ok(())
     }
 }
