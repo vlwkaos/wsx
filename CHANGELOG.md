@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.8.3] - 2026-03-03
+
+### Features
+
+- Detect when another wsx instance writes the cache — pauses writes and shows a popup; any key reloads expand states and cursor from the updated cache ([`a4c4793`](https://github.com/vlwkaos/wsx/commit/a4c4793))
+
+### Bug Fixes
+
+- Cursor no longer drifts across sessions — position is now persisted as a stable path identity (project/worktree/session path) rather than a raw flat-tree index ([`339713b`](https://github.com/vlwkaos/wsx/commit/339713b))
+- Expand state for projects with trailing slashes in config paths (`dgv3/`, `eyetrackpad/`) now persists correctly — paths are normalized on load ([`339713b`](https://github.com/vlwkaos/wsx/commit/339713b))
+- Cache save errors are now visible in the terminal — `flush_cache` runs after `tui::restore` instead of while the alternate screen is active ([`339713b`](https://github.com/vlwkaos/wsx/commit/339713b))
+
+---
+
 ## [0.8.2] - 2026-03-01
 
 ### Bug Fixes
