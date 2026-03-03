@@ -9,7 +9,7 @@ fn default_exclude_worktree_paths() -> Vec<String> {
     vec![".claude/worktrees".to_string()]
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GlobalConfig {
     #[serde(default)]
     pub projects: Vec<ProjectEntry>,
@@ -17,6 +17,15 @@ pub struct GlobalConfig {
     /// Defaults to [".claude/worktrees"] to exclude Claude agent worktrees.
     #[serde(default = "default_exclude_worktree_paths")]
     pub exclude_worktree_paths: Vec<String>,
+}
+
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            projects: vec![],
+            exclude_worktree_paths: default_exclude_worktree_paths(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -40,8 +49,12 @@ impl GlobalConfig {
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let config: Self = toml::from_str(&text)
+        let mut config: Self = toml::from_str(&text)
             .with_context(|| format!("parsing {}", path.display()))?;
+        for entry in &mut config.projects {
+            let s = entry.path.to_string_lossy().trim_end_matches('/').to_string();
+            entry.path = PathBuf::from(s);
+        }
         Ok(config)
     }
 
@@ -61,6 +74,8 @@ impl GlobalConfig {
     }
 
     pub fn add_project(&mut self, name: String, path: PathBuf) {
+        let s = path.to_string_lossy().trim_end_matches('/').to_string();
+        let path = PathBuf::from(s);
         self.projects.retain(|p| p.path != path);
         self.projects.push(ProjectEntry { name, path, aliases: Default::default() });
     }
