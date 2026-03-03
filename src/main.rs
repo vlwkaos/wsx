@@ -25,16 +25,10 @@ fn main() -> Result<()> {
     }
 
     let mut terminal = tui::init().context("terminal init failed")?;
-
-    let result = run(&mut terminal);
-
-    // Always restore terminal, even on error
-    let _ = tui::restore(&mut terminal);
-
-    result
-}
-
-fn run(terminal: &mut tui::Tui) -> Result<()> {
     let mut app = App::new()?;
-    app.run(terminal)
+    let result = app.run(&mut terminal);
+    // Restore terminal before flush_cache so any eprintln is visible.
+    let _ = tui::restore(&mut terminal);
+    app.flush_cache();
+    result
 }

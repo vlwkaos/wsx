@@ -5,7 +5,15 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use crate::model::workspace::{session_display_name_from_tmux, SessionInfo, WorkspaceState};
+use crate::model::workspace::{session_display_name_from_tmux, FlatEntry, SessionInfo, WorkspaceState};
+
+/// Stable cursor identity — survives session appear/disappear and expand-state changes.
+#[derive(Serialize, Deserialize, Clone)]
+pub enum CursorIdentity {
+    Project { path: String },
+    Worktree { path: String },
+    Session { worktree_path: String, session_name: String },
+}
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct WorkspaceCache {
@@ -15,8 +23,11 @@ pub struct WorkspaceCache {
     pub worktree_expanded: HashMap<String, bool>,
     /// project path → expanded
     pub project_expanded: HashMap<String, bool>,
-    /// last cursor position in the flat tree
+    /// last cursor position in the flat tree (raw fallback)
     pub tree_selected: usize,
+    /// stable cursor identity (preferred over raw index)
+    #[serde(default)]
+    pub cursor_identity: Option<CursorIdentity>,
     /// session names where the user dismissed the running-app notification
     #[serde(default)]
     pub suppressed_sessions: HashSet<String>,
@@ -33,15 +44,22 @@ impl WorkspaceCache {
         toml::from_str(&content).unwrap_or_default()
     }
 
-    pub fn save(&self) {
+    pub fn save(&self) -> anyhow::Result<()> {
         let path = cache_path();
         if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            std::fs::create_dir_all(dir)?;
         }
-        if let Ok(s) = toml::to_string(self) {
-            let _ = std::fs::write(path, s);
-        }
+        let s = toml::to_string(self)?;
+        let mut f = std::fs::File::create(&path)?;
+        std::io::Write::write_all(&mut f, s.as_bytes())?;
+        f.sync_all()?;
+        Ok(())
     }
+}
+
+/// Returns the last-modified time of the cache file, used for external-change detection.
+pub fn cache_mtime() -> Option<std::time::SystemTime> {
+    std::fs::metadata(cache_path()).ok()?.modified().ok()
 }
 
 fn cache_path() -> PathBuf {
@@ -52,12 +70,13 @@ fn cache_path() -> PathBuf {
 }
 
 /// Pre-populate workspace with cached state before first live sync.
-/// Returns the last saved cursor position.
-pub fn apply_cache(workspace: &mut WorkspaceState) -> usize {
+/// Returns (raw_index, identity) — caller should prefer resolving identity.
+pub fn apply_cache(workspace: &mut WorkspaceState) -> (usize, Option<CursorIdentity>) {
     let cache = WorkspaceCache::load();
     for project in &mut workspace.projects {
         let proj_key = project.path.to_string_lossy().to_string();
-        if let Some(&expanded) = cache.project_expanded.get(&proj_key) {
+        let cached = cache.project_expanded.get(&proj_key).copied();
+        if let Some(expanded) = cached {
             project.expanded = expanded;
         }
         for wt in &mut project.worktrees {
@@ -88,13 +107,37 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> usize {
             }
         }
     }
-    cache.tree_selected
+    (cache.tree_selected, cache.cursor_identity)
+}
+
+/// Resolve a saved CursorIdentity back to a flat-tree index.
+pub fn find_cursor_index(workspace: &WorkspaceState, flat: &[FlatEntry], id: &CursorIdentity) -> Option<usize> {
+    match id {
+        CursorIdentity::Project { path } => flat.iter().position(|e| {
+            if let FlatEntry::Project { idx } = e {
+                workspace.projects[*idx].path.to_string_lossy() == path.as_str()
+            } else { false }
+        }),
+        CursorIdentity::Worktree { path } => flat.iter().position(|e| {
+            if let FlatEntry::Worktree { project_idx: pi, worktree_idx: wi } = e {
+                workspace.projects[*pi].worktrees[*wi].path.to_string_lossy() == path.as_str()
+            } else { false }
+        }),
+        CursorIdentity::Session { worktree_path, session_name } => flat.iter().position(|e| {
+            if let FlatEntry::Session { project_idx: pi, worktree_idx: wi, session_idx: si } = e {
+                let wt = &workspace.projects[*pi].worktrees[*wi];
+                wt.path.to_string_lossy() == worktree_path.as_str()
+                    && wt.sessions[*si].name == *session_name
+            } else { false }
+        }),
+    }
 }
 
 /// Persist session names, expand states, and cursor position.
-pub fn save_cache(workspace: &WorkspaceState, tree_selected: usize) {
+pub fn save_cache(workspace: &WorkspaceState, tree_selected: usize, flat: &[FlatEntry]) {
     let mut cache = WorkspaceCache::default();
     cache.tree_selected = tree_selected;
+    cache.cursor_identity = resolve_cursor_identity(workspace, flat, tree_selected);
     for project in &workspace.projects {
         let proj_key = project.path.to_string_lossy().to_string();
         cache.project_expanded.insert(proj_key, project.expanded);
@@ -112,5 +155,26 @@ pub fn save_cache(workspace: &WorkspaceState, tree_selected: usize) {
             }
         }
     }
-    cache.save();
+    if let Err(e) = cache.save() {
+        eprintln!("cache save failed: {e}");
+    }
+}
+
+fn resolve_cursor_identity(workspace: &WorkspaceState, flat: &[FlatEntry], idx: usize) -> Option<CursorIdentity> {
+    match flat.get(idx)? {
+        FlatEntry::Project { idx: pi } => {
+            Some(CursorIdentity::Project { path: workspace.projects[*pi].path.to_string_lossy().to_string() })
+        }
+        FlatEntry::Worktree { project_idx: pi, worktree_idx: wi } => {
+            let wt = &workspace.projects[*pi].worktrees[*wi];
+            Some(CursorIdentity::Worktree { path: wt.path.to_string_lossy().to_string() })
+        }
+        FlatEntry::Session { project_idx: pi, worktree_idx: wi, session_idx: si } => {
+            let wt = &workspace.projects[*pi].worktrees[*wi];
+            Some(CursorIdentity::Session {
+                worktree_path: wt.path.to_string_lossy().to_string(),
+                session_name: wt.sessions[*si].name.clone(),
+            })
+        }
+    }
 }
