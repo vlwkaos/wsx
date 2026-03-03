@@ -1,11 +1,11 @@
 // Simple list picker overlay (no fuzzy filtering). Reserved for future use.
 #![allow(dead_code)]
 
+use crate::ui::popup_center;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, List, ListItem, ListState},
 };
-use crate::ui::popup_center;
 
 pub struct PickerState {
     pub title: String,
@@ -19,18 +19,26 @@ impl PickerState {
         if !items.is_empty() {
             list_state.select(Some(0));
         }
-        Self { title: title.into(), items, list_state }
+        Self {
+            title: title.into(),
+            items,
+            list_state,
+        }
     }
 
     pub fn navigate_up(&mut self) {
-        if self.items.is_empty() { return; }
+        if self.items.is_empty() {
+            return;
+        }
         let i = self.list_state.selected().unwrap_or(0);
         let next = if i == 0 { self.items.len() - 1 } else { i - 1 };
         self.list_state.select(Some(next));
     }
 
     pub fn navigate_down(&mut self) {
-        if self.items.is_empty() { return; }
+        if self.items.is_empty() {
+            return;
+        }
         let i = self.list_state.selected().unwrap_or(0);
         let next = (i + 1) % self.items.len();
         self.list_state.select(Some(next));
@@ -49,7 +57,11 @@ pub fn render_picker(frame: &mut Frame, area: Rect, state: &mut PickerState) {
 
     frame.render_widget(Clear, popup);
 
-    let items: Vec<ListItem> = state.items.iter().map(|s| ListItem::new(s.as_str())).collect();
+    let items: Vec<ListItem> = state
+        .items
+        .iter()
+        .map(|s| ListItem::new(s.as_str()))
+        .collect();
     let list = List::new(items)
         .block(
             Block::default()

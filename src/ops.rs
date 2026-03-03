@@ -99,7 +99,10 @@ pub fn refresh_workspace(
 
         if let Ok(entries) = git_worktree::list_worktrees(&path) {
             let mut new_worktrees = Vec::new();
-            for entry in entries.into_iter().filter(|e| !config.is_worktree_excluded(&e.path)) {
+            for entry in entries
+                .into_iter()
+                .filter(|e| !config.is_worktree_excluded(&e.path))
+            {
                 let alias = aliases.get(&entry.branch).cloned();
                 let wt_path = entry.path.clone();
                 let prev = snapshot.get(&entry.path);
@@ -255,7 +258,10 @@ pub fn load_workspace(config: &GlobalConfig) -> WorkspaceState {
             let default_branch = detect_default_branch(path);
             let proj_config = crate::config::project::load_project_config(path);
             let entries = git_worktree::list_worktrees(path).unwrap_or_default();
-            let entries = entries.into_iter().filter(|e| !config.is_worktree_excluded(&e.path)).collect();
+            let entries = entries
+                .into_iter()
+                .filter(|e| !config.is_worktree_excluded(&e.path))
+                .collect();
             let worktrees = git_worktree::to_worktree_infos(entries, &entry.aliases);
 
             Some(Project {

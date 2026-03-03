@@ -1,13 +1,18 @@
 // Per-project .gtrconfig editor overlay.
 
+use crate::model::workspace::ProjectConfig;
+use crate::ui::popup_center;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
-use crate::model::workspace::ProjectConfig;
-use crate::ui::popup_center;
 
-pub fn render_config_modal(frame: &mut Frame, area: Rect, config: &ProjectConfig, project_name: &str) {
+pub fn render_config_modal(
+    frame: &mut Frame,
+    area: Rect,
+    config: &ProjectConfig,
+    project_name: &str,
+) {
     let width = area.width.min(60).max(40);
     let height = area.height.min(16).max(8);
     let popup = popup_center(area, width, height);
@@ -23,19 +28,34 @@ pub fn render_config_modal(frame: &mut Frame, area: Rect, config: &ProjectConfig
             ),
         ]),
         Line::from(""),
-        Line::from(Span::styled("copy.include:", Style::default().fg(Color::Gray))),
+        Line::from(Span::styled(
+            "copy.include:",
+            Style::default().fg(Color::Gray),
+        )),
     ];
 
     for inc in &config.copy_includes {
-        lines.push(Line::from(Span::styled(format!("  {}", inc), Style::default().fg(Color::Green))));
+        lines.push(Line::from(Span::styled(
+            format!("  {}", inc),
+            Style::default().fg(Color::Green),
+        )));
     }
     if config.copy_includes.is_empty() {
-        lines.push(Line::from(Span::styled("  (none)", Style::default().fg(Color::Gray))));
+        lines.push(Line::from(Span::styled(
+            "  (none)",
+            Style::default().fg(Color::Gray),
+        )));
     }
 
-    lines.push(Line::from(Span::styled("copy.exclude:", Style::default().fg(Color::Gray))));
+    lines.push(Line::from(Span::styled(
+        "copy.exclude:",
+        Style::default().fg(Color::Gray),
+    )));
     for exc in &config.copy_excludes {
-        lines.push(Line::from(Span::styled(format!("  {}", exc), Style::default().fg(Color::Red))));
+        lines.push(Line::from(Span::styled(
+            format!("  {}", exc),
+            Style::default().fg(Color::Red),
+        )));
     }
 
     lines.push(Line::from(""));
@@ -48,6 +68,8 @@ pub fn render_config_modal(frame: &mut Frame, area: Rect, config: &ProjectConfig
         .borders(Borders::ALL)
         .title(format!(" Config: {} ", project_name))
         .border_style(Style::default().fg(Color::Yellow));
-    let para = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+    let para = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
     frame.render_widget(para, popup);
 }
