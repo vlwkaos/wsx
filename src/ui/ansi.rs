@@ -43,7 +43,12 @@ pub fn parse(input: &str) -> Text<'static> {
     Text::from(lines)
 }
 
-fn push_text(text: &str, spans: &mut Vec<Span<'static>>, lines: &mut Vec<Line<'static>>, style: Style) {
+fn push_text(
+    text: &str,
+    spans: &mut Vec<Span<'static>>,
+    lines: &mut Vec<Line<'static>>,
+    style: Style,
+) {
     let mut s = text;
     loop {
         match s.find('\n') {
@@ -65,9 +70,7 @@ fn push_text(text: &str, spans: &mut Vec<Span<'static>>, lines: &mut Vec<Line<'s
 }
 
 fn apply_sgr(mut style: Style, seq: &str) -> Style {
-    let mut params: Vec<u8> = seq.split(';')
-        .filter_map(|s| s.parse().ok())
-        .collect();
+    let mut params: Vec<u8> = seq.split(';').filter_map(|s| s.parse().ok()).collect();
     if params.is_empty() {
         params.push(0);
     }
@@ -75,19 +78,19 @@ fn apply_sgr(mut style: Style, seq: &str) -> Style {
     let mut idx = 0;
     while idx < params.len() {
         match params[idx] {
-            0  => style = Style::default(),
-            1  => style = style.add_modifier(Modifier::BOLD),
-            2  => style = style.add_modifier(Modifier::DIM),
-            3  => style = style.add_modifier(Modifier::ITALIC),
-            4  => style = style.add_modifier(Modifier::UNDERLINED),
+            0 => style = Style::default(),
+            1 => style = style.add_modifier(Modifier::BOLD),
+            2 => style = style.add_modifier(Modifier::DIM),
+            3 => style = style.add_modifier(Modifier::ITALIC),
+            4 => style = style.add_modifier(Modifier::UNDERLINED),
             22 => style = style.remove_modifier(Modifier::BOLD | Modifier::DIM),
             23 => style = style.remove_modifier(Modifier::ITALIC),
             24 => style = style.remove_modifier(Modifier::UNDERLINED),
-            n @ 30..=37  => style = style.fg(ansi_color(n - 30, false)),
-            39           => style = style.fg(Color::Reset),
-            n @ 40..=47  => style = style.bg(ansi_color(n - 40, false)),
-            49           => style = style.bg(Color::Reset),
-            n @ 90..=97  => style = style.fg(ansi_color(n - 90, true)),
+            n @ 30..=37 => style = style.fg(ansi_color(n - 30, false)),
+            39 => style = style.fg(Color::Reset),
+            n @ 40..=47 => style = style.bg(ansi_color(n - 40, false)),
+            49 => style = style.bg(Color::Reset),
+            n @ 90..=97 => style = style.fg(ansi_color(n - 90, true)),
             n @ 100..=107 => style = style.bg(ansi_color(n - 100, true)),
             38 | 48 => {
                 let is_fg = params[idx] == 38;
@@ -110,22 +113,30 @@ fn apply_sgr(mut style: Style, seq: &str) -> Style {
 
 fn ansi_color(n: u8, bright: bool) -> Color {
     match (n, bright) {
-        (0, false) => Color::Black,     (0, true) => Color::DarkGray,
-        (1, false) => Color::Red,       (1, true) => Color::LightRed,
-        (2, false) => Color::Green,     (2, true) => Color::LightGreen,
-        (3, false) => Color::Yellow,    (3, true) => Color::LightYellow,
-        (4, false) => Color::Blue,      (4, true) => Color::LightBlue,
-        (5, false) => Color::Magenta,   (5, true) => Color::LightMagenta,
-        (6, false) => Color::Cyan,      (6, true) => Color::LightCyan,
-        (7, false) => Color::White,     (7, true) => Color::Gray,
+        (0, false) => Color::Black,
+        (0, true) => Color::DarkGray,
+        (1, false) => Color::Red,
+        (1, true) => Color::LightRed,
+        (2, false) => Color::Green,
+        (2, true) => Color::LightGreen,
+        (3, false) => Color::Yellow,
+        (3, true) => Color::LightYellow,
+        (4, false) => Color::Blue,
+        (4, true) => Color::LightBlue,
+        (5, false) => Color::Magenta,
+        (5, true) => Color::LightMagenta,
+        (6, false) => Color::Cyan,
+        (6, true) => Color::LightCyan,
+        (7, false) => Color::White,
+        (7, true) => Color::Gray,
         _ => Color::Reset,
     }
 }
 
 fn color_256(n: u8) -> Color {
     match n {
-        0..=7   => ansi_color(n, false),
-        8..=15  => ansi_color(n - 8, true),
+        0..=7 => ansi_color(n, false),
+        8..=15 => ansi_color(n - 8, true),
         16..=231 => {
             let n = n - 16;
             let b = (n % 6) * 51;

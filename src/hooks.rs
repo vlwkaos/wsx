@@ -1,10 +1,10 @@
 // Post-create hooks and .env file copying (ported from gtr).
 
+use crate::model::workspace::ProjectConfig;
 use anyhow::{bail, Context, Result};
 use glob::glob;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use crate::model::workspace::ProjectConfig;
 
 pub fn copy_env_files(src: &Path, dest: &Path, config: &ProjectConfig) -> Result<()> {
     for pattern in &config.copy_includes {
@@ -24,14 +24,17 @@ pub fn copy_env_files(src: &Path, dest: &Path, config: &ProjectConfig) -> Result
                     .map(|p| p == src_file)
                     .unwrap_or(false)
             });
-            if excluded { continue; }
+            if excluded {
+                continue;
+            }
 
             let dest_file = dest.join(rel);
             if let Some(parent) = dest_file.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::copy(&src_file, &dest_file)
-                .with_context(|| format!("copying {} to {}", src_file.display(), dest_file.display()))?;
+            std::fs::copy(&src_file, &dest_file).with_context(|| {
+                format!("copying {} to {}", src_file.display(), dest_file.display())
+            })?;
         }
     }
     Ok(())
@@ -39,11 +42,15 @@ pub fn copy_env_files(src: &Path, dest: &Path, config: &ProjectConfig) -> Result
 
 pub fn run_post_create(dir: &Path, cmd: &str) -> Result<()> {
     let status = Command::new("sh")
-        .arg("-c").arg(cmd)
+        .arg("-c")
+        .arg(cmd)
         .current_dir(dir)
-        .stdout(Stdio::null()).stderr(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .with_context(|| format!("running postCreate: {}", cmd))?;
-    if !status.success() { bail!("postCreate hook exited {}", status); }
+    if !status.success() {
+        bail!("postCreate hook exited {}", status);
+    }
     Ok(())
 }

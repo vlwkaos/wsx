@@ -37,8 +37,12 @@ fn git_config_get_all(config_path: &str, key: &str) -> Vec<String> {
     let Ok(output) = Command::new("git")
         .args(["config", "-f", config_path, "--get-all", key])
         .output()
-    else { return vec![] };
-    if !output.status.success() { return vec![]; }
+    else {
+        return vec![];
+    };
+    if !output.status.success() {
+        return vec![];
+    }
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(|l| l.trim().to_string())

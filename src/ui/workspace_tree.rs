@@ -63,9 +63,16 @@ pub fn render_tree(
                     short_name.to_string()
                 };
 
-                let dirty = wt.git_info.as_ref().map(|g| !g.modified_files.is_empty()).unwrap_or(false);
+                let dirty = wt
+                    .git_info
+                    .as_ref()
+                    .map(|g| !g.modified_files.is_empty())
+                    .unwrap_or(false);
 
-                let mut spans = vec![Span::raw(format!(" {} {}{}", expand_icon, main_mark, display))];
+                let mut spans = vec![Span::raw(format!(
+                    " {} {}{}",
+                    expand_icon, main_mark, display
+                ))];
 
                 // * directly after name (no space) if dirty
                 if dirty {

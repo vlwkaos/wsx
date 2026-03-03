@@ -52,5 +52,10 @@ pub fn merge_into(path: &Path, target: &str) -> Result<String> {
     let merge_result = run(git_cmd(path).args(["merge", &current]));
     // ! must always return to original branch regardless of merge outcome
     run(git_cmd(path).args(["checkout", &current]))?;
-    merge_result.map(|_| format!("Merged {} into {}, returned to {}", current, target, current))
+    merge_result.map(|_| {
+        format!(
+            "Merged {} into {}, returned to {}",
+            current, target, current
+        )
+    })
 }
