@@ -47,6 +47,8 @@ pub struct WorktreeInfo {
     pub git_info: Option<GitInfo>,
     pub fetch_failed: bool,
     pub last_fetched: Option<std::time::Instant>,
+    /// When git_info was last successfully populated; used to skip redundant refreshes.
+    pub git_info_fetched_at: Option<std::time::Instant>,
 }
 
 impl Project {
