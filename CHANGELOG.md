@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.2] - 2026-03-04
+
+### Features
+
+- Send Command (`S`) now shows history as a fuzzy-filtered suggestion dropdown while typing, matching the path autocomplete UX — Tab/Up/Down navigate entries ([`6081895`](https://github.com/vlwkaos/wsx/commit/6081895))
+- Dropdown opens immediately on `S` showing recent commands (newest first), even before typing ([`6081895`](https://github.com/vlwkaos/wsx/commit/6081895))
+
+---
+
 ## [0.9.1] - 2026-03-04
 
 ### Features
