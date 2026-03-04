@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex, Condvar};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -19,8 +19,41 @@ use crate::{
     ops,
     tmux::{capture, monitor, session},
     tui::{self, Tui},
-    ui::{self, input::InputState},
+    ui::{self, ansi, input::InputState},
 };
+
+// ── Git concurrency limiter ───────────────────────────────────────────────────
+
+/// Counting semaphore — limits concurrent git-info subprocesses to CPU count.
+#[derive(Clone)]
+struct GitSemaphore(Arc<(Mutex<usize>, Condvar)>);
+
+impl GitSemaphore {
+    fn new(limit: usize) -> Self {
+        Self(Arc::new((Mutex::new(limit), Condvar::new())))
+    }
+
+    /// Block until a permit is available, then return a guard that releases on drop.
+    fn acquire(&self) -> GitPermit {
+        let (lock, cvar) = &*self.0;
+        let mut count = lock.lock().unwrap();
+        while *count == 0 {
+            count = cvar.wait(count).unwrap();
+        }
+        *count -= 1;
+        GitPermit(self.0.clone())
+    }
+}
+
+struct GitPermit(Arc<(Mutex<usize>, Condvar)>);
+
+impl Drop for GitPermit {
+    fn drop(&mut self) {
+        let (lock, cvar) = &*self.0;
+        *lock.lock().unwrap() += 1;
+        cvar.notify_one();
+    }
+}
 
 // ── Timer ─────────────────────────────────────────────────────────────────────
 
@@ -222,6 +255,8 @@ pub struct App {
     slow_timer: Timer,
     cached_flat: Vec<FlatEntry>,
     flat_dirty: bool,
+    /// Lowercase searchable text parallel to cached_flat; rebuilt with the flat cache.
+    search_cache: Vec<String>,
     git_local_tx: mpsc::Sender<(PathBuf, Option<GitInfo>)>,
     git_local_rx: mpsc::Receiver<(PathBuf, Option<GitInfo>)>,
     git_local_pending: HashSet<PathBuf>,
@@ -232,13 +267,21 @@ pub struct App {
     cache_mtime: Option<std::time::SystemTime>,
     /// true while another instance has written the cache and we're paused.
     pub cache_paused: bool,
+    /// true when workspace state has changed since the last cache write.
+    cache_dirty: bool,
+    /// Limits concurrent git-info threads to available CPU count.
+    git_semaphore: GitSemaphore,
+    /// path → (project_idx, worktree_idx) for O(1) async-result application.
+    worktree_index: std::collections::HashMap<PathBuf, (usize, usize)>,
+    /// session_name → parsed ANSI preview; invalidated when pane_capture changes.
+    pub parsed_preview: std::collections::HashMap<String, ratatui::text::Text<'static>>,
 }
 
 impl App {
     pub fn new() -> Result<Self> {
         let config = GlobalConfig::load()?;
         let mut workspace = ops::load_workspace(&config);
-        let (raw_selected, cursor_identity) = crate::cache::apply_cache(&mut workspace);
+        let (raw_selected, cursor_identity, command_history) = crate::cache::apply_cache(&mut workspace);
         let cached_flat = flatten_tree(&workspace);
         let tree_selected = cursor_identity
             .and_then(|id| crate::cache::find_cursor_index(&workspace, &cached_flat, &id))
@@ -246,6 +289,8 @@ impl App {
         let (git_local_tx, git_local_rx) = mpsc::channel();
         let (fetch_tx, fetch_rx) = mpsc::channel();
         let (bg_tx, bg_rx) = mpsc::channel();
+        let worktree_index = build_worktree_index(&workspace);
+        let search_cache = build_search_cache(&workspace, &cached_flat);
 
         Ok(Self {
             workspace,
@@ -256,7 +301,7 @@ impl App {
             preview_area: Rect::default(),
             mode: Mode::Normal,
             config,
-            send_command_history: vec![],
+            send_command_history: command_history,
             status_message: None,
             status_message_expires: None,
             jobs: vec![],
@@ -269,6 +314,7 @@ impl App {
             slow_timer: Timer::new(SLOW_INTERVAL_MS),
             cached_flat,
             flat_dirty: false,
+            search_cache,
             git_local_tx,
             git_local_rx,
             git_local_pending: HashSet::new(),
@@ -277,6 +323,12 @@ impl App {
             fetch_pending: HashSet::new(),
             cache_mtime: crate::cache::cache_mtime(),
             cache_paused: false,
+            cache_dirty: false,
+            worktree_index,
+            parsed_preview: std::collections::HashMap::new(),
+            git_semaphore: GitSemaphore::new(
+                std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+            ),
         })
     }
 
@@ -353,6 +405,7 @@ impl App {
     fn ensure_flat(&mut self) {
         if self.flat_dirty {
             self.cached_flat = flatten_tree(&self.workspace);
+            self.search_cache = build_search_cache(&self.workspace, &self.cached_flat);
             self.flat_dirty = false;
         }
     }
@@ -360,57 +413,18 @@ impl App {
     fn rebuild_flat(&mut self) {
         self.flat_dirty = true;
         self.ensure_flat();
+        self.worktree_index = build_worktree_index(&self.workspace);
     }
 
-    fn flat(&self) -> &[FlatEntry] {
+    pub fn flat(&self) -> &[FlatEntry] {
         debug_assert!(!self.flat_dirty, "flat() called with dirty cache");
         &self.cached_flat
     }
 
-    /// Fetch git_info for every worktree in parallel, then block until all threads join.
-    /// Called once at startup so the first render already has correct `*` indicators.
-    fn load_git_info_blocking(&mut self) {
-        let targets: Vec<(PathBuf, String)> = self
-            .workspace
-            .projects
-            .iter()
-            .flat_map(|p| {
-                let branch = p.default_branch.clone();
-                p.worktrees
-                    .iter()
-                    .map(move |w| (w.path.clone(), branch.clone()))
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-
-        // Threads send through git_local_tx so any results that arrive after the
-        // 2s deadline are picked up by drain_async_results() in the main loop.
-        let count = targets.len();
-        for (path, branch) in targets {
-            self.git_local_pending.insert(path.clone());
-            let tx = self.git_local_tx.clone();
-            std::thread::spawn(move || {
-                let _ = tx.send((path.clone(), git_info::get_git_info(&path, &branch)));
-            });
-        }
-
-        let deadline = Instant::now() + Duration::from_secs(2);
-        for _ in 0..count {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            match self.git_local_rx.recv_timeout(remaining) {
-                Ok((path, info)) => self.apply_git_local_result(path, info),
-                Err(_) => break,
-            }
-        }
-    }
-
     pub fn run(&mut self, terminal: &mut Tui) -> Result<()> {
-        // Populate git_info for all worktrees before first render so indicators are
-        // correct immediately. Parallel threads; blocks until all complete or 2s elapses.
-        self.load_git_info_blocking();
+        // Kick off async git_info for all worktrees; render immediately with cached data.
+        // Results arrive via drain_async_results() in the main loop without blocking.
+        self.spawn_git_local_for_all();
         loop {
             // Drain async results every iteration so they're never blocked by UI events.
             self.drain_async_results();
@@ -437,7 +451,9 @@ impl App {
                 if action == Action::Quit && matches!(self.mode, Mode::Normal) {
                     break;
                 }
-                self.needs_redraw = true;
+                if action != Action::None {
+                    self.needs_redraw = true;
+                }
                 if let Err(e) = self.dispatch(action, terminal) {
                     self.set_status(format!("Error: {}", e));
                 }
@@ -477,8 +493,7 @@ impl App {
             self.activity_timer.last = Instant::now(); // rescan subsumes activity check
             self.needs_redraw = true;
         } else if self.activity_timer.ready() {
-            self.refresh_activity();
-            self.needs_redraw = true;
+            self.refresh_activity(); // sets needs_redraw internally if changed
         }
 
         if self.fast_timer.ready() {
@@ -492,13 +507,39 @@ impl App {
         Ok(())
     }
 
+    /// Skip re-fetching git_info if the worktree is fresh and not currently selected.
+    const GIT_INFO_CACHE_SECS: u64 = 15;
+
     fn spawn_git_local(&mut self, path: PathBuf, default_branch: String) {
         if self.git_local_pending.contains(&path) {
             return;
         }
+        // If this worktree is not selected and git_info was fetched recently, skip
+        let is_selected = matches!(
+            self.current_selection(),
+            Selection::Worktree(pi, wi) | Selection::Session(pi, wi, _)
+            if self.workspace.projects.get(pi)
+                .and_then(|p| p.worktrees.get(wi))
+                .map(|wt| wt.path == path)
+                .unwrap_or(false)
+        );
+        if !is_selected {
+            if let Some(&(pi, wi)) = self.worktree_index.get(&path) {
+                if let Some(wt) = self.workspace.projects.get(pi).and_then(|p| p.worktrees.get(wi)) {
+                    let fresh = wt.git_info_fetched_at
+                        .map(|t| t.elapsed().as_secs() < Self::GIT_INFO_CACHE_SECS)
+                        .unwrap_or(false);
+                    if fresh {
+                        return;
+                    }
+                }
+            }
+        }
         self.git_local_pending.insert(path.clone());
         let tx = self.git_local_tx.clone();
+        let sem = self.git_semaphore.clone();
         std::thread::spawn(move || {
+            let _permit = sem.acquire();
             let info = git_info::get_git_info(&path, &default_branch);
             let _ = tx.send((path, info));
         });
@@ -528,17 +569,16 @@ impl App {
         self.fetch_pending.remove(&path);
 
         let mut spawn_branch: Option<String> = None;
-        'outer: for project in &mut self.workspace.projects {
-            for wt in &mut project.worktrees {
-                if wt.path == path {
+        if let Some(&(pi, wi)) = self.worktree_index.get(&path) {
+            if let Some(proj) = self.workspace.projects.get_mut(pi) {
+                if let Some(wt) = proj.worktrees.get_mut(wi) {
                     wt.fetch_failed = !success;
                     // Throttle fetch attempts after both success and failure.
                     wt.last_fetched = Some(completed_at);
                     if success {
-                        spawn_branch = Some(project.default_branch.clone());
+                        spawn_branch = Some(proj.default_branch.clone());
                     }
                     self.needs_redraw = true;
-                    break 'outer;
                 }
             }
         }
@@ -550,14 +590,12 @@ impl App {
     fn apply_git_local_result(&mut self, path: PathBuf, info: Option<GitInfo>) {
         self.git_local_pending.remove(&path);
         if let Some(gi) = info {
-            for project in &mut self.workspace.projects {
-                for wt in &mut project.worktrees {
-                    if wt.path == path {
-                        if wt.git_info.as_ref() != Some(&gi) {
-                            wt.git_info = Some(gi);
-                            self.needs_redraw = true;
-                        }
-                        return;
+            if let Some(&(pi, wi)) = self.worktree_index.get(&path) {
+                if let Some(wt) = self.workspace.projects.get_mut(pi).and_then(|p| p.worktrees.get_mut(wi)) {
+                    wt.git_info_fetched_at = Some(Instant::now());
+                    if wt.git_info.as_ref() != Some(&gi) {
+                        wt.git_info = Some(gi);
+                        self.needs_redraw = true;
                     }
                 }
             }
@@ -565,11 +603,14 @@ impl App {
         // if info is None, leave existing git_info unchanged — old value stays visible
     }
 
-    pub fn flush_cache(&self) {
+    pub fn flush_cache(&mut self) {
         if self.cache_paused {
             return;
         }
-        crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat());
+        // Always write on explicit flush (quit path) regardless of dirty flag; sync to disk
+        crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, true);
+        self.cache_mtime = crate::cache::cache_mtime();
+        self.cache_dirty = false;
     }
 
     fn check_cache_conflict(&mut self) {
@@ -620,16 +661,33 @@ impl App {
         );
         self.rebuild_flat();
         self.clamp_selected();
-        if !self.cache_paused {
-            crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat());
-            self.cache_mtime = crate::cache::cache_mtime();
-        }
+        // Prune parsed_preview entries for sessions that no longer exist
+        let live_sessions: std::collections::HashSet<&str> = self.workspace.projects.iter()
+            .flat_map(|p| p.worktrees.iter())
+            .flat_map(|w| w.sessions.iter())
+            .map(|s| s.name.as_str())
+            .collect();
+        self.parsed_preview.retain(|k, _| live_sessions.contains(k.as_str()));
+        self.cache_dirty = true;
+        self.write_cache_if_dirty();
         Ok(())
+    }
+
+    /// Write cache only when state has changed since last write.
+    fn write_cache_if_dirty(&mut self) {
+        if self.cache_paused || !self.cache_dirty {
+            return;
+        }
+        crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, false);
+        self.cache_mtime = crate::cache::cache_mtime();
+        self.cache_dirty = false;
     }
 
     fn refresh_activity(&mut self) {
         let activity = monitor::session_activity();
-        let _ = ops::update_activity(&mut self.workspace, &activity);
+        if ops::update_activity(&mut self.workspace, &activity) {
+            self.needs_redraw = true;
+        }
     }
 
     fn refresh_captures(&mut self) {
@@ -657,19 +715,20 @@ impl App {
             });
         }
 
-        // Capture pane for selected session
+        // Capture pane for selected session — capture_pane returns None if session absent
         if let Selection::Session(pi, wi, si) = sel {
             let sess_name = self.workspace.session(pi, wi, si).map(|s| s.name.clone());
 
             if let Some(name) = sess_name {
-                if session::session_exists(&name) {
-                    if let Some(raw) = capture::capture_pane(&name) {
-                        let trimmed = capture::trim_capture(&raw);
-                        if let Some(s) = self.workspace.session_mut(pi, wi, si) {
-                            if s.pane_capture.as_deref() != Some(&trimmed) {
-                                s.pane_capture = Some(trimmed);
-                                self.needs_redraw = true;
-                            }
+                if let Some(raw) = capture::capture_pane(&name) {
+                    let trimmed = capture::trim_capture(&raw);
+                    if let Some(s) = self.workspace.session_mut(pi, wi, si) {
+                        if s.pane_capture.as_deref() != Some(&trimmed) {
+                            // Invalidate and rebuild cached parsed preview
+                            let parsed = ansi::parse(&trimmed);
+                            self.parsed_preview.insert(s.name.clone(), parsed);
+                            s.pane_capture = Some(trimmed);
+                            self.needs_redraw = true;
                         }
                     }
                 }
@@ -870,10 +929,8 @@ impl App {
                 Action::NavigateDown => self.move_session(pi, wi, si, 1),
                 Action::NavigateUp => self.move_session(pi, wi, si, -1),
                 Action::Select | Action::InputEscape | Action::Quit | Action::EnterMove => {
-                    if !self.cache_paused {
-                        crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat());
-                        self.cache_mtime = crate::cache::cache_mtime();
-                    }
+                    self.cache_dirty = true;
+                    self.write_cache_if_dirty();
                     self.mode = Mode::Normal;
                 }
                 _ => {}
@@ -1002,19 +1059,20 @@ impl App {
                 }
             }
             Action::InputTab => {
-                if let Mode::Input {
-                    context: InputContext::AddProject,
-                    state,
-                } = &mut self.mode
-                {
-                    state.select_next();
+                if let Mode::Input { context, state } = &mut self.mode {
+                    match context {
+                        InputContext::AddProject | InputContext::SendCommand { .. } => {
+                            state.select_next()
+                        }
+                        _ => {}
+                    }
                 }
             }
             Action::NavigateDown => {
                 if let Mode::Input { context, state } = &mut self.mode {
                     match context {
                         InputContext::AddProject => state.select_next(),
-                        InputContext::SendCommand { .. } => state.history_next(),
+                        InputContext::SendCommand { .. } => state.select_next(),
                         _ => {}
                     }
                 }
@@ -1023,7 +1081,7 @@ impl App {
                 if let Mode::Input { context, state } = &mut self.mode {
                     match context {
                         InputContext::AddProject => state.select_prev(),
-                        InputContext::SendCommand { .. } => state.history_prev(),
+                        InputContext::SendCommand { .. } => state.select_prev(),
                         _ => {}
                     }
                 }
@@ -1077,36 +1135,15 @@ impl App {
         Ok(())
     }
 
-    fn search_text(&self, entry: &FlatEntry) -> String {
-        match entry {
-            FlatEntry::Project { idx } => self.workspace.projects[*idx].name.to_lowercase(),
-            FlatEntry::Worktree {
-                project_idx: pi,
-                worktree_idx: wi,
-            } => {
-                let wt = &self.workspace.projects[*pi].worktrees[*wi];
-                let alias = wt.alias.as_deref().unwrap_or("");
-                format!("{} {} {}", wt.branch, alias, wt.name).to_lowercase()
-            }
-            FlatEntry::Session {
-                project_idx: pi,
-                worktree_idx: wi,
-                session_idx: si,
-            } => self.workspace.projects[*pi].worktrees[*wi].sessions[*si]
-                .display_name
-                .to_lowercase(),
-        }
-    }
-
     fn search_matches(&self, query: &str) -> Vec<usize> {
         if query.is_empty() {
             return vec![];
         }
         let q = query.to_lowercase();
-        self.flat()
+        self.search_cache
             .iter()
             .enumerate()
-            .filter(|(_, e)| self.search_text(e).contains(&q))
+            .filter(|(_, text)| text.contains(&q))
             .map(|(i, _)| i)
             .collect()
     }
@@ -2078,4 +2115,34 @@ impl App {
 
 fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or(s)
+}
+
+fn search_text_for(workspace: &WorkspaceState, entry: &FlatEntry) -> String {
+    match entry {
+        FlatEntry::Project { idx } => workspace.projects[*idx].name.to_lowercase(),
+        FlatEntry::Worktree { project_idx: pi, worktree_idx: wi } => {
+            let wt = &workspace.projects[*pi].worktrees[*wi];
+            let alias = wt.alias.as_deref().unwrap_or("");
+            format!("{} {} {}", wt.branch, alias, wt.name).to_lowercase()
+        }
+        FlatEntry::Session { project_idx: pi, worktree_idx: wi, session_idx: si } => {
+            workspace.projects[*pi].worktrees[*wi].sessions[*si]
+                .display_name
+                .to_lowercase()
+        }
+    }
+}
+
+fn build_search_cache(workspace: &WorkspaceState, flat: &[FlatEntry]) -> Vec<String> {
+    flat.iter().map(|e| search_text_for(workspace, e)).collect()
+}
+
+fn build_worktree_index(workspace: &WorkspaceState) -> std::collections::HashMap<PathBuf, (usize, usize)> {
+    let mut idx = std::collections::HashMap::new();
+    for (pi, proj) in workspace.projects.iter().enumerate() {
+        for (wi, wt) in proj.worktrees.iter().enumerate() {
+            idx.insert(wt.path.clone(), (pi, wi));
+        }
+    }
+    idx
 }

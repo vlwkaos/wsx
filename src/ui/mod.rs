@@ -44,7 +44,8 @@ pub fn popup_upper(area: Rect, w: u16, h: u16) -> Rect {
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
-    let sb_height = status_bar_height(app, area.width);
+    let hints = build_hints(app);
+    let sb_height = status_bar_height(app, area.width, &hints);
     let main_area = Rect::new(
         area.x,
         area.y,
@@ -74,6 +75,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         frame,
         chunks[0],
         &app.workspace,
+        app.flat(),
         app.tree_selected,
         app.tree_scroll,
         is_move_mode,
@@ -82,32 +84,47 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let preview_area = chunks[1];
     match app.current_selection() {
         Selection::Session(pi, wi, si) => {
-            if let Some((sess, title)) = app.workspace.projects.get(pi).and_then(|p| {
+            let found = app.workspace.projects.get(pi).and_then(|p| {
                 let wt = p.worktrees.get(wi)?;
                 let sess = wt.sessions.get(si)?;
                 let title = format!("{} › {} › {}", p.name, wt.display_name(), sess.display_name);
-                Some((sess.clone(), title))
-            }) {
-                render_session_preview(frame, preview_area, &sess, &title);
+                Some((&sess.name, title))
+            });
+            if let Some((sess_name, title)) = found {
+                let parsed = app.parsed_preview.get(sess_name);
+                // Re-borrow sess for render — split borrows on different fields
+                if let Some(sess) = app.workspace.projects.get(pi)
+                    .and_then(|p| p.worktrees.get(wi))
+                    .and_then(|wt| wt.sessions.get(si))
+                {
+                    render_session_preview(frame, preview_area, sess, &title, parsed);
+                } else {
+                    render_empty_preview(frame, preview_area);
+                }
             } else {
                 render_empty_preview(frame, preview_area);
             }
         }
         Selection::Worktree(pi, wi) => {
-            if let Some((worktree, title)) = app.workspace.projects.get(pi).and_then(|p| {
+            let found = app.workspace.projects.get(pi).and_then(|p| {
                 p.worktrees.get(wi).map(|wt| {
                     let title = format!("{} › {}", p.name, wt.display_name());
-                    (wt.clone(), title)
+                    title
                 })
-            }) {
-                render_worktree_preview(frame, preview_area, &worktree, &title);
+            });
+            if let Some(title) = found {
+                if let Some(wt) = app.workspace.projects.get(pi).and_then(|p| p.worktrees.get(wi)) {
+                    render_worktree_preview(frame, preview_area, wt, &title);
+                } else {
+                    render_empty_preview(frame, preview_area);
+                }
             } else {
                 render_empty_preview(frame, preview_area);
             }
         }
         Selection::Project(pi) => {
-            if let Some(project) = app.workspace.projects.get(pi).cloned() {
-                render_project_preview(frame, preview_area, &project);
+            if let Some(project) = app.workspace.projects.get(pi) {
+                render_project_preview(frame, preview_area, project);
             } else {
                 render_empty_preview(frame, preview_area);
             }
@@ -115,7 +132,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Selection::None => render_empty_preview(frame, preview_area),
     }
 
-    render_status_bar(frame, status_area, app);
+    render_status_bar(frame, status_area, app, &hints);
     render_overlay(frame, main_area, app);
     if app.cache_paused {
         render_cache_conflict(frame, main_area);
@@ -232,18 +249,18 @@ fn wrap_hints(hints: &str, available_width: usize) -> Vec<String> {
     lines
 }
 
-fn status_bar_height(app: &App, width: u16) -> u16 {
+fn status_bar_height(app: &App, width: u16, hints: &str) -> u16 {
     if matches!(app.mode, Mode::Search { .. }) || app.status_message.is_some() {
         return 1;
     }
     let label = get_mode_label(app);
     let badge_width = label.len() + 4; // " [LABEL] "
     let available = (width as usize).saturating_sub(badge_width + 1);
-    let lines = wrap_hints(&build_hints(app), available);
+    let lines = wrap_hints(hints, available);
     (lines.len() as u16).max(1)
 }
 
-fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
+fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
     // Search mode gets its own full-bar treatment
     if let Mode::Search { query, .. } = &app.mode {
         let spans = vec![
@@ -292,9 +309,8 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let hints = build_hints(app);
     let available = (area.width as usize).saturating_sub(badge_width + 1);
-    let hint_lines = wrap_hints(&hints, available);
+    let hint_lines = wrap_hints(hints, available);
     let hint_style = Style::default().fg(Color::Gray);
 
     if hint_lines.len() <= 1 || area.height < 2 {
