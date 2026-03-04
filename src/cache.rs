@@ -43,6 +43,9 @@ pub struct WorkspaceCache {
     /// session names the user has muted (no activity updates, shown as ⊘)
     #[serde(default)]
     pub muted_sessions: HashSet<String>,
+    /// global send-command history (Shift+S), newest last, capped at 50
+    #[serde(default)]
+    pub command_history: Vec<String>,
 }
 
 impl WorkspaceCache {
@@ -53,7 +56,7 @@ impl WorkspaceCache {
         toml::from_str(&content).unwrap_or_default()
     }
 
-    pub fn save(&self) -> anyhow::Result<()> {
+    pub fn save(&self, sync: bool) -> anyhow::Result<()> {
         let path = cache_path();
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -61,7 +64,9 @@ impl WorkspaceCache {
         let s = toml::to_string(self)?;
         let mut f = std::fs::File::create(&path)?;
         std::io::Write::write_all(&mut f, s.as_bytes())?;
-        f.sync_all()?;
+        if sync {
+            f.sync_all()?;
+        }
         Ok(())
     }
 }
@@ -79,8 +84,8 @@ fn cache_path() -> PathBuf {
 }
 
 /// Pre-populate workspace with cached state before first live sync.
-/// Returns (raw_index, identity) — caller should prefer resolving identity.
-pub fn apply_cache(workspace: &mut WorkspaceState) -> (usize, Option<CursorIdentity>) {
+/// Returns (raw_index, identity, command_history) — caller should prefer resolving identity.
+pub fn apply_cache(workspace: &mut WorkspaceState) -> (usize, Option<CursorIdentity>, Vec<String>) {
     let cache = WorkspaceCache::load();
     for project in &mut workspace.projects {
         let proj_key = project.path.to_string_lossy().to_string();
@@ -119,7 +124,7 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> (usize, Option<CursorIdent
             }
         }
     }
-    (cache.tree_selected, cache.cursor_identity)
+    (cache.tree_selected, cache.cursor_identity, cache.command_history)
 }
 
 /// Resolve a saved CursorIdentity back to a flat-tree index.
@@ -170,8 +175,14 @@ pub fn find_cursor_index(
     }
 }
 
-/// Persist session names, expand states, and cursor position.
-pub fn save_cache(workspace: &WorkspaceState, tree_selected: usize, flat: &[FlatEntry]) {
+/// Persist session names, expand states, cursor position, and command history.
+pub fn save_cache(
+    workspace: &WorkspaceState,
+    tree_selected: usize,
+    flat: &[FlatEntry],
+    command_history: &[String],
+    sync: bool,
+) {
     let mut cache = WorkspaceCache::default();
     cache.tree_selected = tree_selected;
     cache.cursor_identity = resolve_cursor_identity(workspace, flat, tree_selected);
@@ -195,7 +206,8 @@ pub fn save_cache(workspace: &WorkspaceState, tree_selected: usize, flat: &[Flat
             }
         }
     }
-    if let Err(e) = cache.save() {
+    cache.command_history = command_history.to_vec();
+    if let Err(e) = cache.save(sync) {
         eprintln!("cache save failed: {e}");
     }
 }

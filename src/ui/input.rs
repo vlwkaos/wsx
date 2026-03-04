@@ -15,9 +15,9 @@ pub struct InputState {
     pub completions: Vec<String>,
     pub completion_idx: Option<usize>,
     history: Vec<String>,
-    history_idx: Option<usize>,
     typed: String, // last text the user typed (before completion navigation)
     path_mode: bool,
+    history_mode: bool,
 }
 
 impl InputState {
@@ -38,7 +38,9 @@ impl InputState {
 
     pub fn with_history(prompt: impl Into<String>, history: Vec<String>) -> Self {
         let mut s = Self::make(prompt.into(), String::new(), false);
+        s.completions = history.iter().rev().cloned().collect();
         s.history = history;
+        s.history_mode = true;
         s
     }
 
@@ -51,9 +53,9 @@ impl InputState {
             completions: vec![],
             completion_idx: None,
             history: vec![],
-            history_idx: None,
             typed: value,
             path_mode,
+            history_mode: false,
         }
     }
 
@@ -64,6 +66,8 @@ impl InputState {
         self.completion_idx = None;
         if self.path_mode {
             self.completions = path_completions(&self.buffer);
+        } else if self.history_mode {
+            self.completions = history_completions(&self.buffer, &self.history);
         }
     }
 
@@ -80,6 +84,8 @@ impl InputState {
             self.completion_idx = None;
             if self.path_mode {
                 self.completions = path_completions(&self.buffer);
+            } else if self.history_mode {
+                self.completions = history_completions(&self.buffer, &self.history);
             }
         }
     }
@@ -139,45 +145,6 @@ impl InputState {
         self.maybe_drill_down();
     }
 
-    /// Navigate to older history entries. Index 0 is the most recent entry.
-    pub fn history_prev(&mut self) {
-        if self.history.is_empty() || !self.completions.is_empty() {
-            return;
-        }
-        let next_idx = match self.history_idx {
-            None => {
-                self.typed = self.buffer.clone();
-                0
-            }
-            Some(i) => (i + 1).min(self.history.len().saturating_sub(1)),
-        };
-        self.history_idx = Some(next_idx);
-        let hist_pos = self.history.len() - 1 - next_idx;
-        self.buffer = self.history[hist_pos].clone();
-        self.cursor = self.buffer.len();
-    }
-
-    /// Navigate toward newer history entries, then back to the current typed text.
-    pub fn history_next(&mut self) {
-        if self.history.is_empty() || !self.completions.is_empty() {
-            return;
-        }
-        let Some(idx) = self.history_idx else {
-            return;
-        };
-
-        if idx == 0 {
-            self.history_idx = None;
-            self.buffer = self.typed.clone();
-        } else {
-            let next_idx = idx - 1;
-            self.history_idx = Some(next_idx);
-            let hist_pos = self.history.len() - 1 - next_idx;
-            self.buffer = self.history[hist_pos].clone();
-        }
-        self.cursor = self.buffer.len();
-    }
-
     /// If the current buffer ends with '/' and has only one child match,
     /// or was just selected as a unique completion, show children immediately.
     fn maybe_drill_down(&mut self) {
@@ -226,6 +193,18 @@ fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
     } else {
         None
     }
+}
+
+fn history_completions(typed: &str, history: &[String]) -> Vec<String> {
+    if typed.is_empty() {
+        return history.iter().rev().cloned().collect();
+    }
+    let mut scored: Vec<(i32, &str)> = history
+        .iter()
+        .filter_map(|h| fuzzy_score(typed, h).map(|s| (s, h.as_str())))
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.into_iter().map(|(_, h)| h.to_string()).collect()
 }
 
 fn path_completions(input: &str) -> Vec<String> {
@@ -323,7 +302,7 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
     frame.set_cursor_position((cursor_x.min(popup.x + popup.width - 2), popup.y + 1));
 
     if !state.completions.is_empty() {
-        let max_show = 10usize.min(state.completions.len());
+        let max_show = 5usize.min(state.completions.len());
         let drop_h = max_show as u16 + 2;
         let drop_y = popup.y + 3;
         if drop_y + drop_h <= area.y + area.height {
@@ -340,16 +319,16 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
                     let style = if selected {
                         Style::default().fg(Color::Black).bg(Color::Cyan)
                     } else {
-                        Style::default().fg(Color::Gray)
+                        Style::default().fg(Color::Rgb(100, 100, 100))
                     };
-                    ListItem::new(format!(" {} ", s)).style(style)
+                    ListItem::new(format!(" {s} ")).style(style)
                 })
                 .collect();
 
             let list = List::new(items).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Gray)),
+                    .border_style(Style::default().fg(Color::Rgb(100, 100, 100))),
             );
             frame.render_widget(list, drop);
         }
