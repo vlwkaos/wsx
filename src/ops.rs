@@ -26,6 +26,7 @@ type WorktreeSnap = HashMap<PathBuf, WorktreeSnapEntry>;
 
 struct WorktreeSnapEntry {
     git_info: Option<GitInfo>,
+    git_info_fetched_at: Option<Instant>,
     expanded: bool,
     panes: PaneSnap,
     session_order: Vec<String>,
@@ -53,6 +54,12 @@ pub fn refresh_workspace(
     sessions_with_paths: &[(String, PathBuf)],
     activity: &HashMap<String, SessionStatus>,
 ) {
+    // Pre-index sessions by worktree path for O(1) lookup per worktree
+    let mut sessions_by_path: HashMap<&PathBuf, Vec<&str>> = HashMap::new();
+    for (name, path) in sessions_with_paths {
+        sessions_by_path.entry(path).or_default().push(name.as_str());
+    }
+
     let aliases_by_path: Vec<(PathBuf, HashMap<String, String>)> = config
         .projects
         .iter()
@@ -87,6 +94,7 @@ pub fn refresh_workspace(
                     w.path.clone(),
                     WorktreeSnapEntry {
                         git_info: w.git_info.clone(),
+                        git_info_fetched_at: w.git_info_fetched_at,
                         expanded: w.expanded,
                         panes,
                         session_order: order,
@@ -110,11 +118,18 @@ pub fn refresh_workspace(
                 let prev_order: &[String] = prev
                     .map(|snap| snap.session_order.as_slice())
                     .unwrap_or(&[]);
-
-                let mut sessions: Vec<SessionInfo> = sessions_with_paths
+                // Index prev_order for O(1) sort-key lookup
+                let order_index: HashMap<&str, usize> = prev_order
                     .iter()
-                    .filter(|(_, sp)| sp == &wt_path)
-                    .map(|(name, _)| {
+                    .enumerate()
+                    .map(|(i, n)| (n.as_str(), i))
+                    .collect();
+
+                let empty_names: Vec<&str> = Vec::new();
+                let session_names = sessions_by_path.get(&wt_path).unwrap_or(&empty_names);
+                let mut sessions: Vec<SessionInfo> = session_names
+                    .iter()
+                    .map(|&name| {
                         let display_name = session_display_name_from_tmux(
                             name,
                             &proj_name,
@@ -131,7 +146,7 @@ pub fn refresh_workspace(
                             if muted {
                                 (false, false, None, false)
                             } else {
-                                let status = activity.get(name.as_str());
+                                let status = activity.get(name);
                                 let has_activity = status.map(|s| s.has_bell).unwrap_or(false);
                                 let has_running_app =
                                     status.map(|s| s.has_running_app).unwrap_or(false);
@@ -155,7 +170,7 @@ pub fn refresh_workspace(
                                 )
                             };
                         SessionInfo {
-                            name: name.clone(),
+                            name: name.to_string(),
                             display_name,
                             has_activity,
                             pane_capture,
@@ -166,23 +181,19 @@ pub fn refresh_workspace(
                         }
                     })
                     .collect();
-                sessions.sort_by_key(|s| {
-                    prev_order
-                        .iter()
-                        .position(|n| n == &s.name)
-                        .unwrap_or(usize::MAX)
-                });
+                sessions.sort_by_key(|s| *order_index.get(s.name.as_str()).unwrap_or(&usize::MAX));
 
-                let (git_info, expanded, last_fetched, fetch_failed) = prev
+                let (git_info, git_info_fetched_at, expanded, last_fetched, fetch_failed) = prev
                     .map(|snap| {
                         (
                             snap.git_info.clone(),
+                            snap.git_info_fetched_at,
                             snap.expanded,
                             snap.last_fetched,
                             snap.fetch_failed,
                         )
                     })
-                    .unwrap_or((None, true, None, false));
+                    .unwrap_or((None, None, true, None, false));
 
                 new_worktrees.push(WorktreeInfo {
                     name: entry.name,
@@ -193,6 +204,7 @@ pub fn refresh_workspace(
                     sessions,
                     expanded,
                     git_info,
+                    git_info_fetched_at,
                     fetch_failed,
                     last_fetched,
                 });

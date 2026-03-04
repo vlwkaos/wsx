@@ -103,6 +103,7 @@ pub fn to_worktree_infos(
                 git_info: None,
                 fetch_failed: false,
                 last_fetched: None,
+                git_info_fetched_at: None,
             }
         })
         .collect()
@@ -176,7 +177,7 @@ pub fn clean_merged(repo_path: &Path, default_branch: &str) -> Result<Vec<String
         .output()
         .context("git branch --merged failed")?;
 
-    let merged: Vec<String> = String::from_utf8_lossy(&output.stdout)
+    let merged: std::collections::HashSet<String> = String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(|l| l.trim().trim_start_matches('*').trim().to_string())
         .filter(|b| !b.is_empty() && b != default_branch && !b.starts_with("HEAD"))

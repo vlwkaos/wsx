@@ -6,13 +6,11 @@ use std::path::Path;
 use std::process::Command;
 
 pub fn get_git_info(worktree_path: &Path, _default_branch: &str) -> Option<GitInfo> {
-    // require a valid branch (confirms we're in a real worktree)
-    current_branch(worktree_path)?;
-    // If status fails, do not overwrite existing UI state with a false "clean" result.
-    let modified_files = modified_files(worktree_path)?;
+    // Single subprocess: captures branch, upstream, ahead/behind, and modified files.
+    // If status fails (e.g. corrupt index), do not overwrite existing UI state.
+    let (branch, remote_branch, ahead, behind, modified_files) = status_porcelain2(worktree_path)?;
+    let _ = branch; // branch confirmed valid; value unused for now
     let recent_commits = recent_commits(worktree_path, 3);
-    let (ahead, behind) = ahead_behind(worktree_path);
-    let remote_branch = upstream_branch(worktree_path);
     Some(GitInfo {
         recent_commits,
         modified_files,
@@ -22,21 +20,74 @@ pub fn get_git_info(worktree_path: &Path, _default_branch: &str) -> Option<GitIn
     })
 }
 
-/// Returns the upstream tracking branch name (e.g. "origin/main"), or None if untracked.
-fn upstream_branch(path: &Path) -> Option<String> {
+type StatusResult = (String, Option<String>, usize, usize, Vec<String>);
+
+/// Parse `git status --porcelain=2 --branch` output.
+/// Returns (branch, upstream, ahead, behind, modified_files) or None on failure.
+fn status_porcelain2(path: &Path) -> Option<StatusResult> {
     let out = git_read(path)
-        .args(["rev-parse", "--abbrev-ref", "@{upstream}"])
+        .args(["status", "--porcelain=2", "--branch"])
         .output()
         .ok()?;
     if !out.status.success() {
         return None;
     }
-    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if branch.is_empty() {
-        None
-    } else {
-        Some(branch)
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut branch = String::new();
+    let mut upstream: Option<String> = None;
+    let mut ahead = 0usize;
+    let mut behind = 0usize;
+    let mut modified_files: Vec<String> = Vec::new();
+
+    for line in text.lines() {
+        if let Some(val) = line.strip_prefix("# branch.head ") {
+            branch = val.trim().to_string();
+        } else if let Some(val) = line.strip_prefix("# branch.upstream ") {
+            let u = val.trim().to_string();
+            if !u.is_empty() {
+                upstream = Some(u);
+            }
+        } else if let Some(val) = line.strip_prefix("# branch.ab ") {
+            // "+<ahead> -<behind>"
+            let mut parts = val.split_whitespace();
+            if let Some(a) = parts.next() {
+                ahead = a.trim_start_matches('+').parse().unwrap_or(0);
+            }
+            if let Some(b) = parts.next() {
+                behind = b.trim_start_matches('-').parse().unwrap_or(0);
+            }
+        } else if line.starts_with("1 ") || line.starts_with("2 ") || line.starts_with("u ") {
+            // Type "1": "1 XY ... path" — path is last whitespace token
+            // Type "2": "2 XY ... score path\toldpath" — tab separates new/old paths
+            let path_str = if line.starts_with("2 ") {
+                // Split off the tab-separated part first, take the new path
+                line.split('\t').next().and_then(|before_tab| before_tab.split_whitespace().last())
+            } else {
+                line.split_whitespace().last()
+            };
+            if let Some(path_part) = path_str {
+                if modified_files.len() < 10 {
+                    modified_files.push(path_part.to_string());
+                }
+            }
+        } else if line.starts_with("? ") {
+            // Untracked file
+            if let Some(path_part) = line.strip_prefix("? ") {
+                if modified_files.len() < 10 {
+                    modified_files.push(path_part.trim().to_string());
+                }
+            }
+        }
     }
+
+    if branch.is_empty() || branch == "(detached)" {
+        // Confirm we're in a real worktree with a branch
+        if branch.is_empty() {
+            return None;
+        }
+    }
+
+    Some((branch, upstream, ahead, behind, modified_files))
 }
 
 /// Run `git fetch` in the background thread — polls with timeout to avoid hanging.
@@ -109,43 +160,6 @@ fn recent_commits(path: &Path, n: usize) -> Vec<CommitSummary> {
             Some(CommitSummary { hash, message })
         })
         .collect()
-}
-
-fn modified_files(path: &Path) -> Option<Vec<String>> {
-    let out = git_read(path).args(["status", "--short"]).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter_map(|line| {
-                if line.len() > 3 {
-                    Some(line[3..].trim().to_string())
-                } else {
-                    None
-                }
-            })
-            .take(10)
-            .collect(),
-    )
-}
-
-fn ahead_behind(path: &Path) -> (usize, usize) {
-    let Ok(out) = git_read(path)
-        .args(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
-        .output()
-    else {
-        return (0, 0);
-    };
-    if !out.status.success() {
-        return (0, 0);
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut parts = text.split_whitespace();
-    let ahead = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let behind = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    (ahead, behind)
 }
 
 fn git_read(path: &Path) -> Command {
