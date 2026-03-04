@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.1] - 2026-03-04
+
+### Features
+
+- Send Command (`S`) history is now persisted across restarts — commands survive wsx exit and are restored from cache on next launch ([`f8fe3f8`](https://github.com/vlwkaos/wsx/commit/f8fe3f8))
+
+---
+
 ## [0.9.0] - 2026-03-04
 
 ### Features
