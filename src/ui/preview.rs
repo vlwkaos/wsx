@@ -161,21 +161,35 @@ pub fn render_worktree_preview(
     frame.render_widget(para, area);
 }
 
-pub fn render_session_preview(frame: &mut Frame, area: Rect, session: &SessionInfo, title: &str) {
+pub fn render_session_preview(
+    frame: &mut Frame,
+    area: Rect,
+    session: &SessionInfo,
+    title: &str,
+    parsed: Option<&ratatui::text::Text<'static>>,
+) {
     let activity = if session.has_activity { " ●" } else { "" };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {}{} ", title, activity))
         .title_style(Style::default().bold());
 
-    let text = session
-        .pane_capture
-        .as_deref()
-        .map(ansi::parse)
-        .unwrap_or_else(|| "(no capture)".into());
+    // Use cached parsed ANSI text when available; fall back to parsing inline.
+    let fallback;
+    let text: &ratatui::text::Text<'_> = match parsed {
+        Some(t) => t,
+        None => {
+            fallback = session
+                .pane_capture
+                .as_deref()
+                .map(ansi::parse)
+                .unwrap_or_else(|| "(no capture)".into());
+            &fallback
+        }
+    };
     let inner_h = area.height.saturating_sub(2) as usize; // minus borders
     let scroll = text.lines.len().saturating_sub(inner_h) as u16;
-    let para = Paragraph::new(text).block(block).scroll((scroll, 0));
+    let para = Paragraph::new(text.clone()).block(block).scroll((scroll, 0));
     frame.render_widget(para, area);
 }
 

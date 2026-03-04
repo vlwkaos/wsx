@@ -1,7 +1,7 @@
 // Left sidebar — 3-level tree (Project -> Worktree -> Session) using ratatui List.
 
 use crate::app::IDLE_SECS;
-use crate::model::workspace::{flatten_tree, FlatEntry, WorkspaceState};
+use crate::model::workspace::{FlatEntry, WorkspaceState};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState},
@@ -11,11 +11,11 @@ pub fn render_tree(
     frame: &mut Frame,
     area: Rect,
     workspace: &WorkspaceState,
+    flat: &[FlatEntry],
     selected: usize,
     scroll_offset: usize,
     is_move_mode: bool,
 ) {
-    let flat = flatten_tree(workspace);
 
     let items: Vec<ListItem> = flat
         .iter()
