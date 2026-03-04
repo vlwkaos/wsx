@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.9.3] - 2026-03-05
+
+### Features
+
+- Send-command history persisted across restarts via workspace cache ([`69d403c`](https://github.com/vlwkaos/wsx/commit/69d403c))
+
+### Performance
+
+- Consolidate git-info from 5 subprocesses to 1 per worktree (`git status --porcelain=2 --branch`) with 15s TTL to skip redundant refreshes ([`93ae064`](https://github.com/vlwkaos/wsx/commit/93ae064))
+- Cap concurrent git threads to CPU count via counting semaphore ([`ea196d3`](https://github.com/vlwkaos/wsx/commit/ea196d3))
+- Skip redraw on `Action::None` and unchanged activity ticks ([`ea196d3`](https://github.com/vlwkaos/wsx/commit/ea196d3))
+- Cache parsed ANSI pane previews — re-parse only when capture text changes ([`ea196d3`](https://github.com/vlwkaos/wsx/commit/ea196d3))
+- Remove blocking 2s startup wait — render immediately with cached data, fill git info async ([`ea196d3`](https://github.com/vlwkaos/wsx/commit/ea196d3))
+- O(1) worktree lookup for async result application via path index ([`ea196d3`](https://github.com/vlwkaos/wsx/commit/ea196d3))
+- Pre-indexed session/ordering lookups in `refresh_workspace` ([`93ae064`](https://github.com/vlwkaos/wsx/commit/93ae064))
+- Cache writes gated by dirty flag; `sync_all` only on quit ([`ea196d3`](https://github.com/vlwkaos/wsx/commit/ea196d3))
+
+### Refactor
+
+- `clean_merged` uses `HashSet` instead of `Vec::contains` ([`93ae064`](https://github.com/vlwkaos/wsx/commit/93ae064))
+- Flatten tree passed into renderer instead of recomputing per frame ([`ea196d3`](https://github.com/vlwkaos/wsx/commit/ea196d3))
+- Status hints computed once per frame instead of twice ([`ea196d3`](https://github.com/vlwkaos/wsx/commit/ea196d3))
+- Search text cached alongside flat tree, rebuilt only on tree changes ([`ea196d3`](https://github.com/vlwkaos/wsx/commit/ea196d3))
+
+---
+
 ## [0.9.2] - 2026-03-04
 
 ### Features
