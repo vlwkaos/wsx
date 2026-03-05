@@ -123,7 +123,6 @@ impl InputState {
         self.completion_idx = Some(next);
         self.buffer = self.completions[next].clone();
         self.cursor = self.buffer.len();
-        self.maybe_drill_down();
     }
 
     /// Move selection up. At index 0, goes back to typed text.
@@ -142,20 +141,6 @@ impl InputState {
             Some(i) => self.completions[i].clone(),
         };
         self.cursor = self.buffer.len();
-        self.maybe_drill_down();
-    }
-
-    /// If the current buffer ends with '/' and has only one child match,
-    /// or was just selected as a unique completion, show children immediately.
-    fn maybe_drill_down(&mut self) {
-        if self.buffer.ends_with('/') {
-            let children = path_completions(&self.buffer);
-            if !children.is_empty() {
-                self.typed = self.buffer.clone();
-                self.completions = children;
-                self.completion_idx = None;
-            }
-        }
     }
 
     fn display_cursor(&self) -> usize {
@@ -303,6 +288,11 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
 
     if !state.completions.is_empty() {
         let max_show = 5usize.min(state.completions.len());
+        // Scroll window so the selected item stays visible
+        let scroll_offset = match state.completion_idx {
+            Some(i) if i >= max_show => i - max_show + 1,
+            _ => 0,
+        };
         let drop_h = max_show as u16 + 2;
         let drop_y = popup.y + 3;
         if drop_y + drop_h <= area.y + area.height {
@@ -312,8 +302,9 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
             let items: Vec<ListItem> = state
                 .completions
                 .iter()
-                .take(max_show)
                 .enumerate()
+                .skip(scroll_offset)
+                .take(max_show)
                 .map(|(i, s)| {
                     let selected = state.completion_idx == Some(i);
                     let style = if selected {

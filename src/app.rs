@@ -1059,31 +1059,18 @@ impl App {
                 }
             }
             Action::InputTab => {
-                if let Mode::Input { context, state } = &mut self.mode {
-                    match context {
-                        InputContext::AddProject | InputContext::SendCommand { .. } => {
-                            state.select_next()
-                        }
-                        _ => {}
-                    }
+                if let Mode::Input { state, .. } = &mut self.mode {
+                    state.select_next();
                 }
             }
             Action::NavigateDown => {
-                if let Mode::Input { context, state } = &mut self.mode {
-                    match context {
-                        InputContext::AddProject => state.select_next(),
-                        InputContext::SendCommand { .. } => state.select_next(),
-                        _ => {}
-                    }
+                if let Mode::Input { state, .. } = &mut self.mode {
+                    state.select_next();
                 }
             }
             Action::NavigateUp => {
-                if let Mode::Input { context, state } = &mut self.mode {
-                    match context {
-                        InputContext::AddProject => state.select_prev(),
-                        InputContext::SendCommand { .. } => state.select_prev(),
-                        _ => {}
-                    }
+                if let Mode::Input { state, .. } = &mut self.mode {
+                    state.select_prev();
                 }
             }
             _ => {}
