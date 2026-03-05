@@ -71,6 +71,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     app.preview_area = chunks[1];
 
     let is_move_mode = matches!(app.mode, Mode::Move { .. } | Mode::MoveSession { .. });
+    // Show spinner + job labels during bg work, otherwise status message
+    let tree_notify: Option<String> = if app.is_busy() {
+        let spinner = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+        let labels: Vec<&str> = app.jobs.iter().map(|j| j.label.as_str()).collect();
+        Some(format!("{} {}", spinner, labels.join(" · ")))
+    } else {
+        app.status_message.as_ref().map(|msg| format!("✓ {msg}"))
+    };
     render_tree(
         frame,
         chunks[0],
@@ -79,6 +87,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         app.tree_selected,
         app.tree_scroll,
         is_move_mode,
+        tree_notify.as_deref(),
     );
 
     let preview_area = chunks[1];
@@ -250,7 +259,7 @@ fn wrap_hints(hints: &str, available_width: usize) -> Vec<String> {
 }
 
 fn status_bar_height(app: &App, width: u16, hints: &str) -> u16 {
-    if matches!(app.mode, Mode::Search { .. }) || app.status_message.is_some() {
+    if matches!(app.mode, Mode::Search { .. }) {
         return 1;
     }
     let label = get_mode_label(app);
@@ -283,31 +292,8 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
     let badge_width = mode_text.len();
     let badge_style = Style::default().fg(Color::Black).bg(Color::Yellow).bold();
 
-    // Right corner: spinner when jobs running, version otherwise
-    let (right_text, right_style) = if app.is_busy() {
-        let frame = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-        let labels: Vec<&str> = app.jobs.iter().map(|j| j.label.as_str()).collect();
-        let text = format!(" {} {} ", frame, labels.join(" · "));
-        (text, Style::default().fg(Color::Cyan).bold())
-    } else {
-        let ver = format!(" v{} ", env!("CARGO_PKG_VERSION"));
-        (ver, Style::default().fg(Color::DarkGray))
-    };
-
-    let msg = app.status_message.as_deref().unwrap_or("");
-    if !msg.is_empty() {
-        let left = format!(" {}", msg);
-        let left_len = badge_width + left.len();
-        let pad = (area.width as usize).saturating_sub(left_len + right_text.len());
-        let spans = vec![
-            Span::styled(mode_text, badge_style),
-            Span::styled(left, Style::default().fg(Color::Cyan)),
-            Span::raw(" ".repeat(pad)),
-            Span::styled(right_text, right_style),
-        ];
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
-        return;
-    }
+    let right_text = format!(" v{} ", env!("CARGO_PKG_VERSION"));
+    let right_style = Style::default().fg(Color::DarkGray);
 
     let available = (area.width as usize).saturating_sub(badge_width + 1);
     let hint_lines = wrap_hints(hints, available);
