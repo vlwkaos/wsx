@@ -1521,8 +1521,8 @@ impl App {
                     .unwrap_or(false);
                 let needs_attention = !sess.muted
                     && !currently_active
-                    && sess.has_running_app
-                    && !sess.running_app_suppressed;
+                    && (sess.has_activity
+                        || (sess.has_running_app && !sess.running_app_suppressed));
                 if needs_attention {
                     Some(i)
                 } else {
@@ -1569,6 +1569,11 @@ impl App {
                     .map(|t| t.elapsed().as_secs() < IDLE_SECS)
                     .unwrap_or(false);
                 if active {
+                    return;
+                }
+                if sess.has_activity {
+                    sess.has_activity = false;
+                    self.set_status("Dismissed");
                     return;
                 }
                 if sess.has_running_app && !sess.running_app_suppressed {

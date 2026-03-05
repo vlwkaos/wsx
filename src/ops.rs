@@ -226,9 +226,9 @@ pub fn update_activity(
                 if sess.muted {
                     continue;
                 }
+                let old_bell = sess.has_activity;
+                let old_running = sess.has_running_app;
                 if let Some(status) = activity.get(&sess.name) {
-                    let old_bell = sess.has_activity;
-                    let old_running = sess.has_running_app;
                     sess.has_activity = status.has_bell;
                     sess.has_running_app = status.has_running_app;
                     sess.last_activity = Some(status.last_activity_ts)
@@ -241,9 +241,12 @@ pub fn update_activity(
                     if currently_active {
                         sess.running_app_suppressed = false;
                     }
-                    if sess.has_activity != old_bell || sess.has_running_app != old_running {
-                        changed = true;
-                    }
+                } else {
+                    sess.has_activity = false;
+                    sess.has_running_app = false;
+                }
+                if sess.has_activity != old_bell || sess.has_running_app != old_running {
+                    changed = true;
                 }
             }
         }
