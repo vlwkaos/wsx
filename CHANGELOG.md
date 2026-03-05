@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.4] - 2026-03-05
+
+### Features
+
+- Status notifications (spinner during processing, checkmark on completion) now overlay the bottom of the workspace tree column instead of the status bar ([`d7a84aa`](https://github.com/vlwkaos/wsx/commit/d7a84aa))
+
+### Refactor
+
+- Unified Tab/Up/Down completion navigation for both path and command history inputs — Tab cycles, Up/Down navigate the list, dropdown scrolls to keep selection visible ([`e48dd4d`](https://github.com/vlwkaos/wsx/commit/e48dd4d))
+- Panic hook restores terminal before printing errors so the shell isn't left in raw mode ([`e48dd4d`](https://github.com/vlwkaos/wsx/commit/e48dd4d))
+
+---
+
 ## [0.9.3] - 2026-03-05
 
 ### Features
