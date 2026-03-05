@@ -432,7 +432,7 @@ impl App {
             if self.needs_redraw {
                 self.ensure_flat();
                 if let Err(e) = tui::draw_sync(terminal, |frame| ui::render(frame, self)) {
-                    self.set_status(format!("Render: {}", e));
+                    self.set_status(format!("Error: {}", e));
                 }
                 self.needs_redraw = false;
             }
@@ -1779,17 +1779,11 @@ impl App {
     // ── Dispatch to ops ───────────────────────────────────────────────────────
 
     fn do_register_project(&mut self, path: PathBuf) -> Result<()> {
-        match ops::register_project(path, &mut self.config) {
-            Ok(project) => {
-                self.workspace.projects.push(project);
-                self.rebuild_flat();
-                self.config.save()?;
-                self.set_status("Project registered");
-            }
-            Err(e) => {
-                self.set_status(format!("{e}"));
-            }
-        }
+        let project = ops::register_project(path, &mut self.config)?;
+        self.workspace.projects.push(project);
+        self.rebuild_flat();
+        self.config.save()?;
+        self.set_status("Project registered");
         Ok(())
     }
 
