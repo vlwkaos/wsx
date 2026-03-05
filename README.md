@@ -1,5 +1,7 @@
 # wsx
 
+**ENG** | [한글](README.ko.md)
+
 TUI workspace manager for git worktrees and tmux sessions.
 
 <!-- screenshot -->
@@ -7,30 +9,26 @@ TUI workspace manager for git worktrees and tmux sessions.
 
 ## The core idea
 
-Keep a live view of every project → worktree → session in a sidebar. Each session shows real-time state so you can see what needs attention without entering it.
+Keep a live view of every project → worktree → tmux session in a sidebar. 
+Each session shows real-time state so you can see what needs attention without entering it.
+Simply pressing `n` to iterate sessions where attention is required.
 
-**Session icons**
+```
+▼ project
+  ▾ main * ↑2
+      ◉ wsx_cc_main
+  ▸ feature-auth ↓1
+      ○ wsx_cc_auth 
+```
 
-| Icon | Meaning |
-|------|---------|
-| `◉` green | Actively producing output |
-| `●` yellow | Needs attention — bell fired, or a non-passive process went quiet |
-| `○` gray | Idle |
-| `⊘` | Muted |
-
-The yellow `●` fires on tmux bell activity *or* when a foreground process that isn't a shell or known passive watcher (dev server, file watcher) goes quiet. Press `n` to step through pending sessions, `x` to dismiss or mute.
-
-**Worktree git state**
-
-| Icon | Meaning |
-|------|---------|
-| `~` prefix | Main (original) worktree |
-| `*` yellow | Uncommitted local changes |
-| `↑N` cyan | N commits ahead — ready to push |
-| `↓N` red | N commits behind — pull before working |
-| `↓N↑M` magenta | Diverged |
-
-Remote state is fetched in the background and updates silently. The preview pane shows full detail: remote branch name, sync status, modified files, recent commits.
+```mermaid
+flowchart LR
+  P[Project] --> W1[Worktree main]
+  P --> W2[Worktree feature-auth]
+  W1 --> S1[Session: nvim]
+  W1 --> S2[Session: dev]
+  W2 --> S3[Session: dev]
+```
 
 ## Guide
 
