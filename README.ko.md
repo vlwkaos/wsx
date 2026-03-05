@@ -39,11 +39,11 @@ flowchart LR
 |---|---|
 | **프로젝트 설정** 저장소 루트의 `.gtrconfig` 파일을 생성하면 명세에 따라, 새 워크트리에 env 파일 자동 복사와 훅을 실행합니다. `e`로 수정 가능합니다. | <img width="473" height="245" alt="image" src="https://github.com/user-attachments/assets/41a1ef82-9ebb-49aa-993e-4ae9f1ea0a83" /> |
 | **프로젝트 추가** `p`를 누르고 경로 입력하여 프로젝트를 추가할 수 있습니다. Tab 자동완성 지원. | <img width="457" height="221" alt="image" src="https://github.com/user-attachments/assets/b6c0c7bf-7252-4281-bee4-8dfa4c8d4529" /> |
-| **새 워크트리** 프로젝트 선택 후 `w`, 브랜치 이름 입력하면 워크트리가 추가됩니다. | <img width="459" height="52" alt="image" src="https://github.com/user-attachments/assets/8280c712-29a1-43d6-8504-0c7161ab9b86" /> <img width="264" height="90" alt="image" src="https://github.com/user-attachments/assets/c8183cf6-4de8-414a-88e2-1ceac1722080" /> |
-| **세션** 워크트리 선택 후 `s`. 용도별 이름 — `shell`, `claude`, `build`. 세션은 영구 tmux 세션이며, `d`로 삭제, `r`로 이름 변경. | <img width="270" height="68" alt="image" src="https://github.com/user-attachments/assets/41569337-057f-44b8-bd39-8f1d2ffa6a1f" /> |
-| **대기 순회** `n` / `N`으로 `●` 세션 사이 이동. `x`로 해제, 한번 더 누르면 음소거 `⊘`. `a`로 활성 `◉` 세션 순회. | ![Screen Recording 2026-02-27 at 9 35 16 AM](https://github.com/user-attachments/assets/46c6b7be-34b2-4f73-b959-6205d81d1a66) |
-| **원격 제어** `S`로 선택된 세션에 명령 전송. `C`로 Ctrl+C 전송 — 와처를 발견하는 즉시 종료할 때 유용. | <img width="464" height="57" alt="image" src="https://github.com/user-attachments/assets/6d466d85-4d92-44c7-abe8-93ec4337f480" /> |
-| **디태치로 복귀** 세션 안에서 `Ctrl+a d`로 wsx로 돌아옴. 세션은 계속 실행됨. | |
+| **새 워크트리** 프로젝트 선택 후 `w`, 브랜치 이름 입력하면 워크트리가 추가됩니다. `r` 입력으로 워크트리에 별명을 붙일 수 있습니다. | <img width="459" height="52" alt="image" src="https://github.com/user-attachments/assets/8280c712-29a1-43d6-8504-0c7161ab9b86" /> <img width="264" height="90" alt="image" src="https://github.com/user-attachments/assets/c8183cf6-4de8-414a-88e2-1ceac1722080" /> |
+| **세션** 워크트리 선택 후 `s`. 용도별 이름 `shell`, `claude`, `build`을 지정할 수 있습니다. `d`로 삭제, `r`로 이름 변경이 가능합니다. | <img width="270" height="68" alt="image" src="https://github.com/user-attachments/assets/41569337-057f-44b8-bd39-8f1d2ffa6a1f" /> |
+| **순회** `n` / `N`으로 응답이 필요한 `●` 세션을 순회합니다. 순회하고 싶지 않은 세션은 `x`로 해제하거나, 음소거 `⊘`시킬 수 있습니다. `a`로 뭔가 진행중인 `◉` 세션만도 순회가 가능합니다. | ![Screen Recording 2026-02-27 at 9 35 16 AM](https://github.com/user-attachments/assets/46c6b7be-34b2-4f73-b959-6205d81d1a66) |
+| **원격 제어** `S`로 세션에 진입하지 않고도 명령어를 보낼 수 있습니다. `C`로 Ctrl+C 전송. 돌고있는 프로세스를 빠르게 중단할때 유용합니다. | <img width="464" height="57" alt="image" src="https://github.com/user-attachments/assets/6d466d85-4d92-44c7-abe8-93ec4337f480" /> |
+| **복귀** 세션 안에서 `Ctrl+a d`로 wsx로 돌아갈 수 있습니다 | - |
 
 ## 설치
 
