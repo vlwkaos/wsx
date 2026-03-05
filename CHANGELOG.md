@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.5] - 2026-03-05
+
+### Bug Fixes
+
+- Skip non-git directories when loading workspace ([`07b6556`](https://github.com/vlwkaos/wsx/commit/07b6556))
+- Handle render, tick, and register errors gracefully instead of crashing the TUI ([`88c3ba9`](https://github.com/vlwkaos/wsx/commit/88c3ba9))
+
+### Refactor
+
+- Simplify error handling in event loop — use dispatch-level error catch instead of per-method match ([`f602b75`](https://github.com/vlwkaos/wsx/commit/f602b75))
+
+---
+
 ## [0.9.4] - 2026-03-05
 
 ### Features
