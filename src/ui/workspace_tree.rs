@@ -48,7 +48,6 @@ pub fn render_tree(
                 } else {
                     " "
                 };
-                let has_activity = wt.sessions.iter().any(|s| s.has_activity);
                 let sess_badge = if !wt.sessions.is_empty() && !wt.expanded {
                     format!(" [{}]", wt.sessions.len())
                 } else {
@@ -98,9 +97,6 @@ pub fn render_tree(
                         _ => {}
                     }
                 }
-                if has_activity {
-                    spans.push(Span::styled(" ●", Style::default().fg(Color::White)));
-                }
                 if !sess_badge.is_empty() {
                     spans.push(Span::raw(sess_badge));
                 }
@@ -116,16 +112,16 @@ pub fn render_tree(
                     [*session_idx];
                 let elapsed = sess.last_activity.map(|t| t.elapsed());
                 let active = elapsed.map(|e| e.as_secs() < IDLE_SECS).unwrap_or(false);
+                let needs_attention = sess.has_activity
+                    || (sess.has_running_app && !sess.running_app_suppressed);
                 let (icon, icon_color) = if sess.muted {
-                    ("⊘", Color::DarkGray) // muted — no activity tracking
-                } else if sess.has_activity {
-                    ("●", Color::Yellow) // tmux bell — needs attention
+                    ("⊘", Color::DarkGray)
+                } else if needs_attention {
+                    ("●", Color::Yellow)
                 } else if active {
-                    ("◉", Color::Green) // actively outputting
-                } else if sess.has_running_app && !sess.running_app_suppressed {
-                    ("●", Color::Yellow) // app open but quiet — needs attention
+                    ("◉", Color::Green)
                 } else {
-                    ("○", Color::Gray) // truly idle
+                    ("○", Color::Gray)
                 };
                 let idle_str = match elapsed {
                     Some(e) if e.as_secs() >= IDLE_SECS => format!("  {}", fmt_idle(e)),
