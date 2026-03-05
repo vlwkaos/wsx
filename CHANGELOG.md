@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.6] - 2026-03-06
+
+### Refactor
+
+- Merge bell alert and running-app-quiet into single "needs attention" state — both show yellow `●` ([`1e7754c`](https://github.com/vlwkaos/wsx/commit/1e7754c))
+- Remove worktree-level activity rollup indicator (white `●`) ([`1e7754c`](https://github.com/vlwkaos/wsx/commit/1e7754c))
+- Clear stale `has_activity`/`has_running_app` flags when session is absent from tmux ([`1e7754c`](https://github.com/vlwkaos/wsx/commit/1e7754c))
+- Include bell alerts in attention candidates and dismiss action ([`1e7754c`](https://github.com/vlwkaos/wsx/commit/1e7754c))
+
+### Docs
+
+- Add Korean README ([`e8f1fc2`](https://github.com/vlwkaos/wsx/commit/e8f1fc2))
+
+---
+
 ## [0.9.5] - 2026-03-05
 
 ### Bug Fixes
