@@ -263,7 +263,7 @@ pub fn load_workspace(config: &GlobalConfig) -> WorkspaceState {
         .iter()
         .filter_map(|entry| {
             let path = &entry.path;
-            if !path.exists() {
+            if !path.exists() || !path.join(".git").exists() {
                 return None;
             }
 
