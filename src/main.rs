@@ -24,6 +24,17 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    // Restore terminal on panic so the shell isn't left in raw mode.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = crossterm::execute!(
+            std::io::stderr(),
+            crossterm::terminal::LeaveAlternateScreen,
+        );
+        let _ = crossterm::terminal::disable_raw_mode();
+        default_hook(info);
+    }));
+
     let mut terminal = tui::init().context("terminal init failed")?;
     let mut app = App::new()?;
     let result = app.run(&mut terminal);
