@@ -4,7 +4,7 @@ use crate::app::IDLE_SECS;
 use crate::model::workspace::{FlatEntry, WorkspaceState};
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
 pub fn render_tree(
@@ -15,6 +15,7 @@ pub fn render_tree(
     selected: usize,
     scroll_offset: usize,
     is_move_mode: bool,
+    status_message: Option<&str>,
 ) {
 
     let items: Vec<ListItem> = flat
@@ -164,6 +165,23 @@ pub fn render_tree(
         .highlight_symbol("");
 
     frame.render_stateful_widget(list, area, &mut list_state);
+
+    // Overlay status message on the bottom row of the tree area (no layout shift)
+    if let Some(msg) = status_message {
+        let msg_y = area.y + area.height.saturating_sub(1);
+        let inner_w = area.width.saturating_sub(2) as usize; // inside borders
+        let truncated = if msg.len() > inner_w {
+            &msg[..inner_w]
+        } else {
+            msg
+        };
+        let msg_rect = Rect::new(area.x + 1, msg_y, area.width.saturating_sub(2), 1);
+        let para = Paragraph::new(Span::styled(
+            format!(" {truncated}"),
+            Style::default().fg(Color::Yellow).bg(Color::Reset),
+        ));
+        frame.render_widget(para, msg_rect);
+    }
 }
 
 fn fmt_idle(d: std::time::Duration) -> String {
