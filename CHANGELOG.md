@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.7] - 2026-03-06
+
+### Bug Fixes
+
+- Restore session icon 4-branch priority: active output shows green `◉`, running-but-quiet shows yellow `●` (regression from 0.9.6) ([`ef1c49f`](https://github.com/vlwkaos/wsx/commit/ef1c49f))
+- Strip ANSI OSC sequences (hyperlinks, window titles) and bare control chars that caused display artifacts ([`25d97c7`](https://github.com/vlwkaos/wsx/commit/25d97c7))
+- attention_candidates now cycles to both bell and running-app sessions; send_command_history deduplicates by moving to end ([`c118ea2`](https://github.com/vlwkaos/wsx/commit/c118ea2))
+
+---
+
 ## [0.9.6] - 2026-03-06
 
 ### Refactor
