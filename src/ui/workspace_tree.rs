@@ -112,17 +112,7 @@ pub fn render_tree(
                     [*session_idx];
                 let elapsed = sess.last_activity.map(|t| t.elapsed());
                 let active = elapsed.map(|e| e.as_secs() < IDLE_SECS).unwrap_or(false);
-                let (icon, icon_color) = if sess.muted {
-                    ("⊘", Color::DarkGray)
-                } else if sess.has_activity {
-                    ("●", Color::Yellow)
-                } else if active {
-                    ("◉", Color::Green)
-                } else if sess.has_running_app && !sess.running_app_suppressed {
-                    ("●", Color::Yellow)
-                } else {
-                    ("○", Color::Gray)
-                };
+                let (icon, icon_color) = session_icon(sess, active);
                 let idle_str = match elapsed {
                     Some(e) if e.as_secs() >= IDLE_SECS => format!("  {}", fmt_idle(e)),
                     _ => String::new(),
@@ -180,12 +170,90 @@ pub fn render_tree(
     }
 }
 
+fn session_icon(sess: &crate::model::workspace::SessionInfo, active: bool) -> (&'static str, Color) {
+    if sess.muted {
+        ("⊘", Color::DarkGray)
+    } else if sess.has_activity {
+        ("●", Color::Yellow)
+    } else if active {
+        ("◉", Color::Green)
+    } else if sess.has_running_app && !sess.running_app_suppressed {
+        ("●", Color::Yellow)
+    } else {
+        ("○", Color::Gray)
+    }
+}
+
 fn fmt_idle(d: std::time::Duration) -> String {
     let s = d.as_secs();
     match s {
         s if s < 60 => format!("{}s", s),
         s if s < 3600 => format!("{}m", s / 60),
         s => format!("{}h", s / 3600),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::workspace::SessionInfo;
+    use ratatui::style::Color;
+
+    fn sess(
+        muted: bool,
+        has_activity: bool,
+        has_running_app: bool,
+        running_app_suppressed: bool,
+    ) -> SessionInfo {
+        SessionInfo {
+            name: String::new(),
+            display_name: String::new(),
+            has_activity,
+            pane_capture: None,
+            last_activity: None,
+            has_running_app,
+            running_app_suppressed,
+            muted,
+        }
+    }
+
+    // Priority: muted > bell > active > running > idle
+    // Regression guard for commit ef1c49f — running must NOT override active (green).
+
+    #[test]
+    fn active_output_is_green() {
+        let s = sess(false, false, true, false);
+        assert_eq!(session_icon(&s, true), ("◉", Color::Green));
+    }
+
+    #[test]
+    fn bell_overrides_active_green() {
+        let s = sess(false, true, false, false);
+        assert_eq!(session_icon(&s, true), ("●", Color::Yellow));
+    }
+
+    #[test]
+    fn running_quiet_is_yellow() {
+        let s = sess(false, false, true, false);
+        assert_eq!(session_icon(&s, false), ("●", Color::Yellow));
+    }
+
+    #[test]
+    fn running_suppressed_is_gray() {
+        let s = sess(false, false, true, true);
+        assert_eq!(session_icon(&s, false), ("○", Color::Gray));
+    }
+
+    #[test]
+    fn idle_no_app_is_gray() {
+        let s = sess(false, false, false, false);
+        assert_eq!(session_icon(&s, false), ("○", Color::Gray));
+    }
+
+    #[test]
+    fn muted_overrides_everything() {
+        let s = sess(true, true, true, false);
+        assert_eq!(session_icon(&s, true), ("⊘", Color::DarkGray));
     }
 }
 

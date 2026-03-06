@@ -1510,10 +1510,7 @@ impl App {
                     .last_activity
                     .map(|t| t.elapsed().as_secs() < IDLE_SECS)
                     .unwrap_or(false);
-                let needs_attention = !sess.muted
-                    && !currently_active
-                    && (sess.has_activity
-                        || (sess.has_running_app && !sess.running_app_suppressed));
+                let needs_attention = session_needs_attention(sess, currently_active);
                 if needs_attention {
                     Some(i)
                 } else {
@@ -2119,6 +2116,12 @@ fn search_text_for(workspace: &WorkspaceState, entry: &FlatEntry) -> String {
     }
 }
 
+fn session_needs_attention(sess: &crate::model::workspace::SessionInfo, currently_active: bool) -> bool {
+    !sess.muted
+        && !currently_active
+        && (sess.has_activity || (sess.has_running_app && !sess.running_app_suppressed))
+}
+
 fn search_matches_in(cache: &[String], query: &str) -> Vec<usize> {
     if query.is_empty() {
         return vec![];
@@ -2175,5 +2178,56 @@ mod tests {
     fn search_matches_no_match_returns_empty() {
         let cache = vec!["main".to_string(), "fix".to_string()];
         assert!(search_matches_in(&cache, "xyz").is_empty());
+    }
+
+    // Regression guard for the attention_candidates logic (commit c118ea2).
+    // Ensures active sessions never trigger attention, and muted/suppressed are ignored.
+
+    fn make_sess(
+        muted: bool,
+        has_activity: bool,
+        has_running_app: bool,
+        running_app_suppressed: bool,
+    ) -> crate::model::workspace::SessionInfo {
+        crate::model::workspace::SessionInfo {
+            name: String::new(),
+            display_name: String::new(),
+            has_activity,
+            pane_capture: None,
+            last_activity: None,
+            has_running_app,
+            running_app_suppressed,
+            muted,
+        }
+    }
+
+    #[test]
+    fn attention_active_session_is_ignored() {
+        let s = make_sess(false, false, true, false);
+        assert!(!session_needs_attention(&s, true));
+    }
+
+    #[test]
+    fn attention_bell_inactive_triggers() {
+        let s = make_sess(false, true, false, false);
+        assert!(session_needs_attention(&s, false));
+    }
+
+    #[test]
+    fn attention_running_app_triggers() {
+        let s = make_sess(false, false, true, false);
+        assert!(session_needs_attention(&s, false));
+    }
+
+    #[test]
+    fn attention_running_suppressed_does_not_trigger() {
+        let s = make_sess(false, false, true, true);
+        assert!(!session_needs_attention(&s, false));
+    }
+
+    #[test]
+    fn attention_muted_does_not_trigger() {
+        let s = make_sess(true, true, true, false);
+        assert!(!session_needs_attention(&s, false));
     }
 }
