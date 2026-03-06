@@ -112,14 +112,14 @@ pub fn render_tree(
                     [*session_idx];
                 let elapsed = sess.last_activity.map(|t| t.elapsed());
                 let active = elapsed.map(|e| e.as_secs() < IDLE_SECS).unwrap_or(false);
-                let needs_attention = sess.has_activity
-                    || (sess.has_running_app && !sess.running_app_suppressed);
                 let (icon, icon_color) = if sess.muted {
                     ("⊘", Color::DarkGray)
-                } else if needs_attention {
+                } else if sess.has_activity {
                     ("●", Color::Yellow)
                 } else if active {
                     ("◉", Color::Green)
+                } else if sess.has_running_app && !sess.running_app_suppressed {
+                    ("●", Color::Yellow)
                 } else {
                     ("○", Color::Gray)
                 };
