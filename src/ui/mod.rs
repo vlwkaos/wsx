@@ -227,7 +227,7 @@ fn build_hints(app: &App) -> String {
         Mode::Config { .. } => "(e)dit .gtrignore  Esc: close".to_string(),
         Mode::Move { .. } | Mode::MoveSession { .. } => "(j/k) reorder  Esc: done".to_string(),
         Mode::Help => "Esc: close".to_string(),
-        Mode::Search { .. } => unreachable!(),
+        Mode::Search { .. } => String::new(), // status bar renders search inline; hints unused
         Mode::GitPopup { .. } => {
             "(p)ull  (P)ush  (r)pull-rebase  (m)erge-from  (M)erge-into  Esc: close".to_string()
         }

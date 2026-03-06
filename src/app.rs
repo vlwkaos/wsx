@@ -1127,16 +1127,7 @@ impl App {
     }
 
     fn search_matches(&self, query: &str) -> Vec<usize> {
-        if query.is_empty() {
-            return vec![];
-        }
-        let q = query.to_lowercase();
-        self.search_cache
-            .iter()
-            .enumerate()
-            .filter(|(_, text)| text.contains(&q))
-            .map(|(i, _)| i)
-            .collect()
+        search_matches_in(&self.search_cache, query)
     }
 
     fn search_apply(&mut self) {
@@ -1687,12 +1678,11 @@ impl App {
                 InputContext::SendCommand { session_name } => {
                     if !value.is_empty() {
                         session::send_keys(&session_name, &value)?;
-                        if self.send_command_history.last() != Some(&value) {
-                            self.send_command_history.push(value);
-                            if self.send_command_history.len() > 50 {
-                                let overflow = self.send_command_history.len() - 50;
-                                self.send_command_history.drain(0..overflow);
-                            }
+                        self.send_command_history.retain(|cmd| cmd != &value);
+                        self.send_command_history.push(value);
+                        if self.send_command_history.len() > 50 {
+                            let overflow = self.send_command_history.len() - 50;
+                            self.send_command_history.drain(0..overflow);
                         }
                     }
                 }
@@ -2129,6 +2119,19 @@ fn search_text_for(workspace: &WorkspaceState, entry: &FlatEntry) -> String {
     }
 }
 
+fn search_matches_in(cache: &[String], query: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return vec![];
+    }
+    let q = query.to_lowercase();
+    cache
+        .iter()
+        .enumerate()
+        .filter(|(_, text)| text.contains(&q))
+        .map(|(i, _)| i)
+        .collect()
+}
+
 fn build_search_cache(workspace: &WorkspaceState, flat: &[FlatEntry]) -> Vec<String> {
     flat.iter().map(|e| search_text_for(workspace, e)).collect()
 }
@@ -2141,4 +2144,36 @@ fn build_worktree_index(workspace: &WorkspaceState) -> std::collections::HashMap
         }
     }
     idx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_matches_empty_query_returns_nothing() {
+        let cache = vec!["main".to_string(), "feat/foo".to_string()];
+        assert!(search_matches_in(&cache, "").is_empty());
+    }
+
+    #[test]
+    fn search_matches_case_insensitive() {
+        // cache is always pre-lowercased by build_search_cache; query is lowercased at match time
+        let cache = vec!["main".to_string(), "feature".to_string(), "fix".to_string()];
+        let hits = search_matches_in(&cache, "FEAT");
+        assert_eq!(hits, vec![1]);
+    }
+
+    #[test]
+    fn search_matches_multiple_hits() {
+        let cache = vec!["feat/a".to_string(), "other".to_string(), "feat/b".to_string()];
+        let hits = search_matches_in(&cache, "feat");
+        assert_eq!(hits, vec![0, 2]);
+    }
+
+    #[test]
+    fn search_matches_no_match_returns_empty() {
+        let cache = vec!["main".to_string(), "fix".to_string()];
+        assert!(search_matches_in(&cache, "xyz").is_empty());
+    }
 }
