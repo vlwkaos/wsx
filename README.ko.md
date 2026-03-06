@@ -1,6 +1,6 @@
 # wsx
 
-[ENG](README.md) | **한글**
+[ENG](README.md) | **한국어**
 
 git worktree와 tmux 세션을 위한 TUI 워크스페이스 관리자.
 

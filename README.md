@@ -1,6 +1,6 @@
 # wsx
 
-**ENG** | [한글](README.ko.md)
+**ENG** | [한국어](README.ko.md)
 
 TUI workspace manager for git worktrees and tmux sessions.
 
