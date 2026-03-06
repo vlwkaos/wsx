@@ -13,6 +13,7 @@ pub fn parse(input: &str) -> Text<'static> {
         match rest.find('\x1b') {
             Some(0) => {
                 if rest.starts_with("\x1b[") {
+                    // CSI sequence: \x1b[ ... final_byte (alphabetic)
                     let after = &rest[2..];
                     if let Some(end) = after.find(|c: char| c.is_ascii_alphabetic()) {
                         if after.as_bytes()[end] == b'm' {
@@ -22,8 +23,24 @@ pub fn parse(input: &str) -> Text<'static> {
                     } else {
                         rest = &rest[1..];
                     }
+                } else if rest.starts_with("\x1b]") {
+                    // OSC sequence: \x1b] ... ST  where ST = \x07 or \x1b\\
+                    let after = &rest[2..];
+                    if let Some(pos) = after.find('\x07') {
+                        rest = &after[pos + 1..];
+                    } else if let Some(pos) = after.find("\x1b\\") {
+                        rest = &after[pos + 2..];
+                    } else {
+                        rest = "";
+                    }
+                } else if rest.len() >= 3
+                    && matches!(rest.as_bytes()[1], b'(' | b')' | b'*' | b'+')
+                {
+                    // Charset designation: \x1b ( X  — skip ESC + designator + charset byte
+                    rest = &rest[3..];
                 } else {
-                    rest = &rest[1..];
+                    // Other 2-byte sequences (\x1bM, \x1b7, \x1b8, \x1b=, \x1b>, …)
+                    rest = if rest.len() >= 2 { &rest[2..] } else { "" };
                 }
             }
             Some(pos) => {
@@ -54,19 +71,31 @@ fn push_text(
         match s.find('\n') {
             Some(nl) => {
                 if nl > 0 {
-                    spans.push(Span::styled(s[..nl].to_owned(), style));
+                    let chunk = strip_controls(&s[..nl]);
+                    if !chunk.is_empty() {
+                        spans.push(Span::styled(chunk, style));
+                    }
                 }
                 lines.push(Line::from(std::mem::take(spans)));
                 s = &s[nl + 1..];
             }
             None => {
-                if !s.is_empty() {
-                    spans.push(Span::styled(s.to_owned(), style));
+                let chunk = strip_controls(s);
+                if !chunk.is_empty() {
+                    spans.push(Span::styled(chunk, style));
                 }
                 break;
             }
         }
     }
+}
+
+/// Remove control characters (< 0x20, except \t) and DEL (0x7F) that have no
+/// printable representation but would confuse ratatui's cell-width accounting.
+fn strip_controls(s: &str) -> String {
+    s.chars()
+        .filter(|&c| c == '\t' || (c >= ' ' && c != '\x7f'))
+        .collect()
 }
 
 fn apply_sgr(mut style: Style, seq: &str) -> Style {
@@ -148,5 +177,80 @@ fn color_256(n: u8) -> Color {
             let v = 8 + (n - 232) * 10;
             Color::Rgb(v, v, v)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plain(text: &Text<'static>) -> String {
+        text.lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn sgr_colors_preserved() {
+        let t = parse("\x1b[31mhello\x1b[0m world");
+        assert_eq!(plain(&t), "hello world");
+        assert_eq!(t.lines[0].spans[0].style.fg, Some(Color::Red));
+        assert_eq!(t.lines[0].spans[1].style.fg, None);
+    }
+
+    #[test]
+    fn osc_title_sequence_stripped() {
+        // Shell PS1 typically sets terminal title: \x1b]0;title\x07
+        let t = parse("\x1b]0;user@host: ~/project\x07prompt$ ");
+        assert_eq!(plain(&t), "prompt$ ");
+    }
+
+    #[test]
+    fn osc_with_string_terminator_stripped() {
+        let t = parse("\x1b]0;title\x1b\\prompt$ ");
+        assert_eq!(plain(&t), "prompt$ ");
+    }
+
+    #[test]
+    fn charset_designation_stripped() {
+        // \x1b(B resets G0 to ASCII — common in terminal output
+        let t = parse("hello\x1b(Bworld");
+        assert_eq!(plain(&t), "helloworld");
+    }
+
+    #[test]
+    fn charset_designation_g1_stripped() {
+        let t = parse("a\x1b)0b");
+        assert_eq!(plain(&t), "ab");
+    }
+
+    #[test]
+    fn two_byte_escape_stripped() {
+        // \x1bM = reverse index
+        let t = parse("a\x1bMb");
+        assert_eq!(plain(&t), "ab");
+    }
+
+    #[test]
+    fn control_chars_stripped_from_spans() {
+        // \x07 BEL and other controls must not reach ratatui cells
+        let t = parse("hello\x07world");
+        assert_eq!(plain(&t), "helloworld");
+    }
+
+    #[test]
+    fn newlines_split_lines() {
+        let t = parse("line1\nline2");
+        assert_eq!(t.lines.len(), 2);
+        assert_eq!(plain(&t), "line1\nline2");
+    }
+
+    #[test]
+    fn osc_unterminated_consumed_to_end() {
+        // No \x07 or ST — consume the rest rather than leaking it as text
+        let t = parse("\x1b]0;orphan");
+        assert_eq!(plain(&t), "");
     }
 }
