@@ -181,12 +181,17 @@ fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
 }
 
 fn history_completions(typed: &str, history: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
     if typed.is_empty() {
-        return history.iter().rev().cloned().collect();
+        return history.iter().rev().filter(|h| seen.insert(h.as_str())).cloned().collect();
     }
     let mut scored: Vec<(i32, &str)> = history
         .iter()
-        .filter_map(|h| fuzzy_score(typed, h).map(|s| (s, h.as_str())))
+        .rev()
+        .filter_map(|h| {
+            if !seen.insert(h.as_str()) { return None; }
+            fuzzy_score(typed, h).map(|s| (s, h.as_str()))
+        })
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0));
     scored.into_iter().map(|(_, h)| h.to_string()).collect()
