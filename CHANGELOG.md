@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.8] - 2026-03-07
+
+### Bug Fixes
+
+- Fix character bleed in preview panel on session navigation — replace PUA chars (U+E000–U+F8FF, powerline/Nerd Font symbols) with space to prevent unicode-width mismatch that caused ratatui diff to leave stale terminal cells ([`1bc83a2`](https://github.com/vlwkaos/wsx/commit/1bc83a2))
+- Force full terminal clear inside synchronized update block on nav up/down so any stale content is overwritten atomically without flash ([`1bc83a2`](https://github.com/vlwkaos/wsx/commit/1bc83a2))
+- Strip ANSI escapes before empty-line detection in `trim_capture`; pop trailing whitespace-only lines after ANSI parse ([`1bc83a2`](https://github.com/vlwkaos/wsx/commit/1bc83a2))
+
+---
+
 ## [0.9.7] - 2026-03-06
 
 ### Bug Fixes
