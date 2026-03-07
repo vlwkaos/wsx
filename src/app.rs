@@ -250,6 +250,7 @@ pub struct App {
     bg_tx: mpsc::Sender<BgResult>,
     bg_rx: mpsc::Receiver<BgResult>,
     needs_redraw: bool,
+    force_redraw: bool,
     fast_timer: Timer,
     activity_timer: Timer,
     slow_timer: Timer,
@@ -309,6 +310,7 @@ impl App {
             bg_tx,
             bg_rx,
             needs_redraw: true,
+            force_redraw: false,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
             activity_timer: Timer::new(ACTIVITY_INTERVAL_MS),
             slow_timer: Timer::new(SLOW_INTERVAL_MS),
@@ -431,7 +433,9 @@ impl App {
 
             if self.needs_redraw {
                 self.ensure_flat();
-                if let Err(e) = tui::draw_sync(terminal, |frame| ui::render(frame, self)) {
+                let force = self.force_redraw;
+                self.force_redraw = false;
+                if let Err(e) = tui::draw_sync(terminal, force, |frame| ui::render(frame, self)) {
                     self.set_status(format!("Error: {}", e));
                 }
                 self.needs_redraw = false;
@@ -729,7 +733,13 @@ impl App {
                     if let Some(s) = self.workspace.session_mut(pi, wi, si) {
                         if s.pane_capture.as_deref() != Some(&trimmed) {
                             // Invalidate and rebuild cached parsed preview
-                            let parsed = ansi::parse(&trimmed);
+                            let mut parsed = ansi::parse(&trimmed);
+                            while parsed.lines.last()
+                                .map(|l| l.spans.iter().all(|s| s.content.trim().is_empty()))
+                                .unwrap_or(false)
+                            {
+                                parsed.lines.pop();
+                            }
                             self.parsed_preview.insert(s.name.clone(), parsed);
                             s.pane_capture = Some(trimmed);
                             self.needs_redraw = true;
@@ -775,6 +785,7 @@ impl App {
         if self.tree_selected > 0 {
             self.tree_selected -= 1;
             self.update_scroll();
+            self.force_redraw = true;
         }
     }
 
@@ -783,6 +794,7 @@ impl App {
         if self.tree_selected < max {
             self.tree_selected += 1;
             self.update_scroll();
+            self.force_redraw = true;
         }
     }
 

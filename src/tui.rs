@@ -25,11 +25,15 @@ pub fn init() -> Result<Tui> {
 }
 
 /// Draw with synchronized output to prevent terminal from rendering partial frames.
-pub fn draw_sync<F>(terminal: &mut Tui, f: F) -> Result<()>
+/// If `clear` is true, clears the terminal before drawing (atomically within the sync block).
+pub fn draw_sync<F>(terminal: &mut Tui, clear: bool, f: F) -> Result<()>
 where
     F: FnOnce(&mut ratatui::Frame),
 {
     execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+    if clear {
+        terminal.clear()?;
+    }
     terminal.draw(f)?;
     execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
     Ok(())
