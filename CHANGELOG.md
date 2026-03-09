@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.10.0] - 2026-03-10
+
+### Features
+
+- Check crates.io for a newer version once at startup; highlight the bottom-right version badge in yellow with an up-arrow when an update is available ([`9783f26`](https://github.com/vlwkaos/wsx/commit/9783f26))
+- Add `A`/`Shift+Tab` for backward navigation through active sessions and suggestions ([`d3e374b`](https://github.com/vlwkaos/wsx/commit/d3e374b))
+
+### Bug Fixes
+
+- Restore powerline glyphs in preview — stop replacing PUA chars (U+E000–U+F8FF) with spaces; instead force a full terminal clear on every capture content change to prevent bleed ([`6e7514a`](https://github.com/vlwkaos/wsx/commit/6e7514a))
+
+### UI
+
+- Redesign input suggestion list as an inline dropdown instead of a floating overlay ([`48b9094`](https://github.com/vlwkaos/wsx/commit/48b9094))
+
+---
+
 ## [0.9.9] - 2026-03-09
 
 ### Bug Fixes
