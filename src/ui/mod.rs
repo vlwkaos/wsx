@@ -196,7 +196,7 @@ fn get_mode_label(app: &App) -> &'static str {
 }
 
 fn build_hints(app: &App) -> String {
-    let global = "(/)search  (a)ctive  ·  (n)ext (N)prev pending  ·  (e)config  (?)help";
+    let global = "(/)search  (a/A) active  ·  (n/N) pending  ·  (e)config  (?)help";
     match &app.mode {
         Mode::Normal => match app.current_selection() {
             Selection::Project(_) => format!("(m)ove  (w)orktree  (d)el  (c)lean  ·  {}", global),
@@ -406,7 +406,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         "",
         " Global",
         "  [ / ]         Jump to prev / next project",
-        "  a             Jump to next active session (◉)",
+        "  a / A         Jump to next / prev active session (◉)",
         "  n / N         Jump to next / prev session needing attention (●)",
         "  R             Refresh",
         "  ?             Help",

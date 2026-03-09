@@ -31,6 +31,7 @@ fn translate_input_key(key: KeyEvent) -> Action {
         KeyCode::Esc => Action::InputEscape,
         KeyCode::Backspace => Action::InputBackspace,
         KeyCode::Tab => Action::InputTab,
+        KeyCode::BackTab => Action::InputBackTab,
         KeyCode::Down => Action::NavigateDown,
         KeyCode::Up => Action::NavigateUp,
         KeyCode::Left => Action::NavigateLeft,
@@ -87,6 +88,7 @@ fn translate_key(key: KeyEvent) -> Action {
         (KeyModifiers::NONE, KeyCode::Char(']')) => Action::JumpProjectDown,
         (KeyModifiers::NONE, KeyCode::Char('[')) => Action::JumpProjectUp,
         (KeyModifiers::NONE, KeyCode::Char('a')) => Action::NextActive,
+        (KeyModifiers::SHIFT, KeyCode::Char('A')) | (KeyModifiers::NONE, KeyCode::Char('A')) => Action::PrevActive,
         (KeyModifiers::SHIFT, KeyCode::Char('S')) | (KeyModifiers::NONE, KeyCode::Char('S')) => {
             Action::SendCommand
         }
