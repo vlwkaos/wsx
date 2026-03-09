@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::ui::popup_upper;
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 
 pub struct InputState {
@@ -275,58 +275,61 @@ fn display_path(path: &PathBuf, prefer_tilde: bool) -> String {
 
 pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &str) {
     let width = area.width.min(60);
-    let popup = popup_upper(area, width, 3);
+
+    let max_show = if state.completions.is_empty() {
+        0
+    } else {
+        5usize.min(state.completions.len())
+    };
+    let scroll_offset = match state.completion_idx {
+        Some(i) if i >= max_show => i - max_show + 1,
+        _ => 0,
+    };
+
+    // Single box: input line + completion rows inside one border
+    let popup_h = 3 + max_show as u16;
+    let popup = popup_upper(area, width, popup_h);
 
     frame.render_widget(Clear, popup);
 
-    let display = format!("{}{}", state.prompt, state.buffer);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {} ", title))
         .border_style(Style::default().fg(Color::Cyan));
-    let para = Paragraph::new(display).block(block);
-    frame.render_widget(para, popup);
+    frame.render_widget(block, popup);
+
+    // Input line
+    let display = format!("{}{}", state.prompt, state.buffer);
+    let input_row = Rect::new(popup.x + 1, popup.y + 1, width - 2, 1);
+    frame.render_widget(Paragraph::new(display), input_row);
 
     let cursor_col = state.prompt.len() + state.display_cursor();
     let cursor_x = popup.x + 1 + cursor_col as u16;
     frame.set_cursor_position((cursor_x.min(popup.x + popup.width - 2), popup.y + 1));
 
-    if !state.completions.is_empty() {
-        let max_show = 5usize.min(state.completions.len());
-        // Scroll window so the selected item stays visible
-        let scroll_offset = match state.completion_idx {
-            Some(i) if i >= max_show => i - max_show + 1,
-            _ => 0,
-        };
-        let drop_h = max_show as u16 + 2;
-        let drop_y = popup.y + 3;
-        if drop_y + drop_h <= area.y + area.height {
-            let drop = Rect::new(popup.x, drop_y, width, drop_h);
-            frame.render_widget(Clear, drop);
+    // Completion items — left-aligned with where user types
+    if max_show > 0 {
+        let prompt_w = state.prompt.chars().count() as u16;
+        let comp_x = popup.x + 1 + prompt_w;
+        let comp_w = width.saturating_sub(2 + prompt_w);
 
-            let items: Vec<ListItem> = state
-                .completions
-                .iter()
-                .enumerate()
-                .skip(scroll_offset)
-                .take(max_show)
-                .map(|(i, s)| {
-                    let selected = state.completion_idx == Some(i);
-                    let style = if selected {
-                        Style::default().fg(Color::Black).bg(Color::Cyan)
-                    } else {
-                        Style::default().fg(Color::Rgb(100, 100, 100))
-                    };
-                    ListItem::new(format!(" {s} ")).style(style)
-                })
-                .collect();
-
-            let list = List::new(items).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Rgb(100, 100, 100))),
-            );
-            frame.render_widget(list, drop);
+        for (vis_idx, (orig_idx, s)) in state
+            .completions
+            .iter()
+            .enumerate()
+            .skip(scroll_offset)
+            .take(max_show)
+            .enumerate()
+        {
+            let y = popup.y + 2 + vis_idx as u16;
+            let selected = state.completion_idx == Some(orig_idx);
+            let style = if selected {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::Rgb(140, 140, 140))
+            };
+            let row = Rect::new(comp_x, y, comp_w, 1);
+            frame.render_widget(Paragraph::new(s.as_str()).style(style), row);
         }
     }
 }
