@@ -1,9 +1,14 @@
 // Git info via CLI — branch, commits, modified files, ahead/behind
 
 use super::git_cmd;
-use crate::model::workspace::{CommitSummary, GitInfo};
+use crate::model::workspace::{CommitSummary, FetchFailReason, GitInfo};
 use std::path::Path;
 use std::process::Command;
+
+pub struct FetchOutcome {
+    pub success: bool,
+    pub reason: Option<FetchFailReason>,
+}
 
 pub fn get_git_info(worktree_path: &Path, _default_branch: &str) -> Option<GitInfo> {
     // Single subprocess: captures branch, upstream, ahead/behind, and modified files.
@@ -25,10 +30,11 @@ type StatusResult = (String, Option<String>, usize, usize, Vec<String>);
 /// Parse `git status --porcelain=2 --branch` output.
 /// Returns (branch, upstream, ahead, behind, modified_files) or None on failure.
 fn status_porcelain2(path: &Path) -> Option<StatusResult> {
-    let out = git_read(path)
-        .args(["status", "--porcelain=2", "--branch"])
-        .output()
-        .ok()?;
+    let out = super::output_with_timeout(
+        git_read(path).args(["status", "--porcelain=2", "--branch"]),
+        std::time::Duration::from_secs(10),
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -90,46 +96,45 @@ fn status_porcelain2(path: &Path) -> Option<StatusResult> {
     Some((branch, upstream, ahead, behind, modified_files))
 }
 
-/// Run `git fetch` in the background thread — polls with timeout to avoid hanging.
-pub(crate) fn git_fetch(path: &Path) -> bool {
-    let Ok(mut child) = std::process::Command::new("git")
-        .args(["fetch", "--no-tags", "--quiet"])
-        .current_dir(path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    else {
-        return false;
-    };
-
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(10);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) => {
-                if start.elapsed() > timeout {
-                    // Edge race: process may have exited after the previous `try_wait`.
-                    if let Ok(Some(status)) = child.try_wait() {
-                        return status.success();
-                    }
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return false;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(200));
-            }
-            Err(_) => return false,
+/// Run `git fetch` — uses `output_with_timeout` for process-group cleanup on timeout.
+pub(crate) fn git_fetch(path: &Path) -> FetchOutcome {
+    let result = super::output_with_timeout(
+        git_cmd(path).args(["fetch", "--no-tags", "--quiet"]),
+        std::time::Duration::from_secs(10),
+    );
+    match result {
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+            FetchOutcome { success: false, reason: Some(FetchFailReason::Timeout) }
+        }
+        Err(_) => FetchOutcome { success: false, reason: Some(FetchFailReason::Network) },
+        Ok(out) if out.status.success() => FetchOutcome { success: true, reason: None },
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            FetchOutcome { success: false, reason: Some(classify_fetch_error(&stderr)) }
         }
     }
 }
 
+fn classify_fetch_error(stderr: &str) -> FetchFailReason {
+    let lower = stderr.to_lowercase();
+    if lower.contains("authentication failed")
+        || lower.contains("permission denied")
+        || lower.contains("could not read username")
+        || lower.contains("invalid username or password")
+        || lower.contains("repository not found")
+    {
+        FetchFailReason::Auth
+    } else {
+        FetchFailReason::Network
+    }
+}
+
 pub fn current_branch(path: &Path) -> Option<String> {
-    let out = git_read(path)
-        .args(["branch", "--show-current"])
-        .output()
-        .ok()?;
+    let out = super::output_with_timeout(
+        git_read(path).args(["branch", "--show-current"]),
+        std::time::Duration::from_secs(5),
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -142,10 +147,10 @@ pub fn current_branch(path: &Path) -> Option<String> {
 }
 
 fn recent_commits(path: &Path, n: usize) -> Vec<CommitSummary> {
-    let Ok(out) = git_read(path)
-        .args(["log", "--oneline", &format!("-{}", n)])
-        .output()
-    else {
+    let Ok(out) = super::output_with_timeout(
+        git_read(path).args(["log", "--oneline", &format!("-{}", n)]),
+        std::time::Duration::from_secs(5),
+    ) else {
         return vec![];
     };
     if !out.status.success() {

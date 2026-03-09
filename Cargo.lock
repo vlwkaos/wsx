@@ -881,6 +881,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "glob",
+ "libc",
  "ratatui",
  "serde",
  "thiserror 2.0.18",
