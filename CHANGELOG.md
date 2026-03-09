@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.9.9] - 2026-03-09
+
+### Bug Fixes
+
+- Subprocess process-group isolation — child processes get their own PGID via `process_group(0)`, so `killpg` on timeout reaps git + ssh + credential helpers instead of leaking orphans ([`d1dd486`](https://github.com/vlwkaos/wsx/commit/d1dd486))
+- Add `ConnectTimeout=5` to `GIT_SSH_COMMAND` so SSH fails fast for unreachable hosts instead of hanging 60s+ ([`d1dd486`](https://github.com/vlwkaos/wsx/commit/d1dd486))
+- Join reader threads after kill in `output_with_timeout` to prevent thread leaks on the timeout path ([`d1dd486`](https://github.com/vlwkaos/wsx/commit/d1dd486))
+- Consolidate `git_fetch` onto `output_with_timeout` — removes duplicate timeout loop and blocking `stderr_thread.join()` that hung when SSH survived kill ([`d1dd486`](https://github.com/vlwkaos/wsx/commit/d1dd486))
+- Protect `current_branch`, `list_worktrees`, `recent_commits` with `output_with_timeout` — no more bare `.output()` that could block indefinitely ([`d1dd486`](https://github.com/vlwkaos/wsx/commit/d1dd486))
+
+### Refactor
+
+- Move periodic `list_worktrees` and tmux session refresh off the main thread — `spawn_tmux_refresh` now runs all subprocess calls in a background thread and sends results via channel ([`1862be0`](https://github.com/vlwkaos/wsx/commit/1862be0))
+- Add `refresh_workspace_with_worktrees` that takes pre-computed worktree entries, keeping synchronous `refresh_workspace` for user-triggered actions only ([`1862be0`](https://github.com/vlwkaos/wsx/commit/1862be0))
+- Fetch failure tracking with `FetchFailReason` (auth/timeout/network), per-worktree fail count, and exponential backoff ([`d1dd486`](https://github.com/vlwkaos/wsx/commit/d1dd486))
+
+---
+
 ## [0.9.8] - 2026-03-07
 
 ### Bug Fixes
