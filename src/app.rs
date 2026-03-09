@@ -1133,6 +1133,7 @@ impl App {
             Action::PrevAttention => self.action_next_attention(-1),
             Action::DismissAttention => self.action_dismiss_attention(),
             Action::NextActive => self.action_next_active(),
+            Action::PrevActive => self.action_prev_active(),
             Action::SendCommand => self.action_send_command(),
             Action::SendCtrlC => self.action_send_ctrl_c()?,
             Action::EnterMove => self.action_enter_move(),
@@ -1207,6 +1208,11 @@ impl App {
             Action::InputTab => {
                 if let Mode::Input { state, .. } = &mut self.mode {
                     state.select_next();
+                }
+            }
+            Action::InputBackTab => {
+                if let Mode::Input { state, .. } = &mut self.mode {
+                    state.select_prev();
                 }
             }
             Action::NavigateDown => {
@@ -1631,6 +1637,23 @@ impl App {
             .copied()
             .unwrap_or(candidates[0]);
         self.tree_selected = next;
+        self.update_scroll();
+    }
+
+    fn action_prev_active(&mut self) {
+        let candidates = self.active_candidates();
+        if candidates.is_empty() {
+            self.set_status("No active sessions");
+            return;
+        }
+        let prev = candidates
+            .iter()
+            .rev()
+            .find(|&&i| i < self.tree_selected)
+            .or_else(|| candidates.last())
+            .copied()
+            .unwrap_or(candidates[0]);
+        self.tree_selected = prev;
         self.update_scroll();
     }
 
