@@ -292,8 +292,17 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
     let badge_width = mode_text.len();
     let badge_style = Style::default().fg(Color::Black).bg(Color::Yellow).bold();
 
-    let right_text = format!(" v{} ", env!("CARGO_PKG_VERSION"));
-    let right_style = Style::default().fg(Color::DarkGray);
+    let (right_text, right_style) = if let Some(v) = &app.update_available {
+        (
+            format!(" ↑ v{} ", v),
+            Style::default().fg(Color::Black).bg(Color::Yellow).bold(),
+        )
+    } else {
+        (
+            format!(" v{} ", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(Color::DarkGray),
+        )
+    };
 
     let available = (area.width as usize).saturating_sub(badge_width + 1);
     let hint_lines = wrap_hints(hints, available);

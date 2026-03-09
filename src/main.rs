@@ -13,6 +13,7 @@ mod ops;
 mod tmux;
 mod tui;
 mod ui;
+mod update;
 
 use anyhow::{Context, Result};
 use app::App;

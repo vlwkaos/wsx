@@ -299,6 +299,8 @@ pub struct App {
     tmux_refresh_pending: bool,
     tmux_activity_pending: bool,
     tmux_capture_pending: bool,
+    update_rx: mpsc::Receiver<String>,
+    pub update_available: Option<String>,
 }
 
 impl App {
@@ -314,6 +316,12 @@ impl App {
         let (fetch_tx, fetch_rx) = mpsc::channel();
         let (bg_tx, bg_rx) = mpsc::channel();
         let (tmux_tx, tmux_rx) = mpsc::channel();
+        let (update_tx, update_rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            if let Some(v) = crate::update::fetch_latest_version() {
+                let _ = update_tx.send(v);
+            }
+        });
         let worktree_index = build_worktree_index(&workspace);
         let search_cache = build_search_cache(&workspace, &cached_flat);
 
@@ -360,6 +368,8 @@ impl App {
             tmux_refresh_pending: false,
             tmux_activity_pending: false,
             tmux_capture_pending: false,
+            update_rx,
+            update_available: None,
         })
     }
 
@@ -522,6 +532,10 @@ impl App {
                     self.apply_tmux_capture(session_name, content);
                 }
             }
+        }
+        if let Ok(v) = self.update_rx.try_recv() {
+            self.update_available = Some(v);
+            self.needs_redraw = true;
         }
     }
 
