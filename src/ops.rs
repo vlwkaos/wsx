@@ -13,8 +13,8 @@ use crate::{
     git::{info as git_info, worktree as git_worktree},
     hooks,
     model::workspace::{
-        session_display_name_from_tmux, GitInfo, Project, ProjectConfig, SessionInfo,
-        WorkspaceState, WorktreeInfo,
+        session_display_name_from_tmux, FetchFailReason, GitInfo, Project, ProjectConfig,
+        SessionInfo, WorkspaceState, WorktreeInfo,
     },
     tmux::{monitor::SessionStatus, session},
 };
@@ -32,6 +32,8 @@ struct WorktreeSnapEntry {
     session_order: Vec<String>,
     last_fetched: Option<Instant>,
     fetch_failed: bool,
+    fetch_fail_count: u32,
+    fetch_fail_reason: Option<FetchFailReason>,
 }
 
 pub const IDLE_SECS: u64 = 3;
@@ -48,11 +50,32 @@ fn unix_ts_to_instant(unix_ts: u64) -> Option<Instant> {
 }
 
 /// Rebuild all worktrees + sessions for every project from live data.
+/// Calls `list_worktrees` per project synchronously — use for user-triggered refreshes.
 pub fn refresh_workspace(
     workspace: &mut WorkspaceState,
     config: &GlobalConfig,
     sessions_with_paths: &[(String, PathBuf)],
     activity: &HashMap<String, SessionStatus>,
+) {
+    let worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)> = workspace
+        .projects
+        .iter()
+        .map(|p| {
+            let entries = git_worktree::list_worktrees(&p.path).unwrap_or_default();
+            (p.path.clone(), entries)
+        })
+        .collect();
+    refresh_workspace_with_worktrees(workspace, config, sessions_with_paths, activity, worktrees);
+}
+
+/// Like `refresh_workspace` but with pre-computed worktree entries — avoids subprocess calls
+/// on the caller's thread. Used by the periodic background refresh path.
+pub fn refresh_workspace_with_worktrees(
+    workspace: &mut WorkspaceState,
+    config: &GlobalConfig,
+    sessions_with_paths: &[(String, PathBuf)],
+    activity: &HashMap<String, SessionStatus>,
+    worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
 ) {
     // Pre-index sessions by worktree path for O(1) lookup per worktree
     let mut sessions_by_path: HashMap<&PathBuf, Vec<&str>> = HashMap::new();
@@ -65,6 +88,9 @@ pub fn refresh_workspace(
         .iter()
         .map(|e| (e.path.clone(), e.aliases.clone()))
         .collect();
+
+    let mut worktrees_map: HashMap<PathBuf, Vec<git_worktree::WorktreeEntry>> =
+        worktrees.into_iter().collect();
 
     for i in 0..workspace.projects.len() {
         let path = workspace.projects[i].path.clone();
@@ -100,117 +126,122 @@ pub fn refresh_workspace(
                         session_order: order,
                         last_fetched: w.last_fetched,
                         fetch_failed: w.fetch_failed,
+                        fetch_fail_count: w.fetch_fail_count,
+                        fetch_fail_reason: w.fetch_fail_reason.clone(),
                     },
                 )
             })
             .collect();
 
-        if let Ok(entries) = git_worktree::list_worktrees(&path) {
-            let mut new_worktrees = Vec::new();
-            for entry in entries
-                .into_iter()
-                .filter(|e| !config.is_worktree_excluded(&e.path))
-            {
-                let alias = aliases.get(&entry.branch).cloned();
-                let wt_path = entry.path.clone();
-                let prev = snapshot.get(&entry.path);
+        let entries = worktrees_map.remove(&path).unwrap_or_default();
+        let mut new_worktrees = Vec::new();
+        for entry in entries
+            .into_iter()
+            .filter(|e| !config.is_worktree_excluded(&e.path))
+        {
+            let alias = aliases.get(&entry.branch).cloned();
+            let wt_path = entry.path.clone();
+            let prev = snapshot.get(&entry.path);
 
-                let prev_order: &[String] = prev
-                    .map(|snap| snap.session_order.as_slice())
-                    .unwrap_or(&[]);
-                // Index prev_order for O(1) sort-key lookup
-                let order_index: HashMap<&str, usize> = prev_order
-                    .iter()
-                    .enumerate()
-                    .map(|(i, n)| (n.as_str(), i))
-                    .collect();
+            let prev_order: &[String] = prev
+                .map(|snap| snap.session_order.as_slice())
+                .unwrap_or(&[]);
+            // Index prev_order for O(1) sort-key lookup
+            let order_index: HashMap<&str, usize> = prev_order
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.as_str(), i))
+                .collect();
 
-                let empty_names: Vec<&str> = Vec::new();
-                let session_names = sessions_by_path.get(&wt_path).unwrap_or(&empty_names);
-                let mut sessions: Vec<SessionInfo> = session_names
-                    .iter()
-                    .map(|&name| {
-                        let display_name = session_display_name_from_tmux(
-                            name,
-                            &proj_name,
-                            &wt_path,
-                            &entry.branch,
-                            alias.as_deref(),
-                        );
-                        let prev_pane = prev.and_then(|snap| snap.panes.get(name));
-                        let (pane_capture, prev_suppressed, muted) = prev_pane
-                            .map(|(p, s, m)| (p.clone(), *s, *m))
-                            .unwrap_or((None, false, false));
-                        // Muted sessions skip all activity tracking.
-                        let (has_activity, has_running_app, last_activity, running_app_suppressed) =
-                            if muted {
-                                (false, false, None, false)
+            let empty_names: Vec<&str> = Vec::new();
+            let session_names = sessions_by_path.get(&wt_path).unwrap_or(&empty_names);
+            let mut sessions: Vec<SessionInfo> = session_names
+                .iter()
+                .map(|&name| {
+                    let display_name = session_display_name_from_tmux(
+                        name,
+                        &proj_name,
+                        &wt_path,
+                        &entry.branch,
+                        alias.as_deref(),
+                    );
+                    let prev_pane = prev.and_then(|snap| snap.panes.get(name));
+                    let (pane_capture, prev_suppressed, muted) = prev_pane
+                        .map(|(p, s, m)| (p.clone(), *s, *m))
+                        .unwrap_or((None, false, false));
+                    // Muted sessions skip all activity tracking.
+                    let (has_activity, has_running_app, last_activity, running_app_suppressed) =
+                        if muted {
+                            (false, false, None, false)
+                        } else {
+                            let status = activity.get(name);
+                            let has_activity = status.map(|s| s.has_bell).unwrap_or(false);
+                            let has_running_app =
+                                status.map(|s| s.has_running_app).unwrap_or(false);
+                            let last_activity = status
+                                .filter(|s| s.last_activity_ts > 0)
+                                .and_then(|s| unix_ts_to_instant(s.last_activity_ts));
+                            let currently_active = last_activity
+                                .map(|t| t.elapsed().as_secs() < IDLE_SECS)
+                                .unwrap_or(false);
+                            // Reset suppressed when new activity arrives.
+                            let running_app_suppressed = if currently_active {
+                                false
                             } else {
-                                let status = activity.get(name);
-                                let has_activity = status.map(|s| s.has_bell).unwrap_or(false);
-                                let has_running_app =
-                                    status.map(|s| s.has_running_app).unwrap_or(false);
-                                let last_activity = status
-                                    .filter(|s| s.last_activity_ts > 0)
-                                    .and_then(|s| unix_ts_to_instant(s.last_activity_ts));
-                                let currently_active = last_activity
-                                    .map(|t| t.elapsed().as_secs() < IDLE_SECS)
-                                    .unwrap_or(false);
-                                // Reset suppressed when new activity arrives.
-                                let running_app_suppressed = if currently_active {
-                                    false
-                                } else {
-                                    prev_suppressed
-                                };
-                                (
-                                    has_activity,
-                                    has_running_app,
-                                    last_activity,
-                                    running_app_suppressed,
-                                )
+                                prev_suppressed
                             };
-                        SessionInfo {
-                            name: name.to_string(),
-                            display_name,
-                            has_activity,
-                            pane_capture,
-                            last_activity,
-                            has_running_app,
-                            running_app_suppressed,
-                            muted,
-                        }
-                    })
-                    .collect();
-                sessions.sort_by_key(|s| *order_index.get(s.name.as_str()).unwrap_or(&usize::MAX));
+                            (
+                                has_activity,
+                                has_running_app,
+                                last_activity,
+                                running_app_suppressed,
+                            )
+                        };
+                    SessionInfo {
+                        name: name.to_string(),
+                        display_name,
+                        has_activity,
+                        pane_capture,
+                        last_activity,
+                        has_running_app,
+                        running_app_suppressed,
+                        muted,
+                    }
+                })
+                .collect();
+            sessions.sort_by_key(|s| *order_index.get(s.name.as_str()).unwrap_or(&usize::MAX));
 
-                let (git_info, git_info_fetched_at, expanded, last_fetched, fetch_failed) = prev
-                    .map(|snap| {
-                        (
-                            snap.git_info.clone(),
-                            snap.git_info_fetched_at,
-                            snap.expanded,
-                            snap.last_fetched,
-                            snap.fetch_failed,
-                        )
-                    })
-                    .unwrap_or((None, None, true, None, false));
+            let (git_info, git_info_fetched_at, expanded, last_fetched, fetch_failed, fetch_fail_count, fetch_fail_reason) = prev
+                .map(|snap| {
+                    (
+                        snap.git_info.clone(),
+                        snap.git_info_fetched_at,
+                        snap.expanded,
+                        snap.last_fetched,
+                        snap.fetch_failed,
+                        snap.fetch_fail_count,
+                        snap.fetch_fail_reason.clone(),
+                    )
+                })
+                .unwrap_or((None, None, true, None, false, 0, None));
 
-                new_worktrees.push(WorktreeInfo {
-                    name: entry.name,
-                    branch: entry.branch,
-                    path: entry.path,
-                    is_main: entry.is_main,
-                    alias,
-                    sessions,
-                    expanded,
-                    git_info,
-                    git_info_fetched_at,
-                    fetch_failed,
-                    last_fetched,
-                });
-            }
-            workspace.projects[i].worktrees = new_worktrees;
+            new_worktrees.push(WorktreeInfo {
+                name: entry.name,
+                branch: entry.branch,
+                path: entry.path,
+                is_main: entry.is_main,
+                alias,
+                sessions,
+                expanded,
+                git_info,
+                git_info_fetched_at,
+                fetch_failed,
+                fetch_fail_count,
+                fetch_fail_reason,
+                last_fetched,
+            });
         }
+        workspace.projects[i].worktrees = new_worktrees;
     }
 }
 

@@ -1,7 +1,7 @@
 // App state machine and event loop.
 // ref: ratatui app patterns — https://ratatui.rs/concepts/application-patterns/
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex, Condvar};
 use std::time::{Duration, Instant};
@@ -21,6 +21,24 @@ use crate::{
     tui::{self, Tui},
     ui::{self, ansi, input::InputState},
 };
+
+use git_info::FetchOutcome;
+use monitor::SessionStatus;
+
+// ── Tmux async results ────────────────────────────────────────────────────────
+
+enum TmuxResult {
+    FullRefresh {
+        sessions: Vec<(String, PathBuf)>,
+        activity: HashMap<String, SessionStatus>,
+        worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
+    },
+    Activity(HashMap<String, SessionStatus>),
+    Capture {
+        session_name: String,
+        content: Option<String>,
+    },
+}
 
 // ── Git concurrency limiter ───────────────────────────────────────────────────
 
@@ -261,8 +279,8 @@ pub struct App {
     git_local_tx: mpsc::Sender<(PathBuf, Option<GitInfo>)>,
     git_local_rx: mpsc::Receiver<(PathBuf, Option<GitInfo>)>,
     git_local_pending: HashSet<PathBuf>,
-    fetch_tx: mpsc::Sender<(PathBuf, bool)>,
-    fetch_rx: mpsc::Receiver<(PathBuf, bool)>,
+    fetch_tx: mpsc::Sender<(PathBuf, FetchOutcome)>,
+    fetch_rx: mpsc::Receiver<(PathBuf, FetchOutcome)>,
     fetch_pending: HashSet<PathBuf>,
     /// mtime of cache file after our last write — used to detect external changes.
     cache_mtime: Option<std::time::SystemTime>,
@@ -276,6 +294,11 @@ pub struct App {
     worktree_index: std::collections::HashMap<PathBuf, (usize, usize)>,
     /// session_name → parsed ANSI preview; invalidated when pane_capture changes.
     pub parsed_preview: std::collections::HashMap<String, ratatui::text::Text<'static>>,
+    tmux_tx: mpsc::Sender<TmuxResult>,
+    tmux_rx: mpsc::Receiver<TmuxResult>,
+    tmux_refresh_pending: bool,
+    tmux_activity_pending: bool,
+    tmux_capture_pending: bool,
 }
 
 impl App {
@@ -290,6 +313,7 @@ impl App {
         let (git_local_tx, git_local_rx) = mpsc::channel();
         let (fetch_tx, fetch_rx) = mpsc::channel();
         let (bg_tx, bg_rx) = mpsc::channel();
+        let (tmux_tx, tmux_rx) = mpsc::channel();
         let worktree_index = build_worktree_index(&workspace);
         let search_cache = build_search_cache(&workspace, &cached_flat);
 
@@ -331,6 +355,11 @@ impl App {
             git_semaphore: GitSemaphore::new(
                 std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
             ),
+            tmux_tx,
+            tmux_rx,
+            tmux_refresh_pending: false,
+            tmux_activity_pending: false,
+            tmux_capture_pending: false,
         })
     }
 
@@ -472,14 +501,27 @@ impl App {
     }
 
     fn drain_async_results(&mut self) {
-        while let Ok((path, success)) = self.fetch_rx.try_recv() {
-            self.apply_fetch_result(path, success);
+        while let Ok((path, outcome)) = self.fetch_rx.try_recv() {
+            self.apply_fetch_result(path, outcome);
         }
         while let Ok((path, info)) = self.git_local_rx.try_recv() {
             self.apply_git_local_result(path, info);
         }
         while let Ok(result) = self.bg_rx.try_recv() {
             self.apply_bg_result(result);
+        }
+        while let Ok(result) = self.tmux_rx.try_recv() {
+            match result {
+                TmuxResult::FullRefresh { sessions, activity, worktrees } => {
+                    self.apply_tmux_refresh(sessions, activity, worktrees);
+                }
+                TmuxResult::Activity(activity) => {
+                    self.apply_tmux_activity(activity);
+                }
+                TmuxResult::Capture { session_name, content } => {
+                    self.apply_tmux_capture(session_name, content);
+                }
+            }
         }
     }
 
@@ -494,18 +536,16 @@ impl App {
 
         if self.slow_timer.ready() {
             self.check_cache_conflict();
-            if let Err(e) = self.refresh_all() {
-                self.set_status(format!("Refresh error: {}", e));
-            }
+            self.spawn_tmux_refresh();
             self.spawn_git_local_for_all();
             self.activity_timer.last = Instant::now(); // rescan subsumes activity check
-            self.needs_redraw = true;
         } else if self.activity_timer.ready() {
-            self.refresh_activity(); // sets needs_redraw internally if changed
+            self.spawn_tmux_activity();
         }
 
         if self.fast_timer.ready() {
-            self.refresh_captures();
+            self.spawn_tmux_capture();
+            self.tick_git_fetch();
             if !self.jobs.is_empty() {
                 self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
                 self.needs_redraw = true;
@@ -522,7 +562,6 @@ impl App {
         if self.git_local_pending.contains(&path) {
             return;
         }
-        // If this worktree is not selected and git_info was fetched recently, skip
         let is_selected = matches!(
             self.current_selection(),
             Selection::Worktree(pi, wi) | Selection::Session(pi, wi, _)
@@ -531,15 +570,14 @@ impl App {
                 .map(|wt| wt.path == path)
                 .unwrap_or(false)
         );
-        if !is_selected {
-            if let Some(&(pi, wi)) = self.worktree_index.get(&path) {
-                if let Some(wt) = self.workspace.projects.get(pi).and_then(|p| p.worktrees.get(wi)) {
-                    let fresh = wt.git_info_fetched_at
-                        .map(|t| t.elapsed().as_secs() < Self::GIT_INFO_CACHE_SECS)
-                        .unwrap_or(false);
-                    if fresh {
-                        return;
-                    }
+        let cache_secs = if is_selected { 1 } else { Self::GIT_INFO_CACHE_SECS };
+        if let Some(&(pi, wi)) = self.worktree_index.get(&path) {
+            if let Some(wt) = self.workspace.projects.get(pi).and_then(|p| p.worktrees.get(wi)) {
+                let fresh = wt.git_info_fetched_at
+                    .map(|t| t.elapsed().as_secs() < cache_secs)
+                    .unwrap_or(false);
+                if fresh {
+                    return;
                 }
             }
         }
@@ -572,7 +610,7 @@ impl App {
         }
     }
 
-    fn apply_fetch_result(&mut self, path: PathBuf, success: bool) {
+    fn apply_fetch_result(&mut self, path: PathBuf, outcome: FetchOutcome) {
         let completed_at = Instant::now();
         self.fetch_pending.remove(&path);
 
@@ -580,11 +618,17 @@ impl App {
         if let Some(&(pi, wi)) = self.worktree_index.get(&path) {
             if let Some(proj) = self.workspace.projects.get_mut(pi) {
                 if let Some(wt) = proj.worktrees.get_mut(wi) {
-                    wt.fetch_failed = !success;
                     // Throttle fetch attempts after both success and failure.
                     wt.last_fetched = Some(completed_at);
-                    if success {
+                    if outcome.success {
+                        wt.fetch_failed = false;
+                        wt.fetch_fail_count = 0;
+                        wt.fetch_fail_reason = None;
                         spawn_branch = Some(proj.default_branch.clone());
+                    } else {
+                        wt.fetch_failed = true;
+                        wt.fetch_fail_count = wt.fetch_fail_count.saturating_add(1);
+                        wt.fetch_fail_reason = outcome.reason;
                     }
                     self.needs_redraw = true;
                 }
@@ -597,18 +641,19 @@ impl App {
 
     fn apply_git_local_result(&mut self, path: PathBuf, info: Option<GitInfo>) {
         self.git_local_pending.remove(&path);
-        if let Some(gi) = info {
-            if let Some(&(pi, wi)) = self.worktree_index.get(&path) {
-                if let Some(wt) = self.workspace.projects.get_mut(pi).and_then(|p| p.worktrees.get_mut(wi)) {
-                    wt.git_info_fetched_at = Some(Instant::now());
+        if let Some(&(pi, wi)) = self.worktree_index.get(&path) {
+            if let Some(wt) = self.workspace.projects.get_mut(pi).and_then(|p| p.worktrees.get_mut(wi)) {
+                // ! timestamp unconditionally — throttles retries even on failed repos
+                wt.git_info_fetched_at = Some(Instant::now());
+                if let Some(gi) = info {
                     if wt.git_info.as_ref() != Some(&gi) {
                         wt.git_info = Some(gi);
                         self.needs_redraw = true;
                     }
                 }
+                // if info is None, leave existing git_info unchanged — old value stays visible
             }
         }
-        // if info is None, leave existing git_info unchanged — old value stays visible
     }
 
     pub fn flush_cache(&mut self) {
@@ -691,25 +736,136 @@ impl App {
         self.cache_dirty = false;
     }
 
-    fn refresh_activity(&mut self) {
-        let activity = monitor::session_activity();
+    fn spawn_tmux_refresh(&mut self) {
+        if self.tmux_refresh_pending {
+            return;
+        }
+        self.tmux_refresh_pending = true;
+        let tx = self.tmux_tx.clone();
+        let project_paths: Vec<PathBuf> =
+            self.workspace.projects.iter().map(|p| p.path.clone()).collect();
+        std::thread::spawn(move || {
+            let sessions = session::list_sessions_with_paths();
+            let activity = monitor::session_activity();
+            let worktrees = project_paths
+                .into_iter()
+                .map(|path| {
+                    let entries = git_worktree::list_worktrees(&path).unwrap_or_default();
+                    (path, entries)
+                })
+                .collect();
+            let _ = tx.send(TmuxResult::FullRefresh { sessions, activity, worktrees });
+        });
+    }
+
+    fn apply_tmux_refresh(
+        &mut self,
+        sessions: Vec<(String, PathBuf)>,
+        activity: HashMap<String, SessionStatus>,
+        worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
+    ) {
+        self.tmux_refresh_pending = false;
+        ops::refresh_workspace_with_worktrees(
+            &mut self.workspace,
+            &self.config,
+            &sessions,
+            &activity,
+            worktrees,
+        );
+        self.rebuild_flat();
+        self.clamp_selected();
+        let live_sessions: HashSet<&str> = self.workspace.projects.iter()
+            .flat_map(|p| p.worktrees.iter())
+            .flat_map(|w| w.sessions.iter())
+            .map(|s| s.name.as_str())
+            .collect();
+        self.parsed_preview.retain(|k, _| live_sessions.contains(k.as_str()));
+        self.cache_dirty = true;
+        self.write_cache_if_dirty();
+        self.needs_redraw = true;
+    }
+
+    fn spawn_tmux_activity(&mut self) {
+        if self.tmux_activity_pending || self.tmux_refresh_pending {
+            return;
+        }
+        self.tmux_activity_pending = true;
+        let tx = self.tmux_tx.clone();
+        std::thread::spawn(move || {
+            let activity = monitor::session_activity();
+            let _ = tx.send(TmuxResult::Activity(activity));
+        });
+    }
+
+    fn apply_tmux_activity(&mut self, activity: HashMap<String, SessionStatus>) {
+        self.tmux_activity_pending = false;
         if ops::update_activity(&mut self.workspace, &activity) {
             self.needs_redraw = true;
         }
     }
 
-    fn refresh_captures(&mut self) {
-        let sel = self.current_selection();
-
-        let Some((pi, wi)) = self.selected_worktree_indices() else {
+    fn spawn_tmux_capture(&mut self) {
+        if self.tmux_capture_pending {
             return;
+        }
+        let sess_name = match self.current_selection() {
+            Selection::Session(pi, wi, si) => {
+                self.workspace.session(pi, wi, si).map(|s| s.name.clone())
+            }
+            _ => None,
         };
+        let Some(name) = sess_name else { return };
+        self.tmux_capture_pending = true;
+        let tx = self.tmux_tx.clone();
+        std::thread::spawn(move || {
+            let content = capture::capture_pane(&name).map(|raw| capture::trim_capture(&raw));
+            let _ = tx.send(TmuxResult::Capture { session_name: name, content });
+        });
+    }
 
-        // Trigger background git fetch if stale or never fetched.
+    fn apply_tmux_capture(&mut self, session_name: String, content: Option<String>) {
+        self.tmux_capture_pending = false;
+        let trimmed = match content {
+            Some(t) => t,
+            None => return,
+        };
+        // Find the session by name and update if content changed
+        let mut found: Option<(usize, usize, usize)> = None;
+        'outer: for (pi, proj) in self.workspace.projects.iter().enumerate() {
+            for (wi, wt) in proj.worktrees.iter().enumerate() {
+                for (si, s) in wt.sessions.iter().enumerate() {
+                    if s.name == session_name {
+                        found = Some((pi, wi, si));
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        let Some((pi, wi, si)) = found else { return };
+        if let Some(s) = self.workspace.session_mut(pi, wi, si) {
+            if s.pane_capture.as_deref() != Some(&trimmed) {
+                let mut parsed = ansi::parse(&trimmed);
+                while parsed.lines.last()
+                    .map(|l| l.spans.iter().all(|sp| sp.content.trim().is_empty()))
+                    .unwrap_or(false)
+                {
+                    parsed.lines.pop();
+                }
+                self.parsed_preview.insert(s.name.clone(), parsed);
+                s.pane_capture = Some(trimmed);
+                self.needs_redraw = true;
+            }
+        }
+    }
+
+    /// Git fetch trigger — called from fast_timer tick (already was in refresh_captures).
+    fn tick_git_fetch(&mut self) {
+        let Some((pi, wi)) = self.selected_worktree_indices() else { return };
         let fetch_info = self.workspace.worktree(pi, wi).map(|wt| {
+            let interval = FETCH_INTERVAL_SECS * 2u64.pow(wt.fetch_fail_count.min(4) as u32);
             let stale = wt
                 .last_fetched
-                .map(|t| t.elapsed().as_secs() >= FETCH_INTERVAL_SECS)
+                .map(|t| t.elapsed().as_secs() >= interval)
                 .unwrap_or(true);
             let in_flight = self.fetch_pending.contains(&wt.path);
             (stale && !in_flight, wt.path.clone())
@@ -718,35 +874,9 @@ impl App {
             self.fetch_pending.insert(path.clone());
             let tx = self.fetch_tx.clone();
             std::thread::spawn(move || {
-                let ok = git_info::git_fetch(&path);
-                let _ = tx.send((path, ok));
+                let outcome = git_info::git_fetch(&path);
+                let _ = tx.send((path, outcome));
             });
-        }
-
-        // Capture pane for selected session — capture_pane returns None if session absent
-        if let Selection::Session(pi, wi, si) = sel {
-            let sess_name = self.workspace.session(pi, wi, si).map(|s| s.name.clone());
-
-            if let Some(name) = sess_name {
-                if let Some(raw) = capture::capture_pane(&name) {
-                    let trimmed = capture::trim_capture(&raw);
-                    if let Some(s) = self.workspace.session_mut(pi, wi, si) {
-                        if s.pane_capture.as_deref() != Some(&trimmed) {
-                            // Invalidate and rebuild cached parsed preview
-                            let mut parsed = ansi::parse(&trimmed);
-                            while parsed.lines.last()
-                                .map(|l| l.spans.iter().all(|s| s.content.trim().is_empty()))
-                                .unwrap_or(false)
-                            {
-                                parsed.lines.pop();
-                            }
-                            self.parsed_preview.insert(s.name.clone(), parsed);
-                            s.pane_capture = Some(trimmed);
-                            self.needs_redraw = true;
-                        }
-                    }
-                }
-            }
         }
     }
 

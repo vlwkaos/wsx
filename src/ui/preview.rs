@@ -1,6 +1,6 @@
 // Right preview pane — git info, session capture, project summary
 
-use crate::model::workspace::{Project, SessionInfo, WorktreeInfo};
+use crate::model::workspace::{FetchFailReason, Project, SessionInfo, WorktreeInfo};
 use crate::ui::ansi;
 use ratatui::{
     prelude::*,
@@ -60,27 +60,55 @@ pub fn render_worktree_preview(
                     Style::default().fg(Color::Cyan),
                 ),
             };
-            let fetch_suffix = if worktree.fetch_failed {
-                "  [fetch failed]"
-            } else {
-                ""
-            };
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("  {} — ", remote),
                     Style::default().fg(Color::Rgb(180, 180, 200)),
                 ),
-                Span::styled(format!("{}{}", status_text, fetch_suffix), status_style),
+                Span::styled(status_text, status_style),
             ]));
         } else {
-            let msg = if worktree.fetch_failed {
-                "  no upstream  [fetch failed]"
-            } else {
-                "  no upstream tracking branch"
-            };
             lines.push(Line::from(Span::styled(
-                msg,
+                "  no upstream tracking branch",
                 Style::default().fg(Color::DarkGray),
+            )));
+        }
+
+        // Fetch failure warning block
+        if let Some(reason) = &worktree.fetch_fail_reason {
+            let reason_text = match reason {
+                FetchFailReason::Auth => "credentials rejected",
+                FetchFailReason::Timeout => "timed out",
+                FetchFailReason::Network => "network error",
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  ⚠ fetch failed: ", Style::default().fg(Color::Red)),
+                Span::styled(reason_text, Style::default().fg(Color::Yellow)),
+            ]));
+            if let Some(last) = worktree.last_fetched {
+                let interval = 60u64 * 2u64.pow(worktree.fetch_fail_count.min(4) as u32);
+                let elapsed = last.elapsed().as_secs();
+                let remaining = interval.saturating_sub(elapsed);
+                let retry_text = if remaining < 5 {
+                    format!("retrying soon (attempt {})", worktree.fetch_fail_count)
+                } else if remaining >= 60 {
+                    format!(
+                        "retrying in {}m (attempt {})",
+                        remaining / 60,
+                        worktree.fetch_fail_count
+                    )
+                } else {
+                    format!("retrying in {}s (attempt {})", remaining, worktree.fetch_fail_count)
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("    {}", retry_text),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+        } else if worktree.fetch_failed {
+            lines.push(Line::from(Span::styled(
+                "  ⚠ fetch failed",
+                Style::default().fg(Color::Red),
             )));
         }
 
