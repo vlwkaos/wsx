@@ -35,6 +35,13 @@ pub struct SessionInfo {
     pub muted: bool,           // user silenced — no activity updates, shown as ⊘
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum FetchFailReason {
+    Auth,    // "Authentication failed", "Permission denied", "could not read Username"
+    Timeout, // killed after 10s
+    Network, // generic / other failure
+}
+
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
     pub name: String,
@@ -46,6 +53,8 @@ pub struct WorktreeInfo {
     pub expanded: bool,
     pub git_info: Option<GitInfo>,
     pub fetch_failed: bool,
+    pub fetch_fail_count: u32,
+    pub fetch_fail_reason: Option<FetchFailReason>,
     pub last_fetched: Option<std::time::Instant>,
     /// When git_info was last successfully populated; used to skip redundant refreshes.
     pub git_info_fetched_at: Option<std::time::Instant>,

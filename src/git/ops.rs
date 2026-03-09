@@ -5,7 +5,7 @@ use anyhow::{bail, Result};
 use std::path::Path;
 
 fn run(cmd: &mut std::process::Command) -> Result<String> {
-    let out = cmd.output()?;
+    let out = super::output_with_timeout(cmd, std::time::Duration::from_secs(30))?;
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
     if out.status.success() {

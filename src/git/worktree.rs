@@ -16,10 +16,11 @@ pub struct WorktreeEntry {
 
 /// List worktrees via `git worktree list --porcelain`.
 pub fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeEntry>> {
-    let output = git_cmd(repo_path)
-        .args(["worktree", "list", "--porcelain"])
-        .output()
-        .context("git worktree list failed")?;
+    let output = super::output_with_timeout(
+        git_cmd(repo_path).args(["worktree", "list", "--porcelain"]),
+        std::time::Duration::from_secs(5),
+    )
+    .context("git worktree list")?;
     parse_porcelain_output(&String::from_utf8_lossy(&output.stdout), repo_path)
 }
 
@@ -102,6 +103,8 @@ pub fn to_worktree_infos(
                 expanded: true,
                 git_info: None,
                 fetch_failed: false,
+                fetch_fail_count: 0,
+                fetch_fail_reason: None,
                 last_fetched: None,
                 git_info_fetched_at: None,
             }
