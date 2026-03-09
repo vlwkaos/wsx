@@ -2,13 +2,13 @@
 
 use super::tmux_cmd;
 
-/// Replace Private Use Area characters (U+E000–U+F8FF) with space.
-/// Powerline/Nerd Font symbols: terminals render them as width 2 but
-/// unicode-width reports 1, causing ratatui cell-shift and stale bleed.
+/// Sanitize captured pane content.
+/// PUA chars (U+E000–U+F8FF, powerline/Nerd Font) are passed through — they
+/// render as width-2 in terminals but unicode-width reports 1. The bleed
+/// caused by that mismatch is handled upstream via force_redraw (terminal.clear)
+/// on every capture update, so no per-char replacement is needed here.
 fn sanitize_widths(raw: &str) -> String {
-    raw.chars()
-        .map(|c| if ('\u{E000}'..='\u{F8FF}').contains(&c) { ' ' } else { c })
-        .collect()
+    raw.to_owned()
 }
 
 /// Strip ANSI escape sequences, returning plain text for whitespace checks.
@@ -84,10 +84,10 @@ mod tests {
     }
 
     #[test]
-    fn pua_chars_replaced_with_space() {
+    fn pua_chars_passed_through() {
         let input = "foo\u{E0B0}bar";
         let result = sanitize_widths(input);
-        assert_eq!(result, "foo bar");
+        assert_eq!(result, "foo\u{E0B0}bar");
     }
 
     #[test]

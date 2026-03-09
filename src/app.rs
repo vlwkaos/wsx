@@ -868,6 +868,9 @@ impl App {
                 self.parsed_preview.insert(s.name.clone(), parsed);
                 s.pane_capture = Some(trimmed);
                 self.needs_redraw = true;
+                // ! PUA chars (powerline) are width-1 to ratatui but width-2 in terminal;
+                // ! clear the buffer on every content change so diffs never leave stale cells.
+                self.force_redraw = true;
             }
         }
     }
