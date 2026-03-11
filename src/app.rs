@@ -54,9 +54,9 @@ impl GitSemaphore {
     /// Block until a permit is available, then return a guard that releases on drop.
     fn acquire(&self) -> GitPermit {
         let (lock, cvar) = &*self.0;
-        let mut count = lock.lock().unwrap();
+        let mut count = lock.lock().unwrap_or_else(|e| e.into_inner());
         while *count == 0 {
-            count = cvar.wait(count).unwrap();
+            count = cvar.wait(count).unwrap_or_else(|e| e.into_inner());
         }
         *count -= 1;
         GitPermit(self.0.clone())
@@ -68,7 +68,7 @@ struct GitPermit(Arc<(Mutex<usize>, Condvar)>);
 impl Drop for GitPermit {
     fn drop(&mut self) {
         let (lock, cvar) = &*self.0;
-        *lock.lock().unwrap() += 1;
+        *lock.lock().unwrap_or_else(|e| e.into_inner()) += 1;
         cvar.notify_one();
     }
 }
@@ -305,7 +305,7 @@ pub struct App {
 
 impl App {
     pub fn new() -> Result<Self> {
-        let config = GlobalConfig::load()?;
+        let (config, config_warn) = GlobalConfig::load()?;
         let mut workspace = ops::load_workspace(&config);
         let (raw_selected, cursor_identity, command_history) = crate::cache::apply_cache(&mut workspace);
         let cached_flat = flatten_tree(&workspace);
@@ -335,8 +335,9 @@ impl App {
             mode: Mode::Normal,
             config,
             send_command_history: command_history,
-            status_message: None,
-            status_message_expires: None,
+            status_message: config_warn.clone(),
+            status_message_expires: config_warn
+                .map(|_| Instant::now() + Duration::from_secs(10)),
             jobs: vec![],
             spinner_frame: 0,
             bg_tx,
@@ -675,7 +676,9 @@ impl App {
             return;
         }
         // Always write on explicit flush (quit path) regardless of dirty flag; sync to disk
-        crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, true);
+        if let Some(e) = crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, true) {
+            self.set_status(e);
+        }
         self.cache_mtime = crate::cache::cache_mtime();
         self.cache_dirty = false;
     }
@@ -745,7 +748,9 @@ impl App {
         if self.cache_paused || !self.cache_dirty {
             return;
         }
-        crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, false);
+        if let Some(e) = crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, false) {
+            self.set_status(e);
+        }
         self.cache_mtime = crate::cache::cache_mtime();
         self.cache_dirty = false;
     }

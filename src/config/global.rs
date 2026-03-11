@@ -42,24 +42,32 @@ impl GlobalConfig {
         dirs::config_dir().map(|d| d.join("wsx").join("config.toml"))
     }
 
-    pub fn load() -> Result<Self> {
+    /// Returns `(config, warning)`. On TOML parse error, falls back to defaults
+    /// and sets `warning` so the caller can surface it in the TUI status bar.
+    pub fn load() -> Result<(Self, Option<String>)> {
         let path = Self::config_path().context("no config dir")?;
         if !path.exists() {
-            return Ok(Self::default());
+            return Ok((Self::default(), None));
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let mut config: Self =
-            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        for entry in &mut config.projects {
-            let s = entry
-                .path
-                .to_string_lossy()
-                .trim_end_matches('/')
-                .to_string();
-            entry.path = PathBuf::from(s);
+        match toml::from_str::<Self>(&text) {
+            Err(e) => {
+                let warn = format!("config parse error (using defaults): {e}");
+                Ok((Self::default(), Some(warn)))
+            }
+            Ok(mut config) => {
+                for entry in &mut config.projects {
+                    let s = entry
+                        .path
+                        .to_string_lossy()
+                        .trim_end_matches('/')
+                        .to_string();
+                    entry.path = PathBuf::from(s);
+                }
+                Ok((config, None))
+            }
         }
-        Ok(config)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -68,7 +76,7 @@ impl GlobalConfig {
             std::fs::create_dir_all(parent)?;
         }
         let text = toml::to_string_pretty(self)?;
-        std::fs::write(&path, text)?;
+        std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
         Ok(())
     }
 
