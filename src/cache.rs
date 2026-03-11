@@ -176,13 +176,14 @@ pub fn find_cursor_index(
 }
 
 /// Persist session names, expand states, cursor position, and command history.
+/// Returns an error string if the save fails (caller should surface it in TUI).
 pub fn save_cache(
     workspace: &WorkspaceState,
     tree_selected: usize,
     flat: &[FlatEntry],
     command_history: &[String],
     sync: bool,
-) {
+) -> Option<String> {
     let mut cache = WorkspaceCache::default();
     cache.tree_selected = tree_selected;
     cache.cursor_identity = resolve_cursor_identity(workspace, flat, tree_selected);
@@ -207,9 +208,7 @@ pub fn save_cache(
         }
     }
     cache.command_history = command_history.to_vec();
-    if let Err(e) = cache.save(sync) {
-        eprintln!("cache save failed: {e}");
-    }
+    cache.save(sync).err().map(|e| format!("cache save failed: {e}"))
 }
 
 fn resolve_cursor_identity(

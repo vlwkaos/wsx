@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.10.1] - 2026-03-11
+
+### Bug Fixes
+
+- Replace `Mutex::lock().unwrap()` with `unwrap_or_else(|e| e.into_inner())` in `GitSemaphore` — prevents panic cascade if a git-info thread panics while holding the lock ([`126cfc5`](https://github.com/vlwkaos/wsx/commit/126cfc5))
+- Config TOML parse errors no longer exit before TUI starts — falls back to defaults and shows a 10-second warning in the status bar ([`126cfc5`](https://github.com/vlwkaos/wsx/commit/126cfc5))
+- Cache save failures are now surfaced as TUI status messages instead of `eprintln` to hidden stderr ([`126cfc5`](https://github.com/vlwkaos/wsx/commit/126cfc5))
+- Add file path context to config save IO errors ([`126cfc5`](https://github.com/vlwkaos/wsx/commit/126cfc5))
+
+---
+
 ## [0.10.0] - 2026-03-10
 
 ### Features
