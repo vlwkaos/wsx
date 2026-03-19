@@ -70,6 +70,25 @@ cargo install --path .
 > set -g prefix C-a
 > ```
 
+### .gtrconfig
+
+Place `.gtrconfig` at the root of any project repo to automate worktree setup.
+
+> [!TIP]
+> New worktrees automatically run `postCreate` and receive copies of listed env files — no manual setup per branch.
+
+```ini
+[hooks]
+  postCreate = npm install
+
+[copy]
+  include = .env
+  include = .env.local
+  exclude = .env.production
+```
+
+Press `e` on any project or worktree to view its config.
+
 ## Usage
 
 ```sh
@@ -131,18 +150,6 @@ set -g status-right "#{@wsx_project}/#{@wsx_alias}"
 <summary>Global config</summary>
 
 Global config: `~/.config/wsx/config.toml`. Per-project config via `e` key.
-
-### .gtrconfig
-
-```ini
-[hooks]
-  postCreate = npm install
-
-[copy]
-  include = .env
-  include = .env.local
-  exclude = .env.production
-```
 
 </details>
 
