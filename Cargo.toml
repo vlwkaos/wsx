@@ -1,6 +1,6 @@
 [package]
 name = "wsx"
-version = "0.11.2"
+version = "0.11.3"
 edition = "2021"
 description = "TUI workspace manager — git worktrees + tmux sessions in one tree"
 license = "MIT"
