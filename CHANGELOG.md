@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.1] - 2026-03-19
+
+### Other
+
+- Homebrew formula: replace `--version` test with `assert_predicate :executable?` — wsx is a TUI with no CLI flags
+- Release binary built with `MACOSX_DEPLOYMENT_TARGET=11.0` (arm64) — sets explicit `minos` instead of inheriting from build SDK
+
+---
+
 ## [0.11.0] - 2026-03-19
 
 ### Features
