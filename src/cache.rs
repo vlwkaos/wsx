@@ -46,6 +46,9 @@ pub struct WorkspaceCache {
     /// global send-command history (Shift+S), newest last, capped at 50
     #[serde(default)]
     pub command_history: Vec<String>,
+    /// last active tab name (None = default tab)
+    #[serde(default)]
+    pub active_tab: Option<String>,
 }
 
 impl WorkspaceCache {
@@ -84,8 +87,8 @@ fn cache_path() -> PathBuf {
 }
 
 /// Pre-populate workspace with cached state before first live sync.
-/// Returns (raw_index, identity, command_history) — caller should prefer resolving identity.
-pub fn apply_cache(workspace: &mut WorkspaceState) -> (usize, Option<CursorIdentity>, Vec<String>) {
+/// Returns (raw_index, identity, command_history, active_tab).
+pub fn apply_cache(workspace: &mut WorkspaceState) -> (usize, Option<CursorIdentity>, Vec<String>, Option<String>) {
     let cache = WorkspaceCache::load();
     for project in &mut workspace.projects {
         let proj_key = project.path.to_string_lossy().to_string();
@@ -124,7 +127,7 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> (usize, Option<CursorIdent
             }
         }
     }
-    (cache.tree_selected, cache.cursor_identity, cache.command_history)
+    (cache.tree_selected, cache.cursor_identity, cache.command_history, cache.active_tab)
 }
 
 /// Resolve a saved CursorIdentity back to a flat-tree index.
@@ -175,18 +178,20 @@ pub fn find_cursor_index(
     }
 }
 
-/// Persist session names, expand states, cursor position, and command history.
+/// Persist session names, expand states, cursor position, active_tab, and command history.
 /// Returns an error string if the save fails (caller should surface it in TUI).
 pub fn save_cache(
     workspace: &WorkspaceState,
     tree_selected: usize,
     flat: &[FlatEntry],
     command_history: &[String],
+    active_tab: Option<&str>,
     sync: bool,
 ) -> Option<String> {
     let mut cache = WorkspaceCache::default();
     cache.tree_selected = tree_selected;
     cache.cursor_identity = resolve_cursor_identity(workspace, flat, tree_selected);
+    cache.active_tab = active_tab.map(|s| s.to_string());
     for project in &workspace.projects {
         let proj_key = project.path.to_string_lossy().to_string();
         cache.project_expanded.insert(proj_key, project.expanded);

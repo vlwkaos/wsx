@@ -7,6 +7,7 @@ pub mod git_popup;
 pub mod input;
 pub mod picker;
 pub mod preview;
+pub mod tab_manager;
 pub mod workspace_tree;
 
 use crate::app::{App, Mode, SPINNER_FRAMES};
@@ -20,6 +21,7 @@ use crate::ui::{
         render_empty_preview, render_project_preview, render_session_preview,
         render_worktree_preview,
     },
+    tab_manager::render_tab_manager,
     workspace_tree::{compute_scroll, render_tree},
 };
 use ratatui::{
@@ -88,6 +90,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         app.tree_scroll,
         is_move_mode,
         tree_notify.as_deref(),
+        app.active_tab.as_deref(),
+        &app.config.tabs,
     );
 
     let preview_area = chunks[1];
@@ -178,6 +182,10 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
                 .unwrap_or_else(|| "main".to_string());
             render_git_popup(frame, area, &def);
         }
+        Mode::TabManager { selected } => {
+            let sel = *selected;
+            render_tab_manager(frame, area, sel, &app.config, app.active_tab.as_deref());
+        }
         Mode::Normal | Mode::Move { .. } | Mode::MoveSession { .. } | Mode::Search { .. } => {}
     }
 }
@@ -192,17 +200,24 @@ fn get_mode_label(app: &App) -> &'static str {
         Mode::Help => "HELP",
         Mode::Search { .. } => "SEARCH",
         Mode::GitPopup { .. } => "GIT",
+        Mode::TabManager { .. } => "TABS",
     }
 }
 
 fn build_hints(app: &App) -> String {
-    let global = "(/)search  (a/A) active  ·  (n/N) pending  ·  (e)config  (?)help";
+    let has_tabs = !app.config.tabs.is_empty();
+    let global = if has_tabs {
+        "(/)search  (a/A) active  ·  ({/})tab nav  ·  (n/N) pending  ·  (e)config  (?)help"
+    } else {
+        "(/)search  (a/A) active  ·  (n/N) pending  ·  (e)config  (?)help"
+    };
+    let tabs = if has_tabs { "  (T)abs" } else { "" };
     match &app.mode {
         Mode::Normal => match app.current_selection() {
-            Selection::Project(_) => format!("(m)ove  (w)orktree  (d)el  (c)lean  ·  {}", global),
+            Selection::Project(_) => format!("(m)ove  (w)orktree{}  (d)el  (c)lean  ·  {}", tabs, global),
             Selection::Worktree(_, _) => format!(
-                "(s)ession  (r)alias  (d)el  ·  (w)orktree  (c)lean  ·  {}",
-                global
+                "(s)ession  (r)alias  (d)el  ·  (w)orktree{}  (c)lean  ·  {}",
+                tabs, global
             ),
             Selection::Session(pi, wi, si) => {
                 let active = app
@@ -218,18 +233,28 @@ fn build_hints(app: &App) -> String {
                     })
                     .unwrap_or(false);
                 let dismiss = if active { "" } else { "(x)dismiss  ·  " };
-                format!("(m)ove  (r)ename  (d)kill  ·  {}(S)send cmd  (C)ctrl-c  ·  (C-a d)detach  ·  (s)ession  ·  (w)orktree  (c)lean  ·  {}", dismiss, global)
+                format!("(m)ove  (r)ename  (d)kill  ·  {}(S)send cmd  (C)ctrl-c  ·  (C-a d)detach  ·  (s)ession  ·  (w)orktree{}  (c)lean  ·  {}", dismiss, tabs, global)
             }
             Selection::None => "(p) add project".to_string(),
         },
         Mode::Input { .. } => "Esc: cancel".to_string(),
         Mode::Confirm { .. } => "(y)es  (n)o".to_string(),
         Mode::Config { .. } => "(e)dit .gtrignore  Esc: close".to_string(),
-        Mode::Move { .. } | Mode::MoveSession { .. } => "(j/k) reorder  Esc: done".to_string(),
+        Mode::Move { .. } => {
+            if has_tabs {
+                "(j/k) reorder  (h/l) change tab  Esc: done".to_string()
+            } else {
+                "(j/k) reorder  Esc: done".to_string()
+            }
+        }
+        Mode::MoveSession { .. } => "(j/k) reorder  Esc: done".to_string(),
         Mode::Help => "Esc: close".to_string(),
-        Mode::Search { .. } => String::new(), // status bar renders search inline; hints unused
+        Mode::Search { .. } => String::new(),
         Mode::GitPopup { .. } => {
             "(p)ull  (P)ush  (r)pull-rebase  (m)erge-from  (M)erge-into  Esc: close".to_string()
+        }
+        Mode::TabManager { .. } => {
+            "(a)dd  (r)ename  (d)elete  (J/K)reorder  Enter: switch  Esc: close".to_string()
         }
     }
 }
@@ -412,6 +437,11 @@ fn render_help(frame: &mut Frame, area: Rect) {
         " Inside Session (tmux)",
         "  Ctrl+a d      Detach (return to wsx)",
         "  Ctrl+a ?      tmux help",
+        "",
+        " Tabs (optional)",
+        "  T             Open tab manager (add/rename/delete/reorder)",
+        "  { / }         Switch to prev / next tab",
+        "  m + h/l       Move project to adjacent tab (in Move mode)",
         "",
         " Global",
         "  [ / ]         Jump to prev / next project",

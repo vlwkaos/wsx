@@ -97,6 +97,9 @@ fn translate_key(key: KeyEvent) -> Action {
         }
         (KeyModifiers::NONE, KeyCode::Char('/')) => Action::SearchStart,
         (KeyModifiers::NONE, KeyCode::Char('g')) => Action::GitPopup,
+        (KeyModifiers::SHIFT, KeyCode::Char('{')) | (KeyModifiers::NONE, KeyCode::Char('{')) => Action::TabPrev,
+        (KeyModifiers::SHIFT, KeyCode::Char('}')) | (KeyModifiers::NONE, KeyCode::Char('}')) => Action::TabNext,
+        (KeyModifiers::SHIFT, KeyCode::Char('T')) | (KeyModifiers::NONE, KeyCode::Char('T')) => Action::TabManager,
         (KeyModifiers::NONE, KeyCode::Esc) => Action::InputEscape,
         (KeyModifiers::NONE, KeyCode::Backspace) => Action::InputBackspace,
         _ => Action::None,

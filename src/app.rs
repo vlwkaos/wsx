@@ -15,7 +15,7 @@ use crate::{
     config::global::GlobalConfig,
     event::poll_event,
     git::{info as git_info, ops as git_ops, worktree as git_worktree},
-    model::workspace::{flatten_tree, FlatEntry, GitInfo, Selection, WorkspaceState},
+    model::workspace::{flatten_tree_filtered, FlatEntry, GitInfo, Selection, WorkspaceState},
     ops,
     tmux::{capture, monitor, session},
     tui::{self, Tui},
@@ -137,6 +137,9 @@ pub enum Mode {
         project_idx: usize,
         worktree_idx: usize,
     },
+    TabManager {
+        selected: usize,
+    },
 }
 
 pub enum InputContext {
@@ -177,6 +180,10 @@ pub enum InputContext {
         project_idx: usize,
         worktree_idx: usize,
     },
+    AddTab,
+    RenameTab {
+        tab_idx: usize, // index into config.tabs (0-based, not ordered_tabs)
+    },
 }
 
 impl InputContext {
@@ -192,6 +199,8 @@ impl InputContext {
             InputContext::GitPullRebase { .. } => "Pull Rebase — branch",
             InputContext::GitMergeFrom { .. } => "Merge From — branch",
             InputContext::GitMergeInto { .. } => "Merge Into — branch",
+            InputContext::AddTab => "New Tab",
+            InputContext::RenameTab { .. } => "Rename Tab",
         }
     }
 }
@@ -212,6 +221,9 @@ pub enum PendingAction {
     CreateWorktree {
         project_idx: usize,
         branch: String,
+    },
+    DeleteTab {
+        tab_idx: usize, // index into config.tabs (0-based)
     },
 }
 
@@ -260,6 +272,8 @@ pub struct App {
     pub preview_area: Rect,
     pub mode: Mode,
     pub config: GlobalConfig,
+    pub active_tab: Option<String>,
+    visible_projects: HashSet<usize>,
     send_command_history: Vec<String>,
     pub status_message: Option<String>,
     status_message_expires: Option<Instant>,
@@ -307,8 +321,10 @@ impl App {
     pub fn new() -> Result<Self> {
         let (config, config_warn) = GlobalConfig::load()?;
         let mut workspace = ops::load_workspace(&config);
-        let (raw_selected, cursor_identity, command_history) = crate::cache::apply_cache(&mut workspace);
-        let cached_flat = flatten_tree(&workspace);
+        let (raw_selected, cursor_identity, command_history, cached_active_tab) =
+            crate::cache::apply_cache(&mut workspace);
+        let visible_projects = compute_visible_projects(&config, &workspace, cached_active_tab.as_deref());
+        let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
         let tree_selected = cursor_identity
             .and_then(|id| crate::cache::find_cursor_index(&workspace, &cached_flat, &id))
             .unwrap_or_else(|| raw_selected.min(cached_flat.len().saturating_sub(1)));
@@ -334,6 +350,8 @@ impl App {
             preview_area: Rect::default(),
             mode: Mode::Normal,
             config,
+            active_tab: cached_active_tab,
+            visible_projects,
             send_command_history: command_history,
             status_message: config_warn.clone(),
             status_message_expires: config_warn
@@ -446,10 +464,19 @@ impl App {
 
     fn ensure_flat(&mut self) {
         if self.flat_dirty {
-            self.cached_flat = flatten_tree(&self.workspace);
+            self.cached_flat = flatten_tree_filtered(&self.workspace, &self.visible_projects);
             self.search_cache = build_search_cache(&self.workspace, &self.cached_flat);
             self.flat_dirty = false;
         }
+    }
+
+    /// Recompute visible project set from active_tab + config, then rebuild flat + clamp cursor.
+    fn recompute_visible(&mut self) {
+        let new_visible = compute_visible_projects(&self.config, &self.workspace, self.active_tab.as_deref());
+        self.visible_projects = new_visible;
+        self.flat_dirty = true;
+        self.ensure_flat();
+        self.clamp_selected();
     }
 
     fn rebuild_flat(&mut self) {
@@ -483,7 +510,7 @@ impl App {
 
             let in_input = matches!(
                 self.mode,
-                Mode::Input { .. } | Mode::Search { .. } | Mode::GitPopup { .. }
+                Mode::Input { .. } | Mode::Search { .. } | Mode::GitPopup { .. } | Mode::TabManager { .. }
             );
             if let Some(action) = poll_event(Duration::from_millis(TICK_MS), in_input)? {
                 if self.cache_paused {
@@ -676,7 +703,7 @@ impl App {
             return;
         }
         // Always write on explicit flush (quit path) regardless of dirty flag; sync to disk
-        if let Some(e) = crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, true) {
+        if let Some(e) = crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, self.active_tab.as_deref(), true) {
             self.set_status(e);
         }
         self.cache_mtime = crate::cache::cache_mtime();
@@ -748,7 +775,7 @@ impl App {
         if self.cache_paused || !self.cache_dirty {
             return;
         }
-        if let Some(e) = crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, false) {
+        if let Some(e) = crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, self.active_tab.as_deref(), false) {
             self.set_status(e);
         }
         self.cache_mtime = crate::cache::cache_mtime();
@@ -1076,6 +1103,18 @@ impl App {
             match action {
                 Action::NavigateDown => self.move_project_down(pi),
                 Action::NavigateUp => self.move_project_up(pi),
+                Action::NavigateLeft => {
+                    if !self.config.tabs.is_empty() {
+                        self.move_project_to_adjacent_tab(pi, -1)?;
+                        return Ok(());
+                    }
+                }
+                Action::NavigateRight => {
+                    if !self.config.tabs.is_empty() {
+                        self.move_project_to_adjacent_tab(pi, 1)?;
+                        return Ok(());
+                    }
+                }
                 Action::Select | Action::InputEscape | Action::Quit | Action::EnterMove => {
                     self.sync_config_project_order();
                     self.config.save()?;
@@ -1084,6 +1123,11 @@ impl App {
                 _ => {}
             }
             return Ok(());
+        }
+
+        if let Mode::TabManager { selected } = &self.mode {
+            let sel = *selected;
+            return self.dispatch_tab_manager(sel, action);
         }
 
         if let Mode::MoveSession {
@@ -1128,7 +1172,8 @@ impl App {
             Mode::Config { .. }
             | Mode::Move { .. }
             | Mode::MoveSession { .. }
-            | Mode::GitPopup { .. } => unreachable!(),
+            | Mode::GitPopup { .. }
+            | Mode::TabManager { .. } => unreachable!(),
         }
         Ok(())
     }
@@ -1168,6 +1213,9 @@ impl App {
                 };
             }
             Action::GitPopup => self.action_git_popup(),
+            Action::TabNext => self.action_tab_next(),
+            Action::TabPrev => self.action_tab_prev(),
+            Action::TabManager => self.action_tab_manager(),
             Action::MouseClick { col, row } => self.handle_mouse_click(col, row, terminal)?,
             _ => {}
         }
@@ -1897,6 +1945,44 @@ impl App {
                         return Ok(());
                     }
                 }
+                InputContext::AddTab => {
+                    let trimmed = value.trim().to_string();
+                    if trimmed.is_empty() {
+                        self.mode = Mode::TabManager { selected: 0 };
+                    } else if self.config.tabs.contains(&trimmed) {
+                        self.set_status(format!("Tab '{}' already exists", trimmed));
+                        self.mode = Mode::TabManager { selected: 0 };
+                    } else {
+                        self.config.tabs.push(trimmed);
+                        self.config.save()?;
+                        let sel = self.config.tabs.len(); // last in ordered_tabs (1-indexed)
+                        self.mode = Mode::TabManager { selected: sel };
+                    }
+                }
+                InputContext::RenameTab { tab_idx } => {
+                    let trimmed = value.trim().to_string();
+                    if trimmed.is_empty() || self.config.tabs.get(tab_idx).map_or(false, |t| t == &trimmed) {
+                        self.mode = Mode::TabManager { selected: tab_idx + 1 };
+                    } else if self.config.tabs.contains(&trimmed) {
+                        self.set_status(format!("Tab '{}' already exists", trimmed));
+                        self.mode = Mode::TabManager { selected: tab_idx + 1 };
+                    } else {
+                        let old_name = self.config.tabs[tab_idx].clone();
+                        self.config.tabs[tab_idx] = trimmed.clone();
+                        // Update all projects assigned to this tab
+                        for proj in &mut self.config.projects {
+                            if proj.tab.as_deref() == Some(&old_name) {
+                                proj.tab = Some(trimmed.clone());
+                            }
+                        }
+                        // Update active_tab if it was the renamed one
+                        if self.active_tab.as_deref() == Some(&old_name) {
+                            self.active_tab = Some(trimmed);
+                        }
+                        self.config.save()?;
+                        self.mode = Mode::TabManager { selected: tab_idx + 1 };
+                    }
+                }
             }
         }
         Ok(())
@@ -1950,6 +2036,25 @@ impl App {
                         Ok(BgOutcome::WorktreeCreated { label })
                     });
                 }
+                PendingAction::DeleteTab { tab_idx } => {
+                    let tab_name = self.config.tabs[tab_idx].clone();
+                    // Move projects from deleted tab to default
+                    for proj in &mut self.config.projects {
+                        if proj.tab.as_deref() == Some(&tab_name) {
+                            proj.tab = None;
+                        }
+                    }
+                    self.config.tabs.remove(tab_idx);
+                    // If active tab was deleted, switch to default
+                    if self.active_tab.as_deref() == Some(&tab_name) {
+                        self.active_tab = None;
+                    }
+                    self.config.save()?;
+                    self.recompute_visible();
+                    self.cache_dirty = true;
+                    self.mode = Mode::TabManager { selected: 0 };
+                    self.set_status(format!("Deleted tab '{}'", tab_name));
+                }
             }
         }
         Ok(())
@@ -1959,8 +2064,14 @@ impl App {
 
     fn do_register_project(&mut self, path: PathBuf) -> Result<()> {
         let project = ops::register_project(path, &mut self.config)?;
+        // Assign new project to the currently active tab
+        if !self.config.tabs.is_empty() {
+            if let Some(entry) = self.config.projects.last_mut() {
+                entry.tab = self.active_tab.clone();
+            }
+        }
         self.workspace.projects.push(project);
-        self.rebuild_flat();
+        self.recompute_visible();
         self.config.save()?;
         self.set_status("Project registered");
         Ok(())
@@ -2067,7 +2178,6 @@ impl App {
         match self.current_selection() {
             Selection::Project(pi) => {
                 self.mode = Mode::Move { project_idx: pi };
-                self.set_status("MOVE: j/k to reorder  Enter/Esc to confirm");
             }
             Selection::Session(pi, wi, si) => {
                 self.mode = Mode::MoveSession {
@@ -2075,7 +2185,6 @@ impl App {
                     worktree_idx: wi,
                     session_idx: si,
                 };
-                self.set_status("MOVE: j/k to reorder  Enter/Esc to confirm");
             }
             _ => self.set_status("Select a project or session to move"),
         }
@@ -2222,6 +2331,153 @@ impl App {
         Ok(())
     }
 
+    // ── Tab navigation ────────────────────────────────────────────────────────
+
+    fn action_tab_next(&mut self) {
+        if self.config.tabs.is_empty() {
+            return;
+        }
+        let tabs = self.config.ordered_tabs();
+        let cur = tabs.iter().position(|t| t.as_deref() == self.active_tab.as_deref()).unwrap_or(0);
+        let next = (cur + 1) % tabs.len();
+        self.active_tab = tabs[next].map(|s| s.to_string());
+        self.recompute_visible();
+        self.cache_dirty = true;
+    }
+
+    fn action_tab_prev(&mut self) {
+        if self.config.tabs.is_empty() {
+            return;
+        }
+        let tabs = self.config.ordered_tabs();
+        let cur = tabs.iter().position(|t| t.as_deref() == self.active_tab.as_deref()).unwrap_or(0);
+        let prev = if cur == 0 { tabs.len() - 1 } else { cur - 1 };
+        self.active_tab = tabs[prev].map(|s| s.to_string());
+        self.recompute_visible();
+        self.cache_dirty = true;
+    }
+
+    fn action_tab_manager(&mut self) {
+        let tabs = self.config.ordered_tabs();
+        let selected = tabs
+            .iter()
+            .position(|t| t.as_deref() == self.active_tab.as_deref())
+            .unwrap_or(0);
+        self.mode = Mode::TabManager { selected };
+    }
+
+    fn dispatch_tab_manager(&mut self, selected: usize, action: Action) -> Result<()> {
+        match action {
+            Action::InputEscape => {
+                self.mode = Mode::Normal;
+            }
+            Action::InputChar('j') | Action::NavigateDown => {
+                let len = self.config.tabs.len() + 1; // +1 for default
+                self.mode = Mode::TabManager { selected: (selected + 1) % len };
+            }
+            Action::InputChar('k') | Action::NavigateUp => {
+                let len = self.config.tabs.len() + 1;
+                let prev = if selected == 0 { len - 1 } else { selected - 1 };
+                self.mode = Mode::TabManager { selected: prev };
+            }
+            Action::Select => {
+                // Switch active tab to the selected one
+                let tabs = self.config.ordered_tabs();
+                if let Some(&tab) = tabs.get(selected) {
+                    self.active_tab = tab.map(|s| s.to_string());
+                    self.recompute_visible();
+                    self.cache_dirty = true;
+                }
+                self.mode = Mode::Normal;
+            }
+            Action::InputChar('a') => {
+                self.mode = Mode::Input {
+                    context: InputContext::AddTab,
+                    state: InputState::new("tab name: "),
+                };
+            }
+            Action::InputChar('r') => {
+                if selected == 0 {
+                    self.set_status("Cannot rename default tab");
+                    return Ok(());
+                }
+                let tab_idx = selected - 1;
+                if let Some(name) = self.config.tabs.get(tab_idx) {
+                    let name = name.clone();
+                    self.mode = Mode::Input {
+                        context: InputContext::RenameTab { tab_idx },
+                        state: InputState::with_value("new name: ", name),
+                    };
+                }
+            }
+            Action::InputChar('d') => {
+                if selected == 0 {
+                    self.set_status("Cannot delete default tab");
+                    return Ok(());
+                }
+                let tab_idx = selected - 1;
+                if let Some(name) = self.config.tabs.get(tab_idx) {
+                    let name = name.clone();
+                    let count = self.config.projects.iter().filter(|p| p.tab.as_deref() == Some(&name)).count();
+                    let msg = if count > 0 {
+                        format!("Delete tab '{}'? {} projects move to default", name, count)
+                    } else {
+                        format!("Delete tab '{}'?", name)
+                    };
+                    self.mode = Mode::Confirm {
+                        message: msg,
+                        pending: PendingAction::DeleteTab { tab_idx },
+                    };
+                }
+            }
+            Action::InputChar('J') => {
+                // Reorder: move tab down (later in list)
+                if selected == 0 {
+                    return Ok(());
+                }
+                let idx = selected - 1;
+                if idx + 1 < self.config.tabs.len() {
+                    self.config.tabs.swap(idx, idx + 1);
+                    self.mode = Mode::TabManager { selected: selected + 1 };
+                    self.config.save()?;
+                }
+            }
+            Action::InputChar('K') => {
+                // Reorder: move tab up (earlier in list)
+                if selected == 0 {
+                    return Ok(());
+                }
+                let idx = selected - 1;
+                if idx > 0 {
+                    self.config.tabs.swap(idx - 1, idx);
+                    self.mode = Mode::TabManager { selected: selected - 1 };
+                    self.config.save()?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn move_project_to_adjacent_tab(&mut self, pi: usize, dir: isize) -> Result<()> {
+        let proj_path = self.workspace.projects[pi].path.clone();
+        let proj_name = self.workspace.projects[pi].name.clone();
+        let tabs = self.config.ordered_tabs();
+        let current_tab = self.config.projects.iter()
+            .find(|c| c.path == proj_path)
+            .and_then(|c| c.tab.as_deref());
+        let cur_idx = tabs.iter().position(|t| t.as_deref() == current_tab).unwrap_or(0);
+        let target_idx = (cur_idx as isize + dir).rem_euclid(tabs.len() as isize) as usize;
+        let target_tab = tabs[target_idx].map(|s| s.to_string());
+        let target_name = target_tab.clone().unwrap_or_else(|| "default".to_string());
+        self.config.move_project_tab(&proj_path, target_tab);
+        self.config.save()?;
+        self.mode = Mode::Normal;
+        self.recompute_visible();
+        self.set_status(format!("Moved '{}' to '{}'", proj_name, target_name));
+        Ok(())
+    }
+
     fn git_worktree_path(&self, pi: usize, wi: usize) -> Option<std::path::PathBuf> {
         self.workspace
             .projects
@@ -2285,6 +2541,31 @@ impl App {
 
 fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or(s)
+}
+
+/// Compute the set of project indices visible in `active_tab`.
+/// When config.tabs is empty, all projects are visible (single implicit tab).
+fn compute_visible_projects(
+    config: &GlobalConfig,
+    workspace: &WorkspaceState,
+    active_tab: Option<&str>,
+) -> HashSet<usize> {
+    if config.tabs.is_empty() {
+        return (0..workspace.projects.len()).collect();
+    }
+    workspace
+        .projects
+        .iter()
+        .enumerate()
+        .filter_map(|(i, wp)| {
+            let tab = config
+                .projects
+                .iter()
+                .find(|c| c.path == wp.path)
+                .and_then(|c| c.tab.as_deref());
+            if tab == active_tab { Some(i) } else { None }
+        })
+        .collect()
 }
 
 fn search_text_for(workspace: &WorkspaceState, entry: &FlatEntry) -> String {

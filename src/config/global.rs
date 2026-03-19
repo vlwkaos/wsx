@@ -11,6 +11,8 @@ fn default_exclude_worktree_paths() -> Vec<String> {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GlobalConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tabs: Vec<String>,
     #[serde(default)]
     pub projects: Vec<ProjectEntry>,
     /// Worktree paths containing any of these substrings are hidden.
@@ -22,6 +24,7 @@ pub struct GlobalConfig {
 impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
+            tabs: vec![],
             projects: vec![],
             exclude_worktree_paths: default_exclude_worktree_paths(),
         }
@@ -32,6 +35,9 @@ impl Default for GlobalConfig {
 pub struct ProjectEntry {
     pub name: String,
     pub path: PathBuf,
+    /// Which tab this project belongs to. None = default tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
     /// branch -> alias mapping (stored at app level, independent of git)
     #[serde(default)]
     pub aliases: std::collections::HashMap<String, String>,
@@ -87,6 +93,22 @@ impl GlobalConfig {
             .any(|pat| path_str.contains(pat.as_str()))
     }
 
+    /// Returns tab order as [None, Some("work"), …]. None = default tab (always first).
+    pub fn ordered_tabs(&self) -> Vec<Option<&str>> {
+        let mut out: Vec<Option<&str>> = vec![None];
+        for t in &self.tabs {
+            out.push(Some(t.as_str()));
+        }
+        out
+    }
+
+    /// Set or clear the tab assignment for the project at `path`.
+    pub fn move_project_tab(&mut self, path: &PathBuf, tab: Option<String>) {
+        if let Some(entry) = self.projects.iter_mut().find(|p| &p.path == path) {
+            entry.tab = tab;
+        }
+    }
+
     pub fn add_project(&mut self, name: String, path: PathBuf) {
         let s = path.to_string_lossy().trim_end_matches('/').to_string();
         let path = PathBuf::from(s);
@@ -94,6 +116,7 @@ impl GlobalConfig {
         self.projects.push(ProjectEntry {
             name,
             path,
+            tab: None,
             aliases: Default::default(),
         });
     }
