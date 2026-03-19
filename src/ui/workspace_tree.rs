@@ -6,6 +6,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
+// ref: ratatui Block title — title() accepts &str or String
 
 pub fn render_tree(
     frame: &mut Frame,
@@ -16,6 +17,8 @@ pub fn render_tree(
     scroll_offset: usize,
     is_move_mode: bool,
     status_message: Option<&str>,
+    active_tab: Option<&str>,
+    tab_names: &[String],
 ) {
 
     let items: Vec<ListItem> = flat
@@ -135,17 +138,46 @@ pub fn render_tree(
         list_state.select(Some(selected.min(flat.len().saturating_sub(1))));
     }
 
-    let (block_title, highlight_bg) = if is_move_mode {
-        (" Workspaces — MOVE ", Color::Green)
-    } else {
-        (" Workspaces ", Color::Yellow)
+    let highlight_bg = if is_move_mode { Color::Green } else { Color::Yellow };
+    let title_line: Line<'_> = {
+        let mut spans: Vec<Span<'_>> = vec![Span::styled(
+            " Workspaces ",
+            Style::default().bold(),
+        )];
+        if !tab_names.is_empty() {
+            spans.push(Span::raw("["));
+            for i in 0..=tab_names.len() {
+                if i > 0 {
+                    spans.push(Span::raw("|"));
+                }
+                let (name, is_active) = if i == 0 {
+                    ("default", active_tab.is_none())
+                } else {
+                    let t = tab_names[i - 1].as_str();
+                    (t, active_tab == Some(t))
+                };
+                let display: String = if is_active {
+                    name.to_string()
+                } else {
+                    name.chars().take(2).collect()
+                };
+                let style = if is_active {
+                    Style::default().fg(Color::Black).bg(Color::Yellow).bold()
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                spans.push(Span::styled(display, style));
+            }
+            spans.push(Span::raw("]"));
+        }
+        spans.push(Span::raw(if is_move_mode { " — MOVE " } else { " " }));
+        Line::from(spans)
     };
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(block_title)
-                .title_style(Style::default().bold()),
+                .title(title_line),
         )
         .highlight_style(Style::default().fg(Color::Black).bg(highlight_bg).bold())
         .highlight_symbol("");
@@ -169,6 +201,7 @@ pub fn render_tree(
         frame.render_widget(para, msg_rect);
     }
 }
+
 
 fn session_icon(sess: &crate::model::workspace::SessionInfo, active: bool) -> (&'static str, Color) {
     if sess.muted {
