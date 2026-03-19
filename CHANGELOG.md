@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.3] - 2026-03-20
+
+### Bug Fixes
+
+- Inactive tab labels now use the terminal default foreground instead of `DarkGray` — readable on dark themes ([`2aa4a74`](https://github.com/vlwkaos/wsx/commit/2aa4a74))
+
+---
+
 ## [0.11.2] - 2026-03-19
 
 ### Bug Fixes
