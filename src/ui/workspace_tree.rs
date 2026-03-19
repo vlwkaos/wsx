@@ -164,7 +164,7 @@ pub fn render_tree(
                 let style = if is_active {
                     Style::default().fg(Color::Black).bg(Color::Yellow).bold()
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    Style::default()
                 };
                 spans.push(Span::styled(display, style));
             }
