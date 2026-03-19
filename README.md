@@ -61,6 +61,7 @@ cargo install --path .
 | **Sessions** Select a worktree, press `s`. Name by context — `shell`, `claude`, `build`. Sessions are persistent tmux sessions; `d` deletes, `r` renames. | <img width="270" height="68" alt="image" src="https://github.com/user-attachments/assets/41569337-057f-44b8-bd39-8f1d2ffa6a1f" /> |
 | **Iterate pending** `n` / `N` to jump between `●` sessions. `x` dismisses; press again to mute `⊘`. `a` cycles active `◉` sessions. | ![Screen Recording 2026-02-27 at 9 35 16 AM](https://github.com/user-attachments/assets/46c6b7be-34b2-4f73-b959-6205d81d1a66) |
 | **Remote control** `S` sends a command to the selected session without entering it. `C` sends Ctrl+C — handy for killing a watcher the moment you spot it. | <img width="464" height="57" alt="image" src="https://github.com/user-attachments/assets/6d466d85-4d92-44c7-abe8-93ec4337f480" /> |
+| **Tabs** Press `T` to open the tab manager — create named tabs and assign projects to them. `{` / `}` cycles tabs. Active tab shown full, others abbreviated in the title bar: `[default\|pe\|wo]` | |
 
 > [!IMPORTANT]
 > **Returning to wsx from inside a session:** press `Ctrl+a d` to detach. The session keeps running.
@@ -130,6 +131,9 @@ Mouse clicks work: click a row to select, click the preview to attach.
 | `e` | View `.gtrconfig` |
 | `S` | Send command to session |
 | `C` | Send Ctrl+C to session |
+| `T` | Tab manager (add / rename / delete / reorder) |
+| `{` / `}` | Switch to prev / next tab |
+| `m` + `h`/`l` | Move project to adjacent tab (in Move mode) |
 
 </details>
 
