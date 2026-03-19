@@ -2017,6 +2017,10 @@ impl App {
                         (p.path.clone(), wt.path.clone(), wt.branch.clone(), names)
                     };
                     let label = format!("Deleted: {}", branch);
+                    // Optimistically remove before spawning so the tree updates this frame
+                    self.workspace.projects[pi].worktrees.remove(wi);
+                    self.rebuild_flat();
+                    self.clamp_selected();
                     self.spawn_bg(format!("delete {}", branch), move || {
                         ops::delete_worktree(&repo, &wt_path, &branch, &session_names)?;
                         Ok(BgOutcome::WorktreeRemoved { project_idx: pi, worktree_idx: wi, wt_path, label })
