@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.0] - 2026-03-19
+
+### Features
+
+- Tab grouping: filter projects into named tabs with `{`/`}` to cycle, `T` to manage (add/rename/delete/reorder), `m`+`h`/`l` to move a project between tabs ([`85f6428`](https://github.com/vlwkaos/wsx/commit/85f6428))
+- Compact tab bar in the workspace block title — active tab shown full with highlight, inactive tabs truncated to 2 chars ([`bcb5ad4`](https://github.com/vlwkaos/wsx/commit/bcb5ad4))
+
+---
+
 ## [0.10.1] - 2026-03-11
 
 ### Bug Fixes
