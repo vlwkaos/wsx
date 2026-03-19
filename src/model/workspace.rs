@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -239,9 +239,39 @@ pub enum FlatEntry {
 }
 
 /// Flatten workspace into visible tree entries based on expand state.
+#[allow(dead_code)]
 pub fn flatten_tree(workspace: &WorkspaceState) -> Vec<FlatEntry> {
     let mut result = Vec::new();
     for (pi, project) in workspace.projects.iter().enumerate() {
+        result.push(FlatEntry::Project { idx: pi });
+        if project.expanded {
+            for (wi, wt) in project.worktrees.iter().enumerate() {
+                result.push(FlatEntry::Worktree {
+                    project_idx: pi,
+                    worktree_idx: wi,
+                });
+                if wt.expanded {
+                    for (si, _) in wt.sessions.iter().enumerate() {
+                        result.push(FlatEntry::Session {
+                            project_idx: pi,
+                            worktree_idx: wi,
+                            session_idx: si,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Like `flatten_tree` but skips projects whose index is not in `visible`.
+pub fn flatten_tree_filtered(workspace: &WorkspaceState, visible: &HashSet<usize>) -> Vec<FlatEntry> {
+    let mut result = Vec::new();
+    for (pi, project) in workspace.projects.iter().enumerate() {
+        if !visible.contains(&pi) {
+            continue;
+        }
         result.push(FlatEntry::Project { idx: pi });
         if project.expanded {
             for (wi, wt) in project.worktrees.iter().enumerate() {
