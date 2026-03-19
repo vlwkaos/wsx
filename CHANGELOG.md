@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.11.2] - 2026-03-19
+
+### Bug Fixes
+
+- Worktree no longer flashes on screen for 1+ frames after confirming delete — optimistically remove from model before spawning async cleanup ([`c75ac03`](https://github.com/vlwkaos/wsx/commit/c75ac03))
+
+### Docs
+
+- Add tab grouping to guide and key reference ([`1a83a89`](https://github.com/vlwkaos/wsx/commit/1a83a89))
+- Restructure README — install first, collapsible usage/config sections ([`7d97524`](https://github.com/vlwkaos/wsx/commit/7d97524))
+
+---
+
 ## [0.11.1] - 2026-03-19
 
 ### Other
