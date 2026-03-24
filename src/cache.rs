@@ -49,6 +49,9 @@ pub struct WorkspaceCache {
     /// last active tab name (None = default tab)
     #[serde(default)]
     pub active_tab: Option<String>,
+    /// tmux server PID at last save — used to detect server restart on next launch
+    #[serde(default)]
+    pub tmux_server_pid: Option<u32>,
 }
 
 impl WorkspaceCache {
@@ -87,8 +90,8 @@ fn cache_path() -> PathBuf {
 }
 
 /// Pre-populate workspace with cached state before first live sync.
-/// Returns (raw_index, identity, command_history, active_tab).
-pub fn apply_cache(workspace: &mut WorkspaceState) -> (usize, Option<CursorIdentity>, Vec<String>, Option<String>) {
+/// Returns (raw_index, identity, command_history, active_tab, tmux_server_pid).
+pub fn apply_cache(workspace: &mut WorkspaceState) -> (usize, Option<CursorIdentity>, Vec<String>, Option<String>, Option<u32>) {
     let cache = WorkspaceCache::load();
     for project in &mut workspace.projects {
         let proj_key = project.path.to_string_lossy().to_string();
@@ -127,7 +130,7 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> (usize, Option<CursorIdent
             }
         }
     }
-    (cache.tree_selected, cache.cursor_identity, cache.command_history, cache.active_tab)
+    (cache.tree_selected, cache.cursor_identity, cache.command_history, cache.active_tab, cache.tmux_server_pid)
 }
 
 /// Resolve a saved CursorIdentity back to a flat-tree index.
@@ -213,6 +216,7 @@ pub fn save_cache(
         }
     }
     cache.command_history = command_history.to_vec();
+    cache.tmux_server_pid = crate::tmux::session::server_pid();
     cache.save(sync).err().map(|e| format!("cache save failed: {e}"))
 }
 

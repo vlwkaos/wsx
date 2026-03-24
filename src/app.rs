@@ -321,8 +321,9 @@ impl App {
     pub fn new() -> Result<Self> {
         let (config, config_warn) = GlobalConfig::load()?;
         let mut workspace = ops::load_workspace(&config);
-        let (raw_selected, cursor_identity, command_history, cached_active_tab) =
+        let (raw_selected, cursor_identity, command_history, cached_active_tab, cached_tmux_pid) =
             crate::cache::apply_cache(&mut workspace);
+        ops::restore_cached_sessions(&workspace, cached_tmux_pid);
         let visible_projects = compute_visible_projects(&config, &workspace, cached_active_tab.as_deref());
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
         let tree_selected = cursor_identity
