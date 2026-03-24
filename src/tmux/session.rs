@@ -131,6 +131,12 @@ pub fn attach_foreground(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Get tmux server PID via `tmux display-message -p "#{pid}"`.
+pub fn server_pid() -> Option<u32> {
+    let output = tmux_cmd(&["display-message", "-p", "#{pid}"]).output().ok()?;
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
 /// Set a session-local option (readable as #{@key} in status formats).
 pub fn set_session_opt(session: &str, key: &str, value: &str) {
     let _ = tmux_silent(&["set-option", "-t", session, key, value]).status();

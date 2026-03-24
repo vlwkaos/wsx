@@ -2,7 +2,7 @@
 // These take explicit arguments rather than &mut App so they can be
 // tested and reasoned about independently of the TUI state machine.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -470,6 +470,35 @@ pub fn delete_session(name: &str) -> Result<()> {
 /// Rename a tmux session from `old_name` to `new_name`.
 pub fn rename_session(old_name: &str, new_name: &str) -> Result<()> {
     session::rename_session(old_name, new_name)
+}
+
+/// Recreate tmux sessions from cache after a server restart (reboot/crash).
+///
+/// ! Only restores when the tmux server PID has changed. If the same server is
+/// ! still running, missing sessions were intentionally killed — skip restore.
+pub fn restore_cached_sessions(workspace: &WorkspaceState, cached_pid: Option<u32>) {
+    let current_pid = session::server_pid();
+    if cached_pid.is_some() && cached_pid == current_pid {
+        return;
+    }
+
+    let live: HashSet<String> = session::list_sessions_with_paths()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+
+    for project in &workspace.projects {
+        for wt in &project.worktrees {
+            if !wt.path.exists() {
+                continue;
+            }
+            for s in &wt.sessions {
+                if !live.contains(&s.name) {
+                    let _ = session::create_session(&s.name, &wt.path);
+                }
+            }
+        }
+    }
 }
 
 // ── Alias operations ──────────────────────────────────────────────────────────
