@@ -59,8 +59,13 @@ pub enum WorktreeCmd {
 
 #[derive(Subcommand)]
 pub enum SessionCmd {
-    /// Send keys to a session (Enter appended automatically)
-    SendKeys { session: String, keys: String },
+    /// Send keys to a session (Enter appended unless --no-enter)
+    SendKeys {
+        session: String,
+        keys: String,
+        #[arg(long)]
+        no_enter: bool,
+    },
     /// Capture pane output
     Capture {
         session: String,
@@ -87,7 +92,7 @@ pub fn run(cmd: Command) -> Result<()> {
             WorktreeCmd::List { project, json } => cmd_worktree_list(project.as_deref(), json),
         },
         Command::Session { subcommand } => match subcommand {
-            SessionCmd::SendKeys { session: s, keys } => cmd_session_send_keys(&s, &keys),
+            SessionCmd::SendKeys { session: s, keys, no_enter } => cmd_session_send_keys(&s, &keys, no_enter),
             SessionCmd::Capture { session: s, trim } => cmd_session_capture(&s, trim),
             SessionCmd::Rename { old, new_name } => cmd_session_rename(&old, &new_name),
             SessionCmd::List { project, json } => cmd_session_list(project.as_deref(), json),
@@ -222,8 +227,12 @@ fn cmd_worktree_list(project_name: Option<&str>, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_session_send_keys(sess: &str, keys: &str) -> Result<()> {
-    session::send_keys(sess, keys)?;
+fn cmd_session_send_keys(sess: &str, keys: &str, no_enter: bool) -> Result<()> {
+    if no_enter {
+        session::send_keys_raw(sess, keys)?;
+    } else {
+        session::send_keys(sess, keys)?;
+    }
     Ok(())
 }
 

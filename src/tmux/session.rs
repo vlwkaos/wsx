@@ -148,6 +148,12 @@ pub fn send_keys(session: &str, keys: &str) -> Result<()> {
     Ok(())
 }
 
+/// Send keys without appending Enter.
+pub fn send_keys_raw(session: &str, keys: &str) -> Result<()> {
+    tmux_silent(&["send-keys", "-t", session, keys]).status()?;
+    Ok(())
+}
+
 /// Send Ctrl+C to a session's active pane (no Enter).
 pub fn send_ctrl_c(session: &str) -> Result<()> {
     tmux_silent(&["send-keys", "-t", session, "C-c"]).status()?;
