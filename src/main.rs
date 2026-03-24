@@ -4,6 +4,7 @@
 mod action;
 mod app;
 mod cache;
+mod cli;
 mod config;
 mod event;
 mod git;
@@ -17,6 +18,7 @@ mod update;
 
 use anyhow::{Context, Result};
 use app::App;
+use clap::Parser;
 
 fn main() -> Result<()> {
     // Require tmux
@@ -25,6 +27,14 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    let args = cli::Args::parse();
+    match args.command {
+        Some(cmd) => cli::run(cmd),
+        None => run_tui(),
+    }
+}
+
+fn run_tui() -> Result<()> {
     // Restore terminal on panic so the shell isn't left in raw mode.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

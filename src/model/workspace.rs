@@ -1,18 +1,22 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone)]
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize)]
 pub struct WorkspaceState {
     pub projects: Vec<Project>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Project {
     pub name: String,
     pub path: PathBuf,
     pub default_branch: String,
     pub worktrees: Vec<WorktreeInfo>,
+    #[serde(skip)]
     pub config: Option<ProjectConfig>,
+    #[serde(skip)]
     pub expanded: bool,
 }
 
@@ -23,26 +27,30 @@ pub struct ProjectConfig {
     pub copy_excludes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SessionInfo {
     pub name: String,         // full tmux session name
     pub display_name: String, // shown in UI (strips wt_slug prefix)
     pub has_activity: bool,
+    #[serde(skip)]
     pub pane_capture: Option<String>,
+    #[serde(skip)]
     pub last_activity: Option<std::time::Instant>,
     pub has_running_app: bool, // foreground process is not a bare shell
+    #[serde(skip)]
     pub running_app_suppressed: bool, // user dismissed the running-app notification
+    #[serde(skip)]
     pub muted: bool,           // user silenced — no activity updates, shown as ⊘
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum FetchFailReason {
     Auth,    // "Authentication failed", "Permission denied", "could not read Username"
     Timeout, // killed after 10s
     Network, // generic / other failure
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct WorktreeInfo {
     pub name: String,
     pub branch: String,
@@ -50,13 +58,15 @@ pub struct WorktreeInfo {
     pub is_main: bool,
     pub alias: Option<String>,
     pub sessions: Vec<SessionInfo>,
+    #[serde(skip)]
     pub expanded: bool,
     pub git_info: Option<GitInfo>,
     pub fetch_failed: bool,
     pub fetch_fail_count: u32,
     pub fetch_fail_reason: Option<FetchFailReason>,
+    #[serde(skip)]
     pub last_fetched: Option<std::time::Instant>,
-    /// When git_info was last successfully populated; used to skip redundant refreshes.
+    #[serde(skip)]
     pub git_info_fetched_at: Option<std::time::Instant>,
 }
 
@@ -206,7 +216,7 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GitInfo {
     pub recent_commits: Vec<CommitSummary>,
     pub modified_files: Vec<String>,
@@ -215,7 +225,7 @@ pub struct GitInfo {
     pub remote_branch: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CommitSummary {
     pub hash: String,
     pub message: String,
