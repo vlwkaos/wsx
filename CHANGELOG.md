@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.12.0] - 2026-03-24
+
+### Features
+
+- Restore tmux sessions after server restart — on startup, compares cached tmux server PID to the current one; if they differ (reboot, crash, kill-server), silently recreates all cached sessions in their worktree directories ([`00a531f`](https://github.com/vlwkaos/wsx/commit/00a531f))
+- Headless CLI subcommands for agent/scripting use ([`2ff04f5`](https://github.com/vlwkaos/wsx/commit/2ff04f5))
+
+---
+
 ## [0.11.3] - 2026-03-20
 
 ### Bug Fixes
