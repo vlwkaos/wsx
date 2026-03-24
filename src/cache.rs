@@ -68,18 +68,17 @@ impl WorkspaceCache {
             std::fs::create_dir_all(dir)?;
         }
         let s = toml::to_string(self)?;
-        let mut f = std::fs::File::create(&path)?;
+        // Atomic write: temp file + rename so a crash mid-write leaves the original intact.
+        let tmp = path.with_extension("toml.tmp");
+        let mut f = std::fs::File::create(&tmp)?;
         std::io::Write::write_all(&mut f, s.as_bytes())?;
         if sync {
             f.sync_all()?;
         }
+        drop(f);
+        std::fs::rename(&tmp, &path)?;
         Ok(())
     }
-}
-
-/// Returns the last-modified time of the cache file, used for external-change detection.
-pub fn cache_mtime() -> Option<std::time::SystemTime> {
-    std::fs::metadata(cache_path()).ok()?.modified().ok()
 }
 
 fn cache_path() -> PathBuf {
