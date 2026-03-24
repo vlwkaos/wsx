@@ -177,6 +177,12 @@ fn cmd_worktree_create(branch: &str, project_name: Option<&str>) -> Result<()> {
     let (tmux_name, _) = ops::create_session(&project.name, &wt_slug, &wt_path, None, None)?;
     println!("worktree: {}", wt_path.display());
     println!("session:  {}", tmux_name);
+    let mut cache = crate::cache::WorkspaceCache::load();
+    cache.sessions.insert(wt_path.to_string_lossy().to_string(), vec![tmux_name.clone()]);
+    cache.tmux_server_pid = crate::tmux::session::server_pid();
+    if let Err(e) = cache.save(false) {
+        eprintln!("warning: cache save failed: {}", e);
+    }
     Ok(())
 }
 
@@ -191,6 +197,11 @@ fn cmd_worktree_delete(branch: &str, project_name: Option<&str>) -> Result<()> {
     let session_names: Vec<String> = wt.sessions.iter().map(|s| s.name.clone()).collect();
     ops::delete_worktree(&project.path, &wt.path, &wt.branch, &session_names)?;
     println!("deleted worktree: {}", wt.path.display());
+    let mut cache = crate::cache::WorkspaceCache::load();
+    cache.sessions.remove(&wt.path.to_string_lossy().to_string());
+    if let Err(e) = cache.save(false) {
+        eprintln!("warning: cache save failed: {}", e);
+    }
     Ok(())
 }
 
@@ -226,6 +237,17 @@ fn cmd_session_capture(sess: &str, trim: bool) -> Result<()> {
 fn cmd_session_rename(old: &str, new: &str) -> Result<()> {
     session::rename_session(old, new)?;
     println!("renamed: {} → {}", old, new);
+    let mut cache = crate::cache::WorkspaceCache::load();
+    for sessions in cache.sessions.values_mut() {
+        for s in sessions.iter_mut() {
+            if s == old {
+                *s = new.to_string();
+            }
+        }
+    }
+    if let Err(e) = cache.save(false) {
+        eprintln!("warning: cache save failed: {}", e);
+    }
     Ok(())
 }
 

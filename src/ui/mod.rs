@@ -147,9 +147,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_status_bar(frame, status_area, app, &hints);
     render_overlay(frame, main_area, app);
-    if app.cache_paused {
-        render_cache_conflict(frame, main_area);
-    }
 }
 
 fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -372,29 +369,6 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
         }
         frame.render_widget(Paragraph::new(Text::from(text_lines)), area);
     }
-}
-
-fn render_cache_conflict(frame: &mut Frame, area: Rect) {
-    let popup = popup_center(area, 44, 5);
-    frame.render_widget(Clear, popup);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Cache Updated Externally ")
-        .border_style(Style::default().fg(Color::Yellow));
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-    let text = Text::from(vec![
-        Line::from("Another wsx instance modified the cache."),
-        Line::from("Writes paused."),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("[any key]", Style::default().fg(Color::Green).bold()),
-            Span::raw(" Reload   "),
-            Span::styled("[q]", Style::default().fg(Color::Red).bold()),
-            Span::raw(" Quit"),
-        ]),
-    ]);
-    frame.render_widget(Paragraph::new(text), inner);
 }
 
 

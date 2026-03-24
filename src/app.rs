@@ -296,10 +296,6 @@ pub struct App {
     fetch_tx: mpsc::Sender<(PathBuf, FetchOutcome)>,
     fetch_rx: mpsc::Receiver<(PathBuf, FetchOutcome)>,
     fetch_pending: HashSet<PathBuf>,
-    /// mtime of cache file after our last write — used to detect external changes.
-    cache_mtime: Option<std::time::SystemTime>,
-    /// true while another instance has written the cache and we're paused.
-    pub cache_paused: bool,
     /// true when workspace state has changed since the last cache write.
     cache_dirty: bool,
     /// Limits concurrent git-info threads to available CPU count.
@@ -375,8 +371,6 @@ impl App {
             fetch_tx,
             fetch_rx,
             fetch_pending: HashSet::new(),
-            cache_mtime: crate::cache::cache_mtime(),
-            cache_paused: false,
             cache_dirty: false,
             worktree_index,
             parsed_preview: std::collections::HashMap::new(),
@@ -514,14 +508,6 @@ impl App {
                 Mode::Input { .. } | Mode::Search { .. } | Mode::GitPopup { .. } | Mode::TabManager { .. }
             );
             if let Some(action) = poll_event(Duration::from_millis(TICK_MS), in_input)? {
-                if self.cache_paused {
-                    if action == Action::Quit {
-                        break;
-                    }
-                    self.resume_from_cache_conflict();
-                    self.needs_redraw = true;
-                    continue;
-                }
                 if action == Action::Quit && matches!(self.mode, Mode::Normal) {
                     break;
                 }
@@ -578,7 +564,6 @@ impl App {
         }
 
         if self.slow_timer.ready() {
-            self.check_cache_conflict();
             self.spawn_tmux_refresh();
             self.spawn_git_local_for_all();
             self.activity_timer.last = Instant::now(); // rescan subsumes activity check
@@ -700,52 +685,11 @@ impl App {
     }
 
     pub fn flush_cache(&mut self) {
-        if self.cache_paused {
-            return;
-        }
         // Always write on explicit flush (quit path) regardless of dirty flag; sync to disk
         if let Some(e) = crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, self.active_tab.as_deref(), true) {
             self.set_status(e);
         }
-        self.cache_mtime = crate::cache::cache_mtime();
         self.cache_dirty = false;
-    }
-
-    fn check_cache_conflict(&mut self) {
-        if self.cache_paused {
-            return;
-        }
-        let current = crate::cache::cache_mtime();
-        if current.is_some() && current != self.cache_mtime {
-            self.cache_paused = true;
-            self.needs_redraw = true;
-        }
-    }
-
-    pub fn resume_from_cache_conflict(&mut self) {
-        // Re-apply expand states from the updated cache, then do a full refresh.
-        let cache = crate::cache::WorkspaceCache::load();
-        for project in &mut self.workspace.projects {
-            let key = project.path.to_string_lossy().to_string();
-            if let Some(&expanded) = cache.project_expanded.get(&key) {
-                project.expanded = expanded;
-            }
-            for wt in &mut project.worktrees {
-                let key = wt.path.to_string_lossy().to_string();
-                if let Some(&expanded) = cache.worktree_expanded.get(&key) {
-                    wt.expanded = expanded;
-                }
-            }
-        }
-        self.rebuild_flat();
-        if let Some(id) = &cache.cursor_identity {
-            if let Some(pos) = crate::cache::find_cursor_index(&self.workspace, self.flat(), id) {
-                self.tree_selected = pos;
-            }
-        }
-        self.cache_paused = false;
-        // refresh_all will write fresh cache and update self.cache_mtime
-        let _ = self.refresh_all();
     }
 
     pub fn refresh_all(&mut self) -> Result<()> {
@@ -773,13 +717,12 @@ impl App {
 
     /// Write cache only when state has changed since last write.
     fn write_cache_if_dirty(&mut self) {
-        if self.cache_paused || !self.cache_dirty {
+        if !self.cache_dirty {
             return;
         }
         if let Some(e) = crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, self.active_tab.as_deref(), false) {
             self.set_status(e);
         }
-        self.cache_mtime = crate::cache::cache_mtime();
         self.cache_dirty = false;
     }
 
