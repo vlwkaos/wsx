@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.1] - 2026-03-24
+
+### Features
+
+- `session send-keys` CLI gains `--no-enter` flag — sends keys to a pane without appending Enter, enabling single-key navigation (e.g. selecting numbered Claude suggestions) ([`cfe89c2`](https://github.com/vlwkaos/wsx/commit/cfe89c2))
+
+---
+
 ## [0.12.0] - 2026-03-24
 
 ### Features
