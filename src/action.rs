@@ -21,6 +21,8 @@ pub enum Action {
     DismissAttention,
     NextActive,
     PrevActive,
+    NextIdle,
+    PrevIdle,
     SendCommand,
     SendCtrlC,
     EnterMove,
