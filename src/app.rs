@@ -1150,6 +1150,8 @@ impl App {
             Action::DismissAttention => self.action_dismiss_attention(),
             Action::NextActive => self.action_next_active(),
             Action::PrevActive => self.action_prev_active(),
+            Action::NextIdle => self.action_next_idle(),
+            Action::PrevIdle => self.action_prev_idle(),
             Action::SendCommand => self.action_send_command(),
             Action::SendCtrlC => self.action_send_ctrl_c()?,
             Action::EnterMove => self.action_enter_move(),
@@ -1620,6 +1622,66 @@ impl App {
                 }
             })
             .collect()
+    }
+
+    fn idle_candidates(&self) -> Vec<usize> {
+        self.flat()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| {
+                let FlatEntry::Session {
+                    project_idx: pi,
+                    worktree_idx: wi,
+                    session_idx: si,
+                } = entry
+                else {
+                    return None;
+                };
+                let sess = self.workspace.session(*pi, *wi, *si)?;
+                let active = sess
+                    .last_activity
+                    .map(|t| t.elapsed().as_secs() < IDLE_SECS)
+                    .unwrap_or(false);
+                let idle = !sess.muted
+                    && !sess.has_activity
+                    && !active
+                    && (!sess.has_running_app || sess.running_app_suppressed);
+                if idle { Some(i) } else { None }
+            })
+            .collect()
+    }
+
+    fn action_next_idle(&mut self) {
+        let candidates = self.idle_candidates();
+        if candidates.is_empty() {
+            self.set_status("No idle sessions");
+            return;
+        }
+        let next = candidates
+            .iter()
+            .find(|&&i| i > self.tree_selected)
+            .or_else(|| candidates.first())
+            .copied()
+            .unwrap();
+        self.tree_selected = next;
+        self.update_scroll();
+    }
+
+    fn action_prev_idle(&mut self) {
+        let candidates = self.idle_candidates();
+        if candidates.is_empty() {
+            self.set_status("No idle sessions");
+            return;
+        }
+        let prev = candidates
+            .iter()
+            .rev()
+            .find(|&&i| i < self.tree_selected)
+            .or_else(|| candidates.last())
+            .copied()
+            .unwrap();
+        self.tree_selected = prev;
+        self.update_scroll();
     }
 
     fn action_send_command(&mut self) {
