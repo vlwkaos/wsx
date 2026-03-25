@@ -1,6 +1,8 @@
-// Input box with cursor movement, unicode support, and path completion.
+// Input box with cursor movement, unicode support, and path/project completion.
 
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
 
 use crate::ui::popup_upper;
 use ratatui::{
@@ -18,6 +20,9 @@ pub struct InputState {
     typed: String, // last text the user typed (before completion navigation)
     path_mode: bool,
     history_mode: bool,
+    project_search: bool,
+    scan_rx: Option<mpsc::Receiver<Vec<String>>>,
+    scan_dirs: Vec<String>,
 }
 
 impl InputState {
@@ -25,10 +30,12 @@ impl InputState {
         Self::make(prompt.into(), String::new(), false)
     }
 
-    pub fn new_path(prompt: impl Into<String>, initial: String) -> Self {
-        let mut s = Self::make(prompt.into(), initial, true);
-        s.typed = s.buffer.clone();
-        s.completions = path_completions(&s.buffer);
+    pub fn new_project_search(prompt: impl Into<String>) -> Self {
+        let mut s = Self::make(prompt.into(), String::new(), false);
+        s.project_search = true;
+        let (tx, rx) = mpsc::channel();
+        s.scan_rx = Some(rx);
+        thread::spawn(move || scan_git_repos(tx));
         s
     }
 
@@ -56,7 +63,37 @@ impl InputState {
             typed: value,
             path_mode,
             history_mode: false,
+            project_search: false,
+            scan_rx: None,
+            scan_dirs: vec![],
         }
+    }
+
+    pub fn poll_scan(&mut self) -> bool {
+        let Some(rx) = &self.scan_rx else { return false };
+        let mut new_data = false;
+        loop {
+            match rx.try_recv() {
+                Ok(batch) => {
+                    self.scan_dirs.extend(batch);
+                    new_data = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.scan_rx = None;
+                    break;
+                }
+            }
+        }
+        if new_data {
+            self.completions = project_completions(&self.typed, &self.scan_dirs);
+        }
+        // Return true even on disconnect so caller redraws to clear "scanning..." indicator.
+        new_data || self.scan_rx.is_none() && self.project_search
+    }
+
+    pub fn is_scanning(&self) -> bool {
+        self.scan_rx.is_some()
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -64,7 +101,9 @@ impl InputState {
         self.cursor += c.len_utf8();
         self.typed = self.buffer.clone();
         self.completion_idx = None;
-        if self.path_mode {
+        if self.project_search {
+            self.completions = project_completions(&self.buffer, &self.scan_dirs);
+        } else if self.path_mode {
             self.completions = path_completions(&self.buffer);
         } else if self.history_mode {
             self.completions = history_completions(&self.buffer, &self.history);
@@ -82,7 +121,9 @@ impl InputState {
             self.cursor = prev;
             self.typed = self.buffer.clone();
             self.completion_idx = None;
-            if self.path_mode {
+            if self.project_search {
+                self.completions = project_completions(&self.buffer, &self.scan_dirs);
+            } else if self.path_mode {
                 self.completions = path_completions(&self.buffer);
             } else if self.history_mode {
                 self.completions = history_completions(&self.buffer, &self.history);
@@ -197,6 +238,24 @@ fn history_completions(typed: &str, history: &[String]) -> Vec<String> {
     scored.into_iter().map(|(_, h)| h.to_string()).collect()
 }
 
+fn project_completions(query: &str, dirs: &[String]) -> Vec<String> {
+    if query.is_empty() {
+        let mut refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        refs.sort_unstable();
+        return refs.iter().map(|s| s.to_string()).collect();
+    }
+    let mut scored: Vec<(i32, &str)> = dirs
+        .iter()
+        .filter_map(|d| {
+            let rel = d.strip_prefix("~/").unwrap_or(d);
+            let rel = rel.strip_suffix('/').unwrap_or(rel);
+            fuzzy_score(query, rel).map(|s| (s, d.as_str()))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, d)| d.to_string()).collect()
+}
+
 fn path_completions(input: &str) -> Vec<String> {
     let (expanded, tilde) = expand_input(input);
 
@@ -271,13 +330,90 @@ fn display_path(path: &PathBuf, prefer_tilde: bool) -> String {
     format!("{}/", path.to_string_lossy())
 }
 
+// ── Background git repo scan ──────────────────────────────────────────────────
+
+const SKIP_DIRS: &[&str] = &[
+    "node_modules", "target", "Library", "Applications", ".Trash",
+];
+const MAX_SCAN_DEPTH: usize = 6;
+
+fn scan_git_repos(tx: mpsc::Sender<Vec<String>>) {
+    let Some(home) = dirs::home_dir() else { return };
+    let mut batch = Vec::with_capacity(50);
+    walk_for_git(&home, &home, 0, &mut batch, &tx);
+    if !batch.is_empty() {
+        let _ = tx.send(batch);
+    }
+}
+
+/// Returns false if the receiver dropped — caller should stop walking.
+fn walk_for_git(
+    home: &std::path::Path,
+    dir: &std::path::Path,
+    depth: usize,
+    batch: &mut Vec<String>,
+    tx: &mpsc::Sender<Vec<String>>,
+) -> bool {
+    if depth > MAX_SCAN_DEPTH {
+        return true;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return true };
+
+    let mut has_git = false;
+    let mut subdirs = vec![];
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let path = entry.path();
+
+        if name_str == ".git" && path.is_dir() {
+            has_git = true;
+            continue;
+        }
+        if name_str.starts_with('.') || SKIP_DIRS.contains(&name_str.as_ref()) {
+            continue;
+        }
+        if path.is_dir() {
+            subdirs.push(path);
+        }
+    }
+
+    if has_git {
+        if let Ok(rel) = dir.strip_prefix(home) {
+            let rel_str = rel.to_string_lossy();
+            let display = if rel_str.is_empty() {
+                "~/".to_string()
+            } else {
+                format!("~/{}/", rel_str)
+            };
+            batch.push(display);
+            if batch.len() >= 50 {
+                let to_send = std::mem::replace(batch, Vec::with_capacity(50));
+                if tx.send(to_send).is_err() {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    for subdir in subdirs {
+        if !walk_for_git(home, &subdir, depth + 1, batch, tx) {
+            return false;
+        }
+    }
+    true
+}
+
 // ── Rendering ────────────────────────────────────────────────────────────────
 
 pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &str) {
     let width = area.width.min(60);
 
+    let scanning = state.is_scanning() && state.completions.is_empty();
     let max_show = if state.completions.is_empty() {
-        0
+        if scanning { 1 } else { 0 }
     } else {
         5usize.min(state.completions.len())
     };
@@ -308,11 +444,17 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
     frame.set_cursor_position((cursor_x.min(popup.x + popup.width - 2), popup.y + 1));
 
     // Completion items — left-aligned with where user types
-    if max_show > 0 {
-        let prompt_w = state.prompt.chars().count() as u16;
-        let comp_x = popup.x + 1 + prompt_w;
-        let comp_w = width.saturating_sub(2 + prompt_w);
+    let prompt_w = state.prompt.chars().count() as u16;
+    let comp_x = popup.x + 1 + prompt_w;
+    let comp_w = width.saturating_sub(2 + prompt_w);
 
+    if scanning && state.completions.is_empty() {
+        let row = Rect::new(comp_x, popup.y + 2, comp_w, 1);
+        frame.render_widget(
+            Paragraph::new("scanning...").style(Style::default().fg(Color::Rgb(100, 100, 100))),
+            row,
+        );
+    } else if max_show > 0 {
         for (vis_idx, (orig_idx, s)) in state
             .completions
             .iter()

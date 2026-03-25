@@ -189,7 +189,7 @@ pub enum InputContext {
 impl InputContext {
     pub fn title(&self) -> &'static str {
         match self {
-            InputContext::AddProject => "Add Project",
+            InputContext::AddProject => "Add Project (git repos)",
             InputContext::AddWorktree { .. } => "Add Worktree",
             InputContext::AddSession { .. } => "New Session — name",
             InputContext::AddSessionCmd { .. } => "New Session — command",
@@ -526,6 +526,11 @@ impl App {
     }
 
     fn drain_async_results(&mut self) {
+        if let Mode::Input { context: InputContext::AddProject, ref mut state } = self.mode {
+            if state.poll_scan() {
+                self.needs_redraw = true;
+            }
+        }
         while let Ok((path, outcome)) = self.fetch_rx.try_recv() {
             self.apply_fetch_result(path, outcome);
         }
@@ -1401,7 +1406,7 @@ impl App {
     fn action_add_project(&mut self) -> Result<()> {
         self.mode = Mode::Input {
             context: InputContext::AddProject,
-            state: InputState::new_path("path: ", "~/".to_string()),
+            state: InputState::new_project_search("project: "),
         };
         Ok(())
     }
