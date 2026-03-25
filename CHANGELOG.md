@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.0] - 2026-03-25
+
+### Features
+
+- Add project now uses recursive fuzzy search over git repos instead of directory-by-directory navigation — type a partial name (e.g. `wsx`) to find `~/ws-ps/wsx/` directly; scan runs in background with incremental results ([`9c67e15`](https://github.com/vlwkaos/wsx/commit/9c67e15))
+
+---
+
 ## [0.12.1] - 2026-03-24
 
 ### Features
