@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.1] - 2026-03-26
+
+### Bug Fixes
+
+- Fix worktree delete flicker — optimistic removal raced with the 3s timer refresh which read stale git worktree list and briefly re-added the deleted entry; guard with `pending_deletions` set filtered from both `apply_tmux_refresh` and `refresh_all` ([`94a78a0`](https://github.com/vlwkaos/wsx/commit/94a78a0))
+
+---
+
 ## [0.14.0] - 2026-03-26
 
 ### Features
