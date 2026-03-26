@@ -235,8 +235,6 @@ pub struct BgJob {
 
 pub enum BgOutcome {
     WorktreeRemoved {
-        project_idx: usize,
-        worktree_idx: usize,
         wt_path: std::path::PathBuf,
         label: String,
     },
@@ -309,6 +307,8 @@ pub struct App {
     tmux_refresh_pending: bool,
     tmux_activity_pending: bool,
     tmux_capture_pending: bool,
+    /// Worktree paths pending bg deletion; filtered from refresh results until bg confirms.
+    pending_deletions: HashSet<PathBuf>,
     update_rx: mpsc::Receiver<String>,
     pub update_available: Option<String>,
 }
@@ -382,6 +382,7 @@ impl App {
             tmux_refresh_pending: false,
             tmux_activity_pending: false,
             tmux_capture_pending: false,
+            pending_deletions: HashSet::new(),
             update_rx,
             update_available: None,
         })
@@ -417,19 +418,11 @@ impl App {
             Err(e) => {
                 self.set_status(format!("{}: {}", result.label, e));
             }
-            Ok(BgOutcome::WorktreeRemoved { project_idx: pi, worktree_idx: wi, wt_path, label }) => {
-                // Search by path in case indices shifted due to a refresh
-                let found = self.workspace.projects.iter().enumerate().find_map(|(p, proj)| {
-                    proj.worktrees
-                        .iter()
-                        .enumerate()
-                        .find(|(_, wt)| wt.path == wt_path)
-                        .map(|(w, _)| (p, w))
-                });
-                let (p, w) = found.unwrap_or((pi, wi));
-                if p < self.workspace.projects.len()
-                    && w < self.workspace.projects[p].worktrees.len()
-                {
+            Ok(BgOutcome::WorktreeRemoved { wt_path, label }) => {
+                self.pending_deletions.remove(&wt_path);
+                // ! optimistic removal already ran; this guards the rare case a stale refresh
+                // re-added the entry before pending_deletions filtering took effect.
+                if let Some(&(p, w)) = self.worktree_index.get(&wt_path) {
                     self.workspace.projects[p].worktrees.remove(w);
                     self.rebuild_flat();
                     self.clamp_selected();
@@ -700,11 +693,19 @@ impl App {
     pub fn refresh_all(&mut self) -> Result<()> {
         let sessions_with_paths = session::list_sessions_with_paths();
         let activity = monitor::session_activity();
-        ops::refresh_workspace(
+        let worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)> = self.workspace.projects.iter()
+            .map(|p| {
+                let entries = git_worktree::list_worktrees(&p.path).unwrap_or_default();
+                (p.path.clone(), entries)
+            })
+            .collect();
+        let worktrees = self.filter_pending_deletions(worktrees);
+        ops::refresh_workspace_with_worktrees(
             &mut self.workspace,
             &self.config,
             &sessions_with_paths,
             &activity,
+            worktrees,
         );
         self.rebuild_flat();
         self.clamp_selected();
@@ -729,6 +730,25 @@ impl App {
             self.set_status(e);
         }
         self.cache_dirty = false;
+    }
+
+    fn filter_pending_deletions(
+        &self,
+        worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
+    ) -> Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)> {
+        if self.pending_deletions.is_empty() {
+            return worktrees;
+        }
+        worktrees
+            .into_iter()
+            .map(|(path, entries)| {
+                let entries = entries
+                    .into_iter()
+                    .filter(|e| !self.pending_deletions.contains(&e.path))
+                    .collect();
+                (path, entries)
+            })
+            .collect()
     }
 
     fn spawn_tmux_refresh(&mut self) {
@@ -760,6 +780,7 @@ impl App {
         worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
     ) {
         self.tmux_refresh_pending = false;
+        let worktrees = self.filter_pending_deletions(worktrees);
         ops::refresh_workspace_with_worktrees(
             &mut self.workspace,
             &self.config,
@@ -1533,7 +1554,7 @@ impl App {
                 let label = format!("Cleaned: {}", branch);
                 self.spawn_bg(format!("clean {}", branch), move || {
                     ops::delete_worktree(&repo, &wt_path, &branch, &session_names)?;
-                    Ok(BgOutcome::WorktreeRemoved { project_idx: pi, worktree_idx: wi, wt_path, label })
+                    Ok(BgOutcome::WorktreeRemoved { wt_path, label })
                 });
             }
             Selection::Project(pi) | Selection::Session(pi, _, _) => {
@@ -2029,12 +2050,13 @@ impl App {
                     };
                     let label = format!("Deleted: {}", branch);
                     // Optimistically remove before spawning so the tree updates this frame
+                    self.pending_deletions.insert(wt_path.clone());
                     self.workspace.projects[pi].worktrees.remove(wi);
                     self.rebuild_flat();
                     self.clamp_selected();
                     self.spawn_bg(format!("delete {}", branch), move || {
                         ops::delete_worktree(&repo, &wt_path, &branch, &session_names)?;
-                        Ok(BgOutcome::WorktreeRemoved { project_idx: pi, worktree_idx: wi, wt_path, label })
+                        Ok(BgOutcome::WorktreeRemoved { wt_path, label })
                     });
                 }
                 PendingAction::CreateWorktree {
