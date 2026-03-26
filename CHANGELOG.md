@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.14.0] - 2026-03-26
+
+### Features
+
+- `i` / `I` keys jump to next/prev idle session (○ gray state), consistent with `a`/`A` for active and `n`/`N` for attention ([`6af341c`](https://github.com/vlwkaos/wsx/commit/6af341c))
+- CLI `-f compact` / `--format compact` flag on `status`, `worktree list`, `session list` — labeled fixed-width tabular output with worktree as row unit and sessions inlined as `name[state]`; designed for AI agent stdout consumption with fewer tokens ([`de38f0f`](https://github.com/vlwkaos/wsx/commit/de38f0f))
+
+---
+
 ## [0.13.0] - 2026-03-25
 
 ### Features
