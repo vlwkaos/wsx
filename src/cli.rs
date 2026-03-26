@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{
     config::global::GlobalConfig,
@@ -7,6 +7,13 @@ use crate::{
     ops,
     tmux::{capture, monitor, session},
 };
+
+#[derive(Clone, Default, ValueEnum)]
+pub enum Format {
+    #[default]
+    Normal,
+    Compact,
+}
 
 #[derive(Parser)]
 #[command(name = "wsx", version, about = "Workspace manager — git worktrees + tmux sessions")]
@@ -21,6 +28,8 @@ pub enum Command {
     Status {
         #[arg(long)]
         json: bool,
+        #[arg(short = 'f', long, value_enum, default_value = "normal")]
+        format: Format,
     },
     /// Worktree operations
     Worktree {
@@ -54,6 +63,8 @@ pub enum WorktreeCmd {
         project: Option<String>,
         #[arg(long)]
         json: bool,
+        #[arg(short = 'f', long, value_enum, default_value = "normal")]
+        format: Format,
     },
 }
 
@@ -80,22 +91,24 @@ pub enum SessionCmd {
         project: Option<String>,
         #[arg(long)]
         json: bool,
+        #[arg(short = 'f', long, value_enum, default_value = "normal")]
+        format: Format,
     },
 }
 
 pub fn run(cmd: Command) -> Result<()> {
     match cmd {
-        Command::Status { json } => cmd_status(json),
+        Command::Status { json, format } => cmd_status(json, format),
         Command::Worktree { subcommand } => match subcommand {
             WorktreeCmd::Create { branch, project } => cmd_worktree_create(&branch, project.as_deref()),
             WorktreeCmd::Delete { branch, project } => cmd_worktree_delete(&branch, project.as_deref()),
-            WorktreeCmd::List { project, json } => cmd_worktree_list(project.as_deref(), json),
+            WorktreeCmd::List { project, json, format } => cmd_worktree_list(project.as_deref(), json, format),
         },
         Command::Session { subcommand } => match subcommand {
             SessionCmd::SendKeys { session: s, keys, no_enter } => cmd_session_send_keys(&s, &keys, no_enter),
             SessionCmd::Capture { session: s, trim } => cmd_session_capture(&s, trim),
             SessionCmd::Rename { old, new_name } => cmd_session_rename(&old, &new_name),
-            SessionCmd::List { project, json } => cmd_session_list(project.as_deref(), json),
+            SessionCmd::List { project, json, format } => cmd_session_list(project.as_deref(), json, format),
         },
     }
 }
@@ -149,12 +162,64 @@ fn activity_label(s: &crate::model::workspace::SessionInfo) -> &'static str {
     }
 }
 
+fn git_label(wt: &crate::model::workspace::WorktreeInfo) -> String {
+    wt.git_info.as_ref().map(|g| format!("+{}-{}", g.ahead, g.behind)).unwrap_or_else(|| "-".to_string())
+}
+
+fn sessions_inline(wt: &crate::model::workspace::WorktreeInfo) -> String {
+    wt.sessions
+        .iter()
+        .map(|s| format!("{}[{}]", s.name, activity_label(s)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn print_table(headers: &[&str], rows: &[Vec<String>]) {
+    let ncols = headers.len();
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i + 1 < ncols {
+                widths[i] = widths[i].max(cell.len());
+            }
+        }
+    }
+    let mut line = String::new();
+    for (i, h) in headers.iter().enumerate() {
+        if i + 1 < ncols { line.push_str(&format!("{:<width$}", h, width = widths[i] + 2)); }
+        else { line.push_str(h); }
+    }
+    println!("{}", line);
+    for row in rows {
+        line.clear();
+        for (i, cell) in row.iter().enumerate() {
+            if i + 1 < ncols { line.push_str(&format!("{:<width$}", cell, width = widths[i] + 2)); }
+            else { line.push_str(cell); }
+        }
+        println!("{}", line);
+    }
+}
+
 // --- Command implementations ---
 
-fn cmd_status(json: bool) -> Result<()> {
+fn cmd_status(json: bool, format: Format) -> Result<()> {
     let (_, workspace) = load_full_workspace()?;
     if json {
         println!("{}", serde_json::to_string_pretty(&workspace)?);
+        return Ok(());
+    }
+    if let Format::Compact = format {
+        let headers = &["project", "branch", "git", "sessions"];
+        let rows: Vec<Vec<String>> = workspace
+            .projects
+            .iter()
+            .flat_map(|p| {
+                p.worktrees.iter().map(move |wt| {
+                    vec![p.name.clone(), wt.branch.clone(), git_label(wt), sessions_inline(wt)]
+                })
+            })
+            .collect();
+        print_table(headers, &rows);
         return Ok(());
     }
     for project in &workspace.projects {
@@ -210,12 +275,25 @@ fn cmd_worktree_delete(branch: &str, project_name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_worktree_list(project_name: Option<&str>, json: bool) -> Result<()> {
+fn cmd_worktree_list(project_name: Option<&str>, json: bool, format: Format) -> Result<()> {
     let (_, workspace) = load_full_workspace()?;
     let projects = filter_projects(&workspace, project_name)?;
     if json {
         let worktrees: Vec<_> = projects.iter().flat_map(|p| p.worktrees.iter()).collect();
         println!("{}", serde_json::to_string_pretty(&worktrees)?);
+        return Ok(());
+    }
+    if let Format::Compact = format {
+        let headers = &["project", "branch", "git", "path"];
+        let rows: Vec<Vec<String>> = projects
+            .iter()
+            .flat_map(|p| {
+                p.worktrees.iter().map(move |wt| {
+                    vec![p.name.clone(), wt.branch.clone(), git_label(wt), wt.path.display().to_string()]
+                })
+            })
+            .collect();
+        print_table(headers, &rows);
         return Ok(());
     }
     for p in projects {
@@ -260,12 +338,25 @@ fn cmd_session_rename(old: &str, new: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_session_list(project_name: Option<&str>, json: bool) -> Result<()> {
+fn cmd_session_list(project_name: Option<&str>, json: bool, format: Format) -> Result<()> {
     let (_, workspace) = load_full_workspace()?;
     let projects = filter_projects(&workspace, project_name)?;
     if json {
         let sessions: Vec<_> = projects.iter().flat_map(|p| p.worktrees.iter().flat_map(|w| w.sessions.iter())).collect();
         println!("{}", serde_json::to_string_pretty(&sessions)?);
+        return Ok(());
+    }
+    if let Format::Compact = format {
+        let headers = &["project", "branch", "sessions"];
+        let rows: Vec<Vec<String>> = projects
+            .iter()
+            .flat_map(|p| {
+                p.worktrees.iter().map(move |wt| {
+                    vec![p.name.clone(), wt.branch.clone(), sessions_inline(wt)]
+                })
+            })
+            .collect();
+        print_table(headers, &rows);
         return Ok(());
     }
     for p in projects {
