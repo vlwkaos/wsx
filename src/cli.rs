@@ -77,11 +77,21 @@ pub enum SessionCmd {
         #[arg(long)]
         no_enter: bool,
     },
-    /// Capture pane output
-    Capture {
+    /// Peek at pane output (supports scrollback windowing)
+    Peek {
         session: String,
+        /// Number of lines to capture from scrollback (default: visible viewport)
+        #[arg(short = 'n', long)]
+        lines: Option<u32>,
+        /// Lines from the bottom to skip (scroll back further)
+        #[arg(short = 'o', long, default_value = "0")]
+        offset: u32,
+        /// Trim trailing blank lines
         #[arg(long)]
         trim: bool,
+        /// Strip ANSI/decorations and compact for agent consumption
+        #[arg(short = 'a', long)]
+        agent: bool,
     },
     /// Rename a session
     Rename { old: String, new_name: String },
@@ -106,7 +116,7 @@ pub fn run(cmd: Command) -> Result<()> {
         },
         Command::Session { subcommand } => match subcommand {
             SessionCmd::SendKeys { session: s, keys, no_enter } => cmd_session_send_keys(&s, &keys, no_enter),
-            SessionCmd::Capture { session: s, trim } => cmd_session_capture(&s, trim),
+            SessionCmd::Peek { session: s, lines, offset, trim, agent } => cmd_session_peek(&s, lines, offset, trim, agent),
             SessionCmd::Rename { old, new_name } => cmd_session_rename(&old, &new_name),
             SessionCmd::List { project, json, format } => cmd_session_list(project.as_deref(), json, format),
         },
@@ -314,9 +324,16 @@ fn cmd_session_send_keys(sess: &str, keys: &str, no_enter: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_session_capture(sess: &str, trim: bool) -> Result<()> {
-    let raw = capture::capture_pane(sess).ok_or_else(|| anyhow::anyhow!("session '{}' not found or empty", sess))?;
-    let output = if trim { capture::trim_capture(&raw) } else { raw };
+fn cmd_session_peek(sess: &str, lines: Option<u32>, offset: u32, trim: bool, agent: bool) -> Result<()> {
+    let raw = capture::capture_pane_window(sess, lines, offset)
+        .ok_or_else(|| anyhow::anyhow!("session '{}' not found or empty", sess))?;
+    let output = if agent {
+        capture::compact_for_agent(&raw)
+    } else if trim {
+        capture::trim_capture(&raw)
+    } else {
+        raw
+    };
     print!("{}", output);
     Ok(())
 }

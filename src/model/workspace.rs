@@ -91,6 +91,10 @@ impl WorktreeInfo {
     pub fn session_slug(&self, project_name: &str) -> String {
         canonical_session_slug(project_name, &self.path)
     }
+
+    pub fn session_names(&self) -> Vec<String> {
+        self.sessions.iter().map(|s| s.name.clone()).collect()
+    }
 }
 
 fn sanitize_slug(raw: &str) -> String {
