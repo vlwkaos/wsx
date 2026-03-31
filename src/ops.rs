@@ -472,14 +472,19 @@ pub fn rename_session(old_name: &str, new_name: &str) -> Result<()> {
     session::rename_session(old_name, new_name)
 }
 
-/// Recreate tmux sessions from cache after a server restart (reboot/crash).
+/// Recreate tmux sessions after a server restart (reboot/crash).
 ///
 /// ! Only restores when the tmux server PID has changed. If the same server is
 /// ! still running, missing sessions were intentionally killed — skip restore.
-pub fn restore_cached_sessions(workspace: &WorkspaceState, cached_pid: Option<u32>) {
+///
+/// Uses the session snapshot (written periodically to Application Support) as the
+/// source of truth — more recent than the cache, which may lag behind live state.
+///
+/// Returns the number of sessions recreated.
+pub fn restore_cached_sessions(workspace: &WorkspaceState, cached_pid: Option<u32>) -> usize {
     let current_pid = session::server_pid();
     if cached_pid.is_some() && cached_pid == current_pid {
-        return;
+        return 0;
     }
 
     let live: HashSet<String> = session::list_sessions_with_paths()
@@ -487,18 +492,27 @@ pub fn restore_cached_sessions(workspace: &WorkspaceState, cached_pid: Option<u3
         .map(|(name, _)| name)
         .collect();
 
-    for project in &workspace.projects {
-        for wt in &project.worktrees {
-            if !wt.path.exists() {
-                continue;
-            }
-            for s in &wt.sessions {
-                if !live.contains(&s.name) {
-                    let _ = session::create_session(&s.name, &wt.path);
+    // Prefer snapshot (written on every cache flush) over workspace sessions,
+    // which come from the cache and may not reflect the last live state.
+    let snapshot = crate::cache::load_session_snapshot();
+    let source = if !snapshot.is_empty() {
+        snapshot
+    } else {
+        crate::cache::collect_session_names(workspace)
+    };
+
+    let mut restored = 0usize;
+    for (path_str, names) in &source {
+        let path = std::path::Path::new(path_str.as_str());
+        for name in names {
+            if !live.contains(name) {
+                if session::create_session(name, path).is_ok() {
+                    restored += 1;
                 }
             }
         }
     }
+    restored
 }
 
 // ── Alias operations ──────────────────────────────────────────────────────────

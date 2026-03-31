@@ -319,7 +319,7 @@ impl App {
         let mut workspace = ops::load_workspace(&config);
         let (raw_selected, cursor_identity, command_history, cached_active_tab, cached_tmux_pid) =
             crate::cache::apply_cache(&mut workspace);
-        ops::restore_cached_sessions(&workspace, cached_tmux_pid);
+        let restored = ops::restore_cached_sessions(&workspace, cached_tmux_pid);
         let visible_projects = compute_visible_projects(&config, &workspace, cached_active_tab.as_deref());
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
         let tree_selected = cursor_identity
@@ -350,9 +350,16 @@ impl App {
             active_tab: cached_active_tab,
             visible_projects,
             send_command_history: command_history,
-            status_message: config_warn.clone(),
-            status_message_expires: config_warn
-                .map(|_| Instant::now() + Duration::from_secs(10)),
+            status_message: if restored > 0 {
+                Some(format!("tmux restarted: {restored} session{} restored", if restored == 1 { "" } else { "s" }))
+            } else {
+                config_warn.clone()
+            },
+            status_message_expires: if restored > 0 || config_warn.is_some() {
+                Some(Instant::now() + Duration::from_secs(10))
+            } else {
+                None
+            },
             jobs: vec![],
             spinner_frame: 0,
             bg_tx,
@@ -729,6 +736,7 @@ impl App {
         if let Some(e) = crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, self.active_tab.as_deref(), false) {
             self.set_status(e);
         }
+        crate::cache::save_session_snapshot(&self.workspace);
         self.cache_dirty = false;
     }
 
