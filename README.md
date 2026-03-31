@@ -148,6 +148,26 @@ set -g status-right "#{@wsx_project}/#{@wsx_alias}"
 
 </details>
 
+## CLI
+
+```sh
+# Worktrees
+wsx worktree create <branch> [-p <project>]
+wsx worktree delete <branch> [-p <project>]
+wsx worktree list  [-p <project>] [--json]
+
+# Sessions
+wsx session send-keys <session> <keys>
+wsx session peek <session> [-n <lines>] [-o <offset>] [-a]
+wsx session rename <old> <new>
+wsx session list   [-p <project>] [--json]
+
+# Status
+wsx status [--json]
+```
+
+`peek` captures pane output. `-n` sets how many scrollback lines to include (default: visible viewport). `-o` skips lines from the bottom to scroll further back. `-a` strips ANSI/decorations for agent/LLM consumption.
+
 ## Config
 
 <details>

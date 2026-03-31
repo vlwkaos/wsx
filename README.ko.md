@@ -112,6 +112,26 @@ wsx
 set -g status-right "#{@wsx_project}/#{@wsx_alias}"
 ```
 
+## CLI
+
+```sh
+# 워크트리
+wsx worktree create <branch> [-p <project>]
+wsx worktree delete <branch> [-p <project>]
+wsx worktree list  [-p <project>] [--json]
+
+# 세션
+wsx session send-keys <session> <keys>
+wsx session peek <session> [-n <lines>] [-o <offset>] [-a]
+wsx session rename <old> <new>
+wsx session list   [-p <project>] [--json]
+
+# 상태
+wsx status [--json]
+```
+
+`peek`은 pane 출력을 캡처합니다. `-n`은 스크롤백 줄 수(기본값: 현재 화면), `-o`는 아래에서 건너뛸 줄 수, `-a`는 ANSI/장식 문자 제거(에이전트/LLM 입력용).
+
 ## 설정
 
 전역 설정: `~/.config/wsx/config.toml`. 프로젝트별 설정은 `e` 키로 확인.
