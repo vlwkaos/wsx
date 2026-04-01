@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.14.2] - 2026-04-01
+
+### Features
+
+- `wsx session peek` — new subcommand replacing `capture`; adds `-n <lines>` scrollback depth, `-o <offset>` to skip lines from bottom, and `-a` to strip ANSI/box-drawing for agent/LLM consumption ([`2730058`](https://github.com/vlwkaos/wsx/commit/2730058))
+- Session snapshot (`~/.config/wsx/sessions.toml`) — written on every state change and on quit; survives tmux SIGBUS/crash so sessions are restored even when the cache never flushed ([`9d179da`](https://github.com/vlwkaos/wsx/commit/9d179da))
+
+### Bug Fixes
+
+- Terminal resize and sleep/wake layout corruption — `Event::Resize` was silently discarded, so ratatui repainted over a stale buffer after tmux resized the window; now triggers `terminal.clear()` ([`ae235ba`](https://github.com/vlwkaos/wsx/commit/ae235ba))
+- Session snapshot stale on normal quit — `flush_cache()` on the quit path never wrote `sessions.toml`; snapshot could lag by up to 3s on clean exit ([`7f7255b`](https://github.com/vlwkaos/wsx/commit/7f7255b))
+- Deleted sessions phantom-restored after crash — `do_delete_session` removed the session from the workspace model but never set `cache_dirty`, so the snapshot still listed it and restore recreated it ([`7f7255b`](https://github.com/vlwkaos/wsx/commit/7f7255b))
+
+---
+
 ## [0.14.1] - 2026-03-26
 
 ### Bug Fixes
