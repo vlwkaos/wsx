@@ -1177,6 +1177,10 @@ impl App {
             Action::Edit => self.action_edit()?,
             Action::SetAlias => self.action_set_alias()?,
             Action::Refresh => self.refresh_all()?,
+            Action::Resize => {
+                self.force_redraw = true;
+                self.needs_redraw = true;
+            }
             Action::Help => {
                 self.mode = Mode::Help;
             }

@@ -16,6 +16,7 @@ pub fn poll_event(timeout: Duration, in_input: bool) -> Result<Option<Action>> {
                 }
             }
             Event::Mouse(mouse) => translate_mouse(mouse),
+            Event::Resize(_, _) => Action::Resize,
             _ => Action::None,
         };
         Ok(Some(action))

@@ -39,5 +39,6 @@ pub enum Action {
     InputBackTab,
     InputEscape,
     MouseClick { col: u16, row: u16 },
+    Resize,
     None,
 }
