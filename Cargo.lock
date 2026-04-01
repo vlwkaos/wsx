@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "wsx"
-version = "0.14.2"
+version = "0.14.3"
 dependencies = [
  "anyhow",
  "clap",
