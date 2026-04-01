@@ -33,6 +33,11 @@ where
     execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
     if clear {
         terminal.clear()?;
+        // terminal.clear() resets the back buffer but NOT the current (front) buffer,
+        // so the next diff skips cells that match the stale front buffer even though
+        // the screen was cleared. Drawing an empty frame first flushes the front buffer
+        // to blank state, ensuring the real draw below writes every cell unconditionally.
+        terminal.draw(|_| {})?;
     }
     terminal.draw(f)?;
     execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
