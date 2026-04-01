@@ -690,11 +690,21 @@ impl App {
     }
 
     pub fn flush_cache(&mut self) {
-        // Always write on explicit flush (quit path) regardless of dirty flag; sync to disk
-        if let Some(e) = crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, self.active_tab.as_deref(), true) {
+        self.persist_state(true);
+    }
+
+    /// Single write point — both cache and session snapshot always written together.
+    /// `sync=true` on quit (fsync), `sync=false` on periodic writes.
+    fn persist_state(&mut self, sync: bool) {
+        if let Some(e) = crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, self.active_tab.as_deref(), sync) {
             self.set_status(e);
         }
+        crate::cache::save_session_snapshot(&self.workspace);
         self.cache_dirty = false;
+    }
+
+    fn mark_dirty(&mut self) {
+        self.cache_dirty = true;
     }
 
     pub fn refresh_all(&mut self) -> Result<()> {
@@ -723,7 +733,7 @@ impl App {
             .map(|s| s.name.as_str())
             .collect();
         self.parsed_preview.retain(|k, _| live_sessions.contains(k.as_str()));
-        self.cache_dirty = true;
+        self.mark_dirty();
         self.write_cache_if_dirty();
         Ok(())
     }
@@ -733,11 +743,7 @@ impl App {
         if !self.cache_dirty {
             return;
         }
-        if let Some(e) = crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, self.active_tab.as_deref(), false) {
-            self.set_status(e);
-        }
-        crate::cache::save_session_snapshot(&self.workspace);
-        self.cache_dirty = false;
+        self.persist_state(false);
     }
 
     fn filter_pending_deletions(
@@ -804,7 +810,7 @@ impl App {
             .map(|s| s.name.as_str())
             .collect();
         self.parsed_preview.retain(|k, _| live_sessions.contains(k.as_str()));
-        self.cache_dirty = true;
+        self.mark_dirty();
         self.write_cache_if_dirty();
         self.needs_redraw = true;
     }
@@ -1119,7 +1125,7 @@ impl App {
                 Action::NavigateDown => self.move_session(pi, wi, si, 1),
                 Action::NavigateUp => self.move_session(pi, wi, si, -1),
                 Action::Select | Action::InputEscape | Action::Quit | Action::EnterMove => {
-                    self.cache_dirty = true;
+                    self.mark_dirty();
                     self.write_cache_if_dirty();
                     self.mode = Mode::Normal;
                 }
@@ -2096,7 +2102,7 @@ impl App {
                     }
                     self.config.save()?;
                     self.recompute_visible();
-                    self.cache_dirty = true;
+                    self.mark_dirty();
                     self.mode = Mode::TabManager { selected: 0 };
                     self.set_status(format!("Deleted tab '{}'", tab_name));
                 }
@@ -2174,6 +2180,7 @@ impl App {
             .remove(si);
         self.rebuild_flat();
         self.clamp_selected();
+        self.mark_dirty();
         self.set_status(format!("Killed session: {}", display_name));
         Ok(())
     }
@@ -2387,7 +2394,7 @@ impl App {
         let next = (cur + 1) % tabs.len();
         self.active_tab = tabs[next].map(|s| s.to_string());
         self.recompute_visible();
-        self.cache_dirty = true;
+        self.mark_dirty();
     }
 
     fn action_tab_prev(&mut self) {
@@ -2399,7 +2406,7 @@ impl App {
         let prev = if cur == 0 { tabs.len() - 1 } else { cur - 1 };
         self.active_tab = tabs[prev].map(|s| s.to_string());
         self.recompute_visible();
-        self.cache_dirty = true;
+        self.mark_dirty();
     }
 
     fn action_tab_manager(&mut self) {
@@ -2431,7 +2438,7 @@ impl App {
                 if let Some(&tab) = tabs.get(selected) {
                     self.active_tab = tab.map(|s| s.to_string());
                     self.recompute_visible();
-                    self.cache_dirty = true;
+                    self.mark_dirty();
                 }
                 self.mode = Mode::Normal;
             }
