@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.3] - 2026-04-01
+
+### Bug Fixes
+
+- Status bar corruption after navigation — `terminal.clear()` resets only the back buffer, leaving stale cell values in the front buffer; ratatui's diff skips cells that match the old content even though the screen was cleared, producing blank gaps in the hint text (e.g. `(e)config` rendered as ` e config`); fix draws an empty frame after `clear()` to flush the front buffer before the real frame ([`07c1aa0`](https://github.com/vlwkaos/wsx/commit/07c1aa0))
+
+---
+
 ## [0.14.2] - 2026-04-01
 
 ### Features
