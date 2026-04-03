@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.4] - 2026-04-03
+
+### Features
+
+- `--tab <name>` filter for `wsx status`, `wsx worktree list`, and `wsx session list`; `--tab default` matches projects with no tab assigned ([`a89dcba`](https://github.com/vlwkaos/wsx/commit/a89dcbac2fc847523ed358df91a7cbb24b4138dc))
+
+---
+
 ## [0.14.3] - 2026-04-01
 
 ### Bug Fixes
