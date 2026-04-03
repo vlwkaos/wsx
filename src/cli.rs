@@ -30,6 +30,8 @@ pub enum Command {
         json: bool,
         #[arg(short = 'f', long, value_enum, default_value = "normal")]
         format: Format,
+        #[arg(short = 't', long)]
+        tab: Option<String>,
     },
     /// Worktree operations
     Worktree {
@@ -65,6 +67,8 @@ pub enum WorktreeCmd {
         json: bool,
         #[arg(short = 'f', long, value_enum, default_value = "normal")]
         format: Format,
+        #[arg(short = 't', long)]
+        tab: Option<String>,
     },
 }
 
@@ -103,22 +107,24 @@ pub enum SessionCmd {
         json: bool,
         #[arg(short = 'f', long, value_enum, default_value = "normal")]
         format: Format,
+        #[arg(short = 't', long)]
+        tab: Option<String>,
     },
 }
 
 pub fn run(cmd: Command) -> Result<()> {
     match cmd {
-        Command::Status { json, format } => cmd_status(json, format),
+        Command::Status { json, format, tab } => cmd_status(json, format, tab.as_deref()),
         Command::Worktree { subcommand } => match subcommand {
             WorktreeCmd::Create { branch, project } => cmd_worktree_create(&branch, project.as_deref()),
             WorktreeCmd::Delete { branch, project } => cmd_worktree_delete(&branch, project.as_deref()),
-            WorktreeCmd::List { project, json, format } => cmd_worktree_list(project.as_deref(), json, format),
+            WorktreeCmd::List { project, json, format, tab } => cmd_worktree_list(project.as_deref(), json, format, tab.as_deref()),
         },
         Command::Session { subcommand } => match subcommand {
             SessionCmd::SendKeys { session: s, keys, no_enter } => cmd_session_send_keys(&s, &keys, no_enter),
             SessionCmd::Peek { session: s, lines, offset, trim, agent } => cmd_session_peek(&s, lines, offset, trim, agent),
             SessionCmd::Rename { old, new_name } => cmd_session_rename(&old, &new_name),
-            SessionCmd::List { project, json, format } => cmd_session_list(project.as_deref(), json, format),
+            SessionCmd::List { project, json, format, tab } => cmd_session_list(project.as_deref(), json, format, tab.as_deref()),
         },
     }
 }
@@ -137,11 +143,26 @@ fn load_full_workspace() -> Result<(GlobalConfig, WorkspaceState)> {
     Ok((config, workspace))
 }
 
-fn filter_projects<'a>(workspace: &'a WorkspaceState, project_name: Option<&str>) -> Result<Vec<&'a Project>> {
-    match project_name {
-        Some(n) => Ok(vec![resolve_project(workspace, Some(n))?]),
-        None => Ok(workspace.projects.iter().collect()),
+/// CLI name for the default (unassigned) tab. Maps to `tab: None` in config.
+const DEFAULT_TAB: &str = "default";
+
+/// Resolve projects by project name and/or tab. `-p` takes precedence over `--tab`.
+/// `--tab default` matches projects with no tab assigned.
+fn resolve_projects<'a>(
+    config: &GlobalConfig,
+    workspace: &'a WorkspaceState,
+    project_name: Option<&str>,
+    tab: Option<&str>,
+) -> Result<Vec<&'a Project>> {
+    if let Some(n) = project_name {
+        return Ok(vec![resolve_project(workspace, Some(n))?]);
     }
+    let Some(tab) = tab else { return Ok(workspace.projects.iter().collect()) };
+    let want_default = tab == DEFAULT_TAB;
+    Ok(workspace.projects.iter().filter(|p| {
+        let assigned = config.projects.iter().find(|c| c.path == p.path).and_then(|c| c.tab.as_deref());
+        if want_default { assigned.is_none() } else { assigned == Some(tab) }
+    }).collect())
 }
 
 fn resolve_project<'a>(workspace: &'a WorkspaceState, name: Option<&str>) -> Result<&'a Project> {
@@ -212,16 +233,16 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
 
 // --- Command implementations ---
 
-fn cmd_status(json: bool, format: Format) -> Result<()> {
-    let (_, workspace) = load_full_workspace()?;
+fn cmd_status(json: bool, format: Format, tab: Option<&str>) -> Result<()> {
+    let (config, workspace) = load_full_workspace()?;
+    let projects = resolve_projects(&config, &workspace, None, tab)?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&workspace)?);
+        println!("{}", serde_json::to_string_pretty(&projects)?);
         return Ok(());
     }
     if let Format::Compact = format {
         let headers = &["project", "branch", "git", "sessions"];
-        let rows: Vec<Vec<String>> = workspace
-            .projects
+        let rows: Vec<Vec<String>> = projects
             .iter()
             .flat_map(|p| {
                 p.worktrees.iter().map(move |wt| {
@@ -232,7 +253,7 @@ fn cmd_status(json: bool, format: Format) -> Result<()> {
         print_table(headers, &rows);
         return Ok(());
     }
-    for project in &workspace.projects {
+    for project in &projects {
         println!("{} {}", project.name, project.path.display());
         for wt in &project.worktrees {
             let git = wt.git_info.as_ref().map(|g| format!(" [{}↑ {}↓]", g.ahead, g.behind)).unwrap_or_default();
@@ -285,9 +306,9 @@ fn cmd_worktree_delete(branch: &str, project_name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_worktree_list(project_name: Option<&str>, json: bool, format: Format) -> Result<()> {
-    let (_, workspace) = load_full_workspace()?;
-    let projects = filter_projects(&workspace, project_name)?;
+fn cmd_worktree_list(project_name: Option<&str>, json: bool, format: Format, tab: Option<&str>) -> Result<()> {
+    let (config, workspace) = load_full_workspace()?;
+    let projects = resolve_projects(&config, &workspace, project_name, tab)?;
     if json {
         let worktrees: Vec<_> = projects.iter().flat_map(|p| p.worktrees.iter()).collect();
         println!("{}", serde_json::to_string_pretty(&worktrees)?);
@@ -355,9 +376,9 @@ fn cmd_session_rename(old: &str, new: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_session_list(project_name: Option<&str>, json: bool, format: Format) -> Result<()> {
-    let (_, workspace) = load_full_workspace()?;
-    let projects = filter_projects(&workspace, project_name)?;
+fn cmd_session_list(project_name: Option<&str>, json: bool, format: Format, tab: Option<&str>) -> Result<()> {
+    let (config, workspace) = load_full_workspace()?;
+    let projects = resolve_projects(&config, &workspace, project_name, tab)?;
     if json {
         let sessions: Vec<_> = projects.iter().flat_map(|p| p.worktrees.iter().flat_map(|w| w.sessions.iter())).collect();
         println!("{}", serde_json::to_string_pretty(&sessions)?);
