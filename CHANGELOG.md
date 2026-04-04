@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.14.5] - 2026-04-04
+
+### Features
+
+- `wsx tab` subcommand — `ls`, `create`, `rename`, `own <tab> <project>` for managing tab assignments from the CLI; `own default <project>` unassigns ([`01e4123`](https://github.com/vlwkaos/wsx/commit/01e41232a4f925fa64ecdd8333c30c2270e0a322))
+- `wsx status` normal output prefixes each project with `[tab]` when tabs are configured
+
+---
+
 ## [0.14.4] - 2026-04-03
 
 ### Features
