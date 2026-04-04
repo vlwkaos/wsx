@@ -43,6 +43,23 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: SessionCmd,
     },
+    /// Tab operations
+    Tab {
+        #[command(subcommand)]
+        subcommand: TabCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TabCmd {
+    /// List tabs
+    Ls,
+    /// Create a tab
+    Create { name: String },
+    /// Rename a tab
+    Rename { old: String, new_name: String },
+    /// Assign a project to a tab
+    Own { tab: String, project: String },
 }
 
 #[derive(Subcommand)]
@@ -126,16 +143,27 @@ pub fn run(cmd: Command) -> Result<()> {
             SessionCmd::Rename { old, new_name } => cmd_session_rename(&old, &new_name),
             SessionCmd::List { project, json, format, tab } => cmd_session_list(project.as_deref(), json, format, tab.as_deref()),
         },
+        Command::Tab { subcommand } => match subcommand {
+            TabCmd::Ls => cmd_tab_ls(),
+            TabCmd::Create { name } => cmd_tab_create(&name),
+            TabCmd::Rename { old, new_name } => cmd_tab_rename(&old, &new_name),
+            TabCmd::Own { tab, project } => cmd_tab_own(&tab, &project),
+        },
     }
 }
 
 // --- Helpers ---
 
-fn load_full_workspace() -> Result<(GlobalConfig, WorkspaceState)> {
+fn load_config() -> Result<GlobalConfig> {
     let (config, warning) = GlobalConfig::load()?;
     if let Some(w) = warning {
         eprintln!("warning: {}", w);
     }
+    Ok(config)
+}
+
+fn load_full_workspace() -> Result<(GlobalConfig, WorkspaceState)> {
+    let config = load_config()?;
     let mut workspace = ops::load_workspace(&config);
     let sessions = session::list_sessions_with_paths();
     let activity = monitor::session_activity();
@@ -160,7 +188,7 @@ fn resolve_projects<'a>(
     let Some(tab) = tab else { return Ok(workspace.projects.iter().collect()) };
     let want_default = tab == DEFAULT_TAB;
     Ok(workspace.projects.iter().filter(|p| {
-        let assigned = config.projects.iter().find(|c| c.path == p.path).and_then(|c| c.tab.as_deref());
+        let assigned = config.project_tab(&p.path);
         if want_default { assigned.is_none() } else { assigned == Some(tab) }
     }).collect())
 }
@@ -253,8 +281,14 @@ fn cmd_status(json: bool, format: Format, tab: Option<&str>) -> Result<()> {
         print_table(headers, &rows);
         return Ok(());
     }
+    let show_tabs = !config.tabs.is_empty();
     for project in &projects {
-        println!("{} {}", project.name, project.path.display());
+        if show_tabs {
+            let tab = config.project_tab(&project.path).unwrap_or(DEFAULT_TAB);
+            println!("[{}] {} {}", tab, project.name, project.path.display());
+        } else {
+            println!("{} {}", project.name, project.path.display());
+        }
         for wt in &project.worktrees {
             let git = wt.git_info.as_ref().map(|g| format!(" [{}↑ {}↓]", g.ahead, g.behind)).unwrap_or_default();
             println!("  {}{} ({} sessions)", wt.branch, git, wt.sessions.len());
@@ -373,6 +407,62 @@ fn cmd_session_rename(old: &str, new: &str) -> Result<()> {
     if let Err(e) = cache.save(false) {
         eprintln!("warning: cache save failed: {}", e);
     }
+    Ok(())
+}
+
+fn cmd_tab_ls() -> Result<()> {
+    let config = load_config()?;
+    for tab in &config.tabs {
+        println!("{}", tab);
+    }
+    Ok(())
+}
+
+fn cmd_tab_create(name: &str) -> Result<()> {
+    let mut config = load_config()?;
+    if config.tab_exists(name) {
+        bail!("tab '{}' already exists", name);
+    }
+    config.tabs.push(name.to_string());
+    config.save()?;
+    println!("created tab: {}", name);
+    Ok(())
+}
+
+fn cmd_tab_rename(old: &str, new_name: &str) -> Result<()> {
+    let mut config = load_config()?;
+    let idx = config.tabs.iter().position(|t| t == old)
+        .ok_or_else(|| anyhow::anyhow!("tab '{}' not found", old))?;
+    if config.tab_exists(new_name) {
+        bail!("tab '{}' already exists", new_name);
+    }
+    config.tabs[idx] = new_name.to_string();
+    for entry in &mut config.projects {
+        if entry.tab.as_deref() == Some(old) {
+            entry.tab = Some(new_name.to_string());
+        }
+    }
+    config.save()?;
+    println!("renamed tab: {} → {}", old, new_name);
+    Ok(())
+}
+
+fn cmd_tab_own(tab: &str, project: &str) -> Result<()> {
+    let mut config = load_config()?;
+    let tab_opt = if tab == DEFAULT_TAB {
+        None
+    } else {
+        if !config.tab_exists(tab) {
+            bail!("tab '{}' not found — use 'wsx tab create {}' first", tab, tab);
+        }
+        Some(tab.to_string())
+    };
+    let entry = config.projects.iter_mut()
+        .find(|e| e.name == project)
+        .ok_or_else(|| anyhow::anyhow!("project '{}' not found", project))?;
+    entry.tab = tab_opt;
+    config.save()?;
+    println!("tab: {} → {}", project, tab);
     Ok(())
 }
 

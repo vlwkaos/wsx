@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn default_exclude_worktree_paths() -> Vec<String> {
     vec![".claude/worktrees".to_string()]
@@ -100,6 +100,15 @@ impl GlobalConfig {
             out.push(Some(t.as_str()));
         }
         out
+    }
+
+    pub fn tab_exists(&self, name: &str) -> bool {
+        self.tabs.iter().any(|t| t == name)
+    }
+
+    /// Returns the tab name for the project at `path`, or `None` if unassigned.
+    pub fn project_tab<'a>(&'a self, path: &Path) -> Option<&'a str> {
+        self.projects.iter().find(|e| e.path == path).and_then(|e| e.tab.as_deref())
     }
 
     /// Set or clear the tab assignment for the project at `path`.
