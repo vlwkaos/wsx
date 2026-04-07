@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.14.6] - 2026-04-06
+
+### Bug Fixes
+
+- Preview ghost cells on navigation — PUA-width-shifted cells from session capture persisted when switching to project/worktree preview; move `force_redraw` into `update_scroll` so every navigation triggers a full terminal clear ([`b7f1500`](https://github.com/vlwkaos/wsx/commit/b7f15009648c54ef0615e2f58b217c71f1f1af29))
+- Bell sessions skipped by attention navigation — `n/N` (next/prev pending) missed sessions with `has_activity` (bell) when they were also recently active; bell now triggers attention regardless of active state
+
+---
+
 ## [0.14.5] - 2026-04-04
 
 ### Features
