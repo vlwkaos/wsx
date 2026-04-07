@@ -3,10 +3,9 @@
 use super::tmux_cmd;
 
 /// Sanitize captured pane content.
-/// PUA chars (U+E000–U+F8FF, powerline/Nerd Font) are passed through — they
-/// render as width-2 in terminals but unicode-width reports 1. The bleed
-/// caused by that mismatch is handled upstream via force_redraw (terminal.clear)
-/// on every capture update, so no per-char replacement is needed here.
+/// PUA chars (U+E000-U+F8FF, powerline/Nerd Font) render as width-2 in terminals
+/// but unicode-width reports 1. The per-cell drift this causes is handled by
+/// force_redraw (terminal.clear) on every navigation via update_scroll.
 fn sanitize_widths(raw: &str) -> String {
     raw.to_owned()
 }

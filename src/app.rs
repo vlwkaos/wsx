@@ -948,7 +948,6 @@ impl App {
         if self.tree_selected > 0 {
             self.tree_selected -= 1;
             self.update_scroll();
-            self.force_redraw = true;
         }
     }
 
@@ -957,7 +956,6 @@ impl App {
         if self.tree_selected < max {
             self.tree_selected += 1;
             self.update_scroll();
-            self.force_redraw = true;
         }
     }
 
@@ -1054,6 +1052,9 @@ impl App {
             visible,
             self.tree_scroll,
         );
+        // ^ PUA width mismatch can leave ghost cells when the preview content changes;
+        // force a full redraw on every navigation to flush them.
+        self.force_redraw = true;
     }
 
     // ── Action dispatch ───────────────────────────────────────────────────────
@@ -2641,9 +2642,11 @@ fn search_text_for(workspace: &WorkspaceState, entry: &FlatEntry) -> String {
 }
 
 fn session_needs_attention(sess: &crate::model::workspace::SessionInfo, currently_active: bool) -> bool {
+    // ^ bell (has_activity) always needs attention regardless of active state;
+    // running-app only needs attention when session has gone idle.
     !sess.muted
-        && !currently_active
-        && (sess.has_activity || (sess.has_running_app && !sess.running_app_suppressed))
+        && (sess.has_activity
+            || (!currently_active && sess.has_running_app && !sess.running_app_suppressed))
 }
 
 fn search_matches_in(cache: &[String], query: &str) -> Vec<usize> {
@@ -2753,5 +2756,12 @@ mod tests {
     fn attention_muted_does_not_trigger() {
         let s = make_sess(true, true, true, false);
         assert!(!session_needs_attention(&s, false));
+    }
+
+    #[test]
+    fn attention_bell_active_still_triggers() {
+        // bell always needs attention regardless of active state
+        let s = make_sess(false, true, false, false);
+        assert!(session_needs_attention(&s, true));
     }
 }
