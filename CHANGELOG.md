@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.7] - 2026-04-10
+
+### Performance
+
+- Eliminate main-thread blocking on worktree delete, clean, session kill, and create ops — synchronous subprocess calls replaced with optimistic UI removal and async background execution via existing `spawn_bg`/`spawn_tmux_refresh` infrastructure ([`52bf27e`](https://github.com/vlwkaos/wsx/commit/52bf27e2cedeaf5a79c6612539e4fe97852572c9))
+
+### Bug Fixes
+
+- Preview ghost cells on tab switch — `{`/`}` navigation did not trigger `force_redraw`, leaving stale session preview fragments when switching tabs ([`cd8051e`](https://github.com/vlwkaos/wsx/commit/cd8051e50cd0c79d6d40d73f819ea29bc0c727a4))
+
+---
+
 ## [0.14.6] - 2026-04-06
 
 ### Bug Fixes
