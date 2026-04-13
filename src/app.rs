@@ -427,7 +427,7 @@ impl App {
         self.needs_redraw = true;
         match result.outcome {
             Err(e) => {
-                // ^ clear pending_deletions and refresh so any optimistic removals are restored
+                // ! clear pending_deletions and refresh so any optimistic removals are restored
                 if !self.pending_deletions.is_empty() {
                     self.pending_deletions.clear();
                     self.spawn_tmux_refresh();
@@ -2166,7 +2166,8 @@ impl App {
         let (_tmux_name, display_name) =
             ops::create_session(&proj_name, &wt_slug, &wt_path, explicit_name, command)?;
         self.set_status(format!("Session '{}' created", display_name));
-        // Set expanded before spawn_tmux_refresh — snapshot in apply_tmux_refresh preserves it
+        // Expand so the new session is visible; set before spawn_tmux_refresh so the
+        // snapshot in apply_tmux_refresh captures it before rebuilding workspace state
         if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
             wt.expanded = true;
         }
