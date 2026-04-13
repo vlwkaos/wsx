@@ -2413,6 +2413,7 @@ impl App {
         let next = (cur + 1) % tabs.len();
         self.active_tab = tabs[next].map(|s| s.to_string());
         self.recompute_visible();
+        self.update_scroll();
         self.mark_dirty();
     }
 
@@ -2425,6 +2426,7 @@ impl App {
         let prev = if cur == 0 { tabs.len() - 1 } else { cur - 1 };
         self.active_tab = tabs[prev].map(|s| s.to_string());
         self.recompute_visible();
+        self.update_scroll();
         self.mark_dirty();
     }
 
