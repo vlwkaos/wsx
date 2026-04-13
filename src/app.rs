@@ -238,6 +238,10 @@ pub enum BgOutcome {
         wt_path: std::path::PathBuf,
         label: String,
     },
+    CleanAborted {
+        wt_path: std::path::PathBuf,
+        msg: String,
+    },
     ProjectsCleaned {
         sessions_to_kill: Vec<String>,
         msg: String,
@@ -423,6 +427,11 @@ impl App {
         self.needs_redraw = true;
         match result.outcome {
             Err(e) => {
+                // ^ clear pending_deletions and refresh so any optimistic removals are restored
+                if !self.pending_deletions.is_empty() {
+                    self.pending_deletions.clear();
+                    self.spawn_tmux_refresh();
+                }
                 self.set_status(format!("{}: {}", result.label, e));
             }
             Ok(BgOutcome::WorktreeRemoved { wt_path, label }) => {
@@ -436,11 +445,21 @@ impl App {
                 }
                 self.set_status(label);
             }
+            Ok(BgOutcome::CleanAborted { wt_path, msg }) => {
+                // Merge check failed off-thread; restore the optimistically removed worktree
+                self.pending_deletions.remove(&wt_path);
+                self.spawn_tmux_refresh();
+                self.set_status(msg);
+            }
             Ok(BgOutcome::ProjectsCleaned { sessions_to_kill, msg }) => {
-                for sess in sessions_to_kill {
-                    let _ = session::kill_session(&sess);
+                if !sessions_to_kill.is_empty() {
+                    std::thread::spawn(move || {
+                        for sess in sessions_to_kill {
+                            let _ = session::kill_session(&sess);
+                        }
+                    });
                 }
-                let _ = self.refresh_all();
+                self.spawn_tmux_refresh();
                 self.set_status(msg);
             }
             Ok(BgOutcome::GitOp { pi, wi, msg }) => {
@@ -451,7 +470,7 @@ impl App {
                 self.set_status(msg);
             }
             Ok(BgOutcome::WorktreeCreated { label }) => {
-                let _ = self.refresh_all();
+                self.spawn_tmux_refresh();
                 self.set_status(label);
             }
         }
@@ -1509,19 +1528,8 @@ impl App {
                     self.set_status("Cannot delete main worktree");
                     return Ok(());
                 }
-                let merged = git_worktree::is_branch_merged(
-                    &self.workspace.projects[pi].path,
-                    &wt.branch,
-                    &self.workspace.projects[pi].default_branch,
-                );
-                let msg = if merged {
-                    format!("Delete worktree '{}'?", wt.name)
-                } else {
-                    format!(
-                        "Delete UNMERGED worktree '{}'? Changes will be lost!",
-                        wt.name
-                    )
-                };
+                // ^ skip synchronous merge check — always warn; deletion logic is identical
+                let msg = format!("Delete worktree '{}'? Branch may have unmerged changes.", wt.name);
                 self.mode = Mode::Confirm {
                     message: msg,
                     pending: PendingAction::DeleteWorktree {
@@ -1566,12 +1574,17 @@ impl App {
                     self.set_status("Cannot clean main worktree");
                     return Ok(());
                 }
-                if !git_worktree::is_branch_merged(&repo, &branch, &default_branch) {
-                    self.set_status(format!("'{}' not merged into {}", branch, default_branch));
-                    return Ok(());
-                }
+                // Optimistic removal — merge check moved to bg thread to avoid blocking UI
                 let label = format!("Cleaned: {}", branch);
+                let abort_msg = format!("'{}' not merged into {}", branch, default_branch);
+                self.pending_deletions.insert(wt_path.clone());
+                self.workspace.projects[pi].worktrees.remove(wi);
+                self.rebuild_flat();
+                self.clamp_selected();
                 self.spawn_bg(format!("clean {}", branch), move || {
+                    if !git_worktree::is_branch_merged(&repo, &branch, &default_branch) {
+                        return Ok(BgOutcome::CleanAborted { wt_path, msg: abort_msg });
+                    }
                     ops::delete_worktree(&repo, &wt_path, &branch, &session_names)?;
                     Ok(BgOutcome::WorktreeRemoved { wt_path, label })
                 });
@@ -2153,11 +2166,11 @@ impl App {
         let (_tmux_name, display_name) =
             ops::create_session(&proj_name, &wt_slug, &wt_path, explicit_name, command)?;
         self.set_status(format!("Session '{}' created", display_name));
-        self.refresh_all()?;
-        // Auto-expand the worktree so the new session is visible
+        // Set expanded before spawn_tmux_refresh — snapshot in apply_tmux_refresh preserves it
         if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
             wt.expanded = true;
         }
+        self.spawn_tmux_refresh();
         Ok(())
     }
 
@@ -2179,14 +2192,15 @@ impl App {
         let sess = &self.workspace.projects[pi].worktrees[wi].sessions[si];
         let tmux_name = sess.name.clone();
         let display_name = sess.display_name.clone();
-        ops::delete_session(&tmux_name)?;
-        self.workspace.projects[pi].worktrees[wi]
-            .sessions
-            .remove(si);
+        // Optimistic removal — if kill fails, next periodic refresh re-adds the session
+        self.workspace.projects[pi].worktrees[wi].sessions.remove(si);
         self.rebuild_flat();
         self.clamp_selected();
         self.mark_dirty();
         self.set_status(format!("Killed session: {}", display_name));
+        std::thread::spawn(move || {
+            let _ = session::kill_session(&tmux_name);
+        });
         Ok(())
     }
 

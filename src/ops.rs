@@ -462,11 +462,6 @@ pub fn create_session(
     Ok((tmux_name, display_name))
 }
 
-/// Kill a tmux session by name.
-pub fn delete_session(name: &str) -> Result<()> {
-    session::kill_session(name)
-}
-
 /// Rename a tmux session from `old_name` to `new_name`.
 pub fn rename_session(old_name: &str, new_name: &str) -> Result<()> {
     session::rename_session(old_name, new_name)
