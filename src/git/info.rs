@@ -96,8 +96,53 @@ fn status_porcelain2(path: &Path) -> Option<StatusResult> {
     Some((branch, upstream, ahead, behind, modified_files))
 }
 
+/// Advisory cross-process lockfile for git fetch. Created with O_CREAT|O_EXCL.
+/// Returns the lock path if acquired, None if another process holds it (< 120s old).
+fn try_fetch_lock(path: &Path) -> Option<std::path::PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut h);
+    let hash = h.finish();
+    let lock_path = std::env::temp_dir().join(format!("wsx-fetch-{:x}.lock", hash));
+    // Check if existing lock is stale (> 120s) — crashed process protection
+    if let Ok(meta) = std::fs::metadata(&lock_path) {
+        let age = meta.modified().ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(u64::MAX);
+        if age < 120 {
+            return None; // another process holds a fresh lock
+        }
+        let _ = std::fs::remove_file(&lock_path); // stale, clean up
+    }
+    // Try atomic create with O_CREAT|O_EXCL
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    let mut opts = OpenOptions::new();
+    opts.write(true).create_new(true);
+    match opts.open(&lock_path) {
+        Ok(mut f) => {
+            let _ = write!(f, "{}", std::process::id());
+            Some(lock_path)
+        }
+        Err(_) => None, // lost the race
+    }
+}
+
+/// RAII guard that removes the lockfile on drop.
+struct FetchLockGuard(std::path::PathBuf);
+impl Drop for FetchLockGuard {
+    fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+}
+
 /// Run `git fetch` — uses `output_with_timeout` for process-group cleanup on timeout.
+/// Advisory cross-process lockfile prevents duplicate concurrent fetches from multiple instances.
 pub(crate) fn git_fetch(path: &Path) -> FetchOutcome {
+    let Some(lock_path) = try_fetch_lock(path) else {
+        // Another instance is handling this fetch; report success so backoff stays low.
+        return FetchOutcome { success: true, reason: None };
+    };
+    let _lock = FetchLockGuard(lock_path);
     let result = super::output_with_timeout(
         git_cmd(path).args(["fetch", "--no-tags", "--quiet"]),
         std::time::Duration::from_secs(10),
@@ -175,12 +220,47 @@ fn git_read(path: &Path) -> Command {
 
 #[cfg(test)]
 mod tests {
-    use super::get_git_info;
+    use super::{get_git_info, try_fetch_lock, FetchLockGuard};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn fetch_lock_acquired_on_fresh_path() {
+        let path = PathBuf::from("/tmp/wsx_test_lock_fresh");
+        let result = try_fetch_lock(&path);
+        assert!(result.is_some(), "should acquire lock on a fresh path");
+        let lock_path = result.unwrap();
+        assert!(lock_path.exists(), "lockfile should exist after acquire");
+        let _guard = FetchLockGuard(lock_path.clone());
+        // guard drop removes file
+        drop(_guard);
+        assert!(!lock_path.exists(), "lockfile should be removed on drop");
+    }
+
+    #[test]
+    fn fetch_lock_fails_when_held() {
+        let path = PathBuf::from("/tmp/wsx_test_lock_held");
+        let lock1 = try_fetch_lock(&path);
+        assert!(lock1.is_some(), "first acquire should succeed");
+        let lock2 = try_fetch_lock(&path);
+        assert!(lock2.is_none(), "second acquire should fail while first is held");
+        drop(lock1.map(FetchLockGuard));
+    }
+
+    #[test]
+    fn fetch_lock_different_paths_independent() {
+        let path_a = PathBuf::from("/tmp/wsx_test_lock_a");
+        let path_b = PathBuf::from("/tmp/wsx_test_lock_b");
+        let lock_a = try_fetch_lock(&path_a);
+        let lock_b = try_fetch_lock(&path_b);
+        assert!(lock_a.is_some(), "lock for path_a should succeed");
+        assert!(lock_b.is_some(), "lock for path_b should succeed independently");
+        drop(lock_a.map(FetchLockGuard));
+        drop(lock_b.map(FetchLockGuard));
+    }
 
     static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
 
