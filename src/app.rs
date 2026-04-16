@@ -261,7 +261,41 @@ struct BgResult {
     outcome: Result<BgOutcome>,
 }
 
+/// Tracks user-initiated session mutations so stale refresh results don't overwrite intent.
+/// Entries are filtered in apply_tmux_refresh before rebuilding workspace state.
+enum SessionOp {
+    Killed,
+    Renamed { new_name: String },
+}
+
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// Filter/remap stale tmux session data so user-initiated mutations win over in-flight refreshes.
+/// - Killed: remove from sessions list; clear entry once tmux confirms it's gone.
+/// - Renamed: replace old name with new name so the snapshot lookup preserves pane state.
+fn filter_pending_session_ops(
+    pending: &mut HashMap<String, SessionOp>,
+    sessions: Vec<(String, PathBuf)>,
+) -> Vec<(String, PathBuf)> {
+    if pending.is_empty() {
+        return sessions;
+    }
+    // Build live name set for cleanup; retain only unconfirmed ops
+    let live_names: HashSet<&str> = sessions.iter().map(|(n, _)| n.as_str()).collect();
+    pending.retain(|old_name, op| match op {
+        SessionOp::Killed => live_names.contains(old_name.as_str()), // keep while still alive
+        SessionOp::Renamed { new_name } => !live_names.contains(new_name.as_str()), // keep until new name appears
+    });
+    // Apply filters: drop killed, remap renamed
+    sessions
+        .into_iter()
+        .filter_map(|(name, path)| match pending.get(&name) {
+            Some(SessionOp::Killed) => None,
+            Some(SessionOp::Renamed { new_name }) => Some((new_name.clone(), path)),
+            None => Some((name, path)),
+        })
+        .collect()
+}
 
 // ── App ──────────────────────────────────────────────────────────────────────
 
@@ -309,10 +343,14 @@ pub struct App {
     tmux_tx: mpsc::Sender<TmuxResult>,
     tmux_rx: mpsc::Receiver<TmuxResult>,
     tmux_refresh_pending: bool,
+    /// A user action requested a refresh while one was in-flight; fire another when it lands.
+    tmux_refresh_stale: bool,
     tmux_activity_pending: bool,
     tmux_capture_pending: bool,
     /// Worktree paths pending bg deletion; filtered from refresh results until bg confirms.
     pending_deletions: HashSet<PathBuf>,
+    /// Session mutations pending confirmation in tmux; filtered/remapped in apply_tmux_refresh.
+    pending_session_ops: HashMap<String, SessionOp>,
     update_rx: mpsc::Receiver<String>,
     pub update_available: Option<String>,
 }
@@ -321,8 +359,10 @@ impl App {
     pub fn new() -> Result<Self> {
         let (config, config_warn) = GlobalConfig::load()?;
         let mut workspace = ops::load_workspace(&config);
-        let (raw_selected, cursor_identity, command_history, cached_active_tab, cached_tmux_pid) =
+        let (raw_selected, cursor_identity, command_history, cached_active_tab, cached_tmux_pid, cached_muted, cached_suppressed) =
             crate::cache::apply_cache(&mut workspace);
+        // Migrate old cache muted/suppressed flags to tmux user options (one-time, idempotent).
+        crate::cache::migrate_flags_to_tmux(&cached_muted, &cached_suppressed);
         let restored = ops::restore_cached_sessions(&workspace, cached_tmux_pid);
         let visible_projects = compute_visible_projects(&config, &workspace, cached_active_tab.as_deref());
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
@@ -372,7 +412,7 @@ impl App {
             force_redraw: false,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
             activity_timer: Timer::new(ACTIVITY_INTERVAL_MS),
-            slow_timer: Timer::new(SLOW_INTERVAL_MS),
+            slow_timer: Timer::new(SLOW_INTERVAL_MS + (std::process::id() % 500) as u64),
             cached_flat,
             flat_dirty: false,
             search_cache,
@@ -391,9 +431,11 @@ impl App {
             tmux_tx,
             tmux_rx,
             tmux_refresh_pending: false,
+            tmux_refresh_stale: false,
             tmux_activity_pending: false,
             tmux_capture_pending: false,
             pending_deletions: HashSet::new(),
+            pending_session_ops: HashMap::new(),
             update_rx,
             update_available: None,
         })
@@ -593,6 +635,7 @@ impl App {
             self.activity_timer.last = Instant::now(); // rescan subsumes activity check
         } else if self.activity_timer.ready() {
             self.spawn_tmux_activity();
+            self.needs_redraw = true; // ^ idle time display changes every second
         }
 
         if self.fast_timer.ready() {
@@ -784,8 +827,17 @@ impl App {
             .collect()
     }
 
+    fn apply_pending_session_ops(
+        &mut self,
+        sessions: Vec<(String, PathBuf)>,
+    ) -> Vec<(String, PathBuf)> {
+        filter_pending_session_ops(&mut self.pending_session_ops, sessions)
+    }
+
     fn spawn_tmux_refresh(&mut self) {
         if self.tmux_refresh_pending {
+            // ^ caller needs fresh data; remember to fire another refresh when current lands
+            self.tmux_refresh_stale = true;
             return;
         }
         self.tmux_refresh_pending = true;
@@ -814,6 +866,9 @@ impl App {
     ) {
         self.tmux_refresh_pending = false;
         let worktrees = self.filter_pending_deletions(worktrees);
+        // Apply pending session ops: filter killed sessions and remap renamed ones so
+        // stale tmux snapshots don't clobber user actions in progress.
+        let sessions = self.apply_pending_session_ops(sessions);
         ops::refresh_workspace_with_worktrees(
             &mut self.workspace,
             &self.config,
@@ -832,6 +887,11 @@ impl App {
         self.mark_dirty();
         self.write_cache_if_dirty();
         self.needs_redraw = true;
+        // If a user action queued a refresh while this one was in-flight, fire it now.
+        if self.tmux_refresh_stale {
+            self.tmux_refresh_stale = false;
+            self.spawn_tmux_refresh();
+        }
     }
 
     fn spawn_tmux_activity(&mut self) {
@@ -848,9 +908,8 @@ impl App {
 
     fn apply_tmux_activity(&mut self, activity: HashMap<String, SessionStatus>) {
         self.tmux_activity_pending = false;
-        if ops::update_activity(&mut self.workspace, &activity) {
-            self.needs_redraw = true;
-        }
+        ops::update_activity(&mut self.workspace, &activity);
+        self.needs_redraw = true; // ^ idle counter ticks every second regardless of state change
     }
 
     fn spawn_tmux_capture(&mut self) {
@@ -1865,11 +1924,14 @@ impl App {
                 }
                 if sess.has_running_app && !sess.running_app_suppressed {
                     sess.running_app_suppressed = true;
+                    session::set_session_opt(&sess.name, session::OPT_SUPPRESSED, "1");
                     self.set_status("Dismissed");
                     return;
                 }
                 // Idle session — toggle mute
                 sess.muted = !sess.muted;
+                let muted_val = if sess.muted { "1" } else { "0" };
+                session::set_session_opt(&sess.name, session::OPT_MUTED, muted_val);
                 let msg = if sess.muted { "Muted" } else { "Unmuted" };
                 self.set_status(msg);
                 return;
@@ -2193,7 +2255,9 @@ impl App {
         let sess = &self.workspace.projects[pi].worktrees[wi].sessions[si];
         let tmux_name = sess.name.clone();
         let display_name = sess.display_name.clone();
-        // Optimistic removal — if kill fails, next periodic refresh re-adds the session
+        // Optimistic removal — if kill fails, next periodic refresh re-adds the session.
+        // Register pending op so stale in-flight refreshes don't resurrect it before kill confirms.
+        self.pending_session_ops.insert(tmux_name.clone(), SessionOp::Killed);
         self.workspace.projects[pi].worktrees[wi].sessions.remove(si);
         self.rebuild_flat();
         self.clamp_selected();
@@ -2238,8 +2302,12 @@ impl App {
         let new_tmux_name = format!("{}-{}-{}", proj_name, wt_slug, new_name);
         ops::rename_session(&old_tmux_name, &new_tmux_name)?;
         let sess = &mut self.workspace.projects[pi].worktrees[wi].sessions[si];
-        sess.name = new_tmux_name;
+        sess.name = new_tmux_name.clone();
         sess.display_name = new_name.clone();
+        // Register pending rename so a stale in-flight refresh remaps old name → new name
+        // and preserves pane_capture/muted state instead of losing them.
+        self.pending_session_ops.insert(old_tmux_name, SessionOp::Renamed { new_name: new_tmux_name });
+        self.mark_dirty();
         self.set_status(format!("Session renamed to '{}'", new_name));
         Ok(())
     }
@@ -2780,5 +2848,72 @@ mod tests {
         // bell always needs attention regardless of active state
         let s = make_sess(false, true, false, false);
         assert!(session_needs_attention(&s, true));
+    }
+
+    // ── filter_pending_session_ops ─────────────────────────────────────────────
+
+    fn sess(name: &str) -> (String, std::path::PathBuf) {
+        (name.to_string(), std::path::PathBuf::from("/tmp"))
+    }
+
+    #[test]
+    fn pending_ops_empty_returns_sessions_unchanged() {
+        let mut pending = HashMap::new();
+        let input = vec![sess("a"), sess("b")];
+        let out = filter_pending_session_ops(&mut pending, input.clone());
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn killed_session_suppressed_while_still_alive() {
+        let mut pending = HashMap::new();
+        pending.insert("sess-a".to_string(), SessionOp::Killed);
+        let input = vec![sess("sess-a"), sess("sess-b")];
+        let out = filter_pending_session_ops(&mut pending, input);
+        // sess-a still in tmux → suppressed; sess-b passes through
+        let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(!names.contains(&"sess-a"), "killed session should be filtered");
+        assert!(names.contains(&"sess-b"), "other sessions should pass through");
+        // Entry stays because tmux still reports it (kill not confirmed)
+        assert!(pending.contains_key("sess-a"));
+    }
+
+    #[test]
+    fn killed_session_entry_cleared_when_tmux_confirms() {
+        let mut pending = HashMap::new();
+        pending.insert("sess-dead".to_string(), SessionOp::Killed);
+        // tmux no longer reports sess-dead
+        let input = vec![sess("sess-other")];
+        let out = filter_pending_session_ops(&mut pending, input);
+        let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"sess-other"));
+        // Entry cleared (kill confirmed)
+        assert!(!pending.contains_key("sess-dead"));
+    }
+
+    #[test]
+    fn renamed_session_remapped_to_new_name() {
+        let mut pending = HashMap::new();
+        pending.insert("old-name".to_string(), SessionOp::Renamed { new_name: "new-name".to_string() });
+        // tmux still reports old name (rename not yet visible in snapshot)
+        let input = vec![sess("old-name"), sess("other")];
+        let out = filter_pending_session_ops(&mut pending, input);
+        let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(!names.contains(&"old-name"), "old name should be remapped");
+        assert!(names.contains(&"new-name"), "new name should appear");
+        assert!(names.contains(&"other"), "other sessions pass through");
+    }
+
+    #[test]
+    fn renamed_entry_cleared_when_new_name_confirmed() {
+        let mut pending = HashMap::new();
+        pending.insert("old-name".to_string(), SessionOp::Renamed { new_name: "new-name".to_string() });
+        // tmux now reports the new name (rename confirmed)
+        let input = vec![sess("new-name"), sess("other")];
+        let out = filter_pending_session_ops(&mut pending, input);
+        // Entry cleared; new-name passes through unchanged
+        assert!(!pending.contains_key("old-name"));
+        let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"new-name"));
     }
 }
