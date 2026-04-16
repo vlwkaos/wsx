@@ -1,21 +1,21 @@
 # Changelog
 
-## [Unreleased]
+## [0.15.0] - 2026-04-17
 
 ### Bug Fixes
 
-- Session kill/rename no longer reverts when a stale background refresh arrives mid-operation — pending session ops are filtered/remapped so user intent wins over in-flight tmux snapshots
-- Session rename now persists to cache immediately instead of waiting for the next periodic refresh
-- Idle time counter updates every ~1 second instead of only on state changes
+- Session kill/rename no longer reverts when a stale background refresh arrives mid-operation — pending session ops are filtered/remapped so user intent wins over in-flight tmux snapshots ([`db50e94`](https://github.com/vlwkaos/wsx/commit/db50e94d0dbad0561040b387e920ce1d29acde1a))
+- Session rename now persists to cache immediately instead of waiting for the next periodic refresh ([`db50e94`](https://github.com/vlwkaos/wsx/commit/db50e94d0dbad0561040b387e920ce1d29acde1a))
+- Idle time counter updates every ~1 second instead of only on state changes ([`db50e94`](https://github.com/vlwkaos/wsx/commit/db50e94d0dbad0561040b387e920ce1d29acde1a))
 
 ### Performance
 
-- git fetch deduped across concurrent wsx instances via per-worktree advisory lockfile; skipped fetches report success so backoff stays low
-- slow_timer staggered by PID-derived jitter (0–499ms) so concurrent instances don't hammer tmux/git simultaneously
+- git fetch deduped across concurrent wsx instances via per-worktree advisory lockfile; skipped fetches report success so backoff stays low ([`db50e94`](https://github.com/vlwkaos/wsx/commit/db50e94d0dbad0561040b387e920ce1d29acde1a))
+- slow_timer staggered by PID-derived jitter (0–499ms) so concurrent instances don't hammer tmux/git simultaneously ([`db50e94`](https://github.com/vlwkaos/wsx/commit/db50e94d0dbad0561040b387e920ce1d29acde1a))
 
 ### Improvements
 
-- Muted and suppressed session flags stored as tmux user options (`@wsx-muted`, `@wsx-suppressed`) — shared across instances without cache coordination; one-time migration from old cache format on startup
+- Muted and suppressed session flags stored as tmux user options (`@wsx-muted`, `@wsx-suppressed`) — shared across all concurrent instances without cache coordination; one-time migration from old cache format on startup ([`db50e94`](https://github.com/vlwkaos/wsx/commit/db50e94d0dbad0561040b387e920ce1d29acde1a))
 
 ---
 
