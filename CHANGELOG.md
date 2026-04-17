@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.15.1] - 2026-04-17
+
+### Bug Fixes
+
+- Previewing a session running wsx no longer causes an infinite render loop — `pane_current_command` is tracked per session via the activity monitor and capture is suppressed when wsx is the foreground process; sentinel character (⅋ U+214B) in the status bar provides a fallback for renamed binaries
+
+### UI
+
+- Update available badge now reads `↑ update available: v{N}` instead of just `↑ v{N}`
+
+---
+
 ## [0.15.0] - 2026-04-17
 
 ### Bug Fixes
