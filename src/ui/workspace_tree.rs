@@ -245,6 +245,7 @@ mod tests {
             pane_capture: None,
             last_activity: None,
             has_running_app,
+            is_running_wsx: false,
             running_app_suppressed,
             muted,
         }

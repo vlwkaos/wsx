@@ -9,6 +9,7 @@ pub struct SessionStatus {
     pub has_bell: bool,
     pub last_activity_ts: u64, // Unix timestamp, 0 if unknown
     pub has_running_app: bool, // foreground process is not a bare shell
+    pub is_running_wsx: bool,  // foreground process is wsx itself
     pub wsx_muted: bool,       // @wsx-muted user option set on this session
     pub wsx_suppressed: bool,  // @wsx-suppressed user option set on this session
 }
@@ -90,6 +91,7 @@ pub fn session_activity() -> HashMap<String, SessionStatus> {
             has_bell: false,
             last_activity_ts: 0,
             has_running_app: false,
+            is_running_wsx: false,
             wsx_muted,
             wsx_suppressed,
         });
@@ -104,6 +106,9 @@ pub fn session_activity() -> HashMap<String, SessionStatus> {
         }
         if !cmd.is_empty() && !is_shell(cmd) && !is_passive(cmd) {
             entry.has_running_app = true;
+        }
+        if cmd == "wsx" {
+            entry.is_running_wsx = true;
         }
     }
     result

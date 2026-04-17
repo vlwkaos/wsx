@@ -208,6 +208,7 @@ pub fn refresh_workspace_with_worktrees(
                         pane_capture,
                         last_activity,
                         has_running_app,
+                        is_running_wsx: status.map(|s| s.is_running_wsx).unwrap_or(false),
                         running_app_suppressed,
                         muted,
                     }
@@ -266,6 +267,7 @@ pub fn update_activity(
                 if let Some(status) = activity.get(&sess.name) {
                     sess.has_activity = status.has_bell;
                     sess.has_running_app = status.has_running_app;
+                    sess.is_running_wsx = status.is_running_wsx;
                     sess.last_activity = Some(status.last_activity_ts)
                         .filter(|&ts| ts > 0)
                         .and_then(|ts| unix_ts_to_instant(ts));
@@ -279,6 +281,7 @@ pub fn update_activity(
                 } else {
                     sess.has_activity = false;
                     sess.has_running_app = false;
+                    sess.is_running_wsx = false;
                 }
                 if sess.has_activity != old_bell || sess.has_running_app != old_running {
                     changed = true;
