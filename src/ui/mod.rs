@@ -12,6 +12,7 @@ pub mod workspace_tree;
 
 use crate::app::{App, Mode, SPINNER_FRAMES};
 use crate::model::workspace::Selection;
+use crate::tmux::capture::WSX_SENTINEL;
 use crate::ui::{
     config_modal::render_config_modal,
     confirm::render_confirm,
@@ -304,6 +305,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
                 "  Enter: next  Esc: exit",
                 Style::default().fg(Color::DarkGray),
             ),
+            Span::styled(WSX_SENTINEL, Style::default().fg(Color::DarkGray)),
         ];
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
@@ -316,7 +318,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
 
     let (right_text, right_style) = if let Some(v) = &app.update_available {
         (
-            format!(" ↑ v{} ", v),
+            format!(" ↑ update available: v{} ", v),
             Style::default().fg(Color::Black).bg(Color::Yellow).bold(),
         )
     } else {
@@ -330,16 +332,20 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
     let hint_lines = wrap_hints(hints, available);
     let hint_style = Style::default().fg(Color::Gray);
 
+    // WSX_SENTINEL (⅋ U+214B) appended after version badge — 1 display column, 3 UTF-8 bytes.
+    // Pad subtracts 1 extra to keep layout correct. Outer wsx detects it in the last 2 captured
+    // rows and suppresses the preview, breaking the nested-render loop.
     if hint_lines.len() <= 1 || area.height < 2 {
         let text = hint_lines.first().map(|s| s.as_str()).unwrap_or(&hints);
         let left = format!(" {}", text);
         let left_len = badge_width + left.len();
-        let pad = (area.width as usize).saturating_sub(left_len + right_text.len());
+        let pad = (area.width as usize).saturating_sub(left_len + right_text.len() + 1);
         let spans = vec![
             Span::styled(mode_text, badge_style),
             Span::styled(left, hint_style),
             Span::raw(" ".repeat(pad)),
             Span::styled(right_text, right_style),
+            Span::styled(WSX_SENTINEL, right_style),
         ];
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     } else {
@@ -353,12 +359,13 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
             let left = format!(" {}", hl);
             if i + 1 == last {
                 let left_len = badge_width + left.len();
-                let pad = (area.width as usize).saturating_sub(left_len + right_text.len());
+                let pad = (area.width as usize).saturating_sub(left_len + right_text.len() + 1);
                 text_lines.push(Line::from(vec![
                     Span::raw(indent.clone()),
                     Span::styled(left, hint_style),
                     Span::raw(" ".repeat(pad)),
                     Span::styled(right_text.clone(), right_style),
+                    Span::styled(WSX_SENTINEL, right_style),
                 ]));
             } else {
                 text_lines.push(Line::from(vec![

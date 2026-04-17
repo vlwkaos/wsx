@@ -2,6 +2,15 @@
 
 use super::tmux_cmd;
 
+/// Sentinel embedded in wsx's status bar adjacent to the version badge.
+/// When capture_pane finds this character in a pane's last two rows, it knows wsx is
+/// running there and suppresses the preview to prevent nested-render loops.
+/// U+214B TURNED AMPERSAND (⅋) — letterlike symbol, 1 display column, never appears
+/// in normal terminal output, not stripped by compact_for_agent.
+pub const WSX_SENTINEL: &str = "\u{214B}";
+
+pub const NESTED_WSX_MSG: &str = " [wsx — nested instance, preview suppressed]";
+
 /// Sanitize captured pane content.
 /// PUA chars (U+E000-U+F8FF, powerline/Nerd Font) render as width-2 in terminals
 /// but unicode-width reports 1. The per-cell drift this causes is handled by
@@ -52,7 +61,12 @@ fn strip_ansi(s: &str) -> String {
 }
 
 pub fn capture_pane(session_name: &str) -> Option<String> {
-    capture_pane_window(session_name, None, 0)
+    let raw = capture_pane_window(session_name, None, 0)?;
+    // Sentinel fallback: catches renamed / wrapped wsx binaries not detected by is_running_wsx.
+    if raw.lines().rev().take(2).any(|l| l.contains(WSX_SENTINEL)) {
+        return Some(NESTED_WSX_MSG.to_string());
+    }
+    Some(raw)
 }
 
 /// Capture a window of scrollback.
@@ -137,6 +151,15 @@ pub fn trim_capture(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── sentinel detection ───────────────────────────────────────────────────
+
+    #[test]
+    fn compact_preserves_sentinel_char() {
+        // U+214B is not in the stripped box-drawing ranges; must pass through
+        let input = format!("hello{WSX_SENTINEL}world");
+        assert!(compact_for_agent(&input).contains(WSX_SENTINEL));
+    }
 
     // ── trim_capture (regression) ────────────────────────────────────────────
 

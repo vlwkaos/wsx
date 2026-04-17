@@ -38,6 +38,8 @@ pub struct SessionInfo {
     pub last_activity: Option<std::time::Instant>,
     pub has_running_app: bool, // foreground process is not a bare shell
     #[serde(skip)]
+    pub is_running_wsx: bool,  // foreground process is wsx — suppresses capture preview
+    #[serde(skip)]
     pub running_app_suppressed: bool, // user dismissed the running-app notification
     #[serde(skip)]
     pub muted: bool,           // user silenced — no activity updates, shown as ⊘

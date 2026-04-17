@@ -916,13 +916,22 @@ impl App {
         if self.tmux_capture_pending {
             return;
         }
-        let sess_name = match self.current_selection() {
-            Selection::Session(pi, wi, si) => {
-                self.workspace.session(pi, wi, si).map(|s| s.name.clone())
-            }
-            _ => None,
+        let (name, is_wsx) = match self.current_selection() {
+            Selection::Session(pi, wi, si) => self
+                .workspace
+                .session(pi, wi, si)
+                .map(|s| (s.name.clone(), s.is_running_wsx))
+                .unwrap_or_default(),
+            _ => return,
         };
-        let Some(name) = sess_name else { return };
+        if name.is_empty() {
+            return;
+        }
+        if is_wsx {
+            // Suppress capture — no thread needed, stable placeholder breaks the render loop.
+            self.apply_tmux_capture(name, Some(capture::NESTED_WSX_MSG.to_string()));
+            return;
+        }
         self.tmux_capture_pending = true;
         let tx = self.tmux_tx.clone();
         std::thread::spawn(move || {
@@ -2808,6 +2817,7 @@ mod tests {
             pane_capture: None,
             last_activity: None,
             has_running_app,
+            is_running_wsx: false,
             running_app_suppressed,
             muted,
         }

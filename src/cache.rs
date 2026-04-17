@@ -178,6 +178,7 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> CacheResult {
                             pane_capture: None,
                             last_activity: None,
                             has_running_app: false,
+                            is_running_wsx: false,
                             running_app_suppressed: cache.suppressed_sessions.contains(name),
                             muted: cache.muted_sessions.contains(name),
                         }
@@ -328,6 +329,7 @@ mod tests {
             pane_capture: None,
             last_activity: None,
             has_running_app: false,
+            is_running_wsx: false,
             running_app_suppressed: false,
             muted: false,
         }
