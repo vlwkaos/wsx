@@ -248,6 +248,7 @@ pub fn refresh_workspace_with_worktrees(
         }
         workspace.projects[i].worktrees = new_worktrees;
     }
+    workspace.projects.retain(|p| p.path.exists() && p.path.join(".git").exists());
 }
 
 /// Update session activity state from live tmux data. Returns true if any field changed.
@@ -522,4 +523,58 @@ pub fn restore_cached_sessions(workspace: &WorkspaceState, cached_pid: Option<u3
 /// Persist an alias for a branch in the global config. Caller must call `config.save()`.
 pub fn set_alias(config: &mut GlobalConfig, proj_path: &PathBuf, branch: &str, alias: &str) {
     config.set_alias(proj_path, branch, alias);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::workspace::{Project, WorkspaceState};
+    use std::collections::HashMap;
+
+    fn make_project(path: PathBuf) -> Project {
+        Project {
+            name: "test".to_string(),
+            path,
+            default_branch: "main".to_string(),
+            worktrees: vec![],
+            config: None,
+            expanded: true,
+        }
+    }
+
+    #[test]
+    fn refresh_drops_project_whose_directory_was_deleted() {
+        let base = std::env::temp_dir().join(format!("wsx-test-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let exists_path = base.join("real");
+        std::fs::create_dir_all(&exists_path).unwrap();
+        // Create a .git marker so the existence check passes.
+        std::fs::create_dir(exists_path.join(".git")).unwrap();
+
+        let missing_path = base.join("ghost");
+        // missing_path is never created on disk.
+
+        let config = GlobalConfig::default();
+        let activity: HashMap<String, crate::tmux::monitor::SessionStatus> = HashMap::new();
+
+        let mut workspace = WorkspaceState {
+            projects: vec![
+                make_project(exists_path.clone()),
+                make_project(missing_path.clone()),
+            ],
+        };
+
+        refresh_workspace_with_worktrees(
+            &mut workspace,
+            &config,
+            &[],
+            &activity,
+            // Supply empty worktree entries for each project path.
+            vec![(exists_path, vec![]), (missing_path, vec![])],
+        );
+
+        assert_eq!(workspace.projects.len(), 1);
+        assert!(workspace.projects[0].path.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
