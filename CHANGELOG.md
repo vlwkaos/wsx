@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.15.3] - 2026-04-21
+
+### Features
+
+- `extended-keys on` applied to every session on attach — enables kitty keyboard protocol passthrough for richer key event support in modern terminals ([`9fa8054`](https://github.com/vlwkaos/wsx/commit/9fa8054e60da3222cf23c254eaeb0221d771c5bb))
+
 ## [0.15.2] - 2026-04-21
 
 ### Bug Fixes
