@@ -18,6 +18,8 @@ pub struct Project {
     pub config: Option<ProjectConfig>,
     #[serde(skip)]
     pub expanded: bool,
+    #[serde(skip)]
+    pub missing: bool,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -4,7 +4,11 @@
 
 ### Bug Fixes
 
-- Projects deleted from outside wsx are now removed from the tree at the next refresh (every ~3 s) instead of persisting as stale entries until restart
+- Projects deleted from outside wsx no longer persist as stale entries until restart — on the first refresh after deletion the project is shown as `(missing)` in gray; on the second refresh (~6 s later) it is removed from the tree
+
+### UI
+
+- Externally deleted projects display a `(missing)` indicator in the tree so users know why interactions fail during the brief window before removal
 
 ## [0.15.1] - 2026-04-17
 
