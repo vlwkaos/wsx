@@ -365,6 +365,7 @@ mod tests {
                     .collect(),
                 config: None,
                 expanded: true,
+                missing: false,
             }],
         }
     }

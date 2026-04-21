@@ -32,8 +32,18 @@ pub fn render_tree(
                 } else {
                     format!(" [{}]", p.worktrees.len())
                 };
-                let label = format!("{} {}{}", icon, p.name, count);
-                ListItem::new(label).style(Style::default().fg(Color::Cyan).bold())
+                let (label, style) = if p.missing {
+                    (
+                        format!("{} {} (missing)", icon, p.name),
+                        Style::default().fg(Color::DarkGray),
+                    )
+                } else {
+                    (
+                        format!("{} {}{}", icon, p.name, count),
+                        Style::default().fg(Color::Cyan).bold(),
+                    )
+                };
+                ListItem::new(label).style(style)
             }
             FlatEntry::Worktree {
                 project_idx,
