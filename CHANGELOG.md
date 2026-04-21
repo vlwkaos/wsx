@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Bug Fixes
+
+- Projects deleted from outside wsx are now removed from the tree at the next refresh (every ~3 s) instead of persisting as stale entries until restart
+
 ## [0.15.1] - 2026-04-17
 
 ### Bug Fixes
