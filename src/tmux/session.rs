@@ -110,6 +110,7 @@ pub fn user_has_tmux_config() -> bool {
 /// Best-effort, non-fatal. Skipped when user config exists (let it take over).
 pub fn apply_session_defaults(session: &str) {
     let _ = tmux_silent(&["set-option", "-t", session, "mouse", "on"]).status();
+    let _ = tmux_silent(&["set-option", "-t", session, "extended-keys", "on"]).status();
     if !user_has_tmux_config() {
         let _ = tmux_silent(&["set-option", "-t", session, "prefix", "C-a"]).status();
         let _ = tmux_silent(&["bind-key", "-T", "prefix", "a", "send-prefix"]).status();
