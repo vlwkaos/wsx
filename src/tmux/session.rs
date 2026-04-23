@@ -106,11 +106,15 @@ pub fn user_has_tmux_config() -> bool {
         || xdg.join("tmux/tmux.conf").exists()
 }
 
-/// Apply wsx runtime defaults to a session if the user has no tmux config.
-/// Best-effort, non-fatal. Skipped when user config exists (let it take over).
+/// Apply wsx server-level defaults once at startup. Best-effort, non-fatal.
+pub fn apply_server_defaults() {
+    let _ = tmux_silent(&["set-option", "-g", "extended-keys", "on"]).status();
+}
+
+/// Apply wsx runtime defaults to a session on every attach. Best-effort, non-fatal.
 pub fn apply_session_defaults(session: &str) {
     let _ = tmux_silent(&["set-option", "-t", session, "mouse", "on"]).status();
-    let _ = tmux_silent(&["set-option", "-t", session, "extended-keys", "on"]).status();
+    let _ = tmux_silent(&["set-option", "-t", session, "focus-events", "on"]).status();
     if !user_has_tmux_config() {
         let _ = tmux_silent(&["set-option", "-t", session, "prefix", "C-a"]).status();
         let _ = tmux_silent(&["bind-key", "-T", "prefix", "a", "send-prefix"]).status();

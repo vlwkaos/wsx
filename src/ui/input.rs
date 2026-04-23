@@ -21,7 +21,7 @@ pub struct InputState {
     path_mode: bool,
     history_mode: bool,
     project_search: bool,
-    scan_rx: Option<mpsc::Receiver<Vec<String>>>,
+    scan_rx: Option<mpsc::Receiver<String>>,
     scan_dirs: Vec<String>,
 }
 
@@ -33,7 +33,7 @@ impl InputState {
     pub fn new_project_search(prompt: impl Into<String>) -> Self {
         let mut s = Self::make(prompt.into(), String::new(), false);
         s.project_search = true;
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel::<String>();
         s.scan_rx = Some(rx);
         thread::spawn(move || scan_git_repos(tx));
         s
@@ -74,8 +74,8 @@ impl InputState {
         let mut new_data = false;
         loop {
             match rx.try_recv() {
-                Ok(batch) => {
-                    self.scan_dirs.extend(batch);
+                Ok(path) => {
+                    self.scan_dirs.push(path);
                     new_data = true;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
@@ -88,7 +88,7 @@ impl InputState {
         if new_data {
             self.completions = project_completions(&self.typed, &self.scan_dirs);
         }
-        // Return true even on disconnect so caller redraws to clear "scanning..." indicator.
+        // Return true on disconnect so caller redraws to clear "scanning..." indicator.
         new_data || self.scan_rx.is_none() && self.project_search
     }
 
@@ -337,22 +337,16 @@ const SKIP_DIRS: &[&str] = &[
 ];
 const MAX_SCAN_DEPTH: usize = 6;
 
-fn scan_git_repos(tx: mpsc::Sender<Vec<String>>) {
+fn scan_git_repos(tx: mpsc::Sender<String>) {
     let Some(home) = dirs::home_dir() else { return };
-    let mut batch = Vec::with_capacity(50);
-    walk_for_git(&home, &home, 0, &mut batch, &tx);
-    if !batch.is_empty() {
-        let _ = tx.send(batch);
-    }
+    walk_for_git(&home, 0, &tx);
 }
 
 /// Returns false if the receiver dropped — caller should stop walking.
 fn walk_for_git(
-    home: &std::path::Path,
     dir: &std::path::Path,
     depth: usize,
-    batch: &mut Vec<String>,
-    tx: &mpsc::Sender<Vec<String>>,
+    tx: &mpsc::Sender<String>,
 ) -> bool {
     if depth > MAX_SCAN_DEPTH {
         return true;
@@ -380,26 +374,14 @@ fn walk_for_git(
     }
 
     if has_git {
-        if let Ok(rel) = dir.strip_prefix(home) {
-            let rel_str = rel.to_string_lossy();
-            let display = if rel_str.is_empty() {
-                "~/".to_string()
-            } else {
-                format!("~/{}/", rel_str)
-            };
-            batch.push(display);
-            if batch.len() >= 50 {
-                let to_send = std::mem::replace(batch, Vec::with_capacity(50));
-                if tx.send(to_send).is_err() {
-                    return false;
-                }
-            }
+        if tx.send(display_path(&dir.to_path_buf(), true)).is_err() {
+            return false;
         }
         return true;
     }
 
     for subdir in subdirs {
-        if !walk_for_git(home, &subdir, depth + 1, batch, tx) {
+        if !walk_for_git(&subdir, depth + 1, tx) {
             return false;
         }
     }
