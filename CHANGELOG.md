@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.15.4] - 2026-04-24
+
+### Features
+
+- `focus-events on` applied per session on attach — terminals and editors receive focus in/out signals from tmux ([`700eebd`](https://github.com/vlwkaos/wsx/commit/700eebdab4c12bcf008ba38de5a79206052fcd35))
+- `extended-keys on` set globally at startup instead of per-attach — correctly enables kitty keyboard protocol at the server level ([`700eebd`](https://github.com/vlwkaos/wsx/commit/700eebdab4c12bcf008ba38de5a79206052fcd35))
+
+### Bug Fixes
+
+- Project search no longer shows "scanning..." indefinitely — repos now stream to the picker as they are found instead of waiting for the full scan to complete ([`700eebd`](https://github.com/vlwkaos/wsx/commit/700eebdab4c12bcf008ba38de5a79206052fcd35))
+
 ## [0.15.3] - 2026-04-21
 
 ### Features
