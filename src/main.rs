@@ -46,6 +46,7 @@ fn run_tui() -> Result<()> {
         default_hook(info);
     }));
 
+    tmux::session::apply_server_defaults();
     let mut terminal = tui::init().context("terminal init failed")?;
     let mut app = App::new()?;
     let result = app.run(&mut terminal);
