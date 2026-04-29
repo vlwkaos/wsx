@@ -46,8 +46,9 @@ pub fn popup_upper(area: Rect, w: u16, h: u16) -> Rect {
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    let is_mobile = app.is_mobile;
 
-    let hints = build_hints(app);
+    let hints = build_hints(app, is_mobile);
     let sb_height = status_bar_height(app, area.width, &hints);
     let main_area = Rect::new(
         area.x,
@@ -62,19 +63,23 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         sb_height,
     );
 
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(36), Constraint::Min(0)])
-        .split(main_area);
+    let (tree_area, preview_area) = if is_mobile {
+        (main_area, Rect::default())
+    } else {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(36), Constraint::Min(0)])
+            .split(main_area);
+        (chunks[0], chunks[1])
+    };
 
-    let visible_height = chunks[0].height.saturating_sub(2) as usize;
+    let visible_height = tree_area.height.saturating_sub(2) as usize;
     app.tree_visible_height = visible_height;
     app.tree_scroll = compute_scroll(app.tree_selected, visible_height, app.tree_scroll);
-    app.tree_area = chunks[0];
-    app.preview_area = chunks[1];
+    app.tree_area = tree_area;
+    app.preview_area = preview_area;
 
     let is_move_mode = matches!(app.mode, Mode::Move { .. } | Mode::MoveSession { .. });
-    // Show spinner + job labels during bg work, otherwise status message
     let tree_notify: Option<String> = if app.is_busy() {
         let spinner = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
         let labels: Vec<&str> = app.jobs.iter().map(|j| j.label.as_str()).collect();
@@ -84,7 +89,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
     render_tree(
         frame,
-        chunks[0],
+        tree_area,
         &app.workspace,
         app.flat(),
         app.tree_selected,
@@ -95,55 +100,56 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         &app.config.tabs,
     );
 
-    let preview_area = chunks[1];
-    match app.current_selection() {
-        Selection::Session(pi, wi, si) => {
-            let found = app.workspace.projects.get(pi).and_then(|p| {
-                let wt = p.worktrees.get(wi)?;
-                let sess = wt.sessions.get(si)?;
-                let title = format!("{} › {} › {}", p.name, wt.display_name(), sess.display_name);
-                Some((&sess.name, title))
-            });
-            if let Some((sess_name, title)) = found {
-                let parsed = app.parsed_preview.get(sess_name);
-                // Re-borrow sess for render — split borrows on different fields
-                if let Some(sess) = app.workspace.projects.get(pi)
-                    .and_then(|p| p.worktrees.get(wi))
-                    .and_then(|wt| wt.sessions.get(si))
-                {
-                    render_session_preview(frame, preview_area, sess, &title, parsed);
+    if preview_area.width > 0 {
+        match app.current_selection() {
+            Selection::Session(pi, wi, si) => {
+                let found = app.workspace.projects.get(pi).and_then(|p| {
+                    let wt = p.worktrees.get(wi)?;
+                    let sess = wt.sessions.get(si)?;
+                    let title = format!("{} › {} › {}", p.name, wt.display_name(), sess.display_name);
+                    Some((&sess.name, title))
+                });
+                if let Some((sess_name, title)) = found {
+                    let parsed = app.parsed_preview.get(sess_name);
+                    // Re-borrow sess for render — split borrows on different fields
+                    if let Some(sess) = app.workspace.projects.get(pi)
+                        .and_then(|p| p.worktrees.get(wi))
+                        .and_then(|wt| wt.sessions.get(si))
+                    {
+                        render_session_preview(frame, preview_area, sess, &title, parsed);
+                    } else {
+                        render_empty_preview(frame, preview_area);
+                    }
                 } else {
                     render_empty_preview(frame, preview_area);
                 }
-            } else {
-                render_empty_preview(frame, preview_area);
             }
-        }
-        Selection::Worktree(pi, wi) => {
-            let found = app.workspace.projects.get(pi).and_then(|p| {
-                p.worktrees.get(wi).map(|wt| {
-                    let title = format!("{} › {}", p.name, wt.display_name());
-                    title
-                })
-            });
-            if let Some(title) = found {
-                if let Some(wt) = app.workspace.projects.get(pi).and_then(|p| p.worktrees.get(wi)) {
-                    render_worktree_preview(frame, preview_area, wt, &title);
+            Selection::Worktree(pi, wi) => {
+                let found = app.workspace.projects.get(pi).and_then(|p| {
+                    p.worktrees.get(wi).map(|wt| {
+                        let title = format!("{} › {}", p.name, wt.display_name());
+                        title
+                    })
+                });
+                if let Some(title) = found {
+                    if let Some(wt) = app.workspace.projects.get(pi).and_then(|p| p.worktrees.get(wi)) {
+                        render_worktree_preview(frame, preview_area, wt, &title);
+                    } else {
+                        render_empty_preview(frame, preview_area);
+                    }
                 } else {
                     render_empty_preview(frame, preview_area);
                 }
-            } else {
-                render_empty_preview(frame, preview_area);
             }
-        }
-        Selection::Project(pi) => {
-            if let Some(project) = app.workspace.projects.get(pi) {
-                render_project_preview(frame, preview_area, project);
-            } else {
-                render_empty_preview(frame, preview_area);
+            Selection::Project(pi) => {
+                if let Some(project) = app.workspace.projects.get(pi) {
+                    render_project_preview(frame, preview_area, project);
+                } else {
+                    render_empty_preview(frame, preview_area);
+                }
             }
+            Selection::None => render_empty_preview(frame, preview_area),
         }
-        Selection::None => render_empty_preview(frame, preview_area),
     }
 
     render_status_bar(frame, status_area, app, &hints);
@@ -202,7 +208,20 @@ fn get_mode_label(app: &App) -> &'static str {
     }
 }
 
-fn build_hints(app: &App) -> String {
+fn build_hints(app: &App, mobile: bool) -> String {
+    if mobile {
+        return match &app.mode {
+            Mode::Normal => match app.current_selection() {
+                Selection::Project(_) => "Enter:expand  w:worktree  d:del  ?:help".to_string(),
+                Selection::Worktree(_, _) => "Enter:expand  s:session  r:alias  d:del  ?:help".to_string(),
+                Selection::Session(..) => "Enter:attach  d:kill  r:rename  ?:help".to_string(),
+                Selection::None => "p:add project".to_string(),
+            },
+            Mode::Input { .. } => "Esc: cancel".to_string(),
+            Mode::Confirm { .. } => "y:yes  n:no".to_string(),
+            _ => build_hints(app, false),
+        };
+    }
     let has_tabs = !app.config.tabs.is_empty();
     let global = if has_tabs {
         "(/)search  (a/A) active  ·  ({/})tab nav  ·  (n/N) pending  ·  (e)config  (?)help"

@@ -112,12 +112,15 @@ pub fn apply_server_defaults() {
 }
 
 /// Apply wsx runtime defaults to a session on every attach. Best-effort, non-fatal.
-pub fn apply_session_defaults(session: &str) {
+pub fn apply_session_defaults(session: &str, mobile_detach_key: Option<&str>) {
     let _ = tmux_silent(&["set-option", "-t", session, "mouse", "on"]).status();
     let _ = tmux_silent(&["set-option", "-t", session, "focus-events", "on"]).status();
     if !user_has_tmux_config() {
         let _ = tmux_silent(&["set-option", "-t", session, "prefix", "C-a"]).status();
         let _ = tmux_silent(&["bind-key", "-T", "prefix", "a", "send-prefix"]).status();
+    }
+    if let Some(key) = mobile_detach_key {
+        let _ = tmux_silent(&["bind-key", "-n", key, "detach-client"]).status();
     }
 }
 
