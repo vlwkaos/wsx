@@ -176,8 +176,19 @@ pub fn refresh_workspace_with_worktrees(
                     let status = activity.get(name);
                     // Prefer tmux-sourced muted/suppressed flags over snapshot so all instances agree.
                     // ^ @wsx-muted and @wsx-suppressed are written to tmux on toggle; snapshot is fallback.
-                    let muted = status.map(|s| s.wsx_muted).unwrap_or(prev_muted);
+                    let mut muted = status.map(|s| s.wsx_muted).unwrap_or(prev_muted);
                     let tmux_suppressed = status.map(|s| s.wsx_suppressed).unwrap_or(false);
+                    let last_activity = status
+                        .filter(|s| s.last_activity_ts > 0)
+                        .and_then(|s| unix_ts_to_instant(s.last_activity_ts));
+                    let currently_active = last_activity
+                        .map(|t| t.elapsed().as_secs() < IDLE_SECS)
+                        .unwrap_or(false);
+                    // Auto-unmute when new output arrives — mute is "suppress for now", not permanent.
+                    if muted && currently_active {
+                        session::set_session_opt(name, session::OPT_MUTED, "0");
+                        muted = false;
+                    }
                     // Muted sessions skip all activity tracking.
                     let (has_activity, has_running_app, last_activity, running_app_suppressed) =
                         if muted {
@@ -186,12 +197,6 @@ pub fn refresh_workspace_with_worktrees(
                             let has_activity = status.map(|s| s.has_bell).unwrap_or(false);
                             let has_running_app =
                                 status.map(|s| s.has_running_app).unwrap_or(false);
-                            let last_activity = status
-                                .filter(|s| s.last_activity_ts > 0)
-                                .and_then(|s| unix_ts_to_instant(s.last_activity_ts));
-                            let currently_active = last_activity
-                                .map(|t| t.elapsed().as_secs() < IDLE_SECS)
-                                .unwrap_or(false);
                             // Reset suppressed when new activity arrives; prefer tmux value.
                             let running_app_suppressed = if currently_active {
                                 false
