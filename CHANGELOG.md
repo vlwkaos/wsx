@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+
+- `--mobile` flag: collapses the preview panel for portrait SSH sessions, shows compact key hints
+- `mobile_detach_key` config option: bind a no-prefix tmux key to detach-client when running with `--mobile` (e.g. `mobile_detach_key = "C-q"`)
+- Muted sessions auto-unmute when new output streams to the pane — mute is now "suppress for now" rather than permanent
+
 ## [0.15.4] - 2026-04-24
 
 ### Features

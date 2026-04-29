@@ -112,6 +112,19 @@ wsx
 set -g status-right "#{@wsx_project}/#{@wsx_alias}"
 ```
 
+## 모바일 / SSH
+
+```sh
+wsx --mobile
+```
+
+미리보기 패널을 숨기고 간결한 키 힌트를 표시합니다 — 세로 모드 SSH 환경(폰, 좁은 터미널)에 적합합니다. `mobile_detach_key` 설정으로 no-prefix tmux detach 단축키를 지정할 수 있습니다:
+
+```toml
+# ~/.config/wsx/config.toml
+mobile_detach_key = "C-q"
+```
+
 ## CLI
 
 ```sh
