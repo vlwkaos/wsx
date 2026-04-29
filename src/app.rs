@@ -353,10 +353,12 @@ pub struct App {
     pending_session_ops: HashMap<String, SessionOp>,
     update_rx: mpsc::Receiver<String>,
     pub update_available: Option<String>,
+    /// Set by --mobile flag; collapses preview panel for portrait SSH sessions.
+    pub is_mobile: bool,
 }
 
 impl App {
-    pub fn new() -> Result<Self> {
+    pub fn new(mobile: bool) -> Result<Self> {
         let (config, config_warn) = GlobalConfig::load()?;
         let mut workspace = ops::load_workspace(&config);
         let (raw_selected, cursor_identity, command_history, cached_active_tab, cached_tmux_pid, cached_muted, cached_suppressed) =
@@ -438,6 +440,7 @@ impl App {
             pending_session_ops: HashMap::new(),
             update_rx,
             update_available: None,
+            is_mobile: mobile,
         })
     }
 
@@ -1485,7 +1488,12 @@ impl App {
     }
 
     fn attach_to_session(&self, name: &str, terminal: &mut Tui) -> Result<()> {
-        session::apply_session_defaults(name);
+        let detach_key = if self.is_mobile {
+            self.config.mobile_detach_key.as_deref()
+        } else {
+            None
+        };
+        session::apply_session_defaults(name, detach_key);
         match session::attach_session_cmd(name) {
             session::AttachCommand::SwitchClient(n) => session::switch_client(&n)?,
             session::AttachCommand::Attach(n) => {

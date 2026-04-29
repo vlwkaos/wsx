@@ -20,6 +20,9 @@ pub enum Format {
 pub struct Args {
     #[command(subcommand)]
     pub command: Option<Command>,
+    /// Portrait/mobile mode: full-width tree, no preview panel
+    #[arg(long)]
+    pub mobile: bool,
 }
 
 #[derive(Subcommand)]

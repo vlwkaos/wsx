@@ -30,11 +30,11 @@ fn main() -> Result<()> {
     let args = cli::Args::parse();
     match args.command {
         Some(cmd) => cli::run(cmd),
-        None => run_tui(),
+        None => run_tui(args.mobile),
     }
 }
 
-fn run_tui() -> Result<()> {
+fn run_tui(mobile: bool) -> Result<()> {
     // Restore terminal on panic so the shell isn't left in raw mode.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -48,7 +48,7 @@ fn run_tui() -> Result<()> {
 
     tmux::session::apply_server_defaults();
     let mut terminal = tui::init().context("terminal init failed")?;
-    let mut app = App::new()?;
+    let mut app = App::new(mobile)?;
     let result = app.run(&mut terminal);
     // Restore terminal before flush_cache so any eprintln is visible.
     let _ = tui::restore(&mut terminal);
