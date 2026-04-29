@@ -1,12 +1,15 @@
 # Changelog
 
-## [Unreleased]
+## [0.15.5] - 2026-04-29
 
 ### Features
 
-- `--mobile` flag: collapses the preview panel for portrait SSH sessions, shows compact key hints
-- `mobile_detach_key` config option: bind a no-prefix tmux key to detach-client when running with `--mobile` (e.g. `mobile_detach_key = "C-q"`)
-- Muted sessions auto-unmute when new output streams to the pane — mute is now "suppress for now" rather than permanent
+- `--mobile` flag: collapses preview panel for portrait SSH sessions, shows compact key hints ([`52080a5`](https://github.com/vlwkaos/wsx/commit/52080a5e9703427302245551df7aa67f5b5ec968))
+- `mobile_detach_key` config option: bind a no-prefix tmux key to detach-client when `--mobile` is active, e.g. `mobile_detach_key = "C-q"` ([`52080a5`](https://github.com/vlwkaos/wsx/commit/52080a5e9703427302245551df7aa67f5b5ec968))
+
+### Bug Fixes
+
+- Muted sessions now auto-unmute when new output streams to the pane — mute is "suppress for now", not permanent ([`482c6d9`](https://github.com/vlwkaos/wsx/commit/482c6d9cf05285c150f135d2afd18e05ee66fb07))
 
 ## [0.15.4] - 2026-04-24
 
