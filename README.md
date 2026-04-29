@@ -148,6 +148,19 @@ set -g status-right "#{@wsx_project}/#{@wsx_alias}"
 
 </details>
 
+## Mobile / SSH
+
+```sh
+wsx --mobile
+```
+
+Collapses the preview panel and shows compact key hints — designed for portrait SSH sessions on a phone or narrow terminal. Use the `mobile_detach_key` config option to bind a no-prefix tmux key for easy detach:
+
+```toml
+# ~/.config/wsx/config.toml
+mobile_detach_key = "C-q"
+```
+
 ## CLI
 
 ```sh
