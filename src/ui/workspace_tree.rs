@@ -220,7 +220,7 @@ fn session_icon(sess: &crate::model::workspace::SessionInfo, active: bool) -> (&
         ("●", Color::Yellow)
     } else if active {
         ("◉", Color::Green)
-    } else if sess.has_running_app && !sess.running_app_suppressed {
+    } else if sess.has_running_app {
         ("●", Color::Yellow)
     } else {
         ("○", Color::Gray)
@@ -242,12 +242,7 @@ mod tests {
     use crate::model::workspace::SessionInfo;
     use ratatui::style::Color;
 
-    fn sess(
-        muted: bool,
-        has_activity: bool,
-        has_running_app: bool,
-        running_app_suppressed: bool,
-    ) -> SessionInfo {
+    fn sess(muted: bool, has_activity: bool, has_running_app: bool) -> SessionInfo {
         SessionInfo {
             name: String::new(),
             display_name: String::new(),
@@ -256,7 +251,6 @@ mod tests {
             last_activity: None,
             has_running_app,
             is_running_wsx: false,
-            running_app_suppressed,
             muted,
         }
     }
@@ -266,37 +260,31 @@ mod tests {
 
     #[test]
     fn active_output_is_green() {
-        let s = sess(false, false, true, false);
+        let s = sess(false, false, true);
         assert_eq!(session_icon(&s, true), ("◉", Color::Green));
     }
 
     #[test]
     fn bell_overrides_active_green() {
-        let s = sess(false, true, false, false);
+        let s = sess(false, true, false);
         assert_eq!(session_icon(&s, true), ("●", Color::Yellow));
     }
 
     #[test]
     fn running_quiet_is_yellow() {
-        let s = sess(false, false, true, false);
+        let s = sess(false, false, true);
         assert_eq!(session_icon(&s, false), ("●", Color::Yellow));
     }
 
     #[test]
-    fn running_suppressed_is_gray() {
-        let s = sess(false, false, true, true);
-        assert_eq!(session_icon(&s, false), ("○", Color::Gray));
-    }
-
-    #[test]
     fn idle_no_app_is_gray() {
-        let s = sess(false, false, false, false);
+        let s = sess(false, false, false);
         assert_eq!(session_icon(&s, false), ("○", Color::Gray));
     }
 
     #[test]
     fn muted_overrides_everything() {
-        let s = sess(true, true, true, false);
+        let s = sess(true, true, true);
         assert_eq!(session_icon(&s, true), ("⊘", Color::DarkGray));
     }
 }

@@ -37,9 +37,6 @@ pub struct WorkspaceCache {
     /// stable cursor identity (preferred over raw index)
     #[serde(default)]
     pub cursor_identity: Option<CursorIdentity>,
-    /// session names where the user dismissed the running-app notification
-    #[serde(default)]
-    pub suppressed_sessions: HashSet<String>,
     /// session names the user has muted (no activity updates, shown as ⊘)
     #[serde(default)]
     pub muted_sessions: HashSet<String>,
@@ -144,7 +141,7 @@ pub(crate) fn load_snapshot_from(path: &std::path::Path) -> HashMap<String, Vec<
 
 /// Return type for `apply_cache`. Last two fields are for one-time tmux flag migration.
 #[allow(clippy::type_complexity)]
-type CacheResult = (usize, Option<CursorIdentity>, Vec<String>, Option<String>, Option<u32>, HashSet<String>, HashSet<String>);
+type CacheResult = (usize, Option<CursorIdentity>, Vec<String>, Option<String>, Option<u32>, HashSet<String>);
 
 /// Pre-populate workspace with cached state before first live sync.
 pub fn apply_cache(workspace: &mut WorkspaceState) -> CacheResult {
@@ -179,7 +176,6 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> CacheResult {
                             last_activity: None,
                             has_running_app: false,
                             is_running_wsx: false,
-                            running_app_suppressed: cache.suppressed_sessions.contains(name),
                             muted: cache.muted_sessions.contains(name),
                         }
                     })
@@ -187,7 +183,7 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> CacheResult {
             }
         }
     }
-    (cache.tree_selected, cache.cursor_identity, cache.command_history, cache.active_tab, cache.tmux_server_pid, cache.muted_sessions, cache.suppressed_sessions)
+    (cache.tree_selected, cache.cursor_identity, cache.command_history, cache.active_tab, cache.tmux_server_pid, cache.muted_sessions)
 }
 
 /// Resolve a saved CursorIdentity back to a flat-tree index.
@@ -262,9 +258,8 @@ pub fn save_cache(
                 wt.sessions.iter().map(|s| s.name.clone()).collect(),
             );
             cache.worktree_expanded.insert(key, wt.expanded);
-            // ^ muted_sessions and suppressed_sessions intentionally omitted:
-            // these flags are stored as tmux user options (@wsx-muted, @wsx-suppressed)
-            // so all instances share them without cache coordination.
+            // ^ muted_sessions intentionally omitted: stored as @wsx-muted tmux user option
+            // so all instances share it without cache coordination.
         }
     }
     cache.command_history = command_history.to_vec();
@@ -272,15 +267,12 @@ pub fn save_cache(
     cache.save(sync).err().map(|e| format!("cache save failed: {e}"))
 }
 
-/// One-time migration: write cached muted/suppressed names as tmux user options so they
+/// One-time migration: write cached muted session names as tmux user options so they
 /// survive future cache writes and are visible to all instances. Idempotent and non-fatal.
-pub fn migrate_flags_to_tmux(muted: &HashSet<String>, suppressed: &HashSet<String>) {
-    use crate::tmux::session::{OPT_MUTED, OPT_SUPPRESSED, set_session_opt};
+pub fn migrate_flags_to_tmux(muted: &HashSet<String>) {
+    use crate::tmux::session::{OPT_MUTED, set_session_opt};
     for name in muted {
         set_session_opt(name, OPT_MUTED, "1");
-    }
-    for name in suppressed {
-        set_session_opt(name, OPT_SUPPRESSED, "1");
     }
 }
 
@@ -330,7 +322,6 @@ mod tests {
             last_activity: None,
             has_running_app: false,
             is_running_wsx: false,
-            running_app_suppressed: false,
             muted: false,
         }
     }

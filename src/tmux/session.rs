@@ -147,7 +147,6 @@ pub fn server_pid() -> Option<u32> {
 
 /// tmux user option keys for per-session wsx state shared across instances.
 pub const OPT_MUTED: &str = "@wsx-muted";
-pub const OPT_SUPPRESSED: &str = "@wsx-suppressed";
 
 /// Set a session-local option (readable as #{@key} in status formats).
 pub fn set_session_opt(session: &str, key: &str, value: &str) {

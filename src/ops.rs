@@ -19,8 +19,8 @@ use crate::{
     tmux::{monitor::SessionStatus, session},
 };
 
-// (pane_capture, running_app_suppressed, muted)
-type PaneSnap = HashMap<String, (Option<String>, bool, bool)>;
+// (pane_capture, muted)
+type PaneSnap = HashMap<String, (Option<String>, bool)>;
 // session_order preserves user-defined sort across refresh
 type WorktreeSnap = HashMap<PathBuf, WorktreeSnapEntry>;
 
@@ -115,7 +115,7 @@ pub fn refresh_workspace_with_worktrees(
                     .map(|s| {
                         (
                             s.name.clone(),
-                            (s.pane_capture.clone(), s.running_app_suppressed, s.muted),
+                            (s.pane_capture.clone(), s.muted),
                         )
                     })
                     .collect();
@@ -170,14 +170,12 @@ pub fn refresh_workspace_with_worktrees(
                         alias.as_deref(),
                     );
                     let prev_pane = prev.and_then(|snap| snap.panes.get(name));
-                    let (pane_capture, prev_suppressed, prev_muted) = prev_pane
-                        .map(|(p, s, m)| (p.clone(), *s, *m))
-                        .unwrap_or((None, false, false));
+                    let (pane_capture, prev_muted) = prev_pane
+                        .map(|(p, m)| (p.clone(), *m))
+                        .unwrap_or((None, false));
                     let status = activity.get(name);
-                    // Prefer tmux-sourced muted/suppressed flags over snapshot so all instances agree.
-                    // ^ @wsx-muted and @wsx-suppressed are written to tmux on toggle; snapshot is fallback.
+                    // Prefer tmux-sourced muted flag over snapshot so all instances agree.
                     let mut muted = status.map(|s| s.wsx_muted).unwrap_or(prev_muted);
-                    let tmux_suppressed = status.map(|s| s.wsx_suppressed).unwrap_or(false);
                     let last_activity = status
                         .filter(|s| s.last_activity_ts > 0)
                         .and_then(|s| unix_ts_to_instant(s.last_activity_ts));
@@ -190,26 +188,15 @@ pub fn refresh_workspace_with_worktrees(
                         muted = false;
                     }
                     // Muted sessions skip all activity tracking.
-                    let (has_activity, has_running_app, last_activity, running_app_suppressed) =
-                        if muted {
-                            (false, false, None, false)
-                        } else {
-                            let has_activity = status.map(|s| s.has_bell).unwrap_or(false);
-                            let has_running_app =
-                                status.map(|s| s.has_running_app).unwrap_or(false);
-                            // Reset suppressed when new activity arrives; prefer tmux value.
-                            let running_app_suppressed = if currently_active {
-                                false
-                            } else {
-                                tmux_suppressed || prev_suppressed
-                            };
-                            (
-                                has_activity,
-                                has_running_app,
-                                last_activity,
-                                running_app_suppressed,
-                            )
-                        };
+                    let (has_activity, has_running_app, last_activity) = if muted {
+                        (false, false, None)
+                    } else {
+                        (
+                            status.map(|s| s.has_bell).unwrap_or(false),
+                            status.map(|s| s.has_running_app).unwrap_or(false),
+                            last_activity,
+                        )
+                    };
                     SessionInfo {
                         name: name.to_string(),
                         display_name,
@@ -218,7 +205,6 @@ pub fn refresh_workspace_with_worktrees(
                         last_activity,
                         has_running_app,
                         is_running_wsx: status.map(|s| s.is_running_wsx).unwrap_or(false),
-                        running_app_suppressed,
                         muted,
                     }
                 })
@@ -286,13 +272,6 @@ pub fn update_activity(
                     sess.last_activity = Some(status.last_activity_ts)
                         .filter(|&ts| ts > 0)
                         .and_then(|ts| unix_ts_to_instant(ts));
-                    let currently_active = sess
-                        .last_activity
-                        .map(|t| t.elapsed().as_secs() < IDLE_SECS)
-                        .unwrap_or(false);
-                    if currently_active {
-                        sess.running_app_suppressed = false;
-                    }
                 } else {
                     sess.has_activity = false;
                     sess.has_running_app = false;

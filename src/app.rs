@@ -361,10 +361,10 @@ impl App {
     pub fn new(mobile: bool) -> Result<Self> {
         let (config, config_warn) = GlobalConfig::load()?;
         let mut workspace = ops::load_workspace(&config);
-        let (raw_selected, cursor_identity, command_history, cached_active_tab, cached_tmux_pid, cached_muted, cached_suppressed) =
+        let (raw_selected, cursor_identity, command_history, cached_active_tab, cached_tmux_pid, cached_muted) =
             crate::cache::apply_cache(&mut workspace);
-        // Migrate old cache muted/suppressed flags to tmux user options (one-time, idempotent).
-        crate::cache::migrate_flags_to_tmux(&cached_muted, &cached_suppressed);
+        // One-time migration: write cached muted names to tmux user options.
+        crate::cache::migrate_flags_to_tmux(&cached_muted);
         let restored = ops::restore_cached_sessions(&workspace, cached_tmux_pid);
         let visible_projects = compute_visible_projects(&config, &workspace, cached_active_tab.as_deref());
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
@@ -1771,10 +1771,7 @@ impl App {
                     .last_activity
                     .map(|t| t.elapsed().as_secs() < IDLE_SECS)
                     .unwrap_or(false);
-                let idle = !sess.muted
-                    && !sess.has_activity
-                    && !active
-                    && (!sess.has_running_app || sess.running_app_suppressed);
+                let idle = !sess.muted && !sess.has_activity && !active && !sess.has_running_app;
                 if idle { Some(i) } else { None }
             })
             .collect()
@@ -1939,13 +1936,7 @@ impl App {
                     self.set_status("Dismissed");
                     return;
                 }
-                if sess.has_running_app && !sess.running_app_suppressed {
-                    sess.running_app_suppressed = true;
-                    session::set_session_opt(&sess.name, session::OPT_SUPPRESSED, "1");
-                    self.set_status("Dismissed");
-                    return;
-                }
-                // Idle session — toggle mute
+                // Running app or idle session — toggle mute
                 sess.muted = !sess.muted;
                 let muted_val = if sess.muted { "1" } else { "0" };
                 session::set_session_opt(&sess.name, session::OPT_MUTED, muted_val);
@@ -2746,9 +2737,7 @@ fn search_text_for(workspace: &WorkspaceState, entry: &FlatEntry) -> String {
 fn session_needs_attention(sess: &crate::model::workspace::SessionInfo, currently_active: bool) -> bool {
     // ^ bell (has_activity) always needs attention regardless of active state;
     // running-app only needs attention when session has gone idle.
-    !sess.muted
-        && (sess.has_activity
-            || (!currently_active && sess.has_running_app && !sess.running_app_suppressed))
+    !sess.muted && (sess.has_activity || (!currently_active && sess.has_running_app))
 }
 
 fn search_matches_in(cache: &[String], query: &str) -> Vec<usize> {
@@ -2816,7 +2805,6 @@ mod tests {
         muted: bool,
         has_activity: bool,
         has_running_app: bool,
-        running_app_suppressed: bool,
     ) -> crate::model::workspace::SessionInfo {
         crate::model::workspace::SessionInfo {
             name: String::new(),
@@ -2826,45 +2814,38 @@ mod tests {
             last_activity: None,
             has_running_app,
             is_running_wsx: false,
-            running_app_suppressed,
             muted,
         }
     }
 
     #[test]
     fn attention_active_session_is_ignored() {
-        let s = make_sess(false, false, true, false);
+        let s = make_sess(false, false, true);
         assert!(!session_needs_attention(&s, true));
     }
 
     #[test]
     fn attention_bell_inactive_triggers() {
-        let s = make_sess(false, true, false, false);
+        let s = make_sess(false, true, false);
         assert!(session_needs_attention(&s, false));
     }
 
     #[test]
     fn attention_running_app_triggers() {
-        let s = make_sess(false, false, true, false);
+        let s = make_sess(false, false, true);
         assert!(session_needs_attention(&s, false));
     }
 
     #[test]
-    fn attention_running_suppressed_does_not_trigger() {
-        let s = make_sess(false, false, true, true);
-        assert!(!session_needs_attention(&s, false));
-    }
-
-    #[test]
     fn attention_muted_does_not_trigger() {
-        let s = make_sess(true, true, true, false);
+        let s = make_sess(true, true, true);
         assert!(!session_needs_attention(&s, false));
     }
 
     #[test]
     fn attention_bell_active_still_triggers() {
         // bell always needs attention regardless of active state
-        let s = make_sess(false, true, false, false);
+        let s = make_sess(false, true, false);
         assert!(session_needs_attention(&s, true));
     }
 

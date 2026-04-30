@@ -249,7 +249,7 @@ fn build_hints(app: &App, mobile: bool) -> String {
                             .unwrap_or(false)
                     })
                     .unwrap_or(false);
-                let dismiss = if active { "" } else { "(x)dismiss  ·  " };
+                let dismiss = if active { "" } else { "(x)mute  ·  " };
                 format!("(m)ove  (r)ename  (d)kill  ·  {}(S)send cmd  (C)ctrl-c  ·  (C-a d)detach  ·  (s)ession  ·  (w)orktree{}  (c)lean  ·  {}", dismiss, tabs, global)
             }
             Selection::None => "(p) add project".to_string(),
@@ -432,7 +432,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         "  C             Send Ctrl+C to session",
         "  r             Rename",
         "  d             Kill session",
-        "  x             Dismiss ● (suppress running-app notification) / toggle ⊘ mute",
+        "  x             Toggle ⊘ mute (silences all activity; auto-clears on new output)",
         "",
         " Inside Session (tmux)",
         "  Ctrl+a d      Detach (return to wsx)",
