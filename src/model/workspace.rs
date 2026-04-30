@@ -42,8 +42,6 @@ pub struct SessionInfo {
     #[serde(skip)]
     pub is_running_wsx: bool,  // foreground process is wsx — suppresses capture preview
     #[serde(skip)]
-    pub running_app_suppressed: bool, // user dismissed the running-app notification
-    #[serde(skip)]
     pub muted: bool,           // user silenced — no activity updates, shown as ⊘
 }
 
