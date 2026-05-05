@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.15.7] - 2026-05-05
+
+### Bug Fixes
+
+- Sessions with background runtimes (`node`, `bun`, `deno`, `npm`, `pnpm`, `yarn`, `npx`, `dotenvx`, `watchexec`, `entr`, `reflex`) now show yellow instead of always-green — activity timestamp was being refreshed on every poll for these processes, making them perpetually "active" regardless of actual terminal use
+
 ## [0.15.5] - 2026-04-29
 
 ### Features
