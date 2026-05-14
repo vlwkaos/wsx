@@ -40,9 +40,9 @@ pub struct SessionInfo {
     pub last_activity: Option<std::time::Instant>,
     pub has_running_app: bool, // foreground process is not a bare shell
     #[serde(skip)]
-    pub is_running_wsx: bool,  // foreground process is wsx — suppresses capture preview
+    pub is_running_wsx: bool, // foreground process is wsx — suppresses capture preview
     #[serde(skip)]
-    pub muted: bool,           // user silenced — no activity updates, shown as ⊘
+    pub muted: bool, // user silenced — no activity updates, shown as ⊘
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -282,7 +282,10 @@ pub fn flatten_tree(workspace: &WorkspaceState) -> Vec<FlatEntry> {
 }
 
 /// Like `flatten_tree` but skips projects whose index is not in `visible`.
-pub fn flatten_tree_filtered(workspace: &WorkspaceState, visible: &HashSet<usize>) -> Vec<FlatEntry> {
+pub fn flatten_tree_filtered(
+    workspace: &WorkspaceState,
+    visible: &HashSet<usize>,
+) -> Vec<FlatEntry> {
     let mut result = Vec::new();
     for (pi, project) in workspace.projects.iter().enumerate() {
         if !visible.contains(&pi) {

@@ -16,7 +16,11 @@ pub enum Format {
 }
 
 #[derive(Parser)]
-#[command(name = "wsx", version, about = "Workspace manager — git worktrees + tmux sessions")]
+#[command(
+    name = "wsx",
+    version,
+    about = "Workspace manager — git worktrees + tmux sessions"
+)]
 pub struct Args {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -136,15 +140,39 @@ pub fn run(cmd: Command) -> Result<()> {
     match cmd {
         Command::Status { json, format, tab } => cmd_status(json, format, tab.as_deref()),
         Command::Worktree { subcommand } => match subcommand {
-            WorktreeCmd::Create { branch, project } => cmd_worktree_create(&branch, project.as_deref()),
-            WorktreeCmd::Delete { branch, project } => cmd_worktree_delete(&branch, project.as_deref()),
-            WorktreeCmd::List { project, json, format, tab } => cmd_worktree_list(project.as_deref(), json, format, tab.as_deref()),
+            WorktreeCmd::Create { branch, project } => {
+                cmd_worktree_create(&branch, project.as_deref())
+            }
+            WorktreeCmd::Delete { branch, project } => {
+                cmd_worktree_delete(&branch, project.as_deref())
+            }
+            WorktreeCmd::List {
+                project,
+                json,
+                format,
+                tab,
+            } => cmd_worktree_list(project.as_deref(), json, format, tab.as_deref()),
         },
         Command::Session { subcommand } => match subcommand {
-            SessionCmd::SendKeys { session: s, keys, no_enter } => cmd_session_send_keys(&s, &keys, no_enter),
-            SessionCmd::Peek { session: s, lines, offset, trim, agent } => cmd_session_peek(&s, lines, offset, trim, agent),
+            SessionCmd::SendKeys {
+                session: s,
+                keys,
+                no_enter,
+            } => cmd_session_send_keys(&s, &keys, no_enter),
+            SessionCmd::Peek {
+                session: s,
+                lines,
+                offset,
+                trim,
+                agent,
+            } => cmd_session_peek(&s, lines, offset, trim, agent),
             SessionCmd::Rename { old, new_name } => cmd_session_rename(&old, &new_name),
-            SessionCmd::List { project, json, format, tab } => cmd_session_list(project.as_deref(), json, format, tab.as_deref()),
+            SessionCmd::List {
+                project,
+                json,
+                format,
+                tab,
+            } => cmd_session_list(project.as_deref(), json, format, tab.as_deref()),
         },
         Command::Tab { subcommand } => match subcommand {
             TabCmd::Ls => cmd_tab_ls(),
@@ -188,12 +216,22 @@ fn resolve_projects<'a>(
     if let Some(n) = project_name {
         return Ok(vec![resolve_project(workspace, Some(n))?]);
     }
-    let Some(tab) = tab else { return Ok(workspace.projects.iter().collect()) };
+    let Some(tab) = tab else {
+        return Ok(workspace.projects.iter().collect());
+    };
     let want_default = tab == DEFAULT_TAB;
-    Ok(workspace.projects.iter().filter(|p| {
-        let assigned = config.project_tab(&p.path);
-        if want_default { assigned.is_none() } else { assigned == Some(tab) }
-    }).collect())
+    Ok(workspace
+        .projects
+        .iter()
+        .filter(|p| {
+            let assigned = config.project_tab(&p.path);
+            if want_default {
+                assigned.is_none()
+            } else {
+                assigned == Some(tab)
+            }
+        })
+        .collect())
 }
 
 fn resolve_project<'a>(workspace: &'a WorkspaceState, name: Option<&str>) -> Result<&'a Project> {
@@ -208,7 +246,12 @@ fn resolve_project<'a>(workspace: &'a WorkspaceState, name: Option<&str>) -> Res
             1 => Ok(&workspace.projects[0]),
             _ => bail!(
                 "multiple projects — use -p to specify: {}",
-                workspace.projects.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
+                workspace
+                    .projects
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         },
     }
@@ -225,7 +268,10 @@ fn activity_label(s: &crate::model::workspace::SessionInfo) -> &'static str {
 }
 
 fn git_label(wt: &crate::model::workspace::WorktreeInfo) -> String {
-    wt.git_info.as_ref().map(|g| format!("+{}-{}", g.ahead, g.behind)).unwrap_or_else(|| "-".to_string())
+    wt.git_info
+        .as_ref()
+        .map(|g| format!("+{}-{}", g.ahead, g.behind))
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn sessions_inline(wt: &crate::model::workspace::WorktreeInfo) -> String {
@@ -248,15 +294,21 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     }
     let mut line = String::new();
     for (i, h) in headers.iter().enumerate() {
-        if i + 1 < ncols { line.push_str(&format!("{:<width$}", h, width = widths[i] + 2)); }
-        else { line.push_str(h); }
+        if i + 1 < ncols {
+            line.push_str(&format!("{:<width$}", h, width = widths[i] + 2));
+        } else {
+            line.push_str(h);
+        }
     }
     println!("{}", line);
     for row in rows {
         line.clear();
         for (i, cell) in row.iter().enumerate() {
-            if i + 1 < ncols { line.push_str(&format!("{:<width$}", cell, width = widths[i] + 2)); }
-            else { line.push_str(cell); }
+            if i + 1 < ncols {
+                line.push_str(&format!("{:<width$}", cell, width = widths[i] + 2));
+            } else {
+                line.push_str(cell);
+            }
         }
         println!("{}", line);
     }
@@ -277,7 +329,12 @@ fn cmd_status(json: bool, format: Format, tab: Option<&str>) -> Result<()> {
             .iter()
             .flat_map(|p| {
                 p.worktrees.iter().map(move |wt| {
-                    vec![p.name.clone(), wt.branch.clone(), git_label(wt), sessions_inline(wt)]
+                    vec![
+                        p.name.clone(),
+                        wt.branch.clone(),
+                        git_label(wt),
+                        sessions_inline(wt),
+                    ]
                 })
             })
             .collect();
@@ -293,7 +350,11 @@ fn cmd_status(json: bool, format: Format, tab: Option<&str>) -> Result<()> {
             println!("{} {}", project.name, project.path.display());
         }
         for wt in &project.worktrees {
-            let git = wt.git_info.as_ref().map(|g| format!(" [{}↑ {}↓]", g.ahead, g.behind)).unwrap_or_default();
+            let git = wt
+                .git_info
+                .as_ref()
+                .map(|g| format!(" [{}↑ {}↓]", g.ahead, g.behind))
+                .unwrap_or_default();
             println!("  {}{} ({} sessions)", wt.branch, git, wt.sessions.len());
             for s in &wt.sessions {
                 println!("    {:<40} {}", s.name, activity_label(s));
@@ -307,7 +368,8 @@ fn cmd_worktree_create(branch: &str, project_name: Option<&str>) -> Result<()> {
     let (_, workspace) = load_full_workspace()?;
     let project = resolve_project(&workspace, project_name)?;
     let proj_config = project.config.clone().unwrap_or_default();
-    let (wt_path, warning) = ops::create_worktree(&project.path, &project.default_branch, &proj_config, branch)?;
+    let (wt_path, warning) =
+        ops::create_worktree(&project.path, &project.default_branch, &proj_config, branch)?;
     if let Some(w) = warning {
         eprintln!("warning: {}", w);
     }
@@ -316,7 +378,10 @@ fn cmd_worktree_create(branch: &str, project_name: Option<&str>) -> Result<()> {
     println!("worktree: {}", wt_path.display());
     println!("session:  {}", tmux_name);
     let mut cache = crate::cache::WorkspaceCache::load();
-    cache.sessions.insert(wt_path.to_string_lossy().to_string(), vec![tmux_name.clone()]);
+    cache.sessions.insert(
+        wt_path.to_string_lossy().to_string(),
+        vec![tmux_name.clone()],
+    );
     cache.tmux_server_pid = crate::tmux::session::server_pid();
     if let Err(e) = cache.save(false) {
         eprintln!("warning: cache save failed: {}", e);
@@ -331,19 +396,32 @@ fn cmd_worktree_delete(branch: &str, project_name: Option<&str>) -> Result<()> {
         .worktrees
         .iter()
         .find(|w| w.branch == branch || w.alias.as_deref() == Some(branch))
-        .ok_or_else(|| anyhow::anyhow!("worktree for branch '{}' not found in project '{}'", branch, project.name))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "worktree for branch '{}' not found in project '{}'",
+                branch,
+                project.name
+            )
+        })?;
     let session_names: Vec<String> = wt.sessions.iter().map(|s| s.name.clone()).collect();
     ops::delete_worktree(&project.path, &wt.path, &wt.branch, &session_names)?;
     println!("deleted worktree: {}", wt.path.display());
     let mut cache = crate::cache::WorkspaceCache::load();
-    cache.sessions.remove(&wt.path.to_string_lossy().to_string());
+    cache
+        .sessions
+        .remove(&wt.path.to_string_lossy().to_string());
     if let Err(e) = cache.save(false) {
         eprintln!("warning: cache save failed: {}", e);
     }
     Ok(())
 }
 
-fn cmd_worktree_list(project_name: Option<&str>, json: bool, format: Format, tab: Option<&str>) -> Result<()> {
+fn cmd_worktree_list(
+    project_name: Option<&str>,
+    json: bool,
+    format: Format,
+    tab: Option<&str>,
+) -> Result<()> {
     let (config, workspace) = load_full_workspace()?;
     let projects = resolve_projects(&config, &workspace, project_name, tab)?;
     if json {
@@ -357,7 +435,12 @@ fn cmd_worktree_list(project_name: Option<&str>, json: bool, format: Format, tab
             .iter()
             .flat_map(|p| {
                 p.worktrees.iter().map(move |wt| {
-                    vec![p.name.clone(), wt.branch.clone(), git_label(wt), wt.path.display().to_string()]
+                    vec![
+                        p.name.clone(),
+                        wt.branch.clone(),
+                        git_label(wt),
+                        wt.path.display().to_string(),
+                    ]
                 })
             })
             .collect();
@@ -366,7 +449,11 @@ fn cmd_worktree_list(project_name: Option<&str>, json: bool, format: Format, tab
     }
     for p in projects {
         for wt in &p.worktrees {
-            let git = wt.git_info.as_ref().map(|g| format!(" [{}↑ {}↓]", g.ahead, g.behind)).unwrap_or_default();
+            let git = wt
+                .git_info
+                .as_ref()
+                .map(|g| format!(" [{}↑ {}↓]", g.ahead, g.behind))
+                .unwrap_or_default();
             println!("{}/{}{} — {}", p.name, wt.branch, git, wt.path.display());
         }
     }
@@ -382,7 +469,13 @@ fn cmd_session_send_keys(sess: &str, keys: &str, no_enter: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_session_peek(sess: &str, lines: Option<u32>, offset: u32, trim: bool, agent: bool) -> Result<()> {
+fn cmd_session_peek(
+    sess: &str,
+    lines: Option<u32>,
+    offset: u32,
+    trim: bool,
+    agent: bool,
+) -> Result<()> {
     let raw = capture::capture_pane_window(sess, lines, offset)
         .ok_or_else(|| anyhow::anyhow!("session '{}' not found or empty", sess))?;
     let output = if agent {
@@ -434,7 +527,10 @@ fn cmd_tab_create(name: &str) -> Result<()> {
 
 fn cmd_tab_rename(old: &str, new_name: &str) -> Result<()> {
     let mut config = load_config()?;
-    let idx = config.tabs.iter().position(|t| t == old)
+    let idx = config
+        .tabs
+        .iter()
+        .position(|t| t == old)
         .ok_or_else(|| anyhow::anyhow!("tab '{}' not found", old))?;
     if config.tab_exists(new_name) {
         bail!("tab '{}' already exists", new_name);
@@ -456,11 +552,17 @@ fn cmd_tab_own(tab: &str, project: &str) -> Result<()> {
         None
     } else {
         if !config.tab_exists(tab) {
-            bail!("tab '{}' not found — use 'wsx tab create {}' first", tab, tab);
+            bail!(
+                "tab '{}' not found — use 'wsx tab create {}' first",
+                tab,
+                tab
+            );
         }
         Some(tab.to_string())
     };
-    let entry = config.projects.iter_mut()
+    let entry = config
+        .projects
+        .iter_mut()
         .find(|e| e.name == project)
         .ok_or_else(|| anyhow::anyhow!("project '{}' not found", project))?;
     entry.tab = tab_opt;
@@ -469,11 +571,19 @@ fn cmd_tab_own(tab: &str, project: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_session_list(project_name: Option<&str>, json: bool, format: Format, tab: Option<&str>) -> Result<()> {
+fn cmd_session_list(
+    project_name: Option<&str>,
+    json: bool,
+    format: Format,
+    tab: Option<&str>,
+) -> Result<()> {
     let (config, workspace) = load_full_workspace()?;
     let projects = resolve_projects(&config, &workspace, project_name, tab)?;
     if json {
-        let sessions: Vec<_> = projects.iter().flat_map(|p| p.worktrees.iter().flat_map(|w| w.sessions.iter())).collect();
+        let sessions: Vec<_> = projects
+            .iter()
+            .flat_map(|p| p.worktrees.iter().flat_map(|w| w.sessions.iter()))
+            .collect();
         println!("{}", serde_json::to_string_pretty(&sessions)?);
         return Ok(());
     }
@@ -482,9 +592,9 @@ fn cmd_session_list(project_name: Option<&str>, json: bool, format: Format, tab:
         let rows: Vec<Vec<String>> = projects
             .iter()
             .flat_map(|p| {
-                p.worktrees.iter().map(move |wt| {
-                    vec![p.name.clone(), wt.branch.clone(), sessions_inline(wt)]
-                })
+                p.worktrees
+                    .iter()
+                    .map(move |wt| vec![p.name.clone(), wt.branch.clone(), sessions_inline(wt)])
             })
             .collect();
         print_table(headers, &rows);
@@ -493,7 +603,13 @@ fn cmd_session_list(project_name: Option<&str>, json: bool, format: Format, tab:
     for p in projects {
         for wt in &p.worktrees {
             for s in &wt.sessions {
-                println!("{}/{} — {} ({})", p.name, wt.branch, s.name, activity_label(s));
+                println!(
+                    "{}/{} — {} ({})",
+                    p.name,
+                    wt.branch,
+                    s.name,
+                    activity_label(s)
+                );
             }
         }
     }

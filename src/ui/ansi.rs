@@ -33,8 +33,7 @@ pub fn parse(input: &str) -> Text<'static> {
                     } else {
                         rest = "";
                     }
-                } else if rest.len() >= 3
-                    && matches!(rest.as_bytes()[1], b'(' | b')' | b'*' | b'+')
+                } else if rest.len() >= 3 && matches!(rest.as_bytes()[1], b'(' | b')' | b'*' | b'+')
                 {
                     // Charset designation: \x1b ( X  — skip ESC + designator + charset byte
                     rest = &rest[3..];
@@ -187,7 +186,12 @@ mod tests {
     fn plain(text: &Text<'static>) -> String {
         text.lines
             .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }

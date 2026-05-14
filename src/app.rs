@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex, Condvar};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -361,12 +361,19 @@ impl App {
     pub fn new(mobile: bool) -> Result<Self> {
         let (config, config_warn) = GlobalConfig::load()?;
         let mut workspace = ops::load_workspace(&config);
-        let (raw_selected, cursor_identity, command_history, cached_active_tab, cached_tmux_pid, cached_muted) =
-            crate::cache::apply_cache(&mut workspace);
+        let (
+            raw_selected,
+            cursor_identity,
+            command_history,
+            cached_active_tab,
+            cached_tmux_pid,
+            cached_muted,
+        ) = crate::cache::apply_cache(&mut workspace);
         // One-time migration: write cached muted names to tmux user options.
         crate::cache::migrate_flags_to_tmux(&cached_muted);
         let restored = ops::restore_cached_sessions(&workspace, cached_tmux_pid);
-        let visible_projects = compute_visible_projects(&config, &workspace, cached_active_tab.as_deref());
+        let visible_projects =
+            compute_visible_projects(&config, &workspace, cached_active_tab.as_deref());
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
         let tree_selected = cursor_identity
             .and_then(|id| crate::cache::find_cursor_index(&workspace, &cached_flat, &id))
@@ -397,7 +404,10 @@ impl App {
             visible_projects,
             send_command_history: command_history,
             status_message: if restored > 0 {
-                Some(format!("tmux restarted: {restored} session{} restored", if restored == 1 { "" } else { "s" }))
+                Some(format!(
+                    "tmux restarted: {restored} session{} restored",
+                    if restored == 1 { "" } else { "s" }
+                ))
             } else {
                 config_warn.clone()
             },
@@ -428,7 +438,9 @@ impl App {
             worktree_index,
             parsed_preview: std::collections::HashMap::new(),
             git_semaphore: GitSemaphore::new(
-                std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+                std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4),
             ),
             tmux_tx,
             tmux_rx,
@@ -453,12 +465,18 @@ impl App {
         !self.jobs.is_empty()
     }
 
+    fn shows_preview(&self) -> bool {
+        !self.is_mobile
+    }
+
     fn spawn_bg<F>(&mut self, label: impl Into<String>, f: F)
     where
         F: FnOnce() -> Result<BgOutcome> + Send + 'static,
     {
         let label = label.into();
-        self.jobs.push(BgJob { label: label.clone() });
+        self.jobs.push(BgJob {
+            label: label.clone(),
+        });
         self.needs_redraw = true;
         let tx = self.bg_tx.clone();
         std::thread::spawn(move || {
@@ -496,7 +514,10 @@ impl App {
                 self.spawn_tmux_refresh();
                 self.set_status(msg);
             }
-            Ok(BgOutcome::ProjectsCleaned { sessions_to_kill, msg }) => {
+            Ok(BgOutcome::ProjectsCleaned {
+                sessions_to_kill,
+                msg,
+            }) => {
                 if !sessions_to_kill.is_empty() {
                     std::thread::spawn(move || {
                         for sess in sessions_to_kill {
@@ -531,7 +552,8 @@ impl App {
 
     /// Recompute visible project set from active_tab + config, then rebuild flat + clamp cursor.
     fn recompute_visible(&mut self) {
-        let new_visible = compute_visible_projects(&self.config, &self.workspace, self.active_tab.as_deref());
+        let new_visible =
+            compute_visible_projects(&self.config, &self.workspace, self.active_tab.as_deref());
         self.visible_projects = new_visible;
         self.flat_dirty = true;
         self.ensure_flat();
@@ -569,7 +591,10 @@ impl App {
 
             let in_input = matches!(
                 self.mode,
-                Mode::Input { .. } | Mode::Search { .. } | Mode::GitPopup { .. } | Mode::TabManager { .. }
+                Mode::Input { .. }
+                    | Mode::Search { .. }
+                    | Mode::GitPopup { .. }
+                    | Mode::TabManager { .. }
             );
             if let Some(action) = poll_event(Duration::from_millis(TICK_MS), in_input)? {
                 if action == Action::Quit && matches!(self.mode, Mode::Normal) {
@@ -590,7 +615,11 @@ impl App {
     }
 
     fn drain_async_results(&mut self) {
-        if let Mode::Input { context: InputContext::AddProject, ref mut state } = self.mode {
+        if let Mode::Input {
+            context: InputContext::AddProject,
+            ref mut state,
+        } = self.mode
+        {
             if state.poll_scan() {
                 self.needs_redraw = true;
             }
@@ -606,13 +635,20 @@ impl App {
         }
         while let Ok(result) = self.tmux_rx.try_recv() {
             match result {
-                TmuxResult::FullRefresh { sessions, activity, worktrees } => {
+                TmuxResult::FullRefresh {
+                    sessions,
+                    activity,
+                    worktrees,
+                } => {
                     self.apply_tmux_refresh(sessions, activity, worktrees);
                 }
                 TmuxResult::Activity(activity) => {
                     self.apply_tmux_activity(activity);
                 }
-                TmuxResult::Capture { session_name, content } => {
+                TmuxResult::Capture {
+                    session_name,
+                    content,
+                } => {
                     self.apply_tmux_capture(session_name, content);
                 }
             }
@@ -668,10 +704,20 @@ impl App {
                 .map(|wt| wt.path == path)
                 .unwrap_or(false)
         );
-        let cache_secs = if is_selected { 1 } else { Self::GIT_INFO_CACHE_SECS };
+        let cache_secs = if is_selected {
+            1
+        } else {
+            Self::GIT_INFO_CACHE_SECS
+        };
         if let Some(&(pi, wi)) = self.worktree_index.get(&path) {
-            if let Some(wt) = self.workspace.projects.get(pi).and_then(|p| p.worktrees.get(wi)) {
-                let fresh = wt.git_info_fetched_at
+            if let Some(wt) = self
+                .workspace
+                .projects
+                .get(pi)
+                .and_then(|p| p.worktrees.get(wi))
+            {
+                let fresh = wt
+                    .git_info_fetched_at
                     .map(|t| t.elapsed().as_secs() < cache_secs)
                     .unwrap_or(false);
                 if fresh {
@@ -740,7 +786,12 @@ impl App {
     fn apply_git_local_result(&mut self, path: PathBuf, info: Option<GitInfo>) {
         self.git_local_pending.remove(&path);
         if let Some(&(pi, wi)) = self.worktree_index.get(&path) {
-            if let Some(wt) = self.workspace.projects.get_mut(pi).and_then(|p| p.worktrees.get_mut(wi)) {
+            if let Some(wt) = self
+                .workspace
+                .projects
+                .get_mut(pi)
+                .and_then(|p| p.worktrees.get_mut(wi))
+            {
                 // ! timestamp unconditionally — throttles retries even on failed repos
                 wt.git_info_fetched_at = Some(Instant::now());
                 if let Some(gi) = info {
@@ -761,7 +812,14 @@ impl App {
     /// Single write point — both cache and session snapshot always written together.
     /// `sync=true` on quit (fsync), `sync=false` on periodic writes.
     fn persist_state(&mut self, sync: bool) {
-        if let Some(e) = crate::cache::save_cache(&self.workspace, self.tree_selected, self.flat(), &self.send_command_history, self.active_tab.as_deref(), sync) {
+        if let Some(e) = crate::cache::save_cache(
+            &self.workspace,
+            self.tree_selected,
+            self.flat(),
+            &self.send_command_history,
+            self.active_tab.as_deref(),
+            sync,
+        ) {
             self.set_status(e);
         }
         crate::cache::save_session_snapshot(&self.workspace);
@@ -775,7 +833,10 @@ impl App {
     pub fn refresh_all(&mut self) -> Result<()> {
         let sessions_with_paths = session::list_sessions_with_paths();
         let activity = monitor::session_activity();
-        let worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)> = self.workspace.projects.iter()
+        let worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)> = self
+            .workspace
+            .projects
+            .iter()
             .map(|p| {
                 let entries = git_worktree::list_worktrees(&p.path).unwrap_or_default();
                 (p.path.clone(), entries)
@@ -792,12 +853,16 @@ impl App {
         self.rebuild_flat();
         self.clamp_selected();
         // Prune parsed_preview entries for sessions that no longer exist
-        let live_sessions: std::collections::HashSet<&str> = self.workspace.projects.iter()
+        let live_sessions: std::collections::HashSet<&str> = self
+            .workspace
+            .projects
+            .iter()
             .flat_map(|p| p.worktrees.iter())
             .flat_map(|w| w.sessions.iter())
             .map(|s| s.name.as_str())
             .collect();
-        self.parsed_preview.retain(|k, _| live_sessions.contains(k.as_str()));
+        self.parsed_preview
+            .retain(|k, _| live_sessions.contains(k.as_str()));
         self.mark_dirty();
         self.write_cache_if_dirty();
         Ok(())
@@ -845,8 +910,12 @@ impl App {
         }
         self.tmux_refresh_pending = true;
         let tx = self.tmux_tx.clone();
-        let project_paths: Vec<PathBuf> =
-            self.workspace.projects.iter().map(|p| p.path.clone()).collect();
+        let project_paths: Vec<PathBuf> = self
+            .workspace
+            .projects
+            .iter()
+            .map(|p| p.path.clone())
+            .collect();
         std::thread::spawn(move || {
             let sessions = session::list_sessions_with_paths();
             let activity = monitor::session_activity();
@@ -857,7 +926,11 @@ impl App {
                     (path, entries)
                 })
                 .collect();
-            let _ = tx.send(TmuxResult::FullRefresh { sessions, activity, worktrees });
+            let _ = tx.send(TmuxResult::FullRefresh {
+                sessions,
+                activity,
+                worktrees,
+            });
         });
     }
 
@@ -881,12 +954,16 @@ impl App {
         );
         self.rebuild_flat();
         self.clamp_selected();
-        let live_sessions: HashSet<&str> = self.workspace.projects.iter()
+        let live_sessions: HashSet<&str> = self
+            .workspace
+            .projects
+            .iter()
             .flat_map(|p| p.worktrees.iter())
             .flat_map(|w| w.sessions.iter())
             .map(|s| s.name.as_str())
             .collect();
-        self.parsed_preview.retain(|k, _| live_sessions.contains(k.as_str()));
+        self.parsed_preview
+            .retain(|k, _| live_sessions.contains(k.as_str()));
         self.mark_dirty();
         self.write_cache_if_dirty();
         self.needs_redraw = true;
@@ -916,7 +993,7 @@ impl App {
     }
 
     fn spawn_tmux_capture(&mut self) {
-        if self.tmux_capture_pending {
+        if self.tmux_capture_pending || !self.shows_preview() {
             return;
         }
         let (name, is_wsx) = match self.current_selection() {
@@ -939,7 +1016,10 @@ impl App {
         let tx = self.tmux_tx.clone();
         std::thread::spawn(move || {
             let content = capture::capture_pane(&name).map(|raw| capture::trim_capture(&raw));
-            let _ = tx.send(TmuxResult::Capture { session_name: name, content });
+            let _ = tx.send(TmuxResult::Capture {
+                session_name: name,
+                content,
+            });
         });
     }
 
@@ -965,7 +1045,9 @@ impl App {
         if let Some(s) = self.workspace.session_mut(pi, wi, si) {
             if s.pane_capture.as_deref() != Some(&trimmed) {
                 let mut parsed = ansi::parse(&trimmed);
-                while parsed.lines.last()
+                while parsed
+                    .lines
+                    .last()
                     .map(|l| l.spans.iter().all(|sp| sp.content.trim().is_empty()))
                     .unwrap_or(false)
                 {
@@ -976,14 +1058,16 @@ impl App {
                 self.needs_redraw = true;
                 // ! PUA chars (powerline) are width-1 to ratatui but width-2 in terminal;
                 // ! clear the buffer on every content change so diffs never leave stale cells.
-                self.force_redraw = true;
+                self.force_redraw = self.shows_preview();
             }
         }
     }
 
     /// Git fetch trigger — called from fast_timer tick (already was in refresh_captures).
     fn tick_git_fetch(&mut self) {
-        let Some((pi, wi)) = self.selected_worktree_indices() else { return };
+        let Some((pi, wi)) = self.selected_worktree_indices() else {
+            return;
+        };
         let fetch_info = self.workspace.worktree(pi, wi).map(|wt| {
             let interval = FETCH_INTERVAL_SECS * 2u64.pow(wt.fetch_fail_count.min(4) as u32);
             let stale = wt
@@ -1144,7 +1228,7 @@ impl App {
         );
         // ^ PUA width mismatch can leave ghost cells when the preview content changes;
         // force a full redraw on every navigation to flush them.
-        self.force_redraw = true;
+        self.force_redraw = self.shows_preview();
     }
 
     // ── Action dispatch ───────────────────────────────────────────────────────
@@ -1605,7 +1689,10 @@ impl App {
                     return Ok(());
                 }
                 // ^ skip synchronous merge check — always warn; deletion logic is identical
-                let msg = format!("Delete worktree '{}'? Branch may have unmerged changes.", wt.name);
+                let msg = format!(
+                    "Delete worktree '{}'? Branch may have unmerged changes.",
+                    wt.name
+                );
                 self.mode = Mode::Confirm {
                     message: msg,
                     pending: PendingAction::DeleteWorktree {
@@ -1659,7 +1746,10 @@ impl App {
                 self.clamp_selected();
                 self.spawn_bg(format!("clean {}", branch), move || {
                     if !git_worktree::is_branch_merged(&repo, &branch, &default_branch) {
-                        return Ok(BgOutcome::CleanAborted { wt_path, msg: abort_msg });
+                        return Ok(BgOutcome::CleanAborted {
+                            wt_path,
+                            msg: abort_msg,
+                        });
                     }
                     ops::delete_worktree(&repo, &wt_path, &branch, &session_names)?;
                     Ok(BgOutcome::WorktreeRemoved { wt_path, label })
@@ -1668,7 +1758,11 @@ impl App {
             Selection::Project(pi) | Selection::Session(pi, _, _) => {
                 let (path, default_branch, branch_sessions) = {
                     let p = &self.workspace.projects[pi];
-                    (p.path.clone(), p.default_branch.clone(), p.branch_session_names())
+                    (
+                        p.path.clone(),
+                        p.default_branch.clone(),
+                        p.branch_session_names(),
+                    )
                 };
                 self.spawn_bg("clean project", move || {
                     let removed = git_worktree::clean_merged(&path, &default_branch)?;
@@ -1681,7 +1775,10 @@ impl App {
                     } else {
                         format!("Cleaned: {}", removed.join(", "))
                     };
-                    Ok(BgOutcome::ProjectsCleaned { sessions_to_kill, msg })
+                    Ok(BgOutcome::ProjectsCleaned {
+                        sessions_to_kill,
+                        msg,
+                    })
                 });
             }
             Selection::None => {
@@ -1689,7 +1786,13 @@ impl App {
                     .workspace
                     .projects
                     .iter()
-                    .map(|p| (p.path.clone(), p.default_branch.clone(), p.branch_session_names()))
+                    .map(|p| {
+                        (
+                            p.path.clone(),
+                            p.default_branch.clone(),
+                            p.branch_session_names(),
+                        )
+                    })
                     .collect();
                 self.spawn_bg("clean all", move || {
                     let mut sessions_to_kill = Vec::new();
@@ -1705,7 +1808,10 @@ impl App {
                         }
                     }
                     let msg = format!("Cleaned {} merged worktrees", total);
-                    Ok(BgOutcome::ProjectsCleaned { sessions_to_kill, msg })
+                    Ok(BgOutcome::ProjectsCleaned {
+                        sessions_to_kill,
+                        msg,
+                    })
                 });
             }
         }
@@ -1772,7 +1878,11 @@ impl App {
                     .map(|t| t.elapsed().as_secs() < IDLE_SECS)
                     .unwrap_or(false);
                 let idle = !sess.muted && !sess.has_activity && !active && !sess.has_running_app;
-                if idle { Some(i) } else { None }
+                if idle {
+                    Some(i)
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -2095,11 +2205,21 @@ impl App {
                 }
                 InputContext::RenameTab { tab_idx } => {
                     let trimmed = value.trim().to_string();
-                    if trimmed.is_empty() || self.config.tabs.get(tab_idx).map_or(false, |t| t == &trimmed) {
-                        self.mode = Mode::TabManager { selected: tab_idx + 1 };
+                    if trimmed.is_empty()
+                        || self
+                            .config
+                            .tabs
+                            .get(tab_idx)
+                            .map_or(false, |t| t == &trimmed)
+                    {
+                        self.mode = Mode::TabManager {
+                            selected: tab_idx + 1,
+                        };
                     } else if self.config.tabs.contains(&trimmed) {
                         self.set_status(format!("Tab '{}' already exists", trimmed));
-                        self.mode = Mode::TabManager { selected: tab_idx + 1 };
+                        self.mode = Mode::TabManager {
+                            selected: tab_idx + 1,
+                        };
                     } else {
                         let old_name = self.config.tabs[tab_idx].clone();
                         self.config.tabs[tab_idx] = trimmed.clone();
@@ -2114,7 +2234,9 @@ impl App {
                             self.active_tab = Some(trimmed);
                         }
                         self.config.save()?;
-                        self.mode = Mode::TabManager { selected: tab_idx + 1 };
+                        self.mode = Mode::TabManager {
+                            selected: tab_idx + 1,
+                        };
                     }
                 }
             }
@@ -2147,7 +2269,8 @@ impl App {
                     let (repo, wt_path, branch, session_names) = {
                         let p = &self.workspace.projects[pi];
                         let wt = &p.worktrees[wi];
-                        let names: Vec<String> = wt.sessions.iter().map(|s| s.name.clone()).collect();
+                        let names: Vec<String> =
+                            wt.sessions.iter().map(|s| s.name.clone()).collect();
                         (p.path.clone(), wt.path.clone(), wt.branch.clone(), names)
                     };
                     let label = format!("Deleted: {}", branch);
@@ -2167,7 +2290,11 @@ impl App {
                 } => {
                     let (repo_path, default_branch, proj_config) = {
                         let p = &self.workspace.projects[pi];
-                        (p.path.clone(), p.default_branch.clone(), p.config.clone().unwrap_or_default())
+                        (
+                            p.path.clone(),
+                            p.default_branch.clone(),
+                            p.config.clone().unwrap_or_default(),
+                        )
                     };
                     let label = format!("Created worktree: {}", branch);
                     self.spawn_bg(format!("create {}", branch), move || {
@@ -2265,8 +2392,11 @@ impl App {
         let display_name = sess.display_name.clone();
         // Optimistic removal — if kill fails, next periodic refresh re-adds the session.
         // Register pending op so stale in-flight refreshes don't resurrect it before kill confirms.
-        self.pending_session_ops.insert(tmux_name.clone(), SessionOp::Killed);
-        self.workspace.projects[pi].worktrees[wi].sessions.remove(si);
+        self.pending_session_ops
+            .insert(tmux_name.clone(), SessionOp::Killed);
+        self.workspace.projects[pi].worktrees[wi]
+            .sessions
+            .remove(si);
         self.rebuild_flat();
         self.clamp_selected();
         self.mark_dirty();
@@ -2314,7 +2444,12 @@ impl App {
         sess.display_name = new_name.clone();
         // Register pending rename so a stale in-flight refresh remaps old name → new name
         // and preserves pane_capture/muted state instead of losing them.
-        self.pending_session_ops.insert(old_tmux_name, SessionOp::Renamed { new_name: new_tmux_name });
+        self.pending_session_ops.insert(
+            old_tmux_name,
+            SessionOp::Renamed {
+                new_name: new_tmux_name,
+            },
+        );
         self.mark_dirty();
         self.set_status(format!("Session renamed to '{}'", new_name));
         Ok(())
@@ -2486,7 +2621,10 @@ impl App {
             return;
         }
         let tabs = self.config.ordered_tabs();
-        let cur = tabs.iter().position(|t| t.as_deref() == self.active_tab.as_deref()).unwrap_or(0);
+        let cur = tabs
+            .iter()
+            .position(|t| t.as_deref() == self.active_tab.as_deref())
+            .unwrap_or(0);
         let next = (cur + 1) % tabs.len();
         self.active_tab = tabs[next].map(|s| s.to_string());
         self.recompute_visible();
@@ -2499,7 +2637,10 @@ impl App {
             return;
         }
         let tabs = self.config.ordered_tabs();
-        let cur = tabs.iter().position(|t| t.as_deref() == self.active_tab.as_deref()).unwrap_or(0);
+        let cur = tabs
+            .iter()
+            .position(|t| t.as_deref() == self.active_tab.as_deref())
+            .unwrap_or(0);
         let prev = if cur == 0 { tabs.len() - 1 } else { cur - 1 };
         self.active_tab = tabs[prev].map(|s| s.to_string());
         self.recompute_visible();
@@ -2523,7 +2664,9 @@ impl App {
             }
             Action::InputChar('j') | Action::NavigateDown => {
                 let len = self.config.tabs.len() + 1; // +1 for default
-                self.mode = Mode::TabManager { selected: (selected + 1) % len };
+                self.mode = Mode::TabManager {
+                    selected: (selected + 1) % len,
+                };
             }
             Action::InputChar('k') | Action::NavigateUp => {
                 let len = self.config.tabs.len() + 1;
@@ -2568,7 +2711,12 @@ impl App {
                 let tab_idx = selected - 1;
                 if let Some(name) = self.config.tabs.get(tab_idx) {
                     let name = name.clone();
-                    let count = self.config.projects.iter().filter(|p| p.tab.as_deref() == Some(&name)).count();
+                    let count = self
+                        .config
+                        .projects
+                        .iter()
+                        .filter(|p| p.tab.as_deref() == Some(&name))
+                        .count();
                     let msg = if count > 0 {
                         format!("Delete tab '{}'? {} projects move to default", name, count)
                     } else {
@@ -2588,7 +2736,9 @@ impl App {
                 let idx = selected - 1;
                 if idx + 1 < self.config.tabs.len() {
                     self.config.tabs.swap(idx, idx + 1);
-                    self.mode = Mode::TabManager { selected: selected + 1 };
+                    self.mode = Mode::TabManager {
+                        selected: selected + 1,
+                    };
                     self.config.save()?;
                 }
             }
@@ -2600,7 +2750,9 @@ impl App {
                 let idx = selected - 1;
                 if idx > 0 {
                     self.config.tabs.swap(idx - 1, idx);
-                    self.mode = Mode::TabManager { selected: selected - 1 };
+                    self.mode = Mode::TabManager {
+                        selected: selected - 1,
+                    };
                     self.config.save()?;
                 }
             }
@@ -2613,10 +2765,16 @@ impl App {
         let proj_path = self.workspace.projects[pi].path.clone();
         let proj_name = self.workspace.projects[pi].name.clone();
         let tabs = self.config.ordered_tabs();
-        let current_tab = self.config.projects.iter()
+        let current_tab = self
+            .config
+            .projects
+            .iter()
             .find(|c| c.path == proj_path)
             .and_then(|c| c.tab.as_deref());
-        let cur_idx = tabs.iter().position(|t| t.as_deref() == current_tab).unwrap_or(0);
+        let cur_idx = tabs
+            .iter()
+            .position(|t| t.as_deref() == current_tab)
+            .unwrap_or(0);
         let target_idx = (cur_idx as isize + dir).rem_euclid(tabs.len() as isize) as usize;
         let target_tab = tabs[target_idx].map(|s| s.to_string());
         let target_name = target_tab.clone().unwrap_or_else(|| "default".to_string());
@@ -2684,7 +2842,9 @@ impl App {
     }
 
     fn do_git_merge_into(&mut self, pi: usize, wi: usize, branch: String) -> Result<()> {
-        self.spawn_git_op(pi, wi, "merge-into", move |p| git_ops::merge_into(p, &branch));
+        self.spawn_git_op(pi, wi, "merge-into", move |p| {
+            git_ops::merge_into(p, &branch)
+        });
         Ok(())
     }
 }
@@ -2713,7 +2873,11 @@ fn compute_visible_projects(
                 .iter()
                 .find(|c| c.path == wp.path)
                 .and_then(|c| c.tab.as_deref());
-            if tab == active_tab { Some(i) } else { None }
+            if tab == active_tab {
+                Some(i)
+            } else {
+                None
+            }
         })
         .collect()
 }
@@ -2721,20 +2885,28 @@ fn compute_visible_projects(
 fn search_text_for(workspace: &WorkspaceState, entry: &FlatEntry) -> String {
     match entry {
         FlatEntry::Project { idx } => workspace.projects[*idx].name.to_lowercase(),
-        FlatEntry::Worktree { project_idx: pi, worktree_idx: wi } => {
+        FlatEntry::Worktree {
+            project_idx: pi,
+            worktree_idx: wi,
+        } => {
             let wt = &workspace.projects[*pi].worktrees[*wi];
             let alias = wt.alias.as_deref().unwrap_or("");
             format!("{} {} {}", wt.branch, alias, wt.name).to_lowercase()
         }
-        FlatEntry::Session { project_idx: pi, worktree_idx: wi, session_idx: si } => {
-            workspace.projects[*pi].worktrees[*wi].sessions[*si]
-                .display_name
-                .to_lowercase()
-        }
+        FlatEntry::Session {
+            project_idx: pi,
+            worktree_idx: wi,
+            session_idx: si,
+        } => workspace.projects[*pi].worktrees[*wi].sessions[*si]
+            .display_name
+            .to_lowercase(),
     }
 }
 
-fn session_needs_attention(sess: &crate::model::workspace::SessionInfo, currently_active: bool) -> bool {
+fn session_needs_attention(
+    sess: &crate::model::workspace::SessionInfo,
+    currently_active: bool,
+) -> bool {
     // ^ bell (has_activity) always needs attention regardless of active state;
     // running-app only needs attention when session has gone idle.
     !sess.muted && (sess.has_activity || (!currently_active && sess.has_running_app))
@@ -2757,7 +2929,9 @@ fn build_search_cache(workspace: &WorkspaceState, flat: &[FlatEntry]) -> Vec<Str
     flat.iter().map(|e| search_text_for(workspace, e)).collect()
 }
 
-fn build_worktree_index(workspace: &WorkspaceState) -> std::collections::HashMap<PathBuf, (usize, usize)> {
+fn build_worktree_index(
+    workspace: &WorkspaceState,
+) -> std::collections::HashMap<PathBuf, (usize, usize)> {
     let mut idx = std::collections::HashMap::new();
     for (pi, proj) in workspace.projects.iter().enumerate() {
         for (wi, wt) in proj.worktrees.iter().enumerate() {
@@ -2787,7 +2961,11 @@ mod tests {
 
     #[test]
     fn search_matches_multiple_hits() {
-        let cache = vec!["feat/a".to_string(), "other".to_string(), "feat/b".to_string()];
+        let cache = vec![
+            "feat/a".to_string(),
+            "other".to_string(),
+            "feat/b".to_string(),
+        ];
         let hits = search_matches_in(&cache, "feat");
         assert_eq!(hits, vec![0, 2]);
     }
@@ -2871,8 +3049,14 @@ mod tests {
         let out = filter_pending_session_ops(&mut pending, input);
         // sess-a still in tmux → suppressed; sess-b passes through
         let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(!names.contains(&"sess-a"), "killed session should be filtered");
-        assert!(names.contains(&"sess-b"), "other sessions should pass through");
+        assert!(
+            !names.contains(&"sess-a"),
+            "killed session should be filtered"
+        );
+        assert!(
+            names.contains(&"sess-b"),
+            "other sessions should pass through"
+        );
         // Entry stays because tmux still reports it (kill not confirmed)
         assert!(pending.contains_key("sess-a"));
     }
@@ -2893,7 +3077,12 @@ mod tests {
     #[test]
     fn renamed_session_remapped_to_new_name() {
         let mut pending = HashMap::new();
-        pending.insert("old-name".to_string(), SessionOp::Renamed { new_name: "new-name".to_string() });
+        pending.insert(
+            "old-name".to_string(),
+            SessionOp::Renamed {
+                new_name: "new-name".to_string(),
+            },
+        );
         // tmux still reports old name (rename not yet visible in snapshot)
         let input = vec![sess("old-name"), sess("other")];
         let out = filter_pending_session_ops(&mut pending, input);
@@ -2906,7 +3095,12 @@ mod tests {
     #[test]
     fn renamed_entry_cleared_when_new_name_confirmed() {
         let mut pending = HashMap::new();
-        pending.insert("old-name".to_string(), SessionOp::Renamed { new_name: "new-name".to_string() });
+        pending.insert(
+            "old-name".to_string(),
+            SessionOp::Renamed {
+                new_name: "new-name".to_string(),
+            },
+        );
         // tmux now reports the new name (rename confirmed)
         let input = vec![sess("new-name"), sess("other")];
         let out = filter_pending_session_ops(&mut pending, input);

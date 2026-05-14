@@ -35,7 +35,11 @@ fn parse_newest_version(body: &str) -> Option<String> {
 fn is_newer(candidate: &str, current: &str) -> bool {
     fn parse(v: &str) -> Option<(u32, u32, u32)> {
         let mut p = v.splitn(3, '.');
-        Some((p.next()?.parse().ok()?, p.next()?.parse().ok()?, p.next()?.parse().ok()?))
+        Some((
+            p.next()?.parse().ok()?,
+            p.next()?.parse().ok()?,
+            p.next()?.parse().ok()?,
+        ))
     }
     match (parse(candidate), parse(current)) {
         (Some(c), Some(r)) => c > r,

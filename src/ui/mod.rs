@@ -106,13 +106,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 let found = app.workspace.projects.get(pi).and_then(|p| {
                     let wt = p.worktrees.get(wi)?;
                     let sess = wt.sessions.get(si)?;
-                    let title = format!("{} › {} › {}", p.name, wt.display_name(), sess.display_name);
+                    let title =
+                        format!("{} › {} › {}", p.name, wt.display_name(), sess.display_name);
                     Some((&sess.name, title))
                 });
                 if let Some((sess_name, title)) = found {
                     let parsed = app.parsed_preview.get(sess_name);
                     // Re-borrow sess for render — split borrows on different fields
-                    if let Some(sess) = app.workspace.projects.get(pi)
+                    if let Some(sess) = app
+                        .workspace
+                        .projects
+                        .get(pi)
                         .and_then(|p| p.worktrees.get(wi))
                         .and_then(|wt| wt.sessions.get(si))
                     {
@@ -132,7 +136,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     })
                 });
                 if let Some(title) = found {
-                    if let Some(wt) = app.workspace.projects.get(pi).and_then(|p| p.worktrees.get(wi)) {
+                    if let Some(wt) = app
+                        .workspace
+                        .projects
+                        .get(pi)
+                        .and_then(|p| p.worktrees.get(wi))
+                    {
                         render_worktree_preview(frame, preview_area, wt, &title);
                     } else {
                         render_empty_preview(frame, preview_area);
@@ -213,7 +222,9 @@ fn build_hints(app: &App, mobile: bool) -> String {
         return match &app.mode {
             Mode::Normal => match app.current_selection() {
                 Selection::Project(_) => "Enter:expand  w:worktree  d:del  ?:help".to_string(),
-                Selection::Worktree(_, _) => "Enter:expand  s:session  r:alias  d:del  ?:help".to_string(),
+                Selection::Worktree(_, _) => {
+                    "Enter:expand  s:session  r:alias  d:del  ?:help".to_string()
+                }
                 Selection::Session(..) => "Enter:attach  d:kill  r:rename  ?:help".to_string(),
                 Selection::None => "p:add project".to_string(),
             },
@@ -231,7 +242,9 @@ fn build_hints(app: &App, mobile: bool) -> String {
     let tabs = if has_tabs { "  (T)abs" } else { "" };
     match &app.mode {
         Mode::Normal => match app.current_selection() {
-            Selection::Project(_) => format!("(m)ove  (w)orktree{}  (d)el  (c)lean  ·  {}", tabs, global),
+            Selection::Project(_) => {
+                format!("(m)ove  (w)orktree{}  (d)el  (c)lean  ·  {}", tabs, global)
+            }
             Selection::Worktree(_, _) => format!(
                 "(s)ession  (r)alias  (d)el  ·  (w)orktree{}  (c)lean  ·  {}",
                 tabs, global
@@ -396,7 +409,6 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
         frame.render_widget(Paragraph::new(Text::from(text_lines)), area);
     }
 }
-
 
 fn render_help(frame: &mut Frame, area: Rect) {
     let width = area.width.min(64).max(40);

@@ -74,8 +74,14 @@ pub fn capture_pane(session_name: &str) -> Option<String> {
 /// `offset` — how many lines from the bottom to skip (0 = current bottom).
 /// Returns (`-S` value, `-E` value) for the given window parameters.
 fn window_args(lines: Option<u32>, offset: u32) -> (Option<String>, Option<String>) {
-    let start = lines.filter(|&n| n > 0).map(|n| format!("-{}", n as i64 + offset as i64));
-    let end = if start.is_some() && offset > 0 { Some(format!("-{}", offset)) } else { None };
+    let start = lines
+        .filter(|&n| n > 0)
+        .map(|n| format!("-{}", n as i64 + offset as i64));
+    let end = if start.is_some() && offset > 0 {
+        Some(format!("-{}", offset))
+    } else {
+        None
+    };
     (start, end)
 }
 
@@ -207,7 +213,10 @@ mod tests {
     #[test]
     fn window_args_lines_and_offset() {
         // start = -(50+10) = -60, end = -10
-        assert_eq!(window_args(Some(50), 10), (Some("-60".into()), Some("-10".into())));
+        assert_eq!(
+            window_args(Some(50), 10),
+            (Some("-60".into()), Some("-10".into()))
+        );
     }
 
     #[test]
@@ -254,13 +263,19 @@ mod tests {
 
     #[test]
     fn compact_preserves_leading_indent() {
-        assert_eq!(compact_for_agent("  indented\n    deeper"), "  indented\n    deeper");
+        assert_eq!(
+            compact_for_agent("  indented\n    deeper"),
+            "  indented\n    deeper"
+        );
     }
 
     #[test]
     fn compact_box_drawing_only_line_becomes_blank() {
         // separator line of box chars → blank → collapsed with surrounding blanks
-        assert_eq!(compact_for_agent("above\n────────\nbelow"), "above\n\nbelow");
+        assert_eq!(
+            compact_for_agent("above\n────────\nbelow"),
+            "above\n\nbelow"
+        );
     }
 
     #[test]

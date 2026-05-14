@@ -89,9 +89,13 @@ fn translate_key(key: KeyEvent) -> Action {
         (KeyModifiers::NONE, KeyCode::Char(']')) => Action::JumpProjectDown,
         (KeyModifiers::NONE, KeyCode::Char('[')) => Action::JumpProjectUp,
         (KeyModifiers::NONE, KeyCode::Char('a')) => Action::NextActive,
-        (KeyModifiers::SHIFT, KeyCode::Char('A')) | (KeyModifiers::NONE, KeyCode::Char('A')) => Action::PrevActive,
+        (KeyModifiers::SHIFT, KeyCode::Char('A')) | (KeyModifiers::NONE, KeyCode::Char('A')) => {
+            Action::PrevActive
+        }
         (KeyModifiers::NONE, KeyCode::Char('i')) => Action::NextIdle,
-        (KeyModifiers::SHIFT, KeyCode::Char('I')) | (KeyModifiers::NONE, KeyCode::Char('I')) => Action::PrevIdle,
+        (KeyModifiers::SHIFT, KeyCode::Char('I')) | (KeyModifiers::NONE, KeyCode::Char('I')) => {
+            Action::PrevIdle
+        }
         (KeyModifiers::SHIFT, KeyCode::Char('S')) | (KeyModifiers::NONE, KeyCode::Char('S')) => {
             Action::SendCommand
         }
@@ -100,9 +104,15 @@ fn translate_key(key: KeyEvent) -> Action {
         }
         (KeyModifiers::NONE, KeyCode::Char('/')) => Action::SearchStart,
         (KeyModifiers::NONE, KeyCode::Char('g')) => Action::GitPopup,
-        (KeyModifiers::SHIFT, KeyCode::Char('{')) | (KeyModifiers::NONE, KeyCode::Char('{')) => Action::TabPrev,
-        (KeyModifiers::SHIFT, KeyCode::Char('}')) | (KeyModifiers::NONE, KeyCode::Char('}')) => Action::TabNext,
-        (KeyModifiers::SHIFT, KeyCode::Char('T')) | (KeyModifiers::NONE, KeyCode::Char('T')) => Action::TabManager,
+        (KeyModifiers::SHIFT, KeyCode::Char('{')) | (KeyModifiers::NONE, KeyCode::Char('{')) => {
+            Action::TabPrev
+        }
+        (KeyModifiers::SHIFT, KeyCode::Char('}')) | (KeyModifiers::NONE, KeyCode::Char('}')) => {
+            Action::TabNext
+        }
+        (KeyModifiers::SHIFT, KeyCode::Char('T')) | (KeyModifiers::NONE, KeyCode::Char('T')) => {
+            Action::TabManager
+        }
         (KeyModifiers::NONE, KeyCode::Esc) => Action::InputEscape,
         (KeyModifiers::NONE, KeyCode::Backspace) => Action::InputBackspace,
         _ => Action::None,

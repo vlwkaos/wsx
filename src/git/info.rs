@@ -67,7 +67,9 @@ fn status_porcelain2(path: &Path) -> Option<StatusResult> {
             // Type "2": "2 XY ... score path\toldpath" — tab separates new/old paths
             let path_str = if line.starts_with("2 ") {
                 // Split off the tab-separated part first, take the new path
-                line.split('\t').next().and_then(|before_tab| before_tab.split_whitespace().last())
+                line.split('\t')
+                    .next()
+                    .and_then(|before_tab| before_tab.split_whitespace().last())
             } else {
                 line.split_whitespace().last()
             };
@@ -106,7 +108,9 @@ fn try_fetch_lock(path: &Path) -> Option<std::path::PathBuf> {
     let lock_path = std::env::temp_dir().join(format!("wsx-fetch-{:x}.lock", hash));
     // Check if existing lock is stale (> 120s) — crashed process protection
     if let Ok(meta) = std::fs::metadata(&lock_path) {
-        let age = meta.modified().ok()
+        let age = meta
+            .modified()
+            .ok()
             .and_then(|t| t.elapsed().ok())
             .map(|d| d.as_secs())
             .unwrap_or(u64::MAX);
@@ -132,7 +136,9 @@ fn try_fetch_lock(path: &Path) -> Option<std::path::PathBuf> {
 /// RAII guard that removes the lockfile on drop.
 struct FetchLockGuard(std::path::PathBuf);
 impl Drop for FetchLockGuard {
-    fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// Run `git fetch` — uses `output_with_timeout` for process-group cleanup on timeout.
@@ -140,7 +146,10 @@ impl Drop for FetchLockGuard {
 pub(crate) fn git_fetch(path: &Path) -> FetchOutcome {
     let Some(lock_path) = try_fetch_lock(path) else {
         // Another instance is handling this fetch; report success so backoff stays low.
-        return FetchOutcome { success: true, reason: None };
+        return FetchOutcome {
+            success: true,
+            reason: None,
+        };
     };
     let _lock = FetchLockGuard(lock_path);
     let result = super::output_with_timeout(
@@ -148,14 +157,24 @@ pub(crate) fn git_fetch(path: &Path) -> FetchOutcome {
         std::time::Duration::from_secs(10),
     );
     match result {
-        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
-            FetchOutcome { success: false, reason: Some(FetchFailReason::Timeout) }
-        }
-        Err(_) => FetchOutcome { success: false, reason: Some(FetchFailReason::Network) },
-        Ok(out) if out.status.success() => FetchOutcome { success: true, reason: None },
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => FetchOutcome {
+            success: false,
+            reason: Some(FetchFailReason::Timeout),
+        },
+        Err(_) => FetchOutcome {
+            success: false,
+            reason: Some(FetchFailReason::Network),
+        },
+        Ok(out) if out.status.success() => FetchOutcome {
+            success: true,
+            reason: None,
+        },
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            FetchOutcome { success: false, reason: Some(classify_fetch_error(&stderr)) }
+            FetchOutcome {
+                success: false,
+                reason: Some(classify_fetch_error(&stderr)),
+            }
         }
     }
 }
@@ -246,7 +265,10 @@ mod tests {
         let lock1 = try_fetch_lock(&path);
         assert!(lock1.is_some(), "first acquire should succeed");
         let lock2 = try_fetch_lock(&path);
-        assert!(lock2.is_none(), "second acquire should fail while first is held");
+        assert!(
+            lock2.is_none(),
+            "second acquire should fail while first is held"
+        );
         drop(lock1.map(FetchLockGuard));
     }
 
@@ -257,7 +279,10 @@ mod tests {
         let lock_a = try_fetch_lock(&path_a);
         let lock_b = try_fetch_lock(&path_b);
         assert!(lock_a.is_some(), "lock for path_a should succeed");
-        assert!(lock_b.is_some(), "lock for path_b should succeed independently");
+        assert!(
+            lock_b.is_some(),
+            "lock for path_b should succeed independently"
+        );
         drop(lock_a.map(FetchLockGuard));
         drop(lock_b.map(FetchLockGuard));
     }

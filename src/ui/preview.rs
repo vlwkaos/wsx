@@ -98,7 +98,10 @@ pub fn render_worktree_preview(
                         worktree.fetch_fail_count
                     )
                 } else {
-                    format!("retrying in {}s (attempt {})", remaining, worktree.fetch_fail_count)
+                    format!(
+                        "retrying in {}s (attempt {})",
+                        remaining, worktree.fetch_fail_count
+                    )
                 };
                 lines.push(Line::from(Span::styled(
                     format!("    {}", retry_text),
@@ -217,7 +220,9 @@ pub fn render_session_preview(
     };
     let inner_h = area.height.saturating_sub(2) as usize; // minus borders
     let scroll = text.lines.len().saturating_sub(inner_h) as u16;
-    let para = Paragraph::new(text.clone()).block(block).scroll((scroll, 0));
+    let para = Paragraph::new(text.clone())
+        .block(block)
+        .scroll((scroll, 0));
     frame.render_widget(para, area);
 }
 

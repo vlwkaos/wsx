@@ -20,7 +20,6 @@ pub fn render_tree(
     active_tab: Option<&str>,
     tab_names: &[String],
 ) {
-
     let items: Vec<ListItem> = flat
         .iter()
         .map(|entry| match entry {
@@ -148,12 +147,13 @@ pub fn render_tree(
         list_state.select(Some(selected.min(flat.len().saturating_sub(1))));
     }
 
-    let highlight_bg = if is_move_mode { Color::Green } else { Color::Yellow };
+    let highlight_bg = if is_move_mode {
+        Color::Green
+    } else {
+        Color::Yellow
+    };
     let title_line: Line<'_> = {
-        let mut spans: Vec<Span<'_>> = vec![Span::styled(
-            " Workspaces ",
-            Style::default().bold(),
-        )];
+        let mut spans: Vec<Span<'_>> = vec![Span::styled(" Workspaces ", Style::default().bold())];
         if !tab_names.is_empty() {
             spans.push(Span::raw("["));
             for i in 0..=tab_names.len() {
@@ -184,11 +184,7 @@ pub fn render_tree(
         Line::from(spans)
     };
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title_line),
-        )
+        .block(Block::default().borders(Borders::ALL).title(title_line))
         .highlight_style(Style::default().fg(Color::Black).bg(highlight_bg).bold())
         .highlight_symbol("");
 
@@ -212,8 +208,10 @@ pub fn render_tree(
     }
 }
 
-
-fn session_icon(sess: &crate::model::workspace::SessionInfo, active: bool) -> (&'static str, Color) {
+fn session_icon(
+    sess: &crate::model::workspace::SessionInfo,
+    active: bool,
+) -> (&'static str, Color) {
     if sess.muted {
         ("⊘", Color::DarkGray)
     } else if sess.has_activity {

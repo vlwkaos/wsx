@@ -84,7 +84,10 @@ pub fn refresh_workspace_with_worktrees(
     // Pre-index sessions by worktree path for O(1) lookup per worktree
     let mut sessions_by_path: HashMap<&PathBuf, Vec<&str>> = HashMap::new();
     for (name, path) in sessions_with_paths {
-        sessions_by_path.entry(path).or_default().push(name.as_str());
+        sessions_by_path
+            .entry(path)
+            .or_default()
+            .push(name.as_str());
     }
 
     let aliases_by_path: Vec<(PathBuf, HashMap<String, String>)> = config
@@ -112,12 +115,7 @@ pub fn refresh_workspace_with_worktrees(
                 let panes = w
                     .sessions
                     .iter()
-                    .map(|s| {
-                        (
-                            s.name.clone(),
-                            (s.pane_capture.clone(), s.muted),
-                        )
-                    })
+                    .map(|s| (s.name.clone(), (s.pane_capture.clone(), s.muted)))
                     .collect();
                 let order = w.sessions.iter().map(|s| s.name.clone()).collect();
                 (
@@ -211,7 +209,15 @@ pub fn refresh_workspace_with_worktrees(
                 .collect();
             sessions.sort_by_key(|s| *order_index.get(s.name.as_str()).unwrap_or(&usize::MAX));
 
-            let (git_info, git_info_fetched_at, expanded, last_fetched, fetch_failed, fetch_fail_count, fetch_fail_reason) = prev
+            let (
+                git_info,
+                git_info_fetched_at,
+                expanded,
+                last_fetched,
+                fetch_failed,
+                fetch_fail_count,
+                fetch_fail_reason,
+            ) = prev
                 .map(|snap| {
                     (
                         snap.git_info.clone(),
@@ -567,10 +573,16 @@ mod tests {
             &config,
             &[],
             &activity,
-            vec![(exists_path.clone(), vec![]), (missing_path.clone(), vec![])],
+            vec![
+                (exists_path.clone(), vec![]),
+                (missing_path.clone(), vec![]),
+            ],
         );
         assert_eq!(workspace.projects.len(), 2);
-        assert!(workspace.projects.iter().any(|p| p.missing && p.path == missing_path));
+        assert!(workspace
+            .projects
+            .iter()
+            .any(|p| p.missing && p.path == missing_path));
 
         // Second refresh: missing_path still gone — now dropped.
         refresh_workspace_with_worktrees(
