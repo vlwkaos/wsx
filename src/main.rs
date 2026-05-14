@@ -38,10 +38,7 @@ fn run_tui(mobile: bool) -> Result<()> {
     // Restore terminal on panic so the shell isn't left in raw mode.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = crossterm::execute!(
-            std::io::stderr(),
-            crossterm::terminal::LeaveAlternateScreen,
-        );
+        let _ = crossterm::execute!(std::io::stderr(), crossterm::terminal::LeaveAlternateScreen,);
         let _ = crossterm::terminal::disable_raw_mode();
         default_hook(info);
     }));

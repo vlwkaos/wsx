@@ -15,7 +15,10 @@ pub fn git_cmd(repo: &Path) -> Command {
         .arg(repo)
         .stdin(std::process::Stdio::null())
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=5");
+        .env(
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o ConnectTimeout=5",
+        );
     cmd
 }
 
@@ -59,14 +62,22 @@ pub fn output_with_timeout(
             Ok(Some(status)) => {
                 let stdout = stdout_thread.join().unwrap_or_default();
                 let stderr = stderr_thread.join().unwrap_or_default();
-                return Ok(std::process::Output { status, stdout, stderr });
+                return Ok(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
             }
             Ok(None) => {
                 if start.elapsed() >= timeout {
                     if let Ok(Some(status)) = child.try_wait() {
                         let stdout = stdout_thread.join().unwrap_or_default();
                         let stderr = stderr_thread.join().unwrap_or_default();
-                        return Ok(std::process::Output { status, stdout, stderr });
+                        return Ok(std::process::Output {
+                            status,
+                            stdout,
+                            stderr,
+                        });
                     }
                     // Kill the entire process group — git + ssh + credential helpers
                     unsafe { libc::killpg(child_pgid, libc::SIGKILL) };

@@ -28,7 +28,11 @@ pub fn render_tab_manager(
     for (i, tab) in tabs.iter().enumerate() {
         let name = tab.unwrap_or("default");
         let count = if let Some(tab_str) = tab {
-            config.projects.iter().filter(|p| p.tab.as_deref() == Some(tab_str)).count()
+            config
+                .projects
+                .iter()
+                .filter(|p| p.tab.as_deref() == Some(tab_str))
+                .count()
         } else {
             config.projects.iter().filter(|p| p.tab.is_none()).count()
         };

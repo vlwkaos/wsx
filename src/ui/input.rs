@@ -70,7 +70,9 @@ impl InputState {
     }
 
     pub fn poll_scan(&mut self) -> bool {
-        let Some(rx) = &self.scan_rx else { return false };
+        let Some(rx) = &self.scan_rx else {
+            return false;
+        };
         let mut new_data = false;
         loop {
             match rx.try_recv() {
@@ -224,13 +226,20 @@ fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
 fn history_completions(typed: &str, history: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     if typed.is_empty() {
-        return history.iter().rev().filter(|h| seen.insert(h.as_str())).cloned().collect();
+        return history
+            .iter()
+            .rev()
+            .filter(|h| seen.insert(h.as_str()))
+            .cloned()
+            .collect();
     }
     let mut scored: Vec<(i32, &str)> = history
         .iter()
         .rev()
         .filter_map(|h| {
-            if !seen.insert(h.as_str()) { return None; }
+            if !seen.insert(h.as_str()) {
+                return None;
+            }
             fuzzy_score(typed, h).map(|s| (s, h.as_str()))
         })
         .collect();
@@ -333,7 +342,11 @@ fn display_path(path: &PathBuf, prefer_tilde: bool) -> String {
 // ── Background git repo scan ──────────────────────────────────────────────────
 
 const SKIP_DIRS: &[&str] = &[
-    "node_modules", "target", "Library", "Applications", ".Trash",
+    "node_modules",
+    "target",
+    "Library",
+    "Applications",
+    ".Trash",
 ];
 const MAX_SCAN_DEPTH: usize = 6;
 
@@ -343,15 +356,13 @@ fn scan_git_repos(tx: mpsc::Sender<String>) {
 }
 
 /// Returns false if the receiver dropped — caller should stop walking.
-fn walk_for_git(
-    dir: &std::path::Path,
-    depth: usize,
-    tx: &mpsc::Sender<String>,
-) -> bool {
+fn walk_for_git(dir: &std::path::Path, depth: usize, tx: &mpsc::Sender<String>) -> bool {
     if depth > MAX_SCAN_DEPTH {
         return true;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else { return true };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return true;
+    };
 
     let mut has_git = false;
     let mut subdirs = vec![];
@@ -395,7 +406,11 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
 
     let scanning = state.is_scanning() && state.completions.is_empty();
     let max_show = if state.completions.is_empty() {
-        if scanning { 1 } else { 0 }
+        if scanning {
+            1
+        } else {
+            0
+        }
     } else {
         5usize.min(state.completions.len())
     };

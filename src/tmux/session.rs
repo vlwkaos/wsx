@@ -141,7 +141,9 @@ pub fn attach_foreground(name: &str) -> Result<()> {
 
 /// Get tmux server PID via `tmux display-message -p "#{pid}"`.
 pub fn server_pid() -> Option<u32> {
-    let output = tmux_cmd(&["display-message", "-p", "#{pid}"]).output().ok()?;
+    let output = tmux_cmd(&["display-message", "-p", "#{pid}"])
+        .output()
+        .ok()?;
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 

@@ -113,7 +113,10 @@ impl GlobalConfig {
 
     /// Returns the tab name for the project at `path`, or `None` if unassigned.
     pub fn project_tab<'a>(&'a self, path: &Path) -> Option<&'a str> {
-        self.projects.iter().find(|e| e.path == path).and_then(|e| e.tab.as_deref())
+        self.projects
+            .iter()
+            .find(|e| e.path == path)
+            .and_then(|e| e.tab.as_deref())
     }
 
     /// Set or clear the tab assignment for the project at `path`.

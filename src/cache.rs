@@ -93,8 +93,7 @@ fn cache_path() -> PathBuf {
 }
 
 fn session_snapshot_path() -> Option<PathBuf> {
-    let base = dirs::config_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))?;
+    let base = dirs::config_dir().or_else(|| dirs::home_dir().map(|h| h.join(".config")))?;
     Some(base.join("wsx").join("sessions.toml"))
 }
 
@@ -115,7 +114,9 @@ pub fn collect_session_names(workspace: &WorkspaceState) -> HashMap<String, Vec<
 /// Persist session names to Application Support — survives tmux crashes because
 /// it's outside the cache and written whenever sessions change.
 pub fn save_session_snapshot(workspace: &WorkspaceState) {
-    let Some(path) = session_snapshot_path() else { return };
+    let Some(path) = session_snapshot_path() else {
+        return;
+    };
     save_snapshot_to(workspace, &path);
 }
 
@@ -123,25 +124,38 @@ pub(crate) fn save_snapshot_to(workspace: &WorkspaceState, path: &std::path::Pat
     let map = collect_session_names(workspace);
     let Ok(s) = toml::to_string(&map) else { return };
     if let Some(dir) = path.parent() {
-        if std::fs::create_dir_all(dir).is_err() { return; }
+        if std::fs::create_dir_all(dir).is_err() {
+            return;
+        }
     }
     let _ = write_atomic(path, s.as_bytes());
 }
 
 /// Load the session snapshot written by `save_session_snapshot`.
 pub fn load_session_snapshot() -> HashMap<String, Vec<String>> {
-    let Some(path) = session_snapshot_path() else { return HashMap::new() };
+    let Some(path) = session_snapshot_path() else {
+        return HashMap::new();
+    };
     load_snapshot_from(&path)
 }
 
 pub(crate) fn load_snapshot_from(path: &std::path::Path) -> HashMap<String, Vec<String>> {
-    let Ok(content) = std::fs::read_to_string(path) else { return HashMap::new() };
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
     toml::from_str(&content).unwrap_or_default()
 }
 
 /// Return type for `apply_cache`. Last two fields are for one-time tmux flag migration.
 #[allow(clippy::type_complexity)]
-type CacheResult = (usize, Option<CursorIdentity>, Vec<String>, Option<String>, Option<u32>, HashSet<String>);
+type CacheResult = (
+    usize,
+    Option<CursorIdentity>,
+    Vec<String>,
+    Option<String>,
+    Option<u32>,
+    HashSet<String>,
+);
 
 /// Pre-populate workspace with cached state before first live sync.
 pub fn apply_cache(workspace: &mut WorkspaceState) -> CacheResult {
@@ -183,7 +197,14 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> CacheResult {
             }
         }
     }
-    (cache.tree_selected, cache.cursor_identity, cache.command_history, cache.active_tab, cache.tmux_server_pid, cache.muted_sessions)
+    (
+        cache.tree_selected,
+        cache.cursor_identity,
+        cache.command_history,
+        cache.active_tab,
+        cache.tmux_server_pid,
+        cache.muted_sessions,
+    )
 }
 
 /// Resolve a saved CursorIdentity back to a flat-tree index.
@@ -264,13 +285,16 @@ pub fn save_cache(
     }
     cache.command_history = command_history.to_vec();
     cache.tmux_server_pid = crate::tmux::session::server_pid();
-    cache.save(sync).err().map(|e| format!("cache save failed: {e}"))
+    cache
+        .save(sync)
+        .err()
+        .map(|e| format!("cache save failed: {e}"))
 }
 
 /// One-time migration: write cached muted session names as tmux user options so they
 /// survive future cache writes and are visible to all instances. Idempotent and non-fatal.
 pub fn migrate_flags_to_tmux(muted: &HashSet<String>) {
-    use crate::tmux::session::{OPT_MUTED, set_session_opt};
+    use crate::tmux::session::{set_session_opt, OPT_MUTED};
     for name in muted {
         set_session_opt(name, OPT_MUTED, "1");
     }
@@ -365,19 +389,17 @@ mod tests {
 
     #[test]
     fn collect_session_names_maps_by_path() {
-        let ws = make_workspace(&[
-            ("/tmp/proj", &["proj-main-claude", "proj-main-shell"]),
-        ]);
+        let ws = make_workspace(&[("/tmp/proj", &["proj-main-claude", "proj-main-shell"])]);
         let map = collect_session_names(&ws);
-        assert_eq!(map["/tmp/proj"], vec!["proj-main-claude", "proj-main-shell"]);
+        assert_eq!(
+            map["/tmp/proj"],
+            vec!["proj-main-claude", "proj-main-shell"]
+        );
     }
 
     #[test]
     fn collect_session_names_skips_empty_worktrees() {
-        let ws = make_workspace(&[
-            ("/tmp/proj-a", &["proj-a-claude"]),
-            ("/tmp/proj-b", &[]),
-        ]);
+        let ws = make_workspace(&[("/tmp/proj-a", &["proj-a-claude"]), ("/tmp/proj-b", &[])]);
         let map = collect_session_names(&ws);
         assert!(map.contains_key("/tmp/proj-a"));
         assert!(!map.contains_key("/tmp/proj-b"));
