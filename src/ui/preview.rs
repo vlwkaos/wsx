@@ -4,7 +4,7 @@ use crate::model::workspace::{FetchFailReason, Project, SessionInfo, WorktreeInf
 use crate::ui::ansi;
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 pub fn render_worktree_preview(
@@ -13,6 +13,7 @@ pub fn render_worktree_preview(
     worktree: &WorktreeInfo,
     title: &str,
 ) {
+    frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {} ", title))
@@ -199,6 +200,7 @@ pub fn render_session_preview(
     title: &str,
     parsed: Option<&ratatui::text::Text<'static>>,
 ) {
+    frame.render_widget(Clear, area);
     let activity = if session.has_activity { " ●" } else { "" };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -227,6 +229,7 @@ pub fn render_session_preview(
 }
 
 pub fn render_project_preview(frame: &mut Frame, area: Rect, project: &Project) {
+    frame.render_widget(Clear, area);
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
             Span::styled("Path:  ", Style::default().fg(Color::Gray)),
@@ -290,6 +293,7 @@ pub fn render_project_preview(frame: &mut Frame, area: Rect, project: &Project) 
 }
 
 pub fn render_empty_preview(frame: &mut Frame, area: Rect) {
+    frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Preview ")
