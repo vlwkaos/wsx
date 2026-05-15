@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.8] - 2026-05-14
+
+### Bug Fixes
+
+- Mobile mode no longer triggers preview-driven pane capture and forced full redraws while the preview is hidden, which reduces active-session flicker in xtermjs and other portrait SSH terminals
+- The preview pane now clears before redraw, which prevents wrapped session output from leaving stale cells behind when line layout changes
+
 ## [0.15.7] - 2026-05-05
 
 ### Bug Fixes
