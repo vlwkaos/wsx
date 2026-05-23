@@ -3,6 +3,20 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+/// Foreground process class for a tmux session, classified by `tmux::monitor`.
+/// "Running" (Active state) is decided downstream in `session_state` — this
+/// enum stays a raw input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+pub enum ForegroundKind {
+    #[default]
+    Unknown,
+    Shell,
+    PassiveViewer,
+    Runtime,
+    Agent,
+    InteractiveApp,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkspaceState {
     pub projects: Vec<Project>,
@@ -33,12 +47,12 @@ pub struct ProjectConfig {
 pub struct SessionInfo {
     pub name: String,         // full tmux session name
     pub display_name: String, // shown in UI (strips wt_slug prefix)
-    pub has_activity: bool,
+    pub has_activity: bool,   // tmux bell/alert flag
     #[serde(skip)]
     pub pane_capture: Option<String>,
     #[serde(skip)]
     pub last_activity: Option<std::time::Instant>,
-    pub has_running_app: bool, // foreground process is not a bare shell
+    pub foreground: ForegroundKind, // raw process classification — see tmux::monitor
     #[serde(skip)]
     pub is_running_wsx: bool, // foreground process is wsx — suppresses capture preview
     #[serde(skip)]

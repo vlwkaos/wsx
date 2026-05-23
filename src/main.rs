@@ -11,6 +11,7 @@ mod git;
 mod hooks;
 mod model;
 mod ops;
+mod session_state;
 mod tmux;
 mod tui;
 mod ui;

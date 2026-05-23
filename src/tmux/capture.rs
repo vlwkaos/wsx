@@ -2,6 +2,15 @@
 
 use super::tmux_cmd;
 
+/// Heuristic classification of a captured pane's tail. Best-effort: derived from
+/// the last captured pane text, so it is only fresh for the previewed session.
+/// A complement to the authoritative tmux bell, never a replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureHint {
+    WaitingForConfirm,
+    WaitingForInput,
+}
+
 /// Sentinel embedded in wsx's status bar adjacent to the version badge.
 /// When capture_pane finds this character in a pane's last two rows, it knows wsx is
 /// running there and suppresses the preview to prevent nested-render loops.
@@ -58,6 +67,51 @@ fn strip_ansi(s: &str) -> String {
         }
     }
     out
+}
+
+fn tail_lines_for_hint(raw: &str) -> Vec<String> {
+    strip_ansi(raw)
+        .lines()
+        .rev()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_lowercase())
+        })
+        .take(3)
+        .collect()
+}
+
+fn looks_like_confirm(line: &str) -> bool {
+    let normalized = line.replace(' ', "");
+    normalized.contains("[y/n]")
+        || normalized.contains("(y/n)")
+        || normalized.contains("[y/n]:")
+        || normalized.contains("[y/n]?")
+        || normalized.contains("[y/n]>")
+        || normalized.contains("[y/n])")
+        || line.contains("continue?")
+        || line.contains("confirm")
+        || line.contains("approve")
+        || line.contains("press enter")
+}
+
+fn looks_like_input_wait(line: &str) -> bool {
+    line.contains("input required")
+        || line.contains("waiting for user")
+        || line.contains("enter value")
+        || line.contains("enter input")
+}
+
+pub fn detect_capture_hint(raw: &str) -> Option<CaptureHint> {
+    for line in tail_lines_for_hint(raw) {
+        if looks_like_confirm(&line) {
+            return Some(CaptureHint::WaitingForConfirm);
+        }
+        if looks_like_input_wait(&line) {
+            return Some(CaptureHint::WaitingForInput);
+        }
+    }
+    None
 }
 
 pub fn capture_pane(session_name: &str) -> Option<String> {
@@ -275,6 +329,22 @@ mod tests {
         assert_eq!(
             compact_for_agent("above\n────────\nbelow"),
             "above\n\nbelow"
+        );
+    }
+
+    #[test]
+    fn capture_hint_detects_yes_no_prompt() {
+        assert_eq!(
+            detect_capture_hint("build finished\nContinue? [y/n]"),
+            Some(CaptureHint::WaitingForConfirm)
+        );
+    }
+
+    #[test]
+    fn capture_hint_detects_input_wait() {
+        assert_eq!(
+            detect_capture_hint("agent paused\nwaiting for user"),
+            Some(CaptureHint::WaitingForInput)
         );
     }
 

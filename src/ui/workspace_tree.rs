@@ -1,7 +1,7 @@
 // Left sidebar — 3-level tree (Project -> Worktree -> Session) using ratatui List.
 
-use crate::app::IDLE_SECS;
 use crate::model::workspace::{FlatEntry, WorkspaceState};
+use crate::session_state::{self, AppSessionState};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
@@ -122,12 +122,14 @@ pub fn render_tree(
             } => {
                 let sess = &workspace.projects[*project_idx].worktrees[*worktree_idx].sessions
                     [*session_idx];
-                let elapsed = sess.last_activity.map(|t| t.elapsed());
-                let active = elapsed.map(|e| e.as_secs() < IDLE_SECS).unwrap_or(false);
-                let (icon, icon_color) = session_icon(sess, active);
-                let idle_str = match elapsed {
-                    Some(e) if e.as_secs() >= IDLE_SECS => format!("  {}", fmt_idle(e)),
-                    _ => String::new(),
+                let state = session_state::derive(sess).app_state();
+                let (icon, icon_color) = session_icon(sess, state);
+                let idle_str = if state == AppSessionState::Idle {
+                    sess.last_activity
+                        .map(|e| format!("  {}", fmt_idle(e.elapsed())))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
                 };
                 let line = Line::from(vec![
                     Span::raw("  "),
@@ -210,16 +212,14 @@ pub fn render_tree(
 
 fn session_icon(
     sess: &crate::model::workspace::SessionInfo,
-    active: bool,
+    state: AppSessionState,
 ) -> (&'static str, Color) {
     if sess.muted {
         ("⊘", Color::DarkGray)
-    } else if sess.has_activity {
+    } else if state == AppSessionState::NeedsAttention {
         ("●", Color::Yellow)
-    } else if active {
+    } else if state == AppSessionState::Active {
         ("◉", Color::Green)
-    } else if sess.has_running_app {
-        ("●", Color::Yellow)
     } else {
         ("○", Color::Gray)
     }
@@ -234,59 +234,6 @@ fn fmt_idle(d: std::time::Duration) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::workspace::SessionInfo;
-    use ratatui::style::Color;
-
-    fn sess(muted: bool, has_activity: bool, has_running_app: bool) -> SessionInfo {
-        SessionInfo {
-            name: String::new(),
-            display_name: String::new(),
-            has_activity,
-            pane_capture: None,
-            last_activity: None,
-            has_running_app,
-            is_running_wsx: false,
-            muted,
-        }
-    }
-
-    // Priority: muted > bell > active > running > idle
-    // Regression guard for commit ef1c49f — running must NOT override active (green).
-
-    #[test]
-    fn active_output_is_green() {
-        let s = sess(false, false, true);
-        assert_eq!(session_icon(&s, true), ("◉", Color::Green));
-    }
-
-    #[test]
-    fn bell_overrides_active_green() {
-        let s = sess(false, true, false);
-        assert_eq!(session_icon(&s, true), ("●", Color::Yellow));
-    }
-
-    #[test]
-    fn running_quiet_is_yellow() {
-        let s = sess(false, false, true);
-        assert_eq!(session_icon(&s, false), ("●", Color::Yellow));
-    }
-
-    #[test]
-    fn idle_no_app_is_gray() {
-        let s = sess(false, false, false);
-        assert_eq!(session_icon(&s, false), ("○", Color::Gray));
-    }
-
-    #[test]
-    fn muted_overrides_everything() {
-        let s = sess(true, true, true);
-        assert_eq!(session_icon(&s, true), ("⊘", Color::DarkGray));
-    }
-}
-
 /// Compute scroll offset to keep selected item visible.
 pub fn compute_scroll(selected: usize, visible_height: usize, current_offset: usize) -> usize {
     let up_pad = (visible_height / 4).max(1); // scroll up when cursor within top 1/4
@@ -297,5 +244,65 @@ pub fn compute_scroll(selected: usize, visible_height: usize, current_offset: us
         selected.saturating_sub(down_pad - 1)
     } else {
         current_offset
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_icon;
+    use crate::model::workspace::{ForegroundKind, SessionInfo};
+    use crate::session_state::AppSessionState;
+    use ratatui::style::Color;
+
+    fn session(muted: bool) -> SessionInfo {
+        SessionInfo {
+            name: "proj-wt-sess".to_string(),
+            display_name: "sess".to_string(),
+            has_activity: false,
+            pane_capture: None,
+            last_activity: None,
+            foreground: ForegroundKind::Unknown,
+            is_running_wsx: false,
+            muted,
+        }
+    }
+
+    // muted overrides app_state regardless of the state passed in.
+    #[test]
+    fn given_muted_session_with_needs_attention_when_icon_then_muted_glyph() {
+        assert_eq!(
+            session_icon(&session(true), AppSessionState::NeedsAttention),
+            ("⊘", Color::DarkGray),
+        );
+    }
+    #[test]
+    fn given_muted_session_with_active_when_icon_then_muted_glyph() {
+        assert_eq!(
+            session_icon(&session(true), AppSessionState::Active),
+            ("⊘", Color::DarkGray),
+        );
+    }
+
+    // unmuted: each AppSessionState → distinct glyph + color.
+    #[test]
+    fn given_unmuted_needs_attention_when_icon_then_yellow_dot() {
+        assert_eq!(
+            session_icon(&session(false), AppSessionState::NeedsAttention),
+            ("●", Color::Yellow),
+        );
+    }
+    #[test]
+    fn given_unmuted_active_when_icon_then_green_dot() {
+        assert_eq!(
+            session_icon(&session(false), AppSessionState::Active),
+            ("◉", Color::Green),
+        );
+    }
+    #[test]
+    fn given_unmuted_idle_when_icon_then_gray_ring() {
+        assert_eq!(
+            session_icon(&session(false), AppSessionState::Idle),
+            ("○", Color::Gray),
+        );
     }
 }

@@ -12,6 +12,7 @@ pub mod workspace_tree;
 
 use crate::app::{App, Mode, SPINNER_FRAMES};
 use crate::model::workspace::Selection;
+use crate::session_state::{self, AppSessionState};
 use crate::tmux::capture::WSX_SENTINEL;
 use crate::ui::{
     config_modal::render_config_modal,
@@ -256,11 +257,7 @@ fn build_hints(app: &App, mobile: bool) -> String {
                     .get(pi)
                     .and_then(|p| p.worktrees.get(wi))
                     .and_then(|w| w.sessions.get(si))
-                    .map(|s| {
-                        s.last_activity
-                            .map(|t| t.elapsed().as_secs() < crate::app::IDLE_SECS)
-                            .unwrap_or(false)
-                    })
+                    .map(|s| session_state::derive(s).app_state() == AppSessionState::Active)
                     .unwrap_or(false);
                 let dismiss = if active { "" } else { "(x)mute  ·  " };
                 format!("(m)ove  (r)ename  (d)kill  ·  {}(S)send cmd  (C)ctrl-c  ·  (C-a d)detach  ·  (s)ession  ·  (w)orktree{}  (c)lean  ·  {}", dismiss, tabs, global)

@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use crate::{
     config::global::GlobalConfig,
     model::workspace::{Project, WorkspaceState},
-    ops,
+    ops, session_state,
     tmux::{capture, monitor, session},
 };
 
@@ -258,13 +258,7 @@ fn resolve_project<'a>(workspace: &'a WorkspaceState, name: Option<&str>) -> Res
 }
 
 fn activity_label(s: &crate::model::workspace::SessionInfo) -> &'static str {
-    if s.has_activity {
-        "active"
-    } else if s.has_running_app {
-        "running"
-    } else {
-        "idle"
-    }
+    session_state::status_label(s)
 }
 
 fn git_label(wt: &crate::model::workspace::WorktreeInfo) -> String {
