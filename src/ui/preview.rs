@@ -1,6 +1,7 @@
 // Right preview pane — git info, session capture, project summary
 
 use crate::model::workspace::{FetchFailReason, Project, SessionInfo, WorktreeInfo};
+use crate::session_state::{self, AppSessionState};
 use crate::ui::ansi;
 use ratatui::{
     prelude::*,
@@ -179,7 +180,11 @@ pub fn render_worktree_preview(
             Style::default().fg(Color::Rgb(120, 120, 140)),
         )));
         for s in &worktree.sessions {
-            let dot = if s.has_activity { " ●" } else { "" };
+            let dot = if session_state::derive(s).app_state() == AppSessionState::NeedsAttention {
+                " ●"
+            } else {
+                ""
+            };
             lines.push(Line::from(Span::styled(
                 format!("  {}{}", s.display_name, dot),
                 Style::default().fg(Color::Rgb(100, 220, 130)),
@@ -201,7 +206,11 @@ pub fn render_session_preview(
     parsed: Option<&ratatui::text::Text<'static>>,
 ) {
     frame.render_widget(Clear, area);
-    let activity = if session.has_activity { " ●" } else { "" };
+    let activity = if session_state::derive(session).app_state() == AppSessionState::NeedsAttention {
+        " ●"
+    } else {
+        ""
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {}{} ", title, activity))
@@ -252,7 +261,11 @@ pub fn render_project_preview(frame: &mut Frame, area: Rect, project: &Project) 
     for wt in &project.worktrees {
         let main_mark = if wt.is_main { "* " } else { "  " };
         let sess_count = wt.sessions.len();
-        let activity = if wt.sessions.iter().any(|s| s.has_activity) {
+        let activity = if wt
+            .sessions
+            .iter()
+            .any(|s| session_state::derive(s).app_state() == AppSessionState::NeedsAttention)
+        {
             " ●"
         } else {
             ""

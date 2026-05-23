@@ -13,8 +13,8 @@ use crate::{
     git::{info as git_info, worktree as git_worktree},
     hooks,
     model::workspace::{
-        session_display_name_from_tmux, FetchFailReason, GitInfo, Project, ProjectConfig,
-        SessionInfo, WorkspaceState, WorktreeInfo,
+        session_display_name_from_tmux, FetchFailReason, ForegroundKind, GitInfo, Project,
+        ProjectConfig, SessionInfo, WorkspaceState, WorktreeInfo,
     },
     tmux::{monitor::SessionStatus, session},
 };
@@ -186,14 +186,10 @@ pub fn refresh_workspace_with_worktrees(
                         muted = false;
                     }
                     // Muted sessions skip all activity tracking.
-                    let (has_activity, has_running_app, last_activity) = if muted {
-                        (false, false, None)
+                    let (has_activity, last_activity) = if muted {
+                        (false, None)
                     } else {
-                        (
-                            status.map(|s| s.has_bell).unwrap_or(false),
-                            status.map(|s| s.has_running_app).unwrap_or(false),
-                            last_activity,
-                        )
+                        (status.map(|s| s.has_bell).unwrap_or(false), last_activity)
                     };
                     SessionInfo {
                         name: name.to_string(),
@@ -201,7 +197,9 @@ pub fn refresh_workspace_with_worktrees(
                         has_activity,
                         pane_capture,
                         last_activity,
-                        has_running_app,
+                        foreground: status
+                            .map(|s| s.foreground)
+                            .unwrap_or(ForegroundKind::Unknown),
                         is_running_wsx: status.map(|s| s.is_running_wsx).unwrap_or(false),
                         muted,
                     }
@@ -270,20 +268,20 @@ pub fn update_activity(
                     continue;
                 }
                 let old_bell = sess.has_activity;
-                let old_running = sess.has_running_app;
+                let old_foreground = sess.foreground;
                 if let Some(status) = activity.get(&sess.name) {
                     sess.has_activity = status.has_bell;
-                    sess.has_running_app = status.has_running_app;
+                    sess.foreground = status.foreground;
                     sess.is_running_wsx = status.is_running_wsx;
                     sess.last_activity = Some(status.last_activity_ts)
                         .filter(|&ts| ts > 0)
                         .and_then(|ts| unix_ts_to_instant(ts));
                 } else {
                     sess.has_activity = false;
-                    sess.has_running_app = false;
+                    sess.foreground = ForegroundKind::Unknown;
                     sess.is_running_wsx = false;
                 }
-                if sess.has_activity != old_bell || sess.has_running_app != old_running {
+                if sess.has_activity != old_bell || sess.foreground != old_foreground {
                     changed = true;
                 }
             }

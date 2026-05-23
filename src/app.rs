@@ -17,6 +17,7 @@ use crate::{
     git::{info as git_info, ops as git_ops, worktree as git_worktree},
     model::workspace::{flatten_tree_filtered, FlatEntry, GitInfo, Selection, WorkspaceState},
     ops,
+    session_state::{self, AppSessionState},
     tmux::{capture, monitor, session},
     tui::{self, Tui},
     ui::{self, ansi, input::InputState},
@@ -103,7 +104,6 @@ const FAST_INTERVAL_MS: u64 = 500;
 const ACTIVITY_INTERVAL_MS: u64 = 1000;
 const SLOW_INTERVAL_MS: u64 = 3000;
 const FETCH_INTERVAL_SECS: u64 = 60;
-pub use ops::IDLE_SECS;
 
 // ── Modes ─────────────────────────────────────────────────────────────────────
 
@@ -1846,11 +1846,7 @@ impl App {
                     return None;
                 };
                 let sess = self.workspace.session(*pi, *wi, *si)?;
-                let active = sess
-                    .last_activity
-                    .map(|t| t.elapsed().as_secs() < IDLE_SECS)
-                    .unwrap_or(false);
-                if active {
+                if session_state::derive(sess).app_state() == AppSessionState::Active {
                     Some(i)
                 } else {
                     None
@@ -1873,12 +1869,7 @@ impl App {
                     return None;
                 };
                 let sess = self.workspace.session(*pi, *wi, *si)?;
-                let active = sess
-                    .last_activity
-                    .map(|t| t.elapsed().as_secs() < IDLE_SECS)
-                    .unwrap_or(false);
-                let idle = !sess.muted && !sess.has_activity && !active && !sess.has_running_app;
-                if idle {
+                if session_state::derive(sess).app_state() == AppSessionState::Idle {
                     Some(i)
                 } else {
                     None
@@ -1988,12 +1979,7 @@ impl App {
                     return None;
                 };
                 let sess = self.workspace.session(*pi, *wi, *si)?;
-                let currently_active = sess
-                    .last_activity
-                    .map(|t| t.elapsed().as_secs() < IDLE_SECS)
-                    .unwrap_or(false);
-                let needs_attention = session_needs_attention(sess, currently_active);
-                if needs_attention {
+                if session_state::derive(sess).app_state() == AppSessionState::NeedsAttention {
                     Some(i)
                 } else {
                     None
@@ -2034,11 +2020,7 @@ impl App {
     fn action_dismiss_attention(&mut self) {
         if let Selection::Session(pi, wi, si) = self.current_selection() {
             if let Some(sess) = self.workspace.session_mut(pi, wi, si) {
-                let active = sess
-                    .last_activity
-                    .map(|t| t.elapsed().as_secs() < IDLE_SECS)
-                    .unwrap_or(false);
-                if active {
+                if session_state::derive(sess).app_state() == AppSessionState::Active {
                     return;
                 }
                 if sess.has_activity {
@@ -2903,13 +2885,9 @@ fn search_text_for(workspace: &WorkspaceState, entry: &FlatEntry) -> String {
     }
 }
 
-fn session_needs_attention(
-    sess: &crate::model::workspace::SessionInfo,
-    currently_active: bool,
-) -> bool {
-    // ^ bell (has_activity) always needs attention regardless of active state;
-    // running-app only needs attention when session has gone idle.
-    !sess.muted && (sess.has_activity || (!currently_active && sess.has_running_app))
+#[cfg(test)]
+fn session_needs_attention(sess: &crate::model::workspace::SessionInfo) -> bool {
+    session_state::derive(sess).app_state() == AppSessionState::NeedsAttention
 }
 
 fn search_matches_in(cache: &[String], query: &str) -> Vec<usize> {
@@ -2982,7 +2960,7 @@ mod tests {
     fn make_sess(
         muted: bool,
         has_activity: bool,
-        has_running_app: bool,
+        foreground: crate::model::workspace::ForegroundKind,
     ) -> crate::model::workspace::SessionInfo {
         crate::model::workspace::SessionInfo {
             name: String::new(),
@@ -2990,7 +2968,7 @@ mod tests {
             has_activity,
             pane_capture: None,
             last_activity: None,
-            has_running_app,
+            foreground,
             is_running_wsx: false,
             muted,
         }
@@ -2998,33 +2976,33 @@ mod tests {
 
     #[test]
     fn attention_active_session_is_ignored() {
-        let s = make_sess(false, false, true);
-        assert!(!session_needs_attention(&s, true));
+        let s = make_sess(false, false, crate::model::workspace::ForegroundKind::Agent);
+        assert!(!session_needs_attention(&s));
     }
 
     #[test]
     fn attention_bell_inactive_triggers() {
-        let s = make_sess(false, true, false);
-        assert!(session_needs_attention(&s, false));
+        let s = make_sess(false, true, crate::model::workspace::ForegroundKind::Shell);
+        assert!(session_needs_attention(&s));
     }
 
     #[test]
-    fn attention_running_app_triggers() {
-        let s = make_sess(false, false, true);
-        assert!(session_needs_attention(&s, false));
+    fn running_app_without_prompt_does_not_trigger_attention() {
+        let s = make_sess(false, false, crate::model::workspace::ForegroundKind::Agent);
+        assert!(!session_needs_attention(&s));
     }
 
     #[test]
     fn attention_muted_does_not_trigger() {
-        let s = make_sess(true, true, true);
-        assert!(!session_needs_attention(&s, false));
+        let s = make_sess(true, true, crate::model::workspace::ForegroundKind::Agent);
+        assert!(!session_needs_attention(&s));
     }
 
     #[test]
     fn attention_bell_active_still_triggers() {
         // bell always needs attention regardless of active state
-        let s = make_sess(false, true, false);
-        assert!(session_needs_attention(&s, true));
+        let s = make_sess(false, true, crate::model::workspace::ForegroundKind::Shell);
+        assert!(session_needs_attention(&s));
     }
 
     // ── filter_pending_session_ops ─────────────────────────────────────────────

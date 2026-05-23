@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::model::workspace::{
-    session_display_name_from_tmux, FlatEntry, SessionInfo, WorkspaceState,
+    session_display_name_from_tmux, FlatEntry, ForegroundKind, SessionInfo, WorkspaceState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -188,7 +188,7 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> CacheResult {
                             has_activity: false,
                             pane_capture: None,
                             last_activity: None,
-                            has_running_app: false,
+                            foreground: ForegroundKind::Unknown,
                             is_running_wsx: false,
                             muted: cache.muted_sessions.contains(name),
                         }
@@ -344,7 +344,7 @@ mod tests {
             has_activity: false,
             pane_capture: None,
             last_activity: None,
-            has_running_app: false,
+            foreground: ForegroundKind::Unknown,
             is_running_wsx: false,
             muted: false,
         }
