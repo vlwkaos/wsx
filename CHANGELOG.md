@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.15.9] - 2026-05-23
+
+### Refactor
+
+- Session state collapsed into a single deriver. `SessionInfo` carries only raw inputs (bell, foreground, pane_capture, muted) and every UI/CLI consumer reads the same 3-state projection through `session_state::derive` ([`6a452c4`](https://github.com/vlwkaos/wsx/commit/6a452c445db4dd6c68356c4540c0980038c2555f))
+- **Behavior change**: a session running a foreground process (agent, runtime, interactive app) now renders **green** Active, including when quiet. This reverses the 0.15.7 behavior that forced background runtimes (`node`, `bun`, `npm`, ...) to yellow. Under the new 3-state model green means "a process is running"; yellow is reserved for the tmux bell or a detected interactive prompt
+- A bare shell is always Idle (gray); recent typing alone no longer flips a shell to Active
+- An `[y/n]` confirm or `waiting for user` prompt detected in the captured pane text escalates to NeedsAttention (yellow) regardless of which foreground kind is running. Previously detected but inert
+
+### Bug Fixes
+
+- Project move (`m` + `j`/`k`) now jumps across projects hidden by the tab filter instead of silently swapping with an invisible neighbor ([`74bbef5`](https://github.com/vlwkaos/wsx/commit/74bbef58710b521be78472ab144ae25b3c77705f))
+- Multi-window foreground classification is now order-independent. A session with `node` then `claude` across different windows is recognized as Agent, not Runtime
+- `wsx status --json` drops the `has_running_app` field (it was a stored mirror of `foreground.is_running()`); use the `foreground` field instead
+
 ## [0.15.8] - 2026-05-14
 
 ### Bug Fixes
