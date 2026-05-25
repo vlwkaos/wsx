@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.15.10] - 2026-05-25
+
+### Bug Fixes
+
+- Reworks the v0.15.9 session-state model that rendered "everything green" in real usage. The Active green state now requires either recent output (for agents) or a long-running process kind (Runtime / InteractiveApp); a quiet long-running agent renders **yellow** (AgentDone, "see the result") instead of green. ([`32c044e`](https://github.com/vlwkaos/wsx/commit/32c044e))
+- Foreground classification now walks the process tree under each pane's PID via one `ps -ax` snapshot per refresh. Previously tmux's `pane_current_command` reported the deepest spawned child, so `claude` / `codex` showed up as a node subprocess named `2.1.x` and fell through to InteractiveApp. The agent is now detected correctly even when nested under shells or subprocesses.
+- Shell foreground now distinguishes "prompt just returned" (yellow ●, `ShellPrompt`) from "long idle" (gray ○, `ShellIdle`). Recent activity in a shell signals "do the next thing", not "active app".
+- Mute is sticky: pane output no longer auto-unmutes a session (this reverts the 0.15.5 behavior, which fought against the user's intent on noisy sessions). Mute is cleared only when the user interacts with the session in wsx — attach, send command, send Ctrl-C, or rename.
+
+### Refactor
+
+- New `src/proc_tree.rs` module wraps a single `ps` snapshot per refresh and exposes `descendants(pane_pid)` for foreground classification. Single-source-of-truth: derive only walks the tree.
+- Added a realistic-workspace fixture test (`session_state::tests::given_realistic_workspace_when_classified_then_each_session_state_matches_spec`) as a permanent regression guard. It pins the per-session outcome for a 10-session fixture covering the full taxonomy; the v0.15.9 "running → Active" rule would have produced Active≈6 instead of 4 and failed this test before release.
+
 ## [0.15.9] - 2026-05-23
 
 ### Refactor
