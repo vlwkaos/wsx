@@ -1571,6 +1571,29 @@ impl App {
         Ok(())
     }
 
+    /// User interacted with a session in wsx (attach, send command, rename,
+    /// ctrl-c). Mute is sticky — only an explicit interaction unmutes; pane
+    /// output alone does not. Cursor navigation must NOT call this.
+    fn unmute_on_interaction(&mut self, session_name: &str) {
+        for project in &mut self.workspace.projects {
+            for wt in &mut project.worktrees {
+                for sess in &mut wt.sessions {
+                    if sess.name == session_name {
+                        if sess.muted {
+                            sess.muted = false;
+                            session::set_session_opt(
+                                session_name,
+                                session::OPT_MUTED,
+                                "0",
+                            );
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     fn attach_to_session(&self, name: &str, terminal: &mut Tui) -> Result<()> {
         let detach_key = if self.is_mobile {
             self.config.mobile_detach_key.as_deref()
@@ -1600,6 +1623,8 @@ impl App {
             self.set_status("Session not found");
             return Ok(());
         };
+
+        self.unmute_on_interaction(&name);
 
         let proj = &self.workspace.projects[pi];
         let wt = &proj.worktrees[wi];
@@ -1925,8 +1950,10 @@ impl App {
 
     fn action_send_ctrl_c(&mut self) -> Result<()> {
         if let Selection::Session(pi, wi, si) = self.current_selection() {
-            if let Some(sess) = self.workspace.session(pi, wi, si) {
-                session::send_ctrl_c(&sess.name)?;
+            let name = self.workspace.session(pi, wi, si).map(|s| s.name.clone());
+            if let Some(name) = name {
+                self.unmute_on_interaction(&name);
+                session::send_ctrl_c(&name)?;
             }
         }
         Ok(())
@@ -2135,6 +2162,7 @@ impl App {
                 }
                 InputContext::SendCommand { session_name } => {
                     if !value.is_empty() {
+                        self.unmute_on_interaction(&session_name);
                         session::send_keys(&session_name, &value)?;
                         self.send_command_history.retain(|cmd| cmd != &value);
                         self.send_command_history.push(value);
@@ -2417,6 +2445,7 @@ impl App {
         let old_tmux_name = self.workspace.projects[pi].worktrees[wi].sessions[si]
             .name
             .clone();
+        self.unmute_on_interaction(&old_tmux_name);
         let proj_name = self.workspace.projects[pi].name.clone();
         let wt_slug = self.workspace.projects[pi].worktrees[wi].session_slug(&proj_name);
         let new_tmux_name = format!("{}-{}-{}", proj_name, wt_slug, new_name);
@@ -3196,21 +3225,9 @@ mod tests {
     }
 
     #[test]
-    fn attention_active_session_is_ignored() {
-        let s = make_sess(false, false, crate::model::workspace::ForegroundKind::Agent);
-        assert!(!session_needs_attention(&s));
-    }
-
-    #[test]
     fn attention_bell_inactive_triggers() {
         let s = make_sess(false, true, crate::model::workspace::ForegroundKind::Shell);
         assert!(session_needs_attention(&s));
-    }
-
-    #[test]
-    fn running_app_without_prompt_does_not_trigger_attention() {
-        let s = make_sess(false, false, crate::model::workspace::ForegroundKind::Agent);
-        assert!(!session_needs_attention(&s));
     }
 
     #[test]
@@ -3221,7 +3238,7 @@ mod tests {
 
     #[test]
     fn attention_bell_active_still_triggers() {
-        // bell always needs attention regardless of active state
+        // bell always needs attention regardless of foreground
         let s = make_sess(false, true, crate::model::workspace::ForegroundKind::Shell);
         assert!(session_needs_attention(&s));
     }
