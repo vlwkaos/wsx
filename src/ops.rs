@@ -173,18 +173,12 @@ pub fn refresh_workspace_with_worktrees(
                         .unwrap_or((None, false));
                     let status = activity.get(name);
                     // Prefer tmux-sourced muted flag over snapshot so all instances agree.
-                    let mut muted = status.map(|s| s.wsx_muted).unwrap_or(prev_muted);
+                    let muted = status.map(|s| s.wsx_muted).unwrap_or(prev_muted);
                     let last_activity = status
                         .filter(|s| s.last_activity_ts > 0)
                         .and_then(|s| unix_ts_to_instant(s.last_activity_ts));
-                    let currently_active = last_activity
-                        .map(|t| t.elapsed().as_secs() < IDLE_SECS)
-                        .unwrap_or(false);
-                    // Auto-unmute when new output arrives — mute is "suppress for now", not permanent.
-                    if muted && currently_active {
-                        session::set_session_opt(name, session::OPT_MUTED, "0");
-                        muted = false;
-                    }
+                    // Mute is sticky — only user interaction in wsx (attach, send, etc.)
+                    // unmutes a session. Background output no longer breaks it.
                     // Muted sessions skip all activity tracking.
                     let (has_activity, last_activity) = if muted {
                         (false, None)
