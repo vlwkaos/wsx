@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.15.11] - 2026-05-26
+
+### Features
+
+- Add-project repo cache survives modal opens. The git-repo walker now runs at app start and continues in the background between modal opens, so re-opening "add project" is instant and newly created repos appear automatically without restarting wsx. ([`decdb63`](https://github.com/vlwkaos/wsx/commit/decdb63))
+- Add-project scan depth raised from 6 to 8 so deeper layouts like `~/work/<org>/<year>/<project>` are now discovered. Walks still short-circuit at any `.git`, so this only widens trees that have no repos.
+
+### Bug Fixes
+
+- Add-project completion falls back to filesystem path mode when the input contains `/` or starts with `~`, so paths the background walker can't reach (outside `$HOME`, under `node_modules` / `target`, beyond the depth limit) are now reachable by typing them directly. ([`b73a529`](https://github.com/vlwkaos/wsx/commit/b73a529))
+- The "scanning..." indicator no longer sticks around once you start typing; combined with the persistent cache it should rarely appear at all now.
+
 ## [0.15.10] - 2026-05-25
 
 ### Bug Fixes
