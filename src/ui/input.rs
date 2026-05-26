@@ -88,7 +88,7 @@ impl InputState {
             }
         }
         if new_data {
-            self.completions = project_completions(&self.typed, &self.scan_dirs);
+            self.completions = project_search_completions(&self.typed, &self.scan_dirs);
         }
         // Return true on disconnect so caller redraws to clear "scanning..." indicator.
         new_data || self.scan_rx.is_none() && self.project_search
@@ -104,7 +104,7 @@ impl InputState {
         self.typed = self.buffer.clone();
         self.completion_idx = None;
         if self.project_search {
-            self.completions = project_completions(&self.buffer, &self.scan_dirs);
+            self.completions = project_search_completions(&self.buffer, &self.scan_dirs);
         } else if self.path_mode {
             self.completions = path_completions(&self.buffer);
         } else if self.history_mode {
@@ -245,6 +245,19 @@ fn history_completions(typed: &str, history: &[String]) -> Vec<String> {
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0));
     scored.into_iter().map(|(_, h)| h.to_string()).collect()
+}
+
+/// Path-like input (contains `/` or starts with `~`) gets filesystem
+/// completion — the background scanner can miss repos outside `~`, below
+/// `MAX_SCAN_DEPTH`, or under `SKIP_DIRS`. Bare names stay on fuzzy match
+/// against the cached scan. `register_project` validates "is a git repo"
+/// on submit, so filesystem suggestions can include any directory.
+fn project_search_completions(query: &str, dirs: &[String]) -> Vec<String> {
+    if query.contains('/') || query.starts_with('~') {
+        path_completions(query)
+    } else {
+        project_completions(query, dirs)
+    }
 }
 
 fn project_completions(query: &str, dirs: &[String]) -> Vec<String> {
@@ -404,7 +417,11 @@ fn walk_for_git(dir: &std::path::Path, depth: usize, tx: &mpsc::Sender<String>) 
 pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &str) {
     let width = area.width.min(60);
 
-    let scanning = state.is_scanning() && state.completions.is_empty();
+    // "scanning..." only while the buffer is empty. Once the user has typed
+    // anything, show whatever completions we have (possibly none) rather than
+    // a stuck indicator while a slow background walk continues.
+    let scanning =
+        state.is_scanning() && state.completions.is_empty() && state.buffer.is_empty();
     let max_show = if state.completions.is_empty() {
         if scanning {
             1
