@@ -355,6 +355,12 @@ pub struct App {
     pub update_available: Option<String>,
     /// Set by --mobile flag; collapses preview panel for portrait SSH sessions.
     pub is_mobile: bool,
+    /// Git repos discovered under `$HOME` — populated from app start by a
+    /// background walker. Survives modal opens so the add-project prompt
+    /// is instant on the second and later opens, and picks up newly
+    /// created repos between opens.
+    scanned_repos: Vec<String>,
+    repo_scan_rx: Option<mpsc::Receiver<String>>,
 }
 
 impl App {
@@ -391,7 +397,7 @@ impl App {
         let worktree_index = build_worktree_index(&workspace);
         let search_cache = build_search_cache(&workspace, &cached_flat);
 
-        Ok(Self {
+        let mut app = Self {
             workspace,
             tree_selected,
             tree_scroll: 0,
@@ -453,7 +459,23 @@ impl App {
             update_rx,
             update_available: None,
             is_mobile: mobile,
-        })
+            scanned_repos: Vec::new(),
+            repo_scan_rx: None,
+        };
+        app.spawn_repo_scan();
+        Ok(app)
+    }
+
+    /// Kick off a background walk of `$HOME` for git repos. Idempotent
+    /// while a previous scan is still draining — only the second open of
+    /// the modal forks a refresh, not every render tick.
+    fn spawn_repo_scan(&mut self) {
+        if self.repo_scan_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.repo_scan_rx = Some(rx);
+        std::thread::spawn(move || crate::repo_scan::scan_git_repos(tx));
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
@@ -615,13 +637,22 @@ impl App {
     }
 
     fn drain_async_results(&mut self) {
-        if let Mode::Input {
-            context: InputContext::AddProject,
-            ref mut state,
-        } = self.mode
-        {
-            if state.poll_scan() {
-                self.needs_redraw = true;
+        // Background repo discovery — survives modal opens. We dedup on the
+        // spot so the list stays clean even across re-scans.
+        if let Some(rx) = self.repo_scan_rx.as_ref() {
+            loop {
+                match rx.try_recv() {
+                    Ok(path) => {
+                        if !self.scanned_repos.iter().any(|p| p == &path) {
+                            self.scanned_repos.push(path);
+                        }
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        self.repo_scan_rx = None;
+                        break;
+                    }
+                }
             }
         }
         while let Ok((path, outcome)) = self.fetch_rx.try_recv() {
@@ -1650,9 +1681,13 @@ impl App {
     }
 
     fn action_add_project(&mut self) -> Result<()> {
+        // Snapshot the cached repos for the modal. Trigger a refresh in the
+        // background so the next open picks up newly created repos.
+        let cached = self.scanned_repos.clone();
+        self.spawn_repo_scan();
         self.mode = Mode::Input {
             context: InputContext::AddProject,
-            state: InputState::new_project_search("project: "),
+            state: InputState::new_project_search("project: ", cached),
         };
         Ok(())
     }

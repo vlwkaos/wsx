@@ -1,8 +1,6 @@
 // Input box with cursor movement, unicode support, and path/project completion.
 
 use std::path::PathBuf;
-use std::sync::mpsc;
-use std::thread;
 
 use crate::ui::popup_upper;
 use ratatui::{
@@ -21,7 +19,9 @@ pub struct InputState {
     path_mode: bool,
     history_mode: bool,
     project_search: bool,
-    scan_rx: Option<mpsc::Receiver<String>>,
+    // Snapshot of the app's repo cache at modal open. Stays static for the
+    // lifetime of the modal; the App owns the live scanner and refreshes
+    // between opens.
     scan_dirs: Vec<String>,
 }
 
@@ -30,12 +30,15 @@ impl InputState {
         Self::make(prompt.into(), String::new(), false)
     }
 
-    pub fn new_project_search(prompt: impl Into<String>) -> Self {
+    /// Open with a pre-populated snapshot from the app's repo cache. The
+    /// app refreshes its cache in the background; the modal sees results
+    /// captured at open time. Type a path with `/` or `~` to bypass the
+    /// cache entirely and use live filesystem completion.
+    pub fn new_project_search(prompt: impl Into<String>, cached_repos: Vec<String>) -> Self {
         let mut s = Self::make(prompt.into(), String::new(), false);
         s.project_search = true;
-        let (tx, rx) = mpsc::channel::<String>();
-        s.scan_rx = Some(rx);
-        thread::spawn(move || scan_git_repos(tx));
+        s.completions = project_search_completions("", &cached_repos);
+        s.scan_dirs = cached_repos;
         s
     }
 
@@ -64,38 +67,8 @@ impl InputState {
             path_mode,
             history_mode: false,
             project_search: false,
-            scan_rx: None,
             scan_dirs: vec![],
         }
-    }
-
-    pub fn poll_scan(&mut self) -> bool {
-        let Some(rx) = &self.scan_rx else {
-            return false;
-        };
-        let mut new_data = false;
-        loop {
-            match rx.try_recv() {
-                Ok(path) => {
-                    self.scan_dirs.push(path);
-                    new_data = true;
-                }
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.scan_rx = None;
-                    break;
-                }
-            }
-        }
-        if new_data {
-            self.completions = project_search_completions(&self.typed, &self.scan_dirs);
-        }
-        // Return true on disconnect so caller redraws to clear "scanning..." indicator.
-        new_data || self.scan_rx.is_none() && self.project_search
-    }
-
-    pub fn is_scanning(&self) -> bool {
-        self.scan_rx.is_some()
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -352,82 +325,13 @@ fn display_path(path: &PathBuf, prefer_tilde: bool) -> String {
     format!("{}/", path.to_string_lossy())
 }
 
-// ── Background git repo scan ──────────────────────────────────────────────────
-
-const SKIP_DIRS: &[&str] = &[
-    "node_modules",
-    "target",
-    "Library",
-    "Applications",
-    ".Trash",
-];
-const MAX_SCAN_DEPTH: usize = 6;
-
-fn scan_git_repos(tx: mpsc::Sender<String>) {
-    let Some(home) = dirs::home_dir() else { return };
-    walk_for_git(&home, 0, &tx);
-}
-
-/// Returns false if the receiver dropped — caller should stop walking.
-fn walk_for_git(dir: &std::path::Path, depth: usize, tx: &mpsc::Sender<String>) -> bool {
-    if depth > MAX_SCAN_DEPTH {
-        return true;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return true;
-    };
-
-    let mut has_git = false;
-    let mut subdirs = vec![];
-
-    for entry in entries.filter_map(|e| e.ok()) {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        let path = entry.path();
-
-        if name_str == ".git" && path.is_dir() {
-            has_git = true;
-            continue;
-        }
-        if name_str.starts_with('.') || SKIP_DIRS.contains(&name_str.as_ref()) {
-            continue;
-        }
-        if path.is_dir() {
-            subdirs.push(path);
-        }
-    }
-
-    if has_git {
-        if tx.send(display_path(&dir.to_path_buf(), true)).is_err() {
-            return false;
-        }
-        return true;
-    }
-
-    for subdir in subdirs {
-        if !walk_for_git(&subdir, depth + 1, tx) {
-            return false;
-        }
-    }
-    true
-}
-
 // ── Rendering ────────────────────────────────────────────────────────────────
 
 pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &str) {
     let width = area.width.min(60);
 
-    // "scanning..." only while the buffer is empty. Once the user has typed
-    // anything, show whatever completions we have (possibly none) rather than
-    // a stuck indicator while a slow background walk continues.
-    let scanning =
-        state.is_scanning() && state.completions.is_empty() && state.buffer.is_empty();
     let max_show = if state.completions.is_empty() {
-        if scanning {
-            1
-        } else {
-            0
-        }
+        0
     } else {
         5usize.min(state.completions.len())
     };
@@ -462,13 +366,7 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
     let comp_x = popup.x + 1 + prompt_w;
     let comp_w = width.saturating_sub(2 + prompt_w);
 
-    if scanning && state.completions.is_empty() {
-        let row = Rect::new(comp_x, popup.y + 2, comp_w, 1);
-        frame.render_widget(
-            Paragraph::new("scanning...").style(Style::default().fg(Color::Rgb(100, 100, 100))),
-            row,
-        );
-    } else if max_show > 0 {
+    if max_show > 0 {
         for (vis_idx, (orig_idx, s)) in state
             .completions
             .iter()

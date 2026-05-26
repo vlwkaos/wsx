@@ -12,6 +12,7 @@ mod hooks;
 mod model;
 mod ops;
 mod proc_tree;
+mod repo_scan;
 mod session_state;
 mod tmux;
 mod tui;
