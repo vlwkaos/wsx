@@ -1,6 +1,6 @@
 // Per-project .gtrconfig editor overlay.
 
-use crate::model::workspace::ProjectConfig;
+use wsx_core::model::workspace::ProjectConfig;
 use crate::ui::popup_center;
 use ratatui::{
     prelude::*,

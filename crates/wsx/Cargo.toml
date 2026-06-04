@@ -1,0 +1,29 @@
+[package]
+name = "wsx"
+description = "TUI workspace manager — git worktrees + tmux sessions in one tree"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["tui", "git", "tmux", "worktree", "workspace"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "wsx"
+path = "src/main.rs"
+
+[dependencies]
+wsx-core = { path = "../wsx-core" }
+
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+dirs = { workspace = true }
+glob = { workspace = true }
+libc = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
