@@ -1,4 +1,4 @@
-use crate::config::global::GlobalConfig;
+use wsx_core::config::global::GlobalConfig;
 use crate::ui::popup_center;
 use ratatui::{
     prelude::*,

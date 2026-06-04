@@ -1015,6 +1015,21 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "toml",
+ "wsx-core",
+]
+
+[[package]]
+name = "wsx-core"
+version = "0.15.11"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "glob",
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml",
 ]
 
 [[package]]

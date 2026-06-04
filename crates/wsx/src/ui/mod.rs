@@ -11,9 +11,9 @@ pub mod tab_manager;
 pub mod workspace_tree;
 
 use crate::app::{App, Mode, SPINNER_FRAMES};
-use crate::model::workspace::Selection;
+use wsx_core::model::workspace::Selection;
 use crate::session_state::{self, AppSessionState};
-use crate::tmux::capture::WSX_SENTINEL;
+use wsx_core::tmux::capture::WSX_SENTINEL;
 use crate::ui::{
     config_modal::render_config_modal,
     confirm::render_confirm,

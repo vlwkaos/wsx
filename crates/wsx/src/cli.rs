@@ -1,10 +1,11 @@
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::{
+use crate::session_state;
+use wsx_core::{
     config::global::GlobalConfig,
     model::workspace::{Project, WorkspaceState},
-    ops, session_state,
+    ops,
     tmux::{capture, monitor, session},
 };
 
@@ -257,18 +258,18 @@ fn resolve_project<'a>(workspace: &'a WorkspaceState, name: Option<&str>) -> Res
     }
 }
 
-fn activity_label(s: &crate::model::workspace::SessionInfo) -> &'static str {
+fn activity_label(s: &wsx_core::model::workspace::SessionInfo) -> &'static str {
     session_state::status_label(s)
 }
 
-fn git_label(wt: &crate::model::workspace::WorktreeInfo) -> String {
+fn git_label(wt: &wsx_core::model::workspace::WorktreeInfo) -> String {
     wt.git_info
         .as_ref()
         .map(|g| format!("+{}-{}", g.ahead, g.behind))
         .unwrap_or_else(|| "-".to_string())
 }
 
-fn sessions_inline(wt: &crate::model::workspace::WorktreeInfo) -> String {
+fn sessions_inline(wt: &wsx_core::model::workspace::WorktreeInfo) -> String {
     wt.sessions
         .iter()
         .map(|s| format!("{}[{}]", s.name, activity_label(s)))
@@ -367,16 +368,16 @@ fn cmd_worktree_create(branch: &str, project_name: Option<&str>) -> Result<()> {
     if let Some(w) = warning {
         eprintln!("warning: {}", w);
     }
-    let wt_slug = crate::model::workspace::canonical_session_slug(&project.name, &wt_path);
+    let wt_slug = wsx_core::model::workspace::canonical_session_slug(&project.name, &wt_path);
     let (tmux_name, _) = ops::create_session(&project.name, &wt_slug, &wt_path, None, None)?;
     println!("worktree: {}", wt_path.display());
     println!("session:  {}", tmux_name);
-    let mut cache = crate::cache::WorkspaceCache::load();
+    let mut cache = wsx_core::cache::WorkspaceCache::load();
     cache.sessions.insert(
         wt_path.to_string_lossy().to_string(),
         vec![tmux_name.clone()],
     );
-    cache.tmux_server_pid = crate::tmux::session::server_pid();
+    cache.tmux_server_pid = wsx_core::tmux::session::server_pid();
     if let Err(e) = cache.save(false) {
         eprintln!("warning: cache save failed: {}", e);
     }
@@ -400,7 +401,7 @@ fn cmd_worktree_delete(branch: &str, project_name: Option<&str>) -> Result<()> {
     let session_names: Vec<String> = wt.sessions.iter().map(|s| s.name.clone()).collect();
     ops::delete_worktree(&project.path, &wt.path, &wt.branch, &session_names)?;
     println!("deleted worktree: {}", wt.path.display());
-    let mut cache = crate::cache::WorkspaceCache::load();
+    let mut cache = wsx_core::cache::WorkspaceCache::load();
     cache
         .sessions
         .remove(&wt.path.to_string_lossy().to_string());
@@ -486,7 +487,7 @@ fn cmd_session_peek(
 fn cmd_session_rename(old: &str, new: &str) -> Result<()> {
     session::rename_session(old, new)?;
     println!("renamed: {} → {}", old, new);
-    let mut cache = crate::cache::WorkspaceCache::load();
+    let mut cache = wsx_core::cache::WorkspaceCache::load();
     for sessions in cache.sessions.values_mut() {
         for s in sessions.iter_mut() {
             if s == old {

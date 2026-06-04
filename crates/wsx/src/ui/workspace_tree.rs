@@ -1,6 +1,6 @@
 // Left sidebar — 3-level tree (Project -> Worktree -> Session) using ratatui List.
 
-use crate::model::workspace::{FlatEntry, WorkspaceState};
+use wsx_core::model::workspace::{FlatEntry, WorkspaceState};
 use crate::session_state::{self, AppSessionState};
 use ratatui::{
     prelude::*,
@@ -211,7 +211,7 @@ pub fn render_tree(
 }
 
 fn session_icon(
-    sess: &crate::model::workspace::SessionInfo,
+    sess: &wsx_core::model::workspace::SessionInfo,
     state: AppSessionState,
 ) -> (&'static str, Color) {
     if sess.muted {
@@ -250,7 +250,7 @@ pub fn compute_scroll(selected: usize, visible_height: usize, current_offset: us
 #[cfg(test)]
 mod tests {
     use super::session_icon;
-    use crate::model::workspace::{ForegroundKind, SessionInfo};
+    use wsx_core::model::workspace::{ForegroundKind, SessionInfo};
     use crate::session_state::AppSessionState;
     use ratatui::style::Color;
 

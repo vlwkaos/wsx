@@ -3,9 +3,9 @@
 // last_activity, muted); UI and CLI consumers read the 3-state projection
 // via `derive(...).app_state()` — never re-implement the logic.
 
-use crate::model::workspace::{ForegroundKind, SessionInfo};
-use crate::ops::IDLE_SECS;
-use crate::tmux::capture::{self, CaptureHint};
+use wsx_core::model::workspace::{ForegroundKind, SessionInfo};
+use wsx_core::ops::IDLE_SECS;
+use wsx_core::tmux::capture::{self, CaptureHint};
 
 /// User-facing session state — the 3-state projection rendered as a tree icon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,7 +112,7 @@ pub fn status_label(session: &SessionInfo) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::workspace::{ForegroundKind, SessionInfo};
+    use wsx_core::model::workspace::{ForegroundKind, SessionInfo};
     use std::time::Instant;
 
     fn sess(

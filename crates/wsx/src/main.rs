@@ -3,18 +3,10 @@
 
 mod action;
 mod app;
-mod cache;
 mod cli;
-mod config;
 mod event;
-mod git;
-mod hooks;
-mod model;
-mod ops;
-mod proc_tree;
 mod repo_scan;
 mod session_state;
-mod tmux;
 mod tui;
 mod ui;
 mod update;
@@ -25,7 +17,7 @@ use clap::Parser;
 
 fn main() -> Result<()> {
     // Require tmux
-    if !tmux::session::is_available() {
+    if !wsx_core::tmux::session::is_available() {
         eprintln!("wsx requires tmux — https://github.com/tmux/tmux/wiki/Installing");
         std::process::exit(1);
     }
@@ -46,7 +38,7 @@ fn run_tui(mobile: bool) -> Result<()> {
         default_hook(info);
     }));
 
-    tmux::session::apply_server_defaults();
+    wsx_core::tmux::session::apply_server_defaults();
     let mut terminal = tui::init().context("terminal init failed")?;
     let mut app = App::new(mobile)?;
     let result = app.run(&mut terminal);
