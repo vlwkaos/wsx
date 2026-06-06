@@ -12,15 +12,17 @@ use ratatui::layout::{Position, Rect};
 
 use crate::{
     action::Action,
-    config::global::GlobalConfig,
     event::poll_event,
+    session_state::{self, AppSessionState},
+    tui::{self, Tui},
+    ui::{self, ansi, input::InputState},
+};
+use wsx_core::{
+    config::global::GlobalConfig,
     git::{info as git_info, ops as git_ops, worktree as git_worktree},
     model::workspace::{flatten_tree_filtered, FlatEntry, GitInfo, Selection, WorkspaceState},
     ops,
-    session_state::{self, AppSessionState},
     tmux::{capture, monitor, session},
-    tui::{self, Tui},
-    ui::{self, ansi, input::InputState},
 };
 
 use git_info::FetchOutcome;
@@ -374,15 +376,15 @@ impl App {
             cached_active_tab,
             cached_tmux_pid,
             cached_muted,
-        ) = crate::cache::apply_cache(&mut workspace);
+        ) = wsx_core::cache::apply_cache(&mut workspace);
         // One-time migration: write cached muted names to tmux user options.
-        crate::cache::migrate_flags_to_tmux(&cached_muted);
+        wsx_core::cache::migrate_flags_to_tmux(&cached_muted);
         let restored = ops::restore_cached_sessions(&workspace, cached_tmux_pid);
         let visible_projects =
             compute_visible_projects(&config, &workspace, cached_active_tab.as_deref());
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
         let tree_selected = cursor_identity
-            .and_then(|id| crate::cache::find_cursor_index(&workspace, &cached_flat, &id))
+            .and_then(|id| wsx_core::cache::find_cursor_index(&workspace, &cached_flat, &id))
             .unwrap_or_else(|| raw_selected.min(cached_flat.len().saturating_sub(1)));
         let (git_local_tx, git_local_rx) = mpsc::channel();
         let (fetch_tx, fetch_rx) = mpsc::channel();
@@ -843,7 +845,7 @@ impl App {
     /// Single write point — both cache and session snapshot always written together.
     /// `sync=true` on quit (fsync), `sync=false` on periodic writes.
     fn persist_state(&mut self, sync: bool) {
-        if let Some(e) = crate::cache::save_cache(
+        if let Some(e) = wsx_core::cache::save_cache(
             &self.workspace,
             self.tree_selected,
             self.flat(),
@@ -853,7 +855,7 @@ impl App {
         ) {
             self.set_status(e);
         }
-        crate::cache::save_session_snapshot(&self.workspace);
+        wsx_core::cache::save_session_snapshot(&self.workspace);
         self.cache_dirty = false;
     }
 
@@ -2962,7 +2964,7 @@ fn search_text_for(workspace: &WorkspaceState, entry: &FlatEntry) -> String {
 }
 
 #[cfg(test)]
-fn session_needs_attention(sess: &crate::model::workspace::SessionInfo) -> bool {
+fn session_needs_attention(sess: &wsx_core::model::workspace::SessionInfo) -> bool {
     session_state::derive(sess).app_state() == AppSessionState::NeedsAttention
 }
 
@@ -3030,8 +3032,8 @@ mod tests {
         assert!(search_matches_in(&cache, "xyz").is_empty());
     }
 
-    fn make_project(name: &str) -> crate::model::workspace::Project {
-        crate::model::workspace::Project {
+    fn make_project(name: &str) -> wsx_core::model::workspace::Project {
+        wsx_core::model::workspace::Project {
             name: name.to_string(),
             path: std::path::PathBuf::from(format!("/tmp/{name}")),
             default_branch: "main".to_string(),
@@ -3245,9 +3247,9 @@ mod tests {
     fn make_sess(
         muted: bool,
         has_activity: bool,
-        foreground: crate::model::workspace::ForegroundKind,
-    ) -> crate::model::workspace::SessionInfo {
-        crate::model::workspace::SessionInfo {
+        foreground: wsx_core::model::workspace::ForegroundKind,
+    ) -> wsx_core::model::workspace::SessionInfo {
+        wsx_core::model::workspace::SessionInfo {
             name: String::new(),
             display_name: String::new(),
             has_activity,
@@ -3261,20 +3263,20 @@ mod tests {
 
     #[test]
     fn attention_bell_inactive_triggers() {
-        let s = make_sess(false, true, crate::model::workspace::ForegroundKind::Shell);
+        let s = make_sess(false, true, wsx_core::model::workspace::ForegroundKind::Shell);
         assert!(session_needs_attention(&s));
     }
 
     #[test]
     fn attention_muted_does_not_trigger() {
-        let s = make_sess(true, true, crate::model::workspace::ForegroundKind::Agent);
+        let s = make_sess(true, true, wsx_core::model::workspace::ForegroundKind::Agent);
         assert!(!session_needs_attention(&s));
     }
 
     #[test]
     fn attention_bell_active_still_triggers() {
         // bell always needs attention regardless of foreground
-        let s = make_sess(false, true, crate::model::workspace::ForegroundKind::Shell);
+        let s = make_sess(false, true, wsx_core::model::workspace::ForegroundKind::Shell);
         assert!(session_needs_attention(&s));
     }
 

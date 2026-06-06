@@ -143,7 +143,7 @@ impl Drop for FetchLockGuard {
 
 /// Run `git fetch` — uses `output_with_timeout` for process-group cleanup on timeout.
 /// Advisory cross-process lockfile prevents duplicate concurrent fetches from multiple instances.
-pub(crate) fn git_fetch(path: &Path) -> FetchOutcome {
+pub fn git_fetch(path: &Path) -> FetchOutcome {
     let Some(lock_path) = try_fetch_lock(path) else {
         // Another instance is handling this fetch; report success so backoff stays low.
         return FetchOutcome {
