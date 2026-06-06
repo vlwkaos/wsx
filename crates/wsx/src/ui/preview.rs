@@ -1,6 +1,6 @@
 // Right preview pane — git info, session capture, project summary
 
-use crate::model::workspace::{FetchFailReason, Project, SessionInfo, WorktreeInfo};
+use wsx_core::model::workspace::{FetchFailReason, Project, SessionInfo, WorktreeInfo};
 use crate::session_state::{self, AppSessionState};
 use crate::ui::ansi;
 use ratatui::{

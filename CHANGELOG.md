@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0] - 2026-06-06
+
+### Refactor
+
+- Split the codebase into a Cargo workspace with two crates: `wsx` (TUI/CLI binary) and `wsx-core` (ratatui-free library). External orchestrators can now depend on `wsx-core` directly for worktree, tmux, git, hooks, config, and model primitives. All moves used `git mv` so file history is preserved. The binary's behaviour is unchanged. ([`5898383`](https://github.com/vlwkaos/wsx/commit/5898383))
+- `git_fetch` in `wsx-core/src/git/info.rs` promoted from `pub(crate)` to `pub` so the binary can reach it across the new crate boundary.
+
 ## [0.15.11] - 2026-05-26
 
 ### Features
