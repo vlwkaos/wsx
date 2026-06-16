@@ -11,9 +11,7 @@ pub mod tab_manager;
 pub mod workspace_tree;
 
 use crate::app::{App, Mode, SPINNER_FRAMES};
-use wsx_core::model::workspace::Selection;
 use crate::session_state::{self, AppSessionState};
-use wsx_core::tmux::capture::WSX_SENTINEL;
 use crate::ui::{
     config_modal::render_config_modal,
     confirm::render_confirm,
@@ -30,6 +28,8 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Paragraph},
 };
+use wsx_core::model::workspace::Selection;
+use wsx_core::tmux::capture::WSX_SENTINEL;
 
 /// Center a popup of given size within `area`.
 pub fn popup_center(area: Rect, w: u16, h: u16) -> Rect {

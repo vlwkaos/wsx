@@ -14,7 +14,7 @@ name = "wsx"
 path = "src/main.rs"
 
 [dependencies]
-wsx-core = { path = "../wsx-core", version = "=0.16.0" }
+wsx-core = { path = "../wsx-core", version = "=0.16.1" }
 
 ratatui = { workspace = true }
 crossterm = { workspace = true }

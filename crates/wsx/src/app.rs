@@ -574,17 +574,19 @@ impl App {
         }
     }
 
+    fn refresh_visible_projects(&mut self) {
+        self.visible_projects =
+            compute_visible_projects(&self.config, &self.workspace, self.active_tab.as_deref());
+    }
+
     /// Recompute visible project set from active_tab + config, then rebuild flat + clamp cursor.
     fn recompute_visible(&mut self) {
-        let new_visible =
-            compute_visible_projects(&self.config, &self.workspace, self.active_tab.as_deref());
-        self.visible_projects = new_visible;
-        self.flat_dirty = true;
-        self.ensure_flat();
+        self.rebuild_flat();
         self.clamp_selected();
     }
 
     fn rebuild_flat(&mut self) {
+        self.refresh_visible_projects();
         self.flat_dirty = true;
         self.ensure_flat();
         self.worktree_index = build_worktree_index(&self.workspace);
@@ -3044,6 +3046,15 @@ mod tests {
         }
     }
 
+    fn make_project_entry(name: &str, tab: Option<&str>) -> wsx_core::config::global::ProjectEntry {
+        wsx_core::config::global::ProjectEntry {
+            name: name.to_string(),
+            path: std::path::PathBuf::from(format!("/tmp/{name}")),
+            tab: tab.map(|tab| tab.to_string()),
+            aliases: Default::default(),
+        }
+    }
+
     #[test]
     fn given_projects_with_visibility_gaps_when_moving_forward_then_returns_next_visible_index() {
         let workspace = WorkspaceState {
@@ -3239,6 +3250,92 @@ mod tests {
             adjacent_visible_project_index(&workspace, &visible, 0, 1),
             None
         );
+    }
+
+    #[test]
+    fn given_project_removed_from_tab_when_flat_rebuilt_then_shifted_project_does_not_leak() {
+        let config = GlobalConfig {
+            tabs: vec!["work".to_string(), "personal".to_string()],
+            projects: vec![
+                make_project_entry("work-a", Some("work")),
+                make_project_entry("personal", Some("personal")),
+                make_project_entry("work-b", Some("work")),
+            ],
+            exclude_worktree_paths: vec![],
+            mobile_detach_key: None,
+        };
+        let workspace = WorkspaceState {
+            projects: vec![
+                make_project("work-a"),
+                make_project("personal"),
+                make_project("work-b"),
+            ],
+        };
+        let visible_projects = compute_visible_projects(&config, &workspace, Some("work"));
+
+        let (bg_tx, bg_rx) = std::sync::mpsc::channel();
+        let (git_local_tx, git_local_rx) = std::sync::mpsc::channel();
+        let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
+        let (tmux_tx, tmux_rx) = std::sync::mpsc::channel();
+        let (_update_tx, update_rx) = std::sync::mpsc::channel();
+        let mut app = App {
+            workspace,
+            tree_selected: 0,
+            tree_scroll: 0,
+            tree_visible_height: 20,
+            tree_area: Rect::default(),
+            preview_area: Rect::default(),
+            mode: Mode::Normal,
+            config,
+            active_tab: Some("work".to_string()),
+            visible_projects,
+            send_command_history: Vec::new(),
+            status_message: None,
+            status_message_expires: None,
+            jobs: Vec::new(),
+            spinner_frame: 0,
+            bg_tx,
+            bg_rx,
+            needs_redraw: false,
+            force_redraw: false,
+            fast_timer: Timer::new(FAST_INTERVAL_MS),
+            activity_timer: Timer::new(ACTIVITY_INTERVAL_MS),
+            slow_timer: Timer::new(SLOW_INTERVAL_MS),
+            cached_flat: Vec::new(),
+            flat_dirty: false,
+            search_cache: Vec::new(),
+            git_local_tx,
+            git_local_rx,
+            git_local_pending: HashSet::new(),
+            fetch_tx,
+            fetch_rx,
+            fetch_pending: HashSet::new(),
+            cache_dirty: false,
+            git_semaphore: GitSemaphore::new(1),
+            worktree_index: std::collections::HashMap::new(),
+            parsed_preview: std::collections::HashMap::new(),
+            tmux_tx,
+            tmux_rx,
+            tmux_refresh_pending: false,
+            tmux_refresh_stale: false,
+            tmux_activity_pending: false,
+            tmux_capture_pending: false,
+            pending_deletions: HashSet::new(),
+            pending_session_ops: HashMap::new(),
+            update_rx,
+            update_available: None,
+            is_mobile: false,
+            scanned_repos: Vec::new(),
+            repo_scan_rx: None,
+        };
+
+        app.workspace.projects.remove(0);
+        app.config
+            .projects
+            .retain(|p| p.path.as_path() != std::path::Path::new("/tmp/work-a"));
+        app.rebuild_flat();
+
+        assert_eq!(app.flat(), &[FlatEntry::Project { idx: 1 }]);
     }
 
     // Regression guard for the attention_candidates logic (commit c118ea2).

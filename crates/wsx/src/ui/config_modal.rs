@@ -1,11 +1,11 @@
 // Per-project .gtrconfig editor overlay.
 
-use wsx_core::model::workspace::ProjectConfig;
 use crate::ui::popup_center;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
+use wsx_core::model::workspace::ProjectConfig;
 
 pub fn render_config_modal(
     frame: &mut Frame,

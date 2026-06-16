@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "wsx"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1020,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "wsx-core"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "anyhow",
  "dirs",

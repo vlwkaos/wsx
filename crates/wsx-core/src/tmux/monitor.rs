@@ -228,11 +228,8 @@ mod tests {
     #[test]
     fn given_chain_zsh_claude_node_when_classified_then_agent_wins() {
         // claude (Agent, rank 5) > node (Runtime, rank 3) > zsh (Shell, rank 1)
-        let tree = ProcTree::from_rows(&[
-            (100, 1, "zsh"),
-            (200, 100, "claude"),
-            (300, 200, "node"),
-        ]);
+        let tree =
+            ProcTree::from_rows(&[(100, 1, "zsh"), (200, 100, "claude"), (300, 200, "node")]);
         assert_eq!(classify_pane(100, &tree), Some(ForegroundKind::Agent));
     }
 
@@ -262,11 +259,8 @@ mod tests {
 
     #[test]
     fn given_zsh_with_claude_and_node_siblings_when_classified_then_agent_wins() {
-        let tree = ProcTree::from_rows(&[
-            (100, 1, "zsh"),
-            (200, 100, "claude"),
-            (300, 100, "node"),
-        ]);
+        let tree =
+            ProcTree::from_rows(&[(100, 1, "zsh"), (200, 100, "claude"), (300, 100, "node")]);
         assert_eq!(classify_pane(100, &tree), Some(ForegroundKind::Agent));
     }
 
@@ -274,22 +268,16 @@ mod tests {
     fn given_agent_under_runtime_parent_when_classified_then_agent_wins() {
         // Parent is Runtime, child is Agent — max_by_key must walk the whole
         // subtree, not just the root.
-        let tree = ProcTree::from_rows(&[
-            (100, 1, "zsh"),
-            (200, 100, "node"),
-            (300, 200, "claude"),
-        ]);
+        let tree =
+            ProcTree::from_rows(&[(100, 1, "zsh"), (200, 100, "node"), (300, 200, "claude")]);
         assert_eq!(classify_pane(100, &tree), Some(ForegroundKind::Agent));
     }
 
     #[test]
     fn given_mid_chain_pid_when_classified_then_only_subtree_seen() {
         // From a non-root pid: only that subtree is visible, ancestors are not.
-        let tree = ProcTree::from_rows(&[
-            (100, 1, "claude"),
-            (200, 100, "zsh"),
-            (300, 200, "less"),
-        ]);
+        let tree =
+            ProcTree::from_rows(&[(100, 1, "claude"), (200, 100, "zsh"), (300, 200, "less")]);
         // From 200, subtree is {zsh, less} → PassiveViewer wins over Shell.
         assert_eq!(
             classify_pane(200, &tree),

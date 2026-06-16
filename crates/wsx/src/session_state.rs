@@ -24,11 +24,11 @@ pub enum SessionHeuristic {
     Bell,
     WaitingForConfirm,
     WaitingForInput,
-    AgentWorking, // Agent foreground + recent output
-    AgentDone,    // Agent foreground + no recent output (waiting for you to look)
+    AgentWorking,  // Agent foreground + recent output
+    AgentDone,     // Agent foreground + no recent output (waiting for you to look)
     ServerRunning, // Runtime or InteractiveApp — green while the process exists
-    ShellPrompt,  // Shell + recent output (just returned to prompt)
-    ShellIdle,    // Shell + no recent output (at rest)
+    ShellPrompt,   // Shell + recent output (just returned to prompt)
+    ShellIdle,     // Shell + no recent output (at rest)
     PassiveViewer,
     Unknown,
 }
@@ -112,8 +112,8 @@ pub fn status_label(session: &SessionInfo) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wsx_core::model::workspace::{ForegroundKind, SessionInfo};
     use std::time::Instant;
+    use wsx_core::model::workspace::{ForegroundKind, SessionInfo};
 
     fn sess(
         foreground: ForegroundKind,
@@ -150,19 +150,37 @@ mod tests {
 
     #[test]
     fn given_confirm_capture_when_derived_then_waiting_for_confirm() {
-        let s = sess(ForegroundKind::Unknown, false, false, Some("Continue? [y/n]"), false);
+        let s = sess(
+            ForegroundKind::Unknown,
+            false,
+            false,
+            Some("Continue? [y/n]"),
+            false,
+        );
         assert_eq!(derive(&s), SessionHeuristic::WaitingForConfirm);
     }
 
     #[test]
     fn given_input_wait_capture_when_derived_then_waiting_for_input() {
-        let s = sess(ForegroundKind::Unknown, false, false, Some("waiting for user"), false);
+        let s = sess(
+            ForegroundKind::Unknown,
+            false,
+            false,
+            Some("waiting for user"),
+            false,
+        );
         assert_eq!(derive(&s), SessionHeuristic::WaitingForInput);
     }
 
     #[test]
     fn given_non_prompt_capture_when_derived_then_capture_does_not_match() {
-        let s = sess(ForegroundKind::Unknown, false, false, Some("just some output"), false);
+        let s = sess(
+            ForegroundKind::Unknown,
+            false,
+            false,
+            Some("just some output"),
+            false,
+        );
         assert_eq!(derive(&s), SessionHeuristic::Unknown);
     }
 
@@ -231,31 +249,61 @@ mod tests {
 
     #[test]
     fn given_muted_and_bell_and_capture_when_derived_then_muted_wins() {
-        let s = sess(ForegroundKind::Agent, true, true, Some("Continue? [y/n]"), true);
+        let s = sess(
+            ForegroundKind::Agent,
+            true,
+            true,
+            Some("Continue? [y/n]"),
+            true,
+        );
         assert_eq!(derive(&s), SessionHeuristic::Muted);
     }
 
     #[test]
     fn given_bell_and_confirm_capture_and_agent_when_derived_then_bell_wins() {
-        let s = sess(ForegroundKind::Agent, true, false, Some("Continue? [y/n]"), false);
+        let s = sess(
+            ForegroundKind::Agent,
+            true,
+            false,
+            Some("Continue? [y/n]"),
+            false,
+        );
         assert_eq!(derive(&s), SessionHeuristic::Bell);
     }
 
     #[test]
     fn given_confirm_capture_and_agent_recent_when_derived_then_capture_wins_over_agent() {
-        let s = sess(ForegroundKind::Agent, false, true, Some("Continue? [y/n]"), false);
+        let s = sess(
+            ForegroundKind::Agent,
+            false,
+            true,
+            Some("Continue? [y/n]"),
+            false,
+        );
         assert_eq!(derive(&s), SessionHeuristic::WaitingForConfirm);
     }
 
     #[test]
     fn given_confirm_capture_and_shell_recent_when_derived_then_capture_wins_over_shell() {
-        let s = sess(ForegroundKind::Shell, false, true, Some("Continue? [y/n]"), false);
+        let s = sess(
+            ForegroundKind::Shell,
+            false,
+            true,
+            Some("Continue? [y/n]"),
+            false,
+        );
         assert_eq!(derive(&s), SessionHeuristic::WaitingForConfirm);
     }
 
     #[test]
     fn given_input_wait_capture_and_runtime_when_derived_then_capture_wins_over_runtime() {
-        let s = sess(ForegroundKind::Runtime, false, false, Some("waiting for user"), false);
+        let s = sess(
+            ForegroundKind::Runtime,
+            false,
+            false,
+            Some("waiting for user"),
+            false,
+        );
         assert_eq!(derive(&s), SessionHeuristic::WaitingForInput);
     }
 
@@ -273,7 +321,13 @@ mod tests {
 
     #[test]
     fn given_non_prompt_capture_and_agent_recent_when_derived_then_agent_working() {
-        let s = sess(ForegroundKind::Agent, false, true, Some("just some output"), false);
+        let s = sess(
+            ForegroundKind::Agent,
+            false,
+            true,
+            Some("just some output"),
+            false,
+        );
         assert_eq!(derive(&s), SessionHeuristic::AgentWorking);
     }
 
@@ -304,7 +358,10 @@ mod tests {
 
     #[test]
     fn given_heuristic_bell_when_projected_then_needs_attention() {
-        assert_eq!(SessionHeuristic::Bell.app_state(), AppSessionState::NeedsAttention);
+        assert_eq!(
+            SessionHeuristic::Bell.app_state(),
+            AppSessionState::NeedsAttention
+        );
     }
 
     #[test]
@@ -325,7 +382,10 @@ mod tests {
 
     #[test]
     fn given_heuristic_agent_working_when_projected_then_active() {
-        assert_eq!(SessionHeuristic::AgentWorking.app_state(), AppSessionState::Active);
+        assert_eq!(
+            SessionHeuristic::AgentWorking.app_state(),
+            AppSessionState::Active
+        );
     }
 
     #[test]
@@ -338,7 +398,10 @@ mod tests {
 
     #[test]
     fn given_heuristic_server_running_when_projected_then_active() {
-        assert_eq!(SessionHeuristic::ServerRunning.app_state(), AppSessionState::Active);
+        assert_eq!(
+            SessionHeuristic::ServerRunning.app_state(),
+            AppSessionState::Active
+        );
     }
 
     #[test]
@@ -351,12 +414,18 @@ mod tests {
 
     #[test]
     fn given_heuristic_shell_idle_when_projected_then_idle() {
-        assert_eq!(SessionHeuristic::ShellIdle.app_state(), AppSessionState::Idle);
+        assert_eq!(
+            SessionHeuristic::ShellIdle.app_state(),
+            AppSessionState::Idle
+        );
     }
 
     #[test]
     fn given_heuristic_passive_viewer_when_projected_then_idle() {
-        assert_eq!(SessionHeuristic::PassiveViewer.app_state(), AppSessionState::Idle);
+        assert_eq!(
+            SessionHeuristic::PassiveViewer.app_state(),
+            AppSessionState::Idle
+        );
     }
 
     #[test]
@@ -441,7 +510,13 @@ mod tests {
                 AppSessionState::NeedsAttention,
             ),
             (
-                sess(ForegroundKind::Agent, false, false, Some("Continue? [y/n]"), false),
+                sess(
+                    ForegroundKind::Agent,
+                    false,
+                    false,
+                    Some("Continue? [y/n]"),
+                    false,
+                ),
                 SessionHeuristic::WaitingForConfirm,
                 AppSessionState::NeedsAttention,
             ),
@@ -499,7 +574,8 @@ mod tests {
     }
 
     #[test]
-    fn given_workspace_with_no_recent_activity_when_classified_then_runtime_and_app_remain_active() {
+    fn given_workspace_with_no_recent_activity_when_classified_then_runtime_and_app_remain_active()
+    {
         let runtime = sess(ForegroundKind::Runtime, false, false, None, false);
         let app = sess(ForegroundKind::InteractiveApp, false, false, None, false);
         assert_eq!(derive(&runtime).app_state(), AppSessionState::Active);
