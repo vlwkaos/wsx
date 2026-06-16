@@ -1,9 +1,9 @@
-use wsx_core::config::global::GlobalConfig;
 use crate::ui::popup_center;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Paragraph},
 };
+use wsx_core::config::global::GlobalConfig;
 
 pub fn render_tab_manager(
     frame: &mut Frame,

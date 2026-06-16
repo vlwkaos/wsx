@@ -169,12 +169,8 @@ mod tests {
 
     #[test]
     fn given_chain_when_descendants_called_then_all_returned() {
-        let tree = ProcTree::from_rows(&[
-            (10, 1, "root"),
-            (20, 10, "a"),
-            (30, 20, "b"),
-            (40, 30, "c"),
-        ]);
+        let tree =
+            ProcTree::from_rows(&[(10, 1, "root"), (20, 10, "a"), (30, 20, "b"), (40, 30, "c")]);
         let mut pids: Vec<u32> = tree.descendants(10).into_iter().map(|(p, _)| p).collect();
         pids.sort();
         assert_eq!(pids, vec![10, 20, 30, 40]);
@@ -182,11 +178,7 @@ mod tests {
 
     #[test]
     fn given_chain_when_descendants_called_then_root_returned_first() {
-        let tree = ProcTree::from_rows(&[
-            (10, 1, "root"),
-            (20, 10, "a"),
-            (30, 20, "b"),
-        ]);
+        let tree = ProcTree::from_rows(&[(10, 1, "root"), (20, 10, "a"), (30, 20, "b")]);
         let pids: Vec<u32> = tree.descendants(10).into_iter().map(|(p, _)| p).collect();
         assert_eq!(pids.first().copied(), Some(10));
     }
@@ -205,12 +197,8 @@ mod tests {
 
     #[test]
     fn given_multi_fanout_when_descendants_called_then_all_children_returned() {
-        let tree = ProcTree::from_rows(&[
-            (10, 1, "root"),
-            (20, 10, "a"),
-            (30, 10, "b"),
-            (40, 10, "c"),
-        ]);
+        let tree =
+            ProcTree::from_rows(&[(10, 1, "root"), (20, 10, "a"), (30, 10, "b"), (40, 10, "c")]);
         let mut pids: Vec<u32> = tree.descendants(10).into_iter().map(|(p, _)| p).collect();
         pids.sort();
         assert_eq!(pids, vec![10, 20, 30, 40]);
@@ -221,15 +209,11 @@ mod tests {
         // orphan(200) claims ppid=999 which has no comm — reachable from its
         // own pid; descendants(999) traverses the children link but yields no
         // entry for the phantom parent.
-        let tree = ProcTree::from_rows(&[
-            (200, 999, "claude"),
-            (300, 200, "node"),
-        ]);
+        let tree = ProcTree::from_rows(&[(200, 999, "claude"), (300, 200, "node")]);
         let mut pids: Vec<u32> = tree.descendants(200).into_iter().map(|(p, _)| p).collect();
         pids.sort();
         assert_eq!(pids, vec![200, 300]);
-        let mut phantom: Vec<u32> =
-            tree.descendants(999).into_iter().map(|(p, _)| p).collect();
+        let mut phantom: Vec<u32> = tree.descendants(999).into_iter().map(|(p, _)| p).collect();
         phantom.sort();
         assert_eq!(phantom, vec![200, 300]);
     }
@@ -238,11 +222,8 @@ mod tests {
 
     #[test]
     fn given_same_data_when_from_rows_and_parse_then_descendants_match() {
-        let rows: &[(u32, u32, &str)] = &[
-            (100, 1, "zsh"),
-            (200, 100, "claude"),
-            (300, 200, "node"),
-        ];
+        let rows: &[(u32, u32, &str)] =
+            &[(100, 1, "zsh"), (200, 100, "claude"), (300, 200, "node")];
         let from_rows = ProcTree::from_rows(rows);
         let parsed = ProcTree::parse("100 1 zsh\n200 100 claude\n300 200 node");
         let mut a: Vec<(u32, String)> = from_rows

@@ -1,12 +1,12 @@
 // Right preview pane — git info, session capture, project summary
 
-use wsx_core::model::workspace::{FetchFailReason, Project, SessionInfo, WorktreeInfo};
 use crate::session_state::{self, AppSessionState};
 use crate::ui::ansi;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
+use wsx_core::model::workspace::{FetchFailReason, Project, SessionInfo, WorktreeInfo};
 
 pub fn render_worktree_preview(
     frame: &mut Frame,
@@ -206,7 +206,8 @@ pub fn render_session_preview(
     parsed: Option<&ratatui::text::Text<'static>>,
 ) {
     frame.render_widget(Clear, area);
-    let activity = if session_state::derive(session).app_state() == AppSessionState::NeedsAttention {
+    let activity = if session_state::derive(session).app_state() == AppSessionState::NeedsAttention
+    {
         " ●"
     } else {
         ""

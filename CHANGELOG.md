@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.16.1] - 2026-06-16
+
+### Bug Fixes
+
+- Recompute tab visibility whenever the workspace tree is rebuilt, so unregistering a project from one tab no longer lets a shifted project from another tab appear in the active tab.
+
 ## [0.16.0] - 2026-06-06
 
 ### Refactor
