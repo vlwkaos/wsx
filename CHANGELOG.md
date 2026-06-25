@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.2] - 2026-06-25
+
+### Bug Fixes
+
+- Adding a project that is already registered is now rejected instead of creating a duplicate tree entry. Re-adding a project after removing it (or re-adding with a trailing slash) previously appended a second item because the workspace was not deduped and trailing-slash paths bypassed the config dedup. Project paths now run through a single normalizer before registration, and duplicates are refused with a status message. ([`15d2427`](https://github.com/vlwkaos/wsx/commit/15d2427))
+- Keep git status visible during explicit git operations instead of blanking it on refresh, and pick the newest crash-restore session source so a stale snapshot no longer overrides a more recent cache. ([`15d2427`](https://github.com/vlwkaos/wsx/commit/15d2427))
+
 ## [0.16.1] - 2026-06-16
 
 ### Bug Fixes
