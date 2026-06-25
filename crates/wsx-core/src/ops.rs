@@ -346,11 +346,19 @@ pub fn register_project(path: PathBuf, config: &mut GlobalConfig) -> Result<Proj
     if path.as_os_str().is_empty() {
         bail!("empty path");
     }
+    // Normalize before any equality checks so the returned Project.path matches
+    // what config stores — otherwise delete/dedup/cache lookups silently miss and
+    // the tree shows duplicate or undeletable entries. Shared normalizer keeps
+    // this in lockstep with GlobalConfig::add_project / load.
+    let path = crate::config::global::normalize_project_path(&path);
     if !path.exists() {
         bail!("path does not exist: {}", path.display());
     }
     if !is_git_repo(&path) {
         bail!("not a git repository: {}", path.display());
+    }
+    if config.projects.iter().any(|e| e.path == path) {
+        bail!("project already registered: {}", path.display());
     }
 
     let name = path
@@ -650,6 +658,183 @@ mod tests {
         );
         assert_eq!(workspace.projects.len(), 1);
         assert_eq!(workspace.projects[0].path, exists_path);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    fn unique_base() -> PathBuf {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("wsx-test-register-{}", suffix));
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn make_repo_dir(base: &std::path::Path, name: &str) -> PathBuf {
+        let p = base.join(name);
+        std::fs::create_dir_all(p.join(".git")).unwrap();
+        p
+    }
+
+    #[test]
+    fn given_trailing_slash_path_when_registered_then_returned_path_has_no_trailing_slash() {
+        let base = unique_base();
+        let repo = make_repo_dir(&base, "myrepo");
+        let with_slash = PathBuf::from(format!("{}/", repo.to_string_lossy()));
+        let mut config = GlobalConfig::default();
+
+        let project = register_project(with_slash, &mut config).unwrap();
+
+        assert_eq!(project.path, repo);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn given_valid_repo_when_registered_then_name_is_final_path_component() {
+        let base = unique_base();
+        let repo = make_repo_dir(&base, "coolproject");
+        let mut config = GlobalConfig::default();
+
+        let project = register_project(repo, &mut config).unwrap();
+
+        assert_eq!(project.name, "coolproject");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn given_valid_repo_when_registered_then_appended_to_config() {
+        let base = unique_base();
+        let repo = make_repo_dir(&base, "myrepo");
+        let mut config = GlobalConfig::default();
+
+        let _ = register_project(repo, &mut config).unwrap();
+
+        assert_eq!(config.projects.len(), 1);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn given_two_distinct_repos_when_both_registered_then_both_stored() {
+        let base = unique_base();
+        let repo_a = make_repo_dir(&base, "alpha");
+        let repo_b = make_repo_dir(&base, "beta");
+        let mut config = GlobalConfig::default();
+
+        register_project(repo_a, &mut config).unwrap();
+        register_project(repo_b, &mut config).unwrap();
+
+        assert_eq!(config.projects.len(), 2);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn given_same_exact_path_registered_twice_when_second_call_then_returns_err() {
+        let base = unique_base();
+        let repo = make_repo_dir(&base, "myrepo");
+        let mut config = GlobalConfig::default();
+
+        register_project(repo.clone(), &mut config).unwrap();
+        let second = register_project(repo, &mut config);
+
+        assert!(second.is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn given_same_exact_path_registered_twice_when_second_call_then_projects_len_stays_one() {
+        let base = unique_base();
+        let repo = make_repo_dir(&base, "myrepo");
+        let mut config = GlobalConfig::default();
+
+        register_project(repo.clone(), &mut config).unwrap();
+        let _ = register_project(repo, &mut config);
+
+        assert_eq!(config.projects.len(), 1);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn given_path_differing_only_by_trailing_slash_when_second_call_then_returns_err() {
+        let base = unique_base();
+        let repo = make_repo_dir(&base, "myrepo");
+        let with_slash = PathBuf::from(format!("{}/", repo.to_string_lossy()));
+        let mut config = GlobalConfig::default();
+
+        register_project(repo, &mut config).unwrap();
+        let second = register_project(with_slash, &mut config);
+
+        assert!(second.is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn given_path_differing_only_by_trailing_slash_when_second_call_then_projects_len_stays_one() {
+        let base = unique_base();
+        let repo = make_repo_dir(&base, "myrepo");
+        let with_slash = PathBuf::from(format!("{}/", repo.to_string_lossy()));
+        let mut config = GlobalConfig::default();
+
+        register_project(repo, &mut config).unwrap();
+        let _ = register_project(with_slash, &mut config);
+
+        assert_eq!(config.projects.len(), 1);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn given_empty_path_when_registered_then_returns_err() {
+        let mut config = GlobalConfig::default();
+
+        let result = register_project(PathBuf::from(""), &mut config);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn given_empty_path_when_registered_then_projects_stays_empty() {
+        let mut config = GlobalConfig::default();
+
+        let _ = register_project(PathBuf::from(""), &mut config);
+
+        assert_eq!(config.projects.len(), 0);
+    }
+
+    #[test]
+    fn given_nonexistent_path_when_registered_then_returns_err() {
+        let base = unique_base();
+        let missing = base.join("does-not-exist");
+        let mut config = GlobalConfig::default();
+
+        let result = register_project(missing, &mut config);
+
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn given_existing_dir_without_git_when_registered_then_returns_err() {
+        let base = unique_base();
+        let plain = base.join("plaindir");
+        std::fs::create_dir_all(&plain).unwrap();
+        let mut config = GlobalConfig::default();
+
+        let result = register_project(plain, &mut config);
+
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn given_file_at_path_instead_of_dir_when_registered_then_returns_err() {
+        let base = unique_base();
+        let file_path = base.join("notadir");
+        std::fs::write(&file_path, b"i am a file").unwrap();
+        let mut config = GlobalConfig::default();
+
+        let result = register_project(file_path, &mut config);
+
+        assert!(result.is_err());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

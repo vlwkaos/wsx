@@ -2390,7 +2390,15 @@ impl App {
     // ── Dispatch to ops ───────────────────────────────────────────────────────
 
     fn do_register_project(&mut self, path: PathBuf) -> Result<()> {
-        let project = ops::register_project(path, &mut self.config)?;
+        // Surface duplicate/invalid-path rejections as status rather than
+        // propagating up the event loop (which would tear down the TUI).
+        let project = match ops::register_project(path, &mut self.config) {
+            Ok(project) => project,
+            Err(e) => {
+                self.set_status(e.to_string());
+                return Ok(());
+            }
+        };
         // Assign new project to the currently active tab
         if !self.config.tabs.is_empty() {
             if let Some(entry) = self.config.projects.last_mut() {

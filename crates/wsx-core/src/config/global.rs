@@ -10,6 +10,15 @@ fn default_exclude_worktree_paths() -> Vec<String> {
     vec![".claude/worktrees".to_string()]
 }
 
+/// Canonical form used for project-path identity. A trailing `/` is the only
+/// divergence we've seen between a user-typed path and its stored form, and an
+/// un-normalized duplicate silently breaks dedup / delete / cache lookups.
+/// Single source of truth — `load`, `add_project`, and `ops::register_project`
+/// must all route through this so the stored path and the in-memory path match.
+pub fn normalize_project_path(path: &Path) -> PathBuf {
+    PathBuf::from(path.to_string_lossy().trim_end_matches('/').to_string())
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GlobalConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -70,12 +79,7 @@ impl GlobalConfig {
             }
             Ok(mut config) => {
                 for entry in &mut config.projects {
-                    let s = entry
-                        .path
-                        .to_string_lossy()
-                        .trim_end_matches('/')
-                        .to_string();
-                    entry.path = PathBuf::from(s);
+                    entry.path = normalize_project_path(&entry.path);
                 }
                 Ok((config, None))
             }
@@ -136,8 +140,7 @@ impl GlobalConfig {
     }
 
     pub fn add_project(&mut self, name: String, path: PathBuf) {
-        let s = path.to_string_lossy().trim_end_matches('/').to_string();
-        let path = PathBuf::from(s);
+        let path = normalize_project_path(&path);
         self.projects.retain(|p| p.path != path);
         self.projects.push(ProjectEntry {
             name,
@@ -159,5 +162,101 @@ impl GlobalConfig {
                 entry.aliases.insert(branch.to_string(), alias.to_string());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- normalize_project_path ---
+
+    #[test]
+    fn given_path_with_single_trailing_slash_when_normalized_then_slash_stripped() {
+        assert_eq!(normalize_project_path(Path::new("/foo/")), PathBuf::from("/foo"));
+    }
+
+    #[test]
+    fn given_path_with_multiple_trailing_slashes_when_normalized_then_all_stripped() {
+        assert_eq!(normalize_project_path(Path::new("/foo///")), PathBuf::from("/foo"));
+    }
+
+    #[test]
+    fn given_relative_path_with_trailing_slash_when_normalized_then_slash_stripped() {
+        assert_eq!(normalize_project_path(Path::new("foo/bar/")), PathBuf::from("foo/bar"));
+    }
+
+    // Semantically-wrong-input guard: only the trailing run is stripped.
+    // A naive "collapse all slashes" impl would wrongly yield "/foo/bar".
+    #[test]
+    fn given_path_with_interior_and_trailing_slashes_when_normalized_then_only_trailing_stripped() {
+        assert_eq!(normalize_project_path(Path::new("/foo//bar/")), PathBuf::from("/foo//bar"));
+    }
+
+    #[test]
+    fn given_empty_path_when_normalized_then_does_not_panic() {
+        let _ = normalize_project_path(Path::new(""));
+    }
+
+    // All-slashes collapses to empty (not just "no panic").
+    #[test]
+    fn given_all_slashes_path_when_normalized_then_empty() {
+        assert_eq!(normalize_project_path(Path::new("///")), PathBuf::from(""));
+    }
+
+    #[test]
+    fn given_root_slash_path_when_normalized_then_empty() {
+        assert_eq!(normalize_project_path(Path::new("/")), PathBuf::from(""));
+    }
+
+    // --- GlobalConfig::default (precondition for add_project suite) ---
+
+    #[test]
+    fn given_default_config_when_constructed_then_projects_is_empty() {
+        let config = GlobalConfig::default();
+        assert!(config.projects.is_empty());
+    }
+
+    // --- GlobalConfig::add_project ---
+
+    #[test]
+    fn given_path_with_trailing_slash_when_add_project_then_stored_path_normalized() {
+        let mut config = GlobalConfig::default();
+        config.add_project("a".to_string(), PathBuf::from("/foo/"));
+        assert_eq!(config.projects[0].path, PathBuf::from("/foo"));
+    }
+
+    #[test]
+    fn given_duplicate_normalized_path_when_add_project_twice_then_len_is_one() {
+        let mut config = GlobalConfig::default();
+        config.add_project("a".to_string(), PathBuf::from("/foo"));
+        config.add_project("b".to_string(), PathBuf::from("/foo/"));
+        assert_eq!(config.projects.len(), 1);
+    }
+
+    #[test]
+    fn given_duplicate_normalized_path_when_add_project_twice_then_last_name_wins() {
+        let mut config = GlobalConfig::default();
+        config.add_project("a".to_string(), PathBuf::from("/foo"));
+        config.add_project("b".to_string(), PathBuf::from("/foo/"));
+        assert_eq!(config.projects[0].name, "b");
+    }
+
+    // Identity is keyed on the normalized path: the survivor's stored path is
+    // the normalized form regardless of which call carried the trailing slash.
+    #[test]
+    fn given_duplicate_normalized_path_when_add_project_twice_then_survivor_path_normalized() {
+        let mut config = GlobalConfig::default();
+        config.add_project("a".to_string(), PathBuf::from("/foo/"));
+        config.add_project("b".to_string(), PathBuf::from("/foo"));
+        assert_eq!(config.projects[0].path, PathBuf::from("/foo"));
+    }
+
+    #[test]
+    fn given_two_distinct_paths_when_add_project_each_then_both_persist() {
+        let mut config = GlobalConfig::default();
+        config.add_project("a".to_string(), PathBuf::from("/foo"));
+        config.add_project("b".to_string(), PathBuf::from("/bar"));
+        assert_eq!(config.projects.len(), 2);
     }
 }
