@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 fn default_exclude_worktree_paths() -> Vec<String> {
@@ -87,7 +88,15 @@ impl GlobalConfig {
             std::fs::create_dir_all(parent)?;
         }
         let text = toml::to_string_pretty(self)?;
-        std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+        let tmp = path.with_extension("toml.tmp");
+        let mut file =
+            std::fs::File::create(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
+        file.write_all(text.as_bytes())
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        file.sync_all()
+            .with_context(|| format!("syncing {}", tmp.display()))?;
+        drop(file);
+        std::fs::rename(&tmp, &path).with_context(|| format!("renaming {}", path.display()))?;
         Ok(())
     }
 
