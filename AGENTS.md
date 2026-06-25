@@ -1,5 +1,13 @@
 release.flow: rust
 
+## Release
+
+This is a Cargo **workspace** — the shared `~/.claude/skills/rust-release/release.sh` assumes a single-crate layout, so two manual steps are required every release:
+
+- **Bump two version locations, not one.** `release.sh`'s `sed` only rewrites the root `[workspace.package].version`. Also bump the pinned path dep in `crates/wsx/Cargo.toml` (`wsx-core = { path = "../wsx-core", version = "=X.Y.Z" }`), or the in-script `cargo build` fails on the version mismatch. Bump both and run `cargo build` before invoking `release.sh`.
+- **Homebrew step dies silently on the workspace root.** `release.sh` runs `grep '^description' Cargo.toml` near the end; the workspace root has no `[package]`/`description`, so under `set -e` grep exit-1 kills the script *after* the GitHub release/tag/push but *before* the tap update. Recover the tap manually using the artifacts the script already produced: tarball SHA is in `wsx-<ver>-darwin-universal.tar.gz.sha256`, bottle SHA is printed as `Bottle: ... (<sha>)`. Update `Formula/wsx.rb` in `~/ws-ps/homebrew-tap` (url, version, sha256, bottle root_url + bottle sha256), then commit + push. The tap remote may be ahead — `git pull --rebase` and keep the new version on conflict.
+- **crates.io is a manual step.** `release.sh` skips publish because the workspace root has no `[package]`. Publish in dependency order after the GitHub release: `cargo publish -p wsx-core` then `cargo publish -p wsx`. Requires a valid crates.io token (`cargo login`); a 403 means the token is stale — GitHub release + brew are already live, so this can be finished later without re-tagging.
+
 ## good-to-go
 
 Recurring audit axes (auto-maintained by /good-to-go):
