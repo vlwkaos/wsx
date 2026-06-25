@@ -2,7 +2,9 @@
 // Loaded before first refresh_all() so the tree is populated immediately.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::model::workspace::{
     session_display_name_from_tmux, FlatEntry, ForegroundKind, SessionInfo, WorkspaceState,
@@ -24,8 +26,11 @@ pub enum CursorIdentity {
     },
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 pub struct WorkspaceCache {
+    /// Write timestamp used to choose the newest source after a crash.
+    #[serde(default)]
+    pub written_at_unix_ms: Option<u64>,
     /// worktree path → session names
     pub sessions: HashMap<String, Vec<String>>,
     /// worktree path → expanded
@@ -60,15 +65,17 @@ impl WorkspaceCache {
     }
 
     pub fn save(&self, sync: bool) -> anyhow::Result<()> {
+        let mut cache = self.clone();
+        cache.written_at_unix_ms = Some(now_unix_ms());
         let path = cache_path();
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let s = toml::to_string(self)?;
+        let s = toml::to_string(&cache)?;
         // Atomic write: temp file + rename so a crash mid-write leaves the original intact.
         let tmp = path.with_extension("toml.tmp");
         let mut f = std::fs::File::create(&tmp)?;
-        std::io::Write::write_all(&mut f, s.as_bytes())?;
+        f.write_all(s.as_bytes())?;
         if sync {
             f.sync_all()?;
         }
@@ -79,10 +86,24 @@ impl WorkspaceCache {
 }
 
 /// Atomic write: write to a `.toml.tmp` sibling then rename over the target.
-fn write_atomic(path: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
+fn write_atomic(path: &std::path::Path, content: &[u8], sync: bool) -> std::io::Result<()> {
     let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, content)?;
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(content)?;
+    if sync {
+        f.sync_all()?;
+    }
+    drop(f);
     std::fs::rename(&tmp, path)
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 fn cache_path() -> PathBuf {
@@ -111,39 +132,76 @@ pub fn collect_session_names(workspace: &WorkspaceState) -> HashMap<String, Vec<
     map
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionSnapshot {
+    pub sessions: HashMap<String, Vec<String>>,
+    pub written_at_unix_ms: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PersistedSessionSnapshot {
+    version: u32,
+    written_at_unix_ms: u64,
+    #[serde(default)]
+    tmux_server_pid: Option<u32>,
+    sessions: HashMap<String, Vec<String>>,
+}
+
 /// Persist session names to Application Support — survives tmux crashes because
 /// it's outside the cache and written whenever sessions change.
-pub fn save_session_snapshot(workspace: &WorkspaceState) {
+pub fn save_session_snapshot(workspace: &WorkspaceState, sync: bool) {
     let Some(path) = session_snapshot_path() else {
         return;
     };
-    save_snapshot_to(workspace, &path);
+    save_snapshot_to(workspace, &path, sync);
 }
 
-pub(crate) fn save_snapshot_to(workspace: &WorkspaceState, path: &std::path::Path) {
+pub(crate) fn save_snapshot_to(workspace: &WorkspaceState, path: &std::path::Path, sync: bool) {
     let map = collect_session_names(workspace);
-    let Ok(s) = toml::to_string(&map) else { return };
+    let snapshot = PersistedSessionSnapshot {
+        version: 1,
+        written_at_unix_ms: now_unix_ms(),
+        tmux_server_pid: crate::tmux::session::server_pid(),
+        sessions: map,
+    };
+    let Ok(s) = toml::to_string(&snapshot) else {
+        return;
+    };
     if let Some(dir) = path.parent() {
         if std::fs::create_dir_all(dir).is_err() {
             return;
         }
     }
-    let _ = write_atomic(path, s.as_bytes());
+    let _ = write_atomic(path, s.as_bytes(), sync);
 }
 
 /// Load the session snapshot written by `save_session_snapshot`.
 pub fn load_session_snapshot() -> HashMap<String, Vec<String>> {
+    load_session_snapshot_with_meta().sessions
+}
+
+pub fn load_session_snapshot_with_meta() -> SessionSnapshot {
     let Some(path) = session_snapshot_path() else {
-        return HashMap::new();
+        return SessionSnapshot::default();
     };
     load_snapshot_from(&path)
 }
 
-pub(crate) fn load_snapshot_from(path: &std::path::Path) -> HashMap<String, Vec<String>> {
+pub(crate) fn load_snapshot_from(path: &std::path::Path) -> SessionSnapshot {
     let Ok(content) = std::fs::read_to_string(path) else {
-        return HashMap::new();
+        return SessionSnapshot::default();
     };
-    toml::from_str(&content).unwrap_or_default()
+    if let Ok(snapshot) = toml::from_str::<PersistedSessionSnapshot>(&content) {
+        return SessionSnapshot {
+            sessions: snapshot.sessions,
+            written_at_unix_ms: Some(snapshot.written_at_unix_ms),
+        };
+    }
+    let sessions = toml::from_str(&content).unwrap_or_default();
+    SessionSnapshot {
+        sessions,
+        written_at_unix_ms: None,
+    }
 }
 
 /// Return type for `apply_cache`. Last two fields are for one-time tmux flag migration.
@@ -265,10 +323,15 @@ pub fn save_cache(
     active_tab: Option<&str>,
     sync: bool,
 ) -> Option<String> {
-    let mut cache = WorkspaceCache::default();
-    cache.tree_selected = tree_selected;
-    cache.cursor_identity = resolve_cursor_identity(workspace, flat, tree_selected);
-    cache.active_tab = active_tab.map(|s| s.to_string());
+    let mut cache = WorkspaceCache {
+        written_at_unix_ms: Some(now_unix_ms()),
+        tree_selected,
+        cursor_identity: resolve_cursor_identity(workspace, flat, tree_selected),
+        command_history: command_history.to_vec(),
+        active_tab: active_tab.map(|s| s.to_string()),
+        tmux_server_pid: crate::tmux::session::server_pid(),
+        ..Default::default()
+    };
     for project in &workspace.projects {
         let proj_key = project.path.to_string_lossy().to_string();
         cache.project_expanded.insert(proj_key, project.expanded);
@@ -283,8 +346,6 @@ pub fn save_cache(
             // so all instances share it without cache coordination.
         }
     }
-    cache.command_history = command_history.to_vec();
-    cache.tmux_server_pid = crate::tmux::session::server_pid();
     cache
         .save(sync)
         .err()
@@ -424,11 +485,15 @@ mod tests {
             ("/tmp/proj-b", &["proj-b-shell", "proj-b-build"]),
         ]);
 
-        save_snapshot_to(&ws, &path);
+        save_snapshot_to(&ws, &path, true);
         let loaded = load_snapshot_from(&path);
 
-        assert_eq!(loaded["/tmp/proj-a"], vec!["proj-a-claude"]);
-        assert_eq!(loaded["/tmp/proj-b"], vec!["proj-b-shell", "proj-b-build"]);
+        assert_eq!(loaded.sessions["/tmp/proj-a"], vec!["proj-a-claude"]);
+        assert_eq!(
+            loaded.sessions["/tmp/proj-b"],
+            vec!["proj-b-shell", "proj-b-build"]
+        );
+        assert!(loaded.written_at_unix_ms.is_some());
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -436,7 +501,7 @@ mod tests {
     #[test]
     fn snapshot_load_missing_file_returns_empty() {
         let path = std::path::Path::new("/tmp/wsx_nonexistent_snapshot.toml");
-        assert!(load_snapshot_from(path).is_empty());
+        assert!(load_snapshot_from(path).sessions.is_empty());
     }
 
     #[test]
@@ -446,8 +511,23 @@ mod tests {
         let path = dir.join("sessions.toml");
 
         let ws = make_workspace(&[]);
-        save_snapshot_to(&ws, &path);
-        assert!(load_snapshot_from(&path).is_empty());
+        save_snapshot_to(&ws, &path, true);
+        assert!(load_snapshot_from(&path).sessions.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn snapshot_loads_legacy_bare_session_map() {
+        let dir = std::env::temp_dir().join("wsx_test_snapshot_legacy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.toml");
+        std::fs::write(&path, "\"/tmp/proj\" = [\"proj-main-claude\"]\n").unwrap();
+
+        let loaded = load_snapshot_from(&path);
+
+        assert_eq!(loaded.sessions["/tmp/proj"], vec!["proj-main-claude"]);
+        assert_eq!(loaded.written_at_unix_ms, None);
 
         std::fs::remove_dir_all(&dir).ok();
     }

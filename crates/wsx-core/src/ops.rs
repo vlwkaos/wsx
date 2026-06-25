@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Result};
 
 use crate::{
+    cache::SessionSnapshot,
     config::global::GlobalConfig,
     git::{info as git_info, worktree as git_worktree},
     hooks,
@@ -473,8 +474,8 @@ pub fn rename_session(old_name: &str, new_name: &str) -> Result<()> {
 /// ! Only restores when the tmux server PID has changed. If the same server is
 /// ! still running, missing sessions were intentionally killed — skip restore.
 ///
-/// Uses the session snapshot (written periodically to Application Support) as the
-/// source of truth — more recent than the cache, which may lag behind live state.
+/// Uses the newest non-empty session source. Older versions always preferred
+/// sessions.toml, but that let a stale crash snapshot override a newer cache.
 ///
 /// Returns the number of sessions recreated.
 pub fn restore_cached_sessions(workspace: &WorkspaceState, cached_pid: Option<u32>) -> usize {
@@ -488,27 +489,41 @@ pub fn restore_cached_sessions(workspace: &WorkspaceState, cached_pid: Option<u3
         .map(|(name, _)| name)
         .collect();
 
-    // Prefer snapshot (written on every cache flush) over workspace sessions,
-    // which come from the cache and may not reflect the last live state.
-    let snapshot = crate::cache::load_session_snapshot();
-    let source = if !snapshot.is_empty() {
-        snapshot
-    } else {
-        crate::cache::collect_session_names(workspace)
-    };
+    let source = choose_restore_source(
+        crate::cache::load_session_snapshot_with_meta(),
+        crate::cache::collect_session_names(workspace),
+        crate::cache::WorkspaceCache::load().written_at_unix_ms,
+    );
 
     let mut restored = 0usize;
     for (path_str, names) in &source {
         let path = std::path::Path::new(path_str.as_str());
         for name in names {
-            if !live.contains(name) {
-                if session::create_session(name, path).is_ok() {
-                    restored += 1;
-                }
+            if !live.contains(name) && session::create_session(name, path).is_ok() {
+                restored += 1;
             }
         }
     }
     restored
+}
+
+fn choose_restore_source(
+    snapshot: SessionSnapshot,
+    workspace_sessions: HashMap<String, Vec<String>>,
+    workspace_written_at: Option<u64>,
+) -> HashMap<String, Vec<String>> {
+    let snapshot_is_newer = match (snapshot.written_at_unix_ms, workspace_written_at) {
+        // Legacy snapshots had no timestamp, so keep the old crash-restore
+        // behavior and prefer them when present.
+        (None, _) => true,
+        (Some(_), None) => true,
+        (Some(snapshot_ms), Some(workspace_ms)) => snapshot_ms >= workspace_ms,
+    };
+    if !snapshot.sessions.is_empty() && (workspace_sessions.is_empty() || snapshot_is_newer) {
+        snapshot.sessions
+    } else {
+        workspace_sessions
+    }
 }
 
 // ── Alias operations ──────────────────────────────────────────────────────────
@@ -534,6 +549,55 @@ mod tests {
             expanded: true,
             missing: false,
         }
+    }
+
+    fn sessions(path: &str, names: &[&str]) -> HashMap<String, Vec<String>> {
+        HashMap::from([(
+            path.to_string(),
+            names.iter().map(|name| name.to_string()).collect(),
+        )])
+    }
+
+    #[test]
+    fn restore_source_uses_workspace_when_snapshot_is_older() {
+        let source = choose_restore_source(
+            SessionSnapshot {
+                sessions: sessions("/tmp/repo", &["old"]),
+                written_at_unix_ms: Some(10),
+            },
+            sessions("/tmp/repo", &["new"]),
+            Some(20),
+        );
+
+        assert_eq!(source["/tmp/repo"], vec!["new"]);
+    }
+
+    #[test]
+    fn restore_source_uses_snapshot_when_snapshot_is_newer() {
+        let source = choose_restore_source(
+            SessionSnapshot {
+                sessions: sessions("/tmp/repo", &["new"]),
+                written_at_unix_ms: Some(20),
+            },
+            sessions("/tmp/repo", &["old"]),
+            Some(10),
+        );
+
+        assert_eq!(source["/tmp/repo"], vec!["new"]);
+    }
+
+    #[test]
+    fn restore_source_keeps_legacy_snapshot_preference() {
+        let source = choose_restore_source(
+            SessionSnapshot {
+                sessions: sessions("/tmp/repo", &["legacy"]),
+                written_at_unix_ms: None,
+            },
+            sessions("/tmp/repo", &["workspace"]),
+            Some(20),
+        );
+
+        assert_eq!(source["/tmp/repo"], vec!["legacy"]);
     }
 
     #[test]

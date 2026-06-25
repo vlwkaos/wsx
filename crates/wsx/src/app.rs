@@ -336,6 +336,7 @@ pub struct App {
     fetch_pending: HashSet<PathBuf>,
     /// true when workspace state has changed since the last cache write.
     cache_dirty: bool,
+    last_session_snapshot: HashMap<String, Vec<String>>,
     /// Limits concurrent git-info threads to available CPU count.
     git_semaphore: GitSemaphore,
     /// path → (project_idx, worktree_idx) for O(1) async-result application.
@@ -398,6 +399,7 @@ impl App {
         });
         let worktree_index = build_worktree_index(&workspace);
         let search_cache = build_search_cache(&workspace, &cached_flat);
+        let last_session_snapshot = wsx_core::cache::collect_session_names(&workspace);
 
         let mut app = Self {
             workspace,
@@ -443,6 +445,7 @@ impl App {
             fetch_rx,
             fetch_pending: HashSet::new(),
             cache_dirty: false,
+            last_session_snapshot,
             worktree_index,
             parsed_preview: std::collections::HashMap::new(),
             git_semaphore: GitSemaphore::new(
@@ -553,10 +556,9 @@ impl App {
                 self.set_status(msg);
             }
             Ok(BgOutcome::GitOp { pi, wi, msg }) => {
-                self.invalidate_git_info(pi, wi);
                 let path = self.git_worktree_path(pi, wi).unwrap_or_default();
                 let branch = self.default_branch_for_project(pi);
-                self.spawn_git_local(path, branch);
+                self.spawn_git_local_force(path, branch);
                 self.set_status(msg);
             }
             Ok(BgOutcome::WorktreeCreated { label }) => {
@@ -728,6 +730,14 @@ impl App {
     const GIT_INFO_CACHE_SECS: u64 = 15;
 
     fn spawn_git_local(&mut self, path: PathBuf, default_branch: String) {
+        self.spawn_git_local_with_options(path, default_branch, false);
+    }
+
+    fn spawn_git_local_force(&mut self, path: PathBuf, default_branch: String) {
+        self.spawn_git_local_with_options(path, default_branch, true);
+    }
+
+    fn spawn_git_local_with_options(&mut self, path: PathBuf, default_branch: String, force: bool) {
         if self.git_local_pending.contains(&path) {
             return;
         }
@@ -744,19 +754,21 @@ impl App {
         } else {
             Self::GIT_INFO_CACHE_SECS
         };
-        if let Some(&(pi, wi)) = self.worktree_index.get(&path) {
-            if let Some(wt) = self
-                .workspace
-                .projects
-                .get(pi)
-                .and_then(|p| p.worktrees.get(wi))
-            {
-                let fresh = wt
-                    .git_info_fetched_at
-                    .map(|t| t.elapsed().as_secs() < cache_secs)
-                    .unwrap_or(false);
-                if fresh {
-                    return;
+        if !force {
+            if let Some(&(pi, wi)) = self.worktree_index.get(&path) {
+                if let Some(wt) = self
+                    .workspace
+                    .projects
+                    .get(pi)
+                    .and_then(|p| p.worktrees.get(wi))
+                {
+                    let fresh = wt
+                        .git_info_fetched_at
+                        .map(|t| t.elapsed().as_secs() < cache_secs)
+                        .unwrap_or(false);
+                    if fresh {
+                        return;
+                    }
                 }
             }
         }
@@ -857,7 +869,11 @@ impl App {
         ) {
             self.set_status(e);
         }
-        wsx_core::cache::save_session_snapshot(&self.workspace);
+        let session_snapshot = wsx_core::cache::collect_session_names(&self.workspace);
+        if sync || session_snapshot != self.last_session_snapshot {
+            wsx_core::cache::save_session_snapshot(&self.workspace, true);
+            self.last_session_snapshot = session_snapshot;
+        }
         self.cache_dirty = false;
     }
 
@@ -1616,11 +1632,7 @@ impl App {
                     if sess.name == session_name {
                         if sess.muted {
                             sess.muted = false;
-                            session::set_session_opt(
-                                session_name,
-                                session::OPT_MUTED,
-                                "0",
-                            );
+                            session::set_session_opt(session_name, session::OPT_MUTED, "0");
                         }
                         return;
                     }
@@ -2837,12 +2849,6 @@ impl App {
             .map(|wt| wt.path.clone())
     }
 
-    fn invalidate_git_info(&mut self, pi: usize, wi: usize) {
-        if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
-            wt.git_info = None;
-        }
-    }
-
     /// Spawn a background git operation. Closes the current popup mode immediately.
     fn spawn_git_op<F>(&mut self, pi: usize, wi: usize, op_name: &str, f: F)
     where
@@ -3043,6 +3049,103 @@ mod tests {
             config: None,
             expanded: true,
             missing: false,
+        }
+    }
+
+    fn make_worktree(path: &str) -> wsx_core::model::workspace::WorktreeInfo {
+        wsx_core::model::workspace::WorktreeInfo {
+            name: "main".to_string(),
+            branch: "main".to_string(),
+            path: std::path::PathBuf::from(path),
+            is_main: true,
+            alias: None,
+            sessions: vec![],
+            expanded: true,
+            git_info: None,
+            fetch_failed: false,
+            fetch_fail_count: 0,
+            fetch_fail_reason: None,
+            last_fetched: None,
+            git_info_fetched_at: None,
+        }
+    }
+
+    fn make_git_info() -> GitInfo {
+        GitInfo {
+            recent_commits: vec![],
+            modified_files: vec![],
+            ahead: 1,
+            behind: 0,
+            remote_branch: Some("origin/main".to_string()),
+        }
+    }
+
+    fn make_test_app(
+        config: GlobalConfig,
+        workspace: WorkspaceState,
+        active_tab: Option<String>,
+    ) -> App {
+        let visible_projects = compute_visible_projects(&config, &workspace, active_tab.as_deref());
+        let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
+        let search_cache = build_search_cache(&workspace, &cached_flat);
+        let worktree_index = build_worktree_index(&workspace);
+        let last_session_snapshot = wsx_core::cache::collect_session_names(&workspace);
+        let (bg_tx, bg_rx) = std::sync::mpsc::channel();
+        let (git_local_tx, git_local_rx) = std::sync::mpsc::channel();
+        let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
+        let (tmux_tx, tmux_rx) = std::sync::mpsc::channel();
+        let (_update_tx, update_rx) = std::sync::mpsc::channel();
+
+        App {
+            workspace,
+            tree_selected: 0,
+            tree_scroll: 0,
+            tree_visible_height: 20,
+            tree_area: Rect::default(),
+            preview_area: Rect::default(),
+            mode: Mode::Normal,
+            config,
+            active_tab,
+            visible_projects,
+            send_command_history: Vec::new(),
+            status_message: None,
+            status_message_expires: None,
+            jobs: Vec::new(),
+            spinner_frame: 0,
+            bg_tx,
+            bg_rx,
+            needs_redraw: false,
+            force_redraw: false,
+            fast_timer: Timer::new(FAST_INTERVAL_MS),
+            activity_timer: Timer::new(ACTIVITY_INTERVAL_MS),
+            slow_timer: Timer::new(SLOW_INTERVAL_MS),
+            cached_flat,
+            flat_dirty: false,
+            search_cache,
+            git_local_tx,
+            git_local_rx,
+            git_local_pending: HashSet::new(),
+            fetch_tx,
+            fetch_rx,
+            fetch_pending: HashSet::new(),
+            cache_dirty: false,
+            last_session_snapshot,
+            git_semaphore: GitSemaphore::new(1),
+            worktree_index,
+            parsed_preview: std::collections::HashMap::new(),
+            tmux_tx,
+            tmux_rx,
+            tmux_refresh_pending: false,
+            tmux_refresh_stale: false,
+            tmux_activity_pending: false,
+            tmux_capture_pending: false,
+            pending_deletions: HashSet::new(),
+            pending_session_ops: HashMap::new(),
+            update_rx,
+            update_available: None,
+            is_mobile: false,
+            scanned_repos: Vec::new(),
+            repo_scan_rx: None,
         }
     }
 
@@ -3311,6 +3414,7 @@ mod tests {
             fetch_rx,
             fetch_pending: HashSet::new(),
             cache_dirty: false,
+            last_session_snapshot: HashMap::new(),
             git_semaphore: GitSemaphore::new(1),
             worktree_index: std::collections::HashMap::new(),
             parsed_preview: std::collections::HashMap::new(),
@@ -3338,6 +3442,30 @@ mod tests {
         assert_eq!(app.flat(), &[FlatEntry::Project { idx: 1 }]);
     }
 
+    #[test]
+    fn given_fresh_git_info_when_forced_refresh_requested_then_old_info_stays_visible_and_refresh_starts(
+    ) {
+        let path = std::path::PathBuf::from("/tmp/wsx-force-git-refresh");
+        let mut project = make_project("repo");
+        let mut worktree = make_worktree(path.to_string_lossy().as_ref());
+        worktree.git_info = Some(make_git_info());
+        worktree.git_info_fetched_at = Some(Instant::now());
+        project.worktrees.push(worktree);
+
+        let config = GlobalConfig::default();
+        let workspace = WorkspaceState {
+            projects: vec![project],
+        };
+        let mut app = make_test_app(config, workspace, None);
+
+        app.spawn_git_local(path.clone(), "main".to_string());
+        assert!(!app.git_local_pending.contains(&path));
+
+        app.spawn_git_local_force(path.clone(), "main".to_string());
+        assert!(app.git_local_pending.contains(&path));
+        assert!(app.workspace.projects[0].worktrees[0].git_info.is_some());
+    }
+
     // Regression guard for the attention_candidates logic (commit c118ea2).
     // Ensures active sessions never trigger attention, and muted/suppressed are ignored.
 
@@ -3360,20 +3488,32 @@ mod tests {
 
     #[test]
     fn attention_bell_inactive_triggers() {
-        let s = make_sess(false, true, wsx_core::model::workspace::ForegroundKind::Shell);
+        let s = make_sess(
+            false,
+            true,
+            wsx_core::model::workspace::ForegroundKind::Shell,
+        );
         assert!(session_needs_attention(&s));
     }
 
     #[test]
     fn attention_muted_does_not_trigger() {
-        let s = make_sess(true, true, wsx_core::model::workspace::ForegroundKind::Agent);
+        let s = make_sess(
+            true,
+            true,
+            wsx_core::model::workspace::ForegroundKind::Agent,
+        );
         assert!(!session_needs_attention(&s));
     }
 
     #[test]
     fn attention_bell_active_still_triggers() {
         // bell always needs attention regardless of foreground
-        let s = make_sess(false, true, wsx_core::model::workspace::ForegroundKind::Shell);
+        let s = make_sess(
+            false,
+            true,
+            wsx_core::model::workspace::ForegroundKind::Shell,
+        );
         assert!(session_needs_attention(&s));
     }
 
