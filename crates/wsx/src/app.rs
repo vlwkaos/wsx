@@ -660,7 +660,6 @@ impl App {
     }
 
     fn refresh_routines_all(&mut self) -> Result<()> {
-        crate::cli::ensure_routine_daemon()?;
         for project in &mut self.workspace.projects {
             let response =
                 crate::cli::send_routine(&project.path, wsx_core::routine::ipc::Action::List)?;
