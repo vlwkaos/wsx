@@ -92,12 +92,13 @@ wsx
 | `p` | 프로젝트 추가 |
 | `w` | 새 워크트리 |
 | `s` | 새 세션 |
+| `u` | 선택한 프로젝트에 새 루틴 생성, `F1`/`F2`로 편집 가능한 Codex/Claude 초기값 적용 |
 | `m` | 프로젝트 또는 세션 순서 변경 |
 | `r` | 별칭 설정 |
-| `d` | 삭제 |
+| `d` | 삭제, 실행 중인 루틴은 먼저 취소 |
 | `g` | Git 팝업 (pull / push / rebase / merge) |
 | `c` | 병합된 워크트리 정리 |
-| `e` | `.gtrconfig` 보기 |
+| `e` | 선택한 루틴 수정, 그 외에는 `.gtrignore` 보기 |
 | `S` | 세션에 명령 전송 |
 | `C` | 세션에 Ctrl+C 전송 |
 
@@ -126,6 +127,27 @@ mobile_detach_key = "C-q"
 ```
 
 ## CLI
+
+### 머신 로컬 루틴
+
+`wsx routine`은 분리 실행되는 단일 데몬을 통해 프로젝트별 direct-argv 예약 명령을 관리합니다. 정의는 git 밖에 저장하고 canonical main worktree에서 실행합니다.
+
+```sh
+wsx routine add nightly --cron "0 2 * * *" --arg codex --arg exec --arg=--json --arg '{prompt}' --prompt "유지보수를 실행해 줘" -p wsx
+wsx routine list -p wsx
+wsx routine show nightly -p wsx
+wsx routine run nightly -p wsx
+wsx routine cancel nightly -p wsx
+wsx routine logs nightly -p wsx
+wsx routine delete nightly -p wsx
+wsx routine daemon status
+```
+
+cron은 데몬 호스트 로컬 시간의 숫자 5필드이며 `*`, 쉼표 목록, 포함 범위, 양수 `/step`을 지원합니다. 일요일은 `0` 또는 `7`이고 일과 요일을 모두 제한하면 일반 cron처럼 OR로 판정합니다. 놓친 분은 재실행하지 않으며 실행 전 epoch-minute claim을 영속화하고 같은 루틴의 동시 실행을 막습니다.
+
+TUI에서는 프로젝트나 그 하위 항목에서 `u`를 눌러 첫 루틴을 생성한 뒤, 펼쳐진 `Routines` 섹션에서 이후 루틴을 관리합니다. `F1`/`F2`로 편집 가능한 Codex/Claude 초기값을 적용하고, `e`로 수정하며 확인된 `d`로 삭제합니다. 실행 중 삭제는 먼저 취소합니다. command argv는 shell 문자열이 아닌 JSON 배열로 편집합니다. 미리보기에는 설정, 다음/최근 실행, 로그 경로, 현재 허용된 동작, 최종 agent output이 표시되며 모바일에서는 Enter로 전체 화면 상세를 엽니다.
+
+설정은 `~/.config/wsx/routines/projects/` 아래 canonical 프로젝트별 버전 TOML입니다. 안정적인 FNV-1a-128 파일 키와 저장된 전체 경로를 대조해 충돌을 거부합니다. claim과 최근 20개 실행 로그는 별도 저장합니다. 정확히 일치하는 `{prompt}` argv는 치환하고 없으면 stdin으로 전달합니다. 원본 stdout/stderr와 Codex/Claude 최종 응답 추출 결과를 보존하며 `--revision`으로 stale write를 거부할 수 있습니다. 데몬 재시작 시 남은 Running 기록은 Interrupted로 복구하고, 취소와 종료는 process group에 TERM 후 제한 시간 내 종료되지 않으면 KILL을 보냅니다.
 
 ```sh
 # 워크트리

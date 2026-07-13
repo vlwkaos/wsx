@@ -7,6 +7,7 @@ pub mod git_popup;
 pub mod input;
 pub mod picker;
 pub mod preview;
+pub mod routine_editor;
 pub mod tab_manager;
 pub mod workspace_tree;
 
@@ -158,6 +159,24 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     render_empty_preview(frame, preview_area);
                 }
             }
+            Selection::RoutinesHeader(pi) => {
+                if let Some(project) = app.workspace.projects.get(pi) {
+                    preview::render_routines_preview(frame, preview_area, project);
+                } else {
+                    render_empty_preview(frame, preview_area);
+                }
+            }
+            Selection::Routine(pi, ri) => {
+                if let Some(project) = app.workspace.projects.get(pi) {
+                    if let Some(routine) = project.routines.get(ri) {
+                        preview::render_routine_preview(frame, preview_area, project, routine, 0);
+                    } else {
+                        render_empty_preview(frame, preview_area);
+                    }
+                } else {
+                    render_empty_preview(frame, preview_area);
+                }
+            }
             Selection::None => render_empty_preview(frame, preview_area),
         }
     }
@@ -200,6 +219,35 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
             let sel = *selected;
             render_tab_manager(frame, area, sel, &app.config, app.active_tab.as_deref());
         }
+        Mode::RoutineEditor {
+            form,
+            original_name,
+            can_rename,
+            ..
+        } => routine_editor::render(frame, area, form, original_name.is_some(), *can_rename),
+        Mode::RoutineDetail {
+            project_path,
+            routine_name,
+            scroll,
+        } => {
+            if let Some(project) = app
+                .workspace
+                .projects
+                .iter()
+                .find(|project| project.path == *project_path)
+            {
+                if let Some(routine) = project
+                    .routines
+                    .iter()
+                    .find(|view| view.routine.name == *routine_name)
+                {
+                    frame.render_widget(Clear, area);
+                    preview::render_routine_preview(frame, area, project, routine, *scroll);
+                } else {
+                    render_empty_preview(frame, area);
+                }
+            }
+        }
         Mode::Normal | Mode::Move { .. } | Mode::MoveSession { .. } | Mode::Search { .. } => {}
     }
 }
@@ -215,6 +263,8 @@ fn get_mode_label(app: &App) -> &'static str {
         Mode::Search { .. } => "SEARCH",
         Mode::GitPopup { .. } => "GIT",
         Mode::TabManager { .. } => "TABS",
+        Mode::RoutineEditor { .. } => "ROUTINE",
+        Mode::RoutineDetail { .. } => "DETAIL",
     }
 }
 
@@ -222,11 +272,17 @@ fn build_hints(app: &App, mobile: bool) -> String {
     if mobile {
         return match &app.mode {
             Mode::Normal => match app.current_selection() {
-                Selection::Project(_) => "Enter:expand  w:worktree  d:del  ?:help".to_string(),
+                Selection::Project(_) => {
+                    "Enter:expand  w:tree  u:routine  d:del  ?:help".to_string()
+                }
                 Selection::Worktree(_, _) => {
                     "Enter:expand  s:session  r:alias  d:del  ?:help".to_string()
                 }
                 Selection::Session(..) => "Enter:attach  d:kill  r:rename  ?:help".to_string(),
+                Selection::RoutinesHeader(_) => "Enter:expand  u:new routine  ?:help".to_string(),
+                Selection::Routine(..) => {
+                    "Enter:details  u:new  e:edit  d:delete  ?:help".to_string()
+                }
                 Selection::None => "p:add project".to_string(),
             },
             Mode::Input { .. } => "Esc: cancel".to_string(),
@@ -244,7 +300,10 @@ fn build_hints(app: &App, mobile: bool) -> String {
     match &app.mode {
         Mode::Normal => match app.current_selection() {
             Selection::Project(_) => {
-                format!("(m)ove  (w)orktree{}  (d)el  (c)lean  ·  {}", tabs, global)
+                format!(
+                    "(m)ove  (w)orktree  (u)routine{}  (d)el  (c)lean  ·  {}",
+                    tabs, global
+                )
             }
             Selection::Worktree(_, _) => format!(
                 "(s)ession  (r)alias  (d)el  ·  (w)orktree{}  (c)lean  ·  {}",
@@ -263,6 +322,13 @@ fn build_hints(app: &App, mobile: bool) -> String {
                 format!("(m)ove  (r)ename  (d)kill  ·  {}(S)send cmd  (C)ctrl-c  ·  (C-a d)detach  ·  (s)ession  ·  (w)orktree{}  (c)lean  ·  {}", dismiss, tabs, global)
             }
             Selection::None => "(p) add project".to_string(),
+            Selection::RoutinesHeader(_) => {
+                "(u)new routine  Enter:expand  ·  (/)search  (?)help".to_string()
+            }
+            Selection::Routine(..) => {
+                "(u)new  (e)edit  (d)delete/cancel  Enter:details  ·  (/)search  (?)help"
+                    .to_string()
+            }
         },
         Mode::Input { .. } => "Esc: cancel".to_string(),
         Mode::Confirm { .. } => "(y)es  (n)o".to_string(),
@@ -283,6 +349,10 @@ fn build_hints(app: &App, mobile: bool) -> String {
         Mode::TabManager { .. } => {
             "(a)dd  (r)ename  (d)elete  (J/K)reorder  Enter: switch  Esc: close".to_string()
         }
+        Mode::RoutineEditor { .. } => {
+            "Tab: field  F1/F2: preset  Enter: save  Esc: cancel".to_string()
+        }
+        Mode::RoutineDetail { .. } => "j/k: scroll  Esc: close".to_string(),
     }
 }
 
@@ -422,10 +492,11 @@ fn render_help(frame: &mut Frame, area: Rect) {
         "",
         " Project",
         "  p             Add project (path: prompt)",
+        "  u             Create routine",
         "  m             Move project (reorder list)",
         "  d             Unregister project",
         "  c             Clean merged worktrees (batch)",
-        "  e             View .gtrconfig",
+        "  e             View config / edit .gtrignore",
         "",
         " Worktree",
         "  w             Add worktree (branch: prompt)",
@@ -433,7 +504,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         "  r             Set alias",
         "  d             Delete worktree + kill all sessions",
         "  c             Clean this worktree if merged",
-        "  e             View .gtrconfig",
+        "  e             View config / edit .gtrignore",
         "",
         " Session",
         "  Enter         Attach",

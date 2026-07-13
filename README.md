@@ -123,12 +123,13 @@ Mouse clicks work: click a row to select, click the preview to attach.
 | `p` | Add project |
 | `w` | New worktree |
 | `s` | New session |
+| `u` | New routine for the selected project; `F1`/`F2` apply editable Codex/Claude presets |
 | `m` | Reorder project or session |
 | `r` | Set alias |
-| `d` | Delete |
+| `d` | Delete; a running routine is cancelled before deletion |
 | `g` | Git popup (pull / push / rebase / merge) |
 | `c` | Clean merged worktrees |
-| `e` | View `.gtrconfig` |
+| `e` | Edit the selected routine, otherwise view `.gtrignore` |
 | `S` | Send command to session |
 | `C` | Send Ctrl+C to session |
 | `T` | Tab manager (add / rename / delete / reorder) |
@@ -162,6 +163,27 @@ mobile_detach_key = "C-q"
 ```
 
 ## CLI
+
+### Machine-local routines
+
+`wsx routine` manages project-local scheduled direct-argv commands through one detached daemon. Definitions stay outside git and run from the canonical main worktree.
+
+```sh
+wsx routine add nightly --cron "0 2 * * *" --arg codex --arg exec --arg=--json --arg '{prompt}' --prompt "Run maintenance" -p wsx
+wsx routine list -p wsx
+wsx routine show nightly -p wsx
+wsx routine run nightly -p wsx
+wsx routine cancel nightly -p wsx
+wsx routine logs nightly -p wsx
+wsx routine delete nightly -p wsx
+wsx routine daemon status
+```
+
+Cron uses five numeric local-time fields with `*`, comma lists, inclusive ranges, and positive slash steps. Sunday is `0` or `7`; restricted day-of-month and weekday fields use cron OR semantics. The daemon checks only the current civil minute, never catches up missed minutes, claims each epoch minute before spawn, and prevents same-routine overlap.
+
+In the TUI, press `u` on a project or any of its entries to create the first routine, then expand its `Routines` section for later entries. `e` edits, and confirmed `d` deletes or cancels then deletes. The form keeps command argv as a JSON array so arguments never pass through a shell. The preview shows configuration, next/last run, log paths, currently allowed actions, and final agent output. On mobile, Enter opens the routine detail full-screen.
+
+Versioned per-project TOML lives under `~/.config/wsx/routines/projects/`. The stable FNV-1a-128 filename key is collision-checked against the stored canonical path. Claims and the latest 20 complete run logs are separate. One exact `{prompt}` argv item is replaced; otherwise prompt is sent to stdin. Raw stdout/stderr and an extracted Codex/Claude final response are retained. Mutations accept `--revision` to reject stale clients. A daemon restart reconciles stale running records as interrupted. Shutdown and explicit cancellation send TERM to the process group, then bounded KILL.
 
 ```sh
 # Worktrees
