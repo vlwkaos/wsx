@@ -180,7 +180,13 @@ impl RoutineClient {
 
     fn poll_ready(&self, status: &Request, deadline: Instant) -> Result<bool, RoutineError> {
         while Instant::now() < deadline {
-            match self.request(status) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(false);
+            }
+            match ipc::send_with_timeout(&self.socket_path(), status, remaining)
+                .and_then(Response::into_result)
+            {
                 Ok(response) => {
                     validate_status_response(response)?;
                     return Ok(true);
@@ -601,6 +607,26 @@ mod tests {
     }
 
     #[test]
+    fn ready_status_read_cannot_exceed_startup_timeout() {
+        let root = test_root("ready-status-hang");
+        std::fs::create_dir_all(&root).unwrap();
+        let pid_path = root.join("helper.pid");
+        let started = Instant::now();
+        let result = RoutineClient::new(root.clone())
+            .with_startup_timeout(Duration::from_millis(300))
+            .request_with_start(&list(&root), helper_command(&root, "ready_status_hang"));
+
+        assert!(matches!(
+            result,
+            Err(RoutineError::Unavailable(message))
+                if message.contains("reported ready but did not accept status requests")
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_helper_reaped(&pid_path);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn ready_with_non_daemon_status_is_corrupt_and_reaps_child() {
         let root = test_root("ready-wrong-status");
         std::fs::create_dir_all(&root).unwrap();
@@ -652,6 +678,17 @@ mod tests {
             stream
                 .write_all(b"{\"result\":\"ok\",\"revision\":null}\n")
                 .unwrap();
+            std::thread::sleep(Duration::from_secs(30));
+            return;
+        }
+        if mode == "ready_status_hang" {
+            use std::os::unix::net::UnixListener;
+
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("helper.pid"), std::process::id().to_string()).unwrap();
+            let listener = UnixListener::bind(root.join("daemon-v1.sock")).unwrap();
+            startup.write_all(b"ready").unwrap();
+            let _connection = listener.accept().unwrap();
             std::thread::sleep(Duration::from_secs(30));
             return;
         }
