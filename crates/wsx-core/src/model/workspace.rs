@@ -29,6 +29,12 @@ pub struct Project {
     pub default_branch: String,
     pub worktrees: Vec<WorktreeInfo>,
     #[serde(skip)]
+    pub routines: Vec<crate::routine::ipc::RoutineView>,
+    #[serde(skip)]
+    pub routine_revision: u64,
+    #[serde(skip)]
+    pub routines_expanded: bool,
+    #[serde(skip)]
     pub config: Option<ProjectConfig>,
     #[serde(skip)]
     pub expanded: bool,
@@ -266,6 +272,13 @@ pub enum FlatEntry {
         worktree_idx: usize,
         session_idx: usize,
     },
+    RoutinesHeader {
+        project_idx: usize,
+    },
+    Routine {
+        project_idx: usize,
+        routine_idx: usize,
+    },
 }
 
 /// Flatten workspace into visible tree entries based on expand state.
@@ -286,6 +299,17 @@ pub fn flatten_tree(workspace: &WorkspaceState) -> Vec<FlatEntry> {
                             project_idx: pi,
                             worktree_idx: wi,
                             session_idx: si,
+                        });
+                    }
+                }
+            }
+            if !project.routines.is_empty() {
+                result.push(FlatEntry::RoutinesHeader { project_idx: pi });
+                if project.routines_expanded {
+                    for (ri, _) in project.routines.iter().enumerate() {
+                        result.push(FlatEntry::Routine {
+                            project_idx: pi,
+                            routine_idx: ri,
                         });
                     }
                 }
@@ -322,6 +346,17 @@ pub fn flatten_tree_filtered(
                     }
                 }
             }
+            if !project.routines.is_empty() {
+                result.push(FlatEntry::RoutinesHeader { project_idx: pi });
+                if project.routines_expanded {
+                    for (ri, _) in project.routines.iter().enumerate() {
+                        result.push(FlatEntry::Routine {
+                            project_idx: pi,
+                            routine_idx: ri,
+                        });
+                    }
+                }
+            }
         }
     }
     result
@@ -333,6 +368,8 @@ pub enum Selection {
     Project(usize),
     Worktree(usize, usize),
     Session(usize, usize, usize),
+    RoutinesHeader(usize),
+    Routine(usize, usize),
     None,
 }
 
@@ -377,6 +414,13 @@ impl WorkspaceState {
                 worktree_idx,
                 session_idx,
             }) => Selection::Session(*project_idx, *worktree_idx, *session_idx),
+            Some(FlatEntry::RoutinesHeader { project_idx }) => {
+                Selection::RoutinesHeader(*project_idx)
+            }
+            Some(FlatEntry::Routine {
+                project_idx,
+                routine_idx,
+            }) => Selection::Routine(*project_idx, *routine_idx),
             None => Selection::None,
         }
     }

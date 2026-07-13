@@ -7,6 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use wsx_core::model::workspace::{FetchFailReason, Project, SessionInfo, WorktreeInfo};
+use wsx_core::routine::ipc::RoutineView;
 
 pub fn render_worktree_preview(
     frame: &mut Frame,
@@ -316,4 +317,165 @@ pub fn render_empty_preview(frame: &mut Frame, area: Rect) {
         .style(Style::default().fg(Color::Gray))
         .block(block);
     frame.render_widget(para, area);
+}
+
+pub fn render_routines_preview(frame: &mut Frame, area: Rect, project: &Project) {
+    frame.render_widget(Clear, area);
+    let lines = project
+        .routines
+        .iter()
+        .map(|view| {
+            let last = view
+                .latest_run
+                .as_ref()
+                .map(|run| format!("{:?}", run.status))
+                .unwrap_or_else(|| "never".into());
+            Line::from(vec![
+                Span::styled(
+                    format!("◇ {}", view.routine.name),
+                    Style::default().fg(Color::Magenta).bold(),
+                ),
+                Span::raw(format!("  {}  last: {last}", view.routine.cron)),
+            ])
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} › Routines ", project.name)),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+pub fn render_routine_preview(
+    frame: &mut Frame,
+    area: Rect,
+    project: &Project,
+    view: &RoutineView,
+    scroll: u16,
+) {
+    frame.render_widget(Clear, area);
+    let label = Style::default().fg(Color::DarkGray);
+    let next = view
+        .next_run_epoch
+        .map(format_epoch)
+        .unwrap_or_else(|| "unavailable".into());
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Cron:    ", label),
+            Span::raw(view.routine.cron.clone()),
+        ]),
+        Line::from(vec![Span::styled("Next:    ", label), Span::raw(next)]),
+        Line::from(vec![
+            Span::styled("Command: ", label),
+            Span::raw(serde_json::to_string(&view.routine.command).unwrap_or_default()),
+        ]),
+        Line::from(vec![
+            Span::styled("Prompt:  ", label),
+            Span::raw(view.routine.prompt.clone()),
+        ]),
+        Line::raw(""),
+    ];
+    let mut actions = Vec::new();
+    if view.capabilities.can_edit {
+        actions.push(if view.capabilities.can_rename {
+            "edit (rename allowed)"
+        } else {
+            "edit"
+        });
+    }
+    if view.capabilities.can_delete {
+        actions.push(if view.capabilities.can_cancel {
+            "delete (cancels active run)"
+        } else {
+            "delete"
+        });
+    }
+    lines.push(Line::from(vec![
+        Span::styled("Actions: ", label),
+        Span::raw(if actions.is_empty() {
+            "unavailable".to_string()
+        } else {
+            actions.join(", ")
+        }),
+    ]));
+    lines.push(Line::raw(""));
+    if let Some(run) = &view.latest_run {
+        lines.extend([
+            Line::from(vec![
+                Span::styled("Last:    ", label),
+                Span::raw(format!(
+                    "{}  {:?}",
+                    format_epoch(run.started_epoch),
+                    run.status
+                )),
+            ]),
+            Line::from(vec![
+                Span::styled("stdout:  ", label),
+                Span::raw(run.stdout_path.to_string_lossy().to_string()),
+            ]),
+            Line::from(vec![
+                Span::styled("stderr:  ", label),
+                Span::raw(run.stderr_path.to_string_lossy().to_string()),
+            ]),
+            Line::raw(""),
+            Line::styled(
+                "Final agent output",
+                Style::default().fg(Color::Magenta).bold(),
+            ),
+            Line::raw(run.final_output.clone()),
+        ]);
+        if view.recent_runs.len() > 1 {
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                "Recent history",
+                Style::default().fg(Color::Magenta).bold(),
+            ));
+            for previous in view.recent_runs.iter().rev().skip(1).take(5) {
+                lines.push(Line::raw(format!(
+                    "{}  {:?}  {}",
+                    format_epoch(previous.started_epoch),
+                    previous.status,
+                    previous.stdout_path.display()
+                )));
+            }
+        }
+    } else {
+        lines.push(Line::styled(
+            "No run history",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} › {} ", project.name, view.routine.name)),
+            )
+            .scroll((scroll, 0))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn format_epoch(epoch: i64) -> String {
+    let timestamp = epoch as libc::time_t;
+    let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
+    unsafe {
+        libc::localtime_r(&timestamp, local.as_mut_ptr());
+    }
+    let local = unsafe { local.assume_init() };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        local.tm_year + 1900,
+        local.tm_mon + 1,
+        local.tm_mday,
+        local.tm_hour,
+        local.tm_min
+    )
 }

@@ -1,5 +1,11 @@
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 use crate::session_state;
 use wsx_core::{
@@ -56,6 +62,96 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: TabCmd,
     },
+    /// Manage machine-local scheduled routines
+    Routine {
+        #[command(subcommand)]
+        subcommand: RoutineCmd,
+    },
+    #[command(hide = true)]
+    RoutineDaemonServe,
+}
+
+#[derive(Subcommand)]
+pub enum RoutineCmd {
+    List {
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Show {
+        name: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Add {
+        name: String,
+        #[arg(long)]
+        cron: String,
+        #[arg(long = "arg", required = true)]
+        command: Vec<String>,
+        #[arg(long, default_value = "")]
+        prompt: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        revision: Option<u64>,
+    },
+    Edit {
+        name: String,
+        #[arg(long)]
+        new_name: Option<String>,
+        #[arg(long)]
+        cron: String,
+        #[arg(long = "arg", required = true)]
+        command: Vec<String>,
+        #[arg(long, default_value = "")]
+        prompt: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        revision: Option<u64>,
+    },
+    Delete {
+        name: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        revision: Option<u64>,
+    },
+    Run {
+        name: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Cancel an active routine run
+    Cancel {
+        name: String,
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+    Logs {
+        name: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Daemon {
+        #[command(subcommand)]
+        subcommand: RoutineDaemonCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RoutineDaemonCmd {
+    Start,
+    Status,
+    Stop,
 }
 
 #[derive(Subcommand)]
@@ -181,6 +277,391 @@ pub fn run(cmd: Command) -> Result<()> {
             TabCmd::Rename { old, new_name } => cmd_tab_rename(&old, &new_name),
             TabCmd::Own { tab, project } => cmd_tab_own(&tab, &project),
         },
+        Command::Routine { subcommand } => cmd_routine(subcommand),
+        Command::RoutineDaemonServe => {
+            let root = wsx_core::routine::store::RoutineStore::default_root()?;
+            if let Some(mut startup) = startup_notifier()? {
+                wsx_core::routine::daemon::serve_with_startup(root, move |result| {
+                    let message = match result {
+                        Ok(()) => "ready".to_string(),
+                        Err(error) => format!("error:{error}"),
+                    };
+                    let _ = startup.write_all(message.as_bytes());
+                })?;
+            } else {
+                wsx_core::routine::daemon::serve(root)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn cmd_routine(command: RoutineCmd) -> Result<()> {
+    use wsx_core::routine::ipc::Action as IpcAction;
+    if let RoutineCmd::Daemon { subcommand } = command {
+        return cmd_routine_daemon(subcommand);
+    }
+    ensure_routine_daemon()?;
+    let (project_arg, action, json) = match command {
+        RoutineCmd::List { project, json } => (project, IpcAction::List, json),
+        RoutineCmd::Show {
+            name,
+            project,
+            json,
+        } => (project, IpcAction::Show { name }, json),
+        RoutineCmd::Add {
+            name,
+            cron,
+            command,
+            prompt,
+            project,
+            revision,
+        } => {
+            let path = routine_project(project.as_deref())?;
+            let revision = revision.unwrap_or(fetch_revision(&path)?);
+            return print_routine_response(
+                send_routine(
+                    &path,
+                    IpcAction::Add {
+                        revision,
+                        routine: wsx_core::routine::Routine {
+                            name,
+                            cron,
+                            command,
+                            prompt,
+                        },
+                    },
+                )?,
+                false,
+            );
+        }
+        RoutineCmd::Edit {
+            name,
+            new_name,
+            cron,
+            command,
+            prompt,
+            project,
+            revision,
+        } => {
+            let path = routine_project(project.as_deref())?;
+            let revision = revision.unwrap_or(fetch_revision(&path)?);
+            let routine = wsx_core::routine::Routine {
+                name: new_name.unwrap_or_else(|| name.clone()),
+                cron,
+                command,
+                prompt,
+            };
+            return print_routine_response(
+                send_routine(
+                    &path,
+                    IpcAction::Edit {
+                        revision,
+                        old_name: name,
+                        routine,
+                    },
+                )?,
+                false,
+            );
+        }
+        RoutineCmd::Delete {
+            name,
+            project,
+            revision,
+        } => {
+            let path = routine_project(project.as_deref())?;
+            let revision = revision.unwrap_or(fetch_revision(&path)?);
+            return print_routine_response(
+                send_routine(&path, IpcAction::Delete { revision, name })?,
+                false,
+            );
+        }
+        RoutineCmd::Run {
+            name,
+            project,
+            json,
+        } => (project, IpcAction::Run { name }, json),
+        RoutineCmd::Cancel { name, project } => (project, IpcAction::Cancel { name }, false),
+        RoutineCmd::Logs {
+            name,
+            project,
+            json,
+        } => (project, IpcAction::Logs { name }, json),
+        RoutineCmd::Daemon { .. } => unreachable!(),
+    };
+    let path = routine_project(project_arg.as_deref())?;
+    print_routine_response(send_routine(&path, action)?, json)
+}
+
+fn routine_root() -> Result<PathBuf> {
+    Ok(wsx_core::routine::store::RoutineStore::default_root()?)
+}
+
+fn routine_project(value: Option<&str>) -> Result<PathBuf> {
+    let (config, warning) = GlobalConfig::load()?;
+    if let Some(warning) = warning {
+        eprintln!("warning: {warning}");
+    }
+    if let Some(value) = value {
+        let path = PathBuf::from(value);
+        if path.exists() {
+            return Ok(path);
+        }
+        return config
+            .projects
+            .iter()
+            .find(|p| p.name == value)
+            .map(|p| p.path.clone())
+            .ok_or_else(|| anyhow::anyhow!("project '{}' not found", value));
+    }
+    match config.projects.as_slice() {
+        [project] => Ok(project.path.clone()),
+        [] => Ok(std::env::current_dir()?),
+        many => bail!(
+            "multiple projects — use -p to specify: {}",
+            many.iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+pub(crate) fn send_routine(
+    project: &Path,
+    action: wsx_core::routine::ipc::Action,
+) -> Result<wsx_core::routine::ipc::Response> {
+    let socket = routine_root()?.join("daemon-v1.sock");
+    match wsx_core::routine::ipc::send(
+        &socket,
+        &wsx_core::routine::ipc::Request::new(project.to_path_buf(), action),
+    )? {
+        wsx_core::routine::ipc::Response::Error { kind, message } => bail!("{kind}: {message}"),
+        response => Ok(response),
+    }
+}
+
+fn fetch_revision(project: &Path) -> Result<u64> {
+    match send_routine(project, wsx_core::routine::ipc::Action::List)? {
+        wsx_core::routine::ipc::Response::Routines { revision, .. } => Ok(revision),
+        _ => bail!("unexpected daemon response"),
+    }
+}
+
+pub(crate) fn ensure_routine_daemon() -> Result<()> {
+    let socket = routine_root()?.join("daemon-v1.sock");
+    let status = wsx_core::routine::ipc::Request::new(
+        std::env::current_dir()?,
+        wsx_core::routine::ipc::Action::Status,
+    );
+    if wsx_core::routine::ipc::send(&socket, &status).is_ok() {
+        return Ok(());
+    }
+    let (read_end, write_end) = startup_pipe()?;
+    let read_fd = read_end.as_raw_fd();
+    let write_fd = write_end.as_raw_fd();
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .arg("routine-daemon-serve")
+        .env("WSX_ROUTINE_STARTUP_FD", write_fd.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    unsafe {
+        command.pre_exec(move || {
+            libc::close(read_fd);
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn()?;
+    drop(write_end);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut read_end = std::fs::File::from(read_end);
+    while Instant::now() < deadline {
+        if fd_readable(read_end.as_raw_fd())? {
+            let mut startup = String::new();
+            read_end.read_to_string(&mut startup)?;
+            if startup == "ready" {
+                if wsx_core::routine::ipc::send(&socket, &status).is_ok() {
+                    return Ok(());
+                }
+                stop_startup_child(&mut child);
+                bail!("routine daemon reported ready but did not accept status requests");
+            }
+            if let Some(error) = startup.strip_prefix("error:") {
+                let _ = child.wait();
+                if error.contains("already running")
+                    && poll_routine_daemon(&socket, &status, deadline)
+                {
+                    return Ok(());
+                }
+                bail!("routine daemon failed to start: {error}");
+            }
+            if startup.is_empty() {
+                if let Some(exit) = child.try_wait()? {
+                    bail!("routine daemon exited during startup: {exit}");
+                }
+            }
+            stop_startup_child(&mut child);
+            bail!("routine daemon returned an invalid startup response");
+        }
+        if let Some(exit) = child.try_wait()? {
+            bail!("routine daemon exited during startup: {exit}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    stop_startup_child(&mut child);
+    bail!("routine daemon did not become ready within 3 seconds")
+}
+
+fn poll_routine_daemon(
+    socket: &Path,
+    status: &wsx_core::routine::ipc::Request,
+    deadline: Instant,
+) -> bool {
+    while Instant::now() < deadline {
+        if wsx_core::routine::ipc::send(socket, status).is_ok() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+fn stop_startup_child(child: &mut std::process::Child) {
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.wait();
+}
+
+fn startup_pipe() -> Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    unsafe { Ok((OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))) }
+}
+
+fn startup_notifier() -> Result<Option<std::fs::File>> {
+    let Some(raw) = std::env::var_os("WSX_ROUTINE_STARTUP_FD") else {
+        return Ok(None);
+    };
+    std::env::remove_var("WSX_ROUTINE_STARTUP_FD");
+    let fd = raw
+        .to_string_lossy()
+        .parse::<i32>()
+        .map_err(|_| anyhow::anyhow!("invalid routine startup descriptor"))?;
+    Ok(Some(unsafe { std::fs::File::from_raw_fd(fd) }))
+}
+
+fn fd_readable(fd: i32) -> Result<bool> {
+    let mut descriptor = libc::pollfd {
+        fd,
+        events: libc::POLLIN | libc::POLLHUP,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(result > 0)
+}
+
+fn cmd_routine_daemon(command: RoutineDaemonCmd) -> Result<()> {
+    use wsx_core::routine::ipc::{Action, Request};
+    let socket = routine_root()?.join("daemon-v1.sock");
+    match command {
+        RoutineDaemonCmd::Start => {
+            ensure_routine_daemon()?;
+            println!("routine daemon running");
+        }
+        RoutineDaemonCmd::Status => print_routine_response(
+            wsx_core::routine::ipc::send(
+                &socket,
+                &Request::new(std::env::current_dir()?, Action::Status),
+            )?,
+            false,
+        )?,
+        RoutineDaemonCmd::Stop => print_routine_response(
+            wsx_core::routine::ipc::send(
+                &socket,
+                &Request::new(std::env::current_dir()?, Action::Shutdown),
+            )?,
+            false,
+        )?,
+    }
+    Ok(())
+}
+
+fn print_routine_response(response: wsx_core::routine::ipc::Response, json: bool) -> Result<()> {
+    use wsx_core::routine::ipc::Response;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+        return Ok(());
+    }
+    match response {
+        Response::Routines { revision, routines } => {
+            println!("revision {revision}");
+            for view in routines {
+                println!(
+                    "{}\t{}\t{}",
+                    view.routine.name,
+                    view.routine.cron,
+                    format_argv(&view.routine.command)
+                );
+            }
+        }
+        Response::Routine { revision, routine } => println!(
+            "revision {revision}\nname: {}\ncron: {}\ncommand: {}\nprompt: {}",
+            routine.routine.name,
+            routine.routine.cron,
+            format_argv(&routine.routine.command),
+            routine.routine.prompt
+        ),
+        Response::Runs { runs } => {
+            for run in runs {
+                println!(
+                    "{}\t{:?}\t{}",
+                    run.id,
+                    run.status,
+                    run.final_output.replace('\n', " ")
+                );
+            }
+        }
+        Response::Run { run } => println!("{}\t{:?}\n{}", run.id, run.status, run.final_output),
+        Response::Daemon { protocol, pid } => {
+            println!("routine daemon pid={pid} protocol={protocol}")
+        }
+        Response::Ok { revision } => {
+            if let Some(revision) = revision {
+                println!("ok revision={revision}")
+            } else {
+                println!("ok")
+            }
+        }
+        Response::Error { kind, message } => bail!("{kind}: {message}"),
+    }
+    Ok(())
+}
+
+fn format_argv(argv: &[String]) -> String {
+    serde_json::to_string(argv).unwrap_or_else(|_| "[]".into())
+}
+
+#[cfg(test)]
+mod routine_output_tests {
+    use super::format_argv;
+
+    #[test]
+    fn plain_routine_argv_preserves_argument_boundaries() {
+        assert_eq!(
+            format_argv(&["printf".into(), "two words".into(), "".into()]),
+            r#"["printf","two words",""]"#
+        );
     }
 }
 
@@ -609,4 +1090,63 @@ fn cmd_session_list(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod routine_daemon_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{mpsc, Arc, Barrier};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn concurrent_first_starts_converge_on_singleton_daemon() {
+        let root = PathBuf::from(".tmp").join(format!(
+            "routine-cli-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let barrier = Arc::new(Barrier::new(3));
+        let (started_tx, started_rx) = mpsc::channel();
+        let mut servers = Vec::new();
+        for _ in 0..2 {
+            let root = root.clone();
+            let barrier = barrier.clone();
+            let started_tx = started_tx.clone();
+            servers.push(std::thread::spawn(move || {
+                barrier.wait();
+                wsx_core::routine::daemon::serve_with_startup(root, move |result| {
+                    started_tx.send(result).unwrap();
+                })
+            }));
+        }
+        barrier.wait();
+        let first = started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let second = started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_ne!(first.is_ok(), second.is_ok());
+
+        let socket = root.join("daemon-v1.sock");
+        let status = wsx_core::routine::ipc::Request::new(
+            std::env::current_dir().unwrap(),
+            wsx_core::routine::ipc::Action::Status,
+        );
+        assert!(poll_routine_daemon(
+            &socket,
+            &status,
+            Instant::now() + Duration::from_secs(3)
+        ));
+        wsx_core::routine::ipc::send(
+            &socket,
+            &wsx_core::routine::ipc::Request::new(
+                std::env::current_dir().unwrap(),
+                wsx_core::routine::ipc::Action::Shutdown,
+            ),
+        )
+        .unwrap();
+        for server in servers {
+            let _ = server.join().unwrap();
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

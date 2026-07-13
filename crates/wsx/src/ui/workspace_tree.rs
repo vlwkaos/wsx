@@ -141,6 +141,34 @@ pub fn render_tree(
                 ]);
                 ListItem::new(line)
             }
+            FlatEntry::RoutinesHeader { project_idx } => {
+                let project = &workspace.projects[*project_idx];
+                let icon = if project.routines_expanded {
+                    "▾"
+                } else {
+                    "▸"
+                };
+                ListItem::new(format!("  {icon} ◈ Routines [{}]", project.routines.len()))
+                    .style(Style::default().fg(Color::Magenta).bold())
+            }
+            FlatEntry::Routine {
+                project_idx,
+                routine_idx,
+            } => {
+                let view = &workspace.projects[*project_idx].routines[*routine_idx];
+                let status = view
+                    .latest_run
+                    .as_ref()
+                    .map(|r| format!(" · {:?}", r.status))
+                    .unwrap_or_default();
+                ListItem::new(format!("      ◇ {}{}", view.routine.name, status)).style(
+                    Style::default().fg(if view.capabilities.can_cancel {
+                        Color::Yellow
+                    } else {
+                        Color::LightMagenta
+                    }),
+                )
+            }
         })
         .collect();
 
