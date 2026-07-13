@@ -16,9 +16,11 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Client for a routine daemon rooted at one machine-local state directory.
 ///
 /// [`request`](Self::request) never starts a daemon. [`request_with_start`](Self::request_with_start)
-/// first probes daemon availability with a status request, then starts the
-/// caller-provided command only when the daemon is unavailable. The caller's
-/// request is sent exactly once. The command must run a routine daemon that
+/// accepts routine list and mutation requests, probes daemon availability with
+/// a status request, then starts the caller-provided command only when the daemon
+/// is unavailable. Status and shutdown requests are rejected by the auto-start
+/// boundary and must use [`request`](Self::request). The caller's request is sent
+/// exactly once. The command must run a routine daemon that
 /// writes `ready` or `error:<message>` to the descriptor supplied in the
 /// `WSX_ROUTINE_STARTUP_FD` environment variable. The client adds that
 /// handshake and a detached process group; executable, arguments, standard
@@ -62,15 +64,15 @@ impl RoutineClient {
         request: &Request,
         mut command: Command,
     ) -> Result<Response, RoutineError> {
+        if matches!(&request.action, Action::Status | Action::Shutdown) {
+            return Err(RoutineError::Validation(
+                "status and shutdown requests cannot auto-start the routine daemon".into(),
+            ));
+        }
+
         // ^ Probe with an observation so a mutation is never retried after an ambiguous disconnect.
         let status = Request::new(request.project.clone(), Action::Status);
-        let availability = if matches!(&request.action, Action::Status) {
-            self.request(request)
-        } else {
-            self.request(&status)
-        };
-        match availability {
-            Ok(response) if matches!(&request.action, Action::Status) => return Ok(response),
+        match self.request(&status) {
             Ok(_) => return self.request(request),
             Err(RoutineError::Unavailable(_)) => {}
             Err(error) => return Err(error),
@@ -249,6 +251,10 @@ mod tests {
         Request::new(root.to_path_buf(), Action::Status)
     }
 
+    fn list(root: &Path) -> Request {
+        Request::new(root.to_path_buf(), Action::List)
+    }
+
     #[test]
     fn direct_request_does_not_start_an_absent_daemon() {
         let root = test_root("direct");
@@ -258,13 +264,26 @@ mod tests {
     }
 
     #[test]
-    fn auto_start_serves_request_and_direct_shutdown_stops_daemon() {
+    fn lifecycle_requests_cannot_use_auto_start() {
+        for action in [Action::Status, Action::Shutdown] {
+            let root = test_root("lifecycle");
+            let request = Request::new(root.clone(), action);
+            let result = RoutineClient::new(root.clone())
+                .request_with_start(&request, helper_command(&root, "must_not_start"));
+
+            assert!(matches!(result, Err(RoutineError::Validation(_))));
+            assert!(!root.exists());
+        }
+    }
+
+    #[test]
+    fn auto_start_serves_list_and_direct_shutdown_stops_daemon() {
         let root = test_root("start");
         let client = RoutineClient::new(root.clone());
         let response = client
-            .request_with_start(&status(&root), helper_command(&root, "daemon"))
+            .request_with_start(&list(&root), helper_command(&root, "daemon"))
             .unwrap();
-        assert!(matches!(response, Response::Daemon { .. }));
+        assert!(matches!(response, Response::Routines { .. }));
         client
             .request(&Request::new(root.clone(), Action::Shutdown))
             .unwrap();
@@ -282,14 +301,14 @@ mod tests {
             callers.push(std::thread::spawn(move || {
                 barrier.wait();
                 RoutineClient::new(root.clone())
-                    .request_with_start(&status(&root), helper_command(&root, "daemon"))
+                    .request_with_start(&list(&root), helper_command(&root, "daemon"))
             }));
         }
         barrier.wait();
         for caller in callers {
             assert!(matches!(
                 caller.join().unwrap(),
-                Ok(Response::Daemon { .. })
+                Ok(Response::Routines { .. })
             ));
         }
         RoutineClient::new(root.clone())
@@ -357,7 +376,7 @@ mod tests {
         let pid_path = root.join("helper.pid");
         let result = RoutineClient::new(root.clone())
             .with_startup_timeout(Duration::from_millis(300))
-            .request_with_start(&status(&root), helper_command(&root, "hang"));
+            .request_with_start(&list(&root), helper_command(&root, "hang"));
         assert!(matches!(result, Err(RoutineError::Unavailable(_))));
         let pid: i32 = std::fs::read_to_string(&pid_path).unwrap().parse().unwrap();
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
@@ -373,7 +392,7 @@ mod tests {
         let root = test_root("unrepresentable-timeout");
         let result = RoutineClient::new(root.clone())
             .with_startup_timeout(Duration::MAX)
-            .request_with_start(&status(&root), helper_command(&root, "must_not_start"));
+            .request_with_start(&list(&root), helper_command(&root, "must_not_start"));
         assert!(matches!(result, Err(RoutineError::Validation(_))));
         assert!(!root.join("helper.pid").exists());
     }
@@ -395,7 +414,7 @@ mod tests {
             stream.write_all(b"not-json\n").unwrap();
         });
         let result = RoutineClient::new(root.clone())
-            .request_with_start(&status(&root), helper_command(&root, "must_not_start"));
+            .request_with_start(&list(&root), helper_command(&root, "must_not_start"));
         assert!(matches!(result, Err(RoutineError::Corrupt(_))));
         server.join().unwrap();
         assert!(!root.join("helper.pid").exists());
@@ -453,7 +472,7 @@ mod tests {
         let started = Instant::now();
         let result = RoutineClient::new(root.clone())
             .with_startup_timeout(Duration::from_millis(300))
-            .request_with_start(&status(&root), helper_command(&root, "error_hang"));
+            .request_with_start(&list(&root), helper_command(&root, "error_hang"));
         assert!(matches!(result, Err(RoutineError::Unavailable(_))));
         assert!(started.elapsed() < Duration::from_secs(2));
         let pid: i32 = std::fs::read_to_string(&pid_path).unwrap().parse().unwrap();
@@ -471,7 +490,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let pid_path = root.join("helper.pid");
         let result = RoutineClient::new(root.clone())
-            .request_with_start(&status(&root), helper_command(&root, "invalid_hang"));
+            .request_with_start(&list(&root), helper_command(&root, "invalid_hang"));
         assert!(matches!(result, Err(RoutineError::Corrupt(_))));
         assert_helper_reaped(&pid_path);
         let _ = std::fs::remove_dir_all(root);
@@ -483,7 +502,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let pid_path = root.join("helper.pid");
         let result = RoutineClient::new(root.clone())
-            .request_with_start(&status(&root), helper_command(&root, "exit"));
+            .request_with_start(&list(&root), helper_command(&root, "exit"));
         assert!(matches!(result, Err(RoutineError::Unavailable(_))));
         assert_helper_reaped(&pid_path);
         let _ = std::fs::remove_dir_all(root);
@@ -496,7 +515,7 @@ mod tests {
         let pid_path = root.join("helper.pid");
         let result = RoutineClient::new(root.clone())
             .with_startup_timeout(Duration::from_millis(300))
-            .request_with_start(&status(&root), helper_command(&root, "ready_hang"));
+            .request_with_start(&list(&root), helper_command(&root, "ready_hang"));
         assert!(matches!(result, Err(RoutineError::Unavailable(_))));
         assert_helper_reaped(&pid_path);
         let _ = std::fs::remove_dir_all(root);

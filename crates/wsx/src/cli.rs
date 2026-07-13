@@ -444,7 +444,8 @@ pub(crate) fn ensure_routine_daemon() -> Result<()> {
     let client = routine_client()?;
     let request = wsx_core::routine::ipc::Request::new(
         std::env::current_dir()?,
-        wsx_core::routine::ipc::Action::Status,
+        // ^ Start is explicit CLI intent; List uses the auto-start request path without weakening lifecycle actions.
+        wsx_core::routine::ipc::Action::List,
     );
     client.request_with_start(&request, routine_daemon_command()?)?;
     Ok(())
