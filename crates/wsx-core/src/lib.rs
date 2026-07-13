@@ -19,4 +19,5 @@ pub mod hooks;
 pub mod model;
 pub mod ops;
 pub mod proc_tree;
+pub mod routine;
 pub mod tmux;

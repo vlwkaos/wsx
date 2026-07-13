@@ -16,13 +16,18 @@ use app::App;
 use clap::Parser;
 
 fn main() -> Result<()> {
-    // Require tmux
+    let args = cli::Args::parse();
+    if matches!(
+        args.command,
+        Some(cli::Command::Routine { .. }) | Some(cli::Command::RoutineDaemonServe)
+    ) {
+        return cli::run(args.command.expect("matched Some"));
+    }
     if !wsx_core::tmux::session::is_available() {
         eprintln!("wsx requires tmux — https://github.com/tmux/tmux/wiki/Installing");
         std::process::exit(1);
     }
 
-    let args = cli::Args::parse();
     match args.command {
         Some(cmd) => cli::run(cmd),
         None => run_tui(args.mobile),
