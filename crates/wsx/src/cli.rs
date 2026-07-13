@@ -1,11 +1,9 @@
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::process::CommandExt;
+use std::io::Write;
+use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, Instant};
 
 use crate::session_state;
 use wsx_core::{
@@ -301,7 +299,6 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
     if let RoutineCmd::Daemon { subcommand } = command {
         return cmd_routine_daemon(subcommand);
     }
-    ensure_routine_daemon()?;
     let (project_arg, action, json) = match command {
         RoutineCmd::List { project, json } => (project, IpcAction::List, json),
         RoutineCmd::Show {
@@ -431,14 +428,9 @@ pub(crate) fn send_routine(
     project: &Path,
     action: wsx_core::routine::ipc::Action,
 ) -> Result<wsx_core::routine::ipc::Response> {
-    let socket = routine_root()?.join("daemon-v1.sock");
-    match wsx_core::routine::ipc::send(
-        &socket,
-        &wsx_core::routine::ipc::Request::new(project.to_path_buf(), action),
-    )? {
-        wsx_core::routine::ipc::Response::Error { kind, message } => bail!("{kind}: {message}"),
-        response => Ok(response),
-    }
+    let client = routine_client()?;
+    let request = wsx_core::routine::ipc::Request::new(project.to_path_buf(), action);
+    Ok(client.request_with_start(&request, routine_daemon_command()?)?)
 }
 
 fn fetch_revision(project: &Path) -> Result<u64> {
@@ -449,101 +441,24 @@ fn fetch_revision(project: &Path) -> Result<u64> {
 }
 
 pub(crate) fn ensure_routine_daemon() -> Result<()> {
-    let socket = routine_root()?.join("daemon-v1.sock");
-    let status = wsx_core::routine::ipc::Request::new(
-        std::env::current_dir()?,
-        wsx_core::routine::ipc::Action::Status,
-    );
-    if wsx_core::routine::ipc::send(&socket, &status).is_ok() {
-        return Ok(());
-    }
-    let (read_end, write_end) = startup_pipe()?;
-    let read_fd = read_end.as_raw_fd();
-    let write_fd = write_end.as_raw_fd();
+    let client = routine_client()?;
+    // ^ Explicit startup must not depend on whether the caller's current directory is a valid project.
+    client.start(routine_daemon_command()?)?;
+    Ok(())
+}
+
+fn routine_client() -> Result<wsx_core::routine::RoutineClient> {
+    Ok(wsx_core::routine::RoutineClient::new(routine_root()?))
+}
+
+fn routine_daemon_command() -> Result<std::process::Command> {
     let mut command = std::process::Command::new(std::env::current_exe()?);
     command
         .arg("routine-daemon-serve")
-        .env("WSX_ROUTINE_STARTUP_FD", write_fd.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    unsafe {
-        command.pre_exec(move || {
-            libc::close(read_fd);
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let mut child = command.spawn()?;
-    drop(write_end);
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let mut read_end = std::fs::File::from(read_end);
-    while Instant::now() < deadline {
-        if fd_readable(read_end.as_raw_fd())? {
-            let mut startup = String::new();
-            read_end.read_to_string(&mut startup)?;
-            if startup == "ready" {
-                if wsx_core::routine::ipc::send(&socket, &status).is_ok() {
-                    return Ok(());
-                }
-                stop_startup_child(&mut child);
-                bail!("routine daemon reported ready but did not accept status requests");
-            }
-            if let Some(error) = startup.strip_prefix("error:") {
-                let _ = child.wait();
-                if error.contains("already running")
-                    && poll_routine_daemon(&socket, &status, deadline)
-                {
-                    return Ok(());
-                }
-                bail!("routine daemon failed to start: {error}");
-            }
-            if startup.is_empty() {
-                if let Some(exit) = child.try_wait()? {
-                    bail!("routine daemon exited during startup: {exit}");
-                }
-            }
-            stop_startup_child(&mut child);
-            bail!("routine daemon returned an invalid startup response");
-        }
-        if let Some(exit) = child.try_wait()? {
-            bail!("routine daemon exited during startup: {exit}");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    stop_startup_child(&mut child);
-    bail!("routine daemon did not become ready within 3 seconds")
-}
-
-fn poll_routine_daemon(
-    socket: &Path,
-    status: &wsx_core::routine::ipc::Request,
-    deadline: Instant,
-) -> bool {
-    while Instant::now() < deadline {
-        if wsx_core::routine::ipc::send(socket, status).is_ok() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
-
-fn stop_startup_child(child: &mut std::process::Child) {
-    unsafe {
-        libc::kill(-(child.id() as i32), libc::SIGKILL);
-    }
-    let _ = child.wait();
-}
-
-fn startup_pipe() -> Result<(OwnedFd, OwnedFd)> {
-    let mut fds = [0; 2];
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    unsafe { Ok((OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))) }
+    Ok(command)
 }
 
 fn startup_notifier() -> Result<Option<std::fs::File>> {
@@ -558,39 +473,20 @@ fn startup_notifier() -> Result<Option<std::fs::File>> {
     Ok(Some(unsafe { std::fs::File::from_raw_fd(fd) }))
 }
 
-fn fd_readable(fd: i32) -> Result<bool> {
-    let mut descriptor = libc::pollfd {
-        fd,
-        events: libc::POLLIN | libc::POLLHUP,
-        revents: 0,
-    };
-    let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
-    if result < 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    Ok(result > 0)
-}
-
 fn cmd_routine_daemon(command: RoutineDaemonCmd) -> Result<()> {
     use wsx_core::routine::ipc::{Action, Request};
-    let socket = routine_root()?.join("daemon-v1.sock");
+    let client = routine_client()?;
     match command {
         RoutineDaemonCmd::Start => {
             ensure_routine_daemon()?;
             println!("routine daemon running");
         }
         RoutineDaemonCmd::Status => print_routine_response(
-            wsx_core::routine::ipc::send(
-                &socket,
-                &Request::new(std::env::current_dir()?, Action::Status),
-            )?,
+            client.request(&Request::new(std::env::current_dir()?, Action::Status))?,
             false,
         )?,
         RoutineDaemonCmd::Stop => print_routine_response(
-            wsx_core::routine::ipc::send(
-                &socket,
-                &Request::new(std::env::current_dir()?, Action::Shutdown),
-            )?,
+            client.request(&Request::new(std::env::current_dir()?, Action::Shutdown))?,
             false,
         )?,
     }
@@ -741,6 +637,21 @@ fn resolve_project<'a>(workspace: &'a WorkspaceState, name: Option<&str>) -> Res
 
 fn activity_label(s: &wsx_core::model::workspace::SessionInfo) -> &'static str {
     session_state::status_label(s)
+}
+
+#[cfg(test)]
+mod routine_client_wiring_tests {
+    use super::*;
+
+    #[test]
+    fn daemon_command_selects_the_wsx_serve_entrypoint() {
+        let command = routine_daemon_command().unwrap();
+        assert_eq!(command.get_program(), std::env::current_exe().unwrap());
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![std::ffi::OsStr::new("routine-daemon-serve")]
+        );
+    }
 }
 
 fn git_label(wt: &wsx_core::model::workspace::WorktreeInfo) -> String {
@@ -1090,63 +1001,4 @@ fn cmd_session_list(
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod routine_daemon_tests {
-    use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{mpsc, Arc, Barrier};
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-
-    #[test]
-    fn concurrent_first_starts_converge_on_singleton_daemon() {
-        let root = PathBuf::from(".tmp").join(format!(
-            "routine-cli-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let barrier = Arc::new(Barrier::new(3));
-        let (started_tx, started_rx) = mpsc::channel();
-        let mut servers = Vec::new();
-        for _ in 0..2 {
-            let root = root.clone();
-            let barrier = barrier.clone();
-            let started_tx = started_tx.clone();
-            servers.push(std::thread::spawn(move || {
-                barrier.wait();
-                wsx_core::routine::daemon::serve_with_startup(root, move |result| {
-                    started_tx.send(result).unwrap();
-                })
-            }));
-        }
-        barrier.wait();
-        let first = started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
-        let second = started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
-        assert_ne!(first.is_ok(), second.is_ok());
-
-        let socket = root.join("daemon-v1.sock");
-        let status = wsx_core::routine::ipc::Request::new(
-            std::env::current_dir().unwrap(),
-            wsx_core::routine::ipc::Action::Status,
-        );
-        assert!(poll_routine_daemon(
-            &socket,
-            &status,
-            Instant::now() + Duration::from_secs(3)
-        ));
-        wsx_core::routine::ipc::send(
-            &socket,
-            &wsx_core::routine::ipc::Request::new(
-                std::env::current_dir().unwrap(),
-                wsx_core::routine::ipc::Action::Shutdown,
-            ),
-        )
-        .unwrap();
-        for server in servers {
-            let _ = server.join().unwrap();
-        }
-        let _ = std::fs::remove_dir_all(root);
-    }
 }
