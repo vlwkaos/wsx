@@ -22,3 +22,11 @@ Recurring audit axes (auto-maintained by /good-to-go):
 - **Realistic-workspace regression test**: `session_state::tests::given_realistic_workspace_when_classified_then_each_session_state_matches_spec` pins the per-session outcomes for a 10-session fixture representing typical usage. This test exists because v0.15.9 shipped with all unit tests passing while real-world usage rendered "everything green" — the fixture is the floor for any future derive change. Do not loosen it without updating the fixture.
 
 - Uncertain about project term/schema/convention/prior decision → `/seek <topic>` first (lightweight KB lookup; same tier as grep/Glob).
+
+## auwsx Knowledge Collections
+<!-- auwsx:knowledge-collections -->
+Agents should use these collection hints before answering project/domain questions or changing architecture:
+- coding_language: rust
+- project_domain: wsx
+- knowledge_domains: coding, domain
+- update_when: project stack, domain, or knowledge layout changes
