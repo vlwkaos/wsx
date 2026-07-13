@@ -36,6 +36,15 @@ pub fn execute(
     routine: &Routine,
     scheduled: Option<i64>,
 ) -> Result<RunRecord, RoutineError> {
+    execute_supervised(store, routine, scheduled, |_| {})
+}
+
+pub fn execute_supervised(
+    store: &RoutineStore,
+    routine: &Routine,
+    scheduled: Option<i64>,
+    on_started: impl FnOnce(&RunRecord),
+) -> Result<RunRecord, RoutineError> {
     let lock_dir = store.logs_dir().join("locks");
     fs::create_dir_all(&lock_dir)?;
     fs::set_permissions(&lock_dir, fs::Permissions::from_mode(0o700))?;
@@ -98,6 +107,7 @@ pub fn execute(
     };
     record.pid = Some(child.id() as i32);
     replace_record(store, record.clone())?;
+    on_started(&record);
     if let Some(mut stdin) = child.stdin.take() {
         if let Some(bytes) = stdin_bytes {
             stdin.write_all(bytes)?;

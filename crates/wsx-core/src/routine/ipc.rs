@@ -45,6 +45,9 @@ pub enum Action {
     Run {
         name: String,
     },
+    Cancel {
+        name: String,
+    },
     Logs {
         name: String,
     },
@@ -57,6 +60,8 @@ pub struct RoutineView {
     pub routine: Routine,
     pub capabilities: Capabilities,
     pub latest_run: Option<RunRecord>,
+    #[serde(default)]
+    pub recent_runs: Vec<RunRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -24,6 +24,13 @@ pub enum CursorIdentity {
         worktree_path: String,
         session_name: String,
     },
+    RoutinesHeader {
+        project_path: String,
+    },
+    Routine {
+        project_path: String,
+        routine_name: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -310,6 +317,12 @@ pub fn find_cursor_index(
                 false
             }
         }),
+        CursorIdentity::RoutinesHeader { project_path } => flat.iter().position(|e| {
+            matches!(e, FlatEntry::RoutinesHeader { project_idx } if workspace.projects[*project_idx].path.to_string_lossy() == project_path.as_str())
+        }),
+        CursorIdentity::Routine { project_path, routine_name } => flat.iter().position(|e| {
+            matches!(e, FlatEntry::Routine { project_idx, routine_idx } if workspace.projects[*project_idx].path.to_string_lossy() == project_path.as_str() && workspace.projects[*project_idx].routines[*routine_idx].routine.name == *routine_name)
+        }),
     }
 }
 
@@ -361,7 +374,7 @@ pub fn migrate_flags_to_tmux(muted: &HashSet<String>) {
     }
 }
 
-fn resolve_cursor_identity(
+pub fn resolve_cursor_identity(
     workspace: &WorkspaceState,
     flat: &[FlatEntry],
     idx: usize,
@@ -390,6 +403,25 @@ fn resolve_cursor_identity(
                 session_name: wt.sessions[*si].name.clone(),
             })
         }
+        FlatEntry::RoutinesHeader { project_idx } => Some(CursorIdentity::RoutinesHeader {
+            project_path: workspace.projects[*project_idx]
+                .path
+                .to_string_lossy()
+                .to_string(),
+        }),
+        FlatEntry::Routine {
+            project_idx,
+            routine_idx,
+        } => Some(CursorIdentity::Routine {
+            project_path: workspace.projects[*project_idx]
+                .path
+                .to_string_lossy()
+                .to_string(),
+            routine_name: workspace.projects[*project_idx].routines[*routine_idx]
+                .routine
+                .name
+                .clone(),
+        }),
     }
 }
 
@@ -439,6 +471,9 @@ mod tests {
                     .iter()
                     .map(|(path, sessions)| make_worktree(path, sessions))
                     .collect(),
+                routines: Vec::new(),
+                routine_revision: 0,
+                routines_expanded: true,
                 config: None,
                 expanded: true,
                 missing: false,

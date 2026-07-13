@@ -10,6 +10,9 @@ This is a Cargo **workspace** — the shared `~/.claude/skills/rust-release/rele
 
 ## good-to-go
 
+- **auwsx issue inspection**: use `"$AUWSX_BIN" issue get <issue_id>`; `issue show` and `issue --help` are unsupported.
+- **Routine daemon smoke tests**: sandboxed `flock` can fail with `EPERM`, and detached children from an escalated command may be reaped before a later command; use one approved foreground harness for lifecycle assertions.
+
 Recurring audit axes (auto-maintained by /good-to-go):
 - **Pending ops pattern**: any new user-initiated mutation (session/worktree create/delete/rename) must register a `SessionOp` or `pending_deletions` entry so stale background refreshes don't clobber intent. Check `apply_pending_session_ops` and `filter_pending_deletions` call sites.
 - **Cross-instance shared state**: flags that must be visible across concurrent instances (muted, suppressed) must be stored in tmux user options, not the cache. Cache carries only per-instance UI state (cursor, expand, tab, history).

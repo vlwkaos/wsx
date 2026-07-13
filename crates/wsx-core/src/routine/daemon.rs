@@ -1,7 +1,8 @@
-use super::execution::execute;
+use super::execution::execute_supervised;
 use super::ipc::{Action, Request, Response, RoutineView};
 use super::store::{ProjectRoutines, RoutineStore};
 use super::{Capabilities, CronSchedule, LocalTime, RoutineError, RunStatus, PROTOCOL_VERSION};
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::AsRawFd;
@@ -10,8 +11,9 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
+use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub fn serve(root: PathBuf) -> Result<(), RoutineError> {
@@ -48,13 +50,16 @@ pub fn serve(root: PathBuf) -> Result<(), RoutineError> {
 fn event_loop(root: &Path, listener: &UnixListener) -> Result<(), RoutineError> {
     let mut last_minute = i64::MIN;
     let stopping = Arc::new(AtomicBool::new(false));
+    let state = Arc::new(DaemonState::default());
     while !stopping.load(Ordering::SeqCst) {
+        reap_workers(&state);
         match listener.accept() {
             Ok((stream, _)) => {
                 let root = root.to_path_buf();
                 let stopping = stopping.clone();
+                let state = state.clone();
                 std::thread::spawn(move || {
-                    let _ = handle_stream(&root, stream, &stopping);
+                    let _ = handle_stream(&root, stream, &stopping, &state);
                 });
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -63,17 +68,33 @@ fn event_loop(root: &Path, listener: &UnixListener) -> Result<(), RoutineError> 
         let minute = now_epoch() / 60;
         if minute != last_minute {
             last_minute = minute;
-            tick(root, minute);
+            tick(root, minute, &state);
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    stop_active(root, &state);
+    drain_workers(&state);
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RunKey {
+    project: PathBuf,
+    routine: String,
+}
+
+#[derive(Default)]
+struct DaemonState {
+    active: Mutex<HashMap<RunKey, bool>>,
+    workers: Mutex<Vec<JoinHandle<()>>>,
+    config: Mutex<()>,
 }
 
 fn handle_stream(
     root: &Path,
     mut stream: UnixStream,
     stopping: &AtomicBool,
+    state: &Arc<DaemonState>,
 ) -> Result<(), RoutineError> {
     let mut line = String::new();
     BufReader::new(stream.try_clone()?).read_line(&mut line)?;
@@ -87,7 +108,7 @@ fn handle_stream(
         })
     );
     let response = match request {
-        Ok(request) => process(root, request).unwrap_or_else(Response::error),
+        Ok(request) => process(root, request, state).unwrap_or_else(Response::error),
         Err(error) => Response::error(error),
     };
     let mut bytes =
@@ -100,7 +121,11 @@ fn handle_stream(
     Ok(())
 }
 
-fn process(root: &Path, request: Request) -> Result<Response, RoutineError> {
+fn process(
+    root: &Path,
+    request: Request,
+    state: &Arc<DaemonState>,
+) -> Result<Response, RoutineError> {
     if request.protocol != PROTOCOL_VERSION {
         return Err(RoutineError::ProtocolMismatch {
             client: request.protocol,
@@ -119,13 +144,21 @@ fn process(root: &Path, request: Request) -> Result<Response, RoutineError> {
     let store = RoutineStore::new(root.to_path_buf(), &request.project)?;
     match request.action {
         Action::List => {
+            let _guard = state
+                .config
+                .lock()
+                .map_err(|_| RoutineError::Io("config lock poisoned".into()))?;
             let config = store.load()?;
             Ok(Response::Routines {
                 revision: config.revision,
-                routines: views(&store, &config),
+                routines: views(&store, &config, state),
             })
         }
         Action::Show { name } => {
+            let _guard = state
+                .config
+                .lock()
+                .map_err(|_| RoutineError::Io("config lock poisoned".into()))?;
             let config = store.load()?;
             let routine = config
                 .routines
@@ -134,10 +167,14 @@ fn process(root: &Path, request: Request) -> Result<Response, RoutineError> {
                 .ok_or_else(|| RoutineError::NotFound(name.clone()))?;
             Ok(Response::Routine {
                 revision: config.revision,
-                routine: view(&store, routine),
+                routine: view(&store, routine, state),
             })
         }
         Action::Add { revision, routine } => {
+            let _guard = state
+                .config
+                .lock()
+                .map_err(|_| RoutineError::Io("config lock poisoned".into()))?;
             let routine = routine.validated()?;
             let mut config = store.load()?;
             if config.routines.iter().any(|r| r.name == routine.name) {
@@ -154,6 +191,10 @@ fn process(root: &Path, request: Request) -> Result<Response, RoutineError> {
             old_name,
             routine,
         } => {
+            let _guard = state
+                .config
+                .lock()
+                .map_err(|_| RoutineError::Io("config lock poisoned".into()))?;
             let routine = routine.validated()?;
             let mut config = store.load()?;
             let index = config
@@ -161,7 +202,7 @@ fn process(root: &Path, request: Request) -> Result<Response, RoutineError> {
                 .iter()
                 .position(|r| r.name == old_name)
                 .ok_or_else(|| RoutineError::NotFound(old_name.clone()))?;
-            if routine.name != old_name && is_running(&store, &old_name) {
+            if routine.name != old_name && is_active(state, store.project(), &old_name) {
                 return Err(RoutineError::AlreadyRunning(old_name));
             }
             if routine.name != old_name && config.routines.iter().any(|r| r.name == routine.name) {
@@ -180,6 +221,11 @@ fn process(root: &Path, request: Request) -> Result<Response, RoutineError> {
             })
         }
         Action::Delete { revision, name } => {
+            let _guard = state
+                .config
+                .lock()
+                .map_err(|_| RoutineError::Io("config lock poisoned".into()))?;
+            request_cancel(state, store.project(), &name);
             cancel_running(&store, &name)?;
             let mut config = store.load()?;
             let before = config.routines.len();
@@ -193,18 +239,26 @@ fn process(root: &Path, request: Request) -> Result<Response, RoutineError> {
             })
         }
         Action::Run { name } => {
-            if is_running(&store, &name) {
-                return Err(RoutineError::AlreadyRunning(name));
-            }
+            let _guard = state
+                .config
+                .lock()
+                .map_err(|_| RoutineError::Io("config lock poisoned".into()))?;
             let config = store.load()?;
             let routine = config
                 .routines
                 .iter()
                 .find(|r| r.name == name)
                 .ok_or(RoutineError::NotFound(name))?;
-            Ok(Response::Run {
-                run: execute(&store, routine, None)?,
-            })
+            spawn_run(store, routine.clone(), None, state)?;
+            Ok(Response::Ok { revision: None })
+        }
+        Action::Cancel { name } => {
+            if !is_active(state, store.project(), &name) {
+                return Err(RoutineError::NotFound(format!("active run for {name}")));
+            }
+            request_cancel(state, store.project(), &name);
+            cancel_running(&store, &name)?;
+            Ok(Response::Ok { revision: None })
         }
         Action::Logs { name } => {
             let state = store.load_runtime()?;
@@ -216,36 +270,51 @@ fn process(root: &Path, request: Request) -> Result<Response, RoutineError> {
     }
 }
 
-fn views(store: &RoutineStore, config: &ProjectRoutines) -> Vec<RoutineView> {
+fn views(store: &RoutineStore, config: &ProjectRoutines, state: &DaemonState) -> Vec<RoutineView> {
     config
         .routines
         .iter()
-        .map(|routine| view(store, routine))
+        .map(|routine| view(store, routine, state))
         .collect()
 }
 
-fn view(store: &RoutineStore, routine: &super::Routine) -> RoutineView {
+fn view(store: &RoutineStore, routine: &super::Routine, state: &DaemonState) -> RoutineView {
     let runs = store
         .load_runtime()
         .ok()
         .and_then(|state| state.runs.get(&routine.name).cloned())
         .unwrap_or_default();
-    let running = runs
-        .last()
-        .is_some_and(|run| run.status == RunStatus::Running);
+    let running = is_active(state, store.project(), &routine.name);
     RoutineView {
         routine: routine.clone(),
         capabilities: Capabilities::for_running(running),
         latest_run: runs.last().cloned(),
+        recent_runs: runs,
     }
 }
 
-fn is_running(store: &RoutineStore, name: &str) -> bool {
-    store
-        .load_runtime()
-        .ok()
-        .and_then(|state| state.runs.get(name).and_then(|runs| runs.last()).cloned())
-        .is_some_and(|run| run.status == RunStatus::Running)
+fn is_active(state: &DaemonState, project: &Path, name: &str) -> bool {
+    state
+        .active
+        .lock()
+        .map(|active| {
+            active.contains_key(&RunKey {
+                project: project.to_path_buf(),
+                routine: name.to_string(),
+            })
+        })
+        .unwrap_or(true)
+}
+
+fn request_cancel(state: &DaemonState, project: &Path, name: &str) {
+    if let Ok(mut active) = state.active.lock() {
+        if let Some(requested) = active.get_mut(&RunKey {
+            project: project.to_path_buf(),
+            routine: name.to_string(),
+        }) {
+            *requested = true;
+        }
+    }
 }
 
 fn migrate_runtime_name(store: &RoutineStore, old: &str, new: &str) -> Result<(), RoutineError> {
@@ -270,7 +339,7 @@ fn migrate_runtime_name(store: &RoutineStore, old: &str, new: &str) -> Result<()
     })
 }
 
-fn tick(root: &Path, epoch_minute: i64) {
+fn tick(root: &Path, epoch_minute: i64, state: &Arc<DaemonState>) {
     let projects = root.join("projects");
     let Ok(entries) = fs::read_dir(projects) else {
         return;
@@ -291,18 +360,118 @@ fn tick(root: &Path, epoch_minute: i64) {
                 continue;
             };
             if schedule.matches(local)
-                && !is_running(&store, &routine.name)
+                && !is_active(state, store.project(), &routine.name)
                 && store.claim(&routine.name, epoch_minute).unwrap_or(false)
             {
-                let root = root.to_path_buf();
-                let project = config.project_path.clone();
-                let routine = routine.clone();
-                std::thread::spawn(move || {
-                    if let Ok(store) = RoutineStore::new(root, &project) {
-                        let _ = execute(&store, &routine, Some(epoch_minute));
-                    }
-                });
+                let _ = spawn_run(store.clone(), routine.clone(), Some(epoch_minute), state);
             }
+        }
+    }
+}
+
+fn spawn_run(
+    store: RoutineStore,
+    routine: super::Routine,
+    scheduled: Option<i64>,
+    state: &Arc<DaemonState>,
+) -> Result<(), RoutineError> {
+    let key = RunKey {
+        project: store.project().to_path_buf(),
+        routine: routine.name.clone(),
+    };
+    {
+        let mut active = state
+            .active
+            .lock()
+            .map_err(|_| RoutineError::Io("active-run lock poisoned".into()))?;
+        if active.insert(key.clone(), false).is_some() {
+            return Err(RoutineError::AlreadyRunning(routine.name));
+        }
+    }
+    let shared = state.clone();
+    let handle = std::thread::spawn(move || {
+        let callback_state = shared.clone();
+        let callback_key = key.clone();
+        let callback_store = store.clone();
+        let callback_name = routine.name.clone();
+        let result = execute_supervised(&store, &routine, scheduled, move |_| {
+            let cancellation_requested = callback_state
+                .active
+                .lock()
+                .ok()
+                .and_then(|active| active.get(&callback_key).copied())
+                .unwrap_or(true);
+            if cancellation_requested {
+                let _ = cancel_running(&callback_store, &callback_name);
+            }
+        });
+        if result.is_err() {
+            let _ = interrupt_latest_running(&store, &routine.name);
+        }
+        if let Ok(mut active) = shared.active.lock() {
+            active.remove(&key);
+        }
+    });
+    state
+        .workers
+        .lock()
+        .map_err(|_| RoutineError::Io("worker lock poisoned".into()))?
+        .push(handle);
+    Ok(())
+}
+
+fn interrupt_latest_running(store: &RoutineStore, name: &str) -> Result<(), RoutineError> {
+    store.modify_runtime(|state| {
+        if let Some(run) = state.runs.get_mut(name).and_then(|runs| runs.last_mut()) {
+            if run.status == RunStatus::Running {
+                run.status = RunStatus::Interrupted;
+                run.finished_epoch = Some(now_epoch());
+                run.pid = None;
+            }
+        }
+        Ok(())
+    })
+}
+
+fn stop_active(root: &Path, state: &DaemonState) {
+    let keys = state
+        .active
+        .lock()
+        .map(|mut active| {
+            for requested in active.values_mut() {
+                *requested = true;
+            }
+            active.keys().cloned().collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for key in keys {
+        if let Ok(store) = RoutineStore::new(root.to_path_buf(), &key.project) {
+            let _ = cancel_running(&store, &key.routine);
+        }
+    }
+}
+
+fn drain_workers(state: &DaemonState) {
+    let workers = state
+        .workers
+        .lock()
+        .map(|mut workers| std::mem::take(&mut *workers))
+        .unwrap_or_default();
+    for worker in workers {
+        let _ = worker.join();
+    }
+}
+
+fn reap_workers(state: &DaemonState) {
+    let Ok(mut workers) = state.workers.lock() else {
+        return;
+    };
+    let mut index = workers.len();
+    while index > 0 {
+        index -= 1;
+        if workers[index].is_finished() {
+            let worker = workers.swap_remove(index);
+            let _ = worker.join();
         }
     }
 }
@@ -402,4 +571,132 @@ fn now_epoch() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::routine::{Routine, SCHEMA_VERSION};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn fixture() -> (PathBuf, PathBuf, Arc<DaemonState>) {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/routine-daemon-tests")
+            .join(format!(
+                "{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+        let project =
+            fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        store
+            .save(
+                ProjectRoutines {
+                    version: SCHEMA_VERSION,
+                    revision: 0,
+                    project_path: project.clone(),
+                    routines: vec![slow("one"), slow("two")],
+                },
+                0,
+            )
+            .unwrap();
+        (root, project, Arc::new(DaemonState::default()))
+    }
+
+    fn slow(name: &str) -> Routine {
+        Routine {
+            name: name.into(),
+            cron: "0 0 1 1 *".into(),
+            command: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()],
+            prompt: String::new(),
+        }
+    }
+
+    fn request(project: &Path, action: Action) -> Request {
+        Request::new(project.to_path_buf(), action)
+    }
+
+    #[test]
+    fn slow_run_keeps_status_responsive_rejects_overlap_and_allows_other_routine() {
+        let (root, project, state) = fixture();
+        let started = Instant::now();
+        assert!(matches!(
+            process(
+                &root,
+                request(&project, Action::Run { name: "one".into() }),
+                &state
+            )
+            .unwrap(),
+            Response::Ok { .. }
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(matches!(
+            process(&root, request(&project, Action::Status), &state).unwrap(),
+            Response::Daemon { .. }
+        ));
+        assert!(matches!(
+            process(
+                &root,
+                request(&project, Action::Run { name: "one".into() }),
+                &state
+            ),
+            Err(RoutineError::AlreadyRunning(_))
+        ));
+        assert!(process(
+            &root,
+            request(&project, Action::Run { name: "two".into() }),
+            &state
+        )
+        .is_ok());
+        assert!(process(
+            &root,
+            request(&project, Action::Cancel { name: "one".into() }),
+            &state
+        )
+        .is_ok());
+        assert!(process(
+            &root,
+            request(&project, Action::Cancel { name: "two".into() }),
+            &state
+        )
+        .is_ok());
+        drain_workers(&state);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn confirmed_delete_cancels_active_run_and_removes_definition() {
+        let (root, project, state) = fixture();
+        process(
+            &root,
+            request(&project, Action::Run { name: "one".into() }),
+            &state,
+        )
+        .unwrap();
+        assert!(process(
+            &root,
+            request(
+                &project,
+                Action::Delete {
+                    revision: 1,
+                    name: "one".into()
+                }
+            ),
+            &state
+        )
+        .is_ok());
+        drain_workers(&state);
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        assert!(!store
+            .load()
+            .unwrap()
+            .routines
+            .iter()
+            .any(|routine| routine.name == "one"));
+        let _ = fs::remove_dir_all(root);
+    }
 }

@@ -15,7 +15,7 @@ use crate::{
     event::poll_event,
     session_state::{self, AppSessionState},
     tui::{self, Tui},
-    ui::{self, ansi, input::InputState},
+    ui::{self, ansi, input::InputState, routine_editor::RoutineForm},
 };
 use wsx_core::{
     config::global::GlobalConfig,
@@ -142,6 +142,16 @@ pub enum Mode {
     TabManager {
         selected: usize,
     },
+    RoutineEditor {
+        project_idx: usize,
+        original_name: Option<String>,
+        form: RoutineForm,
+    },
+    RoutineDetail {
+        project_idx: usize,
+        routine_idx: usize,
+        scroll: u16,
+    },
 }
 
 pub enum InputContext {
@@ -226,6 +236,11 @@ pub enum PendingAction {
     },
     DeleteTab {
         tab_idx: usize, // index into config.tabs (0-based)
+    },
+    DeleteRoutine {
+        project_idx: usize,
+        name: String,
+        revision: u64,
     },
 }
 
@@ -364,6 +379,8 @@ pub struct App {
     /// created repos between opens.
     scanned_repos: Vec<String>,
     repo_scan_rx: Option<mpsc::Receiver<String>>,
+    routine_tx: mpsc::Sender<(usize, wsx_core::routine::ipc::Response)>,
+    routine_rx: mpsc::Receiver<(usize, wsx_core::routine::ipc::Response)>,
 }
 
 impl App {
@@ -385,13 +402,15 @@ impl App {
             compute_visible_projects(&config, &workspace, cached_active_tab.as_deref());
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
         let tree_selected = cursor_identity
-            .and_then(|id| wsx_core::cache::find_cursor_index(&workspace, &cached_flat, &id))
+            .as_ref()
+            .and_then(|id| wsx_core::cache::find_cursor_index(&workspace, &cached_flat, id))
             .unwrap_or_else(|| raw_selected.min(cached_flat.len().saturating_sub(1)));
         let (git_local_tx, git_local_rx) = mpsc::channel();
         let (fetch_tx, fetch_rx) = mpsc::channel();
         let (bg_tx, bg_rx) = mpsc::channel();
         let (tmux_tx, tmux_rx) = mpsc::channel();
         let (update_tx, update_rx) = mpsc::channel::<String>();
+        let (routine_tx, routine_rx) = mpsc::channel();
         std::thread::spawn(move || {
             if let Some(v) = crate::update::fetch_latest_version() {
                 let _ = update_tx.send(v);
@@ -466,7 +485,18 @@ impl App {
             is_mobile: mobile,
             scanned_repos: Vec::new(),
             repo_scan_rx: None,
+            routine_tx,
+            routine_rx,
         };
+        if let Err(error) = app.refresh_routines_all() {
+            app.set_status(format!("Routines unavailable: {error}"));
+        } else if let Some(identity) = cursor_identity.as_ref() {
+            if let Some(index) =
+                wsx_core::cache::find_cursor_index(&app.workspace, app.flat(), identity)
+            {
+                app.tree_selected = index;
+            }
+        }
         app.spawn_repo_scan();
         Ok(app)
     }
@@ -599,6 +629,38 @@ impl App {
         &self.cached_flat
     }
 
+    fn refresh_routines_all(&mut self) -> Result<()> {
+        crate::cli::ensure_routine_daemon()?;
+        for project in &mut self.workspace.projects {
+            let response =
+                crate::cli::send_routine(&project.path, wsx_core::routine::ipc::Action::List)?;
+            if let wsx_core::routine::ipc::Response::Routines { revision, routines } = response {
+                project.routine_revision = revision;
+                project.routines = routines;
+            }
+        }
+        self.rebuild_flat();
+        Ok(())
+    }
+
+    fn refresh_routine_project(&mut self, project_idx: usize) -> Result<()> {
+        let project = self
+            .workspace
+            .projects
+            .get(project_idx)
+            .ok_or_else(|| anyhow::anyhow!("project not found"))?;
+        let response =
+            crate::cli::send_routine(&project.path, wsx_core::routine::ipc::Action::List)?;
+        if let wsx_core::routine::ipc::Response::Routines { revision, routines } = response {
+            let project = &mut self.workspace.projects[project_idx];
+            project.routine_revision = revision;
+            project.routines = routines;
+            project.routines_expanded = true;
+            self.rebuild_flat();
+        }
+        Ok(())
+    }
+
     pub fn run(&mut self, terminal: &mut Tui) -> Result<()> {
         // Kick off async git_info for all worktrees; render immediately with cached data.
         // Results arrive via drain_async_results() in the main loop without blocking.
@@ -623,6 +685,7 @@ impl App {
                     | Mode::Search { .. }
                     | Mode::GitPopup { .. }
                     | Mode::TabManager { .. }
+                    | Mode::RoutineEditor { .. }
             );
             if let Some(action) = poll_event(Duration::from_millis(TICK_MS), in_input)? {
                 if action == Action::Quit && matches!(self.mode, Mode::Normal) {
@@ -690,6 +753,31 @@ impl App {
                 }
             }
         }
+        while let Ok((project_idx, response)) = self.routine_rx.try_recv() {
+            if let wsx_core::routine::ipc::Response::Routines { revision, routines } = response {
+                let identity = wsx_core::cache::resolve_cursor_identity(
+                    &self.workspace,
+                    self.flat(),
+                    self.tree_selected,
+                );
+                if let Some(project) = self.workspace.projects.get_mut(project_idx) {
+                    project.routine_revision = revision;
+                    project.routines = routines;
+                    self.rebuild_flat();
+                    if let Some(identity) = identity.as_ref() {
+                        if let Some(index) = wsx_core::cache::find_cursor_index(
+                            &self.workspace,
+                            self.flat(),
+                            identity,
+                        ) {
+                            self.tree_selected = index;
+                        }
+                    }
+                    self.clamp_selected();
+                    self.needs_redraw = true;
+                }
+            }
+        }
         if let Ok(v) = self.update_rx.try_recv() {
             self.update_available = Some(v);
             self.needs_redraw = true;
@@ -709,6 +797,7 @@ impl App {
             self.spawn_tmux_refresh();
             self.spawn_git_local_for_all();
             self.activity_timer.last = Instant::now(); // rescan subsumes activity check
+            self.spawn_routine_refresh();
         } else if self.activity_timer.ready() {
             self.spawn_tmux_activity();
             self.needs_redraw = true; // ^ idle time display changes every second
@@ -724,6 +813,20 @@ impl App {
         }
 
         Ok(())
+    }
+
+    fn spawn_routine_refresh(&mut self) {
+        for (project_idx, project) in self.workspace.projects.iter().enumerate() {
+            let path = project.path.clone();
+            let tx = self.routine_tx.clone();
+            std::thread::spawn(move || {
+                if let Ok(response) =
+                    crate::cli::send_routine(&path, wsx_core::routine::ipc::Action::List)
+                {
+                    let _ = tx.send((project_idx, response));
+                }
+            });
+        }
     }
 
     /// Skip re-fetching git_info if the worktree is fresh and not currently selected.
@@ -1213,6 +1316,20 @@ impl App {
                     self.update_scroll();
                 }
             }
+            Some(FlatEntry::RoutinesHeader { project_idx: pi }) => {
+                if self.workspace.projects[pi].routines_expanded {
+                    self.workspace.projects[pi].routines_expanded = false;
+                    self.rebuild_flat();
+                    self.clamp_selected();
+                } else if let Some(pos) = self.flat().iter().position(|entry| matches!(entry, FlatEntry::Project { idx } if *idx == pi)) {
+                    self.tree_selected = pos;
+                }
+            }
+            Some(FlatEntry::Routine { project_idx: pi, .. }) => {
+                if let Some(pos) = self.flat().iter().position(|entry| matches!(entry, FlatEntry::RoutinesHeader { project_idx } if *project_idx == pi)) {
+                    self.tree_selected = pos;
+                }
+            }
             None => {}
         }
     }
@@ -1242,6 +1359,14 @@ impl App {
                 {
                     self.tree_selected += 1;
                     self.update_scroll();
+                }
+            }
+            Some(FlatEntry::RoutinesHeader { project_idx: pi }) => {
+                if !self.workspace.projects[pi].routines_expanded {
+                    self.workspace.projects[pi].routines_expanded = true;
+                    self.rebuild_flat();
+                } else if !self.workspace.projects[pi].routines.is_empty() {
+                    self.tree_selected += 1;
                 }
             }
             _ => {}
@@ -1340,6 +1465,27 @@ impl App {
             return self.dispatch_tab_manager(sel, action);
         }
 
+        if matches!(self.mode, Mode::RoutineEditor { .. }) {
+            return self.dispatch_routine_editor(action);
+        }
+        if matches!(self.mode, Mode::RoutineDetail { .. }) {
+            match action {
+                Action::InputEscape | Action::Quit | Action::Select => self.mode = Mode::Normal,
+                Action::NavigateDown => {
+                    if let Mode::RoutineDetail { scroll, .. } = &mut self.mode {
+                        *scroll = scroll.saturating_add(1);
+                    }
+                }
+                Action::NavigateUp => {
+                    if let Mode::RoutineDetail { scroll, .. } = &mut self.mode {
+                        *scroll = scroll.saturating_sub(1);
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         if let Mode::MoveSession {
             project_idx,
             worktree_idx,
@@ -1384,6 +1530,7 @@ impl App {
             | Mode::MoveSession { .. }
             | Mode::GitPopup { .. }
             | Mode::TabManager { .. } => unreachable!(),
+            Mode::RoutineEditor { .. } | Mode::RoutineDetail { .. } => unreachable!(),
         }
         Ok(())
     }
@@ -1398,6 +1545,7 @@ impl App {
             Action::AddProject => self.action_add_project()?,
             Action::AddWorktree => self.action_add_worktree()?,
             Action::AddSession => self.action_add_session()?,
+            Action::AddRoutine => self.action_add_routine()?,
             Action::Delete => self.action_delete()?,
             Action::Clean => self.action_clean()?,
             Action::Edit => self.action_edit()?,
@@ -1560,6 +1708,126 @@ impl App {
         Ok(())
     }
 
+    fn dispatch_routine_editor(&mut self, action: Action) -> Result<()> {
+        match action {
+            Action::InputEscape | Action::Quit => self.mode = Mode::Normal,
+            Action::RoutineCodexPreset => {
+                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
+                    form.apply_preset(false);
+                }
+            }
+            Action::RoutineClaudePreset => {
+                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
+                    form.apply_preset(true);
+                }
+            }
+            Action::InputChar(c) => {
+                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
+                    form.insert(c);
+                }
+            }
+            Action::InputBackspace => {
+                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
+                    form.backspace();
+                }
+            }
+            Action::NavigateLeft => {
+                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
+                    form.left();
+                }
+            }
+            Action::NavigateRight => {
+                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
+                    form.right();
+                }
+            }
+            Action::InputTab | Action::NavigateDown => {
+                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
+                    form.next(false);
+                }
+            }
+            Action::InputBackTab | Action::NavigateUp => {
+                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
+                    form.next(true);
+                }
+            }
+            Action::Select => self.save_routine_form()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn save_routine_form(&mut self) -> Result<()> {
+        let mode = std::mem::replace(&mut self.mode, Mode::Normal);
+        let Mode::RoutineEditor {
+            project_idx,
+            original_name,
+            form,
+        } = mode
+        else {
+            return Ok(());
+        };
+        let routine = match form.routine() {
+            Ok(routine) => routine,
+            Err(error) => {
+                self.mode = Mode::RoutineEditor {
+                    project_idx,
+                    original_name,
+                    form,
+                };
+                self.set_status(error);
+                return Ok(());
+            }
+        };
+        let project = &self.workspace.projects[project_idx];
+        let action = if let Some(old_name) = original_name.clone() {
+            wsx_core::routine::ipc::Action::Edit {
+                revision: project.routine_revision,
+                old_name,
+                routine: routine.clone(),
+            }
+        } else {
+            wsx_core::routine::ipc::Action::Add {
+                revision: project.routine_revision,
+                routine: routine.clone(),
+            }
+        };
+        if let Err(error) = crate::cli::send_routine(&project.path, action) {
+            self.refresh_routine_project(project_idx).ok();
+            self.mode = Mode::RoutineEditor {
+                project_idx,
+                original_name,
+                form,
+            };
+            self.set_status(format!("Routine not saved: {error}"));
+            return Ok(());
+        }
+        self.refresh_routine_project(project_idx)?;
+        self.select_routine(project_idx, Some(&routine.name));
+        self.set_status(format!("Saved routine '{}'", routine.name));
+        Ok(())
+    }
+
+    fn select_routine(&mut self, project_idx: usize, name: Option<&str>) {
+        let position = self.flat().iter().position(|entry| match entry {
+            FlatEntry::Routine {
+                project_idx: pi,
+                routine_idx,
+            } if *pi == project_idx => name.is_none_or(|name| {
+                self.workspace.projects[*pi].routines[*routine_idx]
+                    .routine
+                    .name
+                    == name
+            }),
+            FlatEntry::RoutinesHeader { project_idx: pi } if *pi == project_idx => name.is_none(),
+            _ => false,
+        });
+        if let Some(position) = position {
+            self.tree_selected = position;
+            self.update_scroll();
+        }
+    }
+
     fn search_matches(&self, query: &str) -> Vec<usize> {
         search_matches_in(&self.search_cache, query)
     }
@@ -1616,6 +1884,19 @@ impl App {
                     !self.workspace.projects[pi].worktrees[wi].expanded;
                 self.rebuild_flat();
                 self.clamp_selected();
+            }
+            Selection::RoutinesHeader(pi) => {
+                self.workspace.projects[pi].routines_expanded =
+                    !self.workspace.projects[pi].routines_expanded;
+                self.rebuild_flat();
+                self.clamp_selected();
+            }
+            Selection::Routine(pi, ri) => {
+                self.mode = Mode::RoutineDetail {
+                    project_idx: pi,
+                    routine_idx: ri,
+                    scroll: 0,
+                };
             }
             Selection::None => {}
         }
@@ -1710,9 +1991,11 @@ impl App {
 
     fn action_add_worktree(&mut self) -> Result<()> {
         let pi = match self.current_selection() {
-            Selection::Project(pi) | Selection::Worktree(pi, _) | Selection::Session(pi, _, _) => {
-                pi
-            }
+            Selection::Project(pi)
+            | Selection::Worktree(pi, _)
+            | Selection::Session(pi, _, _)
+            | Selection::RoutinesHeader(pi)
+            | Selection::Routine(pi, _) => pi,
             Selection::None => {
                 self.set_status("Select a project first (press p to add one)");
                 return Ok(());
@@ -1739,6 +2022,26 @@ impl App {
                 worktree_idx: wi,
             },
             state: InputState::new("name (optional): "),
+        };
+        Ok(())
+    }
+
+    fn action_add_routine(&mut self) -> Result<()> {
+        let pi = match self.current_selection() {
+            Selection::Project(pi)
+            | Selection::Worktree(pi, _)
+            | Selection::Session(pi, _, _)
+            | Selection::RoutinesHeader(pi)
+            | Selection::Routine(pi, _) => pi,
+            Selection::None => {
+                self.set_status("Select a project first");
+                return Ok(());
+            }
+        };
+        self.mode = Mode::RoutineEditor {
+            project_idx: pi,
+            original_name: None,
+            form: RoutineForm::codex(),
         };
         Ok(())
     }
@@ -1782,6 +2085,25 @@ impl App {
                 self.mode = Mode::Confirm {
                     message: format!("Unregister project '{}'? (files not deleted)", name),
                     pending: PendingAction::DeleteProject { project_idx: pi },
+                };
+            }
+            Selection::RoutinesHeader(_) => {}
+            Selection::Routine(pi, ri) => {
+                let view = &self.workspace.projects[pi].routines[ri];
+                self.mode = Mode::Confirm {
+                    message: if view.capabilities.can_cancel {
+                        format!(
+                            "Cancel active run and delete routine '{}' ?",
+                            view.routine.name
+                        )
+                    } else {
+                        format!("Delete routine '{}' ?", view.routine.name)
+                    },
+                    pending: PendingAction::DeleteRoutine {
+                        project_idx: pi,
+                        name: view.routine.name.clone(),
+                        revision: self.workspace.projects[pi].routine_revision,
+                    },
                 };
             }
             Selection::None => {}
@@ -1890,19 +2212,37 @@ impl App {
                     })
                 });
             }
+            Selection::RoutinesHeader(_) | Selection::Routine(_, _) => {
+                self.set_status("Clean applies to projects and worktrees")
+            }
         }
         Ok(())
     }
 
     fn action_edit(&mut self) -> Result<()> {
-        let pi = match self.current_selection() {
-            Selection::Project(pi) | Selection::Worktree(pi, _) | Selection::Session(pi, _, _) => {
-                pi
+        if let Selection::Routine(pi, ri) = self.current_selection() {
+            let view = self.workspace.projects[pi].routines[ri].clone();
+            if !view.capabilities.can_edit {
+                self.set_status("Routine cannot be edited in its current state");
+                return Ok(());
             }
+            self.mode = Mode::RoutineEditor {
+                project_idx: pi,
+                original_name: Some(view.routine.name.clone()),
+                form: RoutineForm::from_routine(view.routine),
+            };
+            return Ok(());
+        }
+        let pi = match self.current_selection() {
+            Selection::Project(pi)
+            | Selection::Worktree(pi, _)
+            | Selection::Session(pi, _, _)
+            | Selection::RoutinesHeader(pi) => pi,
             Selection::None => {
                 self.set_status("Select a project or worktree");
                 return Ok(());
             }
+            Selection::Routine(_, _) => unreachable!(),
         };
         self.mode = Mode::Config { project_idx: pi };
         Ok(())
@@ -2381,6 +2721,23 @@ impl App {
                     self.mark_dirty();
                     self.mode = Mode::TabManager { selected: 0 };
                     self.set_status(format!("Deleted tab '{}'", tab_name));
+                }
+                PendingAction::DeleteRoutine {
+                    project_idx,
+                    name,
+                    revision,
+                } => {
+                    let path = self.workspace.projects[project_idx].path.clone();
+                    crate::cli::send_routine(
+                        &path,
+                        wsx_core::routine::ipc::Action::Delete {
+                            revision,
+                            name: name.clone(),
+                        },
+                    )?;
+                    self.refresh_routine_project(project_idx)?;
+                    self.select_routine(project_idx, None);
+                    self.set_status(format!("Deleted routine '{name}'"));
                 }
             }
         }
@@ -2976,6 +3333,23 @@ fn search_text_for(workspace: &WorkspaceState, entry: &FlatEntry) -> String {
         } => workspace.projects[*pi].worktrees[*wi].sessions[*si]
             .display_name
             .to_lowercase(),
+        FlatEntry::RoutinesHeader { project_idx } => {
+            format!("{} routines", workspace.projects[*project_idx].name).to_lowercase()
+        }
+        FlatEntry::Routine {
+            project_idx,
+            routine_idx,
+        } => {
+            let routine = &workspace.projects[*project_idx].routines[*routine_idx].routine;
+            format!(
+                "{} {} {} {}",
+                routine.name,
+                routine.cron,
+                routine.command.join(" "),
+                routine.prompt
+            )
+            .to_lowercase()
+        }
     }
 }
 
@@ -3054,6 +3428,9 @@ mod tests {
             path: std::path::PathBuf::from(format!("/tmp/{name}")),
             default_branch: "main".to_string(),
             worktrees: vec![],
+            routines: Vec::new(),
+            routine_revision: 0,
+            routines_expanded: true,
             config: None,
             expanded: true,
             missing: false,
@@ -3103,6 +3480,7 @@ mod tests {
         let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
         let (tmux_tx, tmux_rx) = std::sync::mpsc::channel();
         let (_update_tx, update_rx) = std::sync::mpsc::channel();
+        let (routine_tx, routine_rx) = std::sync::mpsc::channel();
 
         App {
             workspace,
@@ -3154,6 +3532,8 @@ mod tests {
             is_mobile: false,
             scanned_repos: Vec::new(),
             repo_scan_rx: None,
+            routine_tx,
+            routine_rx,
         }
     }
 
@@ -3164,6 +3544,75 @@ mod tests {
             tab: tab.map(|tab| tab.to_string()),
             aliases: Default::default(),
         }
+    }
+
+    fn routine_view(name: &str) -> wsx_core::routine::ipc::RoutineView {
+        wsx_core::routine::ipc::RoutineView {
+            routine: wsx_core::routine::Routine {
+                name: name.into(),
+                cron: "0 9 * * *".into(),
+                command: vec!["echo".into(), "{prompt}".into()],
+                prompt: "hello".into(),
+            },
+            capabilities: wsx_core::routine::Capabilities::for_running(false),
+            latest_run: None,
+            recent_runs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn routines_header_is_nonempty_searchable_and_mobile_safe() {
+        let mut project = make_project("demo");
+        project.routines = vec![routine_view("morning")];
+        let workspace = WorkspaceState {
+            projects: vec![project],
+        };
+        let mut app = make_test_app(GlobalConfig::default(), workspace, None);
+        app.is_mobile = true;
+        assert!(app
+            .flat()
+            .iter()
+            .any(|entry| matches!(entry, FlatEntry::RoutinesHeader { .. })));
+        assert!(app
+            .flat()
+            .iter()
+            .any(|entry| matches!(entry, FlatEntry::Routine { .. })));
+        assert_eq!(app.search_matches("morning").len(), 1);
+        let backend = ratatui::backend::TestBackend::new(40, 18);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.preview_area, Rect::default());
+        app.mode = Mode::RoutineDetail {
+            project_idx: 0,
+            routine_idx: 0,
+            scroll: 0,
+        };
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+    }
+
+    #[test]
+    fn empty_project_has_no_routines_header_but_can_open_first_creation_form() {
+        let workspace = WorkspaceState {
+            projects: vec![make_project("demo")],
+        };
+        let mut app = make_test_app(GlobalConfig::default(), workspace, None);
+        assert!(!app
+            .flat()
+            .iter()
+            .any(|entry| matches!(entry, FlatEntry::RoutinesHeader { .. })));
+        app.action_add_routine().unwrap();
+        assert!(matches!(
+            app.mode,
+            Mode::RoutineEditor {
+                project_idx: 0,
+                original_name: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -3389,6 +3838,7 @@ mod tests {
         let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
         let (tmux_tx, tmux_rx) = std::sync::mpsc::channel();
         let (_update_tx, update_rx) = std::sync::mpsc::channel();
+        let (routine_tx, routine_rx) = std::sync::mpsc::channel();
         let mut app = App {
             workspace,
             tree_selected: 0,
@@ -3439,6 +3889,8 @@ mod tests {
             is_mobile: false,
             scanned_repos: Vec::new(),
             repo_scan_rx: None,
+            routine_tx,
+            routine_rx,
         };
 
         app.workspace.projects.remove(0);
