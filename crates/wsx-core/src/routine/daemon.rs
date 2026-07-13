@@ -5,6 +5,7 @@ use super::{Capabilities, CronSchedule, LocalTime, RoutineError, RunStatus, PROT
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -15,6 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub fn serve(root: PathBuf) -> Result<(), RoutineError> {
     fs::create_dir_all(&root)?;
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     let lock_path = root.join("daemon-v1.lock");
     let lock = OpenOptions::new()
         .read(true)
@@ -22,6 +24,7 @@ pub fn serve(root: PathBuf) -> Result<(), RoutineError> {
         .create(true)
         .truncate(false)
         .open(&lock_path)?;
+    lock.set_permissions(fs::Permissions::from_mode(0o600))?;
     let locked = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if locked != 0 {
         return Err(RoutineError::Unavailable(
@@ -33,6 +36,7 @@ pub fn serve(root: PathBuf) -> Result<(), RoutineError> {
         fs::remove_file(&socket)?;
     }
     let listener = UnixListener::bind(&socket)?;
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
     reconcile_running(&root);
     let result = event_loop(&root, &listener);

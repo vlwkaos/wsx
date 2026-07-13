@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -37,12 +38,14 @@ pub fn execute(
 ) -> Result<RunRecord, RoutineError> {
     let lock_dir = store.logs_dir().join("locks");
     fs::create_dir_all(&lock_dir)?;
+    fs::set_permissions(&lock_dir, fs::Permissions::from_mode(0o700))?;
     let run_lock = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .open(lock_dir.join(hex_name(&routine.name)))?;
+    run_lock.set_permissions(fs::Permissions::from_mode(0o600))?;
     if unsafe { libc::flock(run_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err(RoutineError::AlreadyRunning(routine.name.clone()));
     }
@@ -50,6 +53,7 @@ pub fn execute(
     let id = format!("{}-{}", started, now_nanos());
     let run_dir = store.logs_dir().join(hex_name(&routine.name)).join(&id);
     fs::create_dir_all(&run_dir)?;
+    fs::set_permissions(&run_dir, fs::Permissions::from_mode(0o700))?;
     let stdout_path = run_dir.join("stdout.log");
     let stderr_path = run_dir.join("stderr.log");
     let mut record = RunRecord {
@@ -79,8 +83,12 @@ pub fn execute(
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            File::create(&stdout_path)?;
-            fs::write(&stderr_path, error.to_string())?;
+            let stdout_file = File::create(&stdout_path)?;
+            stdout_file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            let mut stderr_file = File::create(&stderr_path)?;
+            stderr_file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            stderr_file.write_all(error.to_string().as_bytes())?;
+            stderr_file.sync_all()?;
             record.status = RunStatus::SpawnFailed;
             record.finished_epoch = Some(now_epoch());
             record.final_output = error.to_string();
@@ -146,6 +154,7 @@ fn drain(
 ) -> thread::JoinHandle<Result<(), RoutineError>> {
     thread::spawn(move || {
         let mut file = File::create(path)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
         std::io::copy(&mut source, &mut file)?;
         file.sync_all()?;
         Ok(())
