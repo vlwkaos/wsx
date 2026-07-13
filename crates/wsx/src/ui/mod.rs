@@ -226,11 +226,16 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
             ..
         } => routine_editor::render(frame, area, form, original_name.is_some(), *can_rename),
         Mode::RoutineDetail {
-            project_idx,
+            project_path,
             routine_name,
             scroll,
         } => {
-            if let Some(project) = app.workspace.projects.get(*project_idx) {
+            if let Some(project) = app
+                .workspace
+                .projects
+                .iter()
+                .find(|project| project.path == *project_path)
+            {
                 if let Some(routine) = project
                     .routines
                     .iter()

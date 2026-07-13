@@ -20,6 +20,8 @@ use std::sync::{
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+const MAX_REQUEST_FRAME_BYTES: usize = 1024 * 1024;
+
 pub fn serve(root: PathBuf) -> Result<(), RoutineError> {
     serve_with_startup(root, |_| {})
 }
@@ -132,10 +134,11 @@ fn handle_stream(
 ) -> Result<(), RoutineError> {
     stream.set_read_timeout(Some(handler_io_timeout()))?;
     stream.set_write_timeout(Some(handler_io_timeout()))?;
-    let mut line = String::new();
-    BufReader::new(stream.try_clone()?).read_line(&mut line)?;
-    let request = serde_json::from_str::<Request>(&line)
-        .map_err(|e| RoutineError::Validation(format!("invalid request: {e}")));
+    let frame = read_request_frame(BufReader::new(stream.try_clone()?));
+    let request = frame.and_then(|frame| {
+        serde_json::from_slice::<Request>(&frame)
+            .map_err(|e| RoutineError::Validation(format!("invalid request: {e}")))
+    });
     let response = match request {
         Ok(request) => dispatch(root, request, stopping, state).unwrap_or_else(Response::error),
         Err(error) => Response::error(error),
@@ -145,6 +148,25 @@ fn handle_stream(
     bytes.push(b'\n');
     stream.write_all(&bytes)?;
     Ok(())
+}
+
+fn read_request_frame(reader: impl BufRead) -> Result<Vec<u8>, RoutineError> {
+    let mut frame = Vec::new();
+    reader
+        .take((MAX_REQUEST_FRAME_BYTES + 2) as u64)
+        .read_until(b'\n', &mut frame)?;
+    if !frame.ends_with(b"\n") {
+        return Err(RoutineError::Validation(
+            "request frame must end with a newline".into(),
+        ));
+    }
+    if frame.len() > MAX_REQUEST_FRAME_BYTES + 1 {
+        return Err(RoutineError::Validation(format!(
+            "request frame exceeds {MAX_REQUEST_FRAME_BYTES} bytes"
+        )));
+    }
+    frame.pop();
+    Ok(frame)
 }
 
 fn handler_io_timeout() -> Duration {
@@ -882,6 +904,7 @@ fn now_epoch() -> i64 {
 mod tests {
     use super::*;
     use crate::routine::{Routine, RunRecord, SCHEMA_VERSION};
+    use std::io::Cursor;
     use std::os::unix::process::CommandExt;
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -925,6 +948,27 @@ mod tests {
 
     fn request(project: &Path, action: Action) -> Request {
         Request::new(project.to_path_buf(), action)
+    }
+
+    #[test]
+    fn request_frames_are_bounded_and_require_a_terminator() {
+        let mut exact = vec![b' '; MAX_REQUEST_FRAME_BYTES];
+        exact.push(b'\n');
+        assert_eq!(
+            read_request_frame(Cursor::new(exact)).unwrap().len(),
+            MAX_REQUEST_FRAME_BYTES
+        );
+
+        let mut oversized = vec![b' '; MAX_REQUEST_FRAME_BYTES + 1];
+        oversized.push(b'\n');
+        assert!(matches!(
+            read_request_frame(Cursor::new(oversized)),
+            Err(RoutineError::Validation(message)) if message.contains("exceeds")
+        ));
+        assert!(matches!(
+            read_request_frame(Cursor::new(b"{}")),
+            Err(RoutineError::Validation(message)) if message.contains("newline")
+        ));
     }
 
     #[test]

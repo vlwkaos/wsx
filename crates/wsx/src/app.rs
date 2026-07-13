@@ -149,7 +149,7 @@ pub enum Mode {
         form: RoutineForm,
     },
     RoutineDetail {
-        project_idx: usize,
+        project_path: PathBuf,
         routine_name: String,
         scroll: u16,
     },
@@ -239,7 +239,7 @@ pub enum PendingAction {
         tab_idx: usize, // index into config.tabs (0-based)
     },
     DeleteRoutine {
-        project_idx: usize,
+        project_path: PathBuf,
         name: String,
         revision: u64,
     },
@@ -1957,7 +1957,7 @@ impl App {
             }
             Selection::Routine(pi, ri) => {
                 self.mode = Mode::RoutineDetail {
-                    project_idx: pi,
+                    project_path: self.workspace.projects[pi].path.clone(),
                     routine_name: self.workspace.projects[pi].routines[ri]
                         .routine
                         .name
@@ -2168,7 +2168,7 @@ impl App {
                         format!("Delete routine '{}' ?", view.routine.name)
                     },
                     pending: PendingAction::DeleteRoutine {
-                        project_idx: pi,
+                        project_path: self.workspace.projects[pi].path.clone(),
                         name: view.routine.name.clone(),
                         revision: self.workspace.projects[pi].routine_revision,
                     },
@@ -2797,11 +2797,23 @@ impl App {
                     self.set_status(format!("Deleted tab '{}'", tab_name));
                 }
                 PendingAction::DeleteRoutine {
-                    project_idx,
+                    project_path,
                     name,
                     revision,
                 } => {
-                    let path = self.workspace.projects[project_idx].path.clone();
+                    let Some(project_idx) = self
+                        .workspace
+                        .projects
+                        .iter()
+                        .position(|project| project.path == project_path)
+                    else {
+                        self.mode = Mode::Normal;
+                        self.set_status(format!(
+                            "Routine '{name}' not deleted: project is no longer registered"
+                        ));
+                        return Ok(());
+                    };
+                    let path = project_path;
                     if let Err(error) = crate::cli::send_routine(
                         &path,
                         wsx_core::routine::ipc::Action::Delete {
@@ -3682,7 +3694,7 @@ mod tests {
             .unwrap();
         assert_eq!(app.preview_area, Rect::default());
         app.mode = Mode::RoutineDetail {
-            project_idx: 0,
+            project_path: app.workspace.projects[0].path.clone(),
             routine_name: "morning".into(),
             scroll: 0,
         };
@@ -3704,7 +3716,7 @@ mod tests {
         app.mode = Mode::Confirm {
             message: "delete".into(),
             pending: PendingAction::DeleteRoutine {
-                project_idx: 0,
+                project_path: app.workspace.projects[0].path.clone(),
                 name: "morning".into(),
                 revision: 1,
             },
@@ -3813,15 +3825,21 @@ mod tests {
         };
         let mut app = make_test_app(GlobalConfig::default(), workspace, None);
         app.mode = Mode::RoutineDetail {
-            project_idx: 0,
+            project_path: app.workspace.projects[0].path.clone(),
             routine_name: "morning".into(),
             scroll: 0,
         };
         app.workspace.projects[0].routines.swap(0, 1);
 
-        let Mode::RoutineDetail { routine_name, .. } = &app.mode else {
+        let Mode::RoutineDetail {
+            project_path,
+            routine_name,
+            ..
+        } = &app.mode
+        else {
             panic!("detail closed unexpectedly");
         };
+        assert_eq!(project_path, &PathBuf::from("/tmp/demo"));
         assert_eq!(routine_name, "morning");
         assert_eq!(
             app.workspace.projects[0]
@@ -3833,6 +3851,35 @@ mod tests {
                 .name,
             "morning"
         );
+    }
+
+    #[test]
+    fn routine_detail_tracks_project_path_when_projects_reorder() {
+        let mut first = make_project("first");
+        first.routines = vec![routine_view("morning")];
+        let workspace = WorkspaceState {
+            projects: vec![first, make_project("second")],
+        };
+        let mut app = make_test_app(GlobalConfig::default(), workspace, None);
+        app.mode = Mode::RoutineDetail {
+            project_path: PathBuf::from("/tmp/first"),
+            routine_name: "morning".into(),
+            scroll: 0,
+        };
+
+        app.workspace.projects.swap(0, 1);
+
+        let Mode::RoutineDetail { project_path, .. } = &app.mode else {
+            panic!("detail closed unexpectedly");
+        };
+        let project = app
+            .workspace
+            .projects
+            .iter()
+            .find(|project| project.path == *project_path)
+            .unwrap();
+        assert_eq!(project.name, "first");
+        assert_eq!(project.routines[0].routine.name, "morning");
     }
 
     #[test]
