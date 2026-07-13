@@ -28,6 +28,7 @@ pub struct RuntimeState {
     pub runs: BTreeMap<String, Vec<RunRecord>>,
 }
 
+#[derive(Clone)]
 pub struct RoutineStore {
     root: PathBuf,
     project: PathBuf,

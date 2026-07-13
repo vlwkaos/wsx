@@ -7,6 +7,7 @@ pub mod git_popup;
 pub mod input;
 pub mod picker;
 pub mod preview;
+pub mod routine_editor;
 pub mod tab_manager;
 pub mod workspace_tree;
 
@@ -158,6 +159,24 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     render_empty_preview(frame, preview_area);
                 }
             }
+            Selection::RoutinesHeader(pi) => {
+                if let Some(project) = app.workspace.projects.get(pi) {
+                    preview::render_routines_preview(frame, preview_area, project);
+                } else {
+                    render_empty_preview(frame, preview_area);
+                }
+            }
+            Selection::Routine(pi, ri) => {
+                if let Some(project) = app.workspace.projects.get(pi) {
+                    if let Some(routine) = project.routines.get(ri) {
+                        preview::render_routine_preview(frame, preview_area, project, routine, 0);
+                    } else {
+                        render_empty_preview(frame, preview_area);
+                    }
+                } else {
+                    render_empty_preview(frame, preview_area);
+                }
+            }
             Selection::None => render_empty_preview(frame, preview_area),
         }
     }
@@ -200,6 +219,23 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
             let sel = *selected;
             render_tab_manager(frame, area, sel, &app.config, app.active_tab.as_deref());
         }
+        Mode::RoutineEditor {
+            form,
+            original_name,
+            ..
+        } => routine_editor::render(frame, area, form, original_name.is_some()),
+        Mode::RoutineDetail {
+            project_idx,
+            routine_idx,
+            scroll,
+        } => {
+            if let Some(project) = app.workspace.projects.get(*project_idx) {
+                if let Some(routine) = project.routines.get(*routine_idx) {
+                    frame.render_widget(Clear, area);
+                    preview::render_routine_preview(frame, area, project, routine, *scroll);
+                }
+            }
+        }
         Mode::Normal | Mode::Move { .. } | Mode::MoveSession { .. } | Mode::Search { .. } => {}
     }
 }
@@ -215,6 +251,8 @@ fn get_mode_label(app: &App) -> &'static str {
         Mode::Search { .. } => "SEARCH",
         Mode::GitPopup { .. } => "GIT",
         Mode::TabManager { .. } => "TABS",
+        Mode::RoutineEditor { .. } => "ROUTINE",
+        Mode::RoutineDetail { .. } => "DETAIL",
     }
 }
 
@@ -227,6 +265,10 @@ fn build_hints(app: &App, mobile: bool) -> String {
                     "Enter:expand  s:session  r:alias  d:del  ?:help".to_string()
                 }
                 Selection::Session(..) => "Enter:attach  d:kill  r:rename  ?:help".to_string(),
+                Selection::RoutinesHeader(_) => "Enter:expand  u:new routine  ?:help".to_string(),
+                Selection::Routine(..) => {
+                    "Enter:details  u:new  e:edit  d:delete  ?:help".to_string()
+                }
                 Selection::None => "p:add project".to_string(),
             },
             Mode::Input { .. } => "Esc: cancel".to_string(),
@@ -263,6 +305,13 @@ fn build_hints(app: &App, mobile: bool) -> String {
                 format!("(m)ove  (r)ename  (d)kill  ·  {}(S)send cmd  (C)ctrl-c  ·  (C-a d)detach  ·  (s)ession  ·  (w)orktree{}  (c)lean  ·  {}", dismiss, tabs, global)
             }
             Selection::None => "(p) add project".to_string(),
+            Selection::RoutinesHeader(_) => {
+                "(u)new routine  Enter:expand  ·  (/)search  (?)help".to_string()
+            }
+            Selection::Routine(..) => {
+                "(u)new  (e)edit  (d)delete/cancel  Enter:details  ·  (/)search  (?)help"
+                    .to_string()
+            }
         },
         Mode::Input { .. } => "Esc: cancel".to_string(),
         Mode::Confirm { .. } => "(y)es  (n)o".to_string(),
@@ -283,6 +332,10 @@ fn build_hints(app: &App, mobile: bool) -> String {
         Mode::TabManager { .. } => {
             "(a)dd  (r)ename  (d)elete  (J/K)reorder  Enter: switch  Esc: close".to_string()
         }
+        Mode::RoutineEditor { .. } => {
+            "Tab: field  F1/F2: preset  Enter: save  Esc: cancel".to_string()
+        }
+        Mode::RoutineDetail { .. } => "j/k: scroll  Esc: close".to_string(),
     }
 }
 

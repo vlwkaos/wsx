@@ -125,6 +125,12 @@ pub enum RoutineCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Cancel an active routine run
+    Cancel {
+        name: String,
+        #[arg(short, long)]
+        project: Option<String>,
+    },
     Logs {
         name: String,
         #[arg(short, long)]
@@ -363,6 +369,7 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
             project,
             json,
         } => (project, IpcAction::Run { name }, json),
+        RoutineCmd::Cancel { name, project } => (project, IpcAction::Cancel { name }, false),
         RoutineCmd::Logs {
             name,
             project,
@@ -408,7 +415,7 @@ fn routine_project(value: Option<&str>) -> Result<PathBuf> {
     }
 }
 
-fn send_routine(
+pub(crate) fn send_routine(
     project: &Path,
     action: wsx_core::routine::ipc::Action,
 ) -> Result<wsx_core::routine::ipc::Response> {
@@ -429,7 +436,7 @@ fn fetch_revision(project: &Path) -> Result<u64> {
     }
 }
 
-fn ensure_routine_daemon() -> Result<()> {
+pub(crate) fn ensure_routine_daemon() -> Result<()> {
     let socket = routine_root()?.join("daemon-v1.sock");
     let status = wsx_core::routine::ipc::Request::new(
         std::env::current_dir()?,
