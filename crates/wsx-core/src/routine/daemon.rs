@@ -1,6 +1,6 @@
-use super::execution::{execute_supervised, process_start};
+use super::execution::{execute_supervised, process_start, prune_run_logs};
 use super::ipc::{Action, Request, Response, RoutineView};
-use super::store::{atomic_toml, ProjectRoutines, RoutineStore};
+use super::store::{atomic_toml, ProjectRoutines, RoutineStore, RuntimeState};
 use super::{
     Capabilities, CronSchedule, LocalTime, RoutineError, RunRecord, RunStatus, MAX_RUNS,
     PROTOCOL_VERSION, SCHEMA_VERSION,
@@ -202,7 +202,7 @@ fn process(
             let config = store.load()?;
             Ok(Response::Routines {
                 revision: config.revision,
-                routines: views(&store, &config, state),
+                routines: views(&store, &config, state)?,
             })
         }
         Action::Show { name } => {
@@ -218,7 +218,7 @@ fn process(
                 .ok_or_else(|| RoutineError::NotFound(name.clone()))?;
             Ok(Response::Routine {
                 revision: config.revision,
-                routine: view(&store, routine, state),
+                routine: view(&store, routine, state)?,
             })
         }
         Action::Add { revision, routine } => {
@@ -327,20 +327,35 @@ fn process(
     }
 }
 
-fn views(store: &RoutineStore, config: &ProjectRoutines, state: &DaemonState) -> Vec<RoutineView> {
-    config
+fn views(
+    store: &RoutineStore,
+    config: &ProjectRoutines,
+    state: &DaemonState,
+) -> Result<Vec<RoutineView>, RoutineError> {
+    let runtime = store.load_runtime()?;
+    Ok(config
         .routines
         .iter()
-        .map(|routine| view(store, routine, state))
-        .collect()
+        .map(|routine| view_with_runtime(store, routine, state, &runtime))
+        .collect())
 }
 
-fn view(store: &RoutineStore, routine: &super::Routine, state: &DaemonState) -> RoutineView {
-    let runs = store
-        .load_runtime()
-        .ok()
-        .and_then(|state| state.runs.get(&routine.name).cloned())
-        .unwrap_or_default();
+fn view(
+    store: &RoutineStore,
+    routine: &super::Routine,
+    state: &DaemonState,
+) -> Result<RoutineView, RoutineError> {
+    let runtime = store.load_runtime()?;
+    Ok(view_with_runtime(store, routine, state, &runtime))
+}
+
+fn view_with_runtime(
+    store: &RoutineStore,
+    routine: &super::Routine,
+    state: &DaemonState,
+    runtime: &RuntimeState,
+) -> RoutineView {
+    let runs = runtime.runs.get(&routine.name).cloned().unwrap_or_default();
     let running = is_active(state, store.project(), &routine.name);
     let next_run_epoch = CronSchedule::parse(&routine.cron)
         .ok()
@@ -811,12 +826,8 @@ fn reconcile_running(root: &Path) {
         });
         if let Ok(removed) = removed {
             for run in removed {
-                if let Some(dir) = run.stdout_path.parent() {
-                    let logs = store.logs_dir();
-                    if dir.starts_with(&logs) && dir != logs {
-                        let _ = fs::remove_dir_all(dir);
-                    }
-                }
+                let routine = run.routine.clone();
+                prune_run_logs(&store, &routine, &run);
             }
         }
     }
@@ -1175,6 +1186,22 @@ mod tests {
     }
 
     #[test]
+    fn list_and_show_report_corrupt_runtime_state() {
+        let (root, project, state) = fixture();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        fs::create_dir_all(store.runtime_file().parent().unwrap()).unwrap();
+        fs::write(store.runtime_file(), "not valid = [toml").unwrap();
+
+        for action in [Action::List, Action::Show { name: "one".into() }] {
+            assert!(matches!(
+                process(&root, request(&project, action), &state),
+                Err(RoutineError::Corrupt(_))
+            ));
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn startup_recovers_rename_after_runtime_and_logs_were_migrated() {
         let (root, project, _state) = fixture();
         let store = RoutineStore::new(root.clone(), &project).unwrap();
@@ -1375,10 +1402,11 @@ mod tests {
         let routine_dir = store.logs_dir().join(hex_name("one"));
         let mut records = Vec::new();
         for index in 0..(MAX_RUNS + 2) {
-            let run_dir = routine_dir.join(format!("run-{index}"));
+            let id = format!("1-{index}");
+            let run_dir = routine_dir.join(&id);
             fs::create_dir_all(&run_dir).unwrap();
             records.push(RunRecord {
-                id: format!("run-{index}"),
+                id,
                 routine: "one".into(),
                 started_epoch: index as i64,
                 finished_epoch: Some(index as i64),
@@ -1403,10 +1431,10 @@ mod tests {
 
         let retained = &store.load_runtime().unwrap().runs["one"];
         assert_eq!(retained.len(), MAX_RUNS);
-        assert_eq!(retained.first().unwrap().id, "run-2");
-        assert!(!routine_dir.join("run-0").exists());
-        assert!(!routine_dir.join("run-1").exists());
-        assert!(routine_dir.join("run-2").exists());
+        assert_eq!(retained.first().unwrap().id, "1-2");
+        assert!(!routine_dir.join("1-0").exists());
+        assert!(!routine_dir.join("1-1").exists());
+        assert!(routine_dir.join("1-2").exists());
         let _ = fs::remove_dir_all(root);
     }
 

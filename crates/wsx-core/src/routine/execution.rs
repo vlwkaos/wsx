@@ -292,6 +292,7 @@ fn append_record(store: &RoutineStore, record: RunRecord) -> Result<(), RoutineE
 }
 
 fn replace_record(store: &RoutineStore, record: RunRecord) -> Result<(), RoutineError> {
+    let routine = record.routine.clone();
     let removed = store.modify_runtime(|state| {
         let runs = state.runs.entry(record.routine.clone()).or_default();
         if let Some(existing) = runs.iter_mut().find(|run| run.id == record.id) {
@@ -304,11 +305,29 @@ fn replace_record(store: &RoutineStore, record: RunRecord) -> Result<(), Routine
         })
     })?;
     for old in removed {
-        if let Some(dir) = old.stdout_path.parent() {
-            let _ = fs::remove_dir_all(dir);
-        }
+        prune_run_logs(store, &routine, &old);
     }
     Ok(())
+}
+
+pub(crate) fn prune_run_logs(store: &RoutineStore, routine: &str, run: &RunRecord) {
+    // ^ Runtime state is persisted input. Only remove a single validated child
+    // derived from the trusted routine log root, never a stored output path.
+    if run.routine != routine || !is_safe_run_id(&run.id) {
+        return;
+    }
+    let dir = store.logs_dir().join(hex_name(routine)).join(&run.id);
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn is_safe_run_id(id: &str) -> bool {
+    let Some((seconds, nanos)) = id.split_once('-') else {
+        return false;
+    };
+    !seconds.is_empty()
+        && !nanos.is_empty()
+        && seconds.bytes().all(|byte| byte.is_ascii_digit())
+        && nanos.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 pub fn extract_final_output(stdout: &str, stderr: &str) -> String {
@@ -462,6 +481,42 @@ mod tests {
             extract_final_output_bytes(b"before\xffafter\n", b""),
             "before\u{fffd}after"
         );
+    }
+
+    #[test]
+    fn retention_never_deletes_a_directory_from_persisted_output_paths() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/routine-execution-tests")
+            .join(format!(
+                "{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+        let project =
+            fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let victim = root.join("must-survive");
+        fs::create_dir_all(&victim).unwrap();
+        fs::write(victim.join("marker"), "present").unwrap();
+        let record = RunRecord {
+            id: "../must-survive".into(),
+            routine: "safe".into(),
+            started_epoch: 1,
+            finished_epoch: Some(2),
+            scheduled_epoch_minute: None,
+            status: RunStatus::Succeeded,
+            exit_code: Some(0),
+            pid: None,
+            process_start: None,
+            final_output: String::new(),
+            stdout_path: victim.join("stdout.log"),
+            stderr_path: victim.join("stderr.log"),
+        };
+
+        prune_run_logs(&store, "safe", &record);
+
+        assert!(victim.join("marker").exists());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

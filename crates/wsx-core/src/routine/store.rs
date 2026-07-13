@@ -22,8 +22,8 @@ pub struct ProjectRoutines {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RuntimeState {
     pub version: u32,
-    /// Latest claimed epoch minute per routine. One entry per routine bounds
-    /// restart-safe scheduling state regardless of tick frequency.
+    /// Greatest claimed epoch minute per routine. One entry per routine bounds
+    /// restart-safe scheduling state and rejects duplicate slots after rollback.
     #[serde(default, deserialize_with = "deserialize_claims")]
     pub claims: BTreeMap<String, i64>,
     #[serde(default)]
@@ -152,7 +152,11 @@ impl RoutineStore {
 
     pub fn claim(&self, routine: &str, epoch_minute: i64) -> Result<bool, RoutineError> {
         self.modify_runtime(|state| {
-            if state.claims.get(routine) == Some(&epoch_minute) {
+            if state
+                .claims
+                .get(routine)
+                .is_some_and(|claimed| epoch_minute <= *claimed)
+            {
                 return Ok(false);
             }
             state.claims.insert(routine.to_string(), epoch_minute);
@@ -383,16 +387,18 @@ mod tests {
     }
 
     #[test]
-    fn repeated_claims_remain_bounded_to_one_epoch_per_routine() {
+    fn claims_are_bounded_and_reject_duplicate_or_rolled_back_minutes() {
         let store = test_store();
         for minute in 0..100 {
             assert!(store.claim("frequent", minute).unwrap());
             assert!(!store.claim("frequent", minute).unwrap());
         }
+        assert!(!store.claim("frequent", 50).unwrap());
+        assert!(store.claim("frequent", 100).unwrap());
         assert!(store.claim("other", 42).unwrap());
         let state = store.load_runtime().unwrap();
         assert_eq!(state.claims.len(), 2);
-        assert_eq!(state.claims["frequent"], 99);
+        assert_eq!(state.claims["frequent"], 100);
         assert_eq!(state.claims["other"], 42);
         let _ = fs::remove_dir_all(&store.root);
     }
