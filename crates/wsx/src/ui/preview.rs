@@ -380,6 +380,28 @@ pub fn render_routine_preview(
         ]),
         Line::raw(""),
     ];
+    let mut actions = Vec::new();
+    if view.capabilities.can_edit {
+        actions.push(if view.capabilities.can_rename {
+            "edit (rename allowed)"
+        } else {
+            "edit"
+        });
+    }
+    if view.capabilities.can_run {
+        actions.push("run");
+    }
+    if view.capabilities.can_cancel {
+        actions.push("cancel");
+    }
+    if view.capabilities.can_delete {
+        actions.push("delete");
+    }
+    lines.push(Line::from(vec![
+        Span::styled("Actions: ", label),
+        Span::raw(actions.join(", ")),
+    ]));
+    lines.push(Line::raw(""));
     if let Some(run) = &view.latest_run {
         lines.extend([
             Line::from(vec![

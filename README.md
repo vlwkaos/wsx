@@ -129,7 +129,7 @@ Mouse clicks work: click a row to select, click the preview to attach.
 | `d` | Delete; a running routine is cancelled before deletion |
 | `g` | Git popup (pull / push / rebase / merge) |
 | `c` | Clean merged worktrees |
-| `e` | Edit the selected routine, otherwise view `.gtrconfig` |
+| `e` | Edit the selected routine, otherwise view `.gtrignore` |
 | `S` | Send command to session |
 | `C` | Send Ctrl+C to session |
 | `T` | Tab manager (add / rename / delete / reorder) |
@@ -181,7 +181,7 @@ wsx routine daemon status
 
 Cron uses five numeric local-time fields with `*`, comma lists, inclusive ranges, and positive slash steps. Sunday is `0` or `7`; restricted day-of-month and weekday fields use cron OR semantics. The daemon checks only the current civil minute, never catches up missed minutes, claims each epoch minute before spawn, and prevents same-routine overlap.
 
-In the TUI, expand a project to see its `Routines` section. `u` creates the first or next routine, `e` edits, and confirmed `d` deletes or cancels then deletes. The form keeps command argv as a JSON array so arguments never pass through a shell. The preview shows configuration, next/last run, log paths, capabilities, and final agent output. On mobile, Enter opens the routine detail full-screen.
+In the TUI, press `u` on a project or any of its entries to create the first routine, then expand its `Routines` section for later entries. `e` edits, and confirmed `d` deletes or cancels then deletes. The form keeps command argv as a JSON array so arguments never pass through a shell. The preview shows configuration, next/last run, log paths, currently allowed actions, and final agent output. On mobile, Enter opens the routine detail full-screen.
 
 Versioned per-project TOML lives under `~/.config/wsx/routines/projects/`. The stable FNV-1a-128 filename key is collision-checked against the stored canonical path. Claims and the latest 20 complete run logs are separate. One exact `{prompt}` argv item is replaced; otherwise prompt is sent to stdin. Raw stdout/stderr and an extracted Codex/Claude final response are retained. Mutations accept `--revision` to reject stale clients. A daemon restart reconciles stale running records as interrupted. Shutdown and explicit cancellation send TERM to the process group, then bounded KILL.
 
