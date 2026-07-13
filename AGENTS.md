@@ -20,6 +20,8 @@ This is a Cargo **workspace** — the shared `~/.claude/skills/rust-release/rele
 - **Touched-file formatting**: `cargo fmt -- <paths>` still formats the workspace; use `rustfmt --edition 2021 <paths>` to format only selected Rust files.
 - **Rust newline literal search**: use `rg -n -F "split(b'\\n')" <path>` so the shell does not turn the pattern into an actual newline.
 - **Linked-worktree Git writes**: sandboxed `git add`/`git commit` can fail creating the shared worktree `index.lock`; rerun the Git mutation with approved escalation.
+- **Moving a linked worktree**: pass both paths, e.g. `git worktree move <old-path> <new-path>`.
+- **Routine daemon shutdown**: use `wsx routine daemon stop`; there is no `shutdown` subcommand.
 
 Recurring audit axes (auto-maintained by /good-to-go):
 - **Pending ops pattern**: any new user-initiated mutation (session/worktree create/delete/rename) must register a `SessionOp` or `pending_deletions` entry so stale background refreshes don't clobber intent. Check `apply_pending_session_ops` and `filter_pending_deletions` call sites.
