@@ -1,7 +1,11 @@
 use super::execution::{execute_supervised, process_start};
 use super::ipc::{Action, Request, Response, RoutineView};
-use super::store::{ProjectRoutines, RoutineStore};
-use super::{Capabilities, CronSchedule, LocalTime, RoutineError, RunStatus, PROTOCOL_VERSION};
+use super::store::{atomic_toml, ProjectRoutines, RoutineStore};
+use super::{
+    Capabilities, CronSchedule, LocalTime, RoutineError, RunRecord, RunStatus, MAX_RUNS,
+    PROTOCOL_VERSION, SCHEMA_VERSION,
+};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -58,6 +62,7 @@ fn setup(root: &Path) -> Result<(std::fs::File, PathBuf, UnixListener), RoutineE
             "routine daemon is already running".into(),
         ));
     }
+    recover_rename_transactions(root)?;
     let socket = root.join("daemon-v1.sock");
     if socket.exists() {
         fs::remove_file(&socket)?;
@@ -153,6 +158,12 @@ fn dispatch(
             "routine daemon is shutting down".into(),
         ));
     }
+    if request.protocol != PROTOCOL_VERSION {
+        return Err(RoutineError::ProtocolMismatch {
+            client: request.protocol,
+            daemon: PROTOCOL_VERSION,
+        });
+    }
     if matches!(request.action, Action::Shutdown) {
         stopping.store(true, Ordering::SeqCst);
         return Ok(Response::Ok { revision: None });
@@ -180,6 +191,7 @@ fn process(
     if matches!(request.action, Action::Shutdown) {
         return Ok(Response::Ok { revision: None });
     }
+    recover_rename_transactions(root)?;
     let store = RoutineStore::new(root.to_path_buf(), &request.project)?;
     match request.action {
         Action::List => {
@@ -255,9 +267,7 @@ fn process(
             let saved = if routine.name == old_name {
                 store.save(config, revision)?
             } else {
-                migrate_runtime_name(&store, &old_name, &routine.name, || {
-                    store.save(config, revision)
-                })?
+                rename_routine(root, &store, &old_name, &routine.name, config, revision)?
             };
             Ok(Response::Ok {
                 revision: Some(saved.revision),
@@ -375,18 +385,73 @@ fn validate_revision(actual: u64, expected: u64) -> Result<(), RoutineError> {
     Ok(())
 }
 
-fn migrate_runtime_name<T>(
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RenameTransaction {
+    version: u32,
+    project_path: PathBuf,
+    old_name: String,
+    new_name: String,
+    expected_revision: u64,
+    config: ProjectRoutines,
+}
+
+fn rename_routine(
+    root: &Path,
     store: &RoutineStore,
     old: &str,
     new: &str,
-    commit_config: impl FnOnce() -> Result<T, RoutineError>,
-) -> Result<T, RoutineError> {
+    config: ProjectRoutines,
+    expected_revision: u64,
+) -> Result<ProjectRoutines, RoutineError> {
+    let transaction = RenameTransaction {
+        version: SCHEMA_VERSION,
+        project_path: store.project().to_path_buf(),
+        old_name: old.to_string(),
+        new_name: new.to_string(),
+        expected_revision,
+        config,
+    };
+    let path = rename_transaction_path(root, store.key());
+    atomic_toml(&path, &transaction)?;
+    apply_rename_transaction(root, store, &transaction)
+}
+
+fn apply_rename_transaction(
+    root: &Path,
+    store: &RoutineStore,
+    transaction: &RenameTransaction,
+) -> Result<ProjectRoutines, RoutineError> {
+    let old = &transaction.old_name;
+    let new = &transaction.new_name;
+    if old == new
+        || transaction.config.revision != transaction.expected_revision
+        || transaction
+            .config
+            .routines
+            .iter()
+            .filter(|routine| routine.name == *new)
+            .count()
+            != 1
+        || transaction
+            .config
+            .routines
+            .iter()
+            .any(|routine| routine.name == *old)
+    {
+        return Err(RoutineError::Corrupt(
+            "invalid rename transaction boundaries".into(),
+        ));
+    }
     store.with_runtime_lock(|| {
         let old_dir = store.logs_dir().join(hex_name(old));
         let new_dir = store.logs_dir().join(hex_name(new));
-        let before = store.load_runtime()?;
-        let mut after = before.clone();
+        let mut after = store.load_runtime()?;
         if let Some(mut runs) = after.runs.remove(old) {
+            if after.runs.contains_key(new) {
+                return Err(RoutineError::Corrupt(format!(
+                    "rename state contains both '{old}' and '{new}'"
+                )));
+            }
             for run in &mut runs {
                 run.routine = new.to_string();
                 run.stdout_path = replace_prefix(&run.stdout_path, &old_dir, &new_dir);
@@ -395,42 +460,92 @@ fn migrate_runtime_name<T>(
             after.runs.insert(new.to_string(), runs);
         }
         if let Some(claim) = after.claims.remove(old) {
+            if after.claims.contains_key(new) {
+                return Err(RoutineError::Corrupt(format!(
+                    "rename claims contain both '{old}' and '{new}'"
+                )));
+            }
             after.claims.insert(new.to_string(), claim);
         }
-        let mut moved_logs = false;
         if old_dir.exists() {
             if new_dir.exists() {
                 return Err(RoutineError::Duplicate(new.to_string()));
             }
             fs::rename(&old_dir, &new_dir)?;
-            moved_logs = true;
+            std::fs::File::open(store.logs_dir())?.sync_all()?;
         }
+        store.save_runtime(&after)
+    })?;
 
-        if let Err(error) = store.save_runtime(&after) {
-            if moved_logs {
-                let _ = fs::rename(&new_dir, &old_dir);
-            }
-            return Err(error);
+    let current = store.load()?;
+    let saved = if current.revision == transaction.expected_revision {
+        store.save(transaction.config.clone(), transaction.expected_revision)?
+    } else if current.revision
+        == transaction
+            .expected_revision
+            .checked_add(1)
+            .ok_or_else(|| RoutineError::Corrupt("revision overflow".into()))?
+    {
+        let mut expected = transaction.config.clone();
+        expected.version = SCHEMA_VERSION;
+        expected.project_path = store.project().to_path_buf();
+        expected.revision = current.revision;
+        if current != expected {
+            return Err(RoutineError::Corrupt(
+                "rename transaction conflicts with committed config".into(),
+            ));
         }
+        current
+    } else {
+        return Err(RoutineError::Conflict {
+            expected: transaction.expected_revision,
+            actual: current.revision,
+        });
+    };
+    remove_durable(&rename_transaction_path(root, store.key()))?;
+    Ok(saved)
+}
 
-        match commit_config() {
-            Ok(value) => Ok(value),
-            Err(error) => {
-                let runtime_rollback = store.save_runtime(&before);
-                let logs_rollback = if moved_logs {
-                    fs::rename(&new_dir, &old_dir).map_err(RoutineError::from)
-                } else {
-                    Ok(())
-                };
-                match (runtime_rollback, logs_rollback) {
-                    (Ok(()), Ok(())) => Err(error),
-                    (runtime, logs) => Err(RoutineError::Io(format!(
-                        "rename commit failed ({error}); rollback failed (runtime: {runtime:?}, logs: {logs:?})"
-                    ))),
-                }
-            }
+fn rename_transaction_path(root: &Path, key: &str) -> PathBuf {
+    root.join("transactions").join(format!("{key}.toml"))
+}
+
+fn remove_durable(path: &Path) -> Result<(), RoutineError> {
+    if path.exists() {
+        fs::remove_file(path)?;
+        if let Some(parent) = path.parent() {
+            std::fs::File::open(parent)?.sync_all()?;
         }
-    })
+    }
+    Ok(())
+}
+
+fn recover_rename_transactions(root: &Path) -> Result<(), RoutineError> {
+    let dir = root.join("transactions");
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = entry?;
+        let text = fs::read_to_string(entry.path())?;
+        let transaction: RenameTransaction = toml::from_str(&text).map_err(|error| {
+            RoutineError::Corrupt(format!("{}: {error}", entry.path().display()))
+        })?;
+        if transaction.version != SCHEMA_VERSION {
+            return Err(RoutineError::Corrupt(
+                "unsupported rename transaction schema".into(),
+            ));
+        }
+        let store = RoutineStore::new(root.to_path_buf(), &transaction.project_path)?;
+        if entry.path() != rename_transaction_path(root, store.key()) {
+            return Err(RoutineError::ProjectCollision {
+                expected: rename_transaction_path(root, store.key()),
+                stored: entry.path(),
+            });
+        }
+        apply_rename_transaction(root, &store, &transaction)?;
+    }
+    Ok(())
 }
 
 fn tick(root: &Path, epoch_minute: i64, state: &Arc<DaemonState>) {
@@ -439,6 +554,9 @@ fn tick(root: &Path, epoch_minute: i64, state: &Arc<DaemonState>) {
     let Ok(_guard) = state.config.lock() else {
         return;
     };
+    if recover_rename_transactions(root).is_err() {
+        return;
+    }
     let projects = root.join("projects");
     let Ok(entries) = fs::read_dir(projects) else {
         return;
@@ -448,10 +566,16 @@ fn tick(root: &Path, epoch_minute: i64, state: &Arc<DaemonState>) {
         let Ok(text) = fs::read_to_string(entry.path()) else {
             continue;
         };
-        let Ok(config) = toml::from_str::<ProjectRoutines>(&text) else {
+        let Ok(discovered) = toml::from_str::<ProjectRoutines>(&text) else {
             continue;
         };
-        let Ok(store) = RoutineStore::new(root.to_path_buf(), &config.project_path) else {
+        let Ok(store) = RoutineStore::new(root.to_path_buf(), &discovered.project_path) else {
+            continue;
+        };
+        if entry.path() != store.project_file() {
+            continue;
+        }
+        let Ok(config) = store.load() else {
             continue;
         };
         for routine in &config.routines {
@@ -605,7 +729,7 @@ fn cancel_running(store: &RoutineStore, name: &str) -> Result<(), RoutineError> 
     let Some((pid, start)) = process else {
         return Ok(());
     };
-    if process_start(pid).as_deref() != Some(start.as_str()) {
+    if !original_process_group_exists(pid, &start) {
         return Ok(());
     }
     unsafe {
@@ -636,6 +760,13 @@ fn process_group_exists(pgid: i32) -> bool {
     std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
+fn original_process_group_exists(pgid: i32, leader_start: &str) -> bool {
+    match process_start(pgid) {
+        Some(current) => current == leader_start,
+        None => process_group_exists(pgid),
+    }
+}
+
 fn reconcile_running(root: &Path) {
     let Ok(entries) = fs::read_dir(root.join("projects")) else {
         return;
@@ -644,20 +775,24 @@ fn reconcile_running(root: &Path) {
         let Ok(text) = fs::read_to_string(entry.path()) else {
             continue;
         };
-        let Ok(config) = toml::from_str::<ProjectRoutines>(&text) else {
+        let Ok(discovered) = toml::from_str::<ProjectRoutines>(&text) else {
             continue;
         };
-        let Ok(store) = RoutineStore::new(root.to_path_buf(), &config.project_path) else {
+        let Ok(store) = RoutineStore::new(root.to_path_buf(), &discovered.project_path) else {
             continue;
         };
-        let _ = store.modify_runtime(|state| {
+        if entry.path() != store.project_file() || store.load().is_err() {
+            continue;
+        }
+        let removed = store.modify_runtime(|state| {
+            let mut removed = Vec::<RunRecord>::new();
             for runs in state.runs.values_mut() {
                 for run in runs
                     .iter_mut()
                     .filter(|run| run.status == RunStatus::Running)
                 {
                     if let Some((pid, start)) = run.pid.zip(run.process_start.as_deref()) {
-                        if process_start(pid).as_deref() == Some(start) {
+                        if original_process_group_exists(pid, start) {
                             unsafe {
                                 libc::kill(-pid, libc::SIGKILL);
                             }
@@ -668,9 +803,22 @@ fn reconcile_running(root: &Path) {
                     run.pid = None;
                     run.process_start = None;
                 }
+                if runs.len() > MAX_RUNS {
+                    removed.extend(runs.drain(0..runs.len() - MAX_RUNS));
+                }
             }
-            Ok(())
+            Ok(removed)
         });
+        if let Ok(removed) = removed {
+            for run in removed {
+                if let Some(dir) = run.stdout_path.parent() {
+                    let logs = store.logs_dir();
+                    if dir.starts_with(&logs) && dir != logs {
+                        let _ = fs::remove_dir_all(dir);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1010,7 +1158,24 @@ mod tests {
     }
 
     #[test]
-    fn failed_rename_commit_restores_runtime_claims_and_logs() {
+    fn scheduler_rejects_unvalidated_project_file() {
+        let (root, project, state) = fixture();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let mut config = store.load().unwrap();
+        config.routines.truncate(1);
+        config.routines[0].cron = "* * * * *".into();
+        config.routines[0].command.clear();
+        fs::write(store.project_file(), toml::to_string(&config).unwrap()).unwrap();
+
+        tick(&root, now_epoch() / 60, &state);
+
+        assert!(!is_active(&state, &project, "one"));
+        assert!(!store.load_runtime().unwrap().claims.contains_key("one"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_recovers_rename_after_runtime_and_logs_were_migrated() {
         let (root, project, _state) = fixture();
         let store = RoutineStore::new(root.clone(), &project).unwrap();
         let old_dir = store.logs_dir().join(hex_name("one"));
@@ -1040,17 +1205,52 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let result = migrate_runtime_name(&store, "one", "renamed", || {
-            Err::<(), _>(RoutineError::Io("injected config failure".into()))
-        });
-        assert!(result.is_err());
+        let mut config = store.load().unwrap();
+        config.routines[0].name = "renamed".into();
+        let transaction = RenameTransaction {
+            version: SCHEMA_VERSION,
+            project_path: project.clone(),
+            old_name: "one".into(),
+            new_name: "renamed".into(),
+            expected_revision: config.revision,
+            config,
+        };
+        atomic_toml(&rename_transaction_path(&root, store.key()), &transaction).unwrap();
+        fs::rename(&old_dir, store.logs_dir().join(hex_name("renamed"))).unwrap();
+        store
+            .modify_runtime(|runtime| {
+                let mut runs = runtime.runs.remove("one").unwrap();
+                for run in &mut runs {
+                    run.routine = "renamed".into();
+                    run.stdout_path = replace_prefix(
+                        &run.stdout_path,
+                        &old_dir,
+                        &store.logs_dir().join(hex_name("renamed")),
+                    );
+                    run.stderr_path = replace_prefix(
+                        &run.stderr_path,
+                        &old_dir,
+                        &store.logs_dir().join(hex_name("renamed")),
+                    );
+                }
+                runtime.runs.insert("renamed".into(), runs);
+                let claim = runtime.claims.remove("one").unwrap();
+                runtime.claims.insert("renamed".into(), claim);
+                Ok(())
+            })
+            .unwrap();
+
+        recover_rename_transactions(&root).unwrap();
+
         let runtime = store.load_runtime().unwrap();
-        assert_eq!(runtime.claims.get("one"), Some(&123));
-        assert!(!runtime.claims.contains_key("renamed"));
-        assert_eq!(runtime.runs["one"][0].routine, "one");
-        assert_eq!(runtime.runs["one"][0].stdout_path, stdout);
-        assert!(old_dir.exists());
-        assert!(!store.logs_dir().join(hex_name("renamed")).exists());
+        assert_eq!(runtime.claims.get("renamed"), Some(&123));
+        assert!(!runtime.claims.contains_key("one"));
+        assert_eq!(runtime.runs["renamed"][0].routine, "renamed");
+        assert!(runtime.runs["renamed"][0]
+            .stdout_path
+            .starts_with(store.logs_dir().join(hex_name("renamed"))));
+        assert_eq!(store.load().unwrap().routines[0].name, "renamed");
+        assert!(!rename_transaction_path(&root, store.key()).exists());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1109,8 +1309,12 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        cancel_running(&store, "one").unwrap();
+        unsafe {
+            libc::kill(leader.id() as i32, libc::SIGTERM);
+        }
         let _ = leader.wait();
+        assert_eq!(process_start(leader.id() as i32), None);
+        cancel_running(&store, "one").unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         while unsafe { libc::kill(descendant, 0) } == 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
@@ -1161,6 +1365,48 @@ mod tests {
             libc::kill(-pid, libc::SIGKILL);
         }
         let _ = child.wait();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_reconciliation_prunes_only_after_persisting_latest_runs() {
+        let (root, project, _state) = fixture();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let routine_dir = store.logs_dir().join(hex_name("one"));
+        let mut records = Vec::new();
+        for index in 0..(MAX_RUNS + 2) {
+            let run_dir = routine_dir.join(format!("run-{index}"));
+            fs::create_dir_all(&run_dir).unwrap();
+            records.push(RunRecord {
+                id: format!("run-{index}"),
+                routine: "one".into(),
+                started_epoch: index as i64,
+                finished_epoch: Some(index as i64),
+                scheduled_epoch_minute: None,
+                status: RunStatus::Succeeded,
+                exit_code: Some(0),
+                pid: None,
+                process_start: None,
+                final_output: String::new(),
+                stdout_path: run_dir.join("stdout.log"),
+                stderr_path: run_dir.join("stderr.log"),
+            });
+        }
+        store
+            .modify_runtime(|runtime| {
+                runtime.runs.insert("one".into(), records);
+                Ok(())
+            })
+            .unwrap();
+
+        reconcile_running(&root);
+
+        let retained = &store.load_runtime().unwrap().runs["one"];
+        assert_eq!(retained.len(), MAX_RUNS);
+        assert_eq!(retained.first().unwrap().id, "run-2");
+        assert!(!routine_dir.join("run-0").exists());
+        assert!(!routine_dir.join("run-1").exists());
+        assert!(routine_dir.join("run-2").exists());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1281,6 +1527,20 @@ mod tests {
             .routines
             .iter()
             .any(|routine| routine.name == "late"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn shutdown_rejects_protocol_mismatch_without_stopping() {
+        let (root, project, state) = fixture();
+        let stopping = AtomicBool::new(false);
+        let mut shutdown = request(&project, Action::Shutdown);
+        shutdown.protocol = PROTOCOL_VERSION + 1;
+
+        let result = dispatch(&root, shutdown, &stopping, &state);
+
+        assert!(matches!(result, Err(RoutineError::ProtocolMismatch { .. })));
+        assert!(!stopping.load(Ordering::SeqCst));
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -10,7 +10,7 @@ use std::sync::{Mutex, OnceLock};
 
 static RUNTIME_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectRoutines {
     pub version: u32,
     pub revision: u64,
@@ -103,9 +103,7 @@ impl RoutineStore {
                 stored: config.project_path,
             });
         }
-        for routine in &config.routines {
-            routine.clone().validated()?;
-        }
+        validate_unique(&config.routines)?;
         Ok(config)
     }
 
@@ -268,7 +266,7 @@ fn validate_unique(routines: &[Routine]) -> Result<(), RoutineError> {
     Ok(())
 }
 
-fn atomic_toml<T: Serialize>(path: &Path, value: &T) -> Result<(), RoutineError> {
+pub(crate) fn atomic_toml<T: Serialize>(path: &Path, value: &T) -> Result<(), RoutineError> {
     let parent = path
         .parent()
         .ok_or_else(|| RoutineError::Io("path has no parent".into()))?;

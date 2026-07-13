@@ -150,8 +150,8 @@ pub fn execute_supervised(
     err_thread
         .join()
         .map_err(|_| RoutineError::Io("stderr reader panicked".into()))??;
-    let stdout = fs::read_to_string(&stdout_path).unwrap_or_default();
-    let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
+    let stdout = fs::read(&stdout_path).unwrap_or_default();
+    let stderr = fs::read(&stderr_path).unwrap_or_default();
     record.finished_epoch = Some(now_epoch());
     record.exit_code = status.code();
     let cancelled = store
@@ -174,7 +174,7 @@ pub fn execute_supervised(
     };
     record.pid = None;
     record.process_start = None;
-    record.final_output = extract_final_output(&stdout, &stderr);
+    record.final_output = extract_final_output_bytes(&stdout, &stderr);
     replace_record(store, record.clone())?;
     Ok(record)
 }
@@ -312,7 +312,13 @@ fn replace_record(store: &RoutineStore, record: RunRecord) -> Result<(), Routine
 }
 
 pub fn extract_final_output(stdout: &str, stderr: &str) -> String {
+    extract_final_output_bytes(stdout.as_bytes(), stderr.as_bytes())
+}
+
+fn extract_final_output_bytes(stdout: &[u8], stderr: &[u8]) -> String {
     const FALLBACK_TAIL_BYTES: usize = 16 * 1024;
+    let stdout = String::from_utf8_lossy(stdout);
+    let stderr = String::from_utf8_lossy(stderr);
     let mut codex = None;
     let mut claude = None;
     for line in stdout.lines() {
@@ -448,6 +454,14 @@ mod tests {
             "{\"type\":\"tool_use\",\"input\":{\"text\":\"not an answer\"}}]}}\n"
         );
         assert_eq!(extract_final_output(output, ""), output.trim());
+    }
+
+    #[test]
+    fn invalid_utf8_is_preserved_in_plain_fallback() {
+        assert_eq!(
+            extract_final_output_bytes(b"before\xffafter\n", b""),
+            "before\u{fffd}after"
+        );
     }
 
     #[test]
