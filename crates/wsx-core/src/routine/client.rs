@@ -137,6 +137,8 @@ impl RoutineClient {
                 }
                 if let Some(error) = startup.strip_prefix("error:") {
                     if self.poll_ready(status, deadline).is_some() {
+                        // ^ A singleton-race loser has failed even though its peer is ready.
+                        stop_startup_child(child);
                         return Ok(());
                     }
                     return Err(RoutineError::Unavailable(format!(
@@ -293,6 +295,58 @@ mod tests {
     }
 
     #[test]
+    fn singleton_race_reaps_the_losing_startup_child() {
+        let root = test_root("race-reap");
+        let barrier = Arc::new(Barrier::new(3));
+        let mut callers = Vec::new();
+        for _ in 0..2 {
+            let root = root.clone();
+            let barrier = barrier.clone();
+            callers.push(std::thread::spawn(move || {
+                let client = RoutineClient::new(root.clone());
+                let mut command = helper_command(&root, "daemon_with_pid");
+                barrier.wait();
+                client.start(&root, &mut command)
+            }));
+        }
+        barrier.wait();
+        for caller in callers {
+            caller.join().unwrap().unwrap();
+        }
+
+        let winner_pid = match RoutineClient::new(root.clone())
+            .request(&status(&root))
+            .unwrap()
+        {
+            Response::Daemon { pid, .. } => pid,
+            response => panic!("expected daemon response, got {response:?}"),
+        };
+        let helper_pids: Vec<u32> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|entry| {
+                let name = entry.ok()?.file_name();
+                name.to_str()?
+                    .strip_prefix("helper-")?
+                    .strip_suffix(".pid")?
+                    .parse()
+                    .ok()
+            })
+            .collect();
+        assert_eq!(helper_pids.len(), 2);
+        let loser_pid = *helper_pids.iter().find(|&&pid| pid != winner_pid).unwrap();
+        assert_eq!(unsafe { libc::kill(loser_pid as i32, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+
+        RoutineClient::new(root.clone())
+            .request(&Request::new(root.clone(), Action::Shutdown))
+            .unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn startup_timeout_kills_and_reaps_the_spawned_process() {
         let root = test_root("timeout");
         std::fs::create_dir_all(&root).unwrap();
@@ -417,6 +471,15 @@ mod tests {
             startup.write_all(b"error:startup failed").unwrap();
             std::thread::sleep(Duration::from_secs(30));
             return;
+        }
+        if mode == "daemon_with_pid" {
+            // ^ Startup helpers run before daemon root initialization.
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(
+                root.join(format!("helper-{}.pid", std::process::id())),
+                std::process::id().to_string(),
+            )
+            .unwrap();
         }
         let _ = super::super::daemon::serve_with_startup(root, move |result| {
             let message = match result {
