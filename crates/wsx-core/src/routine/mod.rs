@@ -1,14 +1,18 @@
 //! Machine-local scheduled routines.
 //!
 //! Definitions are stored per canonical main repository. The daemon is the
-//! only writer; clients use the versioned Unix-socket protocol in [`ipc`].
+//! only writer; application clients should use [`RoutineClient`]. The
+//! versioned Unix-socket protocol remains available in [`ipc`] for diagnostics
+//! and protocol-level integrations.
 
+mod client;
 mod cron;
 pub mod daemon;
 pub mod execution;
 pub mod ipc;
 pub mod store;
 
+pub use client::RoutineClient;
 pub use cron::{CronSchedule, LocalTime};
 
 use serde::{Deserialize, Serialize};
@@ -109,6 +113,28 @@ impl Capabilities {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutineErrorKind {
+    Validation,
+    Duplicate,
+    NotFound,
+    Conflict,
+    ProjectCollision,
+    AlreadyRunning,
+    ProtocolMismatch,
+    Unavailable,
+    Io,
+    Corrupt,
+}
+
+impl std::fmt::Display for RoutineErrorKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = serde_json::to_value(self).map_err(|_| std::fmt::Error)?;
+        formatter.write_str(value.as_str().ok_or(std::fmt::Error)?)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RoutineError {
     #[error("invalid routine: {0}")]
@@ -131,6 +157,29 @@ pub enum RoutineError {
     Io(String),
     #[error("invalid stored data: {0}")]
     Corrupt(String),
+    #[error("routine daemon {kind}: {message}")]
+    RemoteDaemon {
+        kind: RoutineErrorKind,
+        message: String,
+    },
+}
+
+impl RoutineError {
+    pub fn kind(&self) -> RoutineErrorKind {
+        match self {
+            Self::Validation(_) => RoutineErrorKind::Validation,
+            Self::Duplicate(_) => RoutineErrorKind::Duplicate,
+            Self::NotFound(_) => RoutineErrorKind::NotFound,
+            Self::Conflict { .. } => RoutineErrorKind::Conflict,
+            Self::ProjectCollision { .. } => RoutineErrorKind::ProjectCollision,
+            Self::AlreadyRunning(_) => RoutineErrorKind::AlreadyRunning,
+            Self::ProtocolMismatch { .. } => RoutineErrorKind::ProtocolMismatch,
+            Self::Unavailable(_) => RoutineErrorKind::Unavailable,
+            Self::Io(_) => RoutineErrorKind::Io,
+            Self::Corrupt(_) => RoutineErrorKind::Corrupt,
+            Self::RemoteDaemon { kind, .. } => *kind,
+        }
+    }
 }
 
 impl From<std::io::Error> for RoutineError {
