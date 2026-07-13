@@ -130,7 +130,8 @@ fn handle_stream(
     stopping: &AtomicBool,
     state: &Arc<DaemonState>,
 ) -> Result<(), RoutineError> {
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_read_timeout(Some(handler_io_timeout()))?;
+    stream.set_write_timeout(Some(handler_io_timeout()))?;
     let mut line = String::new();
     BufReader::new(stream.try_clone()?).read_line(&mut line)?;
     let request = serde_json::from_str::<Request>(&line)
@@ -144,6 +145,14 @@ fn handle_stream(
     bytes.push(b'\n');
     stream.write_all(&bytes)?;
     Ok(())
+}
+
+fn handler_io_timeout() -> Duration {
+    if cfg!(test) {
+        Duration::from_millis(200)
+    } else {
+        Duration::from_secs(5)
+    }
 }
 
 fn dispatch(
@@ -1518,6 +1527,40 @@ mod tests {
         super::super::ipc::send(&socket, &request(&project, Action::Shutdown)).unwrap();
         server.join().unwrap().unwrap();
         assert!(!socket.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn idle_client_cannot_prevent_socket_shutdown() {
+        let project =
+            fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+        let root = PathBuf::from(".tmp").join(format!(
+            "routine-daemon-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let server_root = root.clone();
+        let server = std::thread::spawn(move || {
+            serve_with_startup(server_root, move |result| {
+                started_tx.send(result).unwrap();
+            })
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap();
+        let socket = store.socket_path();
+        let idle = UnixStream::connect(&socket).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+
+        super::super::ipc::send(&socket, &request(&project, Action::Shutdown)).unwrap();
+        let started = Instant::now();
+        server.join().unwrap().unwrap();
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        drop(idle);
         let _ = fs::remove_dir_all(root);
     }
 

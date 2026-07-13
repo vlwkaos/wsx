@@ -142,7 +142,7 @@ impl RoutineForm {
     }
 }
 
-pub fn render(frame: &mut Frame, area: Rect, form: &RoutineForm, editing: bool) {
+pub fn render(frame: &mut Frame, area: Rect, form: &RoutineForm, editing: bool, can_rename: bool) {
     let width = area.width.saturating_sub(4).min(88);
     let height = area.height.saturating_sub(2).min(13);
     let popup = super::popup_center(area, width, height);
@@ -157,6 +157,21 @@ pub fn render(frame: &mut Frame, area: Rect, form: &RoutineForm, editing: bool) 
     .style(Style::default().fg(Color::Magenta).bold())];
     for (index, (label, value)) in labels.iter().zip(values).enumerate() {
         let marker = if index == form.field { "›" } else { " " };
+        let locked = index == 0 && editing && !can_rename;
+        let label = if locked {
+            format!("{label} (locked)")
+        } else {
+            (*label).to_string()
+        };
+        let value_width = popup
+            .width
+            .saturating_sub(label.len() as u16)
+            .saturating_sub(7) as usize;
+        let value = visible_value(
+            value,
+            (index == form.field).then_some(form.cursor),
+            value_width,
+        );
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{marker} {label}: "),
@@ -174,6 +189,42 @@ pub fn render(frame: &mut Frame, area: Rect, form: &RoutineForm, editing: bool) 
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Routine ")),
         popup,
     );
+}
+
+fn visible_value(value: &str, cursor: Option<usize>, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let chars = value.chars().collect::<Vec<_>>();
+    if chars.len() <= width {
+        return value.to_string();
+    }
+    let cursor_chars = cursor
+        .map(|cursor| value[..cursor.min(value.len())].chars().count())
+        .unwrap_or(0);
+    let start = if cursor.is_some() {
+        if cursor_chars >= chars.len().saturating_sub(width / 2) {
+            chars.len().saturating_sub(width.saturating_sub(1))
+        } else {
+            cursor_chars.saturating_sub(width / 2)
+        }
+    } else {
+        0
+    }
+    .min(chars.len().saturating_sub(1));
+    // ^ A leading ellipsis consumes one viewport column; tail tests must count it.
+    let prefix = usize::from(start > 0);
+    let suffix = usize::from(start + width - prefix < chars.len());
+    let take = width.saturating_sub(prefix + suffix);
+    let mut visible = String::new();
+    if prefix == 1 {
+        visible.push('…');
+    }
+    visible.extend(chars.iter().skip(start).take(take));
+    if suffix == 1 {
+        visible.push('…');
+    }
+    visible
 }
 
 #[cfg(test)]
@@ -209,7 +260,14 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(30, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render(frame, frame.area(), &form, false))
+            .draw(|frame| render(frame, frame.area(), &form, false, true))
             .unwrap();
+    }
+
+    #[test]
+    fn active_long_field_scrolls_to_its_cursor() {
+        let value = "head-abcdefghijklmnopqrstuvwxyz-tail";
+        assert_eq!(visible_value(value, Some(value.len()), 12), "…uvwxyz-tail");
+        assert_eq!(visible_value(value, None, 12), "head-abcdef…");
     }
 }

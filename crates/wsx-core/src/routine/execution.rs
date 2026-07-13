@@ -10,6 +10,9 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const FINAL_OUTPUT_BYTES: usize = 16 * 1024;
+const STRUCTURED_LINE_BYTES: usize = 64 * 1024;
+
 pub fn expanded_argv(routine: &Routine) -> (Vec<String>, Option<&[u8]>) {
     if routine.command.iter().any(|arg| arg == "{prompt}") {
         (
@@ -45,6 +48,11 @@ pub fn execute_supervised(
     scheduled: Option<i64>,
     on_started: impl FnOnce(&RunRecord),
 ) -> Result<RunRecord, RoutineError> {
+    if routine.command.is_empty() {
+        return Err(RoutineError::Validation(
+            "command argv must not be empty".into(),
+        ));
+    }
     let lock_dir = store.logs_dir().join("locks");
     fs::create_dir_all(&lock_dir)?;
     fs::set_permissions(&lock_dir, fs::Permissions::from_mode(0o700))?;
@@ -143,7 +151,9 @@ pub fn execute_supervised(
             }
         }
     }
+    let pid = child.id() as i32;
     let status = child.wait()?;
+    terminate_remaining_process_group(pid);
     out_thread
         .join()
         .map_err(|_| RoutineError::Io("stdout reader panicked".into()))??;
@@ -232,6 +242,32 @@ fn process_group_exists(pgid: i32) -> bool {
         return true;
     }
     std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+fn terminate_remaining_process_group(pgid: i32) {
+    if !process_group_exists(pgid) {
+        return;
+    }
+    unsafe {
+        libc::kill(-pgid, libc::SIGTERM);
+    }
+    for _ in 0..20 {
+        if !process_group_exists(pgid) {
+            return;
+        }
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // ^ Repeat KILL while polling to close pipes inherited by descendants that
+    // forked during TERM handling before reader threads are joined.
+    for _ in 0..20 {
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
+        if !process_group_exists(pgid) {
+            return;
+        }
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 pub(crate) fn process_start(pid: i32) -> Option<String> {
@@ -333,29 +369,34 @@ pub fn extract_final_output(stdout: &str, stderr: &str) -> String {
 }
 
 fn extract_final_output_bytes(stdout: &[u8], stderr: &[u8]) -> String {
-    const FALLBACK_TAIL_BYTES: usize = 16 * 1024;
     let stdout = String::from_utf8_lossy(stdout);
     let stderr = String::from_utf8_lossy(stderr);
     let mut codex = None;
     let mut claude = None;
-    for line in stdout.lines() {
+    for line in stdout
+        .lines()
+        .filter(|line| line.len() <= STRUCTURED_LINE_BYTES)
+    {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
         if value.get("type").and_then(Value::as_str) == Some("item.completed") {
             let item = &value["item"];
             if item.get("type").and_then(Value::as_str) == Some("agent_message") {
-                codex = item.get("text").and_then(Value::as_str).map(str::to_owned);
+                codex = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(|text| text_tail(text, FINAL_OUTPUT_BYTES));
             }
         }
         if value.get("type").and_then(Value::as_str) == Some("result") {
             claude = value
                 .get("result")
                 .and_then(Value::as_str)
-                .map(str::to_owned);
+                .map(|text| text_tail(text, FINAL_OUTPUT_BYTES));
         } else if value.get("type").and_then(Value::as_str) == Some("assistant") {
             if let Some(text) = claude_assistant_text(&value) {
-                claude = Some(text);
+                claude = Some(text_tail(&text, FINAL_OUTPUT_BYTES));
             }
         }
     }
@@ -364,9 +405,9 @@ fn extract_final_output_bytes(stdout: &[u8], stderr: &[u8]) -> String {
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| {
             if !stdout.trim().is_empty() {
-                text_tail(stdout.trim(), FALLBACK_TAIL_BYTES)
+                text_tail(stdout.trim(), FINAL_OUTPUT_BYTES)
             } else {
-                text_tail(stderr.trim(), FALLBACK_TAIL_BYTES)
+                text_tail(stderr.trim(), FINAL_OUTPUT_BYTES)
             }
         })
 }
@@ -395,9 +436,13 @@ fn extract_final_output_files(
 fn scan_structured_output(file: File) -> (Option<String>, Option<String>) {
     let mut codex = None;
     let mut claude = None;
-    for line in BufReader::new(file).split(b'\n') {
-        let Ok(line) = line else {
+    let mut reader = BufReader::new(file);
+    loop {
+        let Some(line) = read_bounded_line(&mut reader, STRUCTURED_LINE_BYTES) else {
             break;
+        };
+        let Some(line) = line else {
+            continue;
         };
         let Ok(value) = serde_json::from_slice::<Value>(&line) else {
             continue;
@@ -405,25 +450,51 @@ fn scan_structured_output(file: File) -> (Option<String>, Option<String>) {
         if value.get("type").and_then(Value::as_str) == Some("item.completed") {
             let item = &value["item"];
             if item.get("type").and_then(Value::as_str) == Some("agent_message") {
-                codex = item.get("text").and_then(Value::as_str).map(str::to_owned);
+                codex = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(|text| text_tail(text, FINAL_OUTPUT_BYTES));
             }
         }
         if value.get("type").and_then(Value::as_str) == Some("result") {
             claude = value
                 .get("result")
                 .and_then(Value::as_str)
-                .map(str::to_owned);
+                .map(|text| text_tail(text, FINAL_OUTPUT_BYTES));
         } else if value.get("type").and_then(Value::as_str) == Some("assistant") {
             if let Some(text) = claude_assistant_text(&value) {
-                claude = Some(text);
+                claude = Some(text_tail(&text, FINAL_OUTPUT_BYTES));
             }
         }
     }
     (codex, claude)
 }
 
+fn read_bounded_line(reader: &mut impl BufRead, max_bytes: usize) -> Option<Option<Vec<u8>>> {
+    let mut line = Vec::new();
+    let mut oversized = false;
+    loop {
+        let buffer = reader.fill_buf().ok()?;
+        if buffer.is_empty() {
+            return (!line.is_empty() || oversized).then_some((!oversized).then_some(line));
+        }
+        let newline = buffer.iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(buffer.len(), |index| index + 1);
+        let content_len = newline.unwrap_or(buffer.len());
+        if !oversized && line.len().saturating_add(content_len) <= max_bytes {
+            line.extend_from_slice(&buffer[..content_len]);
+        } else {
+            oversized = true;
+            line.clear();
+        }
+        reader.consume(consumed);
+        if newline.is_some() {
+            return Some((!oversized).then_some(line));
+        }
+    }
+}
+
 fn bounded_file_tail(path: &std::path::Path) -> String {
-    const FALLBACK_TAIL_BYTES: usize = 16 * 1024;
     const READ_CHUNK_BYTES: usize = 4 * 1024;
 
     let Ok(mut file) = File::open(path) else {
@@ -432,9 +503,9 @@ fn bounded_file_tail(path: &std::path::Path) -> String {
     let Ok(mut position) = file.seek(SeekFrom::End(0)) else {
         return String::new();
     };
-    let mut tail = Vec::with_capacity(FALLBACK_TAIL_BYTES);
+    let mut tail = Vec::with_capacity(FINAL_OUTPUT_BYTES);
     let mut found_content = false;
-    while position > 0 && tail.len() < FALLBACK_TAIL_BYTES {
+    while position > 0 && tail.len() < FINAL_OUTPUT_BYTES {
         let chunk_len = usize::try_from(position.min(READ_CHUNK_BYTES as u64)).unwrap_or(0);
         position -= chunk_len as u64;
         if file.seek(SeekFrom::Start(position)).is_err() {
@@ -451,7 +522,7 @@ fn bounded_file_tail(path: &std::path::Path) -> String {
             found_content = !chunk.is_empty();
         }
         if found_content {
-            let remaining = FALLBACK_TAIL_BYTES - tail.len();
+            let remaining = FINAL_OUTPUT_BYTES - tail.len();
             let start = chunk.len().saturating_sub(remaining);
             chunk.drain(..start);
             chunk.extend_from_slice(&tail);
@@ -608,6 +679,96 @@ mod tests {
         assert!(fallback.len() <= 16 * 1024);
         assert!(fallback.ends_with("TAIL"));
         assert!(!fallback.contains("HEAD"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn oversized_structured_line_is_discarded_without_hiding_later_result() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/routine-execution-tests")
+            .join(format!(
+                "{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+        fs::create_dir_all(&root).unwrap();
+        let stdout_path = root.join("stdout.log");
+        let stderr_path = root.join("stderr.log");
+        let mut stdout = File::create(&stdout_path).unwrap();
+        writeln!(
+            stdout,
+            "{{\"type\":\"result\",\"result\":\"{}\"}}",
+            "x".repeat(STRUCTURED_LINE_BYTES)
+        )
+        .unwrap();
+        writeln!(stdout, "{{\"type\":\"result\",\"result\":\"bounded\"}}").unwrap();
+        fs::write(&stderr_path, "").unwrap();
+
+        assert_eq!(
+            extract_final_output_files(&stdout_path, &stderr_path),
+            "bounded"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn empty_public_command_returns_validation_instead_of_panicking() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/routine-execution-tests")
+            .join(format!(
+                "{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+        let project =
+            fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let routine = Routine {
+            name: "empty".into(),
+            cron: "* * * * *".into(),
+            command: Vec::new(),
+            prompt: String::new(),
+        };
+
+        assert!(matches!(
+            execute(&store, &routine, None),
+            Err(RoutineError::Validation(_))
+        ));
+        assert!(!store.load_runtime().unwrap().runs.contains_key("empty"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn successful_leader_exit_does_not_leave_pipe_holding_descendants() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/routine-execution-tests")
+            .join(format!(
+                "{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+        let project =
+            fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let routine = Routine {
+            name: "descendant".into(),
+            cron: "* * * * *".into(),
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "(trap '' TERM; sleep 30) & exit 0".into(),
+            ],
+            prompt: String::new(),
+        };
+        let pid = AtomicI32::new(0);
+
+        let record = execute_supervised(&store, &routine, None, |record| {
+            pid.store(record.pid.unwrap(), Ordering::SeqCst);
+        })
+        .unwrap();
+
+        assert_eq!(record.status, RunStatus::Succeeded);
+        assert_eq!(unsafe { libc::kill(-pid.load(Ordering::SeqCst), 0) }, -1);
         let _ = fs::remove_dir_all(root);
     }
 

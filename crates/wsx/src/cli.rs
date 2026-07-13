@@ -611,7 +611,7 @@ fn print_routine_response(response: wsx_core::routine::ipc::Response, json: bool
                     "{}\t{}\t{}",
                     view.routine.name,
                     view.routine.cron,
-                    view.routine.command.join(" ")
+                    format_argv(&view.routine.command)
                 );
             }
         }
@@ -619,7 +619,7 @@ fn print_routine_response(response: wsx_core::routine::ipc::Response, json: bool
             "revision {revision}\nname: {}\ncron: {}\ncommand: {}\nprompt: {}",
             routine.routine.name,
             routine.routine.cron,
-            routine.routine.command.join(" "),
+            format_argv(&routine.routine.command),
             routine.routine.prompt
         ),
         Response::Runs { runs } => {
@@ -646,6 +646,23 @@ fn print_routine_response(response: wsx_core::routine::ipc::Response, json: bool
         Response::Error { kind, message } => bail!("{kind}: {message}"),
     }
     Ok(())
+}
+
+fn format_argv(argv: &[String]) -> String {
+    serde_json::to_string(argv).unwrap_or_else(|_| "[]".into())
+}
+
+#[cfg(test)]
+mod routine_output_tests {
+    use super::format_argv;
+
+    #[test]
+    fn plain_routine_argv_preserves_argument_boundaries() {
+        assert_eq!(
+            format_argv(&["printf".into(), "two words".into(), "".into()]),
+            r#"["printf","two words",""]"#
+        );
+    }
 }
 
 // --- Helpers ---

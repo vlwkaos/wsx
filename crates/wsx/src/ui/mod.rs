@@ -222,17 +222,24 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
         Mode::RoutineEditor {
             form,
             original_name,
+            can_rename,
             ..
-        } => routine_editor::render(frame, area, form, original_name.is_some()),
+        } => routine_editor::render(frame, area, form, original_name.is_some(), *can_rename),
         Mode::RoutineDetail {
             project_idx,
-            routine_idx,
+            routine_name,
             scroll,
         } => {
             if let Some(project) = app.workspace.projects.get(*project_idx) {
-                if let Some(routine) = project.routines.get(*routine_idx) {
+                if let Some(routine) = project
+                    .routines
+                    .iter()
+                    .find(|view| view.routine.name == *routine_name)
+                {
                     frame.render_widget(Clear, area);
                     preview::render_routine_preview(frame, area, project, routine, *scroll);
+                } else {
+                    render_empty_preview(frame, area);
                 }
             }
         }
@@ -260,7 +267,9 @@ fn build_hints(app: &App, mobile: bool) -> String {
     if mobile {
         return match &app.mode {
             Mode::Normal => match app.current_selection() {
-                Selection::Project(_) => "Enter:expand  w:worktree  d:del  ?:help".to_string(),
+                Selection::Project(_) => {
+                    "Enter:expand  w:tree  u:routine  d:del  ?:help".to_string()
+                }
                 Selection::Worktree(_, _) => {
                     "Enter:expand  s:session  r:alias  d:del  ?:help".to_string()
                 }
@@ -286,7 +295,10 @@ fn build_hints(app: &App, mobile: bool) -> String {
     match &app.mode {
         Mode::Normal => match app.current_selection() {
             Selection::Project(_) => {
-                format!("(m)ove  (w)orktree{}  (d)el  (c)lean  ·  {}", tabs, global)
+                format!(
+                    "(m)ove  (w)orktree  (u)routine{}  (d)el  (c)lean  ·  {}",
+                    tabs, global
+                )
             }
             Selection::Worktree(_, _) => format!(
                 "(s)ession  (r)alias  (d)el  ·  (w)orktree{}  (c)lean  ·  {}",

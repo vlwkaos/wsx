@@ -145,11 +145,12 @@ pub enum Mode {
     RoutineEditor {
         project_idx: usize,
         original_name: Option<String>,
+        can_rename: bool,
         form: RoutineForm,
     },
     RoutineDetail {
         project_idx: usize,
-        routine_idx: usize,
+        routine_name: String,
         scroll: u16,
     },
 }
@@ -1767,13 +1768,23 @@ impl App {
                 }
             }
             Action::InputChar(c) => {
-                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
-                    form.insert(c);
+                if let Mode::RoutineEditor {
+                    form, can_rename, ..
+                } = &mut self.mode
+                {
+                    if *can_rename || form.field != 0 {
+                        form.insert(c);
+                    }
                 }
             }
             Action::InputBackspace => {
-                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
-                    form.backspace();
+                if let Mode::RoutineEditor {
+                    form, can_rename, ..
+                } = &mut self.mode
+                {
+                    if *can_rename || form.field != 0 {
+                        form.backspace();
+                    }
                 }
             }
             Action::NavigateLeft => {
@@ -1807,17 +1818,24 @@ impl App {
         let Mode::RoutineEditor {
             project_idx,
             original_name,
-            form,
+            can_rename,
+            mut form,
         } = mode
         else {
             return Ok(());
         };
+        if !can_rename {
+            if let Some(old_name) = &original_name {
+                form.name.clone_from(old_name);
+            }
+        }
         let routine = match form.routine() {
             Ok(routine) => routine,
             Err(error) => {
                 self.mode = Mode::RoutineEditor {
                     project_idx,
                     original_name,
+                    can_rename,
                     form,
                 };
                 self.set_status(error);
@@ -1842,6 +1860,7 @@ impl App {
             self.mode = Mode::RoutineEditor {
                 project_idx,
                 original_name,
+                can_rename,
                 form,
             };
             self.set_status(format!("Routine not saved: {error}"));
@@ -1939,7 +1958,10 @@ impl App {
             Selection::Routine(pi, ri) => {
                 self.mode = Mode::RoutineDetail {
                     project_idx: pi,
-                    routine_idx: ri,
+                    routine_name: self.workspace.projects[pi].routines[ri]
+                        .routine
+                        .name
+                        .clone(),
                     scroll: 0,
                 };
             }
@@ -2086,6 +2108,7 @@ impl App {
         self.mode = Mode::RoutineEditor {
             project_idx: pi,
             original_name: None,
+            can_rename: true,
             form: RoutineForm::codex(),
         };
         Ok(())
@@ -2271,10 +2294,16 @@ impl App {
                 self.set_status("Routine cannot be edited in its current state");
                 return Ok(());
             }
+            let mut form = RoutineForm::from_routine(view.routine);
+            if !view.capabilities.can_rename {
+                form.field = 1;
+                form.cursor = form.cron.len();
+            }
             self.mode = Mode::RoutineEditor {
                 project_idx: pi,
-                original_name: Some(view.routine.name.clone()),
-                form: RoutineForm::from_routine(view.routine),
+                original_name: Some(form.name.clone()),
+                can_rename: view.capabilities.can_rename,
+                form,
             };
             return Ok(());
         }
@@ -3654,7 +3683,7 @@ mod tests {
         assert_eq!(app.preview_area, Rect::default());
         app.mode = Mode::RoutineDetail {
             project_idx: 0,
-            routine_idx: 0,
+            routine_name: "morning".into(),
             scroll: 0,
         };
         terminal
@@ -3745,9 +3774,65 @@ mod tests {
             Mode::RoutineEditor {
                 project_idx: 0,
                 original_name: None,
+                can_rename: true,
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn running_routine_editor_keeps_name_locked() {
+        let workspace = WorkspaceState {
+            projects: vec![make_project("demo")],
+        };
+        let mut app = make_test_app(GlobalConfig::default(), workspace, None);
+        let mut form = RoutineForm::from_routine(routine_view("running").routine);
+        form.field = 0;
+        form.cursor = form.name.len();
+        app.mode = Mode::RoutineEditor {
+            project_idx: 0,
+            original_name: Some("running".into()),
+            can_rename: false,
+            form,
+        };
+
+        app.dispatch_routine_editor(Action::InputChar('x')).unwrap();
+
+        let Mode::RoutineEditor { form, .. } = &app.mode else {
+            panic!("editor closed unexpectedly");
+        };
+        assert_eq!(form.name, "running");
+    }
+
+    #[test]
+    fn routine_detail_tracks_name_when_refresh_reorders_views() {
+        let mut project = make_project("demo");
+        project.routines = vec![routine_view("morning"), routine_view("evening")];
+        let workspace = WorkspaceState {
+            projects: vec![project],
+        };
+        let mut app = make_test_app(GlobalConfig::default(), workspace, None);
+        app.mode = Mode::RoutineDetail {
+            project_idx: 0,
+            routine_name: "morning".into(),
+            scroll: 0,
+        };
+        app.workspace.projects[0].routines.swap(0, 1);
+
+        let Mode::RoutineDetail { routine_name, .. } = &app.mode else {
+            panic!("detail closed unexpectedly");
+        };
+        assert_eq!(routine_name, "morning");
+        assert_eq!(
+            app.workspace.projects[0]
+                .routines
+                .iter()
+                .find(|view| view.routine.name == *routine_name)
+                .unwrap()
+                .routine
+                .name,
+            "morning"
+        );
     }
 
     #[test]
