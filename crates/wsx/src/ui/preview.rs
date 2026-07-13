@@ -388,18 +388,20 @@ pub fn render_routine_preview(
             "edit"
         });
     }
-    if view.capabilities.can_run {
-        actions.push("run");
-    }
-    if view.capabilities.can_cancel {
-        actions.push("cancel");
-    }
     if view.capabilities.can_delete {
-        actions.push("delete");
+        actions.push(if view.capabilities.can_cancel {
+            "delete (cancels active run)"
+        } else {
+            "delete"
+        });
     }
     lines.push(Line::from(vec![
         Span::styled("Actions: ", label),
-        Span::raw(actions.join(", ")),
+        Span::raw(if actions.is_empty() {
+            "unavailable".to_string()
+        } else {
+            actions.join(", ")
+        }),
     ]));
     lines.push(Line::raw(""));
     if let Some(run) = &view.latest_run {

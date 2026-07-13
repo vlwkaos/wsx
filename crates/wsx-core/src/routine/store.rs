@@ -262,9 +262,14 @@ pub fn project_key(path: &Path) -> String {
 fn validate_unique(routines: &[Routine]) -> Result<(), RoutineError> {
     let mut names = BTreeSet::new();
     for routine in routines {
-        let routine = routine.clone().validated()?;
-        if !names.insert(routine.name.clone()) {
-            return Err(RoutineError::Duplicate(routine.name));
+        let validated = routine.clone().validated()?;
+        if validated.name != routine.name {
+            return Err(RoutineError::Validation(
+                "stored routine name must be trimmed".into(),
+            ));
+        }
+        if !names.insert(validated.name.clone()) {
+            return Err(RoutineError::Duplicate(validated.name));
         }
     }
     Ok(())
@@ -383,6 +388,24 @@ mod tests {
             0,
         );
         assert!(matches!(result, Err(RoutineError::Duplicate(name)) if name == "same"));
+        let _ = fs::remove_dir_all(&store.root);
+    }
+
+    #[test]
+    fn durable_store_rejects_noncanonical_names() {
+        let store = test_store();
+        let config = ProjectRoutines {
+            version: SCHEMA_VERSION,
+            revision: 1,
+            project_path: store.project.clone(),
+            routines: vec![routine(" padded ")],
+        };
+        atomic_toml(&store.project_file(), &config).unwrap();
+
+        assert!(matches!(
+            store.load(),
+            Err(RoutineError::Validation(message)) if message.contains("trimmed")
+        ));
         let _ = fs::remove_dir_all(&store.root);
     }
 
