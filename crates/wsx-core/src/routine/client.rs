@@ -466,6 +466,52 @@ mod tests {
     }
 
     #[test]
+    fn invalid_startup_notification_is_corrupt_and_reaps_child() {
+        let root = test_root("invalid-notification");
+        std::fs::create_dir_all(&root).unwrap();
+        let pid_path = root.join("helper.pid");
+        let result = RoutineClient::new(root.clone())
+            .request_with_start(&status(&root), helper_command(&root, "invalid_hang"));
+        assert!(matches!(result, Err(RoutineError::Corrupt(_))));
+        assert_helper_reaped(&pid_path);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn early_child_exit_is_unavailable_and_reaped() {
+        let root = test_root("early-exit");
+        std::fs::create_dir_all(&root).unwrap();
+        let pid_path = root.join("helper.pid");
+        let result = RoutineClient::new(root.clone())
+            .request_with_start(&status(&root), helper_command(&root, "exit"));
+        assert!(matches!(result, Err(RoutineError::Unavailable(_))));
+        assert_helper_reaped(&pid_path);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ready_but_unreachable_is_unavailable_and_reaps_child() {
+        let root = test_root("ready-unreachable");
+        std::fs::create_dir_all(&root).unwrap();
+        let pid_path = root.join("helper.pid");
+        let result = RoutineClient::new(root.clone())
+            .with_startup_timeout(Duration::from_millis(300))
+            .request_with_start(&status(&root), helper_command(&root, "ready_hang"));
+        assert!(matches!(result, Err(RoutineError::Unavailable(_))));
+        assert_helper_reaped(&pid_path);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn assert_helper_reaped(pid_path: &Path) {
+        let pid: i32 = std::fs::read_to_string(pid_path).unwrap().parse().unwrap();
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
+
+    #[test]
     #[ignore = "spawned by RoutineClient lifecycle tests"]
     fn daemon_helper() {
         let root = PathBuf::from(std::env::var_os("WSX_ROUTINE_TEST_ROOT").unwrap());
@@ -480,6 +526,20 @@ mod tests {
             .parse::<i32>()
             .unwrap();
         let mut startup = unsafe { std::fs::File::from_raw_fd(fd) };
+        if matches!(mode.as_str(), "invalid_hang" | "exit" | "ready_hang") {
+            std::fs::write(root.join("helper.pid"), std::process::id().to_string()).unwrap();
+            let notification = match mode.as_str() {
+                "invalid_hang" => Some("invalid"),
+                "ready_hang" => Some("ready"),
+                "exit" => None,
+                _ => unreachable!(),
+            };
+            if let Some(notification) = notification {
+                startup.write_all(notification.as_bytes()).unwrap();
+                std::thread::sleep(Duration::from_secs(30));
+            }
+            return;
+        }
         if mode == "error_hang" {
             std::fs::write(root.join("helper.pid"), std::process::id().to_string()).unwrap();
             startup.write_all(b"error:startup failed").unwrap();
