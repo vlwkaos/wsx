@@ -81,6 +81,11 @@ impl RoutineClient {
     }
 
     fn start(&self, project: &Path, command: &mut Command) -> Result<(), RoutineError> {
+        let deadline = Instant::now()
+            .checked_add(self.startup_timeout)
+            .ok_or_else(|| {
+                RoutineError::Validation("routine daemon startup timeout is too large".into())
+            })?;
         let (read_end, write_end) = startup_pipe()?;
         let read_fd = read_end.as_raw_fd();
         let write_fd = write_end.as_raw_fd();
@@ -98,7 +103,6 @@ impl RoutineClient {
         drop(write_end);
 
         let status = Request::new(project.to_path_buf(), Action::Status);
-        let deadline = Instant::now() + self.startup_timeout;
         let mut read_end = std::fs::File::from(read_end);
         let result = self.await_startup(&status, &mut child, &mut read_end, deadline);
         if result.is_err() {
@@ -362,6 +366,16 @@ mod tests {
             Some(libc::ESRCH)
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unrepresentable_startup_timeout_is_rejected_without_spawning() {
+        let root = test_root("unrepresentable-timeout");
+        let result = RoutineClient::new(root.clone())
+            .with_startup_timeout(Duration::MAX)
+            .request_with_start(&status(&root), helper_command(&root, "must_not_start"));
+        assert!(matches!(result, Err(RoutineError::Validation(_))));
+        assert!(!root.join("helper.pid").exists());
     }
 
     #[test]
