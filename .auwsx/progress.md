@@ -9,3 +9,9 @@
 - [x] Added slow-run responsiveness/overlap/concurrent-routine tests plus routine form, empty/nonempty header, search, and narrow mobile rendering coverage.
 - [x] Updated English/Korean docs for CLI/TUI/cancellation and persistence/recovery semantics.
 - [x] Final verification passed: 213 workspace tests, workspace build, isolated daemon CRUD/run/log smoke, CLI help, diff check, and clippy with only the existing 9 core + 17 wsx warnings.
+- [x] Added public `RoutineClient` direct and bounded auto-start request paths with caller-owned daemon commands.
+- [x] Moved socket discovery, startup handshake/polling, singleton race convergence, and failed-child cleanup into `wsx-core`.
+- [x] Added closed serialized `RoutineErrorKind` values and typed remote-daemon errors without changing protocol-v1 strings.
+- [x] Migrated wsx CLI and TUI routine requests to `RoutineClient`; daemon status/stop remain direct and non-starting.
+- [x] Added lifecycle, concurrent startup, cleanup, invalid transport, typed error round-trip, and CLI command-wiring tests.
+- [x] Verification passed: touched-file rustfmt, workspace build, 262 workspace tests, lifecycle harness, diff check, and unchanged clippy baselines of 9 core + 17 wsx warnings.
