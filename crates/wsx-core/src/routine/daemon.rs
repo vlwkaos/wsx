@@ -17,8 +17,33 @@ use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub fn serve(root: PathBuf) -> Result<(), RoutineError> {
-    fs::create_dir_all(&root)?;
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+    serve_with_startup(root, |_| {})
+}
+
+/// Serve while reporting the one-shot startup result after the socket is bound.
+pub fn serve_with_startup(
+    root: PathBuf,
+    notify: impl FnOnce(Result<(), String>),
+) -> Result<(), RoutineError> {
+    let setup = setup(&root);
+    let (lock, socket, listener) = match setup {
+        Ok(setup) => setup,
+        Err(error) => {
+            notify(Err(error.to_string()));
+            return Err(error);
+        }
+    };
+    notify(Ok(()));
+    let result = event_loop(&root, &listener);
+    drop(lock);
+    reconcile_running(&root);
+    let _ = fs::remove_file(socket);
+    result
+}
+
+fn setup(root: &Path) -> Result<(std::fs::File, PathBuf, UnixListener), RoutineError> {
+    fs::create_dir_all(root)?;
+    fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
     let lock_path = root.join("daemon-v1.lock");
     let lock = OpenOptions::new()
         .read(true)
@@ -40,11 +65,8 @@ pub fn serve(root: PathBuf) -> Result<(), RoutineError> {
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
-    reconcile_running(&root);
-    let result = event_loop(&root, &listener);
-    reconcile_running(&root);
-    let _ = fs::remove_file(socket);
-    result
+    reconcile_running(root);
+    Ok((lock, socket, listener))
 }
 
 fn event_loop(root: &Path, listener: &UnixListener) -> Result<(), RoutineError> {
@@ -197,6 +219,7 @@ fn process(
                 .map_err(|_| RoutineError::Io("config lock poisoned".into()))?;
             let routine = routine.validated()?;
             let mut config = store.load()?;
+            validate_revision(config.revision, revision)?;
             let index = config
                 .routines
                 .iter()
@@ -212,10 +235,13 @@ fn process(
                 return Err(RoutineError::Duplicate(routine.name));
             }
             config.routines[index] = routine.clone();
-            let saved = store.save(config, revision)?;
-            if routine.name != old_name {
-                migrate_runtime_name(&store, &old_name, &routine.name)?;
-            }
+            let saved = if routine.name == old_name {
+                store.save(config, revision)?
+            } else {
+                migrate_runtime_name(&store, &old_name, &routine.name, || {
+                    store.save(config, revision)
+                })?
+            };
             Ok(Response::Ok {
                 revision: Some(saved.revision),
             })
@@ -225,14 +251,15 @@ fn process(
                 .config
                 .lock()
                 .map_err(|_| RoutineError::Io("config lock poisoned".into()))?;
-            request_cancel(state, store.project(), &name);
-            cancel_running(&store, &name)?;
             let mut config = store.load()?;
+            validate_revision(config.revision, revision)?;
             let before = config.routines.len();
             config.routines.retain(|r| r.name != name);
             if config.routines.len() == before {
                 return Err(RoutineError::NotFound(name));
             }
+            request_cancel(state, store.project(), &name);
+            cancel_running(&store, &name)?;
             let saved = store.save(config, revision)?;
             Ok(Response::Ok {
                 revision: Some(saved.revision),
@@ -285,9 +312,13 @@ fn view(store: &RoutineStore, routine: &super::Routine, state: &DaemonState) -> 
         .and_then(|state| state.runs.get(&routine.name).cloned())
         .unwrap_or_default();
     let running = is_active(state, store.project(), &routine.name);
+    let next_run_epoch = CronSchedule::parse(&routine.cron)
+        .ok()
+        .and_then(|schedule| schedule.next_run_after(now_epoch()));
     RoutineView {
         routine: routine.clone(),
         capabilities: Capabilities::for_running(running),
+        next_run_epoch,
         latest_run: runs.last().cloned(),
         recent_runs: runs,
     }
@@ -317,25 +348,68 @@ fn request_cancel(state: &DaemonState, project: &Path, name: &str) {
     }
 }
 
-fn migrate_runtime_name(store: &RoutineStore, old: &str, new: &str) -> Result<(), RoutineError> {
-    let old_dir = store.logs_dir().join(hex_name(old));
-    let new_dir = store.logs_dir().join(hex_name(new));
-    if old_dir.exists() {
-        if new_dir.exists() {
-            return Err(RoutineError::Duplicate(new.to_string()));
-        }
-        fs::rename(&old_dir, &new_dir)?;
+fn validate_revision(actual: u64, expected: u64) -> Result<(), RoutineError> {
+    if actual != expected {
+        return Err(RoutineError::Conflict { expected, actual });
     }
-    store.modify_runtime(|state| {
-        if let Some(mut runs) = state.runs.remove(old) {
+    Ok(())
+}
+
+fn migrate_runtime_name<T>(
+    store: &RoutineStore,
+    old: &str,
+    new: &str,
+    commit_config: impl FnOnce() -> Result<T, RoutineError>,
+) -> Result<T, RoutineError> {
+    store.with_runtime_lock(|| {
+        let old_dir = store.logs_dir().join(hex_name(old));
+        let new_dir = store.logs_dir().join(hex_name(new));
+        let before = store.load_runtime()?;
+        let mut after = before.clone();
+        if let Some(mut runs) = after.runs.remove(old) {
             for run in &mut runs {
                 run.routine = new.to_string();
                 run.stdout_path = replace_prefix(&run.stdout_path, &old_dir, &new_dir);
                 run.stderr_path = replace_prefix(&run.stderr_path, &old_dir, &new_dir);
             }
-            state.runs.insert(new.to_string(), runs);
+            after.runs.insert(new.to_string(), runs);
         }
-        Ok(())
+        if let Some(claim) = after.claims.remove(old) {
+            after.claims.insert(new.to_string(), claim);
+        }
+        let mut moved_logs = false;
+        if old_dir.exists() {
+            if new_dir.exists() {
+                return Err(RoutineError::Duplicate(new.to_string()));
+            }
+            fs::rename(&old_dir, &new_dir)?;
+            moved_logs = true;
+        }
+
+        if let Err(error) = store.save_runtime(&after) {
+            if moved_logs {
+                let _ = fs::rename(&new_dir, &old_dir);
+            }
+            return Err(error);
+        }
+
+        match commit_config() {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let runtime_rollback = store.save_runtime(&before);
+                let logs_rollback = if moved_logs {
+                    fs::rename(&new_dir, &old_dir).map_err(RoutineError::from)
+                } else {
+                    Ok(())
+                };
+                match (runtime_rollback, logs_rollback) {
+                    (Ok(()), Ok(())) => Err(error),
+                    (runtime, logs) => Err(RoutineError::Io(format!(
+                        "rename commit failed ({error}); rollback failed (runtime: {runtime:?}, logs: {logs:?})"
+                    ))),
+                }
+            }
+        }
     })
 }
 
@@ -491,7 +565,7 @@ fn cancel_running(store: &RoutineStore, name: &str) -> Result<(), RoutineError> 
         libc::kill(-pid, libc::SIGTERM);
     }
     for _ in 0..20 {
-        if unsafe { libc::kill(pid, 0) } != 0 {
+        if !process_group_exists(pid) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -499,7 +573,20 @@ fn cancel_running(store: &RoutineStore, name: &str) -> Result<(), RoutineError> 
     unsafe {
         libc::kill(-pid, libc::SIGKILL);
     }
+    for _ in 0..20 {
+        if !process_group_exists(pid) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
     Ok(())
+}
+
+fn process_group_exists(pgid: i32) -> bool {
+    if unsafe { libc::kill(-pgid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
 fn reconcile_running(root: &Path) {
@@ -576,7 +663,9 @@ fn now_epoch() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::routine::{Routine, SCHEMA_VERSION};
+    use crate::routine::{Routine, RunRecord, SCHEMA_VERSION};
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Instant;
 
@@ -697,6 +786,176 @@ mod tests {
             .routines
             .iter()
             .any(|routine| routine.name == "one"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stale_delete_preserves_active_run_and_definition() {
+        let (root, project, state) = fixture();
+        state.active.lock().unwrap().insert(
+            RunKey {
+                project: project.clone(),
+                routine: "one".into(),
+            },
+            false,
+        );
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        store
+            .modify_runtime(|runtime| {
+                runtime.runs.insert(
+                    "one".into(),
+                    vec![RunRecord {
+                        id: "active".into(),
+                        routine: "one".into(),
+                        started_epoch: 1,
+                        finished_epoch: None,
+                        scheduled_epoch_minute: None,
+                        status: RunStatus::Running,
+                        exit_code: None,
+                        pid: None,
+                        final_output: String::new(),
+                        stdout_path: root.join("stdout"),
+                        stderr_path: root.join("stderr"),
+                    }],
+                );
+                Ok(())
+            })
+            .unwrap();
+        let result = process(
+            &root,
+            request(
+                &project,
+                Action::Delete {
+                    revision: 0,
+                    name: "one".into(),
+                },
+            ),
+            &state,
+        );
+        assert!(matches!(result, Err(RoutineError::Conflict { .. })));
+        assert!(is_active(&state, &project, "one"));
+        assert!(store
+            .load()
+            .unwrap()
+            .routines
+            .iter()
+            .any(|r| r.name == "one"));
+        assert_eq!(
+            store.load_runtime().unwrap().runs["one"]
+                .last()
+                .unwrap()
+                .status,
+            RunStatus::Running
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_rename_commit_restores_runtime_claims_and_logs() {
+        let (root, project, _state) = fixture();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let old_dir = store.logs_dir().join(hex_name("one"));
+        fs::create_dir_all(&old_dir).unwrap();
+        let stdout = old_dir.join("run/stdout.log");
+        let stderr = old_dir.join("run/stderr.log");
+        store
+            .modify_runtime(|runtime| {
+                runtime.claims.insert("one".into(), 123);
+                runtime.runs.insert(
+                    "one".into(),
+                    vec![RunRecord {
+                        id: "run".into(),
+                        routine: "one".into(),
+                        started_epoch: 1,
+                        finished_epoch: Some(2),
+                        scheduled_epoch_minute: Some(123),
+                        status: RunStatus::Succeeded,
+                        exit_code: Some(0),
+                        pid: None,
+                        final_output: "done".into(),
+                        stdout_path: stdout.clone(),
+                        stderr_path: stderr.clone(),
+                    }],
+                );
+                Ok(())
+            })
+            .unwrap();
+        let result = migrate_runtime_name(&store, "one", "renamed", || {
+            Err::<(), _>(RoutineError::Io("injected config failure".into()))
+        });
+        assert!(result.is_err());
+        let runtime = store.load_runtime().unwrap();
+        assert_eq!(runtime.claims.get("one"), Some(&123));
+        assert!(!runtime.claims.contains_key("renamed"));
+        assert_eq!(runtime.runs["one"][0].routine, "one");
+        assert_eq!(runtime.runs["one"][0].stdout_path, stdout);
+        assert!(old_dir.exists());
+        assert!(!store.logs_dir().join(hex_name("renamed")).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cancel_kills_term_ignoring_descendant_after_leader_exits() {
+        let (root, project, _state) = fixture();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let child_pid_file = root.join("descendant.pid");
+        fs::create_dir_all(&root).unwrap();
+        let script = "trap 'exit 0' TERM; sh -c 'trap \"\" TERM; while :; do sleep 1; done' & echo $! > \"$1\"; wait";
+        let mut leader = Command::new("/bin/sh");
+        leader
+            .args([
+                "-c",
+                script,
+                "cancel-test",
+                child_pid_file.to_str().unwrap(),
+            ])
+            .process_group(0);
+        let mut leader = leader.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let descendant = loop {
+            if let Ok(pid) = fs::read_to_string(&child_pid_file) {
+                if let Ok(pid) = pid.trim().parse::<i32>() {
+                    break pid;
+                }
+            }
+            if Instant::now() >= deadline {
+                unsafe {
+                    libc::kill(-(leader.id() as i32), libc::SIGKILL);
+                }
+                let _ = leader.wait();
+                panic!("descendant pid was not published");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        store
+            .modify_runtime(|runtime| {
+                runtime.runs.insert(
+                    "one".into(),
+                    vec![RunRecord {
+                        id: "active".into(),
+                        routine: "one".into(),
+                        started_epoch: 1,
+                        finished_epoch: None,
+                        scheduled_epoch_minute: None,
+                        status: RunStatus::Running,
+                        exit_code: None,
+                        pid: Some(leader.id() as i32),
+                        final_output: String::new(),
+                        stdout_path: root.join("stdout"),
+                        stderr_path: root.join("stderr"),
+                    }],
+                );
+                Ok(())
+            })
+            .unwrap();
+        cancel_running(&store, "one").unwrap();
+        let _ = leader.wait();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while unsafe { libc::kill(descendant, 0) } == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_ne!(unsafe { libc::kill(descendant, 0) }, 0);
+        assert!(!process_group_exists(leader.id() as i32));
         let _ = fs::remove_dir_all(root);
     }
 }

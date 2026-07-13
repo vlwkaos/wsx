@@ -52,6 +52,67 @@ impl CronSchedule {
         };
         basic && day
     }
+
+    /// Project the first matching local civil minute strictly after `epoch`.
+    /// This belongs in the refreshed view model, never in a render pass.
+    pub fn next_run_after(&self, epoch: i64) -> Option<i64> {
+        self.next_run_after_counted(epoch).0
+    }
+
+    fn next_run_after_counted(&self, epoch: i64) -> (Option<i64>, usize) {
+        let mut candidate = (epoch / 60 + 1) * 60;
+        let deadline = candidate + 366 * 24 * 60 * 60;
+        let mut probes = 0;
+        while candidate < deadline {
+            let local = local_time(candidate);
+            probes += 1;
+            if self.matches(local) {
+                return (Some(candidate), probes);
+            }
+            let date_allowed = self.month.allowed[local.month as usize]
+                && self.day_matches(local.day_of_month, local.day_of_week);
+            let minutes = if !date_allowed || !self.hour.allowed[local.hour as usize] {
+                60 - i64::from(local.minute)
+            } else {
+                self.minute
+                    .allowed
+                    .iter()
+                    .enumerate()
+                    .skip(usize::from(local.minute) + 1)
+                    .find_map(|(minute, allowed)| allowed.then_some(minute as i64))
+                    .map(|minute| minute - i64::from(local.minute))
+                    .unwrap_or_else(|| 60 - i64::from(local.minute))
+            };
+            candidate += minutes.max(1) * 60;
+        }
+        (None, probes)
+    }
+
+    fn day_matches(&self, day_of_month: u8, day_of_week: u8) -> bool {
+        let dom = self.day_of_month.allowed[day_of_month as usize];
+        let dow = self.day_of_week.allowed[day_of_week as usize];
+        if self.day_of_month.restricted && self.day_of_week.restricted {
+            dom || dow
+        } else {
+            dom && dow
+        }
+    }
+}
+
+fn local_time(epoch: i64) -> LocalTime {
+    let timestamp = epoch as libc::time_t;
+    let mut out = std::mem::MaybeUninit::<libc::tm>::uninit();
+    unsafe {
+        libc::localtime_r(&timestamp, out.as_mut_ptr());
+        let out = out.assume_init();
+        LocalTime {
+            minute: out.tm_min as u8,
+            hour: out.tm_hour as u8,
+            day_of_month: out.tm_mday as u8,
+            month: (out.tm_mon + 1) as u8,
+            day_of_week: out.tm_wday as u8,
+        }
+    }
 }
 
 fn invalid(message: impl Into<String>) -> RoutineError {
@@ -167,5 +228,17 @@ mod tests {
         ] {
             assert!(CronSchedule::parse(value).is_err(), "{value}");
         }
+    }
+
+    #[test]
+    fn sparse_annual_schedule_projects_once_into_the_view_model() {
+        let schedule = CronSchedule::parse("0 0 1 1 *").unwrap();
+        let start = 1_767_225_600; // 2026-01-01T00:00:00Z
+        let (next, probes) = schedule.next_run_after_counted(start);
+        let next = next.unwrap();
+        assert!(next > start);
+        assert!(next <= start + 366 * 24 * 60 * 60);
+        assert!(schedule.matches(local_time(next)));
+        assert!(probes < 10_000, "sparse projection used {probes} probes");
     }
 }

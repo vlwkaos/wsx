@@ -1,5 +1,8 @@
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -276,9 +279,18 @@ pub fn run(cmd: Command) -> Result<()> {
         },
         Command::Routine { subcommand } => cmd_routine(subcommand),
         Command::RoutineDaemonServe => {
-            wsx_core::routine::daemon::serve(
-                wsx_core::routine::store::RoutineStore::default_root()?,
-            )?;
+            let root = wsx_core::routine::store::RoutineStore::default_root()?;
+            if let Some(mut startup) = startup_notifier()? {
+                wsx_core::routine::daemon::serve_with_startup(root, move |result| {
+                    let message = match result {
+                        Ok(()) => "ready".to_string(),
+                        Err(error) => format!("error:{error}"),
+                    };
+                    let _ = startup.write_all(message.as_bytes());
+                })?;
+            } else {
+                wsx_core::routine::daemon::serve(root)?;
+            }
             Ok(())
         }
     }
@@ -445,20 +457,99 @@ pub(crate) fn ensure_routine_daemon() -> Result<()> {
     if wsx_core::routine::ipc::send(&socket, &status).is_ok() {
         return Ok(());
     }
-    std::process::Command::new(std::env::current_exe()?)
+    let (read_end, write_end) = startup_pipe()?;
+    let read_fd = read_end.as_raw_fd();
+    let write_fd = write_end.as_raw_fd();
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
         .arg("routine-daemon-serve")
+        .env("WSX_ROUTINE_STARTUP_FD", write_fd.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::null());
+    unsafe {
+        command.pre_exec(move || {
+            libc::close(read_fd);
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn()?;
+    drop(write_end);
     let deadline = Instant::now() + Duration::from_secs(3);
+    let mut read_end = std::fs::File::from(read_end);
     while Instant::now() < deadline {
-        if wsx_core::routine::ipc::send(&socket, &status).is_ok() {
-            return Ok(());
+        if fd_readable(read_end.as_raw_fd())? {
+            let mut startup = String::new();
+            read_end.read_to_string(&mut startup)?;
+            if startup == "ready" {
+                if wsx_core::routine::ipc::send(&socket, &status).is_ok() {
+                    return Ok(());
+                }
+                stop_startup_child(&mut child);
+                bail!("routine daemon reported ready but did not accept status requests");
+            }
+            if let Some(error) = startup.strip_prefix("error:") {
+                let _ = child.wait();
+                bail!("routine daemon failed to start: {error}");
+            }
+            if startup.is_empty() {
+                if let Some(exit) = child.try_wait()? {
+                    bail!("routine daemon exited during startup: {exit}");
+                }
+            }
+            stop_startup_child(&mut child);
+            bail!("routine daemon returned an invalid startup response");
+        }
+        if let Some(exit) = child.try_wait()? {
+            bail!("routine daemon exited during startup: {exit}");
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    stop_startup_child(&mut child);
     bail!("routine daemon did not become ready within 3 seconds")
+}
+
+fn stop_startup_child(child: &mut std::process::Child) {
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.wait();
+}
+
+fn startup_pipe() -> Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    unsafe { Ok((OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))) }
+}
+
+fn startup_notifier() -> Result<Option<std::fs::File>> {
+    let Some(raw) = std::env::var_os("WSX_ROUTINE_STARTUP_FD") else {
+        return Ok(None);
+    };
+    std::env::remove_var("WSX_ROUTINE_STARTUP_FD");
+    let fd = raw
+        .to_string_lossy()
+        .parse::<i32>()
+        .map_err(|_| anyhow::anyhow!("invalid routine startup descriptor"))?;
+    Ok(Some(unsafe { std::fs::File::from_raw_fd(fd) }))
+}
+
+fn fd_readable(fd: i32) -> Result<bool> {
+    let mut descriptor = libc::pollfd {
+        fd,
+        events: libc::POLLIN | libc::POLLHUP,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(result > 0)
 }
 
 fn cmd_routine_daemon(command: RoutineDaemonCmd) -> Result<()> {

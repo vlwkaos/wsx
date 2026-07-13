@@ -8,7 +8,6 @@ use ratatui::{
 };
 use wsx_core::model::workspace::{FetchFailReason, Project, SessionInfo, WorktreeInfo};
 use wsx_core::routine::ipc::RoutineView;
-use wsx_core::routine::{CronSchedule, LocalTime};
 
 pub fn render_worktree_preview(
     frame: &mut Frame,
@@ -361,7 +360,8 @@ pub fn render_routine_preview(
 ) {
     frame.render_widget(Clear, area);
     let label = Style::default().fg(Color::DarkGray);
-    let next = next_run_epoch(&view.routine.cron)
+    let next = view
+        .next_run_epoch
         .map(format_epoch)
         .unwrap_or_else(|| "unavailable".into());
     let mut lines = vec![
@@ -426,19 +426,6 @@ pub fn render_routine_preview(
             Style::default().fg(Color::DarkGray),
         ));
     }
-    let capabilities = format!(
-        "run:{} edit:{} rename:{} cancel:{} delete:{}",
-        view.capabilities.can_run,
-        view.capabilities.can_edit,
-        view.capabilities.can_rename,
-        view.capabilities.can_cancel,
-        view.capabilities.can_delete
-    );
-    lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        capabilities,
-        Style::default().fg(Color::DarkGray),
-    ));
     frame.render_widget(
         Paragraph::new(lines)
             .block(
@@ -450,34 +437,6 @@ pub fn render_routine_preview(
             .wrap(Wrap { trim: false }),
         area,
     );
-}
-
-fn next_run_epoch(cron: &str) -> Option<i64> {
-    let schedule = CronSchedule::parse(cron).ok()?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64;
-    let mut epoch = (now / 60 + 1) * 60;
-    for _ in 0..(366 * 24 * 60) {
-        let timestamp = epoch as libc::time_t;
-        let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
-        unsafe {
-            libc::localtime_r(&timestamp, local.as_mut_ptr());
-        }
-        let local = unsafe { local.assume_init() };
-        if schedule.matches(LocalTime {
-            minute: local.tm_min as u8,
-            hour: local.tm_hour as u8,
-            day_of_month: local.tm_mday as u8,
-            month: (local.tm_mon + 1) as u8,
-            day_of_week: local.tm_wday as u8,
-        }) {
-            return Some(epoch);
-        }
-        epoch += 60;
-    }
-    None
 }
 
 fn format_epoch(epoch: i64) -> String {
