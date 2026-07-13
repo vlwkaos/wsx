@@ -16,6 +16,7 @@ This is a Cargo **workspace** — the shared `~/.claude/skills/rust-release/rele
 - **Routine daemon smoke tests**: sandboxed `flock` can fail with `EPERM`, and detached children from an escalated command may be reaped before a later command; use one approved foreground harness for lifecycle assertions.
 - **Filtered Cargo tests**: `cargo test` accepts one positional `TESTNAME` filter; run distinct filters as separate commands.
 - **Formatting baseline**: whole-workspace `cargo fmt --all -- --check` currently reports pre-existing drift in `crates/wsx-core/src/config/global.rs`; format touched Rust files directly until that baseline is repaired.
+- **Touched-file formatting**: `cargo fmt -- <paths>` still formats the workspace; use `rustfmt --edition 2021 <paths>` to format only selected Rust files.
 - **Rust newline literal search**: use `rg -n -F "split(b'\\n')" <path>` so the shell does not turn the pattern into an actual newline.
 - **Linked-worktree Git writes**: sandboxed `git add`/`git commit` can fail creating the shared worktree `index.lock`; rerun the Git mutation with approved escalation.
 
