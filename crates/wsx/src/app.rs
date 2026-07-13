@@ -2728,20 +2728,41 @@ impl App {
                     revision,
                 } => {
                     let path = self.workspace.projects[project_idx].path.clone();
-                    crate::cli::send_routine(
+                    if let Err(error) = crate::cli::send_routine(
                         &path,
                         wsx_core::routine::ipc::Action::Delete {
                             revision,
                             name: name.clone(),
                         },
-                    )?;
-                    self.refresh_routine_project(project_idx)?;
+                    ) {
+                        let _ = self.refresh_routine_project(project_idx);
+                        self.restore_failed_routine_delete(project_idx, &name, error.to_string());
+                        return Ok(());
+                    }
+                    if let Err(error) = self.refresh_routine_project(project_idx) {
+                        if let Some(project) = self.workspace.projects.get_mut(project_idx) {
+                            project.routines.retain(|view| view.routine.name != name);
+                            project.routines_expanded = true;
+                        }
+                        self.rebuild_flat();
+                        self.select_routine(project_idx, None);
+                        self.set_status(format!(
+                            "Deleted routine '{name}', but refresh failed: {error}"
+                        ));
+                        return Ok(());
+                    }
                     self.select_routine(project_idx, None);
                     self.set_status(format!("Deleted routine '{name}'"));
                 }
             }
         }
         Ok(())
+    }
+
+    fn restore_failed_routine_delete(&mut self, project_idx: usize, name: &str, error: String) {
+        self.mode = Mode::Normal;
+        self.select_routine(project_idx, Some(name));
+        self.set_status(format!("Routine '{name}' not deleted: {error}"));
     }
 
     // ── Dispatch to ops ───────────────────────────────────────────────────────
@@ -3555,6 +3576,7 @@ mod tests {
                 prompt: "hello".into(),
             },
             capabilities: wsx_core::routine::Capabilities::for_running(false),
+            next_run_epoch: None,
             latest_run: None,
             recent_runs: Vec::new(),
         }
@@ -3592,6 +3614,33 @@ mod tests {
         terminal
             .draw(|frame| crate::ui::render(frame, &mut app))
             .unwrap();
+    }
+
+    #[test]
+    fn failed_routine_delete_restores_selection_and_surfaces_status() {
+        let mut project = make_project("demo");
+        project.routines = vec![routine_view("morning")];
+        project.routines_expanded = true;
+        let workspace = WorkspaceState {
+            projects: vec![project],
+        };
+        let mut app = make_test_app(GlobalConfig::default(), workspace, None);
+        app.tree_selected = 0;
+        app.mode = Mode::Confirm {
+            message: "delete".into(),
+            pending: PendingAction::DeleteRoutine {
+                project_idx: 0,
+                name: "morning".into(),
+                revision: 1,
+            },
+        };
+        app.restore_failed_routine_delete(0, "morning", "stale config revision".into());
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(matches!(app.current_selection(), Selection::Routine(0, 0)));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Routine 'morning' not deleted: stale config revision")
+        );
     }
 
     #[test]

@@ -22,8 +22,10 @@ pub struct ProjectRoutines {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RuntimeState {
     pub version: u32,
-    #[serde(default)]
-    pub claims: BTreeSet<String>,
+    /// Latest claimed epoch minute per routine. One entry per routine bounds
+    /// restart-safe scheduling state regardless of tick frequency.
+    #[serde(default, deserialize_with = "deserialize_claims")]
+    pub claims: BTreeMap<String, i64>,
     #[serde(default)]
     pub runs: BTreeMap<String, Vec<RunRecord>>,
 }
@@ -152,8 +154,11 @@ impl RoutineStore {
 
     pub fn claim(&self, routine: &str, epoch_minute: i64) -> Result<bool, RoutineError> {
         self.modify_runtime(|state| {
-            let key = format!("{routine}\\0{epoch_minute}");
-            Ok(state.claims.insert(key))
+            if state.claims.get(routine) == Some(&epoch_minute) {
+                return Ok(false);
+            }
+            state.claims.insert(routine.to_string(), epoch_minute);
+            Ok(true)
         })
     }
 
@@ -161,15 +166,57 @@ impl RoutineStore {
         &self,
         update: impl FnOnce(&mut RuntimeState) -> Result<T, RoutineError>,
     ) -> Result<T, RoutineError> {
+        self.with_runtime_lock(|| {
+            let mut state = self.load_runtime()?;
+            let result = update(&mut state)?;
+            self.save_runtime(&state)?;
+            Ok(result)
+        })
+    }
+
+    pub(crate) fn with_runtime_lock<T>(
+        &self,
+        transaction: impl FnOnce() -> Result<T, RoutineError>,
+    ) -> Result<T, RoutineError> {
         let lock = RUNTIME_WRITE_LOCK.get_or_init(|| Mutex::new(()));
         let _guard = lock
             .lock()
             .map_err(|_| RoutineError::Io("runtime lock poisoned".into()))?;
-        let mut state = self.load_runtime()?;
-        let result = update(&mut state)?;
-        self.save_runtime(&state)?;
-        Ok(result)
+        transaction()
     }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredClaims {
+    Current(BTreeMap<String, i64>),
+    Legacy(BTreeSet<String>),
+}
+
+fn deserialize_claims<'de, D>(deserializer: D) -> Result<BTreeMap<String, i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let stored = StoredClaims::deserialize(deserializer)?;
+    Ok(match stored {
+        StoredClaims::Current(claims) => claims,
+        StoredClaims::Legacy(claims) => {
+            let mut latest = BTreeMap::<String, i64>::new();
+            for claim in claims {
+                let Some((routine, minute)) = claim.rsplit_once("\\0") else {
+                    continue;
+                };
+                let Ok(minute) = minute.parse::<i64>() else {
+                    continue;
+                };
+                latest
+                    .entry(routine.to_string())
+                    .and_modify(|current| *current = (*current).max(minute))
+                    .or_insert(minute);
+            }
+            latest
+        }
+    })
 }
 
 pub fn canonical_main_project(path: &Path) -> Result<PathBuf, RoutineError> {
@@ -335,5 +382,33 @@ mod tests {
         );
         assert!(matches!(result, Err(RoutineError::Duplicate(name)) if name == "same"));
         let _ = fs::remove_dir_all(&store.root);
+    }
+
+    #[test]
+    fn repeated_claims_remain_bounded_to_one_epoch_per_routine() {
+        let store = test_store();
+        for minute in 0..100 {
+            assert!(store.claim("frequent", minute).unwrap());
+            assert!(!store.claim("frequent", minute).unwrap());
+        }
+        assert!(store.claim("other", 42).unwrap());
+        let state = store.load_runtime().unwrap();
+        assert_eq!(state.claims.len(), 2);
+        assert_eq!(state.claims["frequent"], 99);
+        assert_eq!(state.claims["other"], 42);
+        let _ = fs::remove_dir_all(&store.root);
+    }
+
+    #[test]
+    fn legacy_claim_sets_load_as_latest_epoch_per_routine() {
+        let parsed: RuntimeState = toml::from_str(
+            r#"
+version = 1
+claims = ["one\\01", "one\\02", "two\\07"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.claims.get("one"), Some(&2));
+        assert_eq!(parsed.claims.get("two"), Some(&7));
     }
 }

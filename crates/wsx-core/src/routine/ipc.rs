@@ -59,6 +59,8 @@ pub enum Action {
 pub struct RoutineView {
     pub routine: Routine,
     pub capabilities: Capabilities,
+    #[serde(default)]
+    pub next_run_epoch: Option<i64>,
     pub latest_run: Option<RunRecord>,
     #[serde(default)]
     pub recent_runs: Vec<RunRecord>,
