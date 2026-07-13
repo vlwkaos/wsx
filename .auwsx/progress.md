@@ -8,4 +8,4 @@
 - [x] Corrected daemon supervision: background active-run registry, explicit cancel IPC/CLI, nonblocking run scheduling, overlap rejection, shutdown drain, and confirmed-delete cancellation.
 - [x] Added slow-run responsiveness/overlap/concurrent-routine tests plus routine form, empty/nonempty header, search, and narrow mobile rendering coverage.
 - [x] Updated English/Korean docs for CLI/TUI/cancellation and persistence/recovery semantics.
-- [ ] Final workspace test/build/clippy and concrete branch audit remain.
+- [x] Final verification passed: 213 workspace tests, workspace build, isolated daemon CRUD/run/log smoke, CLI help, diff check, and clippy with only the existing 9 core + 17 wsx warnings.
