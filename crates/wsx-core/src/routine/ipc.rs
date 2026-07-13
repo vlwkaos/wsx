@@ -114,15 +114,41 @@ impl Response {
 }
 
 pub fn send(socket: &Path, request: &Request) -> Result<Response, RoutineError> {
+    send_inner(socket, request, Duration::from_secs(30), false)
+}
+
+pub(crate) fn send_with_timeout(
+    socket: &Path,
+    request: &Request,
+    timeout: Duration,
+) -> Result<Response, RoutineError> {
+    send_inner(socket, request, timeout, true)
+}
+
+fn send_inner(
+    socket: &Path,
+    request: &Request,
+    timeout: Duration,
+    timeout_is_unavailable: bool,
+) -> Result<Response, RoutineError> {
     let mut stream = UnixStream::connect(socket)
         .map_err(|e| RoutineError::Unavailable(format!("{}: {e}", socket.display())))?;
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_read_timeout(Some(timeout))?;
     let mut data = serde_json::to_vec(request).map_err(|e| RoutineError::Corrupt(e.to_string()))?;
     data.push(b'\n');
     stream.write_all(&data)?;
     stream.shutdown(std::net::Shutdown::Write)?;
     let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line)?;
+    BufReader::new(stream)
+        .read_line(&mut line)
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                if timeout_is_unavailable =>
+            {
+                RoutineError::Unavailable("daemon response timed out".into())
+            }
+            _ => error.into(),
+        })?;
     if line.is_empty() {
         return Err(RoutineError::Unavailable("daemon closed connection".into()));
     }
