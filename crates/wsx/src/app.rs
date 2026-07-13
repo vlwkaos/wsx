@@ -2,7 +2,7 @@
 // ref: ratatui app patterns — https://ratatui.rs/concepts/application-patterns/
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -278,6 +278,12 @@ struct BgResult {
     outcome: Result<BgOutcome>,
 }
 
+struct RoutineRefreshResult {
+    project_path: PathBuf,
+    generation: u64,
+    response: wsx_core::routine::ipc::Response,
+}
+
 /// Tracks user-initiated session mutations so stale refresh results don't overwrite intent.
 /// Entries are filtered in apply_tmux_refresh before rebuilding workspace state.
 enum SessionOp {
@@ -379,8 +385,9 @@ pub struct App {
     /// created repos between opens.
     scanned_repos: Vec<String>,
     repo_scan_rx: Option<mpsc::Receiver<String>>,
-    routine_tx: mpsc::Sender<(usize, wsx_core::routine::ipc::Response)>,
-    routine_rx: mpsc::Receiver<(usize, wsx_core::routine::ipc::Response)>,
+    routine_tx: mpsc::Sender<RoutineRefreshResult>,
+    routine_rx: mpsc::Receiver<RoutineRefreshResult>,
+    routine_refresh_generation: HashMap<PathBuf, u64>,
 }
 
 impl App {
@@ -487,6 +494,7 @@ impl App {
             repo_scan_rx: None,
             routine_tx,
             routine_rx,
+            routine_refresh_generation: HashMap::new(),
         };
         if let Err(error) = app.refresh_routines_all() {
             app.set_status(format!("Routines unavailable: {error}"));
@@ -644,21 +652,37 @@ impl App {
     }
 
     fn refresh_routine_project(&mut self, project_idx: usize) -> Result<()> {
-        let project = self
+        let path = self
             .workspace
             .projects
             .get(project_idx)
-            .ok_or_else(|| anyhow::anyhow!("project not found"))?;
-        let response =
-            crate::cli::send_routine(&project.path, wsx_core::routine::ipc::Action::List)?;
+            .ok_or_else(|| anyhow::anyhow!("project not found"))?
+            .path
+            .clone();
+        self.invalidate_routine_refresh(&path);
+        let response = crate::cli::send_routine(&path, wsx_core::routine::ipc::Action::List)?;
         if let wsx_core::routine::ipc::Response::Routines { revision, routines } = response {
-            let project = &mut self.workspace.projects[project_idx];
+            let project = self
+                .workspace
+                .projects
+                .iter_mut()
+                .find(|project| project.path == path)
+                .ok_or_else(|| anyhow::anyhow!("project removed during routine refresh"))?;
             project.routine_revision = revision;
             project.routines = routines;
             project.routines_expanded = true;
             self.rebuild_flat();
         }
         Ok(())
+    }
+
+    fn invalidate_routine_refresh(&mut self, path: &Path) -> u64 {
+        let generation = self
+            .routine_refresh_generation
+            .entry(path.to_path_buf())
+            .or_default();
+        *generation = generation.wrapping_add(1);
+        *generation
     }
 
     pub fn run(&mut self, terminal: &mut Tui) -> Result<()> {
@@ -753,14 +777,25 @@ impl App {
                 }
             }
         }
-        while let Ok((project_idx, response)) = self.routine_rx.try_recv() {
-            if let wsx_core::routine::ipc::Response::Routines { revision, routines } = response {
+        while let Ok(result) = self.routine_rx.try_recv() {
+            if self.routine_refresh_generation.get(&result.project_path) != Some(&result.generation)
+            {
+                continue;
+            }
+            if let wsx_core::routine::ipc::Response::Routines { revision, routines } =
+                result.response
+            {
                 let identity = wsx_core::cache::resolve_cursor_identity(
                     &self.workspace,
                     self.flat(),
                     self.tree_selected,
                 );
-                if let Some(project) = self.workspace.projects.get_mut(project_idx) {
+                if let Some(project) = self
+                    .workspace
+                    .projects
+                    .iter_mut()
+                    .find(|project| project.path == result.project_path)
+                {
                     project.routine_revision = revision;
                     project.routines = routines;
                     self.rebuild_flat();
@@ -816,14 +851,24 @@ impl App {
     }
 
     fn spawn_routine_refresh(&mut self) {
-        for (project_idx, project) in self.workspace.projects.iter().enumerate() {
-            let path = project.path.clone();
+        let paths = self
+            .workspace
+            .projects
+            .iter()
+            .map(|project| project.path.clone())
+            .collect::<Vec<_>>();
+        for path in paths {
+            let generation = self.invalidate_routine_refresh(&path);
             let tx = self.routine_tx.clone();
             std::thread::spawn(move || {
                 if let Ok(response) =
                     crate::cli::send_routine(&path, wsx_core::routine::ipc::Action::List)
                 {
-                    let _ = tx.send((project_idx, response));
+                    let _ = tx.send(RoutineRefreshResult {
+                        project_path: path,
+                        generation,
+                        response,
+                    });
                 }
             });
         }
@@ -3555,6 +3600,7 @@ mod tests {
             repo_scan_rx: None,
             routine_tx,
             routine_rx,
+            routine_refresh_generation: HashMap::new(),
         }
     }
 
@@ -3641,6 +3687,46 @@ mod tests {
             app.status_message.as_deref(),
             Some("Routine 'morning' not deleted: stale config revision")
         );
+    }
+
+    #[test]
+    fn routine_refresh_applies_by_path_and_discards_superseded_generation() {
+        let workspace = WorkspaceState {
+            projects: vec![make_project("a"), make_project("b")],
+        };
+        let mut app = make_test_app(GlobalConfig::default(), workspace, None);
+        let path = PathBuf::from("/tmp/a");
+        let generation = app.invalidate_routine_refresh(&path);
+        app.workspace.projects.swap(0, 1);
+        app.routine_tx
+            .send(RoutineRefreshResult {
+                project_path: path.clone(),
+                generation,
+                response: wsx_core::routine::ipc::Response::Routines {
+                    revision: 1,
+                    routines: vec![routine_view("fresh")],
+                },
+            })
+            .unwrap();
+        app.drain_async_results();
+        assert_eq!(app.workspace.projects[0].name, "b");
+        assert!(app.workspace.projects[0].routines.is_empty());
+        assert_eq!(app.workspace.projects[1].routines[0].routine.name, "fresh");
+
+        app.invalidate_routine_refresh(&path);
+        app.routine_tx
+            .send(RoutineRefreshResult {
+                project_path: path,
+                generation,
+                response: wsx_core::routine::ipc::Response::Routines {
+                    revision: 0,
+                    routines: vec![routine_view("stale")],
+                },
+            })
+            .unwrap();
+        app.drain_async_results();
+        assert_eq!(app.workspace.projects[1].routines[0].routine.name, "fresh");
+        assert_eq!(app.workspace.projects[1].routine_revision, 1);
     }
 
     #[test]
@@ -3940,6 +4026,7 @@ mod tests {
             repo_scan_rx: None,
             routine_tx,
             routine_rx,
+            routine_refresh_generation: HashMap::new(),
         };
 
         app.workspace.projects.remove(0);

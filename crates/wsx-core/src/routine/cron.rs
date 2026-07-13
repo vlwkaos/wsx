@@ -61,7 +61,9 @@ impl CronSchedule {
 
     fn next_run_after_counted(&self, epoch: i64) -> (Option<i64>, usize) {
         let mut candidate = (epoch / 60 + 1) * 60;
-        let deadline = candidate + 366 * 24 * 60 * 60;
+        // ^ Eight years covers the longest Gregorian gap between realizable
+        // numeric schedules (Feb 29 across a non-leap century).
+        let deadline = candidate + 8 * 366 * 24 * 60 * 60;
         let mut probes = 0;
         while candidate < deadline {
             let local = local_time(candidate);
@@ -240,5 +242,15 @@ mod tests {
         assert!(next <= start + 366 * 24 * 60 * 60);
         assert!(schedule.matches(local_time(next)));
         assert!(probes < 10_000, "sparse projection used {probes} probes");
+    }
+
+    #[test]
+    fn leap_day_schedule_beyond_one_year_still_projects() {
+        let schedule = CronSchedule::parse("0 0 29 2 *").unwrap();
+        let start = 1_767_225_600; // 2026-01-01T00:00:00Z
+        let next = schedule.next_run_after(start).unwrap();
+        assert!(next > start + 366 * 24 * 60 * 60);
+        assert!(next <= start + 8 * 366 * 24 * 60 * 60);
+        assert!(schedule.matches(local_time(next)));
     }
 }

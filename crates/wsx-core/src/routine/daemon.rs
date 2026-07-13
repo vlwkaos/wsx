@@ -1,4 +1,4 @@
-use super::execution::execute_supervised;
+use super::execution::{execute_supervised, process_start};
 use super::ipc::{Action, Request, Response, RoutineView};
 use super::store::{ProjectRoutines, RoutineStore};
 use super::{Capabilities, CronSchedule, LocalTime, RoutineError, RunStatus, PROTOCOL_VERSION};
@@ -258,9 +258,10 @@ fn process(
             if config.routines.len() == before {
                 return Err(RoutineError::NotFound(name));
             }
+            let saved = store.save(config, revision)?;
+            // ^ Persist the requested mutation before it can affect a running process.
             request_cancel(state, store.project(), &name);
             cancel_running(&store, &name)?;
-            let saved = store.save(config, revision)?;
             Ok(Response::Ok {
                 revision: Some(saved.revision),
             })
@@ -414,6 +415,11 @@ fn migrate_runtime_name<T>(
 }
 
 fn tick(root: &Path, epoch_minute: i64, state: &Arc<DaemonState>) {
+    // ^ CRUD and scheduling share this boundary so a loaded definition cannot
+    // be deleted or renamed before its claim and active registration complete.
+    let Ok(_guard) = state.config.lock() else {
+        return;
+    };
     let projects = root.join("projects");
     let Ok(entries) = fs::read_dir(projects) else {
         return;
@@ -551,16 +557,21 @@ fn reap_workers(state: &DaemonState) {
 }
 
 fn cancel_running(store: &RoutineStore, name: &str) -> Result<(), RoutineError> {
-    let pid = store.modify_runtime(|state| {
+    let process = store.modify_runtime(|state| {
         let latest = state.runs.get_mut(name).and_then(|runs| runs.last_mut());
         if let Some(run) = latest.filter(|run| run.status == RunStatus::Running) {
             run.status = RunStatus::Cancelled;
-            Ok(run.pid)
+            Ok(run.pid.zip(run.process_start.clone()))
         } else {
             Ok(None)
         }
     })?;
-    let Some(pid) = pid else { return Ok(()) };
+    let Some((pid, start)) = process else {
+        return Ok(());
+    };
+    if process_start(pid).as_deref() != Some(start.as_str()) {
+        return Ok(());
+    }
     unsafe {
         libc::kill(-pid, libc::SIGTERM);
     }
@@ -609,14 +620,17 @@ fn reconcile_running(root: &Path) {
                     .iter_mut()
                     .filter(|run| run.status == RunStatus::Running)
                 {
-                    if let Some(pid) = run.pid {
-                        unsafe {
-                            libc::kill(-pid, libc::SIGKILL);
+                    if let Some((pid, start)) = run.pid.zip(run.process_start.as_deref()) {
+                        if process_start(pid).as_deref() == Some(start) {
+                            unsafe {
+                                libc::kill(-pid, libc::SIGKILL);
+                            }
                         }
                     }
                     run.status = RunStatus::Interrupted;
                     run.finished_epoch = Some(now_epoch());
                     run.pid = None;
+                    run.process_start = None;
                 }
             }
             Ok(())
@@ -813,6 +827,7 @@ mod tests {
                         status: RunStatus::Running,
                         exit_code: None,
                         pid: None,
+                        process_start: None,
                         final_output: String::new(),
                         stdout_path: root.join("stdout"),
                         stderr_path: root.join("stderr"),
@@ -851,6 +866,73 @@ mod tests {
     }
 
     #[test]
+    fn config_save_failure_does_not_request_cancel() {
+        let (root, project, state) = fixture();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let mut config = store.load().unwrap();
+        let max_toml_integer = i64::MAX as u64;
+        config.revision = max_toml_integer;
+        fs::write(store.project_file(), toml::to_string(&config).unwrap()).unwrap();
+        state.active.lock().unwrap().insert(
+            RunKey {
+                project: project.clone(),
+                routine: "one".into(),
+            },
+            false,
+        );
+
+        let result = process(
+            &root,
+            request(
+                &project,
+                Action::Delete {
+                    revision: max_toml_integer,
+                    name: "one".into(),
+                },
+            ),
+            &state,
+        );
+
+        assert!(matches!(result, Err(RoutineError::Corrupt(_))));
+        let key = RunKey {
+            project: project.clone(),
+            routine: "one".into(),
+        };
+        assert_eq!(state.active.lock().unwrap().get(&key), Some(&false));
+        assert!(store
+            .load()
+            .unwrap()
+            .routines
+            .iter()
+            .any(|r| r.name == "one"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scheduler_reloads_config_after_waiting_for_crud_lock() {
+        let (root, project, state) = fixture();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let mut config = store.load().unwrap();
+        config.routines[0].cron = "* * * * *".into();
+        config.routines.truncate(1);
+        let config = store.save(config, 1).unwrap();
+        let guard = state.config.lock().unwrap();
+        let tick_root = root.clone();
+        let tick_state = state.clone();
+        let worker = std::thread::spawn(move || tick(&tick_root, now_epoch() / 60, &tick_state));
+        std::thread::sleep(Duration::from_millis(100));
+        let mut deleted = config;
+        deleted.routines.clear();
+        store.save(deleted, 2).unwrap();
+        drop(guard);
+        worker.join().unwrap();
+
+        assert!(!is_active(&state, &project, "one"));
+        assert!(!store.load_runtime().unwrap().claims.contains_key("one"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn failed_rename_commit_restores_runtime_claims_and_logs() {
         let (root, project, _state) = fixture();
         let store = RoutineStore::new(root.clone(), &project).unwrap();
@@ -872,6 +954,7 @@ mod tests {
                         status: RunStatus::Succeeded,
                         exit_code: Some(0),
                         pid: None,
+                        process_start: None,
                         final_output: "done".into(),
                         stdout_path: stdout.clone(),
                         stderr_path: stderr.clone(),
@@ -940,6 +1023,7 @@ mod tests {
                         status: RunStatus::Running,
                         exit_code: None,
                         pid: Some(leader.id() as i32),
+                        process_start: process_start(leader.id() as i32),
                         final_output: String::new(),
                         stdout_path: root.join("stdout"),
                         stderr_path: root.join("stderr"),
@@ -956,6 +1040,50 @@ mod tests {
         }
         assert_ne!(unsafe { libc::kill(descendant, 0) }, 0);
         assert!(!process_group_exists(leader.id() as i32));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_reconciliation_does_not_signal_reused_process_group() {
+        let (root, project, _state) = fixture();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let mut child = Command::new("/bin/sh");
+        child.args(["-c", "sleep 30"]).process_group(0);
+        let mut child = child.spawn().unwrap();
+        let pid = child.id() as i32;
+        store
+            .modify_runtime(|runtime| {
+                runtime.runs.insert(
+                    "one".into(),
+                    vec![RunRecord {
+                        id: "stale".into(),
+                        routine: "one".into(),
+                        started_epoch: 1,
+                        finished_epoch: None,
+                        scheduled_epoch_minute: None,
+                        status: RunStatus::Running,
+                        exit_code: None,
+                        pid: Some(pid),
+                        process_start: Some("different-process".into()),
+                        final_output: String::new(),
+                        stdout_path: root.join("stdout"),
+                        stderr_path: root.join("stderr"),
+                    }],
+                );
+                Ok(())
+            })
+            .unwrap();
+
+        reconcile_running(&root);
+
+        assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+        let record = &store.load_runtime().unwrap().runs["one"][0];
+        assert_eq!(record.status, RunStatus::Interrupted);
+        assert!(record.pid.is_none());
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+        let _ = child.wait();
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -74,6 +74,7 @@ pub fn execute_supervised(
         status: RunStatus::Running,
         exit_code: None,
         pid: None,
+        process_start: None,
         final_output: String::new(),
         stdout_path: stdout_path.clone(),
         stderr_path: stderr_path.clone(),
@@ -106,23 +107,42 @@ pub fn execute_supervised(
         }
     };
     record.pid = Some(child.id() as i32);
-    replace_record(store, record.clone())?;
-    on_started(&record);
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Some(bytes) = stdin_bytes {
-            stdin.write_all(bytes)?;
-        }
+    record.process_start = process_start(child.id() as i32);
+    if let Err(error) = replace_record(store, record.clone()) {
+        return fail_started_run(
+            store,
+            child,
+            record,
+            &format!("failed to persist spawned process: {error}"),
+            None,
+            None,
+        );
     }
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| RoutineError::Io("stdout pipe missing".into()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| RoutineError::Io("stderr pipe missing".into()))?;
+    on_started(&record);
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => return fail_started_run(store, child, record, "stdout pipe missing", None, None),
+    };
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => return fail_started_run(store, child, record, "stderr pipe missing", None, None),
+    };
     let out_thread = drain(stdout, stdout_path.clone());
     let err_thread = drain(stderr, stderr_path.clone());
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Some(bytes) = stdin_bytes {
+            if let Err(error) = stdin.write_all(bytes) {
+                return fail_started_run(
+                    store,
+                    child,
+                    record,
+                    &format!("prompt delivery failed: {error}"),
+                    Some(out_thread),
+                    Some(err_thread),
+                );
+            }
+        }
+    }
     let status = child.wait()?;
     out_thread
         .join()
@@ -153,9 +173,98 @@ pub fn execute_supervised(
         RunStatus::Failed
     };
     record.pid = None;
+    record.process_start = None;
     record.final_output = extract_final_output(&stdout, &stderr);
     replace_record(store, record.clone())?;
     Ok(record)
+}
+
+fn fail_started_run(
+    store: &RoutineStore,
+    mut child: std::process::Child,
+    mut record: RunRecord,
+    message: &str,
+    out_thread: Option<thread::JoinHandle<Result<(), RoutineError>>>,
+    err_thread: Option<thread::JoinHandle<Result<(), RoutineError>>>,
+) -> Result<RunRecord, RoutineError> {
+    let pid = child.id() as i32;
+    unsafe {
+        libc::kill(-pid, libc::SIGTERM);
+    }
+    let mut status = None;
+    for _ in 0..20 {
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(Some(value)) => status = Some(value),
+                Ok(None) => {}
+                Err(_) => break,
+            }
+        }
+        if !process_group_exists(pid) {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if status.is_none() || process_group_exists(pid) {
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+        if status.is_none() {
+            status = child.wait().ok();
+        }
+    }
+    if let Some(handle) = out_thread {
+        let _ = handle.join();
+    }
+    if let Some(handle) = err_thread {
+        let _ = handle.join();
+    }
+    record.finished_epoch = Some(now_epoch());
+    record.status = RunStatus::Failed;
+    record.exit_code = status.and_then(|status| status.code());
+    record.pid = None;
+    record.process_start = None;
+    record.final_output = message.to_string();
+    replace_record(store, record)?;
+    Err(RoutineError::Io(message.to_string()))
+}
+
+fn process_group_exists(pgid: i32) -> bool {
+    if unsafe { libc::kill(-pgid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+pub(crate) fn process_start(pid: i32) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+        let read = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        if read != size {
+            return None;
+        }
+        let info = unsafe { info.assume_init() };
+        Some(format!(
+            "{}:{}",
+            info.pbi_start_tvsec, info.pbi_start_tvusec
+        ))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let after_name = stat.rsplit_once(") ")?.1;
+        after_name.split_whitespace().nth(19).map(str::to_string)
+    }
 }
 
 fn drain(
@@ -269,6 +378,10 @@ fn now_nanos() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn exact_prompt_is_replaced_otherwise_stdin_is_used() {
@@ -296,5 +409,44 @@ mod tests {
         );
         assert_eq!(extract_final_output("plain\n", "err"), "plain");
         assert_eq!(extract_final_output("", "err\n"), "err");
+    }
+
+    #[test]
+    fn prompt_write_failure_terminates_and_reaps_process_group() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/routine-execution-tests")
+            .join(format!(
+                "{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+        let project =
+            fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let routine = Routine {
+            name: "broken-stdin".into(),
+            cron: "* * * * *".into(),
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "exec 0<&-; trap '' TERM; sleep 30".into(),
+            ],
+            prompt: "x".repeat(1024 * 1024),
+        };
+        let pid = AtomicI32::new(0);
+        let result = execute_supervised(&store, &routine, None, |record| {
+            pid.store(record.pid.unwrap(), Ordering::SeqCst);
+        });
+        assert!(matches!(result, Err(RoutineError::Io(_))));
+        let pid = pid.load(Ordering::SeqCst);
+        assert!(pid > 0);
+        assert_eq!(unsafe { libc::kill(-pid, 0) }, -1);
+        let record = store.load_runtime().unwrap().runs["broken-stdin"]
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(record.status, RunStatus::Failed);
+        assert!(record.pid.is_none());
+        let _ = fs::remove_dir_all(root);
     }
 }

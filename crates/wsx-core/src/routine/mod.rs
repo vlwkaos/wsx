@@ -80,6 +80,9 @@ pub struct RunRecord {
     pub exit_code: Option<i32>,
     #[serde(default)]
     pub pid: Option<i32>,
+    /// OS process-start token used to reject a recycled PID/process group.
+    #[serde(default)]
+    pub process_start: Option<String>,
     pub final_output: String,
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
