@@ -149,6 +149,8 @@ TUI에서는 프로젝트나 그 하위 항목에서 `u`를 눌러 첫 루틴을
 
 설정은 `~/.config/wsx/routines/projects/` 아래 canonical 프로젝트별 버전 TOML입니다. 안정적인 FNV-1a-128 파일 키와 저장된 전체 경로를 대조해 충돌을 거부합니다. claim과 최근 20개 실행 로그는 별도 저장합니다. 정확히 일치하는 `{prompt}` argv는 치환하고 없으면 stdin으로 전달합니다. 원본 stdout/stderr와 Codex/Claude 최종 응답 추출 결과를 보존하며 `--revision`으로 stale write를 거부할 수 있습니다. 데몬 재시작 시 남은 Running 기록은 Interrupted로 복구하고, 취소와 종료는 process group에 TERM 후 제한 시간 내 종료되지 않으면 KILL을 보냅니다.
 
+외부 Rust 소비자는 애플리케이션 경계로 `wsx_core::routine::RoutineClient`를 사용합니다. `request`는 실행 중인 데몬에만 요청하며 새 데몬을 시작하지 않으므로 상태 확인과 종료에 사용합니다. `request_with_start`는 먼저 상태를 확인하고 unavailable일 때만 호출자가 만든 `std::process::Command`를 시작합니다. wsx-core는 분리된 process group과 `WSX_ROUTINE_STARTUP_FD`를 추가하며, 데몬은 이 descriptor에 `ready` 또는 `error:<message>`를 써야 합니다. 시작 제한 시간은 기본 3초이고 `with_startup_timeout`으로 바꿀 수 있으며, 실패하거나 제한 시간을 넘긴 child는 종료 후 reap합니다. 데몬 오류는 `RoutineErrorKind` 타입 범주를 보존하므로 메시지를 파싱할 필요가 없습니다. 저수준 `routine::ipc::send`는 프로토콜 진단 용도로 유지됩니다.
+
 ```sh
 # 워크트리
 wsx worktree create <branch> [-p <project>]

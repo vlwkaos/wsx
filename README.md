@@ -185,6 +185,8 @@ In the TUI, press `u` on a project or any of its entries to create the first rou
 
 Versioned per-project TOML lives under `~/.config/wsx/routines/projects/`. The stable FNV-1a-128 filename key is collision-checked against the stored canonical path. Claims and the latest 20 complete run logs are separate. One exact `{prompt}` argv item is replaced; otherwise prompt is sent to stdin. Raw stdout/stderr and an extracted Codex/Claude final response are retained. Mutations accept `--revision` to reject stale clients. A daemon restart reconciles stale running records as interrupted. Shutdown and explicit cancellation send TERM to the process group, then bounded KILL.
 
+External Rust consumers should use `wsx_core::routine::RoutineClient` as the application boundary. `request` contacts an existing daemon and never starts one, so use it for status and shutdown. `request_with_start` probes first and, only when unavailable, starts a caller-built `std::process::Command`; wsx-core adds a detached process group and passes `WSX_ROUTINE_STARTUP_FD`, on which the daemon must write `ready` or `error:<message>`. Startup is bounded (three seconds by default, configurable with `with_startup_timeout`), and failed or timed-out children are killed and reaped. Daemon responses preserve typed `RoutineErrorKind` categories; callers do not need to parse error messages. Low-level `routine::ipc::send` remains available for protocol diagnostics.
+
 ```sh
 # Worktrees
 wsx worktree create <branch> [-p <project>]
