@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -224,10 +225,12 @@ fn atomic_toml<T: Serialize>(path: &Path, value: &T) -> Result<(), RoutineError>
         .parent()
         .ok_or_else(|| RoutineError::Io("path has no parent".into()))?;
     fs::create_dir_all(parent)?;
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     let text = toml::to_string_pretty(value).map_err(|e| RoutineError::Corrupt(e.to_string()))?;
     let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
     let result = (|| {
         let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
         drop(file);
