@@ -1,7 +1,7 @@
 //! Supported application boundary for routine daemon requests and startup.
 
 use super::ipc::{self, Action, Request, Response};
-use super::RoutineError;
+use super::{RoutineError, PROTOCOL_VERSION};
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
@@ -73,7 +73,10 @@ impl RoutineClient {
         // ^ Probe with an observation so a mutation is never retried after an ambiguous disconnect.
         let status = Request::new(request.project.clone(), Action::Status);
         match self.request(&status) {
-            Ok(_) => return self.request(request),
+            Ok(response) => {
+                validate_status_response(response)?;
+                return self.request(request);
+            }
             Err(RoutineError::Unavailable(_)) => {}
             Err(error) => return Err(error),
         }
@@ -132,8 +135,8 @@ impl RoutineClient {
                 })?;
                 if startup == "ready" {
                     return self
-                        .poll_ready(status, deadline)
-                        .map(|_| ())
+                        .poll_ready(status, deadline)?
+                        .then_some(())
                         .ok_or_else(|| {
                             RoutineError::Unavailable(
                                 "routine daemon reported ready but did not accept status requests"
@@ -142,7 +145,7 @@ impl RoutineClient {
                         });
                 }
                 if let Some(error) = startup.strip_prefix("error:") {
-                    if self.poll_ready(status, deadline).is_some() {
+                    if self.poll_ready(status, deadline)? {
                         // ^ A singleton-race loser has failed even though its peer is ready.
                         stop_startup_child(child);
                         return Ok(());
@@ -175,14 +178,32 @@ impl RoutineClient {
         )))
     }
 
-    fn poll_ready(&self, status: &Request, deadline: Instant) -> Option<Response> {
+    fn poll_ready(&self, status: &Request, deadline: Instant) -> Result<bool, RoutineError> {
         while Instant::now() < deadline {
-            if let Ok(response) = self.request(status) {
-                return Some(response);
+            match self.request(status) {
+                Ok(response) => {
+                    validate_status_response(response)?;
+                    return Ok(true);
+                }
+                Err(RoutineError::Unavailable(_)) => {}
+                Err(error) => return Err(error),
             }
             std::thread::sleep(POLL_INTERVAL);
         }
-        None
+        Ok(false)
+    }
+}
+
+fn validate_status_response(response: Response) -> Result<(), RoutineError> {
+    match response {
+        Response::Daemon { protocol, .. } if protocol == PROTOCOL_VERSION => Ok(()),
+        Response::Daemon { protocol, .. } => Err(RoutineError::ProtocolMismatch {
+            client: PROTOCOL_VERSION,
+            daemon: protocol,
+        }),
+        _ => Err(RoutineError::Corrupt(
+            "routine daemon returned a non-daemon response to a status request".into(),
+        )),
     }
 }
 
@@ -422,6 +443,64 @@ mod tests {
     }
 
     #[test]
+    fn non_daemon_status_response_does_not_trigger_a_start() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::net::UnixListener;
+
+        let root = test_root("wrong-status-response");
+        std::fs::create_dir_all(&root).unwrap();
+        let listener = UnixListener::bind(root.join("daemon-v1.sock")).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            stream
+                .write_all(b"{\"result\":\"ok\",\"revision\":null}\n")
+                .unwrap();
+        });
+        let result = RoutineClient::new(root.clone())
+            .request_with_start(&list(&root), helper_command(&root, "must_not_start"));
+        assert!(matches!(result, Err(RoutineError::Corrupt(_))));
+        server.join().unwrap();
+        assert!(!root.join("helper.pid").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mismatched_status_protocol_does_not_trigger_a_start() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::net::UnixListener;
+
+        let root = test_root("wrong-status-protocol");
+        std::fs::create_dir_all(&root).unwrap();
+        let listener = UnixListener::bind(root.join("daemon-v1.sock")).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            stream
+                .write_all(b"{\"result\":\"daemon\",\"protocol\":2,\"pid\":1}\n")
+                .unwrap();
+        });
+        let result = RoutineClient::new(root.clone())
+            .request_with_start(&list(&root), helper_command(&root, "must_not_start"));
+        assert!(matches!(
+            result,
+            Err(RoutineError::ProtocolMismatch {
+                client: PROTOCOL_VERSION,
+                daemon: 2,
+            })
+        ));
+        server.join().unwrap();
+        assert!(!root.join("helper.pid").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn ambiguous_mutation_disconnect_is_not_retried_or_auto_started() {
         use std::io::{BufRead, BufReader};
         use std::os::unix::net::UnixListener;
@@ -521,6 +600,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn ready_with_non_daemon_status_is_corrupt_and_reaps_child() {
+        let root = test_root("ready-wrong-status");
+        std::fs::create_dir_all(&root).unwrap();
+        let pid_path = root.join("helper.pid");
+        let result = RoutineClient::new(root.clone())
+            .request_with_start(&list(&root), helper_command(&root, "ready_wrong_status"));
+        assert!(matches!(result, Err(RoutineError::Corrupt(_))));
+        assert_helper_reaped(&pid_path);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn assert_helper_reaped(pid_path: &Path) {
         let pid: i32 = std::fs::read_to_string(pid_path).unwrap().parse().unwrap();
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
@@ -545,6 +636,25 @@ mod tests {
             .parse::<i32>()
             .unwrap();
         let mut startup = unsafe { std::fs::File::from_raw_fd(fd) };
+        if mode == "ready_wrong_status" {
+            use std::io::{BufRead, BufReader};
+            use std::os::unix::net::UnixListener;
+
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("helper.pid"), std::process::id().to_string()).unwrap();
+            let listener = UnixListener::bind(root.join("daemon-v1.sock")).unwrap();
+            startup.write_all(b"ready").unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            stream
+                .write_all(b"{\"result\":\"ok\",\"revision\":null}\n")
+                .unwrap();
+            std::thread::sleep(Duration::from_secs(30));
+            return;
+        }
         if matches!(mode.as_str(), "invalid_hang" | "exit" | "ready_hang") {
             std::fs::write(root.join("helper.pid"), std::process::id().to_string()).unwrap();
             let notification = match mode.as_str() {
