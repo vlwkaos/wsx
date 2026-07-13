@@ -631,6 +631,27 @@ impl App {
         self.flat_dirty = true;
         self.ensure_flat();
         self.worktree_index = build_worktree_index(&self.workspace);
+        self.close_stale_routine_detail();
+    }
+
+    fn close_stale_routine_detail(&mut self) {
+        let is_stale = match &self.mode {
+            Mode::RoutineDetail {
+                project_path,
+                routine_name,
+                ..
+            } => !self.workspace.projects.iter().any(|project| {
+                project.path == *project_path
+                    && project
+                        .routines
+                        .iter()
+                        .any(|view| view.routine.name == *routine_name)
+            }),
+            _ => false,
+        };
+        if is_stale {
+            self.mode = Mode::Normal;
+        }
     }
 
     pub fn flat(&self) -> &[FlatEntry] {
@@ -3880,6 +3901,37 @@ mod tests {
             .unwrap();
         assert_eq!(project.name, "first");
         assert_eq!(project.routines[0].routine.name, "morning");
+    }
+
+    #[test]
+    fn routine_refresh_closes_detail_when_routine_was_deleted() {
+        let mut project = make_project("demo");
+        project.routines = vec![routine_view("morning")];
+        let workspace = WorkspaceState {
+            projects: vec![project],
+        };
+        let mut app = make_test_app(GlobalConfig::default(), workspace, None);
+        let project_path = app.workspace.projects[0].path.clone();
+        app.mode = Mode::RoutineDetail {
+            project_path: project_path.clone(),
+            routine_name: "morning".into(),
+            scroll: 0,
+        };
+        let generation = app.invalidate_routine_refresh(&project_path);
+        app.routine_tx
+            .send(RoutineRefreshResult {
+                project_path,
+                generation,
+                response: wsx_core::routine::ipc::Response::Routines {
+                    revision: 2,
+                    routines: Vec::new(),
+                },
+            })
+            .unwrap();
+
+        app.drain_async_results();
+
+        assert!(matches!(app.mode, Mode::Normal));
     }
 
     #[test]
