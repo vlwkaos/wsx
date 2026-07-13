@@ -493,6 +493,11 @@ pub(crate) fn ensure_routine_daemon() -> Result<()> {
             }
             if let Some(error) = startup.strip_prefix("error:") {
                 let _ = child.wait();
+                if error.contains("already running")
+                    && poll_routine_daemon(&socket, &status, deadline)
+                {
+                    return Ok(());
+                }
                 bail!("routine daemon failed to start: {error}");
             }
             if startup.is_empty() {
@@ -510,6 +515,20 @@ pub(crate) fn ensure_routine_daemon() -> Result<()> {
     }
     stop_startup_child(&mut child);
     bail!("routine daemon did not become ready within 3 seconds")
+}
+
+fn poll_routine_daemon(
+    socket: &Path,
+    status: &wsx_core::routine::ipc::Request,
+    deadline: Instant,
+) -> bool {
+    while Instant::now() < deadline {
+        if wsx_core::routine::ipc::send(socket, status).is_ok() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
 }
 
 fn stop_startup_child(child: &mut std::process::Child) {
@@ -1054,4 +1073,63 @@ fn cmd_session_list(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod routine_daemon_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{mpsc, Arc, Barrier};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn concurrent_first_starts_converge_on_singleton_daemon() {
+        let root = PathBuf::from(".tmp").join(format!(
+            "routine-cli-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let barrier = Arc::new(Barrier::new(3));
+        let (started_tx, started_rx) = mpsc::channel();
+        let mut servers = Vec::new();
+        for _ in 0..2 {
+            let root = root.clone();
+            let barrier = barrier.clone();
+            let started_tx = started_tx.clone();
+            servers.push(std::thread::spawn(move || {
+                barrier.wait();
+                wsx_core::routine::daemon::serve_with_startup(root, move |result| {
+                    started_tx.send(result).unwrap();
+                })
+            }));
+        }
+        barrier.wait();
+        let first = started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let second = started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_ne!(first.is_ok(), second.is_ok());
+
+        let socket = root.join("daemon-v1.sock");
+        let status = wsx_core::routine::ipc::Request::new(
+            std::env::current_dir().unwrap(),
+            wsx_core::routine::ipc::Action::Status,
+        );
+        assert!(poll_routine_daemon(
+            &socket,
+            &status,
+            Instant::now() + Duration::from_secs(3)
+        ));
+        wsx_core::routine::ipc::send(
+            &socket,
+            &wsx_core::routine::ipc::Request::new(
+                std::env::current_dir().unwrap(),
+                wsx_core::routine::ipc::Action::Shutdown,
+            ),
+        )
+        .unwrap();
+        for server in servers {
+            let _ = server.join().unwrap();
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

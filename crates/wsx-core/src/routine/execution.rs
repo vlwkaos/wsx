@@ -312,6 +312,7 @@ fn replace_record(store: &RoutineStore, record: RunRecord) -> Result<(), Routine
 }
 
 pub fn extract_final_output(stdout: &str, stderr: &str) -> String {
+    const FALLBACK_TAIL_BYTES: usize = 16 * 1024;
     let mut codex = None;
     let mut claude = None;
     for line in stdout.lines() {
@@ -330,7 +331,7 @@ pub fn extract_final_output(stdout: &str, stderr: &str) -> String {
                 .and_then(Value::as_str)
                 .map(str::to_owned);
         } else if value.get("type").and_then(Value::as_str) == Some("assistant") {
-            if let Some(text) = last_text(&value) {
+            if let Some(text) = claude_assistant_text(&value) {
                 claude = Some(text);
             }
         }
@@ -340,23 +341,33 @@ pub fn extract_final_output(stdout: &str, stderr: &str) -> String {
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| {
             if !stdout.trim().is_empty() {
-                stdout.trim().to_string()
+                text_tail(stdout.trim(), FALLBACK_TAIL_BYTES)
             } else {
-                stderr.trim().to_string()
+                text_tail(stderr.trim(), FALLBACK_TAIL_BYTES)
             }
         })
 }
 
-fn last_text(value: &Value) -> Option<String> {
-    match value {
-        Value::Object(map) => map
-            .get("text")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .or_else(|| map.values().filter_map(last_text).next_back()),
-        Value::Array(items) => items.iter().filter_map(last_text).next_back(),
-        _ => None,
+fn claude_assistant_text(value: &Value) -> Option<String> {
+    let content = value.get("message")?.get("content")?.as_array()?;
+    let text = content
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.trim().is_empty()).then_some(text)
+}
+
+fn text_tail(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
     }
+    let mut start = text.len() - max_bytes;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    text[start..].to_string()
 }
 
 fn hex_name(name: &str) -> String {
@@ -409,6 +420,34 @@ mod tests {
         );
         assert_eq!(extract_final_output("plain\n", "err"), "plain");
         assert_eq!(extract_final_output("", "err\n"), "err");
+    }
+
+    #[test]
+    fn plain_fallback_is_bounded_to_the_log_tail() {
+        let output = format!("HEAD\n{}TAIL", "progress\n".repeat(4_000));
+        let extracted = extract_final_output(&output, "");
+        assert!(extracted.len() <= 16 * 1024);
+        assert!(extracted.ends_with("TAIL"));
+        assert!(!extracted.contains("HEAD"));
+    }
+
+    #[test]
+    fn claude_extraction_ignores_nested_tool_payload_text() {
+        let output = concat!(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[",
+            "{\"type\":\"text\",\"text\":\"final answer\"},",
+            "{\"type\":\"tool_use\",\"input\":{\"text\":\"tool payload\"}}]}}\n"
+        );
+        assert_eq!(extract_final_output(output, ""), "final answer");
+    }
+
+    #[test]
+    fn tool_only_structured_output_uses_bounded_plain_fallback() {
+        let output = concat!(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[",
+            "{\"type\":\"tool_use\",\"input\":{\"text\":\"not an answer\"}}]}}\n"
+        );
+        assert_eq!(extract_final_output(output, ""), output.trim());
     }
 
     #[test]

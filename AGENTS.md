@@ -11,6 +11,7 @@ This is a Cargo **workspace** — the shared `~/.claude/skills/rust-release/rele
 ## good-to-go
 
 - **auwsx issue inspection**: use `"$AUWSX_BIN" issue get <issue_id>`; `issue show` and `issue --help` are unsupported.
+- **auwsx finding adjudication**: `finding get` is unsupported; use the phase prompt's open-finding records, then call only `finding accept` or `finding reject`.
 - **Routine daemon smoke tests**: sandboxed `flock` can fail with `EPERM`, and detached children from an escalated command may be reaped before a later command; use one approved foreground harness for lifecycle assertions.
 - **Filtered Cargo tests**: `cargo test` accepts one positional `TESTNAME` filter; run distinct filters as separate commands.
 

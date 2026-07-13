@@ -73,16 +73,18 @@ fn event_loop(root: &Path, listener: &UnixListener) -> Result<(), RoutineError> 
     let mut last_minute = i64::MIN;
     let stopping = Arc::new(AtomicBool::new(false));
     let state = Arc::new(DaemonState::default());
+    let mut handlers = Vec::new();
     while !stopping.load(Ordering::SeqCst) {
         reap_workers(&state);
+        reap_handles(&mut handlers);
         match listener.accept() {
             Ok((stream, _)) => {
                 let root = root.to_path_buf();
                 let stopping = stopping.clone();
                 let state = state.clone();
-                std::thread::spawn(move || {
+                handlers.push(std::thread::spawn(move || {
                     let _ = handle_stream(&root, stream, &stopping, &state);
-                });
+                }));
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(error) => return Err(error.into()),
@@ -94,6 +96,7 @@ fn event_loop(root: &Path, listener: &UnixListener) -> Result<(), RoutineError> 
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    drain_handles(handlers);
     stop_active(root, &state);
     drain_workers(&state);
     Ok(())
@@ -110,6 +113,7 @@ struct DaemonState {
     active: Mutex<HashMap<RunKey, bool>>,
     workers: Mutex<Vec<JoinHandle<()>>>,
     config: Mutex<()>,
+    admission: Mutex<()>,
 }
 
 fn handle_stream(
@@ -118,29 +122,42 @@ fn handle_stream(
     stopping: &AtomicBool,
     state: &Arc<DaemonState>,
 ) -> Result<(), RoutineError> {
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut line = String::new();
     BufReader::new(stream.try_clone()?).read_line(&mut line)?;
     let request = serde_json::from_str::<Request>(&line)
         .map_err(|e| RoutineError::Validation(format!("invalid request: {e}")));
-    let shutdown = matches!(
-        &request,
-        Ok(Request {
-            action: Action::Shutdown,
-            ..
-        })
-    );
     let response = match request {
-        Ok(request) => process(root, request, state).unwrap_or_else(Response::error),
+        Ok(request) => dispatch(root, request, stopping, state).unwrap_or_else(Response::error),
         Err(error) => Response::error(error),
     };
     let mut bytes =
         serde_json::to_vec(&response).map_err(|e| RoutineError::Corrupt(e.to_string()))?;
     bytes.push(b'\n');
     stream.write_all(&bytes)?;
-    if shutdown && !matches!(response, Response::Error { .. }) {
-        stopping.store(true, Ordering::SeqCst);
-    }
     Ok(())
+}
+
+fn dispatch(
+    root: &Path,
+    request: Request,
+    stopping: &AtomicBool,
+    state: &Arc<DaemonState>,
+) -> Result<Response, RoutineError> {
+    let _admission = state
+        .admission
+        .lock()
+        .map_err(|_| RoutineError::Io("request admission lock poisoned".into()))?;
+    if stopping.load(Ordering::SeqCst) {
+        return Err(RoutineError::Unavailable(
+            "routine daemon is shutting down".into(),
+        ));
+    }
+    if matches!(request.action, Action::Shutdown) {
+        stopping.store(true, Ordering::SeqCst);
+        return Ok(Response::Ok { revision: None });
+    }
+    process(root, request, state)
 }
 
 fn process(
@@ -261,7 +278,9 @@ fn process(
             let saved = store.save(config, revision)?;
             // ^ Persist the requested mutation before it can affect a running process.
             request_cancel(state, store.project(), &name);
-            cancel_running(&store, &name)?;
+            // ^ Configuration is already committed. Cancellation remains
+            // best-effort and the worker observes the in-memory request too.
+            let _ = cancel_running(&store, &name);
             Ok(Response::Ok {
                 revision: Some(saved.revision),
             })
@@ -553,6 +572,23 @@ fn reap_workers(state: &DaemonState) {
             let worker = workers.swap_remove(index);
             let _ = worker.join();
         }
+    }
+}
+
+fn reap_handles(handles: &mut Vec<JoinHandle<()>>) {
+    let mut index = handles.len();
+    while index > 0 {
+        index -= 1;
+        if handles[index].is_finished() {
+            let handle = handles.swap_remove(index);
+            let _ = handle.join();
+        }
+    }
+}
+
+fn drain_handles(handles: Vec<JoinHandle<()>>) {
+    for handle in handles {
+        let _ = handle.join();
     }
 }
 
@@ -875,7 +911,7 @@ mod tests {
         fs::write(store.project_file(), toml::to_string(&config).unwrap()).unwrap();
         state.active.lock().unwrap().insert(
             RunKey {
-                project: project.clone(),
+                project: store.project().to_path_buf(),
                 routine: "one".into(),
             },
             false,
@@ -895,7 +931,7 @@ mod tests {
 
         assert!(matches!(result, Err(RoutineError::Corrupt(_))));
         let key = RunKey {
-            project: project.clone(),
+            project: store.project().to_path_buf(),
             routine: "one".into(),
         };
         assert_eq!(state.active.lock().unwrap().get(&key), Some(&false));
@@ -905,6 +941,47 @@ mod tests {
             .routines
             .iter()
             .any(|r| r.name == "one"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delete_reports_committed_revision_when_cancellation_cleanup_fails() {
+        let (root, project, state) = fixture();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        fs::create_dir_all(store.runtime_file()).unwrap();
+        state.active.lock().unwrap().insert(
+            RunKey {
+                project: store.project().to_path_buf(),
+                routine: "one".into(),
+            },
+            false,
+        );
+
+        let response = process(
+            &root,
+            request(
+                &project,
+                Action::Delete {
+                    revision: 1,
+                    name: "one".into(),
+                },
+            ),
+            &state,
+        )
+        .unwrap();
+
+        assert!(matches!(response, Response::Ok { revision: Some(2) }));
+        assert!(!store
+            .load()
+            .unwrap()
+            .routines
+            .iter()
+            .any(|routine| routine.name == "one"));
+        let key = RunKey {
+            project: store.project().to_path_buf(),
+            routine: "one".into(),
+        };
+        assert_eq!(state.active.lock().unwrap().get(&key), Some(&true));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1084,6 +1161,126 @@ mod tests {
             libc::kill(-pid, libc::SIGKILL);
         }
         let _ = child.wait();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn socket_crud_run_logs_and_shutdown_complete_end_to_end() {
+        let project =
+            fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+        let root = PathBuf::from(".tmp").join(format!(
+            "routine-daemon-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let server_root = root.clone();
+        let server = std::thread::spawn(move || {
+            serve_with_startup(server_root, move |result| {
+                started_tx.send(result).unwrap();
+            })
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap();
+        let socket = store.socket_path();
+        let revision = store.load().unwrap().revision;
+        let response = super::super::ipc::send(
+            &socket,
+            &request(
+                &project,
+                Action::Add {
+                    revision,
+                    routine: Routine {
+                        name: "quick".into(),
+                        cron: "0 0 1 1 *".into(),
+                        command: vec!["/bin/echo".into(), "done".into()],
+                        prompt: String::new(),
+                    },
+                },
+            ),
+        )
+        .unwrap();
+        assert!(matches!(
+            response,
+            Response::Ok {
+                revision: Some(saved_revision)
+            } if saved_revision == revision + 1
+        ));
+        super::super::ipc::send(
+            &socket,
+            &request(
+                &project,
+                Action::Run {
+                    name: "quick".into(),
+                },
+            ),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let response = super::super::ipc::send(
+                &socket,
+                &request(
+                    &project,
+                    Action::Logs {
+                        name: "quick".into(),
+                    },
+                ),
+            )
+            .unwrap();
+            if let Response::Runs { runs } = response {
+                if let Some(run) = runs.last() {
+                    if run.status == RunStatus::Succeeded {
+                        assert_eq!(run.final_output, "done");
+                        break;
+                    }
+                }
+            }
+            assert!(Instant::now() < deadline, "routine did not finish");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        super::super::ipc::send(&socket, &request(&project, Action::Shutdown)).unwrap();
+        server.join().unwrap().unwrap();
+        assert!(!socket.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn shutdown_is_terminal_for_later_mutation_handlers() {
+        let (root, project, state) = fixture();
+        let stopping = AtomicBool::new(false);
+        let response = dispatch(
+            &root,
+            request(&project, Action::Shutdown),
+            &stopping,
+            &state,
+        )
+        .unwrap();
+        assert!(matches!(response, Response::Ok { revision: None }));
+
+        let result = dispatch(
+            &root,
+            request(
+                &project,
+                Action::Add {
+                    revision: 1,
+                    routine: slow("late"),
+                },
+            ),
+            &stopping,
+            &state,
+        );
+        assert!(matches!(result, Err(RoutineError::Unavailable(_))));
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        assert!(!store
+            .load()
+            .unwrap()
+            .routines
+            .iter()
+            .any(|routine| routine.name == "late"));
         let _ = fs::remove_dir_all(root);
     }
 }
