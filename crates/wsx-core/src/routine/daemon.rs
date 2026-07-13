@@ -104,12 +104,31 @@ fn event_loop(root: &Path, listener: &UnixListener) -> Result<(), RoutineError> 
             last_minute = minute;
             tick(root, minute, &state);
         }
-        std::thread::sleep(Duration::from_millis(100));
+        wait_for_request(listener, Duration::from_millis(100))?;
     };
     drain_handles(handlers);
     stop_active(root, &state);
     drain_workers(&state);
     result
+}
+
+fn wait_for_request(listener: &UnixListener, timeout: Duration) -> Result<(), RoutineError> {
+    let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+    let mut descriptor = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        let result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        if result >= 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error.into());
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -948,6 +967,42 @@ mod tests {
 
     fn request(project: &Path, action: Action) -> Request {
         Request::new(project.to_path_buf(), action)
+    }
+
+    #[test]
+    fn given_started_daemon_when_twelve_sequential_status_requests_then_completes_within_batch_latency_budget(
+    ) {
+        let (root, project, _) = fixture();
+        let daemon_root = root.clone();
+        let (startup_tx, startup_rx) = std::sync::mpsc::channel();
+        let daemon = std::thread::spawn(move || {
+            serve_with_startup(daemon_root, move |result| {
+                startup_tx.send(result).unwrap();
+            })
+        });
+        startup_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        let client = super::super::RoutineClient::new(root.clone());
+        client.request(&request(&project, Action::Status)).unwrap();
+
+        let started = Instant::now();
+        for _ in 0..12 {
+            client.request(&request(&project, Action::Status)).unwrap();
+        }
+        let elapsed = started.elapsed();
+
+        client
+            .request(&request(&project, Action::Shutdown))
+            .unwrap();
+        daemon.join().unwrap().unwrap();
+        let _ = fs::remove_dir_all(root);
+
+        assert!(
+            elapsed < Duration::from_millis(900),
+            "12 sequential status requests took {elapsed:?}"
+        );
     }
 
     #[test]
