@@ -16,8 +16,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Client for a routine daemon rooted at one machine-local state directory.
 ///
 /// [`request`](Self::request) never starts a daemon. [`request_with_start`](Self::request_with_start)
-/// first tries the direct path, then starts the caller-provided command only
-/// when the daemon is unavailable. The command must run a routine daemon that
+/// first probes daemon availability with a status request, then starts the
+/// caller-provided command only when the daemon is unavailable. The caller's
+/// request is sent exactly once. The command must run a routine daemon that
 /// writes `ready` or `error:<message>` to the descriptor supplied in the
 /// `WSX_ROUTINE_STARTUP_FD` environment variable. The client adds that
 /// handshake and a detached process group; executable, arguments, standard
@@ -55,14 +56,22 @@ impl RoutineClient {
         ipc::send(&self.socket_path(), request)?.into_result()
     }
 
-    /// Send a request, starting the daemon with `command` if it is unavailable.
+    /// Send a request once, starting the daemon with `command` if it is unavailable.
     pub fn request_with_start(
         &self,
         request: &Request,
         mut command: Command,
     ) -> Result<Response, RoutineError> {
-        match self.request(request) {
-            Ok(response) => return Ok(response),
+        // ^ Probe with an observation so a mutation is never retried after an ambiguous disconnect.
+        let status = Request::new(request.project.clone(), Action::Status);
+        let availability = if matches!(&request.action, Action::Status) {
+            self.request(request)
+        } else {
+            self.request(&status)
+        };
+        match availability {
+            Ok(response) if matches!(&request.action, Action::Status) => return Ok(response),
+            Ok(_) => return self.request(request),
             Err(RoutineError::Unavailable(_)) => {}
             Err(error) => return Err(error),
         }
@@ -127,7 +136,6 @@ impl RoutineClient {
                         });
                 }
                 if let Some(error) = startup.strip_prefix("error:") {
-                    let _ = child.wait();
                     if self.poll_ready(status, deadline).is_some() {
                         return Ok(());
                     }
@@ -327,6 +335,69 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_mutation_disconnect_is_not_retried_or_auto_started() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::net::UnixListener;
+
+        let root = test_root("ambiguous-mutation");
+        std::fs::create_dir_all(&root).unwrap();
+        let listener = UnixListener::bind(root.join("daemon-v1.sock")).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut probe, _) = listener.accept().unwrap();
+            let mut probe_request = String::new();
+            BufReader::new(probe.try_clone().unwrap())
+                .read_line(&mut probe_request)
+                .unwrap();
+            let probe_request: Request = serde_json::from_str(&probe_request).unwrap();
+            assert!(matches!(probe_request.action, Action::Status));
+            probe
+                .write_all(b"{\"result\":\"daemon\",\"protocol\":1,\"pid\":1}\n")
+                .unwrap();
+
+            let (mutation, _) = listener.accept().unwrap();
+            let mut mutation_request = String::new();
+            BufReader::new(mutation)
+                .read_line(&mut mutation_request)
+                .unwrap();
+            let mutation_request: Request = serde_json::from_str(&mutation_request).unwrap();
+            assert!(matches!(mutation_request.action, Action::Delete { .. }));
+        });
+        let request = Request::new(
+            root.clone(),
+            Action::Delete {
+                revision: 1,
+                name: "daily".into(),
+            },
+        );
+        let result = RoutineClient::new(root.clone())
+            .request_with_start(&request, helper_command(&root, "must_not_start"));
+        assert!(matches!(result, Err(RoutineError::Unavailable(_))));
+        server.join().unwrap();
+        assert!(!root.join("helper.pid").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_error_handshake_respects_timeout_and_reaps_child() {
+        let root = test_root("error-timeout");
+        std::fs::create_dir_all(&root).unwrap();
+        let pid_path = root.join("helper.pid");
+        let started = Instant::now();
+        let result = RoutineClient::new(root.clone())
+            .with_startup_timeout(Duration::from_millis(300))
+            .request_with_start(&status(&root), helper_command(&root, "error_hang"));
+        assert!(matches!(result, Err(RoutineError::Unavailable(_))));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let pid: i32 = std::fs::read_to_string(&pid_path).unwrap().parse().unwrap();
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     #[ignore = "spawned by RoutineClient lifecycle tests"]
     fn daemon_helper() {
         let root = PathBuf::from(std::env::var_os("WSX_ROUTINE_TEST_ROOT").unwrap());
@@ -341,6 +412,12 @@ mod tests {
             .parse::<i32>()
             .unwrap();
         let mut startup = unsafe { std::fs::File::from_raw_fd(fd) };
+        if mode == "error_hang" {
+            std::fs::write(root.join("helper.pid"), std::process::id().to_string()).unwrap();
+            startup.write_all(b"error:startup failed").unwrap();
+            std::thread::sleep(Duration::from_secs(30));
+            return;
+        }
         let _ = super::super::daemon::serve_with_startup(root, move |result| {
             let message = match result {
                 Ok(()) => "ready".to_string(),
