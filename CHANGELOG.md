@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+
+- Add machine-local project routines across the public `wsx-core` API, headless `wsx routine` CLI, and TUI. A detached singleton daemon owns versioned per-project configuration, five-field local cron scheduling, direct-argv execution, cancellation, history, and retained logs. Durable minute claims and per-routine locks prevent duplicate or overlapping scheduled runs, while output handling preserves raw streams and extracts Codex or Claude final responses when available.
+
 ## [0.16.2] - 2026-06-25
 
 ### Bug Fixes
