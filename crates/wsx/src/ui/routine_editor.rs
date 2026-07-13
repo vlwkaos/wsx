@@ -149,6 +149,7 @@ pub fn render(frame: &mut Frame, area: Rect, form: &RoutineForm, editing: bool, 
     frame.render_widget(Clear, popup);
     let labels = ["Name", "Cron", "Command argv (JSON)", "Prompt"];
     let values = [&form.name, &form.cron, &form.command_json, &form.prompt];
+    let mut cursor_position = None;
     let mut lines = vec![Line::from(if editing {
         "Edit routine"
     } else {
@@ -167,16 +168,20 @@ pub fn render(frame: &mut Frame, area: Rect, form: &RoutineForm, editing: bool, 
             .width
             .saturating_sub(label.len() as u16)
             .saturating_sub(7) as usize;
-        let value = visible_value(
+        let (value, cursor_column) = visible_value(
             value,
             (index == form.field).then_some(form.cursor),
             value_width,
         );
+        let prefix = format!("{marker} {label}: ");
+        if let Some(cursor_column) = cursor_column {
+            cursor_position = Some(Position::new(
+                popup.x + 1 + Span::raw(prefix.as_str()).width() as u16 + cursor_column as u16,
+                popup.y + 2 + index as u16,
+            ));
+        }
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("{marker} {label}: "),
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(prefix, Style::default().fg(Color::DarkGray)),
             Span::raw(value),
         ]));
     }
@@ -189,42 +194,69 @@ pub fn render(frame: &mut Frame, area: Rect, form: &RoutineForm, editing: bool, 
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Routine ")),
         popup,
     );
+    if let Some(position) = cursor_position {
+        frame.set_cursor_position(position);
+    }
 }
 
-fn visible_value(value: &str, cursor: Option<usize>, width: usize) -> String {
+fn visible_value(value: &str, cursor: Option<usize>, width: usize) -> (String, Option<usize>) {
     if width == 0 {
-        return String::new();
+        return (String::new(), cursor.map(|_| 0));
     }
     let chars = value.chars().collect::<Vec<_>>();
-    if chars.len() <= width {
-        return value.to_string();
+    let widths = chars
+        .iter()
+        .map(|character| Span::raw(character.to_string()).width())
+        .collect::<Vec<_>>();
+    let mut cumulative_widths = Vec::with_capacity(widths.len() + 1);
+    cumulative_widths.push(0);
+    for character_width in &widths {
+        cumulative_widths.push(cumulative_widths.last().copied().unwrap_or(0) + character_width);
     }
     let cursor_chars = cursor
         .map(|cursor| value[..cursor.min(value.len())].chars().count())
         .unwrap_or(0);
-    let start = if cursor.is_some() {
-        if cursor_chars >= chars.len().saturating_sub(width / 2) {
-            chars.len().saturating_sub(width.saturating_sub(1))
-        } else {
-            cursor_chars.saturating_sub(width / 2)
-        }
-    } else {
-        0
+    if cumulative_widths.last().copied().unwrap_or(0) <= width {
+        let cursor_column = cursor.map(|_| cumulative_widths[cursor_chars]);
+        return (value.to_string(), cursor_column);
     }
-    .min(chars.len().saturating_sub(1));
+    let mut start = 0;
+    if cursor.is_some() {
+        while start < cursor_chars
+            && cumulative_widths[cursor_chars] - cumulative_widths[start] + usize::from(start > 0)
+                > width
+        {
+            start += 1;
+        }
+    }
     // ^ A leading ellipsis consumes one viewport column; tail tests must count it.
     let prefix = usize::from(start > 0);
-    let suffix = usize::from(start + width - prefix < chars.len());
-    let take = width.saturating_sub(prefix + suffix);
     let mut visible = String::new();
     if prefix == 1 {
         visible.push('…');
     }
-    visible.extend(chars.iter().skip(start).take(take));
-    if suffix == 1 {
-        visible.push('…');
+    let mut visible_width = prefix;
+    let required_end = cursor.map(|_| cursor_chars).unwrap_or(start);
+    let mut index = start;
+    while index < required_end {
+        visible.push(chars[index]);
+        visible_width += widths[index];
+        index += 1;
     }
-    visible
+    let cursor_column = cursor.map(|_| visible_width);
+    while index < chars.len() {
+        let suffix_width = usize::from(index + 1 < chars.len());
+        if visible_width + widths[index] + suffix_width > width {
+            if visible_width < width {
+                visible.push('…');
+            }
+            break;
+        }
+        visible.push(chars[index]);
+        visible_width += widths[index];
+        index += 1;
+    }
+    (visible, cursor_column)
 }
 
 #[cfg(test)]
@@ -267,7 +299,39 @@ mod tests {
     #[test]
     fn active_long_field_scrolls_to_its_cursor() {
         let value = "head-abcdefghijklmnopqrstuvwxyz-tail";
-        assert_eq!(visible_value(value, Some(value.len()), 12), "…uvwxyz-tail");
-        assert_eq!(visible_value(value, None, 12), "head-abcdef…");
+        assert_eq!(
+            visible_value(value, Some(value.len()), 12),
+            ("…uvwxyz-tail".into(), Some(12))
+        );
+        assert_eq!(
+            visible_value(value, None, 12),
+            ("head-abcdef…".into(), None)
+        );
+    }
+
+    #[test]
+    fn editor_places_terminal_cursor_in_active_scrolled_field() {
+        let mut form = RoutineForm::codex();
+        form.command_json = "[\"head-abcdefghijklmnopqrstuvwxyz-tail\"]".into();
+        form.field = 2;
+        form.cursor = form.command_json.len();
+        let backend = ratatui::backend::TestBackend::new(40, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render(frame, frame.area(), &form, false, true))
+            .unwrap();
+
+        terminal
+            .backend_mut()
+            .assert_cursor_position(Position::new(36, 5));
+    }
+
+    #[test]
+    fn wide_characters_use_terminal_columns_for_cursor_and_viewport() {
+        assert_eq!(
+            visible_value("가나다라마바사", Some("가나다라마바사".len()), 7),
+            ("…마바사".into(), Some(7))
+        );
     }
 }
