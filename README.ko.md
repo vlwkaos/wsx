@@ -127,6 +127,22 @@ mobile_detach_key = "C-q"
 
 ## CLI
 
+### 머신 로컬 루틴
+
+`wsx routine`은 분리 실행되는 단일 데몬을 통해 프로젝트별 direct-argv 예약 명령을 관리합니다. 정의는 git 밖에 저장하고 canonical main worktree에서 실행합니다.
+
+```sh
+wsx routine add nightly --cron "0 2 * * *" --arg codex --arg exec --arg=--json --arg '{prompt}' --prompt "유지보수를 실행해 줘" -p wsx
+wsx routine list -p wsx
+wsx routine run nightly -p wsx
+wsx routine logs nightly -p wsx
+wsx routine daemon status
+```
+
+cron은 데몬 호스트 로컬 시간의 숫자 5필드이며 `*`, 쉼표 목록, 포함 범위, 양수 `/step`을 지원합니다. 일요일은 `0` 또는 `7`이고 일과 요일을 모두 제한하면 일반 cron처럼 OR로 판정합니다. 놓친 분은 재실행하지 않으며 실행 전 epoch-minute claim을 영속화하고 같은 루틴의 동시 실행을 막습니다.
+
+설정은 `~/.config/wsx/routines/projects/` 아래 canonical 프로젝트별 버전 TOML입니다. 안정적인 FNV-1a-128 파일 키와 저장된 전체 경로를 대조해 충돌을 거부합니다. claim과 최근 20개 실행 로그는 별도 저장합니다. 정확히 일치하는 `{prompt}` argv는 치환하고 없으면 stdin으로 전달합니다. 원본 stdout/stderr와 Codex/Claude 최종 응답 추출 결과를 보존하며 `--revision`으로 stale write를 거부할 수 있습니다.
+
 ```sh
 # 워크트리
 wsx worktree create <branch> [-p <project>]

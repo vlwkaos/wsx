@@ -163,6 +163,24 @@ mobile_detach_key = "C-q"
 
 ## CLI
 
+### Machine-local routines
+
+`wsx routine` manages project-local scheduled direct-argv commands through one detached daemon. Definitions stay outside git and run from the canonical main worktree.
+
+```sh
+wsx routine add nightly --cron "0 2 * * *" --arg codex --arg exec --arg=--json --arg '{prompt}' --prompt "Run maintenance" -p wsx
+wsx routine list -p wsx
+wsx routine show nightly -p wsx
+wsx routine run nightly -p wsx
+wsx routine logs nightly -p wsx
+wsx routine delete nightly -p wsx
+wsx routine daemon status
+```
+
+Cron uses five numeric local-time fields with `*`, comma lists, inclusive ranges, and positive slash steps. Sunday is `0` or `7`; restricted day-of-month and weekday fields use cron OR semantics. The daemon checks only the current civil minute, never catches up missed minutes, claims each epoch minute before spawn, and prevents same-routine overlap.
+
+Versioned per-project TOML lives under `~/.config/wsx/routines/projects/`. The stable FNV-1a-128 filename key is collision-checked against the stored canonical path. Claims and the latest 20 complete run logs are separate. One exact `{prompt}` argv item is replaced; otherwise prompt is sent to stdin. Raw stdout/stderr and an extracted Codex/Claude final response are retained. Mutations accept `--revision` to reject stale clients.
+
 ```sh
 # Worktrees
 wsx worktree create <branch> [-p <project>]
