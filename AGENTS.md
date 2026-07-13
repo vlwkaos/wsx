@@ -13,6 +13,7 @@ This is a Cargo **workspace** — the shared `~/.claude/skills/rust-release/rele
 - **auwsx issue inspection**: use `"$AUWSX_BIN" issue get <issue_id>`; `issue show` and `issue --help` are unsupported.
 - **auwsx finding inspection/adjudication**: `finding get` is unsupported; inspect with `"$AUWSX_BIN" finding ls "$AUWSX_ISSUE_ID" --open` or use the phase prompt's open-finding records, then call only `finding accept` or `finding reject`.
 - **auwsx finding creation**: severities are `blocker|major|minor|nit`; subcommand help is unsupported, so use `"$AUWSX_BIN" --help` for callback syntax.
+- **Issue-local durable memory**: the injected control outbox rejects `memory save`; do not retry it as a callback, and report the unavailable durable-memory step in the phase report.
 - **Routine daemon smoke tests**: sandboxed `flock` can fail with `EPERM`, and detached children from an escalated command may be reaped before a later command; use one approved foreground harness for lifecycle assertions.
 - **Filtered Cargo tests**: `cargo test` accepts one positional `TESTNAME` filter; run distinct filters as separate commands.
 - **Formatting baseline**: whole-workspace `cargo fmt --all -- --check` currently reports pre-existing drift in `crates/wsx-core/src/config/global.rs`; format touched Rust files directly until that baseline is repaired.
