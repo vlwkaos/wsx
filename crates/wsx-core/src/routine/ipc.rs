@@ -1,4 +1,4 @@
-use super::{Capabilities, Routine, RoutineError, RunRecord, PROTOCOL_VERSION};
+use super::{Capabilities, Routine, RoutineError, RoutineErrorKind, RunRecord, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -91,26 +91,14 @@ pub enum Response {
         revision: Option<u64>,
     },
     Error {
-        kind: String,
+        kind: RoutineErrorKind,
         message: String,
     },
 }
 
 impl Response {
     pub fn error(error: RoutineError) -> Self {
-        let kind = match error {
-            RoutineError::Validation(_) => "validation",
-            RoutineError::Duplicate(_) => "duplicate",
-            RoutineError::NotFound(_) => "not_found",
-            RoutineError::Conflict { .. } => "conflict",
-            RoutineError::ProjectCollision { .. } => "project_collision",
-            RoutineError::AlreadyRunning(_) => "already_running",
-            RoutineError::ProtocolMismatch { .. } => "protocol_mismatch",
-            RoutineError::Unavailable(_) => "unavailable",
-            RoutineError::Io(_) => "io",
-            RoutineError::Corrupt(_) => "corrupt",
-        }
-        .to_string();
+        let kind = error.kind();
         Self::Error {
             kind,
             message: error.to_string(),
@@ -119,7 +107,7 @@ impl Response {
 
     pub fn into_result(self) -> Result<Self, RoutineError> {
         match self {
-            Self::Error { message, .. } => Err(RoutineError::Unavailable(message)),
+            Self::Error { kind, message } => Err(RoutineError::RemoteDaemon { kind, message }),
             other => Ok(other),
         }
     }
@@ -140,4 +128,58 @@ pub fn send(socket: &Path, request: &Request) -> Result<Response, RoutineError> 
     }
     serde_json::from_str(&line)
         .map_err(|e| RoutineError::Corrupt(format!("invalid daemon response: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_v1_error_kinds_keep_the_existing_wire_strings() {
+        let cases = [
+            (RoutineErrorKind::Validation, "validation"),
+            (RoutineErrorKind::Duplicate, "duplicate"),
+            (RoutineErrorKind::NotFound, "not_found"),
+            (RoutineErrorKind::Conflict, "conflict"),
+            (RoutineErrorKind::ProjectCollision, "project_collision"),
+            (RoutineErrorKind::AlreadyRunning, "already_running"),
+            (RoutineErrorKind::ProtocolMismatch, "protocol_mismatch"),
+            (RoutineErrorKind::Unavailable, "unavailable"),
+            (RoutineErrorKind::Io, "io"),
+            (RoutineErrorKind::Corrupt, "corrupt"),
+        ];
+        for (kind, wire) in cases {
+            let response = Response::Error {
+                kind,
+                message: "detail".into(),
+            };
+            let json = serde_json::to_string(&response).unwrap();
+            assert!(json.contains(&format!(r#""kind":"{wire}""#)));
+            let decoded: Response = serde_json::from_str(&json).unwrap();
+            assert!(matches!(decoded, Response::Error { kind: decoded, .. } if decoded == kind));
+        }
+    }
+
+    #[test]
+    fn daemon_error_category_and_message_cross_the_client_boundary() {
+        let response: Response = serde_json::from_str(
+            r#"{"result":"error","kind":"conflict","message":"stale revision"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            response.into_result(),
+            Err(RoutineError::RemoteDaemon {
+                kind: RoutineErrorKind::Conflict,
+                message,
+            }) if message == "stale revision"
+        ));
+    }
+
+    #[test]
+    fn unknown_error_kind_is_rejected_as_an_invalid_closed_domain() {
+        let result = serde_json::from_str::<Response>(
+            r#"{"result":"error","kind":"future_kind","message":"detail"}"#,
+        );
+        assert!(result.is_err());
+    }
 }
