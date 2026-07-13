@@ -442,12 +442,8 @@ fn fetch_revision(project: &Path) -> Result<u64> {
 
 pub(crate) fn ensure_routine_daemon() -> Result<()> {
     let client = routine_client()?;
-    let request = wsx_core::routine::ipc::Request::new(
-        std::env::current_dir()?,
-        // ^ Start is explicit CLI intent; List uses the auto-start request path without weakening lifecycle actions.
-        wsx_core::routine::ipc::Action::List,
-    );
-    client.request_with_start(&request, routine_daemon_command()?)?;
+    // ^ Explicit startup must not depend on whether the caller's current directory is a valid project.
+    client.start(routine_daemon_command()?)?;
     Ok(())
 }
 

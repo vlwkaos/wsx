@@ -15,12 +15,14 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Client for a routine daemon rooted at one machine-local state directory.
 ///
-/// [`request`](Self::request) never starts a daemon. [`request_with_start`](Self::request_with_start)
+/// [`request`](Self::request) never starts a daemon. [`start`](Self::start) ensures
+/// a daemon is running without accessing a project. [`request_with_start`](Self::request_with_start)
 /// accepts routine list and mutation requests, probes daemon availability with
 /// a status request, then starts the caller-provided command only when the daemon
 /// is unavailable. Status and shutdown requests are rejected by the auto-start
 /// boundary and must use [`request`](Self::request). The caller's request is sent
-/// exactly once. The command must run a routine daemon that
+/// exactly once. Availability probing and startup share the configured startup
+/// timeout. The command must run a routine daemon that
 /// writes `ready` or `error:<message>` to the descriptor supplied in the
 /// `WSX_ROUTINE_STARTUP_FD` environment variable. The client adds that
 /// handshake and a detached process group; executable, arguments, standard
@@ -58,6 +60,13 @@ impl RoutineClient {
         ipc::send(&self.socket_path(), request)?.into_result()
     }
 
+    /// Ensure a daemon is running without issuing a project-scoped request.
+    pub fn start(&self, mut command: Command) -> Result<(), RoutineError> {
+        let status = Request::new(PathBuf::new(), Action::Status);
+        let deadline = self.startup_deadline()?;
+        self.ensure_started(&status, &mut command, deadline)
+    }
+
     /// Send a request once, starting the daemon with `command` if it is unavailable.
     pub fn request_with_start(
         &self,
@@ -70,27 +79,54 @@ impl RoutineClient {
             ));
         }
 
+        let deadline = self.startup_deadline()?;
         // ^ Probe with an observation so a mutation is never retried after an ambiguous disconnect.
         let status = Request::new(request.project.clone(), Action::Status);
-        match self.request(&status) {
+        self.ensure_started(&status, &mut command, deadline)?;
+        self.request(request)
+    }
+
+    fn startup_deadline(&self) -> Result<Instant, RoutineError> {
+        Instant::now()
+            .checked_add(self.startup_timeout)
+            .ok_or_else(|| {
+                RoutineError::Validation("routine daemon startup timeout is too large".into())
+            })
+    }
+
+    fn ensure_started(
+        &self,
+        status: &Request,
+        command: &mut Command,
+        deadline: Instant,
+    ) -> Result<(), RoutineError> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(self.startup_timeout_error());
+        }
+        match ipc::send_with_timeout(&self.socket_path(), status, remaining)
+            .and_then(Response::into_result)
+        {
             Ok(response) => {
                 validate_status_response(response)?;
-                return self.request(request);
+                return Ok(());
             }
             Err(RoutineError::Unavailable(_)) => {}
             Err(error) => return Err(error),
         }
 
-        self.start(&request.project, &mut command)?;
-        self.request(request)
+        self.spawn_and_await(status, command, deadline)
     }
 
-    fn start(&self, project: &Path, command: &mut Command) -> Result<(), RoutineError> {
-        let deadline = Instant::now()
-            .checked_add(self.startup_timeout)
-            .ok_or_else(|| {
-                RoutineError::Validation("routine daemon startup timeout is too large".into())
-            })?;
+    fn spawn_and_await(
+        &self,
+        status: &Request,
+        command: &mut Command,
+        deadline: Instant,
+    ) -> Result<(), RoutineError> {
+        if Instant::now() >= deadline {
+            return Err(self.startup_timeout_error());
+        }
         let (read_end, write_end) = startup_pipe()?;
         let read_fd = read_end.as_raw_fd();
         let write_fd = write_end.as_raw_fd();
@@ -107,9 +143,8 @@ impl RoutineClient {
         let mut child = command.spawn()?;
         drop(write_end);
 
-        let status = Request::new(project.to_path_buf(), Action::Status);
         let mut read_end = std::fs::File::from(read_end);
-        let result = self.await_startup(&status, &mut child, &mut read_end, deadline);
+        let result = self.await_startup(status, &mut child, &mut read_end, deadline);
         if result.is_err() {
             stop_startup_child(&mut child);
         }
@@ -172,10 +207,7 @@ impl RoutineClient {
             }
             std::thread::sleep(POLL_INTERVAL);
         }
-        Err(RoutineError::Unavailable(format!(
-            "routine daemon did not become ready within {} ms",
-            self.startup_timeout.as_millis()
-        )))
+        Err(self.startup_timeout_error())
     }
 
     fn poll_ready(&self, status: &Request, deadline: Instant) -> Result<bool, RoutineError> {
@@ -197,6 +229,13 @@ impl RoutineClient {
             std::thread::sleep(POLL_INTERVAL);
         }
         Ok(false)
+    }
+
+    fn startup_timeout_error(&self) -> RoutineError {
+        RoutineError::Unavailable(format!(
+            "routine daemon did not become ready within {} ms",
+            self.startup_timeout.as_millis()
+        ))
     }
 }
 
@@ -356,7 +395,8 @@ mod tests {
                 let client = RoutineClient::new(root.clone());
                 let mut command = helper_command(&root, "daemon_with_pid");
                 barrier.wait();
-                client.start(&root, &mut command)
+                let deadline = client.startup_deadline().unwrap();
+                client.spawn_and_await(&status(&root), &mut command, deadline)
             }));
         }
         barrier.wait();
@@ -411,6 +451,52 @@ mod tests {
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::ESRCH)
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn initial_availability_probe_respects_startup_timeout() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::net::UnixListener;
+
+        let root = test_root("probe-timeout");
+        std::fs::create_dir_all(&root).unwrap();
+        let listener = UnixListener::bind(root.join("daemon-v1.sock")).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream).read_line(&mut request).unwrap();
+            std::thread::sleep(Duration::from_secs(1));
+        });
+        let started = Instant::now();
+        let result = RoutineClient::new(root.clone())
+            .with_startup_timeout(Duration::from_millis(300))
+            .request_with_start(&list(&root), helper_command(&root, "must_not_start"));
+
+        assert!(matches!(result, Err(RoutineError::Unavailable(_))));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let pid_path = root.join("helper.pid");
+        // ^ Socket read timeouts may return just before the deadline, allowing a promptly reaped spawn.
+        if pid_path.exists() {
+            assert_helper_reaped(&pid_path);
+        }
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_start_does_not_issue_a_project_scoped_request() {
+        let root = test_root("explicit-start");
+        let client = RoutineClient::new(root.clone());
+
+        client.start(helper_command(&root, "daemon")).unwrap();
+        assert!(matches!(
+            client.request(&status(&root)).unwrap(),
+            Response::Daemon { .. }
+        ));
+        client
+            .request(&Request::new(root.clone(), Action::Shutdown))
+            .unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
 
