@@ -39,9 +39,9 @@ pub fn serve_with_startup(
     };
     notify(Ok(()));
     let result = event_loop(&root, &listener);
-    drop(lock);
     reconcile_running(&root);
     let _ = fs::remove_file(socket);
+    drop(lock);
     result
 }
 
@@ -79,7 +79,10 @@ fn event_loop(root: &Path, listener: &UnixListener) -> Result<(), RoutineError> 
     let stopping = Arc::new(AtomicBool::new(false));
     let state = Arc::new(DaemonState::default());
     let mut handlers = Vec::new();
-    while !stopping.load(Ordering::SeqCst) {
+    let result = loop {
+        if stopping.load(Ordering::SeqCst) {
+            break Ok(());
+        }
         reap_workers(&state);
         reap_handles(&mut handlers);
         match listener.accept() {
@@ -92,7 +95,7 @@ fn event_loop(root: &Path, listener: &UnixListener) -> Result<(), RoutineError> 
                 }));
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => return Err(error.into()),
+            Err(error) => break Err(error.into()),
         }
         let minute = now_epoch() / 60;
         if minute != last_minute {
@@ -100,11 +103,11 @@ fn event_loop(root: &Path, listener: &UnixListener) -> Result<(), RoutineError> 
             tick(root, minute, &state);
         }
         std::thread::sleep(Duration::from_millis(100));
-    }
+    };
     drain_handles(handlers);
     stop_active(root, &state);
     drain_workers(&state);
-    Ok(())
+    result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -776,10 +779,7 @@ fn process_group_exists(pgid: i32) -> bool {
 }
 
 fn original_process_group_exists(pgid: i32, leader_start: &str) -> bool {
-    match process_start(pgid) {
-        Some(current) => current == leader_start,
-        None => process_group_exists(pgid),
-    }
+    process_start(pgid).is_some_and(|current| current == leader_start)
 }
 
 fn reconcile_running(root: &Path) {
@@ -1282,7 +1282,7 @@ mod tests {
     }
 
     #[test]
-    fn cancel_kills_term_ignoring_descendant_after_leader_exits() {
+    fn cancel_does_not_signal_group_after_leader_identity_is_gone() {
         let (root, project, _state) = fixture();
         let store = RoutineStore::new(root.clone(), &project).unwrap();
         let child_pid_file = root.join("descendant.pid");
@@ -1342,12 +1342,11 @@ mod tests {
         let _ = leader.wait();
         assert_eq!(process_start(leader.id() as i32), None);
         cancel_running(&store, "one").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while unsafe { libc::kill(descendant, 0) } == 0 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(unsafe { libc::kill(descendant, 0) }, 0);
+        assert!(process_group_exists(leader.id() as i32));
+        unsafe {
+            libc::kill(-(leader.id() as i32), libc::SIGKILL);
         }
-        assert_ne!(unsafe { libc::kill(descendant, 0) }, 0);
-        assert!(!process_group_exists(leader.id() as i32));
         let _ = fs::remove_dir_all(root);
     }
 

@@ -2,7 +2,7 @@ use super::store::RoutineStore;
 use super::{Routine, RoutineError, RunRecord, RunStatus, MAX_RUNS};
 use serde_json::Value;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
@@ -150,8 +150,6 @@ pub fn execute_supervised(
     err_thread
         .join()
         .map_err(|_| RoutineError::Io("stderr reader panicked".into()))??;
-    let stdout = fs::read(&stdout_path).unwrap_or_default();
-    let stderr = fs::read(&stderr_path).unwrap_or_default();
     record.finished_epoch = Some(now_epoch());
     record.exit_code = status.code();
     let cancelled = store
@@ -174,7 +172,7 @@ pub fn execute_supervised(
     };
     record.pid = None;
     record.process_start = None;
-    record.final_output = extract_final_output_bytes(&stdout, &stderr);
+    record.final_output = extract_final_output_files(&stdout_path, &stderr_path);
     replace_record(store, record.clone())?;
     Ok(record)
 }
@@ -373,6 +371,96 @@ fn extract_final_output_bytes(stdout: &[u8], stderr: &[u8]) -> String {
         })
 }
 
+fn extract_final_output_files(
+    stdout_path: &std::path::Path,
+    stderr_path: &std::path::Path,
+) -> String {
+    let (codex, claude) = File::open(stdout_path)
+        .ok()
+        .map(scan_structured_output)
+        .unwrap_or_default();
+    codex
+        .or(claude)
+        .filter(|output| !output.trim().is_empty())
+        .unwrap_or_else(|| {
+            let stdout = bounded_file_tail(stdout_path);
+            if stdout.is_empty() {
+                bounded_file_tail(stderr_path)
+            } else {
+                stdout
+            }
+        })
+}
+
+fn scan_structured_output(file: File) -> (Option<String>, Option<String>) {
+    let mut codex = None;
+    let mut claude = None;
+    for line in BufReader::new(file).split(b'\n') {
+        let Ok(line) = line else {
+            break;
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) == Some("item.completed") {
+            let item = &value["item"];
+            if item.get("type").and_then(Value::as_str) == Some("agent_message") {
+                codex = item.get("text").and_then(Value::as_str).map(str::to_owned);
+            }
+        }
+        if value.get("type").and_then(Value::as_str) == Some("result") {
+            claude = value
+                .get("result")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        } else if value.get("type").and_then(Value::as_str) == Some("assistant") {
+            if let Some(text) = claude_assistant_text(&value) {
+                claude = Some(text);
+            }
+        }
+    }
+    (codex, claude)
+}
+
+fn bounded_file_tail(path: &std::path::Path) -> String {
+    const FALLBACK_TAIL_BYTES: usize = 16 * 1024;
+    const READ_CHUNK_BYTES: usize = 4 * 1024;
+
+    let Ok(mut file) = File::open(path) else {
+        return String::new();
+    };
+    let Ok(mut position) = file.seek(SeekFrom::End(0)) else {
+        return String::new();
+    };
+    let mut tail = Vec::with_capacity(FALLBACK_TAIL_BYTES);
+    let mut found_content = false;
+    while position > 0 && tail.len() < FALLBACK_TAIL_BYTES {
+        let chunk_len = usize::try_from(position.min(READ_CHUNK_BYTES as u64)).unwrap_or(0);
+        position -= chunk_len as u64;
+        if file.seek(SeekFrom::Start(position)).is_err() {
+            break;
+        }
+        let mut chunk = vec![0; chunk_len];
+        if file.read_exact(&mut chunk).is_err() {
+            break;
+        }
+        if !found_content {
+            while chunk.last().is_some_and(u8::is_ascii_whitespace) {
+                chunk.pop();
+            }
+            found_content = !chunk.is_empty();
+        }
+        if found_content {
+            let remaining = FALLBACK_TAIL_BYTES - tail.len();
+            let start = chunk.len().saturating_sub(remaining);
+            chunk.drain(..start);
+            chunk.extend_from_slice(&tail);
+            tail = chunk;
+        }
+    }
+    String::from_utf8_lossy(&tail).trim().to_string()
+}
+
 fn claude_assistant_text(value: &Value) -> Option<String> {
     let content = value.get("message")?.get("content")?.as_array()?;
     let text = content
@@ -481,6 +569,46 @@ mod tests {
             extract_final_output_bytes(b"before\xffafter\n", b""),
             "before\u{fffd}after"
         );
+    }
+
+    #[test]
+    fn file_extraction_streams_structured_output_and_bounds_plain_tail() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/routine-execution-tests")
+            .join(format!(
+                "{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+        fs::create_dir_all(&root).unwrap();
+        let stdout_path = root.join("stdout.log");
+        let stderr_path = root.join("stderr.log");
+        let mut stdout = File::create(&stdout_path).unwrap();
+        for _ in 0..10_000 {
+            writeln!(stdout, "progress output that must not be retained").unwrap();
+        }
+        writeln!(
+            stdout,
+            "{{\"type\":\"result\",\"result\":\"final answer\"}}"
+        )
+        .unwrap();
+        fs::write(&stderr_path, "error").unwrap();
+
+        assert_eq!(
+            extract_final_output_files(&stdout_path, &stderr_path),
+            "final answer"
+        );
+
+        fs::write(
+            &stdout_path,
+            format!("HEAD\n{}TAIL\n", "progress\n".repeat(4_000)),
+        )
+        .unwrap();
+        let fallback = extract_final_output_files(&stdout_path, &stderr_path);
+        assert!(fallback.len() <= 16 * 1024);
+        assert!(fallback.ends_with("TAIL"));
+        assert!(!fallback.contains("HEAD"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
