@@ -21,6 +21,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_REQUEST_FRAME_BYTES: usize = 1024 * 1024;
+const MAX_REQUEST_HANDLERS: usize = 64;
 
 pub fn serve(root: PathBuf) -> Result<(), RoutineError> {
     serve_with_startup(root, |_| {})
@@ -77,9 +78,35 @@ fn setup(root: &Path) -> Result<(std::fs::File, PathBuf, UnixListener), RoutineE
 }
 
 fn event_loop(root: &Path, listener: &UnixListener) -> Result<(), RoutineError> {
+    event_loop_with(
+        root,
+        listener,
+        Arc::new(DaemonState::default()),
+        Arc::new(AtomicBool::new(false)),
+        wait_for_request,
+        handle_stream,
+        |task| std::thread::Builder::new().spawn(task),
+    )
+}
+
+fn event_loop_with<W, H, S>(
+    root: &Path,
+    listener: &UnixListener,
+    state: Arc<DaemonState>,
+    stopping: Arc<AtomicBool>,
+    mut wait: W,
+    handle_request: H,
+    mut spawn_handler: S,
+) -> Result<(), RoutineError>
+where
+    W: FnMut(&UnixListener, Duration) -> Result<(), RoutineError>,
+    H: Fn(&Path, UnixStream, &AtomicBool, &Arc<DaemonState>) -> Result<(), RoutineError>
+        + Clone
+        + Send
+        + 'static,
+    S: FnMut(Box<dyn FnOnce() + Send + 'static>) -> std::io::Result<JoinHandle<()>>,
+{
     let mut last_minute = i64::MIN;
-    let stopping = Arc::new(AtomicBool::new(false));
-    let state = Arc::new(DaemonState::default());
     let mut handlers = Vec::new();
     let result = loop {
         if stopping.load(Ordering::SeqCst) {
@@ -87,25 +114,39 @@ fn event_loop(root: &Path, listener: &UnixListener) -> Result<(), RoutineError> 
         }
         reap_workers(&state);
         reap_handles(&mut handlers);
-        match listener.accept() {
-            Ok((stream, _)) => {
-                let root = root.to_path_buf();
-                let stopping = stopping.clone();
-                let state = state.clone();
-                handlers.push(std::thread::spawn(move || {
-                    let _ = handle_stream(&root, stream, &stopping, &state);
-                }));
+        if handlers.len() < MAX_REQUEST_HANDLERS {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let root = root.to_path_buf();
+                    let stopping = stopping.clone();
+                    let state = state.clone();
+                    let handle_request = handle_request.clone();
+                    let task: Box<dyn FnOnce() + Send + 'static> = Box::new(move || {
+                        let _ = handle_request(&root, stream, &stopping, &state);
+                    });
+                    match spawn_handler(task) {
+                        Ok(handler) => handlers.push(handler),
+                        Err(error) => break Err(error.into()),
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => break Err(error.into()),
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => break Err(error.into()),
         }
         let minute = now_epoch() / 60;
         if minute != last_minute {
             last_minute = minute;
             tick(root, minute, &state);
         }
-        wait_for_request(listener, Duration::from_millis(100))?;
+        if handlers.len() == MAX_REQUEST_HANDLERS {
+            std::thread::sleep(Duration::from_millis(100));
+        } else if let Err(error) = wait(listener, Duration::from_millis(100)) {
+            break Err(error);
+        }
     };
+    if result.is_err() {
+        stopping.store(true, Ordering::SeqCst);
+    }
     drain_handles(handlers);
     stop_active(root, &state);
     drain_workers(&state);
@@ -926,7 +967,7 @@ mod tests {
     use std::io::Cursor;
     use std::os::unix::process::CommandExt;
     use std::process::Command;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::time::Instant;
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -969,39 +1010,481 @@ mod tests {
         Request::new(project.to_path_buf(), action)
     }
 
+    #[derive(Clone, Copy)]
+    struct TestDeadline(Instant);
+
+    impl TestDeadline {
+        fn after(duration: Duration) -> Self {
+            Self(Instant::now() + duration)
+        }
+
+        fn remaining(self) -> Duration {
+            self.0.saturating_duration_since(Instant::now())
+        }
+
+        fn wait_until(self, mut predicate: impl FnMut() -> bool) -> bool {
+            loop {
+                let satisfied = predicate();
+                if satisfied || Instant::now() >= self.0 {
+                    return satisfied;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    struct HandlerReleaseGate {
+        released: Mutex<Vec<bool>>,
+        wake: std::sync::Condvar,
+    }
+
+    impl HandlerReleaseGate {
+        fn new(count: usize) -> Self {
+            Self {
+                released: Mutex::new(vec![false; count]),
+                wake: std::sync::Condvar::new(),
+            }
+        }
+
+        fn wait_until_released(&self, index: usize, deadline: TestDeadline) -> bool {
+            let released = self.released.lock().unwrap();
+            let (released, _) = self
+                .wake
+                .wait_timeout_while(released, deadline.remaining(), |released| {
+                    !released.get(index).copied().unwrap_or(true)
+                })
+                .unwrap();
+            released.get(index).copied().unwrap_or(true)
+        }
+
+        fn release(&self, index: usize) {
+            self.released.lock().unwrap()[index] = true;
+            self.wake.notify_all();
+        }
+
+        fn release_all(&self) {
+            self.released.lock().unwrap().fill(true);
+            self.wake.notify_all();
+        }
+    }
+
+    #[test]
+    fn given_two_accepted_handlers_and_active_worker_when_wait_fails_then_error_waits_for_teardown()
+    {
+        let (root, project, state) = fixture();
+        let listener = UnixListener::bind(root.join("event-loop-error.sock")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let clients = [
+            UnixStream::connect(root.join("event-loop-error.sock")).unwrap(),
+            UnixStream::connect(root.join("event-loop-error.sock")).unwrap(),
+        ];
+        let deadline = TestDeadline::after(Duration::from_secs(10));
+
+        let key = RunKey {
+            project,
+            routine: "one".into(),
+        };
+        state.active.lock().unwrap().insert(key.clone(), false);
+        let (worker_release_tx, worker_release_rx) = std::sync::mpsc::channel();
+        let (worker_finished_tx, worker_finished_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = worker_release_rx.recv_timeout(deadline.remaining());
+            let _ = worker_finished_tx.send(());
+        });
+        state.workers.lock().unwrap().push(worker);
+
+        let gate = Arc::new(HandlerReleaseGate::new(2));
+        let next_handler = Arc::new(AtomicUsize::new(0));
+        let (handler_started_tx, handler_started_rx) = std::sync::mpsc::channel();
+        let (handler_finished_tx, handler_finished_rx) = std::sync::mpsc::channel();
+        let gate_in_handler = gate.clone();
+        let next_handler_in_handler = next_handler.clone();
+        let (error_issued_tx, error_issued_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let cleanup_stopping = stopping.clone();
+        let event_state = state.clone();
+        let loop_root = root.clone();
+        let event_loop = std::thread::spawn(move || {
+            let mut waits = 0;
+            let result = event_loop_with(
+                &loop_root,
+                &listener,
+                event_state,
+                stopping,
+                move |_, _| {
+                    waits += 1;
+                    if waits == 1 {
+                        Ok(())
+                    } else {
+                        let _ = error_issued_tx.send(());
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionAborted,
+                            "injected wait failure",
+                        )
+                        .into())
+                    }
+                },
+                move |_, _, _, _| {
+                    let index = next_handler_in_handler.fetch_add(1, Ordering::SeqCst);
+                    let _ = handler_started_tx.send(index);
+                    if !gate_in_handler.wait_until_released(index, deadline) {
+                        return Err(RoutineError::Io("test handler release timed out".into()));
+                    }
+                    let _ = handler_finished_tx.send(index);
+                    Ok(())
+                },
+                |task| std::thread::Builder::new().spawn(task),
+            );
+            let _ = result_tx.send(result);
+        });
+
+        let remaining = || deadline.remaining();
+        let error_was_issued = error_issued_rx.recv_timeout(remaining()).is_ok();
+        let mut started = (0..2)
+            .filter_map(|_| handler_started_rx.recv_timeout(remaining()).ok())
+            .collect::<Vec<_>>();
+        started.sort_unstable();
+        let admission_closed_before_releases =
+            deadline.wait_until(|| cleanup_stopping.load(Ordering::SeqCst));
+        let pending_before_releases = matches!(
+            result_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+
+        gate.release(0);
+        let first_finished = handler_finished_rx.recv_timeout(remaining()).ok();
+        let pending_after_first_handler = matches!(
+            result_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+
+        gate.release(1);
+        let second_finished = handler_finished_rx.recv_timeout(remaining()).ok();
+        let worker_was_stopped = deadline.wait_until(|| {
+            state
+                .active
+                .lock()
+                .ok()
+                .and_then(|active| active.get(&key).copied())
+                == Some(true)
+        });
+        let pending_before_worker = matches!(
+            result_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        let _ = worker_release_tx.send(());
+        let worker_finished = worker_finished_rx.recv_timeout(remaining()).is_ok();
+        let result = result_rx.recv_timeout(remaining()).ok();
+
+        cleanup_stopping.store(true, Ordering::SeqCst);
+        gate.release_all();
+        let _ = worker_release_tx.send(());
+        let event_loop_joined = event_loop.join().is_ok();
+        drop(clients);
+        let _ = fs::remove_dir_all(root);
+
+        assert_eq!(
+            (
+                error_was_issued,
+                started,
+                admission_closed_before_releases,
+                pending_before_releases,
+                first_finished,
+                pending_after_first_handler,
+                second_finished,
+                worker_was_stopped,
+                pending_before_worker,
+                worker_finished,
+                matches!(result, Some(Err(RoutineError::Io(_)))),
+                event_loop_joined,
+            ),
+            (
+                true,
+                vec![0, 1],
+                true,
+                true,
+                Some(0),
+                true,
+                Some(1),
+                true,
+                true,
+                true,
+                true,
+                true,
+            )
+        );
+    }
+
+    #[test]
+    fn given_sixty_five_clients_when_one_of_sixty_four_live_handlers_finishes_then_accepting_resumes(
+    ) {
+        let (root, _, state) = fixture();
+        let socket = root.join("event-loop-cap.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let deadline = TestDeadline::after(Duration::from_secs(10));
+        let gate = Arc::new(HandlerReleaseGate::new(MAX_REQUEST_HANDLERS + 1));
+        let next_handler = Arc::new(AtomicUsize::new(0));
+        let live = Arc::new(AtomicUsize::new(0));
+        let peak_live = Arc::new(AtomicUsize::new(0));
+        let (handler_started_tx, handler_started_rx) = std::sync::mpsc::channel();
+        let (handler_finished_tx, handler_finished_rx) = std::sync::mpsc::channel();
+        let gate_in_handler = gate.clone();
+        let next_handler_in_handler = next_handler.clone();
+        let live_in_handler = live.clone();
+        let peak_live_in_handler = peak_live.clone();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let test_stop = stopping.clone();
+        let (wait_started_tx, wait_started_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let loop_root = root.clone();
+        let event_loop = std::thread::spawn(move || {
+            let mut wait_announced = false;
+            let result = event_loop_with(
+                &loop_root,
+                &listener,
+                state,
+                stopping,
+                move |listener, timeout| {
+                    if !wait_announced {
+                        wait_announced = true;
+                        let _ = wait_started_tx.send(());
+                    }
+                    wait_for_request(listener, timeout)
+                },
+                move |_, _, _, _| {
+                    let index = next_handler_in_handler.fetch_add(1, Ordering::SeqCst);
+                    let current = live_in_handler.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak_live_in_handler.fetch_max(current, Ordering::SeqCst);
+                    let _ = handler_started_tx.send(index);
+                    let was_released = gate_in_handler.wait_until_released(index, deadline);
+                    live_in_handler.fetch_sub(1, Ordering::SeqCst);
+                    let _ = handler_finished_tx.send(index);
+                    if was_released {
+                        Ok(())
+                    } else {
+                        Err(RoutineError::Io("test handler release timed out".into()))
+                    }
+                },
+                |task| std::thread::Builder::new().spawn(task),
+            );
+            let _ = result_tx.send(result);
+        });
+
+        let remaining = || deadline.remaining();
+        let event_loop_started = wait_started_rx.recv_timeout(remaining()).is_ok();
+        let mut clients = Vec::new();
+        for _ in 0..=MAX_REQUEST_HANDLERS {
+            match UnixStream::connect(&socket) {
+                Ok(client) => clients.push(client),
+                Err(_) => break,
+            }
+        }
+        let mut first_wave = (0..MAX_REQUEST_HANDLERS)
+            .filter_map(|_| handler_started_rx.recv_timeout(remaining()).ok())
+            .collect::<Vec<_>>();
+        first_wave.sort_unstable();
+        let accepted_while_queued = next_handler.load(Ordering::SeqCst);
+        let live_while_queued = live.load(Ordering::SeqCst);
+
+        gate.release(0);
+        let first_finished = handler_finished_rx.recv_timeout(remaining()).ok();
+        let resumed_handler = handler_started_rx.recv_timeout(remaining()).ok();
+
+        test_stop.store(true, Ordering::SeqCst);
+        gate.release_all();
+        let result = result_rx.recv_timeout(remaining()).ok();
+        let event_loop_joined = event_loop.join().is_ok();
+        let all_clients_connected = clients.len() == MAX_REQUEST_HANDLERS + 1;
+        drop(clients);
+        let _ = fs::remove_dir_all(root);
+
+        assert_eq!(
+            (
+                event_loop_started,
+                all_clients_connected,
+                first_wave,
+                accepted_while_queued,
+                live_while_queued,
+                first_finished,
+                resumed_handler,
+                peak_live.load(Ordering::SeqCst),
+                next_handler.load(Ordering::SeqCst),
+                live.load(Ordering::SeqCst),
+                matches!(result, Some(Ok(()))),
+                event_loop_joined,
+            ),
+            (
+                true,
+                true,
+                (0..MAX_REQUEST_HANDLERS).collect::<Vec<_>>(),
+                MAX_REQUEST_HANDLERS,
+                MAX_REQUEST_HANDLERS,
+                Some(0),
+                Some(MAX_REQUEST_HANDLERS),
+                MAX_REQUEST_HANDLERS,
+                MAX_REQUEST_HANDLERS + 1,
+                0,
+                true,
+                true,
+            )
+        );
+    }
+
+    #[test]
+    fn given_live_handler_when_next_handler_spawn_fails_then_admission_closes_before_cleanup() {
+        let (root, _, state) = fixture();
+        // ^ Unix-domain socket paths have a small platform limit; keep this test name short.
+        let socket = root.join("spawn.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let clients = [
+            UnixStream::connect(&socket).unwrap(),
+            UnixStream::connect(&socket).unwrap(),
+        ];
+        let deadline = TestDeadline::after(Duration::from_secs(10));
+        let gate = Arc::new(HandlerReleaseGate::new(1));
+        let gate_in_handler = gate.clone();
+        let (handler_started_tx, handler_started_rx) = std::sync::mpsc::channel();
+        let (handler_finished_tx, handler_finished_rx) = std::sync::mpsc::channel();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let cleanup_stopping = stopping.clone();
+        let spawn_attempt = Arc::new(AtomicUsize::new(0));
+        let spawn_attempt_in_loop = spawn_attempt.clone();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let loop_root = root.clone();
+        let event_loop = std::thread::spawn(move || {
+            let result = event_loop_with(
+                &loop_root,
+                &listener,
+                state,
+                stopping,
+                wait_for_request,
+                move |_, _, _, _| {
+                    let _ = handler_started_tx.send(());
+                    if !gate_in_handler.wait_until_released(0, deadline) {
+                        return Err(RoutineError::Io("test handler release timed out".into()));
+                    }
+                    let _ = handler_finished_tx.send(());
+                    Ok(())
+                },
+                move |task| {
+                    if spawn_attempt_in_loop.fetch_add(1, Ordering::SeqCst) == 0 {
+                        std::thread::Builder::new().spawn(task)
+                    } else {
+                        Err(std::io::Error::other("injected handler spawn failure"))
+                    }
+                },
+            );
+            let _ = result_tx.send(result);
+        });
+
+        let remaining = || deadline.remaining();
+        let handler_started = handler_started_rx.recv_timeout(remaining()).is_ok();
+        let admission_closed_before_release =
+            deadline.wait_until(|| cleanup_stopping.load(Ordering::SeqCst));
+        let result_pending_while_handler_is_live = matches!(
+            result_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+
+        gate.release(0);
+        let handler_finished = handler_finished_rx.recv_timeout(remaining()).is_ok();
+        let result = result_rx.recv_timeout(remaining()).ok();
+
+        cleanup_stopping.store(true, Ordering::SeqCst);
+        gate.release(0);
+        let event_loop_joined = event_loop.join().is_ok();
+        drop(clients);
+        let _ = fs::remove_dir_all(root);
+
+        assert_eq!(
+            (
+                handler_started,
+                spawn_attempt.load(Ordering::SeqCst),
+                admission_closed_before_release,
+                result_pending_while_handler_is_live,
+                handler_finished,
+                matches!(
+                    result,
+                    Some(Err(RoutineError::Io(message)))
+                        if message == "injected handler spawn failure"
+                ),
+                event_loop_joined,
+            ),
+            (true, 2, true, true, true, true, true)
+        );
+    }
+
     #[test]
     fn given_started_daemon_when_twelve_sequential_status_requests_then_completes_within_batch_latency_budget(
     ) {
         let (root, project, _) = fixture();
+        let (lock, socket, listener) = setup(&root).unwrap();
         let daemon_root = root.clone();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let daemon_stopping = stopping.clone();
         let (startup_tx, startup_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
         let daemon = std::thread::spawn(move || {
-            serve_with_startup(daemon_root, move |result| {
-                startup_tx.send(result).unwrap();
-            })
+            let _ = startup_tx.send(());
+            let result = event_loop_with(
+                &daemon_root,
+                &listener,
+                Arc::new(DaemonState::default()),
+                daemon_stopping,
+                wait_for_request,
+                handle_stream,
+                |task| std::thread::Builder::new().spawn(task),
+            );
+            let _ = result_tx.send(result);
         });
-        startup_rx
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap()
-            .unwrap();
         let client = super::super::RoutineClient::new(root.clone());
-        client.request(&request(&project, Action::Status)).unwrap();
+        let scenario = (|| -> Result<Duration, String> {
+            startup_rx
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| error.to_string())?;
+            client
+                .request(&request(&project, Action::Status))
+                .map_err(|error| error.to_string())?;
 
-        let started = Instant::now();
-        for _ in 0..12 {
-            client.request(&request(&project, Action::Status)).unwrap();
-        }
-        let elapsed = started.elapsed();
+            let started = Instant::now();
+            for _ in 0..12 {
+                client
+                    .request(&request(&project, Action::Status))
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(started.elapsed())
+        })();
 
-        client
-            .request(&request(&project, Action::Shutdown))
-            .unwrap();
-        daemon.join().unwrap().unwrap();
-        let _ = fs::remove_dir_all(root);
+        let shutdown = client.request(&request(&project, Action::Shutdown));
+        stopping.store(true, Ordering::SeqCst);
+        let daemon_result = result_rx.recv_timeout(Duration::from_secs(5));
+        let daemon_joined = if daemon_result.is_ok() {
+            daemon.join().is_ok()
+        } else {
+            false
+        };
+        drop(lock);
+        let socket_removed = match fs::remove_file(socket) {
+            Ok(()) => true,
+            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        };
+        let root_removed = fs::remove_dir_all(&root).is_ok() || !root.exists();
 
+        let elapsed_within_budget = matches!(
+            &scenario,
+            Ok(elapsed) if *elapsed < Duration::from_millis(900)
+        );
         assert!(
-            elapsed < Duration::from_millis(900),
-            "12 sequential status requests took {elapsed:?}"
+            elapsed_within_budget
+                && shutdown.is_ok()
+                && matches!(&daemon_result, Ok(Ok(())))
+                && daemon_joined
+                && socket_removed
+                && root_removed,
+            "scenario={scenario:?}, shutdown={shutdown:?}, daemon={daemon_result:?}, joined={daemon_joined}, socket_removed={socket_removed}, root_removed={root_removed}"
         );
     }
 
