@@ -17,7 +17,30 @@ fn run(cmd: &mut std::process::Command) -> Result<String> {
 }
 
 pub fn pull(path: &Path) -> Result<String> {
-    run(git_cmd(path).args(["pull"]))
+    match run(git_cmd(path).args(["pull", "--rebase"])) {
+        Ok(output) => Ok(output),
+        Err(error) => {
+            if rebase_in_progress(path) {
+                let _ = run(git_cmd(path).args(["rebase", "--abort"]));
+                bail!("pull stopped on conflict; rebase aborted; resolve manually");
+            }
+            Err(error)
+        }
+    }
+}
+
+fn rebase_in_progress(path: &Path) -> bool {
+    ["rebase-merge", "rebase-apply"].iter().any(|state_dir| {
+        super::output_with_timeout(
+            git_cmd(path).args(["rev-parse", "--git-path", state_dir]),
+            std::time::Duration::from_secs(5),
+        )
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|git_path| !git_path.is_empty())
+        .is_some_and(|git_path| path.join(git_path).exists())
+    })
 }
 
 pub fn push(path: &Path) -> Result<String> {
@@ -58,4 +81,32 @@ pub fn merge_into(path: &Path, target: &str) -> Result<String> {
             current, target, current
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rebase_in_progress;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    #[test]
+    fn linked_git_state_path_detects_and_clears_rebase_marker() {
+        let repo = PathBuf::from("target").join(format!("rebase-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        let initialized = Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        assert!(initialized.success());
+
+        let marker = repo.join(".git/rebase-merge");
+        std::fs::create_dir_all(&marker).unwrap();
+        assert!(rebase_in_progress(&repo));
+
+        std::fs::remove_dir_all(marker).unwrap();
+        assert!(!rebase_in_progress(&repo));
+        std::fs::remove_dir_all(repo).unwrap();
+    }
 }
