@@ -9,6 +9,8 @@
 ### Bug Fixes
 
 - Wake the routine daemon immediately for IPC instead of imposing a 100 ms polling delay on every request, restoring fast TUI startup with many configured projects.
+- Abort conflicted internal pull rebases instead of leaving worktrees mid-operation.
+- Keep deleted worktrees hidden until a live Git refresh confirms removal, preventing stale refreshes from briefly restoring deleted rows.
 
 ## [0.16.2] - 2026-06-25
 

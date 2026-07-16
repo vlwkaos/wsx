@@ -18,9 +18,14 @@ This is a Cargo **workspace** — the shared `~/.claude/skills/rust-release/rele
 - **Filtered Cargo tests**: `cargo test` accepts one positional `TESTNAME` filter; run distinct filters as separate commands.
 - **Formatting baseline**: whole-workspace `cargo fmt --all -- --check` currently reports pre-existing drift in `crates/wsx-core/src/config/global.rs`; format touched Rust files directly until that baseline is repaired.
 - **Touched-file formatting**: `cargo fmt -- <paths>` still formats the workspace; use `rustfmt --edition 2021 <paths>` to format only selected Rust files.
+- **Sibling-repo formatting sandbox**: when the active workspace is `auwsx`, formatting `wsx` source can require escalation even for `rustfmt --edition 2021 <paths>`.
+- **Sibling-repo Cargo sandbox**: from an `auwsx` session, `wsx` check/Clippy can require escalation to acquire `target/debug/.cargo-lock`; rerun the same Cargo command with permission.
 - **Rust newline literal search**: use `rg -n -F "split(b'\\n')" <path>` so the shell does not turn the pattern into an actual newline.
 - **Linked-worktree Git writes**: sandboxed `git add`/`git commit` can fail creating the shared worktree `index.lock`; rerun the Git mutation with approved escalation.
 - **Moving a linked worktree**: pass both paths, e.g. `git worktree move <old-path> <new-path>`.
+- **Read-only merge audit**: sandboxed `git merge-tree --write-tree` can fail while creating temporary Git objects; use `git merge-tree <merge-base> <main> <branch>` when only conflict inspection is needed.
+- **Core test layout**: this repo has no `crates/wsx-core/tests`; search core unit tests under `crates/wsx-core/src`.
+- **Exact core unit-test filter**: include the module path, e.g. `cargo test -p wsx-core git::ops::tests::<name> -- --exact --test-threads=1`; a bare function name with `--exact` selects zero tests.
 - **Routine daemon shutdown**: use `wsx routine daemon stop`; there is no `shutdown` subcommand.
 
 Recurring audit axes (auto-maintained by /good-to-go):

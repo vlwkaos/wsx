@@ -253,7 +253,6 @@ pub struct BgJob {
 
 pub enum BgOutcome {
     WorktreeRemoved {
-        wt_path: std::path::PathBuf,
         label: String,
     },
     CleanAborted {
@@ -317,6 +316,27 @@ fn filter_pending_session_ops(
             Some(SessionOp::Killed) => None,
             Some(SessionOp::Renamed { new_name }) => Some((new_name.clone(), path)),
             None => Some((name, path)),
+        })
+        .collect()
+}
+
+fn filter_pending_deletions(
+    pending: &mut HashSet<PathBuf>,
+    worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
+) -> Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)> {
+    pending.retain(|path| {
+        worktrees
+            .iter()
+            .any(|(_, entries)| entries.iter().any(|entry| entry.path == *path))
+    });
+    worktrees
+        .into_iter()
+        .map(|(project_path, entries)| {
+            let entries = entries
+                .into_iter()
+                .filter(|entry| !pending.contains(&entry.path))
+                .collect();
+            (project_path, entries)
         })
         .collect()
 }
@@ -563,15 +583,9 @@ impl App {
                 }
                 self.set_status(format!("{}: {}", result.label, e));
             }
-            Ok(BgOutcome::WorktreeRemoved { wt_path, label }) => {
-                self.pending_deletions.remove(&wt_path);
-                // ! optimistic removal already ran; this guards the rare case a stale refresh
-                // re-added the entry before pending_deletions filtering took effect.
-                if let Some(&(p, w)) = self.worktree_index.get(&wt_path) {
-                    self.workspace.projects[p].worktrees.remove(w);
-                    self.rebuild_flat();
-                    self.clamp_selected();
-                }
+            Ok(BgOutcome::WorktreeRemoved { label }) => {
+                // ^ A live refresh clears the tombstone after Git stops reporting the path.
+                self.spawn_tmux_refresh();
                 self.set_status(label);
             }
             Ok(BgOutcome::CleanAborted { wt_path, msg }) => {
@@ -1097,22 +1111,10 @@ impl App {
     }
 
     fn filter_pending_deletions(
-        &self,
+        &mut self,
         worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
     ) -> Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)> {
-        if self.pending_deletions.is_empty() {
-            return worktrees;
-        }
-        worktrees
-            .into_iter()
-            .map(|(path, entries)| {
-                let entries = entries
-                    .into_iter()
-                    .filter(|e| !self.pending_deletions.contains(&e.path))
-                    .collect();
-                (path, entries)
-            })
-            .collect()
+        filter_pending_deletions(&mut self.pending_deletions, worktrees)
     }
 
     fn apply_pending_session_ops(
@@ -2238,7 +2240,7 @@ impl App {
                         });
                     }
                     ops::delete_worktree(&repo, &wt_path, &branch, &session_names)?;
-                    Ok(BgOutcome::WorktreeRemoved { wt_path, label })
+                    Ok(BgOutcome::WorktreeRemoved { label })
                 });
             }
             Selection::Project(pi) | Selection::Session(pi, _, _) => {
@@ -2776,7 +2778,7 @@ impl App {
                     self.clamp_selected();
                     self.spawn_bg(format!("delete {}", branch), move || {
                         ops::delete_worktree(&repo, &wt_path, &branch, &session_names)?;
-                        Ok(BgOutcome::WorktreeRemoved { wt_path, label })
+                        Ok(BgOutcome::WorktreeRemoved { label })
                     });
                 }
                 PendingAction::CreateWorktree {
@@ -4377,5 +4379,62 @@ mod tests {
         assert!(!pending.contains_key("old-name"));
         let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains(&"new-name"));
+    }
+
+    fn worktree_entry(path: &str) -> git_worktree::WorktreeEntry {
+        git_worktree::WorktreeEntry {
+            name: path.to_string(),
+            path: PathBuf::from(path),
+            branch: "branch".to_string(),
+            is_main: false,
+        }
+    }
+
+    #[test]
+    fn pending_deletion_stays_hidden_until_git_stops_reporting_it() {
+        let deleted = PathBuf::from("/repo/issue");
+        let mut pending = HashSet::from([deleted.clone()]);
+
+        let visible = filter_pending_deletions(
+            &mut pending,
+            vec![(
+                PathBuf::from("/repo"),
+                vec![worktree_entry("/repo/issue"), worktree_entry("/repo/main")],
+            )],
+        );
+
+        assert_eq!(visible[0].1.len(), 1);
+        assert_eq!(visible[0].1[0].path, PathBuf::from("/repo/main"));
+        assert!(pending.contains(&deleted));
+    }
+
+    #[test]
+    fn pending_deletion_clears_after_git_confirms_removal() {
+        let deleted = PathBuf::from("/repo/issue");
+        let mut pending = HashSet::from([deleted]);
+
+        let visible = filter_pending_deletions(
+            &mut pending,
+            vec![(PathBuf::from("/repo"), vec![worktree_entry("/repo/main")])],
+        );
+
+        assert_eq!(visible[0].1.len(), 1);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn pending_deletion_matches_exact_paths_only() {
+        let mut pending = HashSet::from([PathBuf::from("/repo/issue")]);
+
+        let visible = filter_pending_deletions(
+            &mut pending,
+            vec![(
+                PathBuf::from("/repo"),
+                vec![worktree_entry("/repo/issue-2")],
+            )],
+        );
+
+        assert_eq!(visible[0].1.len(), 1);
+        assert!(pending.is_empty());
     }
 }
