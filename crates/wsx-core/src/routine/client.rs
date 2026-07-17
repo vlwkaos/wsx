@@ -574,9 +574,12 @@ mod tests {
             BufReader::new(stream.try_clone().unwrap())
                 .read_line(&mut request)
                 .unwrap();
-            stream
-                .write_all(b"{\"result\":\"daemon\",\"protocol\":2,\"pid\":1}\n")
-                .unwrap();
+            writeln!(
+                stream,
+                "{{\"result\":\"daemon\",\"protocol\":{},\"pid\":1}}",
+                PROTOCOL_VERSION + 1
+            )
+            .unwrap();
         });
         let result = RoutineClient::new(root.clone())
             .request_with_start(&list(&root), helper_command(&root, "must_not_start"));
@@ -584,8 +587,8 @@ mod tests {
             result,
             Err(RoutineError::ProtocolMismatch {
                 client: PROTOCOL_VERSION,
-                daemon: 2,
-            })
+                daemon,
+            }) if daemon == PROTOCOL_VERSION + 1
         ));
         server.join().unwrap();
         assert!(!root.join("helper.pid").exists());
@@ -608,9 +611,11 @@ mod tests {
                 .unwrap();
             let probe_request: Request = serde_json::from_str(&probe_request).unwrap();
             assert!(matches!(probe_request.action, Action::Status));
-            probe
-                .write_all(b"{\"result\":\"daemon\",\"protocol\":1,\"pid\":1}\n")
-                .unwrap();
+            writeln!(
+                probe,
+                "{{\"result\":\"daemon\",\"protocol\":{PROTOCOL_VERSION},\"pid\":1}}"
+            )
+            .unwrap();
 
             let (mutation, _) = listener.accept().unwrap();
             let mut mutation_request = String::new();

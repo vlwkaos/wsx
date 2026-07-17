@@ -42,6 +42,11 @@ pub enum Action {
         revision: u64,
         name: String,
     },
+    SetEnabled {
+        revision: u64,
+        name: String,
+        enabled: bool,
+    },
     Run {
         name: String,
     },

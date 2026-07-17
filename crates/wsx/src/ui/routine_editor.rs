@@ -12,6 +12,7 @@ pub struct RoutineForm {
     pub prompt: String,
     pub field: usize,
     pub cursor: usize,
+    enabled: bool,
 }
 
 impl RoutineForm {
@@ -26,6 +27,7 @@ impl RoutineForm {
                 "{prompt}".into(),
             ],
             prompt: String::new(),
+            enabled: true,
         })
     }
 
@@ -42,6 +44,7 @@ impl RoutineForm {
                 "{prompt}".into(),
             ],
             prompt: String::new(),
+            enabled: true,
         })
     }
 
@@ -55,6 +58,7 @@ impl RoutineForm {
             prompt: routine.prompt,
             field: 0,
             cursor,
+            enabled: routine.enabled,
         }
     }
 
@@ -136,6 +140,7 @@ impl RoutineForm {
             cron: self.cron.clone(),
             command,
             prompt: self.prompt.clone(),
+            enabled: self.enabled,
         }
         .validated()
         .map_err(|e| e.to_string())
@@ -262,6 +267,30 @@ fn visible_value(value: &str, cursor: Option<usize>, width: usize) -> (String, O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_routine_form_builds_an_enabled_routine() {
+        let mut form = RoutineForm::codex();
+        form.name = "daily".into();
+
+        assert!(form.routine().unwrap().enabled);
+    }
+
+    #[test]
+    fn disabled_routine_form_round_trip_preserves_disabled_state() {
+        let mut form = RoutineForm::from_routine(Routine {
+            name: "daily".into(),
+            cron: "0 9 * * *".into(),
+            command: vec!["echo".into()],
+            prompt: "before".into(),
+            enabled: false,
+        });
+        form.prompt = "after".into();
+
+        let saved = form.routine().unwrap();
+        assert_eq!(saved.prompt, "after");
+        assert!(!saved.enabled);
+    }
 
     #[test]
     fn presets_are_editable_direct_argv_initial_values() {

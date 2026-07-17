@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub const SCHEMA_VERSION: u32 = 1;
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const MAX_RUNS: usize = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +28,12 @@ pub struct Routine {
     pub cron: String,
     pub command: Vec<String>,
     pub prompt: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+const fn default_enabled() -> bool {
+    true
 }
 
 impl Routine {
@@ -99,6 +105,7 @@ pub struct Capabilities {
     pub can_run: bool,
     pub can_cancel: bool,
     pub can_rename: bool,
+    pub can_toggle_enabled: bool,
 }
 
 impl Capabilities {
@@ -109,6 +116,7 @@ impl Capabilities {
             can_run: !running,
             can_cancel: running,
             can_rename: !running,
+            can_toggle_enabled: true,
         }
     }
 }
@@ -200,24 +208,28 @@ mod tests {
                 cron: "* * * * *".into(),
                 command: vec!["x".into()],
                 prompt: String::new(),
+                enabled: true,
             },
             Routine {
                 name: "x".into(),
                 cron: "60 * * * *".into(),
                 command: vec!["x".into()],
                 prompt: String::new(),
+                enabled: true,
             },
             Routine {
                 name: "x".into(),
                 cron: "* * * * *".into(),
                 command: vec![],
                 prompt: String::new(),
+                enabled: true,
             },
             Routine {
                 name: "x".into(),
                 cron: "* * * * *".into(),
                 command: vec!["{prompt}".into(), "{prompt}".into()],
                 prompt: String::new(),
+                enabled: true,
             },
         ] {
             assert!(routine.validated().is_err());

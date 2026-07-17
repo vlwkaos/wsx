@@ -366,6 +366,14 @@ pub fn render_routine_preview(
         .unwrap_or_else(|| "unavailable".into());
     let mut lines = vec![
         Line::from(vec![
+            Span::styled("Schedule:", label),
+            Span::raw(if view.routine.enabled {
+                " enabled"
+            } else {
+                " disabled"
+            }),
+        ]),
+        Line::from(vec![
             Span::styled("Cron:    ", label),
             Span::raw(view.routine.cron.clone()),
         ]),
