@@ -172,6 +172,8 @@ mobile_detach_key = "C-q"
 wsx routine add nightly --cron "0 2 * * *" --arg codex --arg exec --arg=--json --arg '{prompt}' --prompt "Run maintenance" -p wsx
 wsx routine list -p wsx
 wsx routine show nightly -p wsx
+wsx routine disable nightly -p wsx
+wsx routine enable nightly -p wsx
 wsx routine run nightly -p wsx
 wsx routine cancel nightly -p wsx
 wsx routine logs nightly -p wsx
@@ -179,7 +181,7 @@ wsx routine delete nightly -p wsx
 wsx routine daemon status
 ```
 
-Cron uses five numeric local-time fields with `*`, comma lists, inclusive ranges, and positive slash steps. Sunday is `0` or `7`; restricted day-of-month and weekday fields use cron OR semantics. The daemon checks only the current civil minute, never catches up missed minutes, claims each epoch minute before spawn, and prevents same-routine overlap.
+Cron uses five numeric local-time fields with `*`, comma lists, inclusive ranges, and positive slash steps. Sunday is `0` or `7`; restricted day-of-month and weekday fields use cron OR semantics. The daemon checks only the current civil minute, never catches up missed minutes, claims each epoch minute before spawn, and prevents same-routine overlap. Disabled routines skip cron and have no next run; manual run remains available, and toggling the schedule never cancels an active process.
 
 In the TUI, press `u` on a project or any of its entries to create the first routine, then expand its `Routines` section for later entries. `e` edits, and confirmed `d` deletes or cancels then deletes. The form keeps command argv as a JSON array so arguments never pass through a shell. The preview shows configuration, next/last run, log paths, currently allowed actions, and final agent output. On mobile, Enter opens the routine detail full-screen.
 

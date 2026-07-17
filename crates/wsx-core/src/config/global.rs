@@ -173,24 +173,36 @@ mod tests {
 
     #[test]
     fn given_path_with_single_trailing_slash_when_normalized_then_slash_stripped() {
-        assert_eq!(normalize_project_path(Path::new("/foo/")), PathBuf::from("/foo"));
+        assert_eq!(
+            normalize_project_path(Path::new("/foo/")),
+            PathBuf::from("/foo")
+        );
     }
 
     #[test]
     fn given_path_with_multiple_trailing_slashes_when_normalized_then_all_stripped() {
-        assert_eq!(normalize_project_path(Path::new("/foo///")), PathBuf::from("/foo"));
+        assert_eq!(
+            normalize_project_path(Path::new("/foo///")),
+            PathBuf::from("/foo")
+        );
     }
 
     #[test]
     fn given_relative_path_with_trailing_slash_when_normalized_then_slash_stripped() {
-        assert_eq!(normalize_project_path(Path::new("foo/bar/")), PathBuf::from("foo/bar"));
+        assert_eq!(
+            normalize_project_path(Path::new("foo/bar/")),
+            PathBuf::from("foo/bar")
+        );
     }
 
     // Semantically-wrong-input guard: only the trailing run is stripped.
     // A naive "collapse all slashes" impl would wrongly yield "/foo/bar".
     #[test]
     fn given_path_with_interior_and_trailing_slashes_when_normalized_then_only_trailing_stripped() {
-        assert_eq!(normalize_project_path(Path::new("/foo//bar/")), PathBuf::from("/foo//bar"));
+        assert_eq!(
+            normalize_project_path(Path::new("/foo//bar/")),
+            PathBuf::from("/foo//bar")
+        );
     }
 
     #[test]

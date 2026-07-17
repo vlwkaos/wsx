@@ -326,6 +326,7 @@ mod tests {
             cron: "*/5 * * * *".into(),
             command: vec!["echo".into()],
             prompt: "hello".into(),
+            enabled: true,
         }
     }
 
@@ -339,6 +340,46 @@ mod tests {
             project_key(Path::new("/repo")),
             project_key(Path::new("/repo"))
         );
+    }
+
+    #[test]
+    fn legacy_project_routines_without_enabled_load_as_enabled() {
+        #[derive(Serialize)]
+        struct LegacyRoutine<'a> {
+            name: &'a str,
+            cron: &'a str,
+            command: Vec<&'a str>,
+            prompt: &'a str,
+        }
+
+        #[derive(Serialize)]
+        struct LegacyProjectRoutines<'a> {
+            version: u32,
+            revision: u64,
+            project_path: &'a Path,
+            routines: Vec<LegacyRoutine<'a>>,
+        }
+
+        let store = test_store();
+        let legacy = LegacyProjectRoutines {
+            version: SCHEMA_VERSION,
+            revision: 7,
+            project_path: store.project(),
+            routines: vec![LegacyRoutine {
+                name: "daily",
+                cron: "0 9 * * *",
+                command: vec!["echo"],
+                prompt: "hello",
+            }],
+        };
+        fs::create_dir_all(store.project_file().parent().unwrap()).unwrap();
+        fs::write(store.project_file(), toml::to_string(&legacy).unwrap()).unwrap();
+
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.revision, 7);
+        assert_eq!(loaded.routines.len(), 1);
+        assert!(loaded.routines[0].enabled);
+        let _ = fs::remove_dir_all(&store.root);
     }
 
     #[test]

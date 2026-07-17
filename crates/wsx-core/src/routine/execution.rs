@@ -585,6 +585,7 @@ mod tests {
             cron: "* * * * *".into(),
             command: vec!["echo".into(), "{prompt}".into()],
             prompt: "hi".into(),
+            enabled: true,
         };
         assert_eq!(expanded_argv(&replaced).0, vec!["echo", "hi"]);
         assert!(expanded_argv(&replaced).1.is_none());
@@ -728,6 +729,7 @@ mod tests {
             cron: "* * * * *".into(),
             command: Vec::new(),
             prompt: String::new(),
+            enabled: true,
         };
 
         assert!(matches!(
@@ -759,6 +761,7 @@ mod tests {
                 "(trap '' TERM; sleep 30) & exit 0".into(),
             ],
             prompt: String::new(),
+            enabled: true,
         };
         let pid = AtomicI32::new(0);
 
@@ -829,6 +832,7 @@ mod tests {
                 "exec 0<&-; trap '' TERM; sleep 30".into(),
             ],
             prompt: "x".repeat(1024 * 1024),
+            enabled: true,
         };
         let pid = AtomicI32::new(0);
         let result = execute_supervised(&store, &routine, None, |record| {

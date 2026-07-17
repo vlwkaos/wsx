@@ -119,6 +119,22 @@ pub enum RoutineCmd {
         #[arg(long)]
         revision: Option<u64>,
     },
+    /// Enable cron scheduling for a routine
+    Enable {
+        name: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        revision: Option<u64>,
+    },
+    /// Disable cron scheduling without cancelling an active run
+    Disable {
+        name: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        revision: Option<u64>,
+    },
     Run {
         name: String,
         #[arg(short, long)]
@@ -326,6 +342,7 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
                             cron,
                             command,
                             prompt,
+                            enabled: true,
                         },
                     },
                 )?,
@@ -343,11 +360,13 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
         } => {
             let path = routine_project(project.as_deref())?;
             let revision = revision.unwrap_or(fetch_revision(&path)?);
+            let enabled = fetch_routine_enabled(&path, &name)?;
             let routine = wsx_core::routine::Routine {
                 name: new_name.unwrap_or_else(|| name.clone()),
                 cron,
                 command,
                 prompt,
+                enabled,
             };
             return print_routine_response(
                 send_routine(
@@ -373,6 +392,44 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
                 false,
             );
         }
+        RoutineCmd::Enable {
+            name,
+            project,
+            revision,
+        } => {
+            let path = routine_project(project.as_deref())?;
+            let revision = revision.unwrap_or(fetch_revision(&path)?);
+            return print_routine_response(
+                send_routine(
+                    &path,
+                    IpcAction::SetEnabled {
+                        revision,
+                        name,
+                        enabled: true,
+                    },
+                )?,
+                false,
+            );
+        }
+        RoutineCmd::Disable {
+            name,
+            project,
+            revision,
+        } => {
+            let path = routine_project(project.as_deref())?;
+            let revision = revision.unwrap_or(fetch_revision(&path)?);
+            return print_routine_response(
+                send_routine(
+                    &path,
+                    IpcAction::SetEnabled {
+                        revision,
+                        name,
+                        enabled: false,
+                    },
+                )?,
+                false,
+            );
+        }
         RoutineCmd::Run {
             name,
             project,
@@ -392,6 +449,16 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
 
 fn routine_root() -> Result<PathBuf> {
     Ok(wsx_core::routine::store::RoutineStore::default_root()?)
+}
+
+fn fetch_routine_enabled(project: &Path, name: &str) -> Result<bool> {
+    match send_routine(
+        project,
+        wsx_core::routine::ipc::Action::Show { name: name.into() },
+    )? {
+        wsx_core::routine::ipc::Response::Routine { routine, .. } => Ok(routine.routine.enabled),
+        other => bail!("routine daemon returned unexpected response: {other:?}"),
+    }
 }
 
 fn routine_project(value: Option<&str>) -> Result<PathBuf> {
@@ -504,16 +571,22 @@ fn print_routine_response(response: wsx_core::routine::ipc::Response, json: bool
             println!("revision {revision}");
             for view in routines {
                 println!(
-                    "{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}",
                     view.routine.name,
+                    if view.routine.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
                     view.routine.cron,
                     format_argv(&view.routine.command)
                 );
             }
         }
         Response::Routine { revision, routine } => println!(
-            "revision {revision}\nname: {}\ncron: {}\ncommand: {}\nprompt: {}",
+            "revision {revision}\nname: {}\nenabled: {}\ncron: {}\ncommand: {}\nprompt: {}",
             routine.routine.name,
+            routine.routine.enabled,
             routine.routine.cron,
             format_argv(&routine.routine.command),
             routine.routine.prompt

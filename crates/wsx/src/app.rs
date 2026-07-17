@@ -3683,6 +3683,7 @@ mod tests {
                 cron: "0 9 * * *".into(),
                 command: vec!["echo".into(), "{prompt}".into()],
                 prompt: "hello".into(),
+                enabled: true,
             },
             capabilities: wsx_core::routine::Capabilities::for_running(false),
             next_run_epoch: None,

@@ -389,6 +389,28 @@ fn process(
                 revision: Some(saved.revision),
             })
         }
+        Action::SetEnabled {
+            revision,
+            name,
+            enabled,
+        } => {
+            let _guard = state
+                .config
+                .lock()
+                .map_err(|_| RoutineError::Io("config lock poisoned".into()))?;
+            let mut config = store.load()?;
+            validate_revision(config.revision, revision)?;
+            let routine = config
+                .routines
+                .iter_mut()
+                .find(|routine| routine.name == name)
+                .ok_or(RoutineError::NotFound(name))?;
+            routine.enabled = enabled;
+            let saved = store.save(config, revision)?;
+            Ok(Response::Ok {
+                revision: Some(saved.revision),
+            })
+        }
         Action::Run { name } => {
             let _guard = state
                 .config
@@ -451,9 +473,14 @@ fn view_with_runtime(
 ) -> RoutineView {
     let runs = runtime.runs.get(&routine.name).cloned().unwrap_or_default();
     let running = is_active(state, store.project(), &routine.name);
-    let next_run_epoch = CronSchedule::parse(&routine.cron)
-        .ok()
-        .and_then(|schedule| schedule.next_run_after(now_epoch()));
+    let next_run_epoch = routine
+        .enabled
+        .then(|| {
+            CronSchedule::parse(&routine.cron)
+                .ok()
+                .and_then(|schedule| schedule.next_run_after(now_epoch()))
+        })
+        .flatten();
     RoutineView {
         routine: routine.clone(),
         capabilities: Capabilities::for_running(running),
@@ -688,6 +715,9 @@ fn tick(root: &Path, epoch_minute: i64, state: &Arc<DaemonState>) {
             continue;
         };
         for routine in &config.routines {
+            if !routine.enabled {
+                continue;
+            }
             let Ok(schedule) = CronSchedule::parse(&routine.cron) else {
                 continue;
             };
@@ -963,7 +993,7 @@ fn now_epoch() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::routine::{Routine, RunRecord, SCHEMA_VERSION};
+    use crate::routine::{Routine, RoutineErrorKind, RunRecord, SCHEMA_VERSION};
     use std::io::Cursor;
     use std::os::unix::process::CommandExt;
     use std::process::Command;
@@ -1003,6 +1033,7 @@ mod tests {
             cron: "0 0 1 1 *".into(),
             command: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()],
             prompt: String::new(),
+            enabled: true,
         }
     }
 
@@ -1558,6 +1589,136 @@ mod tests {
     }
 
     #[test]
+    fn disabled_routine_is_not_scheduled_has_no_next_run_and_still_runs_manually() {
+        let (root, project, state) = fixture();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let mut config = store.load().unwrap();
+        let routine = config
+            .routines
+            .iter_mut()
+            .find(|routine| routine.name == "one")
+            .unwrap();
+        routine.enabled = false;
+        routine.cron = "* * * * *".into();
+        routine.command = vec!["/bin/echo".into(), "manual".into()];
+        store.save(config, 1).unwrap();
+
+        let listed = process(&root, request(&project, Action::List), &state).unwrap();
+        let Response::Routines { routines, .. } = listed else {
+            panic!("expected routine list");
+        };
+        let view = routines
+            .iter()
+            .find(|view| view.routine.name == "one")
+            .unwrap();
+        assert!(!view.routine.enabled);
+        assert_eq!(view.next_run_epoch, None);
+
+        tick(&root, 1_000_000, &state);
+        drain_workers(&state);
+        let runtime = store.load_runtime().unwrap();
+        assert!(!runtime.claims.contains_key("one"));
+        assert!(!runtime.runs.contains_key("one"));
+
+        process(
+            &root,
+            request(&project, Action::Run { name: "one".into() }),
+            &state,
+        )
+        .unwrap();
+        drain_workers(&state);
+        assert!(store
+            .load_runtime()
+            .unwrap()
+            .runs
+            .get("one")
+            .and_then(|runs| runs.last())
+            .is_some_and(|run| run.status == RunStatus::Succeeded));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn enabled_toggle_persists_over_typed_protocol_and_rejects_stale_revision() {
+        let (root, project, _state) = fixture();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let server_root = root.clone();
+        let server = std::thread::spawn(move || {
+            serve_with_startup(server_root, move |result| {
+                started_tx.send(result).unwrap();
+            })
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap();
+        let client = super::super::RoutineClient::new(root.clone());
+
+        let toggled = client
+            .request(&request(
+                &project,
+                Action::SetEnabled {
+                    revision: 1,
+                    name: "one".into(),
+                    enabled: false,
+                },
+            ))
+            .unwrap();
+        assert!(matches!(toggled, Response::Ok { revision: Some(2) }));
+
+        let stale = client
+            .request(&request(
+                &project,
+                Action::SetEnabled {
+                    revision: 1,
+                    name: "one".into(),
+                    enabled: true,
+                },
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            stale,
+            RoutineError::RemoteDaemon {
+                kind: RoutineErrorKind::Conflict,
+                ..
+            }
+        ));
+
+        let missing = client
+            .request(&request(
+                &project,
+                Action::SetEnabled {
+                    revision: 2,
+                    name: "missing".into(),
+                    enabled: false,
+                },
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            missing,
+            RoutineError::RemoteDaemon {
+                kind: RoutineErrorKind::NotFound,
+                ..
+            }
+        ));
+
+        let shown = client
+            .request(&request(&project, Action::Show { name: "one".into() }))
+            .unwrap();
+        assert!(matches!(
+            shown,
+            Response::Routine {
+                revision: 2,
+                routine,
+            } if !routine.routine.enabled
+        ));
+        client
+            .request(&request(&project, Action::Shutdown))
+            .unwrap();
+        server.join().unwrap().unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn confirmed_delete_cancels_active_run_and_removes_definition() {
         let (root, project, state) = fixture();
         process(
@@ -2062,6 +2223,7 @@ mod tests {
                         cron: "0 0 1 1 *".into(),
                         command: vec!["/bin/echo".into(), "done".into()],
                         prompt: String::new(),
+                        enabled: true,
                     },
                 },
             ),
