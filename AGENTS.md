@@ -42,6 +42,9 @@ Recurring audit axes (auto-maintained by /good-to-go):
 
 - Uncertain about project term/schema/convention/prior decision → `/seek <topic>` first (lightweight KB lookup; same tier as grep/Glob).
 
+seek.collections.auto: wsx rust
+seek.collections.extra: terminal git
+
 ## auwsx Knowledge Collections
 <!-- auwsx:knowledge-collections -->
 Agents should use these collection hints before answering project/domain questions or changing architecture:
