@@ -1,15 +1,33 @@
 // Bell/activity detection from tmux sessions.
 // ref: tmux(1) — list-windows, session_alerts, window_activity
 
-use super::tmux_cmd;
+use super::{capture, tmux_cmd};
 use crate::model::workspace::ForegroundKind;
 use crate::proc_tree::{normalize_comm, ProcTree};
 use std::collections::HashMap;
+
+const AGENT_TAIL_LINES: u32 = 12;
+const MAX_AGENT_TAIL_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AgentMonitorState {
+    pub tmux_activity_ts: u64,
+    pub has_agent_tail: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum AgentTailSample {
+    #[default]
+    NotSampled,
+    Captured(String),
+    Unavailable,
+}
 
 pub struct SessionStatus {
     pub has_bell: bool,
     pub last_activity_ts: u64, // Unix timestamp, 0 if unknown
     pub foreground: ForegroundKind,
+    pub agent_tail: AgentTailSample,
     pub is_running_wsx: bool, // foreground process is wsx itself
     pub wsx_muted: bool,      // @wsx-muted user option set on this session
 }
@@ -33,7 +51,7 @@ fn is_passive(cmd: &str) -> bool {
 fn is_agent(cmd: &str) -> bool {
     matches!(
         cmd.trim(),
-        "claude" | "codex" | "aider" | "opencode" | "gemini" | "qwen"
+        "claude" | "codex" | "aider" | "opencode" | "gemini" | "qwen" | "pi"
     )
 }
 
@@ -52,6 +70,35 @@ fn is_runtime(cmd: &str) -> bool {
             | "entr"
             | "reflex"
     )
+}
+
+fn normalize_agent_tail(raw: &str) -> String {
+    let normalized = raw
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let normalized = normalized.trim_matches('\n');
+    if normalized.len() <= MAX_AGENT_TAIL_BYTES {
+        return normalized.to_string();
+    }
+    let start = normalized
+        .char_indices()
+        .find_map(|(idx, _)| (normalized.len() - idx <= MAX_AGENT_TAIL_BYTES).then_some(idx))
+        .unwrap_or(0);
+    normalized[start..].to_string()
+}
+
+fn is_pane_id(value: &str) -> bool {
+    value.strip_prefix('%').is_some_and(|digits| {
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+fn should_sample_agent(previous: Option<&AgentMonitorState>, current_activity_ts: u64) -> bool {
+    previous
+        .map(|state| !state.has_agent_tail || state.tmux_activity_ts != current_activity_ts)
+        .unwrap_or(true)
 }
 
 fn classify_foreground(cmd: &str) -> ForegroundKind {
@@ -98,63 +145,66 @@ fn foreground_rank(kind: ForegroundKind) -> u8 {
     }
 }
 
-/// Single tmux call + one ps snapshot: returns bell, last activity timestamp,
-/// foreground classified by walking the process tree under each pane, and
-/// @wsx-muted per session.
-pub fn session_activity() -> HashMap<String, SessionStatus> {
+/// Read process/activity state and sample bounded agent tails only when tmux's
+/// raw activity timestamp changes or a baseline is missing.
+pub fn session_activity_since(
+    previous: &HashMap<String, AgentMonitorState>,
+) -> HashMap<String, SessionStatus> {
     let Ok(output) = tmux_cmd(&[
         "list-windows",
         "-a",
         "-F",
-        "#{session_name}\t#{session_alerts}\t#{window_activity}\t#{pane_current_command}\t#{@wsx-muted}\t#{pane_pid}",
+        "#{session_name}\t#{session_alerts}\t#{window_activity}\t#{pane_current_command}\t#{@wsx-muted}\t#{pane_pid}\t#{pane_id}",
     ])
     .output() else {
         return HashMap::new();
     };
 
     // One ps call shared across every pane. Agents nested under shells need
-    // the tree walk; `pane_current_command` reports the deepest spawned child
-    // (e.g. a node subprocess named "2.1.x") and hides the real foreground.
+    // the tree walk; `pane_current_command` can hide the real foreground.
     let tree = ProcTree::snapshot();
-
     let mut result: HashMap<String, SessionStatus> = HashMap::new();
+    let mut agent_panes: HashMap<String, Vec<String>> = HashMap::new();
+
     for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let mut parts = line.splitn(6, '\t');
+        let mut parts = line.splitn(7, '\t');
         let Some(name) = parts.next() else { continue };
         let Some(alerts) = parts.next() else { continue };
         let Some(ts_str) = parts.next() else { continue };
         let cmd = parts.next().unwrap_or("").trim();
         let muted_str = parts.next().unwrap_or("").trim();
         let pane_pid: Option<u32> = parts.next().and_then(|s| s.trim().parse().ok());
+        let pane_id = parts.next().unwrap_or("").trim();
         let name = name.trim().to_string();
         let alerts = alerts.trim();
         let has_bell = !alerts.is_empty() && alerts != "0";
         let ts = ts_str.trim().parse::<u64>().unwrap_or(0);
         let wsx_muted = muted_str == "1";
-        let entry = result.entry(name).or_insert(SessionStatus {
+        let entry = result.entry(name.clone()).or_insert(SessionStatus {
             has_bell: false,
             last_activity_ts: 0,
             foreground: ForegroundKind::Unknown,
+            agent_tail: AgentTailSample::NotSampled,
             is_running_wsx: false,
             wsx_muted,
         });
         entry.has_bell |= has_bell;
-        // @wsx-muted is a session option but tmux reports it per-window; OR across windows
-        // so any window with the flag set treats the whole session as muted.
         entry.wsx_muted |= wsx_muted;
-        if ts > entry.last_activity_ts {
-            entry.last_activity_ts = ts;
-        }
-        // Tree classification first; fall back to pane_current_command only if
-        // the ps snapshot is empty or this pane's pid is missing from it.
+        entry.last_activity_ts = entry.last_activity_ts.max(ts);
+
         let foreground = pane_pid
             .and_then(|pid| classify_pane(pid, &tree))
             .unwrap_or_else(|| classify_foreground(cmd));
+        if foreground == ForegroundKind::Agent && is_pane_id(pane_id) {
+            agent_panes
+                .entry(name)
+                .or_default()
+                .push(pane_id.to_string());
+        }
         if foreground_rank(foreground) > foreground_rank(entry.foreground) {
             entry.foreground = foreground;
         }
-        // wsx-self detection: scan the subtree, not just pane_current_command,
-        // so wrapped or nested invocations still suppress the preview.
+
         let wsx_in_tree = pane_pid
             .map(|pid| {
                 tree.descendants(pid)
@@ -162,16 +212,45 @@ pub fn session_activity() -> HashMap<String, SessionStatus> {
                     .any(|(_, c)| normalize_comm(c) == "wsx")
             })
             .unwrap_or(false);
-        if wsx_in_tree || cmd == "wsx" {
-            entry.is_running_wsx = true;
-        }
+        entry.is_running_wsx |= wsx_in_tree || cmd == "wsx";
     }
+
+    for (name, mut panes) in agent_panes {
+        let Some(status) = result.get_mut(&name) else {
+            continue;
+        };
+        if !should_sample_agent(previous.get(&name), status.last_activity_ts) {
+            continue;
+        }
+        panes.sort_unstable();
+        let mut captures = Vec::with_capacity(panes.len());
+        for pane in panes {
+            let Some(raw) = capture::capture_pane_plain_window(&pane, Some(AGENT_TAIL_LINES), 0)
+            else {
+                captures.clear();
+                break;
+            };
+            captures.push(format!("{pane}\n{}", normalize_agent_tail(&raw)));
+        }
+        status.agent_tail = if captures.is_empty() {
+            AgentTailSample::Unavailable
+        } else {
+            AgentTailSample::Captured(captures.join("\n\u{1e}\n"))
+        };
+    }
+
     result
+}
+
+pub fn session_activity() -> HashMap<String, SessionStatus> {
+    session_activity_since(&HashMap::new())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::foreground_rank;
+    use super::{
+        foreground_rank, is_pane_id, normalize_agent_tail, should_sample_agent, AgentMonitorState,
+    };
     use crate::model::workspace::ForegroundKind;
 
     // Strict ordering: Unknown < Shell < PassiveViewer < Runtime
@@ -214,6 +293,42 @@ mod tests {
         assert!(foreground_rank(ForegroundKind::Unknown) < foreground_rank(ForegroundKind::Agent));
     }
 
+    #[test]
+    fn given_identical_cells_with_trailing_padding_when_normalized_then_equal() {
+        assert_eq!(
+            normalize_agent_tail("working   \n\n"),
+            normalize_agent_tail("working\n")
+        );
+    }
+
+    #[test]
+    fn given_tmux_pane_target_when_validated_then_only_percent_digits_are_accepted() {
+        assert!(is_pane_id("%42"));
+        assert!(!is_pane_id("%"));
+        assert!(!is_pane_id("%42;display-message"));
+        assert!(!is_pane_id("session:0.0"));
+    }
+
+    #[test]
+    fn given_missing_baseline_or_changed_tmux_timestamp_when_checked_then_samples() {
+        assert!(should_sample_agent(None, 10));
+        let previous = AgentMonitorState {
+            tmux_activity_ts: 10,
+            has_agent_tail: true,
+        };
+        assert!(!should_sample_agent(Some(&previous), 10));
+        assert!(should_sample_agent(Some(&previous), 11));
+    }
+
+    #[test]
+    fn given_missing_tail_when_timestamp_is_stable_then_retries_sample() {
+        let previous = AgentMonitorState {
+            tmux_activity_ts: 10,
+            has_agent_tail: false,
+        };
+        assert!(should_sample_agent(Some(&previous), 10));
+    }
+
     // ── classify_pane (tree-walking foreground picker) ───────────────────────
 
     use super::classify_pane;
@@ -237,6 +352,13 @@ mod tests {
     fn given_zsh_with_node_child_when_classified_then_runtime() {
         let tree = ProcTree::from_rows(&[(100, 1, "zsh"), (200, 100, "node")]);
         assert_eq!(classify_pane(100, &tree), Some(ForegroundKind::Runtime));
+    }
+
+    #[test]
+    fn given_node_with_pi_child_when_classified_then_pi_agent_wins() {
+        // ^ Pi runs under a Node launcher; process-tree classification stays provider-neutral.
+        let tree = ProcTree::from_rows(&[(100, 1, "node"), (200, 100, "pi")]);
+        assert_eq!(classify_pane(100, &tree), Some(ForegroundKind::Agent));
     }
 
     #[test]

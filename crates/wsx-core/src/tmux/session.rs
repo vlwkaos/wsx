@@ -109,6 +109,8 @@ pub fn user_has_tmux_config() -> bool {
 /// Apply wsx server-level defaults once at startup. Best-effort, non-fatal.
 pub fn apply_server_defaults() {
     let _ = tmux_silent(&["set-option", "-g", "extended-keys", "on"]).status();
+    let _ = tmux_silent(&["set-option", "-g", "extended-keys-format", "csi-u"]).status();
+    let _ = tmux_silent(&["set-option", "-g", "default-terminal", "tmux-256color"]).status();
 }
 
 /// Apply wsx runtime defaults to a session on every attach. Best-effort, non-fatal.

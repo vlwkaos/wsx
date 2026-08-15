@@ -65,6 +65,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 
 [[package]]
+name = "asched-core"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b88da636c40f662677308f0758016833a582afe9b05a1f2a56111d7e868a7110"
+dependencies = [
+ "dirs",
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1005,6 +1019,7 @@ name = "wsx"
 version = "0.16.2"
 dependencies = [
  "anyhow",
+ "asched-core",
  "clap",
  "crossterm",
  "dirs",
@@ -1023,6 +1038,7 @@ name = "wsx-core"
 version = "0.16.2"
 dependencies = [
  "anyhow",
+ "asched-core",
  "dirs",
  "glob",
  "libc",

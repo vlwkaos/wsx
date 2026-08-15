@@ -25,13 +25,18 @@ pub fn init() -> Result<Tui> {
 }
 
 /// Draw with synchronized output to prevent terminal from rendering partial frames.
-/// If `clear` is true, clears the terminal before drawing (atomically within the sync block).
-pub fn draw_sync<F>(terminal: &mut Tui, clear: bool, f: F) -> Result<()>
+/// Terminal clears are reserved for resize; preview clears flush captured terminal glyphs.
+pub fn draw_sync<F>(
+    terminal: &mut Tui,
+    clear_terminal: bool,
+    clear_preview: bool,
+    mut render: F,
+) -> Result<()>
 where
-    F: FnOnce(&mut ratatui::Frame),
+    F: FnMut(&mut ratatui::Frame, bool),
 {
     execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
-    if clear {
+    if clear_terminal {
         terminal.clear()?;
         // terminal.clear() resets the back buffer but NOT the current (front) buffer,
         // so the next diff skips cells that match the stale front buffer even though
@@ -39,7 +44,10 @@ where
         // to blank state, ensuring the real draw below writes every cell unconditionally.
         terminal.draw(|_| {})?;
     }
-    terminal.draw(f)?;
+    if clear_preview {
+        terminal.draw(|frame| render(frame, true))?;
+    }
+    terminal.draw(|frame| render(frame, false))?;
     execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
     Ok(())
 }

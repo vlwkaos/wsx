@@ -1,8 +1,8 @@
+use asched_core::routine::{Routine, Trigger};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Paragraph},
 };
-use wsx_core::routine::Routine;
 
 #[derive(Clone)]
 pub struct RoutineForm {
@@ -19,7 +19,7 @@ impl RoutineForm {
     pub fn codex() -> Self {
         Self::from_routine(Routine {
             name: String::new(),
-            cron: "0 9 * * *".into(),
+            trigger: Trigger::Cron("0 9 * * *".into()),
             command: vec![
                 "codex".into(),
                 "exec".into(),
@@ -34,7 +34,7 @@ impl RoutineForm {
     pub fn claude() -> Self {
         Self::from_routine(Routine {
             name: String::new(),
-            cron: "0 9 * * *".into(),
+            trigger: Trigger::Cron("0 9 * * *".into()),
             command: vec![
                 "claude".into(),
                 "-p".into(),
@@ -53,7 +53,10 @@ impl RoutineForm {
         let cursor = routine.name.len();
         Self {
             name: routine.name,
-            cron: routine.cron,
+            cron: match routine.trigger {
+                Trigger::Cron(cron) => cron,
+                Trigger::Event { kind } => format!("event:{kind}"),
+            },
             command_json,
             prompt: routine.prompt,
             field: 0,
@@ -135,9 +138,16 @@ impl RoutineForm {
     pub fn routine(&self) -> Result<Routine, String> {
         let command: Vec<String> = serde_json::from_str(&self.command_json)
             .map_err(|e| format!("command must be a JSON argv array: {e}"))?;
+        let trigger = self
+            .cron
+            .strip_prefix("event:")
+            .map(|kind| Trigger::Event {
+                kind: kind.to_string(),
+            })
+            .unwrap_or_else(|| Trigger::Cron(self.cron.clone()));
         Routine {
             name: self.name.clone(),
-            cron: self.cron.clone(),
+            trigger,
             command,
             prompt: self.prompt.clone(),
             enabled: self.enabled,
@@ -152,7 +162,7 @@ pub fn render(frame: &mut Frame, area: Rect, form: &RoutineForm, editing: bool, 
     let height = area.height.saturating_sub(2).min(13);
     let popup = super::popup_center(area, width, height);
     frame.render_widget(Clear, popup);
-    let labels = ["Name", "Cron", "Command argv (JSON)", "Prompt"];
+    let labels = ["Name", "Trigger", "Command argv (JSON)", "Prompt"];
     let values = [&form.name, &form.cron, &form.command_json, &form.prompt];
     let mut cursor_position = None;
     let mut lines = vec![Line::from(if editing {
@@ -280,7 +290,7 @@ mod tests {
     fn disabled_routine_form_round_trip_preserves_disabled_state() {
         let mut form = RoutineForm::from_routine(Routine {
             name: "daily".into(),
-            cron: "0 9 * * *".into(),
+            trigger: Trigger::Cron("0 9 * * *".into()),
             command: vec!["echo".into()],
             prompt: "before".into(),
             enabled: false,
@@ -290,6 +300,26 @@ mod tests {
         let saved = form.routine().unwrap();
         assert_eq!(saved.prompt, "after");
         assert!(!saved.enabled);
+    }
+
+    #[test]
+    fn event_trigger_round_trip_preserves_provider_neutral_kind() {
+        let form = RoutineForm::from_routine(Routine {
+            name: "changed".into(),
+            trigger: Trigger::Event {
+                kind: "filesystem.changed".into(),
+            },
+            command: vec!["echo".into()],
+            prompt: String::new(),
+            enabled: true,
+        });
+
+        assert_eq!(
+            form.routine().unwrap().trigger,
+            Trigger::Event {
+                kind: "filesystem.changed".into()
+            }
+        );
     }
 
     #[test]

@@ -8,7 +8,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use ratatui::layout::{Position, Rect};
+use ratatui::{
+    layout::{Position, Rect},
+    widgets::Clear,
+};
 
 use crate::{
     action::Action,
@@ -26,7 +29,7 @@ use wsx_core::{
 };
 
 use git_info::FetchOutcome;
-use monitor::SessionStatus;
+use monitor::{AgentMonitorState, SessionStatus};
 
 // ── Tmux async results ────────────────────────────────────────────────────────
 
@@ -278,10 +281,54 @@ struct BgResult {
     outcome: Result<BgOutcome>,
 }
 
+enum RoutineSelection {
+    Preserve,
+    Header,
+    Named(String),
+}
+
+enum RoutineResultKind {
+    Refresh {
+        generation: u64,
+        expand: bool,
+        selection: RoutineSelection,
+    },
+    Save {
+        original_name: Option<String>,
+        can_rename: bool,
+        form: RoutineForm,
+        saved_name: String,
+    },
+    Delete {
+        name: String,
+    },
+}
+
 struct RoutineRefreshResult {
     project_path: PathBuf,
-    generation: u64,
-    response: wsx_core::routine::ipc::Response,
+    kind: RoutineResultKind,
+    response: Result<asched_core::routine::ipc::Response>,
+}
+
+fn routine_error_kind(error: &anyhow::Error) -> Option<asched_core::routine::RoutineErrorKind> {
+    error
+        .downcast_ref::<asched_core::routine::RoutineError>()
+        .map(asched_core::routine::RoutineError::kind)
+}
+
+fn routine_error_text(error: &anyhow::Error) -> String {
+    match routine_error_kind(error) {
+        Some(asched_core::routine::RoutineErrorKind::ProtocolMismatch) => {
+            "asched protocol mismatch; upgrade wsx and asched together, then restart asched".into()
+        }
+        Some(asched_core::routine::RoutineErrorKind::Conflict) => {
+            "routine changed in asched; refreshed the latest revision".into()
+        }
+        Some(asched_core::routine::RoutineErrorKind::AlreadyRunning) => {
+            "routine is already running".into()
+        }
+        _ => error.to_string(),
+    }
 }
 
 /// Tracks user-initiated session mutations so stale refresh results don't overwrite intent.
@@ -362,7 +409,10 @@ pub struct App {
     bg_tx: mpsc::Sender<BgResult>,
     bg_rx: mpsc::Receiver<BgResult>,
     needs_redraw: bool,
-    force_redraw: bool,
+    force_terminal_redraw: bool,
+    force_preview_redraw: bool,
+    /// Tracks whether the last successful desktop frame contained captured terminal content.
+    last_rendered_preview_was_session: bool,
     fast_timer: Timer,
     activity_timer: Timer,
     slow_timer: Timer,
@@ -478,7 +528,9 @@ impl App {
             bg_tx,
             bg_rx,
             needs_redraw: true,
-            force_redraw: false,
+            force_terminal_redraw: false,
+            force_preview_redraw: false,
+            last_rendered_preview_was_session: false,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
             activity_timer: Timer::new(ACTIVITY_INTERVAL_MS),
             slow_timer: Timer::new(SLOW_INTERVAL_MS + (std::process::id() % 500) as u64),
@@ -517,15 +569,14 @@ impl App {
             routine_rx,
             routine_refresh_generation: HashMap::new(),
         };
-        if let Err(error) = app.refresh_routines_all() {
-            app.set_status(format!("Routines unavailable: {error}"));
-        } else if let Some(identity) = cursor_identity.as_ref() {
+        if let Some(identity) = cursor_identity.as_ref() {
             if let Some(index) =
                 wsx_core::cache::find_cursor_index(&app.workspace, app.flat(), identity)
             {
                 app.tree_selected = index;
             }
         }
+        app.spawn_routine_refresh();
         app.spawn_repo_scan();
         Ok(app)
     }
@@ -673,42 +724,39 @@ impl App {
         &self.cached_flat
     }
 
-    fn refresh_routines_all(&mut self) -> Result<()> {
-        for project in &mut self.workspace.projects {
-            let response =
-                crate::cli::send_routine(&project.path, wsx_core::routine::ipc::Action::List)?;
-            if let wsx_core::routine::ipc::Response::Routines { revision, routines } = response {
-                project.routine_revision = revision;
-                project.routines = routines;
-            }
-        }
-        self.rebuild_flat();
-        Ok(())
+    fn spawn_routine_request(
+        &mut self,
+        project_path: PathBuf,
+        action: asched_core::routine::ipc::Action,
+        kind: RoutineResultKind,
+    ) {
+        let tx = self.routine_tx.clone();
+        std::thread::spawn(move || {
+            let response = crate::cli::send_routine(&project_path, action);
+            let _ = tx.send(RoutineRefreshResult {
+                project_path,
+                kind,
+                response,
+            });
+        });
     }
 
-    fn refresh_routine_project(&mut self, project_idx: usize) -> Result<()> {
-        let path = self
-            .workspace
-            .projects
-            .get(project_idx)
-            .ok_or_else(|| anyhow::anyhow!("project not found"))?
-            .path
-            .clone();
-        self.invalidate_routine_refresh(&path);
-        let response = crate::cli::send_routine(&path, wsx_core::routine::ipc::Action::List)?;
-        if let wsx_core::routine::ipc::Response::Routines { revision, routines } = response {
-            let project = self
-                .workspace
-                .projects
-                .iter_mut()
-                .find(|project| project.path == path)
-                .ok_or_else(|| anyhow::anyhow!("project removed during routine refresh"))?;
-            project.routine_revision = revision;
-            project.routines = routines;
-            project.routines_expanded = true;
-            self.rebuild_flat();
-        }
-        Ok(())
+    fn spawn_routine_project_refresh(
+        &mut self,
+        project_path: PathBuf,
+        expand: bool,
+        selection: RoutineSelection,
+    ) {
+        let generation = self.invalidate_routine_refresh(&project_path);
+        self.spawn_routine_request(
+            project_path,
+            asched_core::routine::ipc::Action::List,
+            RoutineResultKind::Refresh {
+                generation,
+                expand,
+                selection,
+            },
+        );
     }
 
     fn invalidate_routine_refresh(&mut self, path: &Path) -> u64 {
@@ -730,10 +778,25 @@ impl App {
 
             if self.needs_redraw {
                 self.ensure_flat();
-                let force = self.force_redraw;
-                self.force_redraw = false;
-                if let Err(e) = tui::draw_sync(terminal, force, |frame| ui::render(frame, self)) {
-                    self.set_status(format!("Error: {}", e));
+                let clear_terminal = self.force_terminal_redraw;
+                let clear_preview = self.force_preview_redraw;
+                self.force_terminal_redraw = false;
+                self.force_preview_redraw = false;
+                let preview_is_session = self.shows_preview()
+                    && matches!(self.current_selection(), Selection::Session(..));
+                match tui::draw_sync(
+                    terminal,
+                    clear_terminal,
+                    clear_preview,
+                    |frame, clear_preview| {
+                        ui::render(frame, self);
+                        if clear_preview {
+                            frame.render_widget(Clear, self.preview_area);
+                        }
+                    },
+                ) {
+                    Ok(()) => self.last_rendered_preview_was_session = preview_is_session,
+                    Err(e) => self.set_status(format!("Error: {}", e)),
                 }
                 self.needs_redraw = false;
             }
@@ -813,44 +876,141 @@ impl App {
             }
         }
         while let Ok(result) = self.routine_rx.try_recv() {
-            if self.routine_refresh_generation.get(&result.project_path) != Some(&result.generation)
-            {
-                continue;
-            }
-            if let wsx_core::routine::ipc::Response::Routines { revision, routines } =
-                result.response
-            {
-                let identity = wsx_core::cache::resolve_cursor_identity(
-                    &self.workspace,
-                    self.flat(),
-                    self.tree_selected,
-                );
-                if let Some(project) = self
-                    .workspace
-                    .projects
-                    .iter_mut()
-                    .find(|project| project.path == result.project_path)
-                {
-                    project.routine_revision = revision;
-                    project.routines = routines;
-                    self.rebuild_flat();
-                    if let Some(identity) = identity.as_ref() {
-                        if let Some(index) = wsx_core::cache::find_cursor_index(
-                            &self.workspace,
-                            self.flat(),
-                            identity,
-                        ) {
-                            self.tree_selected = index;
-                        }
-                    }
-                    self.clamp_selected();
-                    self.needs_redraw = true;
-                }
-            }
+            self.apply_routine_result(result);
         }
         if let Ok(v) = self.update_rx.try_recv() {
             self.update_available = Some(v);
             self.needs_redraw = true;
+        }
+    }
+
+    fn apply_routine_result(&mut self, result: RoutineRefreshResult) {
+        let Some(project_idx) = self
+            .workspace
+            .projects
+            .iter()
+            .position(|project| project.path == result.project_path)
+        else {
+            return;
+        };
+        match (result.kind, result.response) {
+            (
+                RoutineResultKind::Refresh {
+                    generation,
+                    expand,
+                    selection,
+                },
+                Ok(asched_core::routine::ipc::Response::Routines { revision, routines }),
+            ) => {
+                if self.routine_refresh_generation.get(&result.project_path) != Some(&generation) {
+                    return;
+                }
+                let identity = matches!(selection, RoutineSelection::Preserve).then(|| {
+                    wsx_core::cache::resolve_cursor_identity(
+                        &self.workspace,
+                        self.flat(),
+                        self.tree_selected,
+                    )
+                });
+                let project = &mut self.workspace.projects[project_idx];
+                project.routine_revision = revision;
+                project.routines = routines;
+                project.routines_expanded |= expand;
+                self.rebuild_flat();
+                match selection {
+                    RoutineSelection::Preserve => {
+                        if let Some(Some(identity)) = identity {
+                            if let Some(index) = wsx_core::cache::find_cursor_index(
+                                &self.workspace,
+                                self.flat(),
+                                &identity,
+                            ) {
+                                self.tree_selected = index;
+                            }
+                        }
+                    }
+                    RoutineSelection::Header => self.select_routine(project_idx, None),
+                    RoutineSelection::Named(name) => self.select_routine(project_idx, Some(&name)),
+                }
+                self.clamp_selected();
+                self.needs_redraw = true;
+            }
+            (RoutineResultKind::Refresh { generation, .. }, Err(error)) => {
+                if self.routine_refresh_generation.get(&result.project_path) == Some(&generation) {
+                    self.set_status(format!(
+                        "Routines unavailable: {}",
+                        routine_error_text(&error)
+                    ));
+                }
+            }
+            (
+                RoutineResultKind::Save {
+                    original_name: _,
+                    can_rename: _,
+                    form: _,
+                    saved_name,
+                },
+                Ok(asched_core::routine::ipc::Response::Ok { .. }),
+            ) => {
+                self.spawn_routine_project_refresh(
+                    result.project_path,
+                    true,
+                    RoutineSelection::Named(saved_name.clone()),
+                );
+                self.set_status(format!("Saved routine '{saved_name}'"));
+            }
+            (
+                RoutineResultKind::Save {
+                    original_name,
+                    can_rename,
+                    form,
+                    saved_name: _,
+                },
+                Err(error),
+            ) => {
+                if routine_error_kind(&error)
+                    == Some(asched_core::routine::RoutineErrorKind::Conflict)
+                {
+                    self.spawn_routine_project_refresh(
+                        result.project_path,
+                        true,
+                        RoutineSelection::Preserve,
+                    );
+                }
+                self.mode = Mode::RoutineEditor {
+                    project_idx,
+                    original_name,
+                    can_rename,
+                    form,
+                };
+                self.set_status(format!("Routine not saved: {}", routine_error_text(&error)));
+            }
+            (
+                RoutineResultKind::Delete { name },
+                Ok(asched_core::routine::ipc::Response::Ok { .. }),
+            ) => {
+                self.spawn_routine_project_refresh(
+                    result.project_path,
+                    true,
+                    RoutineSelection::Header,
+                );
+                self.set_status(format!("Deleted routine '{name}'"));
+            }
+            (RoutineResultKind::Delete { name }, Err(error)) => {
+                if routine_error_kind(&error)
+                    == Some(asched_core::routine::RoutineErrorKind::Conflict)
+                {
+                    self.spawn_routine_project_refresh(
+                        result.project_path,
+                        true,
+                        RoutineSelection::Preserve,
+                    );
+                }
+                self.restore_failed_routine_delete(project_idx, &name, routine_error_text(&error));
+            }
+            (_, Ok(response)) => self.set_status(format!(
+                "Routine daemon returned an unexpected response: {response:?}"
+            )),
         }
     }
 
@@ -886,26 +1046,30 @@ impl App {
     }
 
     fn spawn_routine_refresh(&mut self) {
-        let paths = self
-            .workspace
-            .projects
-            .iter()
-            .map(|project| project.path.clone())
-            .collect::<Vec<_>>();
+        let registered = match crate::cli::registered_routine_paths() {
+            Ok(paths) => paths.into_iter().collect::<HashSet<_>>(),
+            Err(error) => {
+                self.set_status(format!("Routines unavailable: {error}"));
+                return;
+            }
+        };
+        let mut paths = Vec::new();
+        let mut cleared = false;
+        for project in &mut self.workspace.projects {
+            if registered.contains(&project.path) {
+                paths.push(project.path.clone());
+            } else if !project.routines.is_empty() || project.routine_revision != 0 {
+                project.routines.clear();
+                project.routine_revision = 0;
+                cleared = true;
+            }
+        }
+        if cleared {
+            self.rebuild_flat();
+            self.needs_redraw = true;
+        }
         for path in paths {
-            let generation = self.invalidate_routine_refresh(&path);
-            let tx = self.routine_tx.clone();
-            std::thread::spawn(move || {
-                if let Ok(response) =
-                    crate::cli::send_routine(&path, wsx_core::routine::ipc::Action::List)
-                {
-                    let _ = tx.send(RoutineRefreshResult {
-                        project_path: path,
-                        generation,
-                        response,
-                    });
-                }
-            });
+            self.spawn_routine_project_refresh(path, false, RoutineSelection::Preserve);
         }
     }
 
@@ -1124,6 +1288,24 @@ impl App {
         filter_pending_session_ops(&mut self.pending_session_ops, sessions)
     }
 
+    fn agent_monitor_state(&self) -> HashMap<String, AgentMonitorState> {
+        self.workspace
+            .projects
+            .iter()
+            .flat_map(|project| project.worktrees.iter())
+            .flat_map(|worktree| worktree.sessions.iter())
+            .map(|session| {
+                (
+                    session.name.clone(),
+                    AgentMonitorState {
+                        tmux_activity_ts: session.tmux_activity_ts,
+                        has_agent_tail: session.agent_tail.is_some(),
+                    },
+                )
+            })
+            .collect()
+    }
+
     fn spawn_tmux_refresh(&mut self) {
         if self.tmux_refresh_pending {
             // ^ caller needs fresh data; remember to fire another refresh when current lands
@@ -1138,9 +1320,10 @@ impl App {
             .iter()
             .map(|p| p.path.clone())
             .collect();
+        let previous_activity = self.agent_monitor_state();
         std::thread::spawn(move || {
             let sessions = session::list_sessions_with_paths();
-            let activity = monitor::session_activity();
+            let activity = monitor::session_activity_since(&previous_activity);
             let worktrees = project_paths
                 .into_iter()
                 .map(|path| {
@@ -1202,8 +1385,9 @@ impl App {
         }
         self.tmux_activity_pending = true;
         let tx = self.tmux_tx.clone();
+        let previous_activity = self.agent_monitor_state();
         std::thread::spawn(move || {
-            let activity = monitor::session_activity();
+            let activity = monitor::session_activity_since(&previous_activity);
             let _ = tx.send(TmuxResult::Activity(activity));
         });
     }
@@ -1280,7 +1464,7 @@ impl App {
                 self.needs_redraw = true;
                 // ! PUA chars (powerline) are width-1 to ratatui but width-2 in terminal;
                 // ! clear the buffer on every content change so diffs never leave stale cells.
-                self.force_redraw = self.shows_preview();
+                self.force_preview_redraw = self.shows_preview();
             }
         }
     }
@@ -1470,9 +1654,11 @@ impl App {
             visible,
             self.tree_scroll,
         );
-        // ^ PUA width mismatch can leave ghost cells when the preview content changes;
-        // force a full redraw on every navigation to flush them.
-        self.force_redraw = self.shows_preview();
+        // ^ Captured terminal PUA glyphs can have widths that differ from ratatui's model.
+        // Clear only when entering or leaving that content; ordinary previews diff cleanly.
+        self.force_preview_redraw |= self.shows_preview()
+            && (self.last_rendered_preview_was_session
+                || matches!(self.current_selection(), Selection::Session(..)));
     }
 
     // ── Action dispatch ───────────────────────────────────────────────────────
@@ -1620,7 +1806,7 @@ impl App {
             Action::SetAlias => self.action_set_alias()?,
             Action::Refresh => self.refresh_all()?,
             Action::Resize => {
-                self.force_redraw = true;
+                self.force_terminal_redraw = true;
                 self.needs_redraw = true;
             }
             Action::Help => {
@@ -1865,32 +2051,32 @@ impl App {
             }
         };
         let project = &self.workspace.projects[project_idx];
+        let project_path = project.path.clone();
+        let revision = project.routine_revision;
         let action = if let Some(old_name) = original_name.clone() {
-            wsx_core::routine::ipc::Action::Edit {
-                revision: project.routine_revision,
+            asched_core::routine::ipc::Action::Edit {
+                revision,
                 old_name,
                 routine: routine.clone(),
             }
         } else {
-            wsx_core::routine::ipc::Action::Add {
-                revision: project.routine_revision,
+            asched_core::routine::ipc::Action::Add {
+                revision,
                 routine: routine.clone(),
             }
         };
-        if let Err(error) = crate::cli::send_routine(&project.path, action) {
-            self.refresh_routine_project(project_idx).ok();
-            self.mode = Mode::RoutineEditor {
-                project_idx,
+        let saved_name = routine.name.clone();
+        self.spawn_routine_request(
+            project_path,
+            action,
+            RoutineResultKind::Save {
                 original_name,
                 can_rename,
                 form,
-            };
-            self.set_status(format!("Routine not saved: {error}"));
-            return Ok(());
-        }
-        self.refresh_routine_project(project_idx)?;
-        self.select_routine(project_idx, Some(&routine.name));
-        self.set_status(format!("Saved routine '{}'", routine.name));
+                saved_name: saved_name.clone(),
+            },
+        );
+        self.set_status(format!("Saving routine '{saved_name}'…"));
         Ok(())
     }
 
@@ -2823,44 +3009,27 @@ impl App {
                     name,
                     revision,
                 } => {
-                    let Some(project_idx) = self
+                    if !self
                         .workspace
                         .projects
                         .iter()
-                        .position(|project| project.path == project_path)
-                    else {
+                        .any(|project| project.path == project_path)
+                    {
                         self.mode = Mode::Normal;
                         self.set_status(format!(
                             "Routine '{name}' not deleted: project is no longer registered"
                         ));
                         return Ok(());
-                    };
-                    let path = project_path;
-                    if let Err(error) = crate::cli::send_routine(
-                        &path,
-                        wsx_core::routine::ipc::Action::Delete {
+                    }
+                    self.spawn_routine_request(
+                        project_path,
+                        asched_core::routine::ipc::Action::Delete {
                             revision,
                             name: name.clone(),
                         },
-                    ) {
-                        let _ = self.refresh_routine_project(project_idx);
-                        self.restore_failed_routine_delete(project_idx, &name, error.to_string());
-                        return Ok(());
-                    }
-                    if let Err(error) = self.refresh_routine_project(project_idx) {
-                        if let Some(project) = self.workspace.projects.get_mut(project_idx) {
-                            project.routines.retain(|view| view.routine.name != name);
-                            project.routines_expanded = true;
-                        }
-                        self.rebuild_flat();
-                        self.select_routine(project_idx, None);
-                        self.set_status(format!(
-                            "Deleted routine '{name}', but refresh failed: {error}"
-                        ));
-                        return Ok(());
-                    }
-                    self.select_routine(project_idx, None);
-                    self.set_status(format!("Deleted routine '{name}'"));
+                        RoutineResultKind::Delete { name: name.clone() },
+                    );
+                    self.set_status(format!("Deleting routine '{name}'…"));
                 }
             }
         }
@@ -3470,10 +3639,11 @@ fn search_text_for(workspace: &WorkspaceState, entry: &FlatEntry) -> String {
             routine_idx,
         } => {
             let routine = &workspace.projects[*project_idx].routines[*routine_idx].routine;
+            let trigger = format!("{:?}", routine.trigger);
             format!(
                 "{} {} {} {}",
                 routine.name,
-                routine.cron,
+                trigger,
                 routine.command.join(" "),
                 routine.prompt
             )
@@ -3630,7 +3800,9 @@ mod tests {
             bg_tx,
             bg_rx,
             needs_redraw: false,
-            force_redraw: false,
+            force_terminal_redraw: false,
+            force_preview_redraw: false,
+            last_rendered_preview_was_session: false,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
             activity_timer: Timer::new(ACTIVITY_INTERVAL_MS),
             slow_timer: Timer::new(SLOW_INTERVAL_MS),
@@ -3676,16 +3848,16 @@ mod tests {
         }
     }
 
-    fn routine_view(name: &str) -> wsx_core::routine::ipc::RoutineView {
-        wsx_core::routine::ipc::RoutineView {
-            routine: wsx_core::routine::Routine {
+    fn routine_view(name: &str) -> asched_core::routine::ipc::RoutineView {
+        asched_core::routine::ipc::RoutineView {
+            routine: asched_core::routine::Routine {
                 name: name.into(),
-                cron: "0 9 * * *".into(),
+                trigger: asched_core::routine::Trigger::Cron("0 9 * * *".into()),
                 command: vec!["echo".into(), "{prompt}".into()],
                 prompt: "hello".into(),
                 enabled: true,
             },
-            capabilities: wsx_core::routine::Capabilities::for_running(false),
+            capabilities: asched_core::routine::Capabilities::for_running(false),
             next_run_epoch: None,
             latest_run: None,
             recent_runs: Vec::new(),
@@ -3754,6 +3926,39 @@ mod tests {
     }
 
     #[test]
+    fn protocol_mismatch_surfaces_joint_upgrade_and_restart_guidance() {
+        let error = anyhow::Error::new(asched_core::routine::RoutineError::ProtocolMismatch {
+            client: 3,
+            daemon: 2,
+        });
+        assert_eq!(
+            routine_error_text(&error),
+            "asched protocol mismatch; upgrade wsx and asched together, then restart asched"
+        );
+    }
+
+    #[test]
+    fn remote_conflict_surfaces_refresh_guidance() {
+        let error = anyhow::Error::new(asched_core::routine::RoutineError::RemoteDaemon {
+            kind: asched_core::routine::RoutineErrorKind::Conflict,
+            message: "stale config revision".into(),
+        });
+        assert_eq!(
+            routine_error_text(&error),
+            "routine changed in asched; refreshed the latest revision"
+        );
+    }
+
+    #[test]
+    fn remote_already_running_has_stable_user_facing_status() {
+        let error = anyhow::Error::new(asched_core::routine::RoutineError::RemoteDaemon {
+            kind: asched_core::routine::RoutineErrorKind::AlreadyRunning,
+            message: "routine 'daily' is already running".into(),
+        });
+        assert_eq!(routine_error_text(&error), "routine is already running");
+    }
+
+    #[test]
     fn routine_refresh_applies_by_path_and_discards_superseded_generation() {
         let workspace = WorkspaceState {
             projects: vec![make_project("a"), make_project("b")],
@@ -3765,11 +3970,15 @@ mod tests {
         app.routine_tx
             .send(RoutineRefreshResult {
                 project_path: path.clone(),
-                generation,
-                response: wsx_core::routine::ipc::Response::Routines {
+                kind: RoutineResultKind::Refresh {
+                    generation,
+                    expand: false,
+                    selection: RoutineSelection::Preserve,
+                },
+                response: Ok(asched_core::routine::ipc::Response::Routines {
                     revision: 1,
                     routines: vec![routine_view("fresh")],
-                },
+                }),
             })
             .unwrap();
         app.drain_async_results();
@@ -3781,11 +3990,15 @@ mod tests {
         app.routine_tx
             .send(RoutineRefreshResult {
                 project_path: path,
-                generation,
-                response: wsx_core::routine::ipc::Response::Routines {
+                kind: RoutineResultKind::Refresh {
+                    generation,
+                    expand: false,
+                    selection: RoutineSelection::Preserve,
+                },
+                response: Ok(asched_core::routine::ipc::Response::Routines {
                     revision: 0,
                     routines: vec![routine_view("stale")],
-                },
+                }),
             })
             .unwrap();
         app.drain_async_results();
@@ -3923,11 +4136,15 @@ mod tests {
         app.routine_tx
             .send(RoutineRefreshResult {
                 project_path,
-                generation,
-                response: wsx_core::routine::ipc::Response::Routines {
+                kind: RoutineResultKind::Refresh {
+                    generation,
+                    expand: false,
+                    selection: RoutineSelection::Preserve,
+                },
+                response: Ok(asched_core::routine::ipc::Response::Routines {
                     revision: 2,
                     routines: Vec::new(),
-                },
+                }),
             })
             .unwrap();
 
@@ -4179,7 +4396,9 @@ mod tests {
             bg_tx,
             bg_rx,
             needs_redraw: false,
-            force_redraw: false,
+            force_terminal_redraw: false,
+            force_preview_redraw: false,
+            last_rendered_preview_was_session: false,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
             activity_timer: Timer::new(ACTIVITY_INTERVAL_MS),
             slow_timer: Timer::new(SLOW_INTERVAL_MS),
@@ -4262,10 +4481,148 @@ mod tests {
             has_activity,
             pane_capture: None,
             last_activity: None,
+            agent_tail: None,
+            tmux_activity_ts: 0,
             foreground,
             is_running_wsx: false,
             muted,
         }
+    }
+
+    fn make_navigation_test_app() -> App {
+        let mut project = make_project("navigation");
+        let mut worktree = make_worktree("./navigation");
+        worktree.sessions = vec![
+            make_sess(
+                false,
+                false,
+                wsx_core::model::workspace::ForegroundKind::Shell,
+            ),
+            make_sess(
+                false,
+                false,
+                wsx_core::model::workspace::ForegroundKind::Shell,
+            ),
+        ];
+        project.worktrees = vec![worktree];
+        project.routines = vec![routine_view("morning")];
+
+        make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        )
+    }
+
+    fn select_rendered_navigation_entry(app: &mut App, selection: Selection) {
+        let index = (0..app.flat().len())
+            .find(|&index| app.workspace.get_selection(index, app.flat()) == selection)
+            .expect("navigation fixture must contain requested selection");
+        app.tree_selected = index;
+        app.force_preview_redraw = false;
+        app.last_rendered_preview_was_session =
+            !app.is_mobile && matches!(selection, Selection::Session(..));
+    }
+
+    fn assert_navigation_transition(
+        from: Selection,
+        action: Action,
+        to: Selection,
+        mobile: bool,
+        clear_preview: bool,
+    ) {
+        let mut app = make_navigation_test_app();
+        app.is_mobile = mobile;
+        select_rendered_navigation_entry(&mut app, from);
+        match action {
+            Action::NavigateUp => app.nav_up(),
+            Action::NavigateDown => app.nav_down(),
+            Action::NavigateRight => app.nav_right(),
+            _ => unreachable!(),
+        }
+        assert_eq!(app.current_selection(), to);
+        assert_eq!(app.force_preview_redraw, clear_preview);
+        assert!(!app.force_terminal_redraw);
+    }
+
+    #[test]
+    fn given_desktop_when_navigating_down_across_session_boundaries_then_clears_preview() {
+        let cases = [
+            (Selection::Worktree(0, 0), Selection::Session(0, 0, 0)),
+            (Selection::Session(0, 0, 0), Selection::Session(0, 0, 1)),
+            (Selection::Session(0, 0, 1), Selection::RoutinesHeader(0)),
+        ];
+
+        for (from, to) in cases {
+            assert_navigation_transition(from, Action::NavigateDown, to, false, true);
+        }
+    }
+
+    #[test]
+    fn given_desktop_when_navigating_down_between_plain_previews_then_skips_preview_clear() {
+        let cases = [
+            (Selection::Project(0), Selection::Worktree(0, 0)),
+            (Selection::RoutinesHeader(0), Selection::Routine(0, 0)),
+        ];
+
+        for (from, to) in cases {
+            assert_navigation_transition(from, Action::NavigateDown, to, false, false);
+        }
+    }
+
+    #[test]
+    fn given_mobile_when_navigating_across_session_boundaries_then_skips_preview_clear() {
+        let cases = [
+            (Selection::Worktree(0, 0), Selection::Session(0, 0, 0)),
+            (Selection::Session(0, 0, 0), Selection::Session(0, 0, 1)),
+            (Selection::Session(0, 0, 1), Selection::RoutinesHeader(0)),
+        ];
+
+        for (from, to) in cases {
+            assert_navigation_transition(from, Action::NavigateDown, to, true, false);
+        }
+    }
+
+    #[test]
+    fn given_desktop_when_navigating_up_across_session_boundaries_then_clears_preview() {
+        let cases = [
+            (Selection::RoutinesHeader(0), Selection::Session(0, 0, 1)),
+            (Selection::Session(0, 0, 1), Selection::Session(0, 0, 0)),
+            (Selection::Session(0, 0, 0), Selection::Worktree(0, 0)),
+        ];
+
+        for (from, to) in cases {
+            assert_navigation_transition(from, Action::NavigateUp, to, false, true);
+        }
+    }
+
+    #[test]
+    fn given_navigation_boundary_when_navigation_is_noop_then_selection_and_redraw_stay_unchanged()
+    {
+        let cases = [
+            (Selection::Project(0), Action::NavigateUp),
+            (Selection::Routine(0, 0), Action::NavigateDown),
+            (Selection::Session(0, 0, 0), Action::NavigateRight),
+        ];
+
+        for (selection, action) in cases {
+            assert_navigation_transition(selection.clone(), action, selection, false, false);
+        }
+    }
+
+    #[test]
+    fn given_empty_workspace_when_navigating_then_selection_and_redraw_stay_unchanged() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+
+        app.nav_up();
+        app.nav_down();
+
+        assert_eq!(app.current_selection(), Selection::None);
+        assert_eq!(app.tree_selected, 0);
+        assert!(!app.force_preview_redraw);
+        assert!(!app.force_terminal_redraw);
     }
 
     #[test]

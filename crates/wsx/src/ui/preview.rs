@@ -2,12 +2,12 @@
 
 use crate::session_state::{self, AppSessionState};
 use crate::ui::ansi;
+use asched_core::routine::{ipc::RoutineView, Trigger};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use wsx_core::model::workspace::{FetchFailReason, Project, SessionInfo, WorktreeInfo};
-use wsx_core::routine::ipc::RoutineView;
 
 pub fn render_worktree_preview(
     frame: &mut Frame,
@@ -335,7 +335,10 @@ pub fn render_routines_preview(frame: &mut Frame, area: Rect, project: &Project)
                     format!("◇ {}", view.routine.name),
                     Style::default().fg(Color::Magenta).bold(),
                 ),
-                Span::raw(format!("  {}  last: {last}", view.routine.cron)),
+                Span::raw(format!(
+                    "  {}  last: {last}",
+                    routine_trigger_label(&view.routine.trigger)
+                )),
             ])
         })
         .collect::<Vec<_>>();
@@ -344,7 +347,7 @@ pub fn render_routines_preview(frame: &mut Frame, area: Rect, project: &Project)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(format!(" {} › Routines ", project.name)),
+                    .title(format!(" {} › sched ", project.name)),
             )
             .wrap(Wrap { trim: false }),
         area,
@@ -374,8 +377,8 @@ pub fn render_routine_preview(
             }),
         ]),
         Line::from(vec![
-            Span::styled("Cron:    ", label),
-            Span::raw(view.routine.cron.clone()),
+            Span::styled("Trigger: ", label),
+            Span::raw(routine_trigger_label(&view.routine.trigger)),
         ]),
         Line::from(vec![Span::styled("Next:    ", label), Span::raw(next)]),
         Line::from(vec![
@@ -469,6 +472,13 @@ pub fn render_routine_preview(
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn routine_trigger_label(trigger: &Trigger) -> String {
+    match trigger {
+        Trigger::Cron(cron) => cron.clone(),
+        Trigger::Event { kind } => format!("event:{kind}"),
+    }
 }
 
 fn format_epoch(epoch: i64) -> String {

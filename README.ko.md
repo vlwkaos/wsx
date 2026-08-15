@@ -113,6 +113,8 @@ wsx
 set -g status-right "#{@wsx_project}/#{@wsx_alias}"
 ```
 
+Agent 상태 감지는 provider 중립적이며 별도 플러그인이 필요하지 않습니다. wsx는 먼저 foreground process를 분류하고, agent가 터미널 활동을 낼 때 제한된 pane tail을 비교합니다. 화면 변화가 계속되면 active를 유지하고 동일한 redraw가 반복되면 3초 후 attention으로 전환합니다. Runtime과 watch process는 실행 중 active를 유지하며 capture 실패 시 tmux 활동으로 대체합니다.
+
 ## 모바일 / SSH
 
 ```sh
@@ -130,7 +132,7 @@ mobile_detach_key = "C-q"
 
 ### 머신 로컬 루틴
 
-`wsx routine`은 분리 실행되는 단일 데몬을 통해 프로젝트별 direct-argv 예약 명령을 관리합니다. 정의는 git 밖에 저장하고 canonical main worktree에서 실행합니다.
+`wsx routine`은 [asched](https://github.com/vlwkaos/asched)의 프로젝트별 클라이언트입니다. 각 wsx 프로젝트 노드는 동일한 canonical 프로젝트 경로로 등록된 루틴만 표시합니다. asched는 별도로 설치하고 실행하며 wsx는 스케줄러를 내장하거나 시작하지 않습니다.
 
 ```sh
 wsx routine add nightly --cron "0 2 * * *" --arg codex --arg exec --arg=--json --arg '{prompt}' --prompt "유지보수를 실행해 줘" -p wsx
@@ -139,17 +141,15 @@ wsx routine show nightly -p wsx
 wsx routine run nightly -p wsx
 wsx routine cancel nightly -p wsx
 wsx routine logs nightly -p wsx
+wsx routine fire --kind filesystem.changed --event-id delivery-123 --payload '{"path":"src/main.rs"}' -p wsx
 wsx routine delete nightly -p wsx
-wsx routine daemon status
 ```
 
-cron은 데몬 호스트 로컬 시간의 숫자 5필드이며 `*`, 쉼표 목록, 포함 범위, 양수 `/step`을 지원합니다. 일요일은 `0` 또는 `7`이고 일과 요일을 모두 제한하면 일반 cron처럼 OR로 판정합니다. 놓친 분은 재실행하지 않으며 실행 전 epoch-minute claim을 영속화하고 같은 루틴의 동시 실행을 막습니다.
+wsx와 asched는 동일한 플랫폼 기본 상태 디렉터리를 사용하며 `ASCHED_ROOT`로 함께 재정의할 수 있습니다. 프로젝트는 `asched project add`로 등록하며 이 레지스트리가 스케줄링 allowlist입니다. 하나의 asched 데몬만 루틴 쓰기, 예약, 실행, 이벤트 중복 제거를 소유합니다. wsx는 변경 시 optimistic revision을 보내고 conflict, protocol mismatch, deduplicated/no-match 이벤트, already-running 상태를 표시합니다.
 
-TUI에서는 프로젝트나 그 하위 항목에서 `u`를 눌러 첫 루틴을 생성한 뒤, 펼쳐진 `Routines` 섹션에서 이후 루틴을 관리합니다. `F1`/`F2`로 편집 가능한 Codex/Claude 초기값을 적용하고, `e`로 수정하며 확인된 `d`로 삭제합니다. 실행 중 삭제는 먼저 취소합니다. command argv는 shell 문자열이 아닌 JSON 배열로 편집합니다. 미리보기에는 설정, 다음/최근 실행, 로그 경로, 현재 허용된 동작, 최종 agent output이 표시되며 모바일에서는 Enter로 전체 화면 상세를 엽니다.
+TUI에서는 프로젝트나 그 하위 항목에서 `u`를 눌러 첫 루틴을 생성한 뒤, 프로젝트 수준의 `sched` 섹션에서 이후 루틴을 관리합니다. `F1`/`F2`로 편집 가능한 Codex/Claude 초기값을 적용하고, `e`로 수정하며 확인된 `d`로 삭제합니다. 실행 중 삭제는 먼저 취소합니다. command argv는 shell 문자열이 아닌 JSON 배열로 편집합니다. 미리보기에는 설정, 다음/최근 실행, 로그 경로, 현재 허용된 동작, 최종 agent output이 표시되며 모바일에서는 Enter로 전체 화면 상세를 엽니다.
 
-설정은 `~/.config/wsx/routines/projects/` 아래 canonical 프로젝트별 버전 TOML입니다. 안정적인 FNV-1a-128 파일 키와 저장된 전체 경로를 대조해 충돌을 거부합니다. claim과 최근 20개 실행 로그는 별도 저장합니다. 정확히 일치하는 `{prompt}` argv는 치환하고 없으면 stdin으로 전달합니다. 원본 stdout/stderr와 Codex/Claude 최종 응답 추출 결과를 보존하며 `--revision`으로 stale write를 거부할 수 있습니다. 데몬 재시작 시 남은 Running 기록은 Interrupted로 복구하고, 취소와 종료는 process group에 TERM 후 제한 시간 내 종료되지 않으면 KILL을 보냅니다.
-
-외부 Rust 소비자는 애플리케이션 경계로 `wsx_core::routine::RoutineClient`를 사용합니다. `request`는 실행 중인 데몬에만 요청하며 새 데몬을 시작하지 않으므로 상태 확인과 종료에 사용합니다. `request_with_start`는 목록 및 변경 요청만 받고, 먼저 상태를 확인한 뒤 unavailable일 때만 호출자가 만든 `std::process::Command`를 시작합니다. 상태 확인과 종료 요청은 거부하므로 lifecycle 조회가 데몬을 만들 수 없습니다. wsx-core는 분리된 process group과 `WSX_ROUTINE_STARTUP_FD`를 추가하며, 데몬은 이 descriptor에 `ready` 또는 `error:<message>`를 써야 합니다. 시작 제한 시간은 기본 3초이고 `with_startup_timeout`으로 바꿀 수 있으며, 실패하거나 제한 시간을 넘긴 child는 종료 후 reap합니다. 데몬 오류는 `RoutineErrorKind` 타입 범주를 보존하므로 메시지를 파싱할 필요가 없습니다. 저수준 `routine::ipc::send`는 프로토콜 진단 용도로 유지됩니다.
+루틴 저장, 최근 실행과 로그, cron/event 의미, 실행 정리, 데몬 lifecycle은 asched가 소유합니다. TUI의 데몬 I/O는 background worker에서 실행되어 느리거나 unavailable인 데몬이 탐색을 막지 않습니다. 미리보기는 `asched_core::routine::ipc::RoutineView`에서 enabled/running capability, 다음 cron 실행, 최신 결과, 최근 이력을 직접 표시합니다.
 
 ```sh
 # 워크트리

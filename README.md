@@ -147,6 +147,8 @@ wsx sets `status-right` to `project/worktree` on attach. With a custom `~/.tmux.
 set -g status-right "#{@wsx_project}/#{@wsx_alias}"
 ```
 
+Agent status is provider-neutral and requires no integration plugin. wsx classifies the foreground process first, then compares a bounded pane tail when an agent emits terminal activity. Visible motion stays active; repeated identical redraws settle to attention after three seconds. Runtime and watch processes remain active while running, and capture failures fall back to tmux activity.
+
 </details>
 
 ## Mobile / SSH
@@ -166,7 +168,7 @@ mobile_detach_key = "C-q"
 
 ### Machine-local routines
 
-`wsx routine` manages project-local scheduled direct-argv commands through one detached daemon. Definitions stay outside git and run from the canonical main worktree.
+`wsx routine` is a project-scoped client for [asched](https://github.com/vlwkaos/asched). Each wsx project node shows routines registered for that same canonical project path. Install and start asched separately; wsx never embeds or starts a scheduler.
 
 ```sh
 wsx routine add nightly --cron "0 2 * * *" --arg codex --arg exec --arg=--json --arg '{prompt}' --prompt "Run maintenance" -p wsx
@@ -177,17 +179,15 @@ wsx routine enable nightly -p wsx
 wsx routine run nightly -p wsx
 wsx routine cancel nightly -p wsx
 wsx routine logs nightly -p wsx
+wsx routine fire --kind filesystem.changed --event-id delivery-123 --payload '{"path":"src/main.rs"}' -p wsx
 wsx routine delete nightly -p wsx
-wsx routine daemon status
 ```
 
-Cron uses five numeric local-time fields with `*`, comma lists, inclusive ranges, and positive slash steps. Sunday is `0` or `7`; restricted day-of-month and weekday fields use cron OR semantics. The daemon checks only the current civil minute, never catches up missed minutes, claims each epoch minute before spawn, and prevents same-routine overlap. Disabled routines skip cron and have no next run; manual run remains available, and toggling the schedule never cancels an active process.
+wsx and asched resolve the same platform-default state directory, overridden by `ASCHED_ROOT`. Register projects with `asched project add`; that registry remains the scheduling allowlist. The single asched daemon owns routine writes, scheduling, execution, and event deduplication. wsx sends optimistic revisions for mutations and reports conflicts, protocol mismatch, deduplicated/no-match events, and already-running routines.
 
-In the TUI, press `u` on a project or any of its entries to create the first routine, then expand its `Routines` section for later entries. `e` edits, and confirmed `d` deletes or cancels then deletes. The form keeps command argv as a JSON array so arguments never pass through a shell. The preview shows configuration, next/last run, log paths, currently allowed actions, and final agent output. On mobile, Enter opens the routine detail full-screen.
+In the TUI, press `u` on a project or any of its entries to create the first routine, then expand its project-level `sched` section for later entries. `e` edits, and confirmed `d` deletes or cancels then deletes. The form keeps command argv as a JSON array so arguments never pass through a shell. The preview shows configuration, next/last run, log paths, currently allowed actions, and final agent output. On mobile, Enter opens the routine detail full-screen.
 
-Versioned per-project TOML lives under `~/.config/wsx/routines/projects/`. The stable FNV-1a-128 filename key is collision-checked against the stored canonical path. Claims and the latest 20 complete run logs are separate. One exact `{prompt}` argv item is replaced; otherwise prompt is sent to stdin. Raw stdout/stderr and an extracted Codex/Claude final response are retained. Mutations accept `--revision` to reject stale clients. A daemon restart reconciles stale running records as interrupted. Shutdown and explicit cancellation send TERM to the process group, then bounded KILL.
-
-External Rust consumers should use `wsx_core::routine::RoutineClient` as the application boundary. `request` contacts an existing daemon and never starts one, so use it for status and shutdown. `request_with_start` accepts list and mutation requests, probes first and, only when unavailable, starts a caller-built `std::process::Command`; it rejects status and shutdown so lifecycle observations cannot create the daemon. wsx-core adds a detached process group and passes `WSX_ROUTINE_STARTUP_FD`, on which the daemon must write `ready` or `error:<message>`. Startup is bounded (three seconds by default, configurable with `with_startup_timeout`), and failed or timed-out children are killed and reaped. Daemon responses preserve typed `RoutineErrorKind` categories; callers do not need to parse error messages. Low-level `routine::ipc::send` remains available for protocol diagnostics.
+Routine persistence, retained history/logs, cron and event semantics, execution cleanup, and daemon lifecycle belong to asched. TUI daemon I/O runs on background workers so unavailable or slow daemon responses do not block navigation. The preview derives enabled/running capabilities, next cron run, latest result, and recent history directly from `asched_core::routine::ipc::RoutineView`.
 
 ```sh
 # Worktrees

@@ -17,11 +17,22 @@ use crate::{
         session_display_name_from_tmux, FetchFailReason, ForegroundKind, GitInfo, Project,
         ProjectConfig, SessionInfo, WorkspaceState, WorktreeInfo,
     },
-    tmux::{monitor::SessionStatus, session},
+    tmux::{
+        monitor::{AgentTailSample, SessionStatus},
+        session,
+    },
 };
 
-// (pane_capture, muted)
-type PaneSnap = HashMap<String, (Option<String>, bool)>;
+struct PaneSnapState {
+    pane_capture: Option<String>,
+    muted: bool,
+    last_activity: Option<Instant>,
+    foreground: ForegroundKind,
+    agent_tail: Option<String>,
+    tmux_activity_ts: u64,
+}
+
+type PaneSnap = HashMap<String, PaneSnapState>;
 // session_order preserves user-defined sort across refresh
 type WorktreeSnap = HashMap<PathBuf, WorktreeSnapEntry>;
 
@@ -52,6 +63,42 @@ fn unix_ts_to_instant(unix_ts: u64) -> Option<Instant> {
         .as_secs();
     let secs_ago = now_unix.saturating_sub(unix_ts);
     Instant::now().checked_sub(Duration::from_secs(secs_ago))
+}
+
+fn activity_from_status(
+    previous_foreground: ForegroundKind,
+    previous_tail: Option<&str>,
+    previous_last_activity: Option<Instant>,
+    status: &SessionStatus,
+) -> (Option<String>, Option<Instant>) {
+    let tmux_activity = (status.last_activity_ts > 0)
+        .then(|| unix_ts_to_instant(status.last_activity_ts))
+        .flatten();
+    if status.foreground != ForegroundKind::Agent {
+        return (None, tmux_activity);
+    }
+
+    match &status.agent_tail {
+        AgentTailSample::Captured(current) => {
+            let last_activity = if previous_foreground != ForegroundKind::Agent {
+                tmux_activity
+            } else if let Some(previous) = previous_tail {
+                if previous == current {
+                    previous_last_activity
+                } else {
+                    Some(Instant::now())
+                }
+            } else {
+                tmux_activity
+            };
+            (Some(current.clone()), last_activity)
+        }
+        AgentTailSample::NotSampled => (
+            previous_tail.map(str::to_owned),
+            previous_last_activity.or(tmux_activity),
+        ),
+        AgentTailSample::Unavailable => (previous_tail.map(str::to_owned), tmux_activity),
+    }
 }
 
 /// Rebuild all worktrees + sessions for every project from live data.
@@ -116,7 +163,19 @@ pub fn refresh_workspace_with_worktrees(
                 let panes = w
                     .sessions
                     .iter()
-                    .map(|s| (s.name.clone(), (s.pane_capture.clone(), s.muted)))
+                    .map(|s| {
+                        (
+                            s.name.clone(),
+                            PaneSnapState {
+                                pane_capture: s.pane_capture.clone(),
+                                muted: s.muted,
+                                last_activity: s.last_activity,
+                                foreground: s.foreground,
+                                agent_tail: s.agent_tail.clone(),
+                                tmux_activity_ts: s.tmux_activity_ts,
+                            },
+                        )
+                    })
                     .collect();
                 let order = w.sessions.iter().map(|s| s.name.clone()).collect();
                 (
@@ -169,15 +228,29 @@ pub fn refresh_workspace_with_worktrees(
                         alias.as_deref(),
                     );
                     let prev_pane = prev.and_then(|snap| snap.panes.get(name));
-                    let (pane_capture, prev_muted) = prev_pane
-                        .map(|(p, m)| (p.clone(), *m))
-                        .unwrap_or((None, false));
+                    let pane_capture = prev_pane.and_then(|pane| pane.pane_capture.clone());
+                    let prev_muted = prev_pane.map(|pane| pane.muted).unwrap_or(false);
+                    let previous_foreground = prev_pane
+                        .map(|pane| pane.foreground)
+                        .unwrap_or(ForegroundKind::Unknown);
                     let status = activity.get(name);
                     // Prefer tmux-sourced muted flag over snapshot so all instances agree.
                     let muted = status.map(|s| s.wsx_muted).unwrap_or(prev_muted);
-                    let last_activity = status
-                        .filter(|s| s.last_activity_ts > 0)
-                        .and_then(|s| unix_ts_to_instant(s.last_activity_ts));
+                    let (agent_tail, last_activity) = status
+                        .map(|status| {
+                            activity_from_status(
+                                previous_foreground,
+                                prev_pane.and_then(|pane| pane.agent_tail.as_deref()),
+                                prev_pane.and_then(|pane| pane.last_activity),
+                                status,
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            (
+                                prev_pane.and_then(|pane| pane.agent_tail.clone()),
+                                prev_pane.and_then(|pane| pane.last_activity),
+                            )
+                        });
                     // Mute is sticky — only user interaction in wsx (attach, send, etc.)
                     // unmutes a session. Background output no longer breaks it.
                     // Muted sessions skip all activity tracking.
@@ -192,6 +265,11 @@ pub fn refresh_workspace_with_worktrees(
                         has_activity,
                         pane_capture,
                         last_activity,
+                        agent_tail,
+                        tmux_activity_ts: status
+                            .map(|s| s.last_activity_ts)
+                            .or_else(|| prev_pane.map(|pane| pane.tmux_activity_ts))
+                            .unwrap_or(0),
                         foreground: status
                             .map(|s| s.foreground)
                             .unwrap_or(ForegroundKind::Unknown),
@@ -260,23 +338,47 @@ pub fn update_activity(
         for wt in &mut project.worktrees {
             for sess in &mut wt.sessions {
                 if sess.muted {
+                    // ^ [[Muted-session derived fields]] Keep raw monitor baselines current
+                    // without allowing background output to change muted activity state.
+                    if let Some(status) = activity.get(&sess.name) {
+                        let (agent_tail, _) = activity_from_status(
+                            sess.foreground,
+                            sess.agent_tail.as_deref(),
+                            sess.last_activity,
+                            status,
+                        );
+                        sess.agent_tail = agent_tail;
+                        sess.tmux_activity_ts = status.last_activity_ts;
+                    }
                     continue;
                 }
                 let old_bell = sess.has_activity;
                 let old_foreground = sess.foreground;
+                let old_last_activity = sess.last_activity;
                 if let Some(status) = activity.get(&sess.name) {
+                    let (agent_tail, last_activity) = activity_from_status(
+                        sess.foreground,
+                        sess.agent_tail.as_deref(),
+                        sess.last_activity,
+                        status,
+                    );
                     sess.has_activity = status.has_bell;
                     sess.foreground = status.foreground;
+                    sess.agent_tail = agent_tail;
+                    sess.tmux_activity_ts = status.last_activity_ts;
                     sess.is_running_wsx = status.is_running_wsx;
-                    sess.last_activity = Some(status.last_activity_ts)
-                        .filter(|&ts| ts > 0)
-                        .and_then(|ts| unix_ts_to_instant(ts));
+                    sess.last_activity = last_activity;
                 } else {
                     sess.has_activity = false;
                     sess.foreground = ForegroundKind::Unknown;
+                    sess.agent_tail = None;
+                    sess.tmux_activity_ts = 0;
                     sess.is_running_wsx = false;
                 }
-                if sess.has_activity != old_bell || sess.foreground != old_foreground {
+                if sess.has_activity != old_bell
+                    || sess.foreground != old_foreground
+                    || sess.last_activity != old_last_activity
+                {
                     changed = true;
                 }
             }
@@ -615,6 +717,59 @@ mod tests {
         );
 
         assert_eq!(source["/tmp/repo"], vec!["legacy"]);
+    }
+
+    fn agent_status(sample: AgentTailSample, timestamp: u64) -> SessionStatus {
+        SessionStatus {
+            has_bell: false,
+            last_activity_ts: timestamp,
+            foreground: ForegroundKind::Agent,
+            agent_tail: sample,
+            is_running_wsx: false,
+            wsx_muted: false,
+        }
+    }
+
+    #[test]
+    fn given_stable_agent_tail_when_activity_updates_then_previous_recency_is_preserved() {
+        let previous = Instant::now() - Duration::from_secs(10);
+        let status = agent_status(AgentTailSample::Captured("still".into()), 1);
+        let (tail, last_activity) = activity_from_status(
+            ForegroundKind::Agent,
+            Some("still"),
+            Some(previous),
+            &status,
+        );
+
+        assert_eq!(tail.as_deref(), Some("still"));
+        assert_eq!(last_activity, Some(previous));
+    }
+
+    #[test]
+    fn given_changed_agent_tail_when_activity_updates_then_semantic_recency_refreshes() {
+        let previous = Instant::now() - Duration::from_secs(10);
+        let status = agent_status(AgentTailSample::Captured("frame-b".into()), 1);
+        let (_, last_activity) = activity_from_status(
+            ForegroundKind::Agent,
+            Some("frame-a"),
+            Some(previous),
+            &status,
+        );
+
+        assert!(last_activity.unwrap().elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn given_unavailable_agent_capture_when_activity_updates_then_tmux_time_is_fallback() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let status = agent_status(AgentTailSample::Unavailable, now);
+        let (_, last_activity) =
+            activity_from_status(ForegroundKind::Agent, Some("frame"), None, &status);
+
+        assert!(last_activity.unwrap().elapsed() < Duration::from_secs(1));
     }
 
     #[test]

@@ -29,7 +29,7 @@ pub struct Project {
     pub default_branch: String,
     pub worktrees: Vec<WorktreeInfo>,
     #[serde(skip)]
-    pub routines: Vec<crate::routine::ipc::RoutineView>,
+    pub routines: Vec<asched_core::routine::ipc::RoutineView>,
     #[serde(skip)]
     pub routine_revision: u64,
     #[serde(skip)]
@@ -58,6 +58,10 @@ pub struct SessionInfo {
     pub pane_capture: Option<String>,
     #[serde(skip)]
     pub last_activity: Option<std::time::Instant>,
+    #[serde(skip)]
+    pub agent_tail: Option<String>, // normalized bounded tail used for semantic motion
+    #[serde(skip)]
+    pub tmux_activity_ts: u64, // raw tmux window activity timestamp for capture gating
     pub foreground: ForegroundKind, // raw process classification — see tmux::monitor
     #[serde(skip)]
     pub is_running_wsx: bool, // foreground process is wsx — suppresses capture preview
