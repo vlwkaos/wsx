@@ -140,7 +140,25 @@ fn window_args(lines: Option<u32>, offset: u32) -> (Option<String>, Option<Strin
 }
 
 pub fn capture_pane_window(session_name: &str, lines: Option<u32>, offset: u32) -> Option<String> {
-    let mut args: Vec<&str> = vec!["capture-pane", "-t", session_name, "-p", "-e"];
+    capture_pane_window_with_escape_mode(session_name, lines, offset, true)
+}
+
+/// Capture plain visible cells for semantic comparison. Unlike preview capture,
+/// this excludes ANSI styling so identical redraws produce identical text.
+pub fn capture_pane_plain_window(target: &str, lines: Option<u32>, offset: u32) -> Option<String> {
+    capture_pane_window_with_escape_mode(target, lines, offset, false)
+}
+
+fn capture_pane_window_with_escape_mode(
+    target: &str,
+    lines: Option<u32>,
+    offset: u32,
+    include_escapes: bool,
+) -> Option<String> {
+    let mut args: Vec<&str> = vec!["capture-pane", "-t", target, "-p"];
+    if include_escapes {
+        args.push("-e");
+    }
 
     let (start_buf, end_buf) = window_args(lines, offset);
 

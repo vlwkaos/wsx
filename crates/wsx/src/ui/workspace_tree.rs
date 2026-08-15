@@ -8,6 +8,15 @@ use ratatui::{
 use wsx_core::model::workspace::{FlatEntry, WorkspaceState};
 // ref: ratatui Block title — title() accepts &str or String
 
+fn sched_header_label(expanded: bool, count: usize) -> String {
+    let icon = if expanded { "▾" } else { "▸" };
+    format!(" {icon} ◈ sched [{count}]")
+}
+
+fn routine_tree_label(name: &str, status: &str) -> String {
+    format!("  ◇ {name}{status}")
+}
+
 pub fn render_tree(
     frame: &mut Frame,
     area: Rect,
@@ -143,13 +152,11 @@ pub fn render_tree(
             }
             FlatEntry::RoutinesHeader { project_idx } => {
                 let project = &workspace.projects[*project_idx];
-                let icon = if project.routines_expanded {
-                    "▾"
-                } else {
-                    "▸"
-                };
-                ListItem::new(format!("  {icon} ◈ Routines [{}]", project.routines.len()))
-                    .style(Style::default().fg(Color::Magenta).bold())
+                ListItem::new(sched_header_label(
+                    project.routines_expanded,
+                    project.routines.len(),
+                ))
+                .style(Style::default().fg(Color::Magenta).bold())
             }
             FlatEntry::Routine {
                 project_idx,
@@ -161,7 +168,7 @@ pub fn render_tree(
                     .as_ref()
                     .map(|r| format!(" · {:?}", r.status))
                     .unwrap_or_default();
-                ListItem::new(format!("      ◇ {}{}", view.routine.name, status)).style(
+                ListItem::new(routine_tree_label(&view.routine.name, &status)).style(
                     Style::default().fg(if view.capabilities.can_cancel {
                         Color::Yellow
                     } else {
@@ -277,7 +284,7 @@ pub fn compute_scroll(selected: usize, visible_height: usize, current_offset: us
 
 #[cfg(test)]
 mod tests {
-    use super::session_icon;
+    use super::{routine_tree_label, sched_header_label, session_icon};
     use crate::session_state::AppSessionState;
     use ratatui::style::Color;
     use wsx_core::model::workspace::{ForegroundKind, SessionInfo};
@@ -289,10 +296,22 @@ mod tests {
             has_activity: false,
             pane_capture: None,
             last_activity: None,
+            agent_tail: None,
+            tmux_activity_ts: 0,
             foreground: ForegroundKind::Unknown,
             is_running_wsx: false,
             muted,
         }
+    }
+
+    #[test]
+    fn given_project_sched_when_labelled_then_aligns_with_worktree_level() {
+        assert_eq!(sched_header_label(true, 2), " ▾ ◈ sched [2]");
+    }
+
+    #[test]
+    fn given_routine_when_labelled_then_aligns_with_session_level() {
+        assert_eq!(routine_tree_label("nightly", ""), "  ◇ nightly");
     }
 
     // muted overrides app_state regardless of the state passed in.

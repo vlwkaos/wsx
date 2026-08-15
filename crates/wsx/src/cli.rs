@@ -1,9 +1,6 @@
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use std::io::Write;
-use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use crate::session_state;
 use wsx_core::{
@@ -65,8 +62,6 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: RoutineCmd,
     },
-    #[command(hide = true)]
-    RoutineDaemonServe,
 }
 
 #[derive(Subcommand)]
@@ -155,17 +150,19 @@ pub enum RoutineCmd {
         #[arg(long)]
         json: bool,
     },
-    Daemon {
-        #[command(subcommand)]
-        subcommand: RoutineDaemonCmd,
+    /// Fire a provider-neutral event for matching routines
+    Fire {
+        #[arg(long)]
+        kind: String,
+        #[arg(long)]
+        event_id: String,
+        #[arg(long, default_value = "null")]
+        payload: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
-}
-
-#[derive(Subcommand)]
-pub enum RoutineDaemonCmd {
-    Start,
-    Status,
-    Stop,
 }
 
 #[derive(Subcommand)]
@@ -292,36 +289,33 @@ pub fn run(cmd: Command) -> Result<()> {
             TabCmd::Own { tab, project } => cmd_tab_own(&tab, &project),
         },
         Command::Routine { subcommand } => cmd_routine(subcommand),
-        Command::RoutineDaemonServe => {
-            let root = wsx_core::routine::store::RoutineStore::default_root()?;
-            if let Some(mut startup) = startup_notifier()? {
-                wsx_core::routine::daemon::serve_with_startup(root, move |result| {
-                    let message = match result {
-                        Ok(()) => "ready".to_string(),
-                        Err(error) => format!("error:{error}"),
-                    };
-                    let _ = startup.write_all(message.as_bytes());
-                })?;
-            } else {
-                wsx_core::routine::daemon::serve(root)?;
-            }
-            Ok(())
-        }
     }
 }
 
 fn cmd_routine(command: RoutineCmd) -> Result<()> {
-    use wsx_core::routine::ipc::Action as IpcAction;
-    if let RoutineCmd::Daemon { subcommand } = command {
-        return cmd_routine_daemon(subcommand);
-    }
+    use asched_core::routine::{ipc::Action, Routine, Trigger};
+
     let (project_arg, action, json) = match command {
-        RoutineCmd::List { project, json } => (project, IpcAction::List, json),
+        RoutineCmd::List { project, json } => (project, Action::List, json),
         RoutineCmd::Show {
             name,
             project,
             json,
-        } => (project, IpcAction::Show { name }, json),
+        } => {
+            let path = routine_project(project.as_deref())?;
+            let (revision, routines) = fetch_routines(&path)?;
+            let routine = routines
+                .into_iter()
+                .find(|view| view.routine.name == name)
+                .ok_or_else(|| anyhow::anyhow!("routine '{name}' not found"))?;
+            return print_routine_response(
+                asched_core::routine::ipc::Response::Routine {
+                    revision,
+                    routine: Box::new(routine),
+                },
+                json,
+            );
+        }
         RoutineCmd::Add {
             name,
             cron,
@@ -332,20 +326,16 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
         } => {
             let path = routine_project(project.as_deref())?;
             let revision = revision.unwrap_or(fetch_revision(&path)?);
+            let routine = Routine {
+                name,
+                trigger: Trigger::Cron(cron),
+                command,
+                prompt,
+                enabled: true,
+            }
+            .validated()?;
             return print_routine_response(
-                send_routine(
-                    &path,
-                    IpcAction::Add {
-                        revision,
-                        routine: wsx_core::routine::Routine {
-                            name,
-                            cron,
-                            command,
-                            prompt,
-                            enabled: true,
-                        },
-                    },
-                )?,
+                send_routine(&path, Action::Add { revision, routine })?,
                 false,
             );
         }
@@ -359,20 +349,25 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
             revision,
         } => {
             let path = routine_project(project.as_deref())?;
-            let revision = revision.unwrap_or(fetch_revision(&path)?);
-            let enabled = fetch_routine_enabled(&path, &name)?;
-            let routine = wsx_core::routine::Routine {
+            let (current_revision, routines) = fetch_routines(&path)?;
+            let enabled = routines
+                .iter()
+                .find(|view| view.routine.name == name)
+                .map(|view| view.routine.enabled)
+                .ok_or_else(|| anyhow::anyhow!("routine '{name}' not found"))?;
+            let routine = Routine {
                 name: new_name.unwrap_or_else(|| name.clone()),
-                cron,
+                trigger: Trigger::Cron(cron),
                 command,
                 prompt,
                 enabled,
-            };
+            }
+            .validated()?;
             return print_routine_response(
                 send_routine(
                     &path,
-                    IpcAction::Edit {
-                        revision,
+                    Action::Edit {
+                        revision: revision.unwrap_or(current_revision),
                         old_name: name,
                         routine,
                     },
@@ -388,7 +383,7 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
             let path = routine_project(project.as_deref())?;
             let revision = revision.unwrap_or(fetch_revision(&path)?);
             return print_routine_response(
-                send_routine(&path, IpcAction::Delete { revision, name })?,
+                send_routine(&path, Action::Delete { revision, name })?,
                 false,
             );
         }
@@ -396,69 +391,57 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
             name,
             project,
             revision,
-        } => {
-            let path = routine_project(project.as_deref())?;
-            let revision = revision.unwrap_or(fetch_revision(&path)?);
-            return print_routine_response(
-                send_routine(
-                    &path,
-                    IpcAction::SetEnabled {
-                        revision,
-                        name,
-                        enabled: true,
-                    },
-                )?,
-                false,
-            );
-        }
+        } => return set_routine_enabled(project.as_deref(), &name, revision, true),
         RoutineCmd::Disable {
             name,
             project,
             revision,
-        } => {
-            let path = routine_project(project.as_deref())?;
-            let revision = revision.unwrap_or(fetch_revision(&path)?);
-            return print_routine_response(
-                send_routine(
-                    &path,
-                    IpcAction::SetEnabled {
-                        revision,
-                        name,
-                        enabled: false,
-                    },
-                )?,
-                false,
-            );
-        }
+        } => return set_routine_enabled(project.as_deref(), &name, revision, false),
         RoutineCmd::Run {
             name,
             project,
             json,
-        } => (project, IpcAction::Run { name }, json),
-        RoutineCmd::Cancel { name, project } => (project, IpcAction::Cancel { name }, false),
+        } => (project, Action::Run { name }, json),
+        RoutineCmd::Cancel { name, project } => (project, Action::Cancel { name }, false),
         RoutineCmd::Logs {
             name,
             project,
             json,
-        } => (project, IpcAction::Logs { name }, json),
-        RoutineCmd::Daemon { .. } => unreachable!(),
+        } => (project, Action::Logs { name }, json),
+        RoutineCmd::Fire {
+            kind,
+            event_id,
+            payload,
+            project,
+            json,
+        } => {
+            let path = routine_project(project.as_deref())?;
+            let payload = serde_json::from_str(&payload)
+                .map_err(|error| anyhow::anyhow!("event payload must be JSON: {error}"))?;
+            let outcome = routine_client()?.fire(&path, &kind, payload, &event_id)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&outcome)?);
+            } else {
+                print_fire_outcome(&outcome);
+            }
+            return Ok(());
+        }
     };
     let path = routine_project(project_arg.as_deref())?;
     print_routine_response(send_routine(&path, action)?, json)
 }
 
 fn routine_root() -> Result<PathBuf> {
-    Ok(wsx_core::routine::store::RoutineStore::default_root()?)
+    Ok(asched_core::registry::RegistryStore::default_root()?)
 }
 
-fn fetch_routine_enabled(project: &Path, name: &str) -> Result<bool> {
-    match send_routine(
-        project,
-        wsx_core::routine::ipc::Action::Show { name: name.into() },
-    )? {
-        wsx_core::routine::ipc::Response::Routine { routine, .. } => Ok(routine.routine.enabled),
-        other => bail!("routine daemon returned unexpected response: {other:?}"),
-    }
+pub(crate) fn registered_routine_paths() -> Result<Vec<PathBuf>> {
+    let registry = asched_core::registry::RegistryStore::new(routine_root()?).load()?;
+    Ok(registry
+        .projects
+        .into_iter()
+        .map(|project| project.working_dir)
+        .collect())
 }
 
 fn routine_project(value: Option<&str>) -> Result<PathBuf> {
@@ -476,7 +459,7 @@ fn routine_project(value: Option<&str>) -> Result<PathBuf> {
             .iter()
             .find(|p| p.name == value)
             .map(|p| p.path.clone())
-            .ok_or_else(|| anyhow::anyhow!("project '{}' not found", value));
+            .ok_or_else(|| anyhow::anyhow!("project '{value}' not found"));
     }
     match config.projects.as_slice() {
         [project] => Ok(project.path.clone()),
@@ -493,75 +476,76 @@ fn routine_project(value: Option<&str>) -> Result<PathBuf> {
 
 pub(crate) fn send_routine(
     project: &Path,
-    action: wsx_core::routine::ipc::Action,
-) -> Result<wsx_core::routine::ipc::Response> {
-    let client = routine_client()?;
-    let request = wsx_core::routine::ipc::Request::new(project.to_path_buf(), action);
-    Ok(client.request_with_start(&request, routine_daemon_command()?)?)
+    action: asched_core::routine::ipc::Action,
+) -> Result<asched_core::routine::ipc::Response> {
+    let request = asched_core::routine::ipc::Request::new(project.to_path_buf(), action);
+    Ok(routine_client()?.request(&request)?)
+}
+
+fn routine_client() -> Result<asched_core::routine::RoutineClient> {
+    Ok(asched_core::routine::RoutineClient::new(routine_root()?))
+}
+
+fn fetch_routines(project: &Path) -> Result<(u64, Vec<asched_core::routine::ipc::RoutineView>)> {
+    match send_routine(project, asched_core::routine::ipc::Action::List)? {
+        asched_core::routine::ipc::Response::Routines { revision, routines } => {
+            Ok((revision, routines))
+        }
+        other => bail!("routine daemon returned unexpected response: {other:?}"),
+    }
 }
 
 fn fetch_revision(project: &Path) -> Result<u64> {
-    match send_routine(project, wsx_core::routine::ipc::Action::List)? {
-        wsx_core::routine::ipc::Response::Routines { revision, .. } => Ok(revision),
-        _ => bail!("unexpected daemon response"),
-    }
+    Ok(fetch_routines(project)?.0)
 }
 
-pub(crate) fn ensure_routine_daemon() -> Result<()> {
-    let client = routine_client()?;
-    // ^ Explicit startup must not depend on whether the caller's current directory is a valid project.
-    client.start(routine_daemon_command()?)?;
-    Ok(())
+fn set_routine_enabled(
+    project: Option<&str>,
+    name: &str,
+    revision: Option<u64>,
+    enabled: bool,
+) -> Result<()> {
+    let path = routine_project(project)?;
+    let (current_revision, routines) = fetch_routines(&path)?;
+    let mut routine = routines
+        .into_iter()
+        .find(|view| view.routine.name == name)
+        .map(|view| view.routine)
+        .ok_or_else(|| anyhow::anyhow!("routine '{name}' not found"))?;
+    routine.enabled = enabled;
+    print_routine_response(
+        send_routine(
+            &path,
+            asched_core::routine::ipc::Action::Edit {
+                revision: revision.unwrap_or(current_revision),
+                old_name: name.to_string(),
+                routine,
+            },
+        )?,
+        false,
+    )
 }
 
-fn routine_client() -> Result<wsx_core::routine::RoutineClient> {
-    Ok(wsx_core::routine::RoutineClient::new(routine_root()?))
-}
-
-fn routine_daemon_command() -> Result<std::process::Command> {
-    let mut command = std::process::Command::new(std::env::current_exe()?);
-    command
-        .arg("routine-daemon-serve")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    Ok(command)
-}
-
-fn startup_notifier() -> Result<Option<std::fs::File>> {
-    let Some(raw) = std::env::var_os("WSX_ROUTINE_STARTUP_FD") else {
-        return Ok(None);
-    };
-    std::env::remove_var("WSX_ROUTINE_STARTUP_FD");
-    let fd = raw
-        .to_string_lossy()
-        .parse::<i32>()
-        .map_err(|_| anyhow::anyhow!("invalid routine startup descriptor"))?;
-    Ok(Some(unsafe { std::fs::File::from_raw_fd(fd) }))
-}
-
-fn cmd_routine_daemon(command: RoutineDaemonCmd) -> Result<()> {
-    use wsx_core::routine::ipc::{Action, Request};
-    let client = routine_client()?;
-    match command {
-        RoutineDaemonCmd::Start => {
-            ensure_routine_daemon()?;
-            println!("routine daemon running");
+fn print_fire_outcome(outcome: &asched_core::routine::FireOutcome) {
+    use asched_core::routine::{FireOutcome, RoutineFire};
+    match outcome {
+        FireOutcome::Deduplicated => println!("deduplicated"),
+        FireOutcome::NoMatch => println!("no matching routines"),
+        FireOutcome::Handled { routines } => {
+            for routine in routines {
+                match routine {
+                    RoutineFire::Started { name } => println!("started\t{name}"),
+                    RoutineFire::AlreadyRunning { name } => {
+                        println!("already running\t{name}")
+                    }
+                }
+            }
         }
-        RoutineDaemonCmd::Status => print_routine_response(
-            client.request(&Request::new(std::env::current_dir()?, Action::Status))?,
-            false,
-        )?,
-        RoutineDaemonCmd::Stop => print_routine_response(
-            client.request(&Request::new(std::env::current_dir()?, Action::Shutdown))?,
-            false,
-        )?,
     }
-    Ok(())
 }
 
-fn print_routine_response(response: wsx_core::routine::ipc::Response, json: bool) -> Result<()> {
-    use wsx_core::routine::ipc::Response;
+fn print_routine_response(response: asched_core::routine::ipc::Response, json: bool) -> Result<()> {
+    use asched_core::routine::ipc::Response;
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
         return Ok(());
@@ -578,16 +562,16 @@ fn print_routine_response(response: wsx_core::routine::ipc::Response, json: bool
                     } else {
                         "disabled"
                     },
-                    view.routine.cron,
+                    format_trigger(&view.routine.trigger),
                     format_argv(&view.routine.command)
                 );
             }
         }
         Response::Routine { revision, routine } => println!(
-            "revision {revision}\nname: {}\nenabled: {}\ncron: {}\ncommand: {}\nprompt: {}",
+            "revision {revision}\nname: {}\nenabled: {}\ntrigger: {}\ncommand: {}\nprompt: {}",
             routine.routine.name,
             routine.routine.enabled,
-            routine.routine.cron,
+            format_trigger(&routine.routine.trigger),
             format_argv(&routine.routine.command),
             routine.routine.prompt
         ),
@@ -601,20 +585,24 @@ fn print_routine_response(response: wsx_core::routine::ipc::Response, json: bool
                 );
             }
         }
-        Response::Run { run } => println!("{}\t{:?}\n{}", run.id, run.status, run.final_output),
+        Response::Fire { outcome } => print_fire_outcome(&outcome),
         Response::Daemon { protocol, pid } => {
-            println!("routine daemon pid={pid} protocol={protocol}")
+            println!("asched daemon pid={pid} protocol={protocol}")
         }
-        Response::Ok { revision } => {
-            if let Some(revision) = revision {
-                println!("ok revision={revision}")
-            } else {
-                println!("ok")
-            }
-        }
+        Response::Ok { revision } => match revision {
+            Some(revision) => println!("ok revision={revision}"),
+            None => println!("ok"),
+        },
         Response::Error { kind, message } => bail!("{kind}: {message}"),
     }
     Ok(())
+}
+
+fn format_trigger(trigger: &asched_core::routine::Trigger) -> String {
+    match trigger {
+        asched_core::routine::Trigger::Cron(cron) => cron.clone(),
+        asched_core::routine::Trigger::Event { kind } => format!("event:{kind}"),
+    }
 }
 
 fn format_argv(argv: &[String]) -> String {
@@ -714,16 +702,13 @@ fn activity_label(s: &wsx_core::model::workspace::SessionInfo) -> &'static str {
 
 #[cfg(test)]
 mod routine_client_wiring_tests {
-    use super::*;
+    use super::Args;
+    use clap::Parser;
 
     #[test]
-    fn daemon_command_selects_the_wsx_serve_entrypoint() {
-        let command = routine_daemon_command().unwrap();
-        assert_eq!(command.get_program(), std::env::current_exe().unwrap());
-        assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
-            vec![std::ffi::OsStr::new("routine-daemon-serve")]
-        );
+    fn legacy_embedded_daemon_command_is_removed() {
+        assert!(Args::try_parse_from(["wsx", "routine", "daemon", "start"]).is_err());
+        assert!(Args::try_parse_from(["wsx", "routine-daemon-serve"]).is_err());
     }
 }
 

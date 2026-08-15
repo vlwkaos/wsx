@@ -17,10 +17,7 @@ use clap::Parser;
 
 fn main() -> Result<()> {
     let args = cli::Args::parse();
-    if matches!(
-        args.command,
-        Some(cli::Command::Routine { .. }) | Some(cli::Command::RoutineDaemonServe)
-    ) {
+    if matches!(args.command, Some(cli::Command::Routine { .. })) {
         return cli::run(args.command.expect("matched Some"));
     }
     if !wsx_core::tmux::session::is_available() {

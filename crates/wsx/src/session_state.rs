@@ -1,6 +1,6 @@
 // Single source of truth for session state.
-// `SessionInfo` carries raw inputs only (bell, foreground, pane_capture,
-// last_activity, muted); UI and CLI consumers read the 3-state projection
+// `SessionInfo` carries raw inputs only (bell, foreground, semantic agent tail,
+// pane_capture, last_activity, muted); UI and CLI consumers read the 3-state projection
 // via `derive(...).app_state()` — never re-implement the logic.
 
 use wsx_core::model::workspace::{ForegroundKind, SessionInfo};
@@ -60,8 +60,8 @@ fn is_recently_active(session: &SessionInfo) -> bool {
 }
 
 /// Classify a session. Precedence: muted > bell > capture hint > foreground.
-/// For Agent and Shell, recent activity splits the heuristic further
-/// (working vs done; prompt vs idle).
+/// Agent recency comes from semantic pane motion when available; shells keep
+/// tmux output recency. Stable agents become attention, not idle.
 pub fn derive(session: &SessionInfo) -> SessionHeuristic {
     if session.muted {
         return SessionHeuristic::Muted;
@@ -128,6 +128,8 @@ mod tests {
             has_activity,
             pane_capture: capture.map(|c| c.to_string()),
             last_activity: if recent { Some(Instant::now()) } else { None },
+            agent_tail: None,
+            tmux_activity_ts: 0,
             foreground,
             is_running_wsx: false,
             muted,
@@ -138,7 +140,7 @@ mod tests {
 
     #[test]
     fn given_muted_session_when_derived_then_muted() {
-        let s = sess(ForegroundKind::Shell, false, false, None, true);
+        let s = sess(ForegroundKind::Agent, false, true, None, true);
         assert_eq!(derive(&s), SessionHeuristic::Muted);
     }
 

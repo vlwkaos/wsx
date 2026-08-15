@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 wsx-core = { path = "../wsx-core", version = "=0.16.2" }
+asched-core = { workspace = true }
 
 ratatui = { workspace = true }
 crossterm = { workspace = true }
