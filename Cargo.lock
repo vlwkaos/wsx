@@ -1016,7 +1016,7 @@ dependencies = [
 
 [[package]]
 name = "wsx"
-version = "0.16.2"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "asched-core",
@@ -1035,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "wsx-core"
-version = "0.16.2"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "asched-core",
