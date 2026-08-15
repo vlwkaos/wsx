@@ -2,15 +2,27 @@
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-08-15
+
+### Breaking Changes
+
+- Move project scheduling to the separately installed asched 0.2 daemon. wsx no longer embeds, starts, stops, or exposes the former routine daemon API; register canonical project paths with `asched project add` before managing their routines. The initial unreleased embedded scheduler and its lifecycle, IPC, persistence, execution, and security hardening were superseded before publication by the shared `asched-core` boundary. ([`3f977a9`](https://github.com/vlwkaos/wsx/commit/3f977a976ef97bf5be0d316b931d7ebd04869783), [`782d863`](https://github.com/vlwkaos/wsx/commit/782d863da95682bf4254bf9a662bf4286f38df71), [`e6a564e`](https://github.com/vlwkaos/wsx/commit/e6a564e3181b52516b3ac030af104c2f0dea64dc), [`b60d107`](https://github.com/vlwkaos/wsx/commit/b60d1071edb6a3a6b9571ba91a5018d82835d4f9))
+
 ### Features
 
-- Add machine-local project routines across the public `wsx-core` API, headless `wsx routine` CLI, and TUI. A detached singleton daemon owns versioned per-project configuration, five-field local cron scheduling, direct-argv execution, cancellation, history, and retained logs. Durable minute claims and per-routine locks prevent duplicate or overlapping scheduled runs, while output handling preserves raw streams and extracts Codex or Claude final responses when available.
+- Add project-scoped cron and provider-neutral event routines through asched, including optimistic revisions, enable/disable state, manual run and cancellation, retained logs, event deduplication/no-match results, and background TUI requests. The project-level collection is rendered as `sched`, with routine rows aligned to sessions. ([`3cbc525`](https://github.com/vlwkaos/wsx/commit/3cbc52518370727b573a5d6e310440c2d93d39fb), [`b60d107`](https://github.com/vlwkaos/wsx/commit/b60d1071edb6a3a6b9571ba91a5018d82835d4f9))
+- Recognize Pi coding-agent processes, including Pi's Node launcher tree, and derive provider-neutral agent activity from bounded semantic pane-tail motion. Settled agents become yellow attention targets after three seconds, runtime and interactive processes remain active, and capture failures fall back to tmux activity. ([`b60d107`](https://github.com/vlwkaos/wsx/commit/b60d1071edb6a3a6b9571ba91a5018d82835d4f9))
+- Apply `extended-keys on`, CSI-u extended-key formatting, and `tmux-256color` as wsx tmux server defaults. ([`b60d107`](https://github.com/vlwkaos/wsx/commit/b60d1071edb6a3a6b9571ba91a5018d82835d4f9))
 
 ### Bug Fixes
 
-- Wake the routine daemon immediately for IPC instead of imposing a 100 ms polling delay on every request, restoring fast TUI startup with many configured projects.
-- Abort conflicted internal pull rebases instead of leaving worktrees mid-operation.
-- Keep deleted worktrees hidden until a live Git refresh confirms removal, preventing stale refreshes from briefly restoring deleted rows.
+- Keep intentionally unregistered projects out of routine refresh requests so asched's scheduling allowlist does not make the entire TUI report routines unavailable; retain typed conflict, protocol-mismatch, and already-running diagnostics for registered projects. ([`b60d107`](https://github.com/vlwkaos/wsx/commit/b60d1071edb6a3a6b9571ba91a5018d82835d4f9))
+- Avoid full-terminal clears when navigating project, worktree, and routine previews, eliminating visible flicker while preserving ghost-cell cleanup around captured session previews. ([`b60d107`](https://github.com/vlwkaos/wsx/commit/b60d1071edb6a3a6b9571ba91a5018d82835d4f9))
+- Abort conflicts from the default internal `git pull --rebase` path instead of leaving worktrees mid-operation, and keep deleted worktrees hidden until a live Git refresh confirms removal. ([`74584b0`](https://github.com/vlwkaos/wsx/commit/74584b08a9df0a447b8d9e10fecc0091e16330ea))
+
+### Maintenance
+
+- Record workspace-release, review-tool, warning-baseline, and issue-progress guidance accumulated while the unreleased routine implementation was developed and audited. ([`d243e82`](https://github.com/vlwkaos/wsx/commit/d243e824c5777ecdd3bc8cd6cc07dd550d12ad9a), [`623a8fa`](https://github.com/vlwkaos/wsx/commit/623a8fa6096ebe8e253701c2355db615d165211d), [`82d6ca9`](https://github.com/vlwkaos/wsx/commit/82d6ca939a6092496a404c0b98084eac662eee24), [`4d6313e`](https://github.com/vlwkaos/wsx/commit/4d6313e4e5d190f5015576fa8a80d95fc8b34163))
 
 ## [0.16.2] - 2026-06-25
 
