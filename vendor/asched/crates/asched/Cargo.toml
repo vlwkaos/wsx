@@ -1,0 +1,20 @@
+[package]
+name = "asched"
+description = "Minimal TUI and agent-friendly CLI for local scheduled routines"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "asched"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+asched-core = { path = "../asched-core", version = "=0.2.0" }
+clap.workspace = true
+crossterm.workspace = true
+libc.workspace = true
+ratatui.workspace = true
+serde_json.workspace = true
