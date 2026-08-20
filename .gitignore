@@ -1,0 +1,14 @@
+/target/
+/.tmp/
+.env*
+*.pem
+*.key
+*.p12
+*.pfx
+*.asc
+*.tar.gz
+*.sha256
+*secret*
+*credential*
+/secrets/
+/.secrets/
