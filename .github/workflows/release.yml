@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: asched-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - name: Check out tagged source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh repo clone "$GITHUB_REPOSITORY" .
+          git checkout --detach "$GITHUB_SHA"
+
+      - name: Verify version and source
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ruby scripts/prepare-release.rb --check "$VERSION"
+          rustc --version
+          cargo test --workspace --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Build universal macOS binary
+        run: |
+          MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --locked --release --target aarch64-apple-darwin
+          MACOSX_DEPLOYMENT_TARGET=10.15 cargo build --locked --release --target x86_64-apple-darwin
+          mkdir -p target/release-dist
+          lipo -create -output target/release-dist/asched \
+            target/aarch64-apple-darwin/release/asched \
+            target/x86_64-apple-darwin/release/asched
+          VERSION="${GITHUB_REF_NAME#v}"
+          TARBALL="target/release-dist/asched-${VERSION}-darwin-universal.tar.gz"
+          tar -czf "$TARBALL" -C target/release-dist asched
+          ruby -rdigest -e \
+            'path=ARGV.fetch(0); File.write("#{path}.sha256", "#{Digest::SHA256.file(path).hexdigest}  #{File.basename(path)}\n")' \
+            "$TARBALL"
+          ruby scripts/release-notes.rb "$VERSION" CHANGELOG.md \
+            target/release-dist/release-notes.md
+
+      - name: Publish crates.io packages
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: bash scripts/publish-crates.sh "${GITHUB_REF_NAME#v}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          TARBALL="target/release-dist/asched-${VERSION}-darwin-universal.tar.gz"
+          NOTES="target/release-dist/release-notes.md"
+          FLAGS=()
+          if [[ "$VERSION" == *-* ]]; then
+            FLAGS+=(--prerelease)
+          fi
+          if gh release view "v${VERSION}" --json tagName; then
+            gh release upload "v${VERSION}" "$TARBALL" "${TARBALL}.sha256" --clobber
+            gh release edit "v${VERSION}" --title "v${VERSION}" \
+              --notes-file "$NOTES" "${FLAGS[@]}"
+          else
+            gh release create "v${VERSION}" "$TARBALL" "${TARBALL}.sha256" \
+              --title "v${VERSION}" --notes-file "$NOTES" "${FLAGS[@]}"
+          fi
+
+      - name: Update Homebrew tap
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          TARBALL="target/release-dist/asched-${VERSION}-darwin-universal.tar.gz"
+          # ^ See RELEASING.md: raw git push needs gh's credential helper.
+          gh auth setup-git
+          gh repo clone vlwkaos/homebrew-tap target/homebrew-tap
+          ruby scripts/update-homebrew-formula.rb "$VERSION" "$TARBALL" target/homebrew-tap
+          git -C target/homebrew-tap config user.name "github-actions[bot]"
+          git -C target/homebrew-tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C target/homebrew-tap add Formula/asched.rb
+          if ! git -C target/homebrew-tap diff --cached --quiet; then
+            git -C target/homebrew-tap commit -m "asched ${VERSION}"
+            git -C target/homebrew-tap push origin HEAD:main
+          fi

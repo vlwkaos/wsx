@@ -1,0 +1,12 @@
+{
+  "pygmalion": {
+    "skills": {
+      "skills/release/release/SKILL.md": {
+        "mode": "auto"
+      },
+      "skills/release/rust-release/SKILL.md": {
+        "mode": "auto"
+      }
+    }
+  }
+}
