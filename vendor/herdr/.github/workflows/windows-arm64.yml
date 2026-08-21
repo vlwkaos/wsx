@@ -1,0 +1,37 @@
+name: Windows ARM64 installer
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".github/workflows/windows-arm64.yml"
+      - "scripts/windows_arm64_installer_test.ps1"
+      - "website/install.ps1"
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/windows-arm64.yml"
+      - "scripts/windows_arm64_installer_test.ps1"
+      - "website/install.ps1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm64-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installer:
+    name: installer
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Test x86_64 fallback installation
+        shell: powershell
+        run: .\scripts\windows_arm64_installer_test.ps1
