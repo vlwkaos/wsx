@@ -1,0 +1,69 @@
+diff --git a/vendor/libghostty-vt/include/ghostty/vt/terminal.h b/vendor/libghostty-vt/include/ghostty/vt/terminal.h
+index 26ee0c0b..9bb961d3 100644
+--- a/vendor/libghostty-vt/include/ghostty/vt/terminal.h
++++ b/vendor/libghostty-vt/include/ghostty/vt/terminal.h
+@@ -1199,2 +1199,9 @@ typedef enum GHOSTTY_ENUM_TYPED {
+   GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE = 32,
++
++  /**
++   * Whether xterm modifyOtherKeys mode 2 is enabled.
++   *
++   * Output type: bool *
++   */
++  GHOSTTY_TERMINAL_DATA_MODIFY_OTHER_KEYS = 33,
+   GHOSTTY_TERMINAL_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
+diff --git a/vendor/libghostty-vt/src/terminal/c/terminal.zig b/vendor/libghostty-vt/src/terminal/c/terminal.zig
+index a896c0fd..0f95fcf1 100644
+--- a/vendor/libghostty-vt/src/terminal/c/terminal.zig
++++ b/vendor/libghostty-vt/src/terminal/c/terminal.zig
+@@ -759,3 +759,4 @@ pub const TerminalData = enum(c_int) {
+     viewport_active = 32,
++    modify_other_keys = 33,
+-
++
+     /// Output type expected for querying the data of the given kind.
+@@ -765,3 +766,8 @@ pub const TerminalData = enum(c_int) {
+             .cols, .rows, .cursor_x, .cursor_y => size.CellCountInt,
+-            .cursor_pending_wrap, .cursor_visible, .mouse_tracking, .viewport_active => bool,
++            .cursor_pending_wrap,
++            .cursor_visible,
++            .mouse_tracking,
++            .viewport_active,
++            .modify_other_keys,
++            => bool,
+             .active_screen => TerminalScreen,
+@@ -901,2 +907,3 @@ fn getTyped(
+         .viewport_active => out.* = t.screens.active.pages.viewport == .active,
++        .modify_other_keys => out.* = t.flags.modify_other_keys_2,
+     }
+@@ -1655,3 +1662,29 @@ test "get kitty_keyboard_flags" {
+ }
+-
++
++test "get modify_other_keys" {
++    var t: Terminal = null;
++    try testing.expectEqual(Result.success, new(
++        &lib.alloc.test_allocator,
++        &t,
++        .{
++            .cols = 80,
++            .rows = 24,
++            .max_scrollback = 0,
++        },
++    ));
++    defer free(t);
++
++    var enabled: bool = undefined;
++    try testing.expectEqual(Result.success, get(t, .modify_other_keys, @ptrCast(&enabled)));
++    try testing.expect(!enabled);
++
++    vt_write(t, "\x1b[>4;2m", 7);
++    try testing.expectEqual(Result.success, get(t, .modify_other_keys, @ptrCast(&enabled)));
++    try testing.expect(enabled);
++
++    vt_write(t, "\x1b[>4;0m", 7);
++    try testing.expectEqual(Result.success, get(t, .modify_other_keys, @ptrCast(&enabled)));
++    try testing.expect(!enabled);
++}
++
+ test "get mouse_tracking" {

@@ -1,0 +1,77 @@
+[package]
+name = "herdr"
+version = "0.8.2"
+edition = "2021"
+build = "build.rs"
+description = "terminal workspace manager for AI coding agents"
+license = "Apache-2.0"
+repository = "https://github.com/herdrdev/herdr"
+homepage = "https://herdr.dev"
+keywords = ["terminal", "tui", "ai", "agents", "multiplexer"]
+categories = ["command-line-utilities"]
+include = [
+    "src/**/*",
+    "assets/sounds/*",
+    "docs/next/api/herdr-api.schema.json",
+    "skills/herdr/SKILL.md",
+    "website/install.ps1",
+    "README.md",
+    "LICENSE",
+    "Cargo.toml",
+]
+
+[dependencies]
+base64 = "0.22.1"
+bincode = { version = "2", features = ["serde"] }
+bytes = "1"
+clap = { version = "4.5", default-features = false, features = ["std", "help", "usage"] }
+clap_complete = "4.5"
+crossterm = "0.29"
+ctrlc = { version = "3", features = ["termination"] }
+interprocess = "2.4.2"
+jsonc-parser = { version = "0.33.1", default-features = false, features = ["cst", "serde_json"] }
+libc = "0.2"
+portable-pty = "=0.9.0"
+png = "0.17"
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_ignored = "0.1.14"
+serde_json = "1"
+sha2 = "0.10"
+time = { version = "0.3.47", features = ["formatting"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
+toml = "0.8"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+unicode-width = "0.2"
+schemars = { version = "1.2.1", features = ["derive"] }
+
+[patch.crates-io]
+portable-pty = { path = "vendor/portable-pty" }
+
+[target.'cfg(windows)'.dependencies]
+# UTF-16 SDDL input for interprocess security descriptors.
+widestring = "1.2"
+wmi = { version = "0.18.4", default-features = false }
+windows-sys = { version = "0.61.2", features = [
+    "Wdk_System_Threading",
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Kernel",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_UI_Input_Ime",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
