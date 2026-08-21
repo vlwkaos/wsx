@@ -1,6 +1,6 @@
 [package]
 name = "wsx-core"
-description = "Library crate for wsx: worktree, tmux, git, hooks, config, model primitives. Ratatui-free; consumable by wsx binary and external orchestrators (e.g. auwsx)."
+description = "Library crate for wsx: Git worktrees, required Herdr runtime, hooks, config, and model primitives."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

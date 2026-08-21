@@ -29,10 +29,6 @@ pub struct GlobalConfig {
     /// Defaults to [".claude/worktrees"] to exclude Claude agent worktrees.
     #[serde(default = "default_exclude_worktree_paths")]
     pub exclude_worktree_paths: Vec<String>,
-    /// Extra no-prefix tmux key bound to detach-client when --mobile is set.
-    /// Example: "C-q". Unset by default (use prefix + d as normal).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mobile_detach_key: Option<String>,
 }
 
 impl Default for GlobalConfig {
@@ -41,7 +37,6 @@ impl Default for GlobalConfig {
             tabs: vec![],
             projects: vec![],
             exclude_worktree_paths: default_exclude_worktree_paths(),
-            mobile_detach_key: None,
         }
     }
 }
@@ -104,7 +99,7 @@ impl GlobalConfig {
         Ok(())
     }
 
-    pub fn is_worktree_excluded(&self, path: &PathBuf) -> bool {
+    pub fn is_worktree_excluded(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy();
         self.exclude_worktree_paths
             .iter()

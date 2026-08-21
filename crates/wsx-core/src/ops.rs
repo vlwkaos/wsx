@@ -1,460 +1,263 @@
-// Workspace operation functions — pure business logic, no App state.
-// These take explicit arguments rather than &mut App so they can be
-// tested and reasoned about independently of the TUI state machine.
+// Workspace operation functions — Git/config behavior plus the Herdr runtime mapping.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::fs::{File, OpenOptions};
+use std::os::fd::AsRawFd;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use crate::{
-    cache::SessionSnapshot,
     config::global::GlobalConfig,
     git::{info as git_info, worktree as git_worktree},
-    hooks,
+    herdr, hooks,
     model::workspace::{
-        session_display_name_from_tmux, FetchFailReason, ForegroundKind, GitInfo, Project,
-        ProjectConfig, SessionInfo, WorkspaceState, WorktreeInfo,
-    },
-    tmux::{
-        monitor::{AgentTailSample, SessionStatus},
-        session,
+        FetchFailReason, GitInfo, Project, ProjectConfig, SessionInfo, WorkspaceState, WorktreeInfo,
     },
 };
 
-struct PaneSnapState {
-    pane_capture: Option<String>,
-    muted: bool,
-    last_activity: Option<Instant>,
-    foreground: ForegroundKind,
-    agent_tail: Option<String>,
-    tmux_activity_ts: u64,
+pub const WSX_WORKSPACE_PREFIX: &str = "wsx:";
+
+struct HerdrMutationLock(File);
+
+impl HerdrMutationLock {
+    fn acquire() -> Result<Self> {
+        let dir = dirs::cache_dir()
+            .ok_or_else(|| anyhow!("could not resolve cache directory"))?
+            .join("wsx");
+        std::fs::create_dir_all(&dir)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(dir.join("herdr-mutation.lock"))?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if result == 0 {
+                return Ok(Self(file));
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::WouldBlock {
+                return Err(error).context("could not lock Herdr workspace mutation");
+            }
+            if Instant::now() >= deadline {
+                bail!("timed out waiting for another wsx Herdr mutation");
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
 }
 
-type PaneSnap = HashMap<String, PaneSnapState>;
-// session_order preserves user-defined sort across refresh
-type WorktreeSnap = HashMap<PathBuf, WorktreeSnapEntry>;
+impl Drop for HerdrMutationLock {
+    fn drop(&mut self) {
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
 
-struct WorktreeSnapEntry {
+struct WorktreeState {
     git_info: Option<GitInfo>,
-    git_info_fetched_at: Option<Instant>,
+    git_info_fetched_at: Option<std::time::Instant>,
     expanded: bool,
-    panes: PaneSnap,
-    session_order: Vec<String>,
-    last_fetched: Option<Instant>,
+    muted_panes: HashSet<String>,
+    last_fetched: Option<std::time::Instant>,
     fetch_failed: bool,
     fetch_fail_count: u32,
     fetch_fail_reason: Option<FetchFailReason>,
 }
 
-pub const IDLE_SECS: u64 = 3;
-
-fn is_git_repo(path: &std::path::Path) -> bool {
+fn is_git_repo(path: &Path) -> bool {
     path.exists() && path.join(".git").exists()
 }
 
-// ── Refresh helpers ───────────────────────────────────────────────────────────
-
-fn unix_ts_to_instant(unix_ts: u64) -> Option<Instant> {
-    let now_unix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let secs_ago = now_unix.saturating_sub(unix_ts);
-    Instant::now().checked_sub(Duration::from_secs(secs_ago))
+/// Reserved Herdr workspace label based on the existing human worktree identity.
+pub fn herdr_workspace_label(project_name: &str, worktree_slug: &str) -> String {
+    format!("{WSX_WORKSPACE_PREFIX}{project_name}-{worktree_slug}")
 }
 
-fn activity_from_status(
-    previous_foreground: ForegroundKind,
-    previous_tail: Option<&str>,
-    previous_last_activity: Option<Instant>,
-    status: &SessionStatus,
-) -> (Option<String>, Option<Instant>) {
-    let tmux_activity = (status.last_activity_ts > 0)
-        .then(|| unix_ts_to_instant(status.last_activity_ts))
-        .flatten();
-    if status.foreground != ForegroundKind::Agent {
-        return (None, tmux_activity);
-    }
-
-    match &status.agent_tail {
-        AgentTailSample::Captured(current) => {
-            let last_activity = if previous_foreground != ForegroundKind::Agent {
-                tmux_activity
-            } else if let Some(previous) = previous_tail {
-                if previous == current {
-                    previous_last_activity
-                } else {
-                    Some(Instant::now())
-                }
-            } else {
-                tmux_activity
-            };
-            (Some(current.clone()), last_activity)
-        }
-        AgentTailSample::NotSampled => (
-            previous_tail.map(str::to_owned),
-            previous_last_activity.or(tmux_activity),
-        ),
-        AgentTailSample::Unavailable => (previous_tail.map(str::to_owned), tmux_activity),
-    }
+/// A workspace belongs to wsx only when its reserved label and an exact pane cwd agree.
+// ^ [[Session Model]] Herdr ownership, identity, lifecycle, and local mute rules.
+pub fn workspace_ids_for_worktree(snapshot: &herdr::Snapshot, path: &Path) -> Vec<String> {
+    snapshot
+        .workspaces
+        .iter()
+        .filter(|workspace| {
+            workspace.label.starts_with(WSX_WORKSPACE_PREFIX)
+                && snapshot.panes.iter().any(|pane| {
+                    pane.workspace_id == workspace.workspace_id && pane.cwd.as_deref() == Some(path)
+                })
+        })
+        .map(|workspace| workspace.workspace_id.clone())
+        .collect()
 }
 
-/// Rebuild all worktrees + sessions for every project from live data.
-/// Calls `list_worktrees` per project synchronously — use for user-triggered refreshes.
-pub fn refresh_workspace(
-    workspace: &mut WorkspaceState,
-    config: &GlobalConfig,
-    sessions_with_paths: &[(String, PathBuf)],
-    activity: &HashMap<String, SessionStatus>,
-) {
-    let worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)> = workspace
+/// Rebuild worktrees and sessions from Git and one authoritative Herdr snapshot.
+pub fn refresh_workspace(workspace: &mut WorkspaceState, config: &GlobalConfig) -> Result<()> {
+    let snapshot = herdr::snapshot()?;
+    let worktrees = workspace
         .projects
         .iter()
-        .map(|p| {
-            let entries = git_worktree::list_worktrees(&p.path).unwrap_or_default();
-            (p.path.clone(), entries)
+        .map(|project| {
+            Ok((
+                project.path.clone(),
+                git_worktree::list_worktrees(&project.path)?,
+            ))
         })
-        .collect();
-    refresh_workspace_with_worktrees(workspace, config, sessions_with_paths, activity, worktrees);
+        .collect::<Result<Vec<_>>>()?;
+    refresh_workspace_with_worktrees(workspace, config, &snapshot, worktrees)
 }
 
-/// Like `refresh_workspace` but with pre-computed worktree entries — avoids subprocess calls
-/// on the caller's thread. Used by the periodic background refresh path.
+/// Snapshot-fixture variant used by background callers and tests.
 pub fn refresh_workspace_with_worktrees(
     workspace: &mut WorkspaceState,
     config: &GlobalConfig,
-    sessions_with_paths: &[(String, PathBuf)],
-    activity: &HashMap<String, SessionStatus>,
+    snapshot: &herdr::Snapshot,
     worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
-) {
-    // Pre-index sessions by worktree path for O(1) lookup per worktree
-    let mut sessions_by_path: HashMap<&PathBuf, Vec<&str>> = HashMap::new();
-    for (name, path) in sessions_with_paths {
-        sessions_by_path
-            .entry(path)
-            .or_default()
-            .push(name.as_str());
+) -> Result<()> {
+    for entry in worktrees.iter().flat_map(|(_, entries)| entries) {
+        let workspace_ids = workspace_ids_for_worktree(snapshot, &entry.path);
+        if workspace_ids.len() > 1 {
+            bail!(
+                "multiple wsx Herdr workspaces are associated with {}",
+                entry.path.display()
+            );
+        }
     }
-
-    let aliases_by_path: Vec<(PathBuf, HashMap<String, String>)> = config
-        .projects
-        .iter()
-        .map(|e| (e.path.clone(), e.aliases.clone()))
-        .collect();
-
     let mut worktrees_map: HashMap<PathBuf, Vec<git_worktree::WorktreeEntry>> =
         worktrees.into_iter().collect();
 
-    for i in 0..workspace.projects.len() {
-        let path = workspace.projects[i].path.clone();
-        let proj_name = workspace.projects[i].name.clone();
-        let aliases = aliases_by_path
-            .iter()
-            .find(|(p, _)| p == &path)
-            .map(|(_, a)| a.clone())
-            .unwrap_or_default();
-
-        let snapshot: WorktreeSnap = workspace.projects[i]
+    for project in &mut workspace.projects {
+        let previous: HashMap<PathBuf, WorktreeState> = project
             .worktrees
             .iter()
-            .map(|w| {
-                let panes = w
-                    .sessions
-                    .iter()
-                    .map(|s| {
-                        (
-                            s.name.clone(),
-                            PaneSnapState {
-                                pane_capture: s.pane_capture.clone(),
-                                muted: s.muted,
-                                last_activity: s.last_activity,
-                                foreground: s.foreground,
-                                agent_tail: s.agent_tail.clone(),
-                                tmux_activity_ts: s.tmux_activity_ts,
-                            },
-                        )
-                    })
-                    .collect();
-                let order = w.sessions.iter().map(|s| s.name.clone()).collect();
+            .map(|worktree| {
                 (
-                    w.path.clone(),
-                    WorktreeSnapEntry {
-                        git_info: w.git_info.clone(),
-                        git_info_fetched_at: w.git_info_fetched_at,
-                        expanded: w.expanded,
-                        panes,
-                        session_order: order,
-                        last_fetched: w.last_fetched,
-                        fetch_failed: w.fetch_failed,
-                        fetch_fail_count: w.fetch_fail_count,
-                        fetch_fail_reason: w.fetch_fail_reason.clone(),
+                    worktree.path.clone(),
+                    WorktreeState {
+                        git_info: worktree.git_info.clone(),
+                        git_info_fetched_at: worktree.git_info_fetched_at,
+                        expanded: worktree.expanded,
+                        muted_panes: worktree
+                            .sessions
+                            .iter()
+                            .filter(|session| session.muted)
+                            .map(|session| session.pane_id.clone())
+                            .collect(),
+                        last_fetched: worktree.last_fetched,
+                        fetch_failed: worktree.fetch_failed,
+                        fetch_fail_count: worktree.fetch_fail_count,
+                        fetch_fail_reason: worktree.fetch_fail_reason.clone(),
                     },
                 )
             })
             .collect();
-
-        let entries = worktrees_map.remove(&path).unwrap_or_default();
-        let mut new_worktrees = Vec::new();
-        for entry in entries
+        let aliases = config
+            .projects
+            .iter()
+            .find(|entry| entry.path == project.path)
+            .map(|entry| &entry.aliases);
+        let entries = worktrees_map.remove(&project.path).unwrap_or_default();
+        project.worktrees = entries
             .into_iter()
-            .filter(|e| !config.is_worktree_excluded(&e.path))
-        {
-            let alias = aliases.get(&entry.branch).cloned();
-            let wt_path = entry.path.clone();
-            let prev = snapshot.get(&entry.path);
-
-            let prev_order: &[String] = prev
-                .map(|snap| snap.session_order.as_slice())
-                .unwrap_or(&[]);
-            // Index prev_order for O(1) sort-key lookup
-            let order_index: HashMap<&str, usize> = prev_order
-                .iter()
-                .enumerate()
-                .map(|(i, n)| (n.as_str(), i))
-                .collect();
-
-            let empty_names: Vec<&str> = Vec::new();
-            let session_names = sessions_by_path.get(&wt_path).unwrap_or(&empty_names);
-            let mut sessions: Vec<SessionInfo> = session_names
-                .iter()
-                .map(|&name| {
-                    let display_name = session_display_name_from_tmux(
-                        name,
-                        &proj_name,
-                        &wt_path,
-                        &entry.branch,
-                        alias.as_deref(),
-                    );
-                    let prev_pane = prev.and_then(|snap| snap.panes.get(name));
-                    let pane_capture = prev_pane.and_then(|pane| pane.pane_capture.clone());
-                    let prev_muted = prev_pane.map(|pane| pane.muted).unwrap_or(false);
-                    let previous_foreground = prev_pane
-                        .map(|pane| pane.foreground)
-                        .unwrap_or(ForegroundKind::Unknown);
-                    let status = activity.get(name);
-                    // Prefer tmux-sourced muted flag over snapshot so all instances agree.
-                    let muted = status.map(|s| s.wsx_muted).unwrap_or(prev_muted);
-                    let (agent_tail, last_activity) = status
-                        .map(|status| {
-                            activity_from_status(
-                                previous_foreground,
-                                prev_pane.and_then(|pane| pane.agent_tail.as_deref()),
-                                prev_pane.and_then(|pane| pane.last_activity),
-                                status,
-                            )
-                        })
-                        .unwrap_or_else(|| {
-                            (
-                                prev_pane.and_then(|pane| pane.agent_tail.clone()),
-                                prev_pane.and_then(|pane| pane.last_activity),
-                            )
-                        });
-                    // Mute is sticky — only user interaction in wsx (attach, send, etc.)
-                    // unmutes a session. Background output no longer breaks it.
-                    // Muted sessions skip all activity tracking.
-                    let (has_activity, last_activity) = if muted {
-                        (false, None)
-                    } else {
-                        (status.map(|s| s.has_bell).unwrap_or(false), last_activity)
-                    };
-                    SessionInfo {
-                        name: name.to_string(),
-                        display_name,
-                        has_activity,
-                        pane_capture,
-                        last_activity,
-                        agent_tail,
-                        tmux_activity_ts: status
-                            .map(|s| s.last_activity_ts)
-                            .or_else(|| prev_pane.map(|pane| pane.tmux_activity_ts))
-                            .unwrap_or(0),
-                        foreground: status
-                            .map(|s| s.foreground)
-                            .unwrap_or(ForegroundKind::Unknown),
-                        is_running_wsx: status.map(|s| s.is_running_wsx).unwrap_or(false),
-                        muted,
-                    }
-                })
-                .collect();
-            sessions.sort_by_key(|s| *order_index.get(s.name.as_str()).unwrap_or(&usize::MAX));
-
-            let (
-                git_info,
-                git_info_fetched_at,
-                expanded,
-                last_fetched,
-                fetch_failed,
-                fetch_fail_count,
-                fetch_fail_reason,
-            ) = prev
-                .map(|snap| {
-                    (
-                        snap.git_info.clone(),
-                        snap.git_info_fetched_at,
-                        snap.expanded,
-                        snap.last_fetched,
-                        snap.fetch_failed,
-                        snap.fetch_fail_count,
-                        snap.fetch_fail_reason.clone(),
-                    )
-                })
-                .unwrap_or((None, None, true, None, false, 0, None));
-
-            new_worktrees.push(WorktreeInfo {
-                name: entry.name,
-                branch: entry.branch,
-                path: entry.path,
-                is_main: entry.is_main,
-                alias,
-                sessions,
-                expanded,
-                git_info,
-                git_info_fetched_at,
-                fetch_failed,
-                fetch_fail_count,
-                fetch_fail_reason,
-                last_fetched,
-            });
-        }
-        workspace.projects[i].worktrees = new_worktrees;
+            .filter(|entry| !config.is_worktree_excluded(&entry.path))
+            .map(|entry| {
+                let old = previous.get(&entry.path);
+                let workspace_ids: HashSet<String> =
+                    workspace_ids_for_worktree(snapshot, &entry.path)
+                        .into_iter()
+                        .collect();
+                let sessions = snapshot
+                    .panes
+                    .iter()
+                    .filter(|pane| workspace_ids.contains(&pane.workspace_id))
+                    .map(|pane| SessionInfo {
+                        pane_id: pane.pane_id.clone(),
+                        terminal_id: pane.terminal_id.clone(),
+                        workspace_id: pane.workspace_id.clone(),
+                        tab_id: pane.tab_id.clone(),
+                        display_name: pane.label.clone().unwrap_or_else(|| pane.pane_id.clone()),
+                        agent_status: pane.agent_status,
+                        revision: pane.revision,
+                        pane_capture: None,
+                        muted: old
+                            .map(|state| state.muted_panes.contains(&pane.pane_id))
+                            .unwrap_or(false),
+                    })
+                    .collect();
+                WorktreeInfo {
+                    name: entry.name,
+                    branch: entry.branch.clone(),
+                    path: entry.path,
+                    is_main: entry.is_main,
+                    alias: aliases.and_then(|map| map.get(&entry.branch)).cloned(),
+                    sessions,
+                    expanded: old.map(|state| state.expanded).unwrap_or(true),
+                    git_info: old.and_then(|state| state.git_info.clone()),
+                    fetch_failed: old.map(|state| state.fetch_failed).unwrap_or(false),
+                    fetch_fail_count: old.map(|state| state.fetch_fail_count).unwrap_or(0),
+                    fetch_fail_reason: old.and_then(|state| state.fetch_fail_reason.clone()),
+                    last_fetched: old.and_then(|state| state.last_fetched),
+                    git_info_fetched_at: old.and_then(|state| state.git_info_fetched_at),
+                }
+            })
+            .collect();
     }
-    // Drop projects that were already marked missing last cycle; mark newly-gone ones.
-    // This gives one refresh cycle (~3 s) of visual "(missing)" indication before removal.
-    workspace.projects.retain(|p| !p.missing);
-    for p in &mut workspace.projects {
-        p.missing = !is_git_repo(&p.path);
-    }
-}
-
-/// Update session activity state from live tmux data. Returns true if any field changed.
-pub fn update_activity(
-    workspace: &mut WorkspaceState,
-    activity: &HashMap<String, SessionStatus>,
-) -> bool {
-    let mut changed = false;
+    workspace.projects.retain(|project| !project.missing);
     for project in &mut workspace.projects {
-        for wt in &mut project.worktrees {
-            for sess in &mut wt.sessions {
-                if sess.muted {
-                    // ^ [[Muted-session derived fields]] Keep raw monitor baselines current
-                    // without allowing background output to change muted activity state.
-                    if let Some(status) = activity.get(&sess.name) {
-                        let (agent_tail, _) = activity_from_status(
-                            sess.foreground,
-                            sess.agent_tail.as_deref(),
-                            sess.last_activity,
-                            status,
-                        );
-                        sess.agent_tail = agent_tail;
-                        sess.tmux_activity_ts = status.last_activity_ts;
-                    }
-                    continue;
-                }
-                let old_bell = sess.has_activity;
-                let old_foreground = sess.foreground;
-                let old_last_activity = sess.last_activity;
-                if let Some(status) = activity.get(&sess.name) {
-                    let (agent_tail, last_activity) = activity_from_status(
-                        sess.foreground,
-                        sess.agent_tail.as_deref(),
-                        sess.last_activity,
-                        status,
-                    );
-                    sess.has_activity = status.has_bell;
-                    sess.foreground = status.foreground;
-                    sess.agent_tail = agent_tail;
-                    sess.tmux_activity_ts = status.last_activity_ts;
-                    sess.is_running_wsx = status.is_running_wsx;
-                    sess.last_activity = last_activity;
-                } else {
-                    sess.has_activity = false;
-                    sess.foreground = ForegroundKind::Unknown;
-                    sess.agent_tail = None;
-                    sess.tmux_activity_ts = 0;
-                    sess.is_running_wsx = false;
-                }
-                if sess.has_activity != old_bell
-                    || sess.foreground != old_foreground
-                    || sess.last_activity != old_last_activity
-                {
-                    changed = true;
-                }
-            }
-        }
+        project.missing = !is_git_repo(&project.path);
     }
-    changed
+    Ok(())
 }
-
-// ── Workspace loading ─────────────────────────────────────────────────────────
 
 pub fn load_workspace(config: &GlobalConfig) -> WorkspaceState {
-    if config.projects.is_empty() {
-        return WorkspaceState::empty();
-    }
-
     let projects = config
         .projects
         .iter()
-        .filter_map(|entry| {
-            let path = &entry.path;
-            if !is_git_repo(path) {
-                return None;
-            }
-
-            let default_branch = detect_default_branch(path);
-            let proj_config = crate::config::project::load_project_config(path);
-            let entries = git_worktree::list_worktrees(path).unwrap_or_default();
-            let entries = entries
-                .into_iter()
-                .filter(|e| !config.is_worktree_excluded(&e.path))
-                .collect();
-            let worktrees = git_worktree::to_worktree_infos(entries, &entry.aliases);
-
-            Some(Project {
+        .filter(|entry| is_git_repo(&entry.path))
+        .map(|entry| {
+            let entries = git_worktree::list_worktrees(&entry.path).unwrap_or_default();
+            Project {
                 name: entry.name.clone(),
-                path: path.clone(),
-                default_branch,
-                worktrees,
+                path: entry.path.clone(),
+                default_branch: detect_default_branch(&entry.path),
+                worktrees: git_worktree::to_worktree_infos(
+                    entries
+                        .into_iter()
+                        .filter(|wt| !config.is_worktree_excluded(&wt.path))
+                        .collect(),
+                    &entry.aliases,
+                ),
                 routines: Vec::new(),
                 routine_revision: 0,
                 routines_expanded: true,
-                config: Some(proj_config),
+                config: Some(crate::config::project::load_project_config(&entry.path)),
                 expanded: true,
                 missing: false,
-            })
+            }
         })
         .collect();
-
     WorkspaceState { projects }
 }
 
-pub fn expand_path(s: &str) -> PathBuf {
-    if s.starts_with("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(&s[2..]);
-        }
-    }
-    PathBuf::from(s)
+pub fn expand_path(value: &str) -> PathBuf {
+    value
+        .strip_prefix("~/")
+        .and_then(|tail| dirs::home_dir().map(|home| home.join(tail)))
+        .unwrap_or_else(|| PathBuf::from(value))
 }
 
-pub fn detect_default_branch(path: &std::path::Path) -> String {
+pub fn detect_default_branch(path: &Path) -> String {
     git_info::current_branch(path).unwrap_or_else(|| "main".into())
 }
 
-// ── Project registration ──────────────────────────────────────────────────────
-
-/// Register a new project at `path`. Returns the constructed `Project` and
-/// mutates `config` (caller must call `config.save()`).
 pub fn register_project(path: PathBuf, config: &mut GlobalConfig) -> Result<Project> {
     if path.as_os_str().is_empty() {
         bail!("empty path");
     }
-    // Normalize before any equality checks so the returned Project.path matches
-    // what config stores — otherwise delete/dedup/cache lookups silently miss and
-    // the tree shows duplicate or undeletable entries. Shared normalizer keeps
-    // this in lockstep with GlobalConfig::add_project / load.
     let path = crate::config::global::normalize_project_path(&path);
     if !path.exists() {
         bail!("path does not exist: {}", path.display());
@@ -462,543 +265,485 @@ pub fn register_project(path: PathBuf, config: &mut GlobalConfig) -> Result<Proj
     if !is_git_repo(&path) {
         bail!("not a git repository: {}", path.display());
     }
-    if config.projects.iter().any(|e| e.path == path) {
+    if config.projects.iter().any(|entry| entry.path == path) {
         bail!("project already registered: {}", path.display());
     }
-
     let name = path
         .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let default_branch = detect_default_branch(&path);
-    let proj_config = crate::config::project::load_project_config(&path);
-    let entries = git_worktree::list_worktrees(&path).unwrap_or_default();
-    let aliases = config
-        .projects
-        .iter()
-        .find(|e| e.path == path)
-        .map(|e| e.aliases.clone())
-        .unwrap_or_default();
-    let worktrees = git_worktree::to_worktree_infos(entries, &aliases);
-
-    config.add_project(name.clone(), path.clone());
-
-    Ok(Project {
-        name,
-        path,
-        default_branch,
-        worktrees,
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".into());
+    let project = Project {
+        name: name.clone(),
+        path: path.clone(),
+        default_branch: detect_default_branch(&path),
+        worktrees: git_worktree::to_worktree_infos(
+            git_worktree::list_worktrees(&path).unwrap_or_default(),
+            &HashMap::new(),
+        ),
         routines: Vec::new(),
         routine_revision: 0,
         routines_expanded: true,
-        config: Some(proj_config),
+        config: Some(crate::config::project::load_project_config(&path)),
         expanded: true,
         missing: false,
-    })
+    };
+    config.add_project(name, path);
+    Ok(project)
 }
 
-/// Remove a project by path from config. Caller must call `config.save()`.
 pub fn unregister_project(path: &PathBuf, config: &mut GlobalConfig) {
     config.remove_project(path);
 }
 
-// ── Worktree operations ───────────────────────────────────────────────────────
-
-/// Create a new git worktree under `repo_path` for `branch`.
-/// Runs hooks (env copy, post_create) and returns the new worktree path.
-/// Returns a warning string if a hook failed (non-fatal).
+// ^ [[Worktree Model]] wsx owns Git lifecycle; Herdr workspaces close before deletion.
 pub fn create_worktree(
-    repo_path: &PathBuf,
+    repo_path: &Path,
     default_branch: &str,
-    proj_config: &ProjectConfig,
+    project_config: &ProjectConfig,
     branch: &str,
 ) -> Result<(PathBuf, Option<String>)> {
-    let wt_path = git_worktree::create_worktree(repo_path, branch, default_branch)?;
-
-    let mut warning: Option<String> = None;
-
-    if let Err(e) = hooks::copy_env_files(repo_path, &wt_path, proj_config) {
-        warning = Some(format!("Warning: .env copy: {}", e));
-    }
-    if let Some(ref cmd) = proj_config.post_create {
-        if let Err(e) = hooks::run_post_create(&wt_path, cmd) {
-            warning = Some(format!("Warning: postCreate: {}", e));
+    let path = git_worktree::create_worktree(repo_path, branch, default_branch)?;
+    let mut warning = hooks::copy_env_files(repo_path, &path, project_config)
+        .err()
+        .map(|error| format!("Warning: .env copy: {error}"));
+    if let Some(command) = &project_config.post_create {
+        if let Err(error) = hooks::run_post_create(&path, command) {
+            warning = Some(format!("Warning: postCreate: {error}"));
         }
     }
-
-    Ok((wt_path, warning))
+    Ok((path, warning))
 }
 
-/// Remove a git worktree and kill any associated tmux sessions.
-pub fn delete_worktree(
-    repo_path: &PathBuf,
-    wt_path: &PathBuf,
-    branch: &str,
-    session_names: &[String],
-) -> Result<()> {
-    git_worktree::remove_worktree(repo_path, wt_path, branch)?;
-    for sess in session_names {
-        let _ = session::kill_session(sess);
+/// Close every associated wsx Herdr workspace before deleting the Git worktree.
+pub fn delete_worktree(repo_path: &Path, wt_path: &Path, branch: &str) -> Result<()> {
+    let _mutation_lock = HerdrMutationLock::acquire()?;
+    let snapshot = herdr::snapshot()?;
+    for workspace_id in workspace_ids_for_worktree(&snapshot, wt_path) {
+        herdr::close_workspace(&workspace_id)?;
     }
-    Ok(())
+    git_worktree::remove_worktree(repo_path, wt_path, branch)
 }
 
-// ── Session operations ────────────────────────────────────────────────────────
+/// Close Herdr workspaces before deleting every merged Git worktree.
+pub fn clean_merged_worktrees(repo_path: &Path, default_branch: &str) -> Result<Vec<String>> {
+    let candidates = git_worktree::merged_worktrees(repo_path, default_branch)?;
+    let mut removed = Vec::new();
+    for entry in candidates {
+        delete_worktree(repo_path, &entry.path, &entry.branch)?;
+        removed.push(entry.branch);
+    }
+    Ok(removed)
+}
 
-/// Create a named tmux session at `wt_path` and optionally send an initial command.
-/// Returns (tmux_name, display_name). Tmux name is prefixed with `{proj_name}-{wt_slug}-`;
-/// display_name is the user-visible part (what the user typed).
+/// Create one Herdr tab/root pane and return its stable pane ID and display label.
 pub fn create_session(
-    proj_name: &str,
-    wt_slug: &str,
-    wt_path: &PathBuf,
-    session_name: Option<String>,
+    project_name: &str,
+    worktree_slug: &str,
+    worktree_path: &Path,
+    session_label: Option<String>,
     command: Option<String>,
 ) -> Result<(String, String)> {
-    // display name priority: explicit > command first word > proj_name
-    let base_display = match &session_name {
-        Some(n) if !n.is_empty() => n.clone(),
-        _ => match &command {
-            Some(cmd) => cmd
-                .split_whitespace()
-                .next()
-                .unwrap_or(proj_name)
-                .to_string(),
-            None => proj_name.to_string(),
-        },
-    };
-    let base_tmux = format!("{}-{}-{}", proj_name, wt_slug, base_display);
-    let tmux_name = session::unique_session_name(&base_tmux);
-    // strip "{proj_name}-{wt_slug}-" prefix to get display name
-    let prefix_len = proj_name.len() + 1 + wt_slug.len() + 1;
-    let display_name = tmux_name[prefix_len..].to_string();
-    session::create_session(&tmux_name, wt_path)?;
-    if let Some(cmd) = command {
-        session::send_keys(&tmux_name, &cmd)?;
+    // ^ Serialize snapshot/create across wsx processes; Herdr has no atomic get-or-create command.
+    let _mutation_lock = HerdrMutationLock::acquire()?;
+    let snapshot = herdr::snapshot()?;
+    let workspace_ids = workspace_ids_for_worktree(&snapshot, worktree_path);
+    if workspace_ids.len() > 1 {
+        bail!(
+            "multiple wsx Herdr workspaces are associated with {}",
+            worktree_path.display()
+        );
     }
-    Ok((tmux_name, display_name))
-}
-
-/// Rename a tmux session from `old_name` to `new_name`.
-pub fn rename_session(old_name: &str, new_name: &str) -> Result<()> {
-    session::rename_session(old_name, new_name)
-}
-
-/// Recreate tmux sessions after a server restart (reboot/crash).
-///
-/// ! Only restores when the tmux server PID has changed. If the same server is
-/// ! still running, missing sessions were intentionally killed — skip restore.
-///
-/// Uses the newest non-empty session source. Older versions always preferred
-/// sessions.toml, but that let a stale crash snapshot override a newer cache.
-///
-/// Returns the number of sessions recreated.
-pub fn restore_cached_sessions(workspace: &WorkspaceState, cached_pid: Option<u32>) -> usize {
-    let current_pid = session::server_pid();
-    if cached_pid.is_some() && cached_pid == current_pid {
-        return 0;
-    }
-
-    let live: HashSet<String> = session::list_sessions_with_paths()
+    let base_label = session_label
+        .filter(|label| !label.is_empty())
+        .or_else(|| {
+            command
+                .as_ref()
+                .and_then(|cmd| cmd.split_whitespace().next().map(str::to_owned))
+        })
+        .unwrap_or_else(|| project_name.to_owned());
+    let used: HashSet<&str> = workspace_ids
+        .first()
         .into_iter()
-        .map(|(name, _)| name)
+        .flat_map(|id| {
+            snapshot
+                .panes
+                .iter()
+                .filter(move |pane| &pane.workspace_id == id)
+        })
+        .filter_map(|pane| pane.label.as_deref())
         .collect();
-
-    let source = choose_restore_source(
-        crate::cache::load_session_snapshot_with_meta(),
-        crate::cache::collect_session_names(workspace),
-        crate::cache::WorkspaceCache::load().written_at_unix_ms,
-    );
-
-    let mut restored = 0usize;
-    for (path_str, names) in &source {
-        let path = std::path::Path::new(path_str.as_str());
-        for name in names {
-            if !live.contains(name) && session::create_session(name, path).is_ok() {
-                restored += 1;
-            }
-        }
+    let mut display_name = base_label.clone();
+    let mut suffix = 2;
+    while used.contains(display_name.as_str()) {
+        display_name = format!("{base_label}-{suffix}");
+        suffix += 1;
     }
-    restored
-}
-
-fn choose_restore_source(
-    snapshot: SessionSnapshot,
-    workspace_sessions: HashMap<String, Vec<String>>,
-    workspace_written_at: Option<u64>,
-) -> HashMap<String, Vec<String>> {
-    let snapshot_is_newer = match (snapshot.written_at_unix_ms, workspace_written_at) {
-        // Legacy snapshots had no timestamp, so keep the old crash-restore
-        // behavior and prefer them when present.
-        (None, _) => true,
-        (Some(_), None) => true,
-        (Some(snapshot_ms), Some(workspace_ms)) => snapshot_ms >= workspace_ms,
-    };
-    if !snapshot.sessions.is_empty() && (workspace_sessions.is_empty() || snapshot_is_newer) {
-        snapshot.sessions
+    let (pane_id, created_workspace) = if let Some(workspace_id) = workspace_ids.first() {
+        (
+            herdr::create_tab(workspace_id, worktree_path, &display_name)?.root_pane_id,
+            None,
+        )
     } else {
-        workspace_sessions
+        let created = herdr::create_workspace(
+            worktree_path,
+            &herdr_workspace_label(project_name, worktree_slug),
+        )?;
+        (created.root_pane_id, Some(created.workspace_id))
+    };
+    let setup = herdr::rename_pane(&pane_id, &display_name).and_then(|()| {
+        if let Some(command) = command {
+            herdr::send_text(&pane_id, &command, true)?;
+        }
+        Ok(())
+    });
+    if let Err(error) = setup {
+        let cleanup = if let Some(workspace_id) = created_workspace {
+            herdr::close_workspace(&workspace_id)
+        } else {
+            herdr::close_pane(&pane_id)
+        };
+        if let Err(cleanup_error) = cleanup {
+            return Err(error).context(format!(
+                "Herdr session setup failed and cleanup also failed: {cleanup_error}"
+            ));
+        }
+        return Err(error);
+    }
+    Ok((pane_id, display_name))
+}
+
+/// Rename only the pane label; the stable pane identity does not change.
+pub fn rename_session(pane_id: &str, new_label: &str) -> Result<()> {
+    herdr::rename_pane(pane_id, new_label)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SessionCloseTarget {
+    Pane(String),
+    Workspace(String),
+}
+
+fn session_close_target(snapshot: &herdr::Snapshot, pane_id: &str) -> SessionCloseTarget {
+    let Some(pane) = snapshot.panes.iter().find(|pane| pane.pane_id == pane_id) else {
+        return SessionCloseTarget::Pane(pane_id.to_string());
+    };
+    let pane_count = snapshot
+        .panes
+        .iter()
+        .filter(|candidate| candidate.workspace_id == pane.workspace_id)
+        .count();
+    if pane_count == 1 {
+        SessionCloseTarget::Workspace(pane.workspace_id.clone())
+    } else {
+        SessionCloseTarget::Pane(pane_id.to_string())
     }
 }
 
-// ── Alias operations ──────────────────────────────────────────────────────────
+pub fn kill_session(pane_id: &str) -> Result<()> {
+    let _mutation_lock = HerdrMutationLock::acquire()?;
+    match session_close_target(&herdr::snapshot()?, pane_id) {
+        SessionCloseTarget::Pane(pane_id) => herdr::close_pane(&pane_id),
+        SessionCloseTarget::Workspace(workspace_id) => herdr::close_workspace(&workspace_id),
+    }
+}
 
-/// Persist an alias for a branch in the global config. Caller must call `config.save()`.
-pub fn set_alias(config: &mut GlobalConfig, proj_path: &PathBuf, branch: &str, alias: &str) {
-    config.set_alias(proj_path, branch, alias);
+pub fn set_alias(config: &mut GlobalConfig, project_path: &PathBuf, branch: &str, alias: &str) {
+    config.set_alias(project_path, branch, alias);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::workspace::{Project, WorkspaceState};
-    use std::collections::HashMap;
+    use crate::herdr::{AgentStatus, MetadataTokens, Pane, Snapshot, Tab, Workspace};
 
-    fn make_project(path: PathBuf) -> Project {
-        Project {
-            name: "test".to_string(),
-            path,
-            default_branch: "main".to_string(),
-            worktrees: vec![],
-            routines: Vec::new(),
-            routine_revision: 0,
-            routines_expanded: true,
-            config: None,
-            expanded: true,
-            missing: false,
-        }
-    }
-
-    fn sessions(path: &str, names: &[&str]) -> HashMap<String, Vec<String>> {
-        HashMap::from([(
-            path.to_string(),
-            names.iter().map(|name| name.to_string()).collect(),
-        )])
-    }
-
-    #[test]
-    fn restore_source_uses_workspace_when_snapshot_is_older() {
-        let source = choose_restore_source(
-            SessionSnapshot {
-                sessions: sessions("/tmp/repo", &["old"]),
-                written_at_unix_ms: Some(10),
-            },
-            sessions("/tmp/repo", &["new"]),
-            Some(20),
-        );
-
-        assert_eq!(source["/tmp/repo"], vec!["new"]);
-    }
-
-    #[test]
-    fn restore_source_uses_snapshot_when_snapshot_is_newer() {
-        let source = choose_restore_source(
-            SessionSnapshot {
-                sessions: sessions("/tmp/repo", &["new"]),
-                written_at_unix_ms: Some(20),
-            },
-            sessions("/tmp/repo", &["old"]),
-            Some(10),
-        );
-
-        assert_eq!(source["/tmp/repo"], vec!["new"]);
-    }
-
-    #[test]
-    fn restore_source_keeps_legacy_snapshot_preference() {
-        let source = choose_restore_source(
-            SessionSnapshot {
-                sessions: sessions("/tmp/repo", &["legacy"]),
-                written_at_unix_ms: None,
-            },
-            sessions("/tmp/repo", &["workspace"]),
-            Some(20),
-        );
-
-        assert_eq!(source["/tmp/repo"], vec!["legacy"]);
-    }
-
-    fn agent_status(sample: AgentTailSample, timestamp: u64) -> SessionStatus {
-        SessionStatus {
-            has_bell: false,
-            last_activity_ts: timestamp,
-            foreground: ForegroundKind::Agent,
-            agent_tail: sample,
-            is_running_wsx: false,
-            wsx_muted: false,
-        }
-    }
-
-    #[test]
-    fn given_stable_agent_tail_when_activity_updates_then_previous_recency_is_preserved() {
-        let previous = Instant::now() - Duration::from_secs(10);
-        let status = agent_status(AgentTailSample::Captured("still".into()), 1);
-        let (tail, last_activity) = activity_from_status(
-            ForegroundKind::Agent,
-            Some("still"),
-            Some(previous),
-            &status,
-        );
-
-        assert_eq!(tail.as_deref(), Some("still"));
-        assert_eq!(last_activity, Some(previous));
-    }
-
-    #[test]
-    fn given_changed_agent_tail_when_activity_updates_then_semantic_recency_refreshes() {
-        let previous = Instant::now() - Duration::from_secs(10);
-        let status = agent_status(AgentTailSample::Captured("frame-b".into()), 1);
-        let (_, last_activity) = activity_from_status(
-            ForegroundKind::Agent,
-            Some("frame-a"),
-            Some(previous),
-            &status,
-        );
-
-        assert!(last_activity.unwrap().elapsed() < Duration::from_secs(1));
-    }
-
-    #[test]
-    fn given_unavailable_agent_capture_when_activity_updates_then_tmux_time_is_fallback() {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let status = agent_status(AgentTailSample::Unavailable, now);
-        let (_, last_activity) =
-            activity_from_status(ForegroundKind::Agent, Some("frame"), None, &status);
-
-        assert!(last_activity.unwrap().elapsed() < Duration::from_secs(1));
-    }
-
-    #[test]
-    fn refresh_drops_project_whose_directory_was_deleted() {
-        let suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let base = std::env::temp_dir().join(format!("wsx-test-{}", suffix));
-        std::fs::create_dir_all(&base).unwrap();
-        let exists_path = base.join("real");
-        std::fs::create_dir_all(&exists_path).unwrap();
-        std::fs::create_dir(exists_path.join(".git")).unwrap();
-        let missing_path = base.join("ghost");
-
-        let config = GlobalConfig::default();
-        let activity: HashMap<String, crate::tmux::monitor::SessionStatus> = HashMap::new();
-
-        let mut workspace = WorkspaceState {
-            projects: vec![
-                make_project(exists_path.clone()),
-                make_project(missing_path.clone()),
+    fn fixture() -> Snapshot {
+        Snapshot {
+            version: "0.8.2".into(),
+            protocol: 20,
+            workspaces: vec![
+                Workspace {
+                    workspace_id: "owned".into(),
+                    label: "wsx:repo-main".into(),
+                    tokens: MetadataTokens::new(),
+                },
+                Workspace {
+                    workspace_id: "foreign".into(),
+                    label: "personal".into(),
+                    tokens: MetadataTokens::new(),
+                },
+                Workspace {
+                    workspace_id: "wrong-cwd".into(),
+                    label: "wsx:repo-other".into(),
+                    tokens: MetadataTokens::new(),
+                },
             ],
+            tabs: vec![Tab {
+                tab_id: "tab".into(),
+                workspace_id: "owned".into(),
+                label: "agent".into(),
+            }],
+            panes: vec![
+                Pane {
+                    pane_id: "pane-1".into(),
+                    terminal_id: "term-1".into(),
+                    workspace_id: "owned".into(),
+                    tab_id: "tab".into(),
+                    cwd: Some("/repo".into()),
+                    label: Some("agent".into()),
+                    agent_status: AgentStatus::Working,
+                    revision: 7,
+                    tokens: MetadataTokens::new(),
+                },
+                Pane {
+                    pane_id: "pane-2".into(),
+                    terminal_id: "term-2".into(),
+                    workspace_id: "foreign".into(),
+                    tab_id: "tab-2".into(),
+                    cwd: Some("/repo".into()),
+                    label: None,
+                    agent_status: AgentStatus::Idle,
+                    revision: 1,
+                    tokens: MetadataTokens::new(),
+                },
+                Pane {
+                    pane_id: "pane-3".into(),
+                    terminal_id: "term-3".into(),
+                    workspace_id: "wrong-cwd".into(),
+                    tab_id: "tab-3".into(),
+                    cwd: Some("/other".into()),
+                    label: None,
+                    agent_status: AgentStatus::Idle,
+                    revision: 1,
+                    tokens: MetadataTokens::new(),
+                },
+            ],
+            layouts: vec![],
+            agents: vec![],
+        }
+    }
+
+    #[test]
+    fn association_requires_reserved_label_and_exact_pane_cwd() {
+        assert_eq!(
+            workspace_ids_for_worktree(&fixture(), Path::new("/repo")),
+            vec!["owned"]
+        );
+    }
+
+    #[test]
+    fn workspace_label_keeps_human_worktree_identity() {
+        assert_eq!(
+            herdr_workspace_label("repo", "feature-auth"),
+            "wsx:repo-feature-auth"
+        );
+    }
+
+    #[test]
+    fn duplicate_owned_workspaces_are_rejected_during_projection() {
+        let mut snapshot = fixture();
+        let mut duplicate_workspace = snapshot.workspaces[0].clone();
+        duplicate_workspace.workspace_id = "duplicate".into();
+        snapshot.workspaces.push(duplicate_workspace);
+        let mut duplicate_pane = snapshot.panes[0].clone();
+        duplicate_pane.pane_id = "pane-duplicate".into();
+        duplicate_pane.workspace_id = "duplicate".into();
+        snapshot.panes.push(duplicate_pane);
+        let mut workspace = WorkspaceState {
+            projects: vec![Project {
+                name: "repo".into(),
+                path: "/repo".into(),
+                default_branch: "main".into(),
+                worktrees: vec![],
+                routines: vec![],
+                routine_revision: 0,
+                routines_expanded: true,
+                config: None,
+                expanded: true,
+                missing: false,
+            }],
         };
 
-        // First refresh: missing_path is newly gone — stays in tree, marked missing.
+        let error = refresh_workspace_with_worktrees(
+            &mut workspace,
+            &GlobalConfig::default(),
+            &snapshot,
+            vec![(
+                "/repo".into(),
+                vec![git_worktree::WorktreeEntry {
+                    name: "main".into(),
+                    path: "/repo".into(),
+                    branch: "main".into(),
+                    is_main: true,
+                }],
+            )],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("multiple wsx Herdr workspaces"));
+    }
+
+    #[test]
+    fn final_pane_closes_workspace_while_nonfinal_pane_closes_only_itself() {
+        let mut snapshot = fixture();
+        assert_eq!(
+            session_close_target(&snapshot, "pane-1"),
+            SessionCloseTarget::Workspace("owned".into())
+        );
+        let mut second = snapshot.panes[0].clone();
+        second.pane_id = "pane-4".into();
+        snapshot.panes.push(second);
+        assert_eq!(
+            session_close_target(&snapshot, "pane-1"),
+            SessionCloseTarget::Pane("pane-1".into())
+        );
+    }
+
+    #[test]
+    fn refresh_projects_authoritative_herdr_pane_state_without_foreign_panes() {
+        let mut workspace = WorkspaceState {
+            projects: vec![Project {
+                name: "repo".into(),
+                path: "/repo".into(),
+                default_branch: "main".into(),
+                worktrees: vec![],
+                routines: vec![],
+                routine_revision: 0,
+                routines_expanded: true,
+                config: None,
+                expanded: true,
+                missing: false,
+            }],
+        };
         refresh_workspace_with_worktrees(
             &mut workspace,
-            &config,
-            &[],
-            &activity,
-            vec![
-                (exists_path.clone(), vec![]),
-                (missing_path.clone(), vec![]),
+            &GlobalConfig::default(),
+            &fixture(),
+            vec![(
+                "/repo".into(),
+                vec![git_worktree::WorktreeEntry {
+                    name: "main".into(),
+                    path: "/repo".into(),
+                    branch: "main".into(),
+                    is_main: true,
+                }],
+            )],
+        )
+        .unwrap();
+
+        let sessions = &workspace.projects[0].worktrees[0].sessions;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].pane_id, "pane-1");
+        assert_eq!(sessions[0].terminal_id, "term-1");
+        assert_eq!(sessions[0].agent_status, AgentStatus::Working);
+        assert_eq!(sessions[0].revision, 7);
+    }
+
+    fn test_root(label: &str) -> PathBuf {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../target/ops-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn make_repo(root: &Path, name: &str) -> PathBuf {
+        let path = root.join(name);
+        std::fs::create_dir_all(path.join(".git")).unwrap();
+        path
+    }
+
+    #[test]
+    fn missing_project_is_marked_once_then_removed_on_next_refresh() {
+        let root = test_root("missing-project");
+        let live = make_repo(&root, "live");
+        let missing = root.join("missing");
+        let mut workspace = WorkspaceState {
+            projects: vec![
+                Project {
+                    name: "live".into(),
+                    path: live.clone(),
+                    default_branch: "main".into(),
+                    worktrees: vec![],
+                    routines: vec![],
+                    routine_revision: 0,
+                    routines_expanded: true,
+                    config: None,
+                    expanded: true,
+                    missing: false,
+                },
+                Project {
+                    name: "missing".into(),
+                    path: missing.clone(),
+                    default_branch: "main".into(),
+                    worktrees: vec![],
+                    routines: vec![],
+                    routine_revision: 0,
+                    routines_expanded: true,
+                    config: None,
+                    expanded: true,
+                    missing: false,
+                },
             ],
-        );
-        assert_eq!(workspace.projects.len(), 2);
-        assert!(workspace
-            .projects
-            .iter()
-            .any(|p| p.missing && p.path == missing_path));
+        };
+        let snapshot = Snapshot {
+            version: "0.8.2".into(),
+            protocol: 20,
+            workspaces: vec![],
+            tabs: vec![],
+            panes: vec![],
+            layouts: vec![],
+            agents: vec![],
+        };
+        let worktrees = || vec![(live.clone(), vec![]), (missing.clone(), vec![])];
 
-        // Second refresh: missing_path still gone — now dropped.
         refresh_workspace_with_worktrees(
             &mut workspace,
-            &config,
-            &[],
-            &activity,
-            vec![(exists_path.clone(), vec![]), (missing_path, vec![])],
-        );
+            &GlobalConfig::default(),
+            &snapshot,
+            worktrees(),
+        )
+        .unwrap();
+        assert_eq!(workspace.projects.len(), 2);
+        assert!(workspace.projects.iter().any(|project| project.missing));
+
+        refresh_workspace_with_worktrees(
+            &mut workspace,
+            &GlobalConfig::default(),
+            &snapshot,
+            worktrees(),
+        )
+        .unwrap();
         assert_eq!(workspace.projects.len(), 1);
-        assert_eq!(workspace.projects[0].path, exists_path);
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    fn unique_base() -> PathBuf {
-        let suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let base = std::env::temp_dir().join(format!("wsx-test-register-{}", suffix));
-        std::fs::create_dir_all(&base).unwrap();
-        base
-    }
-
-    fn make_repo_dir(base: &std::path::Path, name: &str) -> PathBuf {
-        let p = base.join(name);
-        std::fs::create_dir_all(p.join(".git")).unwrap();
-        p
+        assert_eq!(workspace.projects[0].path, live);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn given_trailing_slash_path_when_registered_then_returned_path_has_no_trailing_slash() {
-        let base = unique_base();
-        let repo = make_repo_dir(&base, "myrepo");
-        let with_slash = PathBuf::from(format!("{}/", repo.to_string_lossy()));
+    fn register_project_normalizes_identity_and_rejects_duplicates() {
+        let root = test_root("register");
+        let repo = make_repo(&root, "repo");
+        let with_slash = PathBuf::from(format!("{}/", repo.display()));
         let mut config = GlobalConfig::default();
 
-        let project = register_project(with_slash, &mut config).unwrap();
-
+        let project = register_project(with_slash.clone(), &mut config).unwrap();
+        assert_eq!(project.name, "repo");
         assert_eq!(project.path, repo);
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn given_valid_repo_when_registered_then_name_is_final_path_component() {
-        let base = unique_base();
-        let repo = make_repo_dir(&base, "coolproject");
-        let mut config = GlobalConfig::default();
-
-        let project = register_project(repo, &mut config).unwrap();
-
-        assert_eq!(project.name, "coolproject");
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn given_valid_repo_when_registered_then_appended_to_config() {
-        let base = unique_base();
-        let repo = make_repo_dir(&base, "myrepo");
-        let mut config = GlobalConfig::default();
-
-        let _ = register_project(repo, &mut config).unwrap();
-
         assert_eq!(config.projects.len(), 1);
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn given_two_distinct_repos_when_both_registered_then_both_stored() {
-        let base = unique_base();
-        let repo_a = make_repo_dir(&base, "alpha");
-        let repo_b = make_repo_dir(&base, "beta");
-        let mut config = GlobalConfig::default();
-
-        register_project(repo_a, &mut config).unwrap();
-        register_project(repo_b, &mut config).unwrap();
-
-        assert_eq!(config.projects.len(), 2);
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn given_same_exact_path_registered_twice_when_second_call_then_returns_err() {
-        let base = unique_base();
-        let repo = make_repo_dir(&base, "myrepo");
-        let mut config = GlobalConfig::default();
-
-        register_project(repo.clone(), &mut config).unwrap();
-        let second = register_project(repo, &mut config);
-
-        assert!(second.is_err());
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn given_same_exact_path_registered_twice_when_second_call_then_projects_len_stays_one() {
-        let base = unique_base();
-        let repo = make_repo_dir(&base, "myrepo");
-        let mut config = GlobalConfig::default();
-
-        register_project(repo.clone(), &mut config).unwrap();
-        let _ = register_project(repo, &mut config);
-
+        assert!(register_project(with_slash, &mut config).is_err());
         assert_eq!(config.projects.len(), 1);
-        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn given_path_differing_only_by_trailing_slash_when_second_call_then_returns_err() {
-        let base = unique_base();
-        let repo = make_repo_dir(&base, "myrepo");
-        let with_slash = PathBuf::from(format!("{}/", repo.to_string_lossy()));
-        let mut config = GlobalConfig::default();
-
-        register_project(repo, &mut config).unwrap();
-        let second = register_project(with_slash, &mut config);
-
-        assert!(second.is_err());
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn given_path_differing_only_by_trailing_slash_when_second_call_then_projects_len_stays_one() {
-        let base = unique_base();
-        let repo = make_repo_dir(&base, "myrepo");
-        let with_slash = PathBuf::from(format!("{}/", repo.to_string_lossy()));
-        let mut config = GlobalConfig::default();
-
-        register_project(repo, &mut config).unwrap();
-        let _ = register_project(with_slash, &mut config);
-
-        assert_eq!(config.projects.len(), 1);
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn given_empty_path_when_registered_then_returns_err() {
-        let mut config = GlobalConfig::default();
-
-        let result = register_project(PathBuf::from(""), &mut config);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn given_empty_path_when_registered_then_projects_stays_empty() {
-        let mut config = GlobalConfig::default();
-
-        let _ = register_project(PathBuf::from(""), &mut config);
-
-        assert_eq!(config.projects.len(), 0);
-    }
-
-    #[test]
-    fn given_nonexistent_path_when_registered_then_returns_err() {
-        let base = unique_base();
-        let missing = base.join("does-not-exist");
-        let mut config = GlobalConfig::default();
-
-        let result = register_project(missing, &mut config);
-
-        assert!(result.is_err());
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn given_existing_dir_without_git_when_registered_then_returns_err() {
-        let base = unique_base();
-        let plain = base.join("plaindir");
+    fn register_project_rejects_empty_missing_and_non_git_paths() {
+        let root = test_root("invalid-register");
+        let plain = root.join("plain");
         std::fs::create_dir_all(&plain).unwrap();
         let mut config = GlobalConfig::default();
 
-        let result = register_project(plain, &mut config);
-
-        assert!(result.is_err());
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn given_file_at_path_instead_of_dir_when_registered_then_returns_err() {
-        let base = unique_base();
-        let file_path = base.join("notadir");
-        std::fs::write(&file_path, b"i am a file").unwrap();
-        let mut config = GlobalConfig::default();
-
-        let result = register_project(file_path, &mut config);
-
-        assert!(result.is_err());
-        let _ = std::fs::remove_dir_all(&base);
+        assert!(register_project(PathBuf::new(), &mut config).is_err());
+        assert!(register_project(root.join("missing"), &mut config).is_err());
+        assert!(register_project(plain, &mut config).is_err());
+        assert!(config.projects.is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

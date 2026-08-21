@@ -22,27 +22,24 @@ use crate::{
 };
 use wsx_core::{
     config::global::GlobalConfig,
-    git::{info as git_info, ops as git_ops, worktree as git_worktree},
+    git::{info as git_info, worktree as git_worktree},
+    herdr,
     model::workspace::{flatten_tree_filtered, FlatEntry, GitInfo, Selection, WorkspaceState},
     ops,
-    tmux::{capture, monitor, session},
 };
 
 use git_info::FetchOutcome;
-use monitor::{AgentMonitorState, SessionStatus};
 
-// ── Tmux async results ────────────────────────────────────────────────────────
+type WorktreeSnapshot = Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>;
+type HerdrRefresh = Result<(herdr::Snapshot, WorktreeSnapshot)>;
 
-enum TmuxResult {
-    FullRefresh {
-        sessions: Vec<(String, PathBuf)>,
-        activity: HashMap<String, SessionStatus>,
-        worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
-    },
-    Activity(HashMap<String, SessionStatus>),
+// ^ Herdr protocol boundary: https://herdr.dev/docs/socket-api/
+enum HerdrResult {
+    FullRefresh(HerdrRefresh),
     Capture {
-        session_name: String,
-        content: Option<String>,
+        pane_id: String,
+        revision: u64,
+        content: Result<String>,
     },
 }
 
@@ -106,7 +103,6 @@ impl Timer {
 
 const TICK_MS: u64 = 100;
 const FAST_INTERVAL_MS: u64 = 500;
-const ACTIVITY_INTERVAL_MS: u64 = 1000;
 const SLOW_INTERVAL_MS: u64 = 3000;
 const FETCH_INTERVAL_SECS: u64 = 60;
 
@@ -138,10 +134,6 @@ pub enum Mode {
         query: String,
         match_idx: usize,
     },
-    GitPopup {
-        project_idx: usize,
-        worktree_idx: usize,
-    },
     TabManager {
         selected: usize,
     },
@@ -170,7 +162,7 @@ pub enum InputContext {
     AddSessionCmd {
         project_idx: usize,
         worktree_idx: usize,
-        session_name: String,
+        session_label: String,
     },
     SetAlias {
         project_idx: usize,
@@ -182,19 +174,7 @@ pub enum InputContext {
         session_idx: usize,
     },
     SendCommand {
-        session_name: String,
-    },
-    GitPullRebase {
-        project_idx: usize,
-        worktree_idx: usize,
-    },
-    GitMergeFrom {
-        project_idx: usize,
-        worktree_idx: usize,
-    },
-    GitMergeInto {
-        project_idx: usize,
-        worktree_idx: usize,
+        pane_id: String,
     },
     AddTab,
     RenameTab {
@@ -212,9 +192,6 @@ impl InputContext {
             InputContext::SetAlias { .. } => "Set Alias",
             InputContext::RenameSession { .. } => "Rename Session",
             InputContext::SendCommand { .. } => "Send Command",
-            InputContext::GitPullRebase { .. } => "Pull Rebase — branch",
-            InputContext::GitMergeFrom { .. } => "Merge From — branch",
-            InputContext::GitMergeInto { .. } => "Merge Into — branch",
             InputContext::AddTab => "New Tab",
             InputContext::RenameTab { .. } => "Rename Tab",
         }
@@ -263,16 +240,14 @@ pub enum BgOutcome {
         msg: String,
     },
     ProjectsCleaned {
-        sessions_to_kill: Vec<String>,
-        msg: String,
-    },
-    GitOp {
-        pi: usize,
-        wi: usize,
         msg: String,
     },
     WorktreeCreated {
         label: String,
+    },
+    SessionKilled {
+        pane_id: String,
+        display_name: String,
     },
 }
 
@@ -331,41 +306,7 @@ fn routine_error_text(error: &anyhow::Error) -> String {
     }
 }
 
-/// Tracks user-initiated session mutations so stale refresh results don't overwrite intent.
-/// Entries are filtered in apply_tmux_refresh before rebuilding workspace state.
-enum SessionOp {
-    Killed,
-    Renamed { new_name: String },
-}
-
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-/// Filter/remap stale tmux session data so user-initiated mutations win over in-flight refreshes.
-/// - Killed: remove from sessions list; clear entry once tmux confirms it's gone.
-/// - Renamed: replace old name with new name so the snapshot lookup preserves pane state.
-fn filter_pending_session_ops(
-    pending: &mut HashMap<String, SessionOp>,
-    sessions: Vec<(String, PathBuf)>,
-) -> Vec<(String, PathBuf)> {
-    if pending.is_empty() {
-        return sessions;
-    }
-    // Build live name set for cleanup; retain only unconfirmed ops
-    let live_names: HashSet<&str> = sessions.iter().map(|(n, _)| n.as_str()).collect();
-    pending.retain(|old_name, op| match op {
-        SessionOp::Killed => live_names.contains(old_name.as_str()), // keep while still alive
-        SessionOp::Renamed { new_name } => !live_names.contains(new_name.as_str()), // keep until new name appears
-    });
-    // Apply filters: drop killed, remap renamed
-    sessions
-        .into_iter()
-        .filter_map(|(name, path)| match pending.get(&name) {
-            Some(SessionOp::Killed) => None,
-            Some(SessionOp::Renamed { new_name }) => Some((new_name.clone(), path)),
-            None => Some((name, path)),
-        })
-        .collect()
-}
 
 fn filter_pending_deletions(
     pending: &mut HashSet<PathBuf>,
@@ -414,7 +355,6 @@ pub struct App {
     /// Tracks whether the last successful desktop frame contained captured terminal content.
     last_rendered_preview_was_session: bool,
     fast_timer: Timer,
-    activity_timer: Timer,
     slow_timer: Timer,
     cached_flat: Vec<FlatEntry>,
     flat_dirty: bool,
@@ -428,24 +368,24 @@ pub struct App {
     fetch_pending: HashSet<PathBuf>,
     /// true when workspace state has changed since the last cache write.
     cache_dirty: bool,
-    last_session_snapshot: HashMap<String, Vec<String>>,
     /// Limits concurrent git-info threads to available CPU count.
     git_semaphore: GitSemaphore,
     /// path → (project_idx, worktree_idx) for O(1) async-result application.
     worktree_index: std::collections::HashMap<PathBuf, (usize, usize)>,
-    /// session_name → parsed ANSI preview; invalidated when pane_capture changes.
+    /// pane ID → parsed ANSI preview; invalidated when pane_capture changes.
     pub parsed_preview: std::collections::HashMap<String, ratatui::text::Text<'static>>,
-    tmux_tx: mpsc::Sender<TmuxResult>,
-    tmux_rx: mpsc::Receiver<TmuxResult>,
-    tmux_refresh_pending: bool,
-    /// A user action requested a refresh while one was in-flight; fire another when it lands.
-    tmux_refresh_stale: bool,
-    tmux_activity_pending: bool,
-    tmux_capture_pending: bool,
+    herdr_tx: mpsc::Sender<HerdrResult>,
+    herdr_rx: mpsc::Receiver<HerdrResult>,
+    herdr_refresh_pending: bool,
+    /// A user action requested a refresh while one was in-flight.
+    herdr_refresh_stale: bool,
+    herdr_capture_pending: bool,
     /// Worktree paths pending bg deletion; filtered from refresh results until bg confirms.
     pending_deletions: HashSet<PathBuf>,
-    /// Session mutations pending confirmation in tmux; filtered/remapped in apply_tmux_refresh.
-    pending_session_ops: HashMap<String, SessionOp>,
+    /// Pane closes awaiting confirmation by a newer Herdr snapshot.
+    pending_session_kills: HashSet<String>,
+    /// Mute is wsx-local and keyed by stable pane ID.
+    muted_ids: HashSet<String>,
     update_rx: mpsc::Receiver<String>,
     pub update_available: Option<String>,
     /// Set by --mobile flag; collapses preview panel for portrait SSH sessions.
@@ -465,17 +405,9 @@ impl App {
     pub fn new(mobile: bool) -> Result<Self> {
         let (config, config_warn) = GlobalConfig::load()?;
         let mut workspace = ops::load_workspace(&config);
-        let (
-            raw_selected,
-            cursor_identity,
-            command_history,
-            cached_active_tab,
-            cached_tmux_pid,
-            cached_muted,
-        ) = wsx_core::cache::apply_cache(&mut workspace);
-        // One-time migration: write cached muted names to tmux user options.
-        wsx_core::cache::migrate_flags_to_tmux(&cached_muted);
-        let restored = ops::restore_cached_sessions(&workspace, cached_tmux_pid);
+        ops::refresh_workspace(&mut workspace, &config)?;
+        let (raw_selected, cursor_identity, command_history, cached_active_tab, cached_muted) =
+            wsx_core::cache::apply_cache(&mut workspace);
         let visible_projects =
             compute_visible_projects(&config, &workspace, cached_active_tab.as_deref());
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
@@ -486,7 +418,7 @@ impl App {
         let (git_local_tx, git_local_rx) = mpsc::channel();
         let (fetch_tx, fetch_rx) = mpsc::channel();
         let (bg_tx, bg_rx) = mpsc::channel();
-        let (tmux_tx, tmux_rx) = mpsc::channel();
+        let (herdr_tx, herdr_rx) = mpsc::channel();
         let (update_tx, update_rx) = mpsc::channel::<String>();
         let (routine_tx, routine_rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -496,7 +428,6 @@ impl App {
         });
         let worktree_index = build_worktree_index(&workspace);
         let search_cache = build_search_cache(&workspace, &cached_flat);
-        let last_session_snapshot = wsx_core::cache::collect_session_names(&workspace);
 
         let mut app = Self {
             workspace,
@@ -510,15 +441,8 @@ impl App {
             active_tab: cached_active_tab,
             visible_projects,
             send_command_history: command_history,
-            status_message: if restored > 0 {
-                Some(format!(
-                    "tmux restarted: {restored} session{} restored",
-                    if restored == 1 { "" } else { "s" }
-                ))
-            } else {
-                config_warn.clone()
-            },
-            status_message_expires: if restored > 0 || config_warn.is_some() {
+            status_message: config_warn.clone(),
+            status_message_expires: if config_warn.is_some() {
                 Some(Instant::now() + Duration::from_secs(10))
             } else {
                 None
@@ -532,7 +456,6 @@ impl App {
             force_preview_redraw: false,
             last_rendered_preview_was_session: false,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
-            activity_timer: Timer::new(ACTIVITY_INTERVAL_MS),
             slow_timer: Timer::new(SLOW_INTERVAL_MS + (std::process::id() % 500) as u64),
             cached_flat,
             flat_dirty: false,
@@ -544,7 +467,6 @@ impl App {
             fetch_rx,
             fetch_pending: HashSet::new(),
             cache_dirty: false,
-            last_session_snapshot,
             worktree_index,
             parsed_preview: std::collections::HashMap::new(),
             git_semaphore: GitSemaphore::new(
@@ -552,14 +474,14 @@ impl App {
                     .map(|n| n.get())
                     .unwrap_or(4),
             ),
-            tmux_tx,
-            tmux_rx,
-            tmux_refresh_pending: false,
-            tmux_refresh_stale: false,
-            tmux_activity_pending: false,
-            tmux_capture_pending: false,
+            herdr_tx,
+            herdr_rx,
+            herdr_refresh_pending: false,
+            herdr_refresh_stale: false,
+            herdr_capture_pending: false,
             pending_deletions: HashSet::new(),
-            pending_session_ops: HashMap::new(),
+            pending_session_kills: HashSet::new(),
+            muted_ids: cached_muted,
             update_rx,
             update_available: None,
             is_mobile: mobile,
@@ -630,44 +552,51 @@ impl App {
                 // ! clear pending_deletions and refresh so any optimistic removals are restored
                 if !self.pending_deletions.is_empty() {
                     self.pending_deletions.clear();
-                    self.spawn_tmux_refresh();
+                    self.spawn_herdr_refresh();
                 }
                 self.set_status(format!("{}: {}", result.label, e));
             }
             Ok(BgOutcome::WorktreeRemoved { label }) => {
                 // ^ A live refresh clears the tombstone after Git stops reporting the path.
-                self.spawn_tmux_refresh();
+                self.spawn_herdr_refresh();
                 self.set_status(label);
             }
             Ok(BgOutcome::CleanAborted { wt_path, msg }) => {
                 // Merge check failed off-thread; restore the optimistically removed worktree
                 self.pending_deletions.remove(&wt_path);
-                self.spawn_tmux_refresh();
+                self.spawn_herdr_refresh();
                 self.set_status(msg);
             }
-            Ok(BgOutcome::ProjectsCleaned {
-                sessions_to_kill,
-                msg,
-            }) => {
-                if !sessions_to_kill.is_empty() {
-                    std::thread::spawn(move || {
-                        for sess in sessions_to_kill {
-                            let _ = session::kill_session(&sess);
-                        }
-                    });
-                }
-                self.spawn_tmux_refresh();
-                self.set_status(msg);
-            }
-            Ok(BgOutcome::GitOp { pi, wi, msg }) => {
-                let path = self.git_worktree_path(pi, wi).unwrap_or_default();
-                let branch = self.default_branch_for_project(pi);
-                self.spawn_git_local_force(path, branch);
+            Ok(BgOutcome::ProjectsCleaned { msg }) => {
+                self.spawn_herdr_refresh();
                 self.set_status(msg);
             }
             Ok(BgOutcome::WorktreeCreated { label }) => {
-                self.spawn_tmux_refresh();
+                self.spawn_herdr_refresh();
                 self.set_status(label);
+            }
+            Ok(BgOutcome::SessionKilled {
+                pane_id,
+                display_name,
+            }) => {
+                // ^ Filter snapshots captured before the successful close.
+                self.pending_session_kills.insert(pane_id.clone());
+                self.muted_ids.remove(&pane_id);
+                for worktree in self
+                    .workspace
+                    .projects
+                    .iter_mut()
+                    .flat_map(|project| &mut project.worktrees)
+                {
+                    worktree
+                        .sessions
+                        .retain(|session| session.pane_id != pane_id);
+                }
+                self.rebuild_flat();
+                self.clamp_selected();
+                self.mark_dirty();
+                self.spawn_herdr_refresh();
+                self.set_status(format!("Killed session: {display_name}"));
             }
         }
     }
@@ -805,7 +734,6 @@ impl App {
                 self.mode,
                 Mode::Input { .. }
                     | Mode::Search { .. }
-                    | Mode::GitPopup { .. }
                     | Mode::TabManager { .. }
                     | Mode::RoutineEditor { .. }
             );
@@ -855,24 +783,14 @@ impl App {
         while let Ok(result) = self.bg_rx.try_recv() {
             self.apply_bg_result(result);
         }
-        while let Ok(result) = self.tmux_rx.try_recv() {
+        while let Ok(result) = self.herdr_rx.try_recv() {
             match result {
-                TmuxResult::FullRefresh {
-                    sessions,
-                    activity,
-                    worktrees,
-                } => {
-                    self.apply_tmux_refresh(sessions, activity, worktrees);
-                }
-                TmuxResult::Activity(activity) => {
-                    self.apply_tmux_activity(activity);
-                }
-                TmuxResult::Capture {
-                    session_name,
+                HerdrResult::FullRefresh(result) => self.apply_herdr_refresh(result),
+                HerdrResult::Capture {
+                    pane_id,
+                    revision,
                     content,
-                } => {
-                    self.apply_tmux_capture(session_name, content);
-                }
+                } => self.apply_herdr_capture(pane_id, revision, content),
             }
         }
         while let Ok(result) = self.routine_rx.try_recv() {
@@ -1024,24 +942,19 @@ impl App {
         }
 
         if self.slow_timer.ready() {
-            self.spawn_tmux_refresh();
+            self.spawn_herdr_refresh();
             self.spawn_git_local_for_all();
-            self.activity_timer.last = Instant::now(); // rescan subsumes activity check
             self.spawn_routine_refresh();
-        } else if self.activity_timer.ready() {
-            self.spawn_tmux_activity();
-            self.needs_redraw = true; // ^ idle time display changes every second
         }
 
         if self.fast_timer.ready() {
-            self.spawn_tmux_capture();
+            self.spawn_herdr_capture();
             self.tick_git_fetch();
             if !self.jobs.is_empty() {
                 self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
                 self.needs_redraw = true;
             }
         }
-
         Ok(())
     }
 
@@ -1078,10 +991,6 @@ impl App {
 
     fn spawn_git_local(&mut self, path: PathBuf, default_branch: String) {
         self.spawn_git_local_with_options(path, default_branch, false);
-    }
-
-    fn spawn_git_local_force(&mut self, path: PathBuf, default_branch: String) {
-        self.spawn_git_local_with_options(path, default_branch, true);
     }
 
     fn spawn_git_local_with_options(&mut self, path: PathBuf, default_branch: String, force: bool) {
@@ -1216,11 +1125,6 @@ impl App {
         ) {
             self.set_status(e);
         }
-        let session_snapshot = wsx_core::cache::collect_session_names(&self.workspace);
-        if sync || session_snapshot != self.last_session_snapshot {
-            wsx_core::cache::save_session_snapshot(&self.workspace, true);
-            self.last_session_snapshot = session_snapshot;
-        }
         self.cache_dirty = false;
     }
 
@@ -1229,49 +1133,15 @@ impl App {
     }
 
     pub fn refresh_all(&mut self) -> Result<()> {
-        let sessions_with_paths = session::list_sessions_with_paths();
-        let activity = monitor::session_activity();
-        let worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)> = self
-            .workspace
-            .projects
-            .iter()
-            .map(|p| {
-                let entries = git_worktree::list_worktrees(&p.path).unwrap_or_default();
-                (p.path.clone(), entries)
-            })
-            .collect();
-        let worktrees = self.filter_pending_deletions(worktrees);
-        ops::refresh_workspace_with_worktrees(
-            &mut self.workspace,
-            &self.config,
-            &sessions_with_paths,
-            &activity,
-            worktrees,
-        );
-        self.rebuild_flat();
-        self.clamp_selected();
-        // Prune parsed_preview entries for sessions that no longer exist
-        let live_sessions: std::collections::HashSet<&str> = self
-            .workspace
-            .projects
-            .iter()
-            .flat_map(|p| p.worktrees.iter())
-            .flat_map(|w| w.sessions.iter())
-            .map(|s| s.name.as_str())
-            .collect();
-        self.parsed_preview
-            .retain(|k, _| live_sessions.contains(k.as_str()));
-        self.mark_dirty();
-        self.write_cache_if_dirty();
+        // ^ Keep one ordered refresh stream so older snapshots cannot clear mutation tombstones.
+        self.spawn_herdr_refresh();
         Ok(())
     }
 
-    /// Write cache only when state has changed since last write.
     fn write_cache_if_dirty(&mut self) {
-        if !self.cache_dirty {
-            return;
+        if self.cache_dirty {
+            self.persist_state(false);
         }
-        self.persist_state(false);
     }
 
     fn filter_pending_deletions(
@@ -1281,201 +1151,168 @@ impl App {
         filter_pending_deletions(&mut self.pending_deletions, worktrees)
     }
 
-    fn apply_pending_session_ops(
-        &mut self,
-        sessions: Vec<(String, PathBuf)>,
-    ) -> Vec<(String, PathBuf)> {
-        filter_pending_session_ops(&mut self.pending_session_ops, sessions)
-    }
-
-    fn agent_monitor_state(&self) -> HashMap<String, AgentMonitorState> {
-        self.workspace
-            .projects
-            .iter()
-            .flat_map(|project| project.worktrees.iter())
-            .flat_map(|worktree| worktree.sessions.iter())
-            .map(|session| {
-                (
-                    session.name.clone(),
-                    AgentMonitorState {
-                        tmux_activity_ts: session.tmux_activity_ts,
-                        has_agent_tail: session.agent_tail.is_some(),
-                    },
-                )
-            })
-            .collect()
-    }
-
-    fn spawn_tmux_refresh(&mut self) {
-        if self.tmux_refresh_pending {
-            // ^ caller needs fresh data; remember to fire another refresh when current lands
-            self.tmux_refresh_stale = true;
+    fn spawn_herdr_refresh(&mut self) {
+        if self.herdr_refresh_pending {
+            self.herdr_refresh_stale = true;
             return;
         }
-        self.tmux_refresh_pending = true;
-        let tx = self.tmux_tx.clone();
+        self.herdr_refresh_pending = true;
+        let tx = self.herdr_tx.clone();
         let project_paths: Vec<PathBuf> = self
             .workspace
             .projects
             .iter()
-            .map(|p| p.path.clone())
+            .map(|project| project.path.clone())
             .collect();
-        let previous_activity = self.agent_monitor_state();
         std::thread::spawn(move || {
-            let sessions = session::list_sessions_with_paths();
-            let activity = monitor::session_activity_since(&previous_activity);
-            let worktrees = project_paths
-                .into_iter()
-                .map(|path| {
-                    let entries = git_worktree::list_worktrees(&path).unwrap_or_default();
-                    (path, entries)
-                })
-                .collect();
-            let _ = tx.send(TmuxResult::FullRefresh {
-                sessions,
-                activity,
-                worktrees,
+            let result = herdr::snapshot().map(|snapshot| {
+                let worktrees = project_paths
+                    .into_iter()
+                    .map(|path| {
+                        let entries = git_worktree::list_worktrees(&path).unwrap_or_default();
+                        (path, entries)
+                    })
+                    .collect();
+                (snapshot, worktrees)
             });
+            let _ = tx.send(HerdrResult::FullRefresh(result));
         });
     }
 
-    fn apply_tmux_refresh(
+    fn apply_herdr_refresh(&mut self, result: HerdrRefresh) {
+        self.herdr_refresh_pending = false;
+        match result {
+            Ok((snapshot, worktrees)) => self.apply_herdr_snapshot(snapshot, worktrees),
+            Err(error) => self.set_status(format!("Herdr refresh failed: {error}")),
+        }
+        if self.herdr_refresh_stale {
+            self.herdr_refresh_stale = false;
+            self.spawn_herdr_refresh();
+        }
+    }
+
+    fn apply_herdr_snapshot(
         &mut self,
-        sessions: Vec<(String, PathBuf)>,
-        activity: HashMap<String, SessionStatus>,
+        mut snapshot: herdr::Snapshot,
         worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
     ) {
-        self.tmux_refresh_pending = false;
-        let worktrees = self.filter_pending_deletions(worktrees);
-        // Apply pending session ops: filter killed sessions and remap renamed ones so
-        // stale tmux snapshots don't clobber user actions in progress.
-        let sessions = self.apply_pending_session_ops(sessions);
-        ops::refresh_workspace_with_worktrees(
-            &mut self.workspace,
-            &self.config,
-            &sessions,
-            &activity,
-            worktrees,
-        );
-        self.rebuild_flat();
-        self.clamp_selected();
-        let live_sessions: HashSet<&str> = self
+        let previous_revisions: HashMap<String, u64> = self
             .workspace
             .projects
             .iter()
-            .flat_map(|p| p.worktrees.iter())
-            .flat_map(|w| w.sessions.iter())
-            .map(|s| s.name.as_str())
+            .flat_map(|project| &project.worktrees)
+            .flat_map(|worktree| &worktree.sessions)
+            .map(|session| (session.pane_id.clone(), session.revision))
             .collect();
-        self.parsed_preview
-            .retain(|k, _| live_sessions.contains(k.as_str()));
+        let live: HashSet<String> = snapshot
+            .panes
+            .iter()
+            .map(|pane| pane.pane_id.clone())
+            .collect();
+        self.pending_session_kills
+            .retain(|pane_id| live.contains(pane_id));
+        snapshot
+            .panes
+            .retain(|pane| !self.pending_session_kills.contains(&pane.pane_id));
+        let worktrees = self.filter_pending_deletions(worktrees);
+        if let Err(error) = ops::refresh_workspace_with_worktrees(
+            &mut self.workspace,
+            &self.config,
+            &snapshot,
+            worktrees,
+        ) {
+            self.set_status(format!("Herdr refresh rejected: {error}"));
+            return;
+        }
+        for session in self
+            .workspace
+            .projects
+            .iter_mut()
+            .flat_map(|project| &mut project.worktrees)
+            .flat_map(|worktree| &mut worktree.sessions)
+        {
+            session.muted = self.muted_ids.contains(&session.pane_id);
+        }
+        self.rebuild_flat();
+        self.clamp_selected();
+        let current_revisions: HashMap<&str, u64> = self
+            .workspace
+            .projects
+            .iter()
+            .flat_map(|project| &project.worktrees)
+            .flat_map(|worktree| &worktree.sessions)
+            .map(|session| (session.pane_id.as_str(), session.revision))
+            .collect();
+        self.parsed_preview.retain(|pane_id, _| {
+            current_revisions.get(pane_id.as_str()).copied()
+                == previous_revisions.get(pane_id).copied()
+        });
         self.mark_dirty();
         self.write_cache_if_dirty();
         self.needs_redraw = true;
-        // If a user action queued a refresh while this one was in-flight, fire it now.
-        if self.tmux_refresh_stale {
-            self.tmux_refresh_stale = false;
-            self.spawn_tmux_refresh();
-        }
     }
 
-    fn spawn_tmux_activity(&mut self) {
-        if self.tmux_activity_pending || self.tmux_refresh_pending {
+    fn spawn_herdr_capture(&mut self) {
+        if self.herdr_capture_pending || !self.shows_preview() {
             return;
         }
-        self.tmux_activity_pending = true;
-        let tx = self.tmux_tx.clone();
-        let previous_activity = self.agent_monitor_state();
-        std::thread::spawn(move || {
-            let activity = monitor::session_activity_since(&previous_activity);
-            let _ = tx.send(TmuxResult::Activity(activity));
-        });
-    }
-
-    fn apply_tmux_activity(&mut self, activity: HashMap<String, SessionStatus>) {
-        self.tmux_activity_pending = false;
-        ops::update_activity(&mut self.workspace, &activity);
-        self.needs_redraw = true; // ^ idle counter ticks every second regardless of state change
-    }
-
-    fn spawn_tmux_capture(&mut self) {
-        if self.tmux_capture_pending || !self.shows_preview() {
-            return;
-        }
-        let (name, is_wsx) = match self.current_selection() {
+        let Some((pane_id, revision)) = (match self.current_selection() {
             Selection::Session(pi, wi, si) => self
                 .workspace
                 .session(pi, wi, si)
-                .map(|s| (s.name.clone(), s.is_running_wsx))
-                .unwrap_or_default(),
-            _ => return,
+                .map(|session| (session.pane_id.clone(), session.revision)),
+            _ => None,
+        }) else {
+            return;
         };
-        if name.is_empty() {
-            return;
-        }
-        if is_wsx {
-            // Suppress capture — no thread needed, stable placeholder breaks the render loop.
-            self.apply_tmux_capture(name, Some(capture::NESTED_WSX_MSG.to_string()));
-            return;
-        }
-        self.tmux_capture_pending = true;
-        let tx = self.tmux_tx.clone();
+        self.herdr_capture_pending = true;
+        let tx = self.herdr_tx.clone();
         std::thread::spawn(move || {
-            let content = capture::capture_pane(&name).map(|raw| capture::trim_capture(&raw));
-            let _ = tx.send(TmuxResult::Capture {
-                session_name: name,
+            let content = herdr::read_recent_ansi(&pane_id, 200);
+            let _ = tx.send(HerdrResult::Capture {
+                pane_id,
+                revision,
                 content,
             });
         });
     }
 
-    fn apply_tmux_capture(&mut self, session_name: String, content: Option<String>) {
-        self.tmux_capture_pending = false;
-        let trimmed = match content {
-            Some(t) => t,
-            None => return,
-        };
-        // Find the session by name and update if content changed
-        let mut found: Option<(usize, usize, usize)> = None;
-        'outer: for (pi, proj) in self.workspace.projects.iter().enumerate() {
-            for (wi, wt) in proj.worktrees.iter().enumerate() {
-                for (si, s) in wt.sessions.iter().enumerate() {
-                    if s.name == session_name {
-                        found = Some((pi, wi, si));
-                        break 'outer;
-                    }
-                }
-            }
+    fn apply_herdr_capture(&mut self, pane_id: String, revision: u64, content: Result<String>) {
+        self.herdr_capture_pending = false;
+        let Ok(trimmed) = content else { return };
+        let session = self
+            .workspace
+            .projects
+            .iter_mut()
+            .flat_map(|project| &mut project.worktrees)
+            .flat_map(|worktree| &mut worktree.sessions)
+            .find(|session| session.pane_id == pane_id && session.revision == revision);
+        let Some(session) = session else { return };
+        if session.pane_capture.as_deref() == Some(&trimmed) {
+            return;
         }
-        let Some((pi, wi, si)) = found else { return };
-        if let Some(s) = self.workspace.session_mut(pi, wi, si) {
-            if s.pane_capture.as_deref() != Some(&trimmed) {
-                let mut parsed = ansi::parse(&trimmed);
-                while parsed
-                    .lines
-                    .last()
-                    .map(|l| l.spans.iter().all(|sp| sp.content.trim().is_empty()))
-                    .unwrap_or(false)
-                {
-                    parsed.lines.pop();
-                }
-                self.parsed_preview.insert(s.name.clone(), parsed);
-                s.pane_capture = Some(trimmed);
-                self.needs_redraw = true;
-                // ! PUA chars (powerline) are width-1 to ratatui but width-2 in terminal;
-                // ! clear the buffer on every content change so diffs never leave stale cells.
-                self.force_preview_redraw = self.shows_preview();
-            }
+        let mut parsed = ansi::parse(&trimmed);
+        while parsed
+            .lines
+            .last()
+            .map(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
+            .unwrap_or(false)
+        {
+            parsed.lines.pop();
         }
+        self.parsed_preview.insert(session.pane_id.clone(), parsed);
+        session.pane_capture = Some(trimmed);
+        self.needs_redraw = true;
+        self.force_preview_redraw = self.shows_preview();
     }
 
-    /// Git fetch trigger — called from fast_timer tick (already was in refresh_captures).
+    /// Git fetch trigger — called from the fast timer tick.
     fn tick_git_fetch(&mut self) {
         let Some((pi, wi)) = self.selected_worktree_indices() else {
             return;
         };
         let fetch_info = self.workspace.worktree(pi, wi).map(|wt| {
-            let interval = FETCH_INTERVAL_SECS * 2u64.pow(wt.fetch_fail_count.min(4) as u32);
+            let interval = FETCH_INTERVAL_SECS * 2u64.pow(wt.fetch_fail_count.min(4));
             let stale = wt
                 .last_fetched
                 .map(|t| t.elapsed().as_secs() >= interval)
@@ -1760,15 +1597,6 @@ impl App {
             return Ok(());
         }
 
-        if let Mode::GitPopup {
-            project_idx,
-            worktree_idx,
-        } = &self.mode
-        {
-            let (pi, wi) = (*project_idx, *worktree_idx);
-            return self.dispatch_git_popup(pi, wi, action, terminal);
-        }
-
         match &self.mode {
             Mode::Normal => self.dispatch_normal(action, terminal)?,
             Mode::Input { .. } => self.dispatch_input(action, terminal)?,
@@ -1782,7 +1610,6 @@ impl App {
             Mode::Config { .. }
             | Mode::Move { .. }
             | Mode::MoveSession { .. }
-            | Mode::GitPopup { .. }
             | Mode::TabManager { .. } => unreachable!(),
             Mode::RoutineEditor { .. } | Mode::RoutineDetail { .. } => unreachable!(),
         }
@@ -1830,7 +1657,6 @@ impl App {
                     match_idx: 0,
                 };
             }
-            Action::GitPopup => self.action_git_popup(),
             Action::TabNext => self.action_tab_next(),
             Action::TabPrev => self.action_tab_prev(),
             Action::TabManager => self.action_tab_manager(),
@@ -1857,10 +1683,10 @@ impl App {
                     }
                 }
             }
-        } else if self.preview_area.contains(pos) {
-            if matches!(self.current_selection(), Selection::Session(..)) {
-                self.action_select(terminal)?;
-            }
+        } else if self.preview_area.contains(pos)
+            && matches!(self.current_selection(), Selection::Session(..))
+        {
+            self.action_select(terminal)?;
         }
         Ok(())
     }
@@ -2181,14 +2007,15 @@ impl App {
     /// User interacted with a session in wsx (attach, send command, rename,
     /// ctrl-c). Mute is sticky — only an explicit interaction unmutes; pane
     /// output alone does not. Cursor navigation must NOT call this.
-    fn unmute_on_interaction(&mut self, session_name: &str) {
+    fn unmute_on_interaction(&mut self, pane_id: &str) {
         for project in &mut self.workspace.projects {
             for wt in &mut project.worktrees {
                 for sess in &mut wt.sessions {
-                    if sess.name == session_name {
+                    if sess.pane_id == pane_id {
                         if sess.muted {
                             sess.muted = false;
-                            session::set_session_opt(session_name, session::OPT_MUTED, "0");
+                            self.muted_ids.remove(pane_id);
+                            self.mark_dirty();
                         }
                         return;
                     }
@@ -2197,20 +2024,8 @@ impl App {
         }
     }
 
-    fn attach_to_session(&self, name: &str, terminal: &mut Tui) -> Result<()> {
-        let detach_key = if self.is_mobile {
-            self.config.mobile_detach_key.as_deref()
-        } else {
-            None
-        };
-        session::apply_session_defaults(name, detach_key);
-        match session::attach_session_cmd(name) {
-            session::AttachCommand::SwitchClient(n) => session::switch_client(&n)?,
-            session::AttachCommand::Attach(n) => {
-                tui::with_raw_mode_disabled(terminal, || session::attach_foreground(&n))?;
-            }
-        }
-        Ok(())
+    fn attach_to_session(&self, terminal_id: &str, terminal: &mut Tui) -> Result<()> {
+        tui::with_raw_mode_disabled(terminal, || herdr::attach_terminal_foreground(terminal_id))
     }
 
     fn attach_session(
@@ -2220,26 +2035,17 @@ impl App {
         si: usize,
         terminal: &mut Tui,
     ) -> Result<()> {
-        let name = self.workspace.session(pi, wi, si).map(|s| s.name.clone());
-
-        let Some(name) = name else {
+        let target = self
+            .workspace
+            .session(pi, wi, si)
+            .map(|session| (session.pane_id.clone(), session.terminal_id.clone()));
+        let Some((pane_id, terminal_id)) = target else {
             self.set_status("Session not found");
             return Ok(());
         };
 
-        self.unmute_on_interaction(&name);
-
-        let proj = &self.workspace.projects[pi];
-        let wt = &proj.worktrees[wi];
-        let alias = wt.alias.as_deref().unwrap_or(&wt.branch);
-        session::set_session_opt(&name, "@wsx_project", &proj.name);
-        session::set_session_opt(&name, "@wsx_alias", alias);
-        if !session::user_has_tmux_config() {
-            let label = format!(" {}/{} ", proj.name, alias);
-            session::set_session_opt(&name, "status-right", &label);
-        }
-
-        self.attach_to_session(&name, terminal)?;
+        self.unmute_on_interaction(&pane_id);
+        self.attach_to_session(&terminal_id, terminal)?;
 
         // Trigger a refresh after returning, but keep old git_info visible until result arrives.
         self.spawn_git_local(
@@ -2394,17 +2200,15 @@ impl App {
         }
         match self.current_selection() {
             Selection::Worktree(pi, wi) => {
-                let (repo, wt_path, branch, default_branch, is_main, session_names) = {
+                let (repo, wt_path, branch, default_branch, is_main) = {
                     let p = &self.workspace.projects[pi];
                     let wt = &p.worktrees[wi];
-                    let names: Vec<String> = wt.sessions.iter().map(|s| s.name.clone()).collect();
                     (
                         p.path.clone(),
                         wt.path.clone(),
                         wt.branch.clone(),
                         p.default_branch.clone(),
                         wt.is_main,
-                        names,
                     )
                 };
                 if is_main {
@@ -2425,34 +2229,22 @@ impl App {
                             msg: abort_msg,
                         });
                     }
-                    ops::delete_worktree(&repo, &wt_path, &branch, &session_names)?;
+                    ops::delete_worktree(&repo, &wt_path, &branch)?;
                     Ok(BgOutcome::WorktreeRemoved { label })
                 });
             }
             Selection::Project(pi) | Selection::Session(pi, _, _) => {
-                let (path, default_branch, branch_sessions) = {
-                    let p = &self.workspace.projects[pi];
-                    (
-                        p.path.clone(),
-                        p.default_branch.clone(),
-                        p.branch_session_names(),
-                    )
-                };
+                let project = &self.workspace.projects[pi];
+                let path = project.path.clone();
+                let default_branch = project.default_branch.clone();
                 self.spawn_bg("clean project", move || {
-                    let removed = git_worktree::clean_merged(&path, &default_branch)?;
-                    let sessions_to_kill: Vec<String> = removed
-                        .iter()
-                        .flat_map(|b| branch_sessions.get(b).cloned().unwrap_or_default())
-                        .collect();
+                    let removed = ops::clean_merged_worktrees(&path, &default_branch)?;
                     let msg = if removed.is_empty() {
                         "No merged worktrees to clean".into()
                     } else {
                         format!("Cleaned: {}", removed.join(", "))
                     };
-                    Ok(BgOutcome::ProjectsCleaned {
-                        sessions_to_kill,
-                        msg,
-                    })
+                    Ok(BgOutcome::ProjectsCleaned { msg })
                 });
             }
             Selection::None => {
@@ -2460,31 +2252,15 @@ impl App {
                     .workspace
                     .projects
                     .iter()
-                    .map(|p| {
-                        (
-                            p.path.clone(),
-                            p.default_branch.clone(),
-                            p.branch_session_names(),
-                        )
-                    })
+                    .map(|project| (project.path.clone(), project.default_branch.clone()))
                     .collect();
                 self.spawn_bg("clean all", move || {
-                    let mut sessions_to_kill = Vec::new();
                     let mut total = 0usize;
-                    for (path, branch, branch_sessions) in &snapshots {
-                        if let Ok(removed) = git_worktree::clean_merged(path, branch) {
-                            for b in &removed {
-                                if let Some(s) = branch_sessions.get(b) {
-                                    sessions_to_kill.extend(s.iter().cloned());
-                                }
-                            }
-                            total += removed.len();
-                        }
+                    for (path, branch) in &snapshots {
+                        total += ops::clean_merged_worktrees(path, branch)?.len();
                     }
-                    let msg = format!("Cleaned {} merged worktrees", total);
                     Ok(BgOutcome::ProjectsCleaned {
-                        sessions_to_kill,
-                        msg,
+                        msg: format!("Cleaned {} merged worktrees", total),
                     })
                 });
             }
@@ -2612,9 +2388,9 @@ impl App {
     fn action_send_command(&mut self) {
         if let Selection::Session(pi, wi, si) = self.current_selection() {
             if let Some(sess) = self.workspace.session(pi, wi, si) {
-                let name = sess.name.clone();
+                let name = sess.pane_id.clone();
                 self.mode = Mode::Input {
-                    context: InputContext::SendCommand { session_name: name },
+                    context: InputContext::SendCommand { pane_id: name },
                     state: InputState::with_history("cmd: ", self.send_command_history.clone()),
                 };
             }
@@ -2623,10 +2399,13 @@ impl App {
 
     fn action_send_ctrl_c(&mut self) -> Result<()> {
         if let Selection::Session(pi, wi, si) = self.current_selection() {
-            let name = self.workspace.session(pi, wi, si).map(|s| s.name.clone());
+            let name = self
+                .workspace
+                .session(pi, wi, si)
+                .map(|session| session.pane_id.clone());
             if let Some(name) = name {
                 self.unmute_on_interaction(&name);
-                session::send_ctrl_c(&name)?;
+                herdr::send_ctrl_c(&name)?;
             }
         }
         Ok(())
@@ -2723,17 +2502,16 @@ impl App {
                 if session_state::derive(sess).app_state() == AppSessionState::Active {
                     return;
                 }
-                if sess.has_activity {
-                    sess.has_activity = false;
-                    self.set_status("Dismissed");
-                    return;
-                }
-                // Running app or idle session — toggle mute
                 sess.muted = !sess.muted;
-                let muted_val = if sess.muted { "1" } else { "0" };
-                session::set_session_opt(&sess.name, session::OPT_MUTED, muted_val);
-                let msg = if sess.muted { "Muted" } else { "Unmuted" };
-                self.set_status(msg);
+                let muted = sess.muted;
+                let pane_id = sess.pane_id.clone();
+                if muted {
+                    self.muted_ids.insert(pane_id);
+                } else {
+                    self.muted_ids.remove(&pane_id);
+                }
+                self.mark_dirty();
+                self.set_status(if muted { "Muted" } else { "Unmuted" });
                 return;
             }
         }
@@ -2804,7 +2582,7 @@ impl App {
                         context: InputContext::AddSessionCmd {
                             project_idx,
                             worktree_idx,
-                            session_name: value,
+                            session_label: value,
                         },
                         state: InputState::new("command (optional): "),
                     };
@@ -2813,10 +2591,10 @@ impl App {
                 InputContext::AddSessionCmd {
                     project_idx,
                     worktree_idx,
-                    session_name,
+                    session_label,
                 } => {
                     let cmd = if value.is_empty() { None } else { Some(value) };
-                    self.do_create_session(project_idx, worktree_idx, session_name, cmd)?;
+                    self.do_create_session(project_idx, worktree_idx, session_label, cmd)?;
                 }
                 InputContext::SetAlias {
                     project_idx,
@@ -2833,43 +2611,16 @@ impl App {
                         self.do_rename_session(project_idx, worktree_idx, session_idx, value)?;
                     }
                 }
-                InputContext::SendCommand { session_name } => {
+                InputContext::SendCommand { pane_id } => {
                     if !value.is_empty() {
-                        self.unmute_on_interaction(&session_name);
-                        session::send_keys(&session_name, &value)?;
+                        self.unmute_on_interaction(&pane_id);
+                        herdr::send_text(&pane_id, &value, true)?;
                         self.send_command_history.retain(|cmd| cmd != &value);
                         self.send_command_history.push(value);
                         if self.send_command_history.len() > 50 {
                             let overflow = self.send_command_history.len() - 50;
                             self.send_command_history.drain(0..overflow);
                         }
-                    }
-                }
-                InputContext::GitPullRebase {
-                    project_idx,
-                    worktree_idx,
-                } => {
-                    if !value.is_empty() {
-                        self.do_git_pull_rebase(project_idx, worktree_idx, value)?;
-                        return Ok(());
-                    }
-                }
-                InputContext::GitMergeFrom {
-                    project_idx,
-                    worktree_idx,
-                } => {
-                    if !value.is_empty() {
-                        self.do_git_merge_from(project_idx, worktree_idx, value)?;
-                        return Ok(());
-                    }
-                }
-                InputContext::GitMergeInto {
-                    project_idx,
-                    worktree_idx,
-                } => {
-                    if !value.is_empty() {
-                        self.do_git_merge_into(project_idx, worktree_idx, value)?;
-                        return Ok(());
                     }
                 }
                 InputContext::AddTab => {
@@ -2888,13 +2639,7 @@ impl App {
                 }
                 InputContext::RenameTab { tab_idx } => {
                     let trimmed = value.trim().to_string();
-                    if trimmed.is_empty()
-                        || self
-                            .config
-                            .tabs
-                            .get(tab_idx)
-                            .map_or(false, |t| t == &trimmed)
-                    {
+                    if trimmed.is_empty() || self.config.tabs.get(tab_idx) == Some(&trimmed) {
                         self.mode = Mode::TabManager {
                             selected: tab_idx + 1,
                         };
@@ -2949,12 +2694,10 @@ impl App {
                     project_idx: pi,
                     worktree_idx: wi,
                 } => {
-                    let (repo, wt_path, branch, session_names) = {
+                    let (repo, wt_path, branch) = {
                         let p = &self.workspace.projects[pi];
                         let wt = &p.worktrees[wi];
-                        let names: Vec<String> =
-                            wt.sessions.iter().map(|s| s.name.clone()).collect();
-                        (p.path.clone(), wt.path.clone(), wt.branch.clone(), names)
+                        (p.path.clone(), wt.path.clone(), wt.branch.clone())
                     };
                     let label = format!("Deleted: {}", branch);
                     // Optimistically remove before spawning so the tree updates this frame
@@ -2963,7 +2706,7 @@ impl App {
                     self.rebuild_flat();
                     self.clamp_selected();
                     self.spawn_bg(format!("delete {}", branch), move || {
-                        ops::delete_worktree(&repo, &wt_path, &branch, &session_names)?;
+                        ops::delete_worktree(&repo, &wt_path, &branch)?;
                         Ok(BgOutcome::WorktreeRemoved { label })
                     });
                 }
@@ -3071,7 +2814,7 @@ impl App {
         &mut self,
         pi: usize,
         wi: usize,
-        session_name: String,
+        session_label: String,
         command: Option<String>,
     ) -> Result<()> {
         let (proj_name, wt_path, wt_slug) = {
@@ -3079,20 +2822,19 @@ impl App {
             let wt = &p.worktrees[wi];
             (p.name.clone(), wt.path.clone(), wt.session_slug(&p.name))
         };
-        let explicit_name = if session_name.is_empty() {
+        let explicit_name = if session_label.is_empty() {
             None
         } else {
-            Some(session_name)
+            Some(session_label)
         };
-        let (_tmux_name, display_name) =
+        let (_pane_id, display_name) =
             ops::create_session(&proj_name, &wt_slug, &wt_path, explicit_name, command)?;
         self.set_status(format!("Session '{}' created", display_name));
-        // Expand so the new session is visible; set before spawn_tmux_refresh so the
-        // snapshot in apply_tmux_refresh captures it before rebuilding workspace state
+        // Expand before the authoritative Herdr refresh reveals the new pane.
         if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
             wt.expanded = true;
         }
-        self.spawn_tmux_refresh();
+        self.spawn_herdr_refresh();
         Ok(())
     }
 
@@ -3111,22 +2853,15 @@ impl App {
     }
 
     fn do_delete_session(&mut self, pi: usize, wi: usize, si: usize) -> Result<()> {
-        let sess = &self.workspace.projects[pi].worktrees[wi].sessions[si];
-        let tmux_name = sess.name.clone();
-        let display_name = sess.display_name.clone();
-        // Optimistic removal — if kill fails, next periodic refresh re-adds the session.
-        // Register pending op so stale in-flight refreshes don't resurrect it before kill confirms.
-        self.pending_session_ops
-            .insert(tmux_name.clone(), SessionOp::Killed);
-        self.workspace.projects[pi].worktrees[wi]
-            .sessions
-            .remove(si);
-        self.rebuild_flat();
-        self.clamp_selected();
-        self.mark_dirty();
-        self.set_status(format!("Killed session: {}", display_name));
-        std::thread::spawn(move || {
-            let _ = session::kill_session(&tmux_name);
+        let session = &self.workspace.projects[pi].worktrees[wi].sessions[si];
+        let pane_id = session.pane_id.clone();
+        let display_name = session.display_name.clone();
+        self.spawn_bg(format!("kill {display_name}"), move || {
+            ops::kill_session(&pane_id)?;
+            Ok(BgOutcome::SessionKilled {
+                pane_id,
+                display_name,
+            })
         });
         Ok(())
     }
@@ -3156,25 +2891,12 @@ impl App {
         si: usize,
         new_name: String,
     ) -> Result<()> {
-        let old_tmux_name = self.workspace.projects[pi].worktrees[wi].sessions[si]
-            .name
+        let pane_id = self.workspace.projects[pi].worktrees[wi].sessions[si]
+            .pane_id
             .clone();
-        self.unmute_on_interaction(&old_tmux_name);
-        let proj_name = self.workspace.projects[pi].name.clone();
-        let wt_slug = self.workspace.projects[pi].worktrees[wi].session_slug(&proj_name);
-        let new_tmux_name = format!("{}-{}-{}", proj_name, wt_slug, new_name);
-        ops::rename_session(&old_tmux_name, &new_tmux_name)?;
-        let sess = &mut self.workspace.projects[pi].worktrees[wi].sessions[si];
-        sess.name = new_tmux_name.clone();
-        sess.display_name = new_name.clone();
-        // Register pending rename so a stale in-flight refresh remaps old name → new name
-        // and preserves pane_capture/muted state instead of losing them.
-        self.pending_session_ops.insert(
-            old_tmux_name,
-            SessionOp::Renamed {
-                new_name: new_tmux_name,
-            },
-        );
+        self.unmute_on_interaction(&pane_id);
+        ops::rename_session(&pane_id, &new_name)?;
+        self.workspace.projects[pi].worktrees[wi].sessions[si].display_name = new_name.clone();
         self.mark_dirty();
         self.set_status(format!("Session renamed to '{}'", new_name));
         Ok(())
@@ -3267,68 +2989,6 @@ impl App {
             })
             .collect();
         self.config.projects = ordered;
-    }
-
-    // ── Git popup ─────────────────────────────────────────────────────────────
-
-    fn action_git_popup(&mut self) {
-        let (pi, wi) = match self.current_selection() {
-            Selection::Worktree(pi, wi) | Selection::Session(pi, wi, _) => (pi, wi),
-            _ => {
-                self.set_status("Select a worktree");
-                return;
-            }
-        };
-        self.mode = Mode::GitPopup {
-            project_idx: pi,
-            worktree_idx: wi,
-        };
-    }
-
-    fn dispatch_git_popup(
-        &mut self,
-        pi: usize,
-        wi: usize,
-        action: Action,
-        _terminal: &mut Tui,
-    ) -> Result<()> {
-        match action {
-            Action::InputChar('p') => self.do_git_pull(pi, wi),
-            Action::InputChar('P') => self.do_git_push(pi, wi),
-            Action::InputChar('r') => {
-                let default = self.workspace.projects[pi].default_branch.clone();
-                self.mode = Mode::Input {
-                    context: InputContext::GitPullRebase {
-                        project_idx: pi,
-                        worktree_idx: wi,
-                    },
-                    state: InputState::with_value("branch: ", default),
-                };
-            }
-            Action::InputChar('m') => {
-                let default = self.workspace.projects[pi].default_branch.clone();
-                self.mode = Mode::Input {
-                    context: InputContext::GitMergeFrom {
-                        project_idx: pi,
-                        worktree_idx: wi,
-                    },
-                    state: InputState::with_value("branch: ", default),
-                };
-            }
-            Action::InputChar('M') => {
-                let default = self.workspace.projects[pi].default_branch.clone();
-                self.mode = Mode::Input {
-                    context: InputContext::GitMergeInto {
-                        project_idx: pi,
-                        worktree_idx: wi,
-                    },
-                    state: InputState::with_value("branch: ", default),
-                };
-            }
-            Action::InputEscape | Action::Quit => self.mode = Mode::Normal,
-            _ => {}
-        }
-        Ok(())
     }
 
     // ── Tab navigation ────────────────────────────────────────────────────────
@@ -3502,70 +3162,11 @@ impl App {
         self.set_status(format!("Moved '{}' to '{}'", proj_name, target_name));
         Ok(())
     }
-
-    fn git_worktree_path(&self, pi: usize, wi: usize) -> Option<std::path::PathBuf> {
-        self.workspace
-            .projects
-            .get(pi)?
-            .worktrees
-            .get(wi)
-            .map(|wt| wt.path.clone())
-    }
-
-    /// Spawn a background git operation. Closes the current popup mode immediately.
-    fn spawn_git_op<F>(&mut self, pi: usize, wi: usize, op_name: &str, f: F)
-    where
-        F: FnOnce(&std::path::Path) -> anyhow::Result<String> + Send + 'static,
-    {
-        if self.is_busy() {
-            self.set_status("Operation in progress");
-            return;
-        }
-        let Some(path) = self.git_worktree_path(pi, wi) else {
-            self.set_status("Worktree not found");
-            return;
-        };
-        self.mode = Mode::Normal;
-        let label = op_name.to_string();
-        self.spawn_bg(label.clone(), move || {
-            let out = f(&path).map_err(|e| anyhow::anyhow!("{} failed: {}", label, e))?;
-            let msg = format!("{}: {}", label, first_line(&out));
-            Ok(BgOutcome::GitOp { pi, wi, msg })
-        });
-    }
-
-    fn do_git_pull(&mut self, pi: usize, wi: usize) {
-        self.spawn_git_op(pi, wi, "pull", |p| git_ops::pull(p));
-    }
-
-    fn do_git_push(&mut self, pi: usize, wi: usize) {
-        self.spawn_git_op(pi, wi, "push", |p| git_ops::push(p));
-    }
-
-    fn do_git_pull_rebase(&mut self, pi: usize, wi: usize, branch: String) -> Result<()> {
-        self.spawn_git_op(pi, wi, "rebase", move |p| git_ops::pull_rebase(p, &branch));
-        Ok(())
-    }
-
-    fn do_git_merge_from(&mut self, pi: usize, wi: usize, branch: String) -> Result<()> {
-        self.spawn_git_op(pi, wi, "merge", move |p| git_ops::merge_from(p, &branch));
-        Ok(())
-    }
-
-    fn do_git_merge_into(&mut self, pi: usize, wi: usize, branch: String) -> Result<()> {
-        self.spawn_git_op(pi, wi, "merge-into", move |p| {
-            git_ops::merge_into(p, &branch)
-        });
-        Ok(())
-    }
-}
-
-fn first_line(s: &str) -> &str {
-    s.lines().next().unwrap_or(s)
 }
 
 /// Compute the set of project indices visible in `active_tab`.
 /// When config.tabs is empty, all projects are visible (single implicit tab).
+// ^ [[Tab Grouping]] wsx tabs filter projects and are distinct from Herdr tabs.
 fn compute_visible_projects(
     config: &GlobalConfig,
     workspace: &WorkspaceState,
@@ -3773,11 +3374,10 @@ mod tests {
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
         let search_cache = build_search_cache(&workspace, &cached_flat);
         let worktree_index = build_worktree_index(&workspace);
-        let last_session_snapshot = wsx_core::cache::collect_session_names(&workspace);
         let (bg_tx, bg_rx) = std::sync::mpsc::channel();
         let (git_local_tx, git_local_rx) = std::sync::mpsc::channel();
         let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
-        let (tmux_tx, tmux_rx) = std::sync::mpsc::channel();
+        let (herdr_tx, herdr_rx) = std::sync::mpsc::channel();
         let (_update_tx, update_rx) = std::sync::mpsc::channel();
         let (routine_tx, routine_rx) = std::sync::mpsc::channel();
 
@@ -3804,7 +3404,6 @@ mod tests {
             force_preview_redraw: false,
             last_rendered_preview_was_session: false,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
-            activity_timer: Timer::new(ACTIVITY_INTERVAL_MS),
             slow_timer: Timer::new(SLOW_INTERVAL_MS),
             cached_flat,
             flat_dirty: false,
@@ -3816,18 +3415,17 @@ mod tests {
             fetch_rx,
             fetch_pending: HashSet::new(),
             cache_dirty: false,
-            last_session_snapshot,
             git_semaphore: GitSemaphore::new(1),
             worktree_index,
             parsed_preview: std::collections::HashMap::new(),
-            tmux_tx,
-            tmux_rx,
-            tmux_refresh_pending: false,
-            tmux_refresh_stale: false,
-            tmux_activity_pending: false,
-            tmux_capture_pending: false,
+            herdr_tx,
+            herdr_rx,
+            herdr_refresh_pending: false,
+            herdr_refresh_stale: false,
+            herdr_capture_pending: false,
             pending_deletions: HashSet::new(),
-            pending_session_ops: HashMap::new(),
+            pending_session_kills: HashSet::new(),
+            muted_ids: HashSet::new(),
             update_rx,
             update_available: None,
             is_mobile: false,
@@ -4360,7 +3958,6 @@ mod tests {
                 make_project_entry("work-b", Some("work")),
             ],
             exclude_worktree_paths: vec![],
-            mobile_detach_key: None,
         };
         let workspace = WorkspaceState {
             projects: vec![
@@ -4374,7 +3971,7 @@ mod tests {
         let (bg_tx, bg_rx) = std::sync::mpsc::channel();
         let (git_local_tx, git_local_rx) = std::sync::mpsc::channel();
         let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
-        let (tmux_tx, tmux_rx) = std::sync::mpsc::channel();
+        let (herdr_tx, herdr_rx) = std::sync::mpsc::channel();
         let (_update_tx, update_rx) = std::sync::mpsc::channel();
         let (routine_tx, routine_rx) = std::sync::mpsc::channel();
         let mut app = App {
@@ -4400,7 +3997,6 @@ mod tests {
             force_preview_redraw: false,
             last_rendered_preview_was_session: false,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
-            activity_timer: Timer::new(ACTIVITY_INTERVAL_MS),
             slow_timer: Timer::new(SLOW_INTERVAL_MS),
             cached_flat: Vec::new(),
             flat_dirty: false,
@@ -4412,18 +4008,17 @@ mod tests {
             fetch_rx,
             fetch_pending: HashSet::new(),
             cache_dirty: false,
-            last_session_snapshot: HashMap::new(),
             git_semaphore: GitSemaphore::new(1),
             worktree_index: std::collections::HashMap::new(),
             parsed_preview: std::collections::HashMap::new(),
-            tmux_tx,
-            tmux_rx,
-            tmux_refresh_pending: false,
-            tmux_refresh_stale: false,
-            tmux_activity_pending: false,
-            tmux_capture_pending: false,
+            herdr_tx,
+            herdr_rx,
+            herdr_refresh_pending: false,
+            herdr_refresh_stale: false,
+            herdr_capture_pending: false,
             pending_deletions: HashSet::new(),
-            pending_session_ops: HashMap::new(),
+            pending_session_kills: HashSet::new(),
+            muted_ids: HashSet::new(),
             update_rx,
             update_available: None,
             is_mobile: false,
@@ -4462,7 +4057,7 @@ mod tests {
         app.spawn_git_local(path.clone(), "main".to_string());
         assert!(!app.git_local_pending.contains(&path));
 
-        app.spawn_git_local_force(path.clone(), "main".to_string());
+        app.spawn_git_local_with_options(path.clone(), "main".to_string(), true);
         assert!(app.git_local_pending.contains(&path));
         assert!(app.workspace.projects[0].worktrees[0].git_info.is_some());
     }
@@ -4472,19 +4067,17 @@ mod tests {
 
     fn make_sess(
         muted: bool,
-        has_activity: bool,
-        foreground: wsx_core::model::workspace::ForegroundKind,
+        status: wsx_core::herdr::AgentStatus,
     ) -> wsx_core::model::workspace::SessionInfo {
         wsx_core::model::workspace::SessionInfo {
-            name: String::new(),
-            display_name: String::new(),
-            has_activity,
+            pane_id: "pane".into(),
+            terminal_id: "terminal".into(),
+            workspace_id: "workspace".into(),
+            tab_id: "tab".into(),
+            display_name: "session".into(),
+            agent_status: status,
+            revision: 1,
             pane_capture: None,
-            last_activity: None,
-            agent_tail: None,
-            tmux_activity_ts: 0,
-            foreground,
-            is_running_wsx: false,
             muted,
         }
     }
@@ -4493,16 +4086,8 @@ mod tests {
         let mut project = make_project("navigation");
         let mut worktree = make_worktree("./navigation");
         worktree.sessions = vec![
-            make_sess(
-                false,
-                false,
-                wsx_core::model::workspace::ForegroundKind::Shell,
-            ),
-            make_sess(
-                false,
-                false,
-                wsx_core::model::workspace::ForegroundKind::Shell,
-            ),
+            make_sess(false, wsx_core::herdr::AgentStatus::Idle),
+            make_sess(false, wsx_core::herdr::AgentStatus::Idle),
         ];
         project.worktrees = vec![worktree];
         project.routines = vec![routine_view("morning")];
@@ -4626,117 +4211,15 @@ mod tests {
     }
 
     #[test]
-    fn attention_bell_inactive_triggers() {
-        let s = make_sess(
-            false,
-            true,
-            wsx_core::model::workspace::ForegroundKind::Shell,
-        );
-        assert!(session_needs_attention(&s));
+    fn blocked_session_needs_attention() {
+        let session = make_sess(false, wsx_core::herdr::AgentStatus::Blocked);
+        assert!(session_needs_attention(&session));
     }
 
     #[test]
-    fn attention_muted_does_not_trigger() {
-        let s = make_sess(
-            true,
-            true,
-            wsx_core::model::workspace::ForegroundKind::Agent,
-        );
-        assert!(!session_needs_attention(&s));
-    }
-
-    #[test]
-    fn attention_bell_active_still_triggers() {
-        // bell always needs attention regardless of foreground
-        let s = make_sess(
-            false,
-            true,
-            wsx_core::model::workspace::ForegroundKind::Shell,
-        );
-        assert!(session_needs_attention(&s));
-    }
-
-    // ── filter_pending_session_ops ─────────────────────────────────────────────
-
-    fn sess(name: &str) -> (String, std::path::PathBuf) {
-        (name.to_string(), std::path::PathBuf::from("/tmp"))
-    }
-
-    #[test]
-    fn pending_ops_empty_returns_sessions_unchanged() {
-        let mut pending = HashMap::new();
-        let input = vec![sess("a"), sess("b")];
-        let out = filter_pending_session_ops(&mut pending, input.clone());
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn killed_session_suppressed_while_still_alive() {
-        let mut pending = HashMap::new();
-        pending.insert("sess-a".to_string(), SessionOp::Killed);
-        let input = vec![sess("sess-a"), sess("sess-b")];
-        let out = filter_pending_session_ops(&mut pending, input);
-        // sess-a still in tmux → suppressed; sess-b passes through
-        let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(
-            !names.contains(&"sess-a"),
-            "killed session should be filtered"
-        );
-        assert!(
-            names.contains(&"sess-b"),
-            "other sessions should pass through"
-        );
-        // Entry stays because tmux still reports it (kill not confirmed)
-        assert!(pending.contains_key("sess-a"));
-    }
-
-    #[test]
-    fn killed_session_entry_cleared_when_tmux_confirms() {
-        let mut pending = HashMap::new();
-        pending.insert("sess-dead".to_string(), SessionOp::Killed);
-        // tmux no longer reports sess-dead
-        let input = vec![sess("sess-other")];
-        let out = filter_pending_session_ops(&mut pending, input);
-        let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"sess-other"));
-        // Entry cleared (kill confirmed)
-        assert!(!pending.contains_key("sess-dead"));
-    }
-
-    #[test]
-    fn renamed_session_remapped_to_new_name() {
-        let mut pending = HashMap::new();
-        pending.insert(
-            "old-name".to_string(),
-            SessionOp::Renamed {
-                new_name: "new-name".to_string(),
-            },
-        );
-        // tmux still reports old name (rename not yet visible in snapshot)
-        let input = vec![sess("old-name"), sess("other")];
-        let out = filter_pending_session_ops(&mut pending, input);
-        let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(!names.contains(&"old-name"), "old name should be remapped");
-        assert!(names.contains(&"new-name"), "new name should appear");
-        assert!(names.contains(&"other"), "other sessions pass through");
-    }
-
-    #[test]
-    fn renamed_entry_cleared_when_new_name_confirmed() {
-        let mut pending = HashMap::new();
-        pending.insert(
-            "old-name".to_string(),
-            SessionOp::Renamed {
-                new_name: "new-name".to_string(),
-            },
-        );
-        // tmux now reports the new name (rename confirmed)
-        let input = vec![sess("new-name"), sess("other")];
-        let out = filter_pending_session_ops(&mut pending, input);
-        // Entry cleared; new-name passes through unchanged
-        assert!(!pending.contains_key("old-name"));
-        let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"new-name"));
+    fn muted_blocked_session_does_not_need_attention() {
+        let session = make_sess(true, wsx_core::herdr::AgentStatus::Blocked);
+        assert!(!session_needs_attention(&session));
     }
 
     fn worktree_entry(path: &str) -> git_worktree::WorktreeEntry {
@@ -4746,6 +4229,104 @@ mod tests {
             branch: "branch".to_string(),
             is_main: false,
         }
+    }
+
+    #[test]
+    fn successful_background_session_close_removes_pane_and_registers_tombstone() {
+        let mut project = make_project("demo");
+        let mut worktree = make_worktree("/tmp/demo");
+        worktree.sessions = vec![make_sess(false, wsx_core::herdr::AgentStatus::Idle)];
+        project.worktrees = vec![worktree];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        app.jobs.push(BgJob {
+            label: "kill session".into(),
+        });
+
+        app.apply_bg_result(BgResult {
+            label: "kill session".into(),
+            outcome: Ok(BgOutcome::SessionKilled {
+                pane_id: "pane".into(),
+                display_name: "session".into(),
+            }),
+        });
+
+        assert!(app.workspace.projects[0].worktrees[0].sessions.is_empty());
+        assert!(app.pending_session_kills.contains("pane"));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("Killed session: session")
+        );
+    }
+
+    #[test]
+    fn manual_refresh_queues_behind_an_inflight_snapshot() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.herdr_refresh_pending = true;
+
+        app.refresh_all().unwrap();
+
+        assert!(app.herdr_refresh_pending);
+        assert!(app.herdr_refresh_stale);
+    }
+
+    #[test]
+    fn changed_herdr_revision_invalidates_parsed_preview() {
+        let mut project = make_project("demo");
+        let mut worktree = make_worktree("/tmp/demo");
+        worktree.sessions = vec![make_sess(false, wsx_core::herdr::AgentStatus::Working)];
+        project.worktrees = vec![worktree];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        app.parsed_preview
+            .insert("pane".into(), ratatui::text::Text::raw("old"));
+        let snapshot = wsx_core::herdr::Snapshot {
+            version: "0.8.2".into(),
+            protocol: 20,
+            workspaces: vec![wsx_core::herdr::Workspace {
+                workspace_id: "workspace".into(),
+                label: "wsx:demo-main".into(),
+                tokens: Default::default(),
+            }],
+            tabs: vec![wsx_core::herdr::Tab {
+                tab_id: "tab".into(),
+                workspace_id: "workspace".into(),
+                label: "session".into(),
+            }],
+            panes: vec![wsx_core::herdr::Pane {
+                pane_id: "pane".into(),
+                terminal_id: "terminal".into(),
+                workspace_id: "workspace".into(),
+                tab_id: "tab".into(),
+                cwd: Some("/tmp/demo".into()),
+                label: Some("session".into()),
+                agent_status: wsx_core::herdr::AgentStatus::Working,
+                revision: 2,
+                tokens: Default::default(),
+            }],
+            layouts: vec![],
+            agents: vec![],
+        };
+
+        app.apply_herdr_snapshot(
+            snapshot,
+            vec![(
+                PathBuf::from("/tmp/demo"),
+                vec![worktree_entry("/tmp/demo")],
+            )],
+        );
+
+        assert!(!app.parsed_preview.contains_key("pane"));
     }
 
     #[test]

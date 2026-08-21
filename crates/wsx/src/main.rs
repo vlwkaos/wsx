@@ -1,5 +1,5 @@
 // wsx — workspace manager TUI
-// Manages git worktrees + tmux sessions via ratatui interface.
+// Manages git worktrees + Herdr panes via ratatui.
 
 mod action;
 mod app;
@@ -20,8 +20,9 @@ fn main() -> Result<()> {
     if matches!(args.command, Some(cli::Command::Routine { .. })) {
         return cli::run(args.command.expect("matched Some"));
     }
-    if !wsx_core::tmux::session::is_available() {
-        eprintln!("wsx requires tmux — https://github.com/tmux/tmux/wiki/Installing");
+    // ^ Herdr protocol boundary: https://herdr.dev/docs/socket-api/
+    if let Err(error) = wsx_core::herdr::ensure_available() {
+        eprintln!("wsx requires Herdr 0.8.2+ with protocol 20: {error}\nInstall or upgrade Herdr, then ensure `herdr status server --json` is available.\nhttps://herdr.dev/docs/socket-api/");
         std::process::exit(1);
     }
 
@@ -40,7 +41,6 @@ fn run_tui(mobile: bool) -> Result<()> {
         default_hook(info);
     }));
 
-    wsx_core::tmux::session::apply_server_defaults();
     let mut terminal = tui::init().context("terminal init failed")?;
     let mut app = App::new(mobile)?;
     let result = app.run(&mut terminal);

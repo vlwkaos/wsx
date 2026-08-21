@@ -1,5 +1,4 @@
 pub mod info;
-pub mod ops;
 pub mod worktree;
 
 use std::path::Path;
@@ -29,7 +28,23 @@ pub fn output_with_timeout(
     cmd: &mut Command,
     timeout: std::time::Duration,
 ) -> std::io::Result<std::process::Output> {
-    use std::io::Read;
+    output_with_timeout_inner(cmd, timeout, None)
+}
+
+/// Timeout-bounded subprocess output with a per-stream byte limit.
+pub fn output_with_timeout_limit(
+    cmd: &mut Command,
+    timeout: std::time::Duration,
+    max_stream_bytes: usize,
+) -> std::io::Result<std::process::Output> {
+    output_with_timeout_inner(cmd, timeout, Some(max_stream_bytes))
+}
+
+fn output_with_timeout_inner(
+    cmd: &mut Command,
+    timeout: std::time::Duration,
+    max_stream_bytes: Option<usize>,
+) -> std::io::Result<std::process::Output> {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
 
@@ -41,42 +56,30 @@ pub fn output_with_timeout(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
-    let stdout_thread = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(mut r) = stdout {
-            let _ = r.read_to_end(&mut buf);
-        }
-        buf
-    });
-    let stderr_thread = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(mut r) = stderr {
-            let _ = r.read_to_end(&mut buf);
-        }
-        buf
-    });
+    let stdout_thread = std::thread::spawn(move || read_bounded(stdout, max_stream_bytes));
+    let stderr_thread = std::thread::spawn(move || read_bounded(stderr, max_stream_bytes));
 
     let start = std::time::Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let stdout = stdout_thread.join().unwrap_or_default();
-                let stderr = stderr_thread.join().unwrap_or_default();
+                let stdout = join_reader(stdout_thread);
+                let stderr = join_reader(stderr_thread);
                 return Ok(std::process::Output {
                     status,
-                    stdout,
-                    stderr,
+                    stdout: stdout?,
+                    stderr: stderr?,
                 });
             }
             Ok(None) => {
                 if start.elapsed() >= timeout {
                     if let Ok(Some(status)) = child.try_wait() {
-                        let stdout = stdout_thread.join().unwrap_or_default();
-                        let stderr = stderr_thread.join().unwrap_or_default();
+                        let stdout = join_reader(stdout_thread);
+                        let stderr = join_reader(stderr_thread);
                         return Ok(std::process::Output {
                             status,
-                            stdout,
-                            stderr,
+                            stdout: stdout?,
+                            stderr: stderr?,
                         });
                     }
                     // Kill the entire process group — git + ssh + credential helpers
@@ -94,5 +97,55 @@ pub fn output_with_timeout(
             }
             Err(e) => return Err(e),
         }
+    }
+}
+
+fn read_bounded<R: std::io::Read>(
+    reader: Option<R>,
+    max_bytes: Option<usize>,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+
+    let Some(reader) = reader else {
+        return Ok(Vec::new());
+    };
+    let mut bytes = Vec::new();
+    match max_bytes {
+        Some(limit) => {
+            reader
+                .take(limit.saturating_add(1) as u64)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > limit {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "subprocess output exceeded byte limit",
+                ));
+            }
+        }
+        None => {
+            let mut reader = reader;
+            reader.read_to_end(&mut bytes)?;
+        }
+    }
+    Ok(bytes)
+}
+
+fn join_reader(
+    thread: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+) -> std::io::Result<Vec<u8>> {
+    thread
+        .join()
+        .map_err(|_| std::io::Error::other("subprocess output reader panicked"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_bounded;
+    use std::io::Cursor;
+
+    #[test]
+    fn bounded_reader_rejects_oversized_output() {
+        let error = read_bounded(Some(Cursor::new(b"four")), Some(3)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 }

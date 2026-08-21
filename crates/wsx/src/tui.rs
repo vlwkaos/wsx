@@ -63,7 +63,7 @@ pub fn restore(terminal: &mut Tui) -> Result<()> {
     Ok(())
 }
 
-/// Run a closure with raw mode disabled (for tmux attach, external commands).
+/// Run a closure with raw mode disabled (for Herdr attach and external commands).
 pub fn with_raw_mode_disabled<F, R>(terminal: &mut Tui, f: F) -> Result<R>
 where
     F: FnOnce() -> Result<R>,

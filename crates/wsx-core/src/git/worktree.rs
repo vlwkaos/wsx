@@ -173,30 +173,32 @@ pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, branch: &str) -> 
     Ok(())
 }
 
-/// Delete worktrees whose branches are merged into default_branch.
-pub fn clean_merged(repo_path: &Path, default_branch: &str) -> Result<Vec<String>> {
+/// Return non-main worktrees whose branches are merged into `default_branch`.
+pub fn merged_worktrees(repo_path: &Path, default_branch: &str) -> Result<Vec<WorktreeEntry>> {
     let output = git_cmd(repo_path)
         .args(["branch", "--merged", default_branch])
         .output()
         .context("git branch --merged failed")?;
-
     let merged: std::collections::HashSet<String> = String::from_utf8_lossy(&output.stdout)
         .lines()
-        .map(|l| l.trim().trim_start_matches('*').trim().to_string())
-        .filter(|b| !b.is_empty() && b != default_branch && !b.starts_with("HEAD"))
+        .map(|line| line.trim().trim_start_matches('*').trim().to_string())
+        .filter(|branch| {
+            !branch.is_empty() && branch != default_branch && !branch.starts_with("HEAD")
+        })
         .collect();
+    Ok(list_worktrees(repo_path)?
+        .into_iter()
+        .filter(|entry| !entry.is_main && merged.contains(&entry.branch))
+        .collect())
+}
 
-    let entries = list_worktrees(repo_path)?;
+/// Delete worktrees whose branches are merged into `default_branch`.
+pub fn clean_merged(repo_path: &Path, default_branch: &str) -> Result<Vec<String>> {
     let mut removed = Vec::new();
-
-    for entry in entries.iter().filter(|e| !e.is_main) {
-        if merged.contains(&entry.branch) {
-            if remove_worktree(repo_path, &entry.path, &entry.branch).is_ok() {
-                removed.push(entry.branch.clone());
-            }
-        }
+    for entry in merged_worktrees(repo_path, default_branch)? {
+        remove_worktree(repo_path, &entry.path, &entry.branch)?;
+        removed.push(entry.branch);
     }
-
     Ok(removed)
 }
 
