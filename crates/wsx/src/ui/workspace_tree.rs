@@ -133,18 +133,11 @@ pub fn render_tree(
                     [*session_idx];
                 let state = session_state::derive(sess).app_state();
                 let (icon, icon_color) = session_icon(sess, state);
-                let idle_str = if state == AppSessionState::Idle {
-                    sess.last_activity
-                        .map(|e| format!("  {}", fmt_idle(e.elapsed())))
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
                 let line = Line::from(vec![
                     Span::raw("  "),
                     Span::styled(icon, Style::default().fg(icon_color)),
                     Span::styled(
-                        format!(" {}{}", sess.display_name, idle_str),
+                        format!(" {}", sess.display_name),
                         Style::default().fg(Color::Rgb(210, 200, 185)),
                     ),
                 ]);
@@ -260,15 +253,6 @@ fn session_icon(
     }
 }
 
-fn fmt_idle(d: std::time::Duration) -> String {
-    let s = d.as_secs();
-    match s {
-        s if s < 60 => format!("{}s", s),
-        s if s < 3600 => format!("{}m", s / 60),
-        s => format!("{}h", s / 3600),
-    }
-}
-
 /// Compute scroll offset to keep selected item visible.
 pub fn compute_scroll(selected: usize, visible_height: usize, current_offset: usize) -> usize {
     let up_pad = (visible_height / 4).max(1); // scroll up when cursor within top 1/4
@@ -287,19 +271,18 @@ mod tests {
     use super::{routine_tree_label, sched_header_label, session_icon};
     use crate::session_state::AppSessionState;
     use ratatui::style::Color;
-    use wsx_core::model::workspace::{ForegroundKind, SessionInfo};
+    use wsx_core::{herdr::AgentStatus, model::workspace::SessionInfo};
 
     fn session(muted: bool) -> SessionInfo {
         SessionInfo {
-            name: "proj-wt-sess".to_string(),
+            pane_id: "pane-1".to_string(),
+            terminal_id: "terminal-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            tab_id: "tab-1".to_string(),
             display_name: "sess".to_string(),
-            has_activity: false,
+            agent_status: AgentStatus::Unknown,
+            revision: 1,
             pane_capture: None,
-            last_activity: None,
-            agent_tail: None,
-            tmux_activity_ts: 0,
-            foreground: ForegroundKind::Unknown,
-            is_running_wsx: false,
             muted,
         }
     }

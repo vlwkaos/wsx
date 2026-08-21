@@ -1,13 +1,14 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
+use std::process::{Command as ProcessCommand, Stdio};
 
 use crate::session_state;
 use wsx_core::{
     config::global::GlobalConfig,
+    herdr,
     model::workspace::{Project, WorkspaceState},
     ops,
-    tmux::{capture, monitor, session},
 };
 
 #[derive(Clone, Default, ValueEnum)]
@@ -21,7 +22,7 @@ pub enum Format {
 #[command(
     name = "wsx",
     version,
-    about = "Workspace manager — git worktrees + tmux sessions"
+    about = "Workspace manager — git worktrees + Herdr panes"
 )]
 pub struct Args {
     #[command(subcommand)]
@@ -479,11 +480,23 @@ pub(crate) fn send_routine(
     action: asched_core::routine::ipc::Action,
 ) -> Result<asched_core::routine::ipc::Response> {
     let request = asched_core::routine::ipc::Request::new(project.to_path_buf(), action);
-    Ok(routine_client()?.request(&request)?)
+    // ^ asched owns daemon lifecycle: vendor/asched/README.md#architecture
+    Ok(routine_client()?.request_with_start(&request, asched_daemon_command()?)?)
 }
 
 fn routine_client() -> Result<asched_core::routine::RoutineClient> {
     Ok(asched_core::routine::RoutineClient::new(routine_root()?))
+}
+
+fn asched_daemon_command() -> Result<ProcessCommand> {
+    let binary = std::env::var_os("ASCHED_BIN").unwrap_or_else(|| "asched".into());
+    let mut command = ProcessCommand::new(binary);
+    command
+        .arg("daemon-serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    Ok(command)
 }
 
 fn fetch_routines(project: &Path) -> Result<(u64, Vec<asched_core::routine::ipc::RoutineView>)> {
@@ -635,9 +648,7 @@ fn load_config() -> Result<GlobalConfig> {
 fn load_full_workspace() -> Result<(GlobalConfig, WorkspaceState)> {
     let config = load_config()?;
     let mut workspace = ops::load_workspace(&config);
-    let sessions = session::list_sessions_with_paths();
-    let activity = monitor::session_activity();
-    ops::refresh_workspace(&mut workspace, &config, &sessions, &activity);
+    ops::refresh_workspace(&mut workspace, &config)?;
     Ok((config, workspace))
 }
 
@@ -722,7 +733,7 @@ fn git_label(wt: &wsx_core::model::workspace::WorktreeInfo) -> String {
 fn sessions_inline(wt: &wsx_core::model::workspace::WorktreeInfo) -> String {
     wt.sessions
         .iter()
-        .map(|s| format!("{}[{}]", s.name, activity_label(s)))
+        .map(|s| format!("{}[{}]", s.pane_id, activity_label(s)))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -802,7 +813,7 @@ fn cmd_status(json: bool, format: Format, tab: Option<&str>) -> Result<()> {
                 .unwrap_or_default();
             println!("  {}{} ({} sessions)", wt.branch, git, wt.sessions.len());
             for s in &wt.sessions {
-                println!("    {:<40} {}", s.name, activity_label(s));
+                println!("    {:<40} {}", s.pane_id, activity_label(s));
             }
         }
     }
@@ -819,18 +830,10 @@ fn cmd_worktree_create(branch: &str, project_name: Option<&str>) -> Result<()> {
         eprintln!("warning: {}", w);
     }
     let wt_slug = wsx_core::model::workspace::canonical_session_slug(&project.name, &wt_path);
-    let (tmux_name, _) = ops::create_session(&project.name, &wt_slug, &wt_path, None, None)?;
+    let (pane_id, _) = ops::create_session(&project.name, &wt_slug, &wt_path, None, None)
+        .context("worktree created, but its initial Herdr session failed")?;
     println!("worktree: {}", wt_path.display());
-    println!("session:  {}", tmux_name);
-    let mut cache = wsx_core::cache::WorkspaceCache::load();
-    cache.sessions.insert(
-        wt_path.to_string_lossy().to_string(),
-        vec![tmux_name.clone()],
-    );
-    cache.tmux_server_pid = wsx_core::tmux::session::server_pid();
-    if let Err(e) = cache.save(false) {
-        eprintln!("warning: cache save failed: {}", e);
-    }
+    println!("pane:     {}", pane_id);
     Ok(())
 }
 
@@ -848,16 +851,8 @@ fn cmd_worktree_delete(branch: &str, project_name: Option<&str>) -> Result<()> {
                 project.name
             )
         })?;
-    let session_names: Vec<String> = wt.sessions.iter().map(|s| s.name.clone()).collect();
-    ops::delete_worktree(&project.path, &wt.path, &wt.branch, &session_names)?;
+    ops::delete_worktree(&project.path, &wt.path, &wt.branch)?;
     println!("deleted worktree: {}", wt.path.display());
-    let mut cache = wsx_core::cache::WorkspaceCache::load();
-    cache
-        .sessions
-        .remove(&wt.path.to_string_lossy().to_string());
-    if let Err(e) = cache.save(false) {
-        eprintln!("warning: cache save failed: {}", e);
-    }
     Ok(())
 }
 
@@ -905,15 +900,11 @@ fn cmd_worktree_list(
     Ok(())
 }
 
-fn cmd_session_send_keys(sess: &str, keys: &str, no_enter: bool) -> Result<()> {
-    if no_enter {
-        session::send_keys_raw(sess, keys)?;
-    } else {
-        session::send_keys(sess, keys)?;
-    }
-    Ok(())
+fn cmd_session_send_keys(pane_id: &str, keys: &str, no_enter: bool) -> Result<()> {
+    herdr::send_text(pane_id, keys, !no_enter)
 }
 
+// ^ [[Session Peek]] Herdr read sources, bounds, ANSI, and future agent-aware reads.
 fn cmd_session_peek(
     sess: &str,
     lines: Option<u32>,
@@ -921,33 +912,38 @@ fn cmd_session_peek(
     trim: bool,
     agent: bool,
 ) -> Result<()> {
-    let raw = capture::capture_pane_window(sess, lines, offset)
-        .ok_or_else(|| anyhow::anyhow!("session '{}' not found or empty", sess))?;
-    let output = if agent {
-        capture::compact_for_agent(&raw)
-    } else if trim {
-        capture::trim_capture(&raw)
-    } else {
-        raw
-    };
+    let requested = lines.unwrap_or(200);
+    let raw = herdr::read_recent_ansi(sess, requested.saturating_add(offset))?;
+    let kept = raw
+        .lines()
+        .rev()
+        .skip(offset as usize)
+        .take(requested as usize)
+        .collect::<Vec<_>>();
+    let mut output = kept.into_iter().rev().collect::<Vec<_>>().join("\n");
+    if agent {
+        output = crate::ui::ansi::parse(&output)
+            .lines
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    if trim || agent {
+        output = output.trim_end().to_string();
+    }
     print!("{}", output);
     Ok(())
 }
 
-fn cmd_session_rename(old: &str, new: &str) -> Result<()> {
-    session::rename_session(old, new)?;
-    println!("renamed: {} → {}", old, new);
-    let mut cache = wsx_core::cache::WorkspaceCache::load();
-    for sessions in cache.sessions.values_mut() {
-        for s in sessions.iter_mut() {
-            if s == old {
-                *s = new.to_string();
-            }
-        }
-    }
-    if let Err(e) = cache.save(false) {
-        eprintln!("warning: cache save failed: {}", e);
-    }
+fn cmd_session_rename(pane_id: &str, new_label: &str) -> Result<()> {
+    ops::rename_session(pane_id, new_label)?;
+    println!("renamed pane {} to '{}'", pane_id, new_label);
     Ok(())
 }
 
@@ -1052,7 +1048,7 @@ fn cmd_session_list(
                     "{}/{} — {} ({})",
                     p.name,
                     wt.branch,
-                    s.name,
+                    s.pane_id,
                     activity_label(s)
                 );
             }

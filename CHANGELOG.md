@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Replace tmux with required Herdr 0.8.2+ protocol 20 sessions. Existing tmux sessions are not imported. Herdr now owns persistent PTYs, pane output, agent lifecycle state, and native agent-session restoration; detach with `Ctrl+b q`.
+- Remove the Git command popup and its pull, push, rebase, and merge actions. Git status, worktree creation, deletion, and merged-worktree cleanup remain available.
+- Remove the `mobile_detach_key` setting. Mobile mode uses Herdr's standard detach gesture.
+
+### Features
+
+- Project Herdr's `working`, `blocked`, `done`, `idle`, and `unknown` states directly instead of using process and pane-motion heuristics.
+- Include Herdr v0.8.2 at `vendor/herdr` as an Apache-2.0 Git subtree and package it as a separate companion executable beside `wsx`.
+- Resolve Herdr from `WSX_HERDR_BIN`, an adjacent bundled executable, then `PATH`; start its headless server on demand with locked, bounded readiness checks.
+- Include asched v0.2.0 at `vendor/asched` as a Git subtree and use its local `asched-core` package from both wsx crates.
+
+### Bug Fixes
+
+- Start the separately installed asched daemon on demand through `RoutineClient::request_with_start`, fixing routine commands and TUI refresh when the daemon is not already running.
+- Close associated Herdr workspaces before deleting or cleaning Git worktrees so persistent processes cannot retain a removed working directory.
+- Serialize Herdr workspace mutations across wsx processes, keep TUI session close asynchronous, reject duplicate owned workspaces, preserve mutation tombstones across refreshes, and bound/validate protocol output.
+- Refuse to replace malformed, inaccessible, or protocol-incompatible running Herdr servers during automatic startup.
+
 ## [0.17.0] - 2026-08-15
 
 ### Breaking Changes

@@ -54,6 +54,7 @@ fn translate_mouse(mouse: MouseEvent) -> Action {
     }
 }
 
+// ^ [[Keybindings]] Scope-specific meaning stays in dispatch, not translation.
 fn translate_key(key: KeyEvent) -> Action {
     match (key.modifiers, key.code) {
         (KeyModifiers::NONE, KeyCode::Char('q')) => Action::Quit,
@@ -106,7 +107,6 @@ fn translate_key(key: KeyEvent) -> Action {
             Action::SendCtrlC
         }
         (KeyModifiers::NONE, KeyCode::Char('/')) => Action::SearchStart,
-        (KeyModifiers::NONE, KeyCode::Char('g')) => Action::GitPopup,
         (KeyModifiers::SHIFT, KeyCode::Char('{')) | (KeyModifiers::NONE, KeyCode::Char('{')) => {
             Action::TabPrev
         }

@@ -2,17 +2,16 @@
 
 [ENG](README.md) | **한국어**
 
-git worktree와 tmux 세션을 위한 TUI 워크스페이스 관리자.
+Git worktree와 영속적인 Herdr 세션을 위한 TUI 워크스페이스 관리자.
 
 <!-- screenshot -->
 ![Screen Recording 2026-02-27 at 9 00 58 AM_1](https://github.com/user-attachments/assets/325dfaca-5f18-458b-944f-ce143e32cd51)
 
 ## 개요
 
-프로젝트 → 워크트리 → tmux 세션을 사이드바에서 실시간으로 확인합니다.
-각 세션의 상태가 실시간으로 표시되어, 들어가지 않아도 어디에 주의가 필요한지 알 수 있습니다.
-`n`을 누르면 주의가 필요한 세션을 순회합니다.
-내부적으로 tmux를 사용하며 세션을 나가는 detach 단축키는 `ctrl+a - d` 로 커스텀됩니다.
+프로젝트 → 워크트리 → Herdr pane을 사이드바에서 실시간으로 확인합니다.
+Herdr가 agent lifecycle 상태와 지원되는 agent 대화 복원을 담당합니다.
+`n`을 누르면 주의가 필요한 세션을 순회합니다. 세션에서 `Ctrl+b q`로 wsx에 복귀합니다.
 
 자세한 내용은 아래를 참고합니다.
 
@@ -43,7 +42,7 @@ flowchart LR
 | **세션** 워크트리 선택 후 `s`. 용도별 이름 `shell`, `claude`, `build`을 지정할 수 있습니다. `d`로 삭제, `r`로 이름 변경이 가능합니다. | <img width="270" height="68" alt="image" src="https://github.com/user-attachments/assets/41569337-057f-44b8-bd39-8f1d2ffa6a1f" /> |
 | **순회** `n` / `N`으로 응답이 필요한 `●` 세션을 순회합니다. 순회하고 싶지 않은 세션은 `x`로 해제하거나, 음소거 `⊘`시킬 수 있습니다. `a`로 뭔가 진행중인 `◉` 세션만도 순회가 가능합니다. | ![Screen Recording 2026-02-27 at 9 35 16 AM](https://github.com/user-attachments/assets/46c6b7be-34b2-4f73-b959-6205d81d1a66) |
 | **원격 제어** `S`로 세션에 진입하지 않고도 명령어를 보낼 수 있습니다. `C`로 Ctrl+C 전송. 돌고있는 프로세스를 빠르게 중단할때 유용합니다. | <img width="464" height="57" alt="image" src="https://github.com/user-attachments/assets/6d466d85-4d92-44c7-abe8-93ec4337f480" /> |
-| **복귀** 세션 안에서 `Ctrl+a d`로 wsx로 돌아갈 수 있습니다 | - |
+| **복귀** 세션 안에서 `Ctrl+b q`로 wsx로 돌아갈 수 있습니다 | - |
 
 ## 설치
 
@@ -53,15 +52,21 @@ brew tap vlwkaos/tap
 brew install wsx
 ```
 
+Homebrew 패키지는 `wsx`와 Herdr 0.8.2 companion binary를 함께 설치합니다.
+
 **macOS / Linux (cargo)**
 ```sh
 cargo install wsx
+cargo +1.96.1 install herdr --version 0.8.2 --locked
 ```
 
 **소스에서 빌드**
 ```sh
-cargo install --path .
+cargo install --path crates/wsx
+cargo +1.96.1 install --path vendor/herdr --locked
 ```
+
+Herdr 소스 빌드에는 Zig 0.15가 필요합니다. 사용하는 agent integration도 설치해야 합니다. wsx는 Herdr protocol 20을 사용하고 headless server를 필요할 때 시작합니다.
 
 ## 사용법
 
@@ -96,24 +101,14 @@ wsx
 | `m` | 프로젝트 또는 세션 순서 변경 |
 | `r` | 별칭 설정 |
 | `d` | 삭제, 실행 중인 루틴은 먼저 취소 |
-| `g` | Git 팝업 (pull / push / rebase / merge) |
 | `c` | 병합된 워크트리 정리 |
 | `e` | 선택한 루틴 수정, 그 외에는 `.gtrignore` 보기 |
 | `S` | 세션에 명령 전송 |
 | `C` | 세션에 Ctrl+C 전송 |
 
-### tmux 설정
+### Herdr runtime
 
-별도의 tmux 설정 파일이 없는 경우:
-- prefix를 `ctrl+a`로 설정합니다.
-- 접속 시 `status-right`를 `project/worktree`로 설정합니다. `~/.tmux.conf` 커스텀:
-- 마우스 설정 활성화
-
-```
-set -g status-right "#{@wsx_project}/#{@wsx_alias}"
-```
-
-Agent 상태 감지는 provider 중립적이며 별도 플러그인이 필요하지 않습니다. wsx는 먼저 foreground process를 분류하고, agent가 터미널 활동을 낼 때 제한된 pane tail을 비교합니다. 화면 변화가 계속되면 active를 유지하고 동일한 redraw가 반복되면 3초 후 attention으로 전환합니다. Runtime과 watch process는 실행 중 active를 유지하며 capture 실패 시 tmux 활동으로 대체합니다.
+Herdr가 PTY, pane 출력, agent lifecycle 상태, 영속성, 지원 agent의 native session 복원을 소유합니다. wsx는 terminal activity를 추측하지 않고 Herdr의 `working`, `blocked`, `done`, `idle`, `unknown` 상태를 직접 표시합니다. `herdr integration install <agent>`로 integration을 설치합니다. Herdr local socket은 동일 사용자 신뢰 경계이므로 신뢰할 수 없는 local process에 노출하지 마세요.
 
 ## 모바일 / SSH
 
@@ -121,18 +116,13 @@ Agent 상태 감지는 provider 중립적이며 별도 플러그인이 필요하
 wsx --mobile
 ```
 
-미리보기 패널을 숨기고 간결한 키 힌트를 표시합니다 — 세로 모드 SSH 환경(폰, 좁은 터미널)에 적합합니다. `mobile_detach_key` 설정으로 no-prefix tmux detach 단축키를 지정할 수 있습니다:
-
-```toml
-# ~/.config/wsx/config.toml
-mobile_detach_key = "C-q"
-```
+미리보기 패널을 숨기고 간결한 키 힌트를 표시합니다. Herdr의 `Ctrl+b q` detach 단축키는 동일하게 동작합니다.
 
 ## CLI
 
 ### 머신 로컬 루틴
 
-`wsx routine`은 [asched](https://github.com/vlwkaos/asched)의 프로젝트별 클라이언트입니다. 각 wsx 프로젝트 노드는 동일한 canonical 프로젝트 경로로 등록된 루틴만 표시합니다. asched는 별도로 설치하고 실행하며 wsx는 스케줄러를 내장하거나 시작하지 않습니다.
+`wsx routine`은 [asched](https://github.com/vlwkaos/asched)의 프로젝트별 클라이언트입니다. `asched` 실행 파일을 설치하면 wsx가 `asched-core`의 지원 API를 통해 단일 machine-local daemon을 필요할 때 시작합니다.
 
 ```sh
 wsx routine add nightly --cron "0 2 * * *" --arg codex --arg exec --arg=--json --arg '{prompt}' --prompt "유지보수를 실행해 줘" -p wsx
@@ -149,7 +139,7 @@ wsx와 asched는 동일한 플랫폼 기본 상태 디렉터리를 사용하며 
 
 TUI에서는 프로젝트나 그 하위 항목에서 `u`를 눌러 첫 루틴을 생성한 뒤, 프로젝트 수준의 `sched` 섹션에서 이후 루틴을 관리합니다. `F1`/`F2`로 편집 가능한 Codex/Claude 초기값을 적용하고, `e`로 수정하며 확인된 `d`로 삭제합니다. 실행 중 삭제는 먼저 취소합니다. command argv는 shell 문자열이 아닌 JSON 배열로 편집합니다. 미리보기에는 설정, 다음/최근 실행, 로그 경로, 현재 허용된 동작, 최종 agent output이 표시되며 모바일에서는 Enter로 전체 화면 상세를 엽니다.
 
-루틴 저장, 최근 실행과 로그, cron/event 의미, 실행 정리, 데몬 lifecycle은 asched가 소유합니다. TUI의 데몬 I/O는 background worker에서 실행되어 느리거나 unavailable인 데몬이 탐색을 막지 않습니다. 미리보기는 `asched_core::routine::ipc::RoutineView`에서 enabled/running capability, 다음 cron 실행, 최신 결과, 최근 이력을 직접 표시합니다.
+루틴 저장, 최근 실행과 로그, cron/event 의미, 실행 정리, 데몬 lifecycle은 asched가 소유합니다. 정확한 asched v0.2.0 소스는 Git subtree인 `vendor/asched`에 포함되며 두 wsx crate는 로컬 `asched-core` 경로를 사용합니다. 업데이트는 `git subtree pull --prefix vendor/asched https://github.com/vlwkaos/asched.git <tag> --squash`를 사용합니다.
 
 ```sh
 # 워크트리
@@ -158,20 +148,20 @@ wsx worktree delete <branch> [-p <project>]
 wsx worktree list  [-p <project>] [--json]
 
 # 세션
-wsx session send-keys <session> <keys>
-wsx session peek <session> [-n <lines>] [-o <offset>] [-a]
-wsx session rename <old> <new>
+wsx session send-keys <pane-id> <keys>
+wsx session peek <pane-id> [-n <lines>] [-o <offset>] [-a]
+wsx session rename <pane-id> <label>
 wsx session list   [-p <project>] [--json]
 
 # 상태
 wsx status [--json]
 ```
 
-`peek`은 pane 출력을 캡처합니다. `-n`은 스크롤백 줄 수(기본값: 현재 화면), `-o`는 아래에서 건너뛸 줄 수, `-a`는 ANSI/장식 문자 제거(에이전트/LLM 입력용).
+`peek`은 Herdr pane 출력을 읽습니다. `-n` 기본값은 200줄이며, `-o`는 아래에서 건너뛸 줄 수, `-a`는 ANSI/장식 문자 제거 옵션입니다.
 
 ## 설정
 
-전역 설정: `~/.config/wsx/config.toml`. 프로젝트별 설정은 `e` 키로 확인.
+전역 설정: `~/.config/wsx/config.toml`. 프로젝트별 설정은 `e` 키로 확인. wsx는 nonempty `WSX_HERDR_BIN`, wsx 옆의 bundled `herdr`, `PATH` 순서로 Herdr를 찾습니다. `herdr status server --json`이 명시적으로 `not_running`일 때만 headless server를 시작하며 호환되지 않는 실행 중 server는 교체하지 않습니다. `ASCHED_BIN`은 routine daemon 실행 파일을 재정의합니다. 두 override와 `ASCHED_ROOT`, 동일 사용자 socket 및 state directory는 신뢰할 수 있는 local control로 취급하세요.
 
 ### .gtrconfig 명세
 

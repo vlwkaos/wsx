@@ -30,7 +30,6 @@ pub enum Action {
     JumpProjectDown,
     JumpProjectUp,
     SearchStart,
-    GitPopup,
     TabPrev,
     TabNext,
     TabManager,

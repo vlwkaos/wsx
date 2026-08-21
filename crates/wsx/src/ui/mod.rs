@@ -3,7 +3,6 @@
 pub mod ansi;
 pub mod config_modal;
 pub mod confirm;
-pub mod git_popup;
 pub mod input;
 pub mod picker;
 pub mod preview;
@@ -16,7 +15,6 @@ use crate::session_state::{self, AppSessionState};
 use crate::ui::{
     config_modal::render_config_modal,
     confirm::render_confirm,
-    git_popup::render_git_popup,
     input::render_input,
     preview::{
         render_empty_preview, render_project_preview, render_session_preview,
@@ -30,7 +28,6 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 use wsx_core::model::workspace::Selection;
-use wsx_core::tmux::capture::WSX_SENTINEL;
 
 /// Center a popup of given size within `area`.
 pub fn popup_center(area: Rect, w: u16, h: u16) -> Rect {
@@ -46,6 +43,7 @@ pub fn popup_upper(area: Rect, w: u16, h: u16) -> Rect {
     Rect::new(x, y, w, h)
 }
 
+// ^ [[wsx UI Patterns]] Responsive layout, capability hints, and direct state projection.
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let is_mobile = app.is_mobile;
@@ -110,7 +108,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     let sess = wt.sessions.get(si)?;
                     let title =
                         format!("{} › {} › {}", p.name, wt.display_name(), sess.display_name);
-                    Some((&sess.name, title))
+                    Some((&sess.pane_id, title))
                 });
                 if let Some((sess_name, title)) = found {
                     let parsed = app.parsed_preview.get(sess_name);
@@ -204,17 +202,6 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
             }
         }
         Mode::Help => render_help(frame, area),
-        Mode::GitPopup {
-            project_idx: pi, ..
-        } => {
-            let def = app
-                .workspace
-                .projects
-                .get(*pi)
-                .map(|p| p.default_branch.clone())
-                .unwrap_or_else(|| "main".to_string());
-            render_git_popup(frame, area, &def);
-        }
         Mode::TabManager { selected } => {
             let sel = *selected;
             render_tab_manager(frame, area, sel, &app.config, app.active_tab.as_deref());
@@ -261,7 +248,6 @@ fn get_mode_label(app: &App) -> &'static str {
         Mode::Move { .. } | Mode::MoveSession { .. } => "MOVE",
         Mode::Help => "HELP",
         Mode::Search { .. } => "SEARCH",
-        Mode::GitPopup { .. } => "GIT",
         Mode::TabManager { .. } => "TABS",
         Mode::RoutineEditor { .. } => "ROUTINE",
         Mode::RoutineDetail { .. } => "DETAIL",
@@ -319,7 +305,7 @@ fn build_hints(app: &App, mobile: bool) -> String {
                     .map(|s| session_state::derive(s).app_state() == AppSessionState::Active)
                     .unwrap_or(false);
                 let dismiss = if active { "" } else { "(x)mute  ·  " };
-                format!("(m)ove  (r)ename  (d)kill  ·  {}(S)send cmd  (C)ctrl-c  ·  (C-a d)detach  ·  (s)ession  ·  (w)orktree{}  (c)lean  ·  {}", dismiss, tabs, global)
+                format!("(m)ove  (r)ename  (d)kill  ·  {}(S)send cmd  (C)ctrl-c  ·  (C-b q)detach  ·  (s)ession  ·  (w)orktree{}  (c)lean  ·  {}", dismiss, tabs, global)
             }
             Selection::None => "(p) add project".to_string(),
             Selection::RoutinesHeader(_) => {
@@ -343,9 +329,6 @@ fn build_hints(app: &App, mobile: bool) -> String {
         Mode::MoveSession { .. } => "(j/k) reorder  Esc: done".to_string(),
         Mode::Help => "Esc: close".to_string(),
         Mode::Search { .. } => String::new(),
-        Mode::GitPopup { .. } => {
-            "(p)ull  (P)ush  (r)pull-rebase  (m)erge-from  (M)erge-into  Esc: close".to_string()
-        }
         Mode::TabManager { .. } => {
             "(a)dd  (r)ename  (d)elete  (J/K)reorder  Enter: switch  Esc: close".to_string()
         }
@@ -404,7 +387,6 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
                 "  Enter: next  Esc: exit",
                 Style::default().fg(Color::DarkGray),
             ),
-            Span::styled(WSX_SENTINEL, Style::default().fg(Color::DarkGray)),
         ];
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
@@ -431,20 +413,16 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
     let hint_lines = wrap_hints(hints, available);
     let hint_style = Style::default().fg(Color::Gray);
 
-    // WSX_SENTINEL (⅋ U+214B) appended after version badge — 1 display column, 3 UTF-8 bytes.
-    // Pad subtracts 1 extra to keep layout correct. Outer wsx detects it in the last 2 captured
-    // rows and suppresses the preview, breaking the nested-render loop.
     if hint_lines.len() <= 1 || area.height < 2 {
-        let text = hint_lines.first().map(|s| s.as_str()).unwrap_or(&hints);
+        let text = hint_lines.first().map(|s| s.as_str()).unwrap_or(hints);
         let left = format!(" {}", text);
         let left_len = badge_width + left.len();
-        let pad = (area.width as usize).saturating_sub(left_len + right_text.len() + 1);
+        let pad = (area.width as usize).saturating_sub(left_len + right_text.len());
         let spans = vec![
             Span::styled(mode_text, badge_style),
             Span::styled(left, hint_style),
             Span::raw(" ".repeat(pad)),
             Span::styled(right_text, right_style),
-            Span::styled(WSX_SENTINEL, right_style),
         ];
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     } else {
@@ -458,13 +436,12 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
             let left = format!(" {}", hl);
             if i + 1 == last {
                 let left_len = badge_width + left.len();
-                let pad = (area.width as usize).saturating_sub(left_len + right_text.len() + 1);
+                let pad = (area.width as usize).saturating_sub(left_len + right_text.len());
                 text_lines.push(Line::from(vec![
                     Span::raw(indent.clone()),
                     Span::styled(left, hint_style),
                     Span::raw(" ".repeat(pad)),
                     Span::styled(right_text.clone(), right_style),
-                    Span::styled(WSX_SENTINEL, right_style),
                 ]));
             } else {
                 text_lines.push(Line::from(vec![
@@ -512,11 +489,11 @@ fn render_help(frame: &mut Frame, area: Rect) {
         "  C             Send Ctrl+C to session",
         "  r             Rename",
         "  d             Kill session",
-        "  x             Toggle ⊘ mute (silences all activity; auto-clears on new output)",
+        "  x             Toggle ⊘ mute (local to wsx; interaction clears it)",
         "",
-        " Inside Session (tmux)",
-        "  Ctrl+a d      Detach (return to wsx)",
-        "  Ctrl+a ?      tmux help",
+        " Inside Session (Herdr)",
+        "  Ctrl+b q      Detach (return to wsx)",
+        "  See           https://herdr.dev/docs/socket-api/",
         "",
         " Tabs (optional)",
         "  T             Open tab manager (add/rename/delete/reorder)",

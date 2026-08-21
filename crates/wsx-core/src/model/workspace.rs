@@ -1,21 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-
-/// Foreground process class for a tmux session, classified by `tmux::monitor`.
-/// "Running" (Active state) is decided downstream in `session_state` — this
-/// enum stays a raw input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
-pub enum ForegroundKind {
-    #[default]
-    Unknown,
-    Shell,
-    PassiveViewer,
-    Runtime,
-    Agent,
-    InteractiveApp,
-}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkspaceState {
@@ -51,22 +37,20 @@ pub struct ProjectConfig {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionInfo {
-    pub name: String,         // full tmux session name
-    pub display_name: String, // shown in UI (strips wt_slug prefix)
-    pub has_activity: bool,   // tmux bell/alert flag
+    /// Stable Herdr pane ID.
+    pub pane_id: String,
+    /// Herdr terminal ID used as the foreground attach target.
+    pub terminal_id: String,
+    pub workspace_id: String,
+    pub tab_id: String,
+    /// Pane label shown in the UI.
+    pub display_name: String,
+    pub agent_status: crate::herdr::AgentStatus,
+    pub revision: u64,
     #[serde(skip)]
     pub pane_capture: Option<String>,
     #[serde(skip)]
-    pub last_activity: Option<std::time::Instant>,
-    #[serde(skip)]
-    pub agent_tail: Option<String>, // normalized bounded tail used for semantic motion
-    #[serde(skip)]
-    pub tmux_activity_ts: u64, // raw tmux window activity timestamp for capture gating
-    pub foreground: ForegroundKind, // raw process classification — see tmux::monitor
-    #[serde(skip)]
-    pub is_running_wsx: bool, // foreground process is wsx — suppresses capture preview
-    #[serde(skip)]
-    pub muted: bool, // user silenced — no activity updates, shown as ⊘
+    pub muted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -96,19 +80,6 @@ pub struct WorktreeInfo {
     pub git_info_fetched_at: Option<std::time::Instant>,
 }
 
-impl Project {
-    /// Maps branch name -> list of tmux session names for all worktrees.
-    pub fn branch_session_names(&self) -> HashMap<String, Vec<String>> {
-        self.worktrees
-            .iter()
-            .map(|wt| {
-                let sessions = wt.sessions.iter().map(|s| s.name.clone()).collect();
-                (wt.branch.clone(), sessions)
-            })
-            .collect()
-    }
-}
-
 impl WorktreeInfo {
     pub fn display_name(&self) -> &str {
         self.alias.as_deref().unwrap_or(&self.name)
@@ -117,18 +88,10 @@ impl WorktreeInfo {
     pub fn session_slug(&self, project_name: &str) -> String {
         canonical_session_slug(project_name, &self.path)
     }
-
-    pub fn session_names(&self) -> Vec<String> {
-        self.sessions.iter().map(|s| s.name.clone()).collect()
-    }
 }
 
 fn sanitize_slug(raw: &str) -> String {
     raw.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
-}
-
-fn legacy_branch_slug(branch: &str) -> String {
-    sanitize_slug(&branch.replace('/', "-"))
 }
 
 pub fn canonical_session_slug(project_name: &str, worktree_path: &Path) -> String {
@@ -141,108 +104,18 @@ pub fn canonical_session_slug(project_name: &str, worktree_path: &Path) -> Strin
     sanitize_slug(short_name)
 }
 
-pub fn session_display_name_from_tmux(
-    tmux_name: &str,
-    project_name: &str,
-    worktree_path: &Path,
-    branch: &str,
-    alias: Option<&str>,
-) -> String {
-    let canonical = format!(
-        "{}-{}-",
-        project_name,
-        canonical_session_slug(project_name, worktree_path)
-    );
-    if let Some(rest) = tmux_name.strip_prefix(&canonical) {
-        return rest.to_string();
-    }
-
-    // Backward compatibility: older builds prefixed by branch/alias slug.
-    let legacy_branch = format!("{}-{}-", project_name, legacy_branch_slug(branch));
-    if let Some(rest) = tmux_name.strip_prefix(&legacy_branch) {
-        return rest.to_string();
-    }
-
-    if let Some(alias) = alias {
-        let legacy_alias = format!("{}-{}-", project_name, sanitize_slug(alias));
-        if let Some(rest) = tmux_name.strip_prefix(&legacy_alias) {
-            return rest.to_string();
-        }
-    }
-
-    // Last-resort compatibility for historical `{project}-{any_slug}-{display}` names.
-    if let Some(rest) = tmux_name.strip_prefix(&format!("{}-", project_name)) {
-        if let Some((_, display)) = rest.split_once('-') {
-            return display.to_string();
-        }
-    }
-
-    tmux_name.to_string()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{canonical_session_slug, session_display_name_from_tmux};
+    use super::canonical_session_slug;
     use std::path::Path;
 
     #[test]
-    fn canonical_slug_uses_worktree_dir_for_main() {
-        let slug = canonical_session_slug("wsx", Path::new("/tmp/wsx"));
-        assert_eq!(slug, "wsx");
-    }
-
-    #[test]
-    fn canonical_slug_strips_project_prefix_for_worktrees() {
-        let slug = canonical_session_slug("wsx", Path::new("/tmp/wsx-feature-auth"));
-        assert_eq!(slug, "feature-auth");
-    }
-
-    #[test]
-    fn display_name_parses_canonical_prefix() {
-        let display = session_display_name_from_tmux(
-            "wsx-wsx-agent",
-            "wsx",
-            Path::new("/tmp/wsx"),
-            "main",
-            None,
+    fn canonical_slug_uses_human_worktree_identity() {
+        assert_eq!(canonical_session_slug("wsx", Path::new("/tmp/wsx")), "wsx");
+        assert_eq!(
+            canonical_session_slug("wsx", Path::new("/tmp/wsx-feature-auth")),
+            "feature-auth"
         );
-        assert_eq!(display, "agent");
-    }
-
-    #[test]
-    fn display_name_parses_legacy_branch_prefix() {
-        let display = session_display_name_from_tmux(
-            "wsx-main-agent",
-            "wsx",
-            Path::new("/tmp/wsx"),
-            "main",
-            None,
-        );
-        assert_eq!(display, "agent");
-    }
-
-    #[test]
-    fn display_name_parses_legacy_alias_prefix() {
-        let display = session_display_name_from_tmux(
-            "wsx-auth-agent",
-            "wsx",
-            Path::new("/tmp/wsx-feature-auth"),
-            "feature/auth",
-            Some("auth"),
-        );
-        assert_eq!(display, "agent");
-    }
-
-    #[test]
-    fn display_name_falls_back_to_project_slug_pattern() {
-        let display = session_display_name_from_tmux(
-            "wsx-oldslug-agent",
-            "wsx",
-            Path::new("/tmp/wsx-feature-auth"),
-            "feature/auth",
-            None,
-        );
-        assert_eq!(display, "agent");
     }
 }
 
