@@ -55,6 +55,18 @@ cargo +1.96.1 install --path vendor/herdr --locked
 
 Source builds of Herdr require Zig 0.15. Install Herdr integrations for the agents you use. wsx requires Herdr protocol 20 and starts the headless server on demand.
 
+### Development commands
+
+```sh
+cargo xtask run                 # build and run wsx
+cargo xtask run -- --mobile     # forward arguments to wsx
+cargo xtask build               # create target/wsx-dev/{wsx,herdr}
+```
+
+`cargo xtask run` prefers a compatible `WSX_HERDR_BIN`, adjacent binary, or `PATH` installation. If none exists, it downloads the official Herdr v0.8.2 host asset, verifies the size and SHA-256 published by GitHub's immutable release metadata plus the reported version, then caches it under `target/wsx-tools/herdr/v0.8.2`. `cargo xtask build` always uses that verified pinned asset and creates a host-native adjacent bundle with notices. Neither command installs Herdr globally. Acquisition uses the system `/usr/bin/curl` and `/usr/bin/shasum` on macOS or `/usr/bin/sha256sum` on Linux. macOS and Linux on arm64 or x86_64 are supported; other hosts must provide `WSX_HERDR_BIN` for `run`.
+
+Ordinary `cargo build`, `cargo test`, and `cargo run -p wsx` still build wsx only. Use them when a compatible Herdr is already installed or explicitly configured. Release packaging remains source-based and uses `scripts/package-companion.sh`.
+
 ## Guide
 
 | Feature | Screenshot |

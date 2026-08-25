@@ -462,14 +462,16 @@ mod tests {
                         .unwrap();
                     let request: Value = serde_json::from_str(&request).unwrap();
                     let id = request["id"].as_str().unwrap();
-                    writeln!(
+                    if writeln!(
                         stream,
                         "{}",
                         json!({"id": id, "result": {"type": "subscription_started"}})
                     )
-                    .unwrap();
-                    let mut rest = Vec::new();
-                    let _ = stream.read_to_end(&mut rest);
+                    .is_ok()
+                    {
+                        let mut rest = Vec::new();
+                        let _ = stream.read_to_end(&mut rest);
+                    }
                 }));
             }
             for handler in handlers {
