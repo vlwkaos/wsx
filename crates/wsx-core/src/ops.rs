@@ -63,7 +63,7 @@ struct WorktreeState {
     git_info: Option<GitInfo>,
     git_info_fetched_at: Option<std::time::Instant>,
     expanded: bool,
-    muted_panes: HashSet<String>,
+    sessions: Vec<SessionInfo>,
     last_fetched: Option<std::time::Instant>,
     fetch_failed: bool,
     fetch_fail_count: u32,
@@ -97,7 +97,8 @@ pub fn workspace_ids_for_worktree(snapshot: &herdr::Snapshot, path: &Path) -> Ve
 
 /// Rebuild worktrees and sessions from Git and one authoritative Herdr snapshot.
 pub fn refresh_workspace(workspace: &mut WorkspaceState, config: &GlobalConfig) -> Result<()> {
-    let snapshot = herdr::snapshot()?;
+    let client = herdr::Client::local()?;
+    let snapshot = herdr::snapshot_with(&client)?;
     let worktrees = workspace
         .projects
         .iter()
@@ -118,15 +119,6 @@ pub fn refresh_workspace_with_worktrees(
     snapshot: &herdr::Snapshot,
     worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
 ) -> Result<()> {
-    for entry in worktrees.iter().flat_map(|(_, entries)| entries) {
-        let workspace_ids = workspace_ids_for_worktree(snapshot, &entry.path);
-        if workspace_ids.len() > 1 {
-            bail!(
-                "multiple wsx Herdr workspaces are associated with {}",
-                entry.path.display()
-            );
-        }
-    }
     let mut worktrees_map: HashMap<PathBuf, Vec<git_worktree::WorktreeEntry>> =
         worktrees.into_iter().collect();
 
@@ -141,12 +133,7 @@ pub fn refresh_workspace_with_worktrees(
                         git_info: worktree.git_info.clone(),
                         git_info_fetched_at: worktree.git_info_fetched_at,
                         expanded: worktree.expanded,
-                        muted_panes: worktree
-                            .sessions
-                            .iter()
-                            .filter(|session| session.muted)
-                            .map(|session| session.pane_id.clone())
-                            .collect(),
+                        sessions: worktree.sessions.clone(),
                         last_fetched: worktree.last_fetched,
                         fetch_failed: worktree.fetch_failed,
                         fetch_fail_count: worktree.fetch_fail_count,
@@ -166,29 +153,13 @@ pub fn refresh_workspace_with_worktrees(
             .filter(|entry| !config.is_worktree_excluded(&entry.path))
             .map(|entry| {
                 let old = previous.get(&entry.path);
-                let workspace_ids: HashSet<String> =
-                    workspace_ids_for_worktree(snapshot, &entry.path)
-                        .into_iter()
-                        .collect();
-                let sessions = snapshot
-                    .panes
-                    .iter()
-                    .filter(|pane| workspace_ids.contains(&pane.workspace_id))
-                    .map(|pane| SessionInfo {
-                        pane_id: pane.pane_id.clone(),
-                        terminal_id: pane.terminal_id.clone(),
-                        workspace_id: pane.workspace_id.clone(),
-                        tab_id: pane.tab_id.clone(),
-                        display_name: pane.label.clone().unwrap_or_else(|| pane.pane_id.clone()),
-                        agent_status: pane.agent_status,
-                        revision: pane.revision,
-                        pane_capture: None,
-                        muted: old
-                            .map(|state| state.muted_panes.contains(&pane.pane_id))
-                            .unwrap_or(false),
-                    })
-                    .collect();
-                WorktreeInfo {
+                let sessions = sessions_for_worktree(
+                    snapshot,
+                    &entry.path,
+                    old.map(|state| state.sessions.as_slice())
+                        .unwrap_or_default(),
+                )?;
+                Ok(WorktreeInfo {
                     name: entry.name,
                     branch: entry.branch.clone(),
                     path: entry.path,
@@ -202,15 +173,69 @@ pub fn refresh_workspace_with_worktrees(
                     fetch_fail_reason: old.and_then(|state| state.fetch_fail_reason.clone()),
                     last_fetched: old.and_then(|state| state.last_fetched),
                     git_info_fetched_at: old.and_then(|state| state.git_info_fetched_at),
-                }
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
     }
     workspace.projects.retain(|project| !project.missing);
     for project in &mut workspace.projects {
         project.missing = !is_git_repo(&project.path);
     }
     Ok(())
+}
+
+/// Refresh only Herdr-owned session state; Git worktree structure stays unchanged.
+pub fn refresh_sessions_from_snapshot(
+    workspace: &mut WorkspaceState,
+    snapshot: &herdr::Snapshot,
+) -> Result<()> {
+    for worktree in workspace
+        .projects
+        .iter_mut()
+        .flat_map(|project| &mut project.worktrees)
+    {
+        worktree.sessions = sessions_for_worktree(snapshot, &worktree.path, &worktree.sessions)?;
+    }
+    Ok(())
+}
+
+fn sessions_for_worktree(
+    snapshot: &herdr::Snapshot,
+    path: &Path,
+    previous: &[SessionInfo],
+) -> Result<Vec<SessionInfo>> {
+    let workspace_ids = workspace_ids_for_worktree(snapshot, path);
+    if workspace_ids.len() > 1 {
+        bail!(
+            "multiple wsx Herdr workspaces are associated with {}",
+            path.display()
+        );
+    }
+    let workspace_ids: HashSet<String> = workspace_ids.into_iter().collect();
+    let previous: HashMap<&str, &SessionInfo> = previous
+        .iter()
+        .map(|session| (session.terminal_id.as_str(), session))
+        .collect();
+    Ok(snapshot
+        .panes
+        .iter()
+        .filter(|pane| workspace_ids.contains(&pane.workspace_id))
+        .map(|pane| {
+            let old = previous.get(pane.terminal_id.as_str()).copied();
+            SessionInfo {
+                pane_id: pane.pane_id.clone(),
+                terminal_id: pane.terminal_id.clone(),
+                agent: pane.agent.clone(),
+                workspace_id: pane.workspace_id.clone(),
+                tab_id: pane.tab_id.clone(),
+                display_name: pane.label.clone().unwrap_or_else(|| pane.pane_id.clone()),
+                agent_status: pane.agent_status,
+                revision: pane.revision,
+                pane_capture: old.and_then(|session| session.pane_capture.clone()),
+                muted: old.is_some_and(|session| session.muted),
+            }
+        })
+        .collect())
 }
 
 pub fn load_workspace(config: &GlobalConfig) -> WorkspaceState {
@@ -317,9 +342,10 @@ pub fn create_worktree(
 /// Close every associated wsx Herdr workspace before deleting the Git worktree.
 pub fn delete_worktree(repo_path: &Path, wt_path: &Path, branch: &str) -> Result<()> {
     let _mutation_lock = HerdrMutationLock::acquire()?;
-    let snapshot = herdr::snapshot()?;
+    let client = herdr::Client::local()?;
+    let snapshot = herdr::snapshot_with(&client)?;
     for workspace_id in workspace_ids_for_worktree(&snapshot, wt_path) {
-        herdr::close_workspace(&workspace_id)?;
+        herdr::close_workspace_with(&client, &workspace_id)?;
     }
     git_worktree::remove_worktree(repo_path, wt_path, branch)
 }
@@ -345,7 +371,8 @@ pub fn create_session(
 ) -> Result<(String, String)> {
     // ^ Serialize snapshot/create across wsx processes; Herdr has no atomic get-or-create command.
     let _mutation_lock = HerdrMutationLock::acquire()?;
-    let snapshot = herdr::snapshot()?;
+    let client = herdr::Client::local()?;
+    let snapshot = herdr::snapshot_with(&client)?;
     let workspace_ids = workspace_ids_for_worktree(&snapshot, worktree_path);
     if workspace_ids.len() > 1 {
         bail!(
@@ -380,27 +407,29 @@ pub fn create_session(
     }
     let (pane_id, created_workspace) = if let Some(workspace_id) = workspace_ids.first() {
         (
-            herdr::create_tab(workspace_id, worktree_path, &display_name)?.root_pane_id,
+            herdr::create_tab_with(&client, workspace_id, worktree_path, &display_name)?
+                .root_pane_id,
             None,
         )
     } else {
-        let created = herdr::create_workspace(
+        let created = herdr::create_workspace_with(
+            &client,
             worktree_path,
             &herdr_workspace_label(project_name, worktree_slug),
         )?;
         (created.root_pane_id, Some(created.workspace_id))
     };
-    let setup = herdr::rename_pane(&pane_id, &display_name).and_then(|()| {
+    let setup = herdr::rename_pane_with(&client, &pane_id, &display_name).and_then(|()| {
         if let Some(command) = command {
-            herdr::send_text(&pane_id, &command, true)?;
+            herdr::send_text_with(&client, &pane_id, &command, true)?;
         }
         Ok(())
     });
     if let Err(error) = setup {
         let cleanup = if let Some(workspace_id) = created_workspace {
-            herdr::close_workspace(&workspace_id)
+            herdr::close_workspace_with(&client, &workspace_id)
         } else {
-            herdr::close_pane(&pane_id)
+            herdr::close_pane_with(&client, &pane_id)
         };
         if let Err(cleanup_error) = cleanup {
             return Err(error).context(format!(
@@ -414,7 +443,8 @@ pub fn create_session(
 
 /// Rename only the pane label; the stable pane identity does not change.
 pub fn rename_session(pane_id: &str, new_label: &str) -> Result<()> {
-    herdr::rename_pane(pane_id, new_label)
+    let client = herdr::Client::local()?;
+    herdr::rename_pane_with(&client, pane_id, new_label)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -441,9 +471,12 @@ fn session_close_target(snapshot: &herdr::Snapshot, pane_id: &str) -> SessionClo
 
 pub fn kill_session(pane_id: &str) -> Result<()> {
     let _mutation_lock = HerdrMutationLock::acquire()?;
-    match session_close_target(&herdr::snapshot()?, pane_id) {
-        SessionCloseTarget::Pane(pane_id) => herdr::close_pane(&pane_id),
-        SessionCloseTarget::Workspace(workspace_id) => herdr::close_workspace(&workspace_id),
+    let client = herdr::Client::local()?;
+    match session_close_target(&herdr::snapshot_with(&client)?, pane_id) {
+        SessionCloseTarget::Pane(pane_id) => herdr::close_pane_with(&client, &pane_id),
+        SessionCloseTarget::Workspace(workspace_id) => {
+            herdr::close_workspace_with(&client, &workspace_id)
+        }
     }
 }
 
@@ -490,6 +523,7 @@ mod tests {
                     tab_id: "tab".into(),
                     cwd: Some("/repo".into()),
                     label: Some("agent".into()),
+                    agent: Some("codex".into()),
                     agent_status: AgentStatus::Working,
                     revision: 7,
                     tokens: MetadataTokens::new(),
@@ -501,6 +535,7 @@ mod tests {
                     tab_id: "tab-2".into(),
                     cwd: Some("/repo".into()),
                     label: None,
+                    agent: None,
                     agent_status: AgentStatus::Idle,
                     revision: 1,
                     tokens: MetadataTokens::new(),
@@ -512,6 +547,7 @@ mod tests {
                     tab_id: "tab-3".into(),
                     cwd: Some("/other".into()),
                     label: None,
+                    agent: None,
                     agent_status: AgentStatus::Idle,
                     revision: 1,
                     tokens: MetadataTokens::new(),
@@ -633,8 +669,21 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].pane_id, "pane-1");
         assert_eq!(sessions[0].terminal_id, "term-1");
+        assert_eq!(sessions[0].agent.as_deref(), Some("codex"));
         assert_eq!(sessions[0].agent_status, AgentStatus::Working);
         assert_eq!(sessions[0].revision, 7);
+
+        workspace.projects[0].worktrees[0].sessions[0].muted = true;
+        workspace.projects[0].worktrees[0].sessions[0].pane_capture = Some("last output".into());
+        let mut moved = fixture();
+        moved.panes[0].pane_id = "pane-moved".into();
+        moved.panes[0].revision = 8;
+        refresh_sessions_from_snapshot(&mut workspace, &moved).unwrap();
+        let session = &workspace.projects[0].worktrees[0].sessions[0];
+        assert_eq!(session.pane_id, "pane-moved");
+        assert_eq!(session.terminal_id, "term-1");
+        assert!(session.muted);
+        assert_eq!(session.pane_capture.as_deref(), Some("last output"));
     }
 
     fn test_root(label: &str) -> PathBuf {

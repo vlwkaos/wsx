@@ -3,9 +3,11 @@
 use crate::session_state::{self, AppSessionState};
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{List, ListItem, ListState, Paragraph},
 };
 use wsx_core::model::workspace::{FlatEntry, WorkspaceState};
+
+use super::theme;
 // ref: ratatui Block title — title() accepts &str or String
 
 fn sched_header_label(expanded: bool, count: usize) -> String {
@@ -25,7 +27,6 @@ pub fn render_tree(
     selected: usize,
     scroll_offset: usize,
     is_move_mode: bool,
-    status_message: Option<&str>,
     active_tab: Option<&str>,
     tab_names: &[String],
 ) {
@@ -43,12 +44,12 @@ pub fn render_tree(
                 let (label, style) = if p.missing {
                     (
                         format!("{} {} (missing)", icon, p.name),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(theme::TEXT_SUBTLE),
                     )
                 } else {
                     (
                         format!("{} {}{}", icon, p.name, count),
-                        Style::default().fg(Color::Cyan).bold(),
+                        Style::default().fg(theme::ACCENT).bold(),
                     )
                 };
                 ListItem::new(label).style(style)
@@ -97,7 +98,7 @@ pub fn render_tree(
 
                 // * directly after name (no space) if dirty
                 if dirty {
-                    spans.push(Span::styled("*", Style::default().fg(Color::Yellow)));
+                    spans.push(Span::styled("*", Style::default().fg(theme::WARNING)));
                 }
 
                 // remote tracking indicators
@@ -105,15 +106,15 @@ pub fn render_tree(
                     match (gi.behind, gi.ahead) {
                         (b, a) if b > 0 && a > 0 => spans.push(Span::styled(
                             format!(" ↓{}↑{}", b, a),
-                            Style::default().fg(Color::Magenta),
+                            Style::default().fg(theme::WARNING),
                         )),
                         (b, _) if b > 0 => spans.push(Span::styled(
                             format!(" ↓{}", b),
-                            Style::default().fg(Color::Red),
+                            Style::default().fg(theme::BLOCKED),
                         )),
                         (_, a) if a > 0 => spans.push(Span::styled(
                             format!(" ↑{}", a),
-                            Style::default().fg(Color::Cyan),
+                            Style::default().fg(theme::ACCENT),
                         )),
                         _ => {}
                     }
@@ -122,7 +123,7 @@ pub fn render_tree(
                     spans.push(Span::raw(sess_badge));
                 }
 
-                ListItem::new(Line::from(spans)).style(Style::default().fg(Color::White))
+                ListItem::new(Line::from(spans)).style(Style::default().fg(theme::TEXT))
             }
             FlatEntry::Session {
                 project_idx,
@@ -133,12 +134,24 @@ pub fn render_tree(
                     [*session_idx];
                 let state = session_state::derive(sess).app_state();
                 let (icon, icon_color) = session_icon(sess, state);
+                let status = match sess.agent_status {
+                    wsx_core::herdr::AgentStatus::Idle => "idle",
+                    wsx_core::herdr::AgentStatus::Working => "working",
+                    wsx_core::herdr::AgentStatus::Blocked => "blocked",
+                    wsx_core::herdr::AgentStatus::Done => "done",
+                    wsx_core::herdr::AgentStatus::Unknown => "unknown",
+                };
+                let muted = if sess.muted { " · muted" } else { "" };
                 let line = Line::from(vec![
                     Span::raw("  "),
                     Span::styled(icon, Style::default().fg(icon_color)),
                     Span::styled(
                         format!(" {}", sess.display_name),
-                        Style::default().fg(Color::Rgb(210, 200, 185)),
+                        Style::default().fg(theme::TEXT),
+                    ),
+                    Span::styled(
+                        format!(" · {status}{muted}"),
+                        Style::default().fg(icon_color),
                     ),
                 ]);
                 ListItem::new(line)
@@ -149,7 +162,7 @@ pub fn render_tree(
                     project.routines_expanded,
                     project.routines.len(),
                 ))
-                .style(Style::default().fg(Color::Magenta).bold())
+                .style(Style::default().fg(theme::ACCENT).bold())
             }
             FlatEntry::Routine {
                 project_idx,
@@ -163,9 +176,9 @@ pub fn render_tree(
                     .unwrap_or_default();
                 ListItem::new(routine_tree_label(&view.routine.name, &status)).style(
                     Style::default().fg(if view.capabilities.can_cancel {
-                        Color::Yellow
+                        theme::WORKING
                     } else {
-                        Color::LightMagenta
+                        theme::ACCENT
                     }),
                 )
             }
@@ -178,9 +191,9 @@ pub fn render_tree(
     }
 
     let highlight_bg = if is_move_mode {
-        Color::Green
+        theme::ROW_MOVE
     } else {
-        Color::Yellow
+        theme::ROW_SELECTED
     };
     let title_line: Line<'_> = {
         let mut spans: Vec<Span<'_>> = vec![Span::styled(" Workspaces ", Style::default().bold())];
@@ -202,9 +215,12 @@ pub fn render_tree(
                     name.chars().take(2).collect()
                 };
                 let style = if is_active {
-                    Style::default().fg(Color::Black).bg(Color::Yellow).bold()
-                } else {
                     Style::default()
+                        .fg(theme::BACKGROUND)
+                        .bg(theme::ACCENT)
+                        .bold()
+                } else {
+                    Style::default().fg(theme::TEXT_MUTED)
                 };
                 spans.push(Span::styled(display, style));
             }
@@ -213,43 +229,47 @@ pub fn render_tree(
         spans.push(Span::raw(if is_move_mode { " — MOVE " } else { " " }));
         Line::from(spans)
     };
+    frame
+        .buffer_mut()
+        .set_style(area, Style::default().bg(theme::PANEL));
+    frame.render_widget(
+        Paragraph::new(title_line).style(Style::default().bg(theme::PANEL)),
+        Rect::new(
+            area.x.saturating_add(1),
+            area.y,
+            area.width.saturating_sub(2),
+            1,
+        ),
+    );
+    let list_area = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(2),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title_line))
-        .highlight_style(Style::default().fg(Color::Black).bg(highlight_bg).bold())
+        .style(Style::default().fg(theme::TEXT).bg(theme::PANEL))
+        .highlight_style(Style::default().fg(theme::TEXT).bg(highlight_bg).bold())
         .highlight_symbol("");
 
-    frame.render_stateful_widget(list, area, &mut list_state);
-
-    // Overlay status message on the bottom row of the tree area (no layout shift)
-    if let Some(msg) = status_message {
-        let msg_y = area.y + area.height.saturating_sub(1);
-        let inner_w = area.width.saturating_sub(2) as usize; // inside borders
-        let truncated = if msg.len() > inner_w {
-            &msg[..inner_w]
-        } else {
-            msg
-        };
-        let msg_rect = Rect::new(area.x + 1, msg_y, area.width.saturating_sub(2), 1);
-        let para = Paragraph::new(Span::styled(
-            format!(" {truncated}"),
-            Style::default().fg(Color::Yellow).bg(Color::Reset),
-        ));
-        frame.render_widget(para, msg_rect);
-    }
+    frame.render_stateful_widget(list, list_area, &mut list_state);
 }
 
 fn session_icon(
     sess: &wsx_core::model::workspace::SessionInfo,
-    state: AppSessionState,
+    _state: AppSessionState,
 ) -> (&'static str, Color) {
+    use wsx_core::herdr::AgentStatus;
     if sess.muted {
-        ("⊘", Color::DarkGray)
-    } else if state == AppSessionState::NeedsAttention {
-        ("●", Color::Yellow)
-    } else if state == AppSessionState::Active {
-        ("◉", Color::Green)
+        ("⊘", theme::TEXT_SUBTLE)
     } else {
-        ("○", Color::Gray)
+        match sess.agent_status {
+            AgentStatus::Blocked => ("×", theme::BLOCKED),
+            AgentStatus::Done => ("✓", theme::DONE),
+            AgentStatus::Working => ("◐", theme::WORKING),
+            AgentStatus::Idle => ("○", theme::SUCCESS),
+            AgentStatus::Unknown => ("·", theme::UNKNOWN),
+        }
     }
 }
 
@@ -269,18 +289,18 @@ pub fn compute_scroll(selected: usize, visible_height: usize, current_offset: us
 #[cfg(test)]
 mod tests {
     use super::{routine_tree_label, sched_header_label, session_icon};
-    use crate::session_state::AppSessionState;
-    use ratatui::style::Color;
+    use crate::{session_state::AppSessionState, ui::theme};
     use wsx_core::{herdr::AgentStatus, model::workspace::SessionInfo};
 
-    fn session(muted: bool) -> SessionInfo {
+    fn session(muted: bool, agent_status: AgentStatus) -> SessionInfo {
         SessionInfo {
             pane_id: "pane-1".to_string(),
             terminal_id: "terminal-1".to_string(),
+            agent: Some("codex".into()),
             workspace_id: "workspace-1".to_string(),
             tab_id: "tab-1".to_string(),
             display_name: "sess".to_string(),
-            agent_status: AgentStatus::Unknown,
+            agent_status,
             revision: 1,
             pane_capture: None,
             muted,
@@ -297,42 +317,47 @@ mod tests {
         assert_eq!(routine_tree_label("nightly", ""), "  ◇ nightly");
     }
 
-    // muted overrides app_state regardless of the state passed in.
     #[test]
-    fn given_muted_session_with_needs_attention_when_icon_then_muted_glyph() {
+    fn mute_preserves_one_distinct_suppression_glyph() {
         assert_eq!(
-            session_icon(&session(true), AppSessionState::NeedsAttention),
-            ("⊘", Color::DarkGray),
-        );
-    }
-    #[test]
-    fn given_muted_session_with_active_when_icon_then_muted_glyph() {
-        assert_eq!(
-            session_icon(&session(true), AppSessionState::Active),
-            ("⊘", Color::DarkGray),
+            session_icon(
+                &session(true, AgentStatus::Blocked),
+                AppSessionState::NeedsAttention
+            ),
+            ("⊘", theme::TEXT_SUBTLE),
         );
     }
 
-    // unmuted: each AppSessionState → distinct glyph + color.
     #[test]
-    fn given_unmuted_needs_attention_when_icon_then_yellow_dot() {
-        assert_eq!(
-            session_icon(&session(false), AppSessionState::NeedsAttention),
-            ("●", Color::Yellow),
-        );
-    }
-    #[test]
-    fn given_unmuted_active_when_icon_then_green_dot() {
-        assert_eq!(
-            session_icon(&session(false), AppSessionState::Active),
-            ("◉", Color::Green),
-        );
-    }
-    #[test]
-    fn given_unmuted_idle_when_icon_then_gray_ring() {
-        assert_eq!(
-            session_icon(&session(false), AppSessionState::Idle),
-            ("○", Color::Gray),
-        );
+    fn authoritative_statuses_have_distinct_symbols_and_semantic_colors() {
+        for (status, app_state, expected) in [
+            (
+                AgentStatus::Blocked,
+                AppSessionState::NeedsAttention,
+                ("×", theme::BLOCKED),
+            ),
+            (
+                AgentStatus::Done,
+                AppSessionState::NeedsAttention,
+                ("✓", theme::DONE),
+            ),
+            (
+                AgentStatus::Working,
+                AppSessionState::Active,
+                ("◐", theme::WORKING),
+            ),
+            (
+                AgentStatus::Idle,
+                AppSessionState::Idle,
+                ("○", theme::SUCCESS),
+            ),
+            (
+                AgentStatus::Unknown,
+                AppSessionState::Idle,
+                ("·", theme::UNKNOWN),
+            ),
+        ] {
+            assert_eq!(session_icon(&session(false, status), app_state), expected);
+        }
     }
 }

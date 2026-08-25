@@ -2,6 +2,12 @@
 //!
 //! There is intentionally no tmux fallback.
 
+mod client;
+mod events;
+
+pub use client::Client;
+pub use events::{EventMonitor, EventSignal};
+
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -12,6 +18,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
@@ -30,6 +37,16 @@ const MIN_VERSION: HerdrVersion = HerdrVersion {
 
 /// Herdr metadata tokens as represented by the protocol's token object.
 pub type MetadataTokens = BTreeMap<String, String>;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagnosticReport {
+    pub binary: String,
+    pub client_version: Option<String>,
+    pub client_error: Option<String>,
+    pub server: Option<Value>,
+    pub server_error: Option<String>,
+    pub integration_notice: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct HerdrVersion {
@@ -95,6 +112,8 @@ pub struct Pane {
     pub tab_id: String,
     pub cwd: Option<PathBuf>,
     pub label: Option<String>,
+    #[serde(default)]
+    pub agent: Option<String>,
     pub agent_status: AgentStatus,
     pub revision: u64,
     #[serde(default)]
@@ -160,6 +179,90 @@ impl Drop for ServerStartLock {
     }
 }
 
+/// Inspect the installed runtime without starting or enforcing compatibility.
+pub fn diagnostics() -> DiagnosticReport {
+    let binary = herdr_binary();
+    let run = |args: &[OsString], operation: &str| {
+        let mut command = herdr_command(args);
+        crate::git::output_with_timeout_limit(
+            &mut command,
+            COMMAND_TIMEOUT,
+            MAX_COMMAND_STREAM_BYTES,
+        )
+        .with_context(|| format!("could not run herdr {operation}"))
+    };
+
+    let (client_version, client_error) = match run(&["--version".into()], "--version") {
+        Ok(output) if output.status.success() => (
+            String::from_utf8(output.stdout)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            None,
+        ),
+        Ok(output) => (None, Some(command_failure_message(&output))),
+        Err(error) => (None, Some(error.to_string())),
+    };
+    let (server, server_error) = match run(
+        &["status".into(), "server".into(), "--json".into()],
+        "status server --json",
+    ) {
+        Ok(output) if output.status.success() => match serde_json::from_slice(&output.stdout) {
+            Ok(value) => (Some(value), None),
+            Err(_) => (
+                None,
+                Some("Herdr server status returned invalid JSON".into()),
+            ),
+        },
+        Ok(output) => (None, Some(command_failure_message(&output))),
+        Err(error) => (None, Some(error.to_string())),
+    };
+    let integration_notice = run(
+        &[
+            "integration".into(),
+            "status".into(),
+            "--outdated-only".into(),
+        ],
+        "integration status --outdated-only",
+    )
+    .ok()
+    .filter(|output| output.status.success())
+    .and_then(|output| {
+        let text = String::from_utf8_lossy(if output.stderr.is_empty() {
+            &output.stdout
+        } else {
+            &output.stderr
+        })
+        .trim()
+        .to_string();
+        (!text.is_empty()).then_some(text)
+    });
+
+    DiagnosticReport {
+        binary: binary.to_string_lossy().into_owned(),
+        client_version,
+        client_error,
+        server,
+        server_error,
+        integration_notice,
+    }
+}
+
+fn command_failure_message(output: &Output) -> String {
+    String::from_utf8_lossy(if output.stderr.is_empty() {
+        &output.stdout
+    } else {
+        &output.stderr
+    })
+    .lines()
+    .find(|line| !line.trim().is_empty())
+    .unwrap_or("Herdr command failed")
+    .trim()
+    .chars()
+    .take(300)
+    .collect()
+}
+
 /// Return the installed Herdr version after enforcing the v0.8.2 minimum.
 pub fn version() -> Result<HerdrVersion> {
     let output = run_ok(&["--version".into()], "--version")?;
@@ -181,7 +284,7 @@ pub fn is_available() -> bool {
 pub fn check_available() -> Result<HerdrVersion> {
     let version = version()?;
     validate_running_server(server_status()?)?;
-    snapshot()?;
+    snapshot_with(&Client::local()?)?;
     Ok(version)
 }
 
@@ -192,50 +295,46 @@ pub fn ensure_available() -> Result<HerdrVersion> {
     if matches!(server_status()?, ServerStatus::NotRunning) {
         let _lock = ServerStartLock::acquire()?;
         if matches!(server_status()?, ServerStatus::NotRunning) {
-            let mut child = spawn_server()?;
-            let readiness = wait_for_server(&mut child);
-            reap_server_on_exit(child)?;
-            readiness?;
+            await_server_start(spawn_server()?, SERVER_READY_TIMEOUT)?;
         }
     }
     validate_running_server(server_status()?)?;
-    snapshot()?;
+    snapshot_with(&Client::local()?)?;
     Ok(version)
 }
 
-/// Request and validate the protocol-20 session snapshot.
-pub fn snapshot() -> Result<Snapshot> {
-    let result = run_json(&["api".into(), "snapshot".into()], "api snapshot")?;
-    let response = result_object(&result, "api snapshot result")?;
+/// Request a snapshot over the local protocol socket without spawning a client process.
+pub fn snapshot_with(client: &Client) -> Result<Snapshot> {
+    let result = client.request("session.snapshot", serde_json::json!({}))?;
+    let response = result_object(&result, "session.snapshot result")?;
     if required_str(response, "type", "snapshot type")? != "session_snapshot" {
-        bail!("herdr api snapshot returned an unexpected response type");
+        bail!("Herdr session.snapshot returned an unexpected response type");
     }
     parse_snapshot(
         response
             .get("snapshot")
-            .ok_or_else(|| anyhow!("herdr api snapshot result has no snapshot"))?,
+            .ok_or_else(|| anyhow!("Herdr session.snapshot result has no snapshot"))?,
     )
 }
 
-/// Create a workspace and its first tab/root pane.
-pub fn create_workspace(cwd: &Path, label: &str) -> Result<CreatedWorkspace> {
+/// Create a workspace and its first tab/root pane over the local protocol socket.
+pub fn create_workspace_with(client: &Client, cwd: &Path, label: &str) -> Result<CreatedWorkspace> {
     validate_path(cwd, "workspace cwd")?;
     validate_text(label, "workspace label")?;
-    let result = run_json(
-        &[
-            "workspace".into(),
-            "create".into(),
-            "--cwd".into(),
-            cwd.as_os_str().to_os_string(),
-            "--label".into(),
-            label.into(),
-        ],
-        "workspace create",
+    let cwd = cwd
+        .to_str()
+        .ok_or_else(|| anyhow!("workspace cwd is not valid UTF-8"))?;
+    let result = client.request(
+        "workspace.create",
+        serde_json::json!({"cwd": cwd, "focus": false, "label": label}),
     )?;
-    let result = result_object(&result, "workspace create result")?;
-    let workspace = required_object(result, "workspace", "workspace create result")?;
-    let tab = required_object(result, "tab", "workspace create result")?;
-    let root_pane = required_object(result, "root_pane", "workspace create result")?;
+    let result = result_object(&result, "workspace.create result")?;
+    if required_str(result, "type", "workspace.create result type")? != "workspace_created" {
+        bail!("Herdr workspace.create returned an unexpected response type");
+    }
+    let workspace = required_object(result, "workspace", "workspace.create result")?;
+    let tab = required_object(result, "tab", "workspace.create result")?;
+    let root_pane = required_object(result, "root_pane", "workspace.create result")?;
     Ok(CreatedWorkspace {
         workspace_id: required_id(workspace, "workspace_id", "created workspace id")?,
         tab_id: required_id(tab, "tab_id", "created tab id")?,
@@ -243,97 +342,162 @@ pub fn create_workspace(cwd: &Path, label: &str) -> Result<CreatedWorkspace> {
     })
 }
 
-/// Create a tab in an existing workspace.
-pub fn create_tab(workspace_id: &str, cwd: &Path, label: &str) -> Result<CreatedTab> {
+/// Create a tab in an existing workspace over the local protocol socket.
+pub fn create_tab_with(
+    client: &Client,
+    workspace_id: &str,
+    cwd: &Path,
+    label: &str,
+) -> Result<CreatedTab> {
     validate_id(workspace_id, "workspace")?;
     validate_path(cwd, "tab cwd")?;
     validate_text(label, "tab label")?;
-    let result = run_json(
-        &[
-            "tab".into(),
-            "create".into(),
-            "--workspace".into(),
-            workspace_id.into(),
-            "--cwd".into(),
-            cwd.as_os_str().to_os_string(),
-            "--label".into(),
-            label.into(),
-        ],
-        "tab create",
+    let cwd = cwd
+        .to_str()
+        .ok_or_else(|| anyhow!("tab cwd is not valid UTF-8"))?;
+    let result = client.request(
+        "tab.create",
+        serde_json::json!({
+            "workspace_id": workspace_id,
+            "cwd": cwd,
+            "focus": false,
+            "label": label
+        }),
     )?;
-    let result = result_object(&result, "tab create result")?;
-    let tab = required_object(result, "tab", "tab create result")?;
-    let root_pane = required_object(result, "root_pane", "tab create result")?;
+    let result = result_object(&result, "tab.create result")?;
+    if required_str(result, "type", "tab.create result type")? != "tab_created" {
+        bail!("Herdr tab.create returned an unexpected response type");
+    }
+    let tab = required_object(result, "tab", "tab.create result")?;
+    let root_pane = required_object(result, "root_pane", "tab.create result")?;
     Ok(CreatedTab {
         tab_id: required_id(tab, "tab_id", "created tab id")?,
         root_pane_id: required_id(root_pane, "pane_id", "created root pane id")?,
     })
 }
 
-pub fn rename_pane(pane_id: &str, label: &str) -> Result<()> {
+pub fn rename_pane_with(client: &Client, pane_id: &str, label: &str) -> Result<()> {
     validate_id(pane_id, "pane")?;
     validate_text(label, "pane label")?;
-    run_ok(
-        &pane_args(PaneCommand::Rename { pane_id, label }),
-        "pane rename",
-    )?;
-    Ok(())
+    require_ok_result(
+        &client.request(
+            "pane.rename",
+            serde_json::json!({"pane_id": pane_id, "label": label}),
+        )?,
+        "pane.rename",
+    )
 }
 
-pub fn close_pane(pane_id: &str) -> Result<()> {
+pub fn close_pane_with(client: &Client, pane_id: &str) -> Result<()> {
     validate_id(pane_id, "pane")?;
-    run_ok(&pane_args(PaneCommand::Close { pane_id }), "pane close")?;
-    Ok(())
+    require_ok_result(
+        &client.request("pane.close", serde_json::json!({"pane_id": pane_id}))?,
+        "pane.close",
+    )
 }
 
-pub fn close_workspace(workspace_id: &str) -> Result<()> {
+pub fn close_workspace_with(client: &Client, workspace_id: &str) -> Result<()> {
     validate_id(workspace_id, "workspace")?;
-    run_ok(
-        &["workspace".into(), "close".into(), workspace_id.into()],
-        "workspace close",
-    )?;
+    require_ok_result(
+        &client.request(
+            "workspace.close",
+            serde_json::json!({"workspace_id": workspace_id}),
+        )?,
+        "workspace.close",
+    )
+}
+
+fn require_ok_result(result: &Value, operation: &str) -> Result<()> {
+    let result = result_object(result, &format!("{operation} result"))?;
+    if required_str(result, "type", &format!("{operation} result type"))? != "ok" {
+        bail!("Herdr {operation} returned an unexpected response type");
+    }
     Ok(())
 }
 
 /// Send literal text and, when requested, a separate Enter key.
-pub fn send_text(pane_id: &str, text: &str, enter: bool) -> Result<()> {
+pub fn send_text_with(client: &Client, pane_id: &str, text: &str, enter: bool) -> Result<()> {
     validate_id(pane_id, "pane")?;
     if text.is_empty() {
         bail!("pane text must not be empty");
     }
-    run_ok(
-        &pane_args(PaneCommand::SendText { pane_id, text }),
-        "pane send-text",
+    client.request(
+        "pane.send_text",
+        serde_json::json!({"pane_id": pane_id, "text": text}),
     )?;
     if enter {
-        run_ok(
-            &pane_args(PaneCommand::SendEnter { pane_id }),
-            "pane send-keys",
+        client.request(
+            "pane.send_keys",
+            serde_json::json!({"pane_id": pane_id, "keys": ["enter"]}),
         )?;
     }
     Ok(())
 }
 
-pub fn send_ctrl_c(pane_id: &str) -> Result<()> {
+pub fn agent_prompt_with(client: &Client, pane_id: &str, text: &str) -> Result<()> {
     validate_id(pane_id, "pane")?;
-    run_ok(
-        &pane_args(PaneCommand::SendCtrlC { pane_id }),
-        "pane send-keys",
+    validate_text(text, "agent prompt")?;
+    client.request(
+        "agent.prompt",
+        serde_json::json!({"target": pane_id, "text": text}),
+    )?;
+    Ok(())
+}
+
+pub fn send_ctrl_c_with(client: &Client, pane_id: &str) -> Result<()> {
+    validate_id(pane_id, "pane")?;
+    client.request(
+        "pane.send_keys",
+        serde_json::json!({"pane_id": pane_id, "keys": ["ctrl+c"]}),
     )?;
     Ok(())
 }
 
 /// Read recent ANSI-preserved terminal output exactly as emitted by Herdr.
-pub fn read_recent_ansi(pane_id: &str, lines: u32) -> Result<String> {
+pub fn read_recent_ansi_with(client: &Client, pane_id: &str, lines: u32) -> Result<String> {
+    validate_read(pane_id, lines)?;
+    let result = client.request(
+        "pane.read",
+        serde_json::json!({
+            "pane_id": pane_id,
+            "source": "recent",
+            "lines": lines,
+            "format": "ansi",
+            "strip_ansi": false
+        }),
+    )?;
+    result
+        .pointer("/read/text")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("Herdr pane.read result has no text"))
+}
+
+pub fn agent_read_with(client: &Client, pane_id: &str, lines: u32) -> Result<String> {
+    validate_read(pane_id, lines)?;
+    let result = client.request(
+        "agent.read",
+        serde_json::json!({
+            "target": pane_id,
+            "source": "recent_unwrapped",
+            "lines": lines,
+            "format": "text",
+            "strip_ansi": true
+        }),
+    )?;
+    result
+        .pointer("/read/text")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("Herdr agent.read result has no text"))
+}
+
+fn validate_read(pane_id: &str, lines: u32) -> Result<()> {
     validate_id(pane_id, "pane")?;
     if lines == 0 || lines > MAX_READ_LINES {
         bail!("read line count must be between 1 and {MAX_READ_LINES}");
     }
-    let output = run_ok(
-        &pane_args(PaneCommand::Read { pane_id, lines }),
-        "pane read",
-    )?;
-    String::from_utf8(output.stdout).context("herdr pane read returned non-UTF-8 output")
+    Ok(())
 }
 
 /// Attach a terminal in the foreground with all three standard streams inherited.
@@ -351,6 +515,46 @@ pub fn attach_terminal_foreground(terminal_id: &str) -> Result<()> {
         bail!("herdr terminal attach failed");
     }
     Ok(())
+}
+
+fn api_socket_path() -> Result<PathBuf> {
+    static CACHE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    if let Some(path) = std::env::var_os("HERDR_SOCKET_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        if !path.is_absolute() {
+            bail!("HERDR_SOCKET_PATH must be absolute");
+        }
+        return Ok(path);
+    }
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Some(path) = cache
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+    {
+        return Ok(path);
+    }
+    let output = run_ok(
+        &["status".into(), "server".into(), "--json".into()],
+        "status server --json",
+    )?;
+    let stdout = String::from_utf8(output.stdout)
+        .context("herdr status server --json returned non-UTF-8 output")?;
+    let value: Value = serde_json::from_str(&stdout)
+        .map_err(|_| anyhow!("herdr status server --json returned invalid JSON"))?;
+    if value.get("running").and_then(Value::as_bool) != Some(true) {
+        bail!("Herdr server is not running");
+    }
+    let path = value
+        .get("socket")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| anyhow!("Herdr server status has no absolute socket path"))?;
+    *cache.lock().unwrap_or_else(|error| error.into_inner()) = Some(path.clone());
+    Ok(path)
 }
 
 fn server_status() -> Result<ServerStatus> {
@@ -446,8 +650,13 @@ fn reap_server_on_exit(mut child: Child) -> Result<()> {
     Ok(())
 }
 
-fn wait_for_server(child: &mut Child) -> Result<()> {
-    wait_for_server_with_timeout(child, SERVER_READY_TIMEOUT)
+fn await_server_start(mut child: Child, timeout: Duration) -> Result<()> {
+    if let Err(error) = wait_for_server_with_timeout(&mut child, timeout) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    reap_server_on_exit(child)
 }
 
 fn wait_for_server_with_timeout(child: &mut Child, timeout: Duration) -> Result<()> {
@@ -519,6 +728,7 @@ fn parse_snapshot(value: &Value) -> Result<Snapshot> {
     }
 
     let mut pane_ids = HashSet::new();
+    let mut terminal_ids = HashSet::new();
     for pane in &snapshot.panes {
         validate_id(&pane.pane_id, "pane id")?;
         validate_id(&pane.terminal_id, "pane terminal id")?;
@@ -526,6 +736,9 @@ fn parse_snapshot(value: &Value) -> Result<Snapshot> {
         validate_id(&pane.tab_id, "pane tab id")?;
         if !pane_ids.insert(pane.pane_id.as_str()) {
             bail!("herdr session snapshot has duplicate pane ids");
+        }
+        if !terminal_ids.insert(pane.terminal_id.as_str()) {
+            bail!("herdr session snapshot has duplicate terminal ids");
         }
         let Some(tab_workspace_id) = tab_workspaces.get(pane.tab_id.as_str()) else {
             bail!("herdr session snapshot pane references an unknown tab");
@@ -670,92 +883,6 @@ fn run_ok(args: &[OsString], operation: &str) -> Result<Output> {
 }
 
 /// Parse the protocol command envelope and return its exact `result` member.
-fn run_json(args: &[OsString], operation: &str) -> Result<Value> {
-    let output = run_ok(args, operation)?;
-    let stdout = String::from_utf8(output.stdout)
-        .with_context(|| format!("herdr {operation} returned non-UTF-8 output"))?;
-    let envelope: Value = serde_json::from_str(&stdout)
-        .map_err(|_| anyhow!("herdr {operation} returned invalid JSON"))?;
-    result_from_envelope(&envelope, operation)
-}
-
-fn result_from_envelope(envelope: &Value, operation: &str) -> Result<Value> {
-    let object = result_object(envelope, "response envelope")?;
-    let response_id = object
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("herdr {operation} response has no id"))?;
-    validate_id(response_id, "Herdr response id")?;
-    if let Some(error) = object.get("error") {
-        let message = error
-            .as_object()
-            .and_then(|error| error.get("message"))
-            .and_then(Value::as_str)
-            .unwrap_or("unknown error");
-        validate_label(message, "Herdr error message")?;
-        bail!("herdr reported an error: {message}");
-    }
-    object
-        .get("result")
-        .cloned()
-        .ok_or_else(|| anyhow!("herdr {operation} response has no result"))
-}
-
-enum PaneCommand<'a> {
-    Rename { pane_id: &'a str, label: &'a str },
-    Close { pane_id: &'a str },
-    SendText { pane_id: &'a str, text: &'a str },
-    SendEnter { pane_id: &'a str },
-    SendCtrlC { pane_id: &'a str },
-    Read { pane_id: &'a str, lines: u32 },
-}
-
-fn pane_args(action: PaneCommand<'_>) -> Vec<OsString> {
-    // ^ Herdr public CLI docs: https://docs.rs/herdr/latest/herdr/
-    // ^ Key names and read flags below intentionally match the documented CLI.
-    match action {
-        PaneCommand::Rename { pane_id, label } => {
-            vec!["pane".into(), "rename".into(), pane_id.into(), label.into()]
-        }
-        PaneCommand::Close { pane_id } => vec!["pane".into(), "close".into(), pane_id.into()],
-        PaneCommand::SendText { pane_id, text } => {
-            vec![
-                "pane".into(),
-                "send-text".into(),
-                pane_id.into(),
-                text.into(),
-            ]
-        }
-        PaneCommand::SendEnter { pane_id } => {
-            vec![
-                "pane".into(),
-                "send-keys".into(),
-                pane_id.into(),
-                "enter".into(),
-            ]
-        }
-        PaneCommand::SendCtrlC { pane_id } => {
-            vec![
-                "pane".into(),
-                "send-keys".into(),
-                pane_id.into(),
-                "ctrl+c".into(),
-            ]
-        }
-        PaneCommand::Read { pane_id, lines } => vec![
-            "pane".into(),
-            "read".into(),
-            pane_id.into(),
-            "--source".into(),
-            "recent".into(),
-            "--lines".into(),
-            lines.to_string().into(),
-            "--format".into(),
-            "ansi".into(),
-        ],
-    }
-}
-
 fn parse_version(text: &str) -> Option<HerdrVersion> {
     for word in text.split(|c: char| c.is_whitespace() || c == ',') {
         let mut parts = word.trim_start_matches('v').split('.');
@@ -784,13 +911,9 @@ fn parse_version(text: &str) -> Option<HerdrVersion> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::{BufRead, Write};
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
+    use std::os::unix::net::UnixListener;
 
     #[test]
     fn binary_resolution_prefers_override_then_adjacent_then_path() {
@@ -850,81 +973,49 @@ mod tests {
     }
 
     #[test]
-    fn server_readiness_wait_is_bounded() {
-        let mut child = Command::new("sh")
+    fn failed_server_readiness_is_bounded_killed_and_reaped() {
+        let child = Command::new("sh")
             .args(["-c", "sleep 10"])
             .spawn()
             .expect("spawn bounded readiness fixture");
-        let error = wait_for_server_with_timeout(&mut child, Duration::ZERO).unwrap_err();
+        let pid = child.id() as libc::pid_t;
+        let error = await_server_start(child, Duration::ZERO).unwrap_err();
         assert!(error.to_string().contains("timed out"));
-        child.kill().expect("kill bounded readiness fixture");
-        child.wait().expect("reap bounded readiness fixture");
-    }
-
-    fn fake_herdr() -> PathBuf {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/wsx-herdr-fake.sh");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, r#"#!/bin/sh
-printf '%s\n' "$@" >> "$WSX_HERDR_TEST_LOG"
-case "$WSX_HERDR_TEST_MODE" in
-  snapshot) echo '{"id":"cli:api:snapshot","result":{"type":"session_snapshot","snapshot":{"version":"0.8.2","protocol":20,"workspaces":[{"workspace_id":"ws-1","label":"main","tokens":{"branch":"main"}}],"tabs":[{"tab_id":"tab-1","workspace_id":"ws-1","label":"agent"}],"panes":[{"pane_id":"pane-1","terminal_id":"term-1","workspace_id":"ws-1","tab_id":"tab-1","cwd":"/work","label":null,"agent_status":"working","revision":4,"tokens":{"agent":"one"}}],"layouts":[],"agents":[]}}}' ;;
-  malformed) echo '{not json' ;;
-  failure) echo 'fake failure' >&2; exit 7 ;;
-  create) echo '{"id":"cli:workspace:create","result":{"workspace":{"workspace_id":"ws-1"},"tab":{"tab_id":"tab-1"},"root_pane":{"pane_id":"pane-1"}}}' ;;
-  raw_read) echo '{"status":"working"}' ;;
-esac
-"#).unwrap();
-        let mut permissions = fs::metadata(&path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&path, permissions).unwrap();
-        path
-    }
-
-    fn with_fake(mode: &str, test: impl FnOnce(&Path)) {
-        let _guard = env_lock().lock().unwrap();
-        let fake = fake_herdr();
-        let log = fake.with_extension(format!("{}.log", std::process::id()));
-        let _ = fs::remove_file(&log);
-        let old_bin = std::env::var_os("WSX_HERDR_BIN");
-        let old_mode = std::env::var_os("WSX_HERDR_TEST_MODE");
-        let old_log = std::env::var_os("WSX_HERDR_TEST_LOG");
-        std::env::set_var("WSX_HERDR_BIN", &fake);
-        std::env::set_var("WSX_HERDR_TEST_MODE", mode);
-        std::env::set_var("WSX_HERDR_TEST_LOG", &log);
-        test(&log);
-        for (name, old) in [
-            ("WSX_HERDR_BIN", old_bin),
-            ("WSX_HERDR_TEST_MODE", old_mode),
-            ("WSX_HERDR_TEST_LOG", old_log),
-        ] {
-            if let Some(value) = old {
-                std::env::set_var(name, value);
-            } else {
-                std::env::remove_var(name);
-            }
-        }
-        let _ = fs::remove_file(log);
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
     }
 
     #[test]
     fn snapshot_preserves_flat_protocol_associations() {
-        with_fake("snapshot", |_| {
-            let snapshot = snapshot().unwrap();
-            assert_eq!(snapshot.version, "0.8.2");
-            assert_eq!(snapshot.protocol, 20);
-            assert_eq!(snapshot.workspaces[0].workspace_id, "ws-1");
-            assert_eq!(snapshot.tabs[0].workspace_id, "ws-1");
-            assert_eq!(snapshot.panes[0].tab_id, "tab-1");
-            assert_eq!(snapshot.panes[0].cwd, Some(PathBuf::from("/work")));
-            assert_eq!(snapshot.panes[0].revision, 4);
-        });
-    }
-
-    #[test]
-    fn malformed_json_is_rejected() {
-        with_fake("malformed", |_| {
-            assert!(snapshot().unwrap_err().to_string().contains("invalid JSON"));
-        });
+        let snapshot = parse_snapshot(&serde_json::json!({
+            "version": "0.8.2",
+            "protocol": 20,
+            "workspaces": [{"workspace_id": "ws-1", "label": "main"}],
+            "tabs": [{"tab_id": "tab-1", "workspace_id": "ws-1", "label": "agent"}],
+            "panes": [{
+                "pane_id": "pane-1",
+                "terminal_id": "term-1",
+                "workspace_id": "ws-1",
+                "tab_id": "tab-1",
+                "cwd": "/work",
+                "label": null,
+                "agent_status": "working",
+                "revision": 4
+            }],
+            "layouts": [],
+            "agents": []
+        }))
+        .unwrap();
+        assert_eq!(snapshot.version, "0.8.2");
+        assert_eq!(snapshot.protocol, 20);
+        assert_eq!(snapshot.workspaces[0].workspace_id, "ws-1");
+        assert_eq!(snapshot.tabs[0].workspace_id, "ws-1");
+        assert_eq!(snapshot.panes[0].tab_id, "tab-1");
+        assert_eq!(snapshot.panes[0].cwd, Some(PathBuf::from("/work")));
+        assert_eq!(snapshot.panes[0].revision, 4);
     }
 
     #[test]
@@ -975,100 +1066,118 @@ esac
             .unwrap_err()
             .to_string()
             .contains("unknown tab"));
-    }
 
-    #[test]
-    fn json_command_envelope_requires_id_result_and_no_error() {
-        for envelope in [
-            serde_json::json!({"result": {}}),
-            serde_json::json!({"id": "cli:test"}),
-            serde_json::json!({
-                "id": "cli:test",
-                "error": {"code": "failed", "message": "test failure"}
-            }),
-        ] {
-            assert!(result_from_envelope(&envelope, "test").is_err());
-        }
-        assert_eq!(
-            result_from_envelope(&serde_json::json!({"id": "cli:test", "result": 7}), "test")
-                .unwrap(),
-            serde_json::json!(7)
-        );
+        let duplicate_terminals = serde_json::json!({
+            "version": "0.8.2", "protocol": 20,
+            "workspaces": [{"workspace_id": "ws", "label": "one"}],
+            "tabs": [{"tab_id": "tab", "workspace_id": "ws", "label": "one"}],
+            "panes": [
+                {
+                    "pane_id": "pane-1", "terminal_id": "terminal",
+                    "workspace_id": "ws", "tab_id": "tab", "cwd": "/work",
+                    "label": null, "agent_status": "idle", "revision": 1
+                },
+                {
+                    "pane_id": "pane-2", "terminal_id": "terminal",
+                    "workspace_id": "ws", "tab_id": "tab", "cwd": "/work",
+                    "label": null, "agent_status": "idle", "revision": 1
+                }
+            ],
+            "layouts": [], "agents": []
+        });
+        assert!(parse_snapshot(&duplicate_terminals)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate terminal"));
     }
 
     #[test]
     fn pane_read_rejects_unbounded_line_counts() {
-        assert!(read_recent_ansi("pane-1", 0).is_err());
-        assert!(read_recent_ansi("pane-1", MAX_READ_LINES + 1).is_err());
+        assert!(validate_read("pane-1", 0).is_err());
+        assert!(validate_read("pane-1", MAX_READ_LINES + 1).is_err());
     }
 
     #[test]
-    fn pane_commands_use_documented_keys_and_recent_ansi_flags() {
-        assert_eq!(
-            pane_args(PaneCommand::Rename {
-                pane_id: "pane-1",
-                label: "reviewer",
-            }),
-            vec!["pane", "rename", "pane-1", "reviewer"]
-                .into_iter()
-                .map(OsString::from)
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            pane_args(PaneCommand::SendEnter { pane_id: "pane-1" }),
-            vec!["pane", "send-keys", "pane-1", "enter"]
-                .into_iter()
-                .map(OsString::from)
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            pane_args(PaneCommand::SendCtrlC { pane_id: "pane-1" }),
-            vec!["pane", "send-keys", "pane-1", "ctrl+c"]
-                .into_iter()
-                .map(OsString::from)
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            pane_args(PaneCommand::Read {
-                pane_id: "pane-1",
-                lines: 40,
-            }),
-            vec![
-                "pane", "read", "pane-1", "--source", "recent", "--lines", "40", "--format",
-                "ansi",
-            ]
-            .into_iter()
-            .map(OsString::from)
-            .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn raw_json_terminal_output_is_not_mistaken_for_a_command_envelope() {
-        with_fake("raw_read", |_| {
-            assert_eq!(
-                read_recent_ansi("pane-1", 20).unwrap(),
-                "{\"status\":\"working\"}\n"
-            );
+    fn mutation_requests_use_typed_protocol_shapes() {
+        let dir = std::env::current_dir()
+            .unwrap()
+            .join(".work/tests")
+            .join(format!("wsx-herdr-mutations-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("herdr.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            let expected = [
+                "workspace.create",
+                "tab.create",
+                "pane.rename",
+                "pane.close",
+                "workspace.close",
+            ];
+            for method in expected {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                std::io::BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: Value = serde_json::from_str(&request).unwrap();
+                assert_eq!(request["method"], method);
+                let params = request["params"].as_object().unwrap();
+                let result = match method {
+                    "workspace.create" => {
+                        assert_eq!(params["cwd"], "/work");
+                        assert_eq!(params["label"], "wsx:main");
+                        serde_json::json!({
+                            "type": "workspace_created",
+                            "workspace": {"workspace_id": "w1"},
+                            "tab": {"tab_id": "w1:t1"},
+                            "root_pane": {"pane_id": "w1:p1"}
+                        })
+                    }
+                    "tab.create" => {
+                        assert_eq!(params["workspace_id"], "w1");
+                        assert_eq!(params["cwd"], "/work");
+                        serde_json::json!({
+                            "type": "tab_created",
+                            "tab": {"tab_id": "w1:t2"},
+                            "root_pane": {"pane_id": "w1:p2"}
+                        })
+                    }
+                    "pane.rename" => {
+                        assert_eq!(params["pane_id"], "w1:p2");
+                        assert_eq!(params["label"], "agent");
+                        serde_json::json!({"type": "ok"})
+                    }
+                    "pane.close" => {
+                        assert_eq!(params["pane_id"], "w1:p2");
+                        serde_json::json!({"type": "ok"})
+                    }
+                    "workspace.close" => {
+                        assert_eq!(params["workspace_id"], "w1");
+                        serde_json::json!({"type": "ok"})
+                    }
+                    _ => unreachable!(),
+                };
+                writeln!(
+                    stream,
+                    "{}",
+                    serde_json::json!({"id": request["id"], "result": result})
+                )
+                .unwrap();
+            }
         });
-    }
 
-    #[test]
-    fn nonzero_status_is_rejected() {
-        with_fake("failure", |_| {
-            assert!(snapshot().unwrap_err().to_string().contains("fake failure"));
-        });
-    }
-
-    #[test]
-    fn create_uses_documented_argument_order_and_result_shape() {
-        with_fake("create", |log| {
-            let created = create_workspace(Path::new("/work"), "main").unwrap();
-            assert_eq!(created.root_pane_id, "pane-1");
-            assert_eq!(
-                fs::read_to_string(log).unwrap(),
-                "workspace\ncreate\n--cwd\n/work\n--label\nmain\n"
-            );
-        });
+        let client = Client::new(path).unwrap();
+        let workspace = create_workspace_with(&client, Path::new("/work"), "wsx:main").unwrap();
+        assert_eq!(workspace.root_pane_id, "w1:p1");
+        let tab = create_tab_with(&client, "w1", Path::new("/work"), "agent").unwrap();
+        assert_eq!(tab.root_pane_id, "w1:p2");
+        rename_pane_with(&client, "w1:p2", "agent").unwrap();
+        close_pane_with(&client, "w1:p2").unwrap();
+        close_workspace_with(&client, "w1").unwrap();
+        server.join().unwrap();
+        let _ = fs::remove_dir_all(dir);
     }
 }

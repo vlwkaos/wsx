@@ -1,4 +1,4 @@
-use crate::ui::popup_center;
+use crate::ui::{popup_center, theme};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Paragraph},
@@ -20,7 +20,7 @@ pub fn render_tab_manager(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Tabs ")
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::ACCENT));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -41,11 +41,14 @@ pub fn render_tab_manager(
         let active_mark = if is_cur_tab { "●" } else { " " };
         let text = format!("{} {} {} ({})", cursor, active_mark, name, count);
         let style = if i == selected {
-            Style::default().fg(Color::Black).bg(Color::Yellow).bold()
+            Style::default()
+                .fg(theme::BACKGROUND)
+                .bg(theme::WARNING)
+                .bold()
         } else if is_cur_tab {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(theme::WARNING)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(theme::TEXT)
         };
         lines.push(Line::from(Span::styled(text, style)));
     }

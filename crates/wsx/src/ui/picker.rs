@@ -1,7 +1,7 @@
 // Simple list picker overlay (no fuzzy filtering). Reserved for future use.
 #![allow(dead_code)]
 
-use crate::ui::popup_center;
+use crate::ui::{popup_center, theme};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, List, ListItem, ListState},
@@ -67,9 +67,9 @@ pub fn render_picker(frame: &mut Frame, area: Rect, state: &mut PickerState) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(" {} ", state.title))
-                .border_style(Style::default().fg(Color::Cyan)),
+                .border_style(Style::default().fg(theme::ACCENT)),
         )
-        .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan));
+        .highlight_style(Style::default().fg(theme::BACKGROUND).bg(theme::ACCENT));
 
     frame.render_stateful_widget(list, popup, &mut state.list_state);
 }

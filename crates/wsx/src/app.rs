@@ -36,6 +36,7 @@ type HerdrRefresh = Result<(herdr::Snapshot, WorktreeSnapshot)>;
 // ^ Herdr protocol boundary: https://herdr.dev/docs/socket-api/
 enum HerdrResult {
     FullRefresh(HerdrRefresh),
+    SessionRefresh(Result<herdr::Snapshot>),
     Capture {
         pane_id: String,
         revision: u64,
@@ -103,7 +104,7 @@ impl Timer {
 
 const TICK_MS: u64 = 100;
 const FAST_INTERVAL_MS: u64 = 500;
-const SLOW_INTERVAL_MS: u64 = 3000;
+const SLOW_INTERVAL_MS: u64 = 30_000;
 const FETCH_INTERVAL_SECS: u64 = 60;
 
 // ── Modes ─────────────────────────────────────────────────────────────────────
@@ -175,6 +176,7 @@ pub enum InputContext {
     },
     SendCommand {
         pane_id: String,
+        agent: Option<String>,
     },
     AddTab,
     RenameTab {
@@ -191,7 +193,8 @@ impl InputContext {
             InputContext::AddSessionCmd { .. } => "New Session — command",
             InputContext::SetAlias { .. } => "Set Alias",
             InputContext::RenameSession { .. } => "Rename Session",
-            InputContext::SendCommand { .. } => "Send Command",
+            InputContext::SendCommand { agent: Some(_), .. } => "Prompt Agent",
+            InputContext::SendCommand { agent: None, .. } => "Send to Terminal",
             InputContext::AddTab => "New Tab",
             InputContext::RenameTab { .. } => "Rename Tab",
         }
@@ -329,7 +332,48 @@ fn filter_pending_deletions(
         .collect()
 }
 
+fn session_pane_ids(workspace: &WorkspaceState) -> Vec<String> {
+    let mut pane_ids = workspace
+        .projects
+        .iter()
+        .flat_map(|project| &project.worktrees)
+        .flat_map(|worktree| &worktree.sessions)
+        .map(|session| session.pane_id.clone())
+        .collect::<Vec<_>>();
+    pane_ids.sort();
+    pane_ids.dedup();
+    pane_ids
+}
+
 // ── App ──────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeLevel {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct Notice {
+    pub level: NoticeLevel,
+    pub title: String,
+    pub body: Option<String>,
+    pub sticky: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum HerdrHealth {
+    Connecting,
+    Healthy {
+        last_success: Instant,
+    },
+    Reconnecting {
+        last_success: Option<Instant>,
+        error: String,
+    },
+}
 
 pub struct App {
     pub workspace: WorkspaceState,
@@ -343,8 +387,8 @@ pub struct App {
     pub active_tab: Option<String>,
     visible_projects: HashSet<usize>,
     send_command_history: Vec<String>,
-    pub status_message: Option<String>,
-    status_message_expires: Option<Instant>,
+    pub notice: Option<Notice>,
+    notice_expires: Option<Instant>,
     pub jobs: Vec<BgJob>,
     pub spinner_frame: usize,
     bg_tx: mpsc::Sender<BgResult>,
@@ -374,22 +418,31 @@ pub struct App {
     worktree_index: std::collections::HashMap<PathBuf, (usize, usize)>,
     /// pane ID → parsed ANSI preview; invalidated when pane_capture changes.
     pub parsed_preview: std::collections::HashMap<String, ratatui::text::Text<'static>>,
+    herdr_client: herdr::Client,
+    herdr_monitor: Option<herdr::EventMonitor>,
+    herdr_event_rx: mpsc::Receiver<herdr::EventSignal>,
+    herdr_event_panes: Vec<String>,
+    pub herdr_health: HerdrHealth,
     herdr_tx: mpsc::Sender<HerdrResult>,
     herdr_rx: mpsc::Receiver<HerdrResult>,
     herdr_refresh_pending: bool,
-    /// A user action requested a refresh while one was in-flight.
+    /// An event requested a session refresh while one was in-flight.
     herdr_refresh_stale: bool,
+    /// A full Git plus Herdr refresh takes priority over queued event refreshes.
+    herdr_full_refresh_stale: bool,
     herdr_capture_pending: bool,
     /// Worktree paths pending bg deletion; filtered from refresh results until bg confirms.
     pending_deletions: HashSet<PathBuf>,
     /// Pane closes awaiting confirmation by a newer Herdr snapshot.
     pending_session_kills: HashSet<String>,
-    /// Mute is wsx-local and keyed by stable pane ID.
-    muted_ids: HashSet<String>,
+    /// Mute is wsx-local and keyed by stable terminal ID.
+    muted_terminal_ids: HashSet<String>,
     update_rx: mpsc::Receiver<String>,
     pub update_available: Option<String>,
-    /// Set by --mobile flag; collapses preview panel for portrait SSH sessions.
+    /// Effective responsive mode for the current frame.
     pub is_mobile: bool,
+    /// Explicit --mobile override; otherwise width drives the mode.
+    pub force_mobile: bool,
     /// Git repos discovered under `$HOME` — populated from app start by a
     /// background walker. Survives modal opens so the add-project prompt
     /// is instant on the second and later opens, and picks up newly
@@ -419,6 +472,10 @@ impl App {
         let (fetch_tx, fetch_rx) = mpsc::channel();
         let (bg_tx, bg_rx) = mpsc::channel();
         let (herdr_tx, herdr_rx) = mpsc::channel();
+        let herdr_client = herdr::Client::local()?;
+        let herdr_event_panes = session_pane_ids(&workspace);
+        let (herdr_monitor, herdr_event_rx) =
+            herdr::EventMonitor::start(herdr_client.clone(), herdr_event_panes.clone())?;
         let (update_tx, update_rx) = mpsc::channel::<String>();
         let (routine_tx, routine_rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -441,8 +498,13 @@ impl App {
             active_tab: cached_active_tab,
             visible_projects,
             send_command_history: command_history,
-            status_message: config_warn.clone(),
-            status_message_expires: if config_warn.is_some() {
+            notice: config_warn.clone().map(|title| Notice {
+                level: NoticeLevel::Warning,
+                title,
+                body: None,
+                sticky: false,
+            }),
+            notice_expires: if config_warn.is_some() {
                 Some(Instant::now() + Duration::from_secs(10))
             } else {
                 None
@@ -474,17 +536,24 @@ impl App {
                     .map(|n| n.get())
                     .unwrap_or(4),
             ),
+            herdr_client,
+            herdr_monitor: Some(herdr_monitor),
+            herdr_event_rx,
+            herdr_event_panes,
+            herdr_health: HerdrHealth::Connecting,
             herdr_tx,
             herdr_rx,
             herdr_refresh_pending: false,
             herdr_refresh_stale: false,
+            herdr_full_refresh_stale: false,
             herdr_capture_pending: false,
             pending_deletions: HashSet::new(),
             pending_session_kills: HashSet::new(),
-            muted_ids: cached_muted,
+            muted_terminal_ids: cached_muted,
             update_rx,
             update_available: None,
             is_mobile: mobile,
+            force_mobile: mobile,
             scanned_repos: Vec::new(),
             repo_scan_rx: None,
             routine_tx,
@@ -516,8 +585,29 @@ impl App {
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
-        self.status_message = Some(msg.into());
-        self.status_message_expires = Some(Instant::now() + Duration::from_secs(4));
+        self.set_notice(NoticeLevel::Success, msg, false);
+    }
+
+    fn set_error(&mut self, msg: impl Into<String>) {
+        self.set_notice(NoticeLevel::Error, msg, true);
+    }
+
+    fn set_notice(&mut self, level: NoticeLevel, msg: impl Into<String>, sticky: bool) {
+        let message = msg.into();
+        let mut lines = message.lines();
+        let title = lines.next().unwrap_or_default().to_string();
+        let body = {
+            let rest = lines.collect::<Vec<_>>().join("\n");
+            (!rest.is_empty()).then_some(rest)
+        };
+        self.notice = Some(Notice {
+            level,
+            title,
+            body,
+            sticky,
+        });
+        self.notice_expires = (!sticky).then(|| Instant::now() + Duration::from_secs(4));
+        self.needs_redraw = true;
     }
 
     pub fn is_busy(&self) -> bool {
@@ -554,7 +644,7 @@ impl App {
                     self.pending_deletions.clear();
                     self.spawn_herdr_refresh();
                 }
-                self.set_status(format!("{}: {}", result.label, e));
+                self.set_error(format!("{}: {}", result.label, e));
             }
             Ok(BgOutcome::WorktreeRemoved { label }) => {
                 // ^ A live refresh clears the tombstone after Git stops reporting the path.
@@ -581,7 +671,6 @@ impl App {
             }) => {
                 // ^ Filter snapshots captured before the successful close.
                 self.pending_session_kills.insert(pane_id.clone());
-                self.muted_ids.remove(&pane_id);
                 for worktree in self
                     .workspace
                     .projects
@@ -725,7 +814,7 @@ impl App {
                     },
                 ) {
                     Ok(()) => self.last_rendered_preview_was_session = preview_is_session,
-                    Err(e) => self.set_status(format!("Error: {}", e)),
+                    Err(e) => self.set_error(format!("Render failed: {e}")),
                 }
                 self.needs_redraw = false;
             }
@@ -745,11 +834,11 @@ impl App {
                     self.needs_redraw = true;
                 }
                 if let Err(e) = self.dispatch(action, terminal) {
-                    self.set_status(format!("Error: {}", e));
+                    self.set_error(format!("Action failed: {e}"));
                 }
             }
             if let Err(e) = self.tick() {
-                self.set_status(format!("Error: {}", e));
+                self.set_error(format!("Background update failed: {e}"));
             }
         }
         Ok(())
@@ -783,9 +872,17 @@ impl App {
         while let Ok(result) = self.bg_rx.try_recv() {
             self.apply_bg_result(result);
         }
+        loop {
+            let signal = self.herdr_event_rx.try_recv();
+            match signal {
+                Ok(signal) => self.apply_herdr_event(signal),
+                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
+            }
+        }
         while let Ok(result) = self.herdr_rx.try_recv() {
             match result {
                 HerdrResult::FullRefresh(result) => self.apply_herdr_refresh(result),
+                HerdrResult::SessionRefresh(result) => self.apply_herdr_session_refresh(result),
                 HerdrResult::Capture {
                     pane_id,
                     revision,
@@ -799,6 +896,28 @@ impl App {
         if let Ok(v) = self.update_rx.try_recv() {
             self.update_available = Some(v);
             self.needs_redraw = true;
+        }
+    }
+
+    fn apply_herdr_event(&mut self, signal: herdr::EventSignal) {
+        match signal {
+            herdr::EventSignal::Dirty => self.spawn_herdr_session_refresh(),
+            herdr::EventSignal::Connected => {
+                // Healthy means a post-subscription authoritative snapshot was accepted.
+                self.needs_redraw = true;
+            }
+            herdr::EventSignal::Disconnected(error) => {
+                let last_success = match self.herdr_health {
+                    HerdrHealth::Healthy { last_success } => Some(last_success),
+                    HerdrHealth::Reconnecting { last_success, .. } => last_success,
+                    HerdrHealth::Connecting => None,
+                };
+                self.herdr_health = HerdrHealth::Reconnecting {
+                    last_success,
+                    error,
+                };
+                self.needs_redraw = true;
+            }
         }
     }
 
@@ -933,10 +1052,10 @@ impl App {
     }
 
     fn tick(&mut self) -> Result<()> {
-        if let Some(expires) = self.status_message_expires {
+        if let Some(expires) = self.notice_expires {
             if Instant::now() >= expires {
-                self.status_message = None;
-                self.status_message_expires = None;
+                self.notice = None;
+                self.notice_expires = None;
                 self.needs_redraw = true;
             }
         }
@@ -1115,7 +1234,7 @@ impl App {
     /// Single write point — both cache and session snapshot always written together.
     /// `sync=true` on quit (fsync), `sync=false` on periodic writes.
     fn persist_state(&mut self, sync: bool) {
-        if let Some(e) = wsx_core::cache::save_cache(
+        if let Some(error) = wsx_core::cache::save_cache(
             &self.workspace,
             self.tree_selected,
             self.flat(),
@@ -1123,9 +1242,11 @@ impl App {
             self.active_tab.as_deref(),
             sync,
         ) {
-            self.set_status(e);
+            self.set_error(error);
+            self.cache_dirty = true;
+        } else {
+            self.cache_dirty = false;
         }
-        self.cache_dirty = false;
     }
 
     fn mark_dirty(&mut self) {
@@ -1153,11 +1274,12 @@ impl App {
 
     fn spawn_herdr_refresh(&mut self) {
         if self.herdr_refresh_pending {
-            self.herdr_refresh_stale = true;
+            self.herdr_full_refresh_stale = true;
             return;
         }
         self.herdr_refresh_pending = true;
         let tx = self.herdr_tx.clone();
+        let client = self.herdr_client.clone();
         let project_paths: Vec<PathBuf> = self
             .workspace
             .projects
@@ -1165,7 +1287,7 @@ impl App {
             .map(|project| project.path.clone())
             .collect();
         std::thread::spawn(move || {
-            let result = herdr::snapshot().map(|snapshot| {
+            let result = herdr::snapshot_with(&client).map(|snapshot| {
                 let worktrees = project_paths
                     .into_iter()
                     .map(|path| {
@@ -1179,22 +1301,62 @@ impl App {
         });
     }
 
+    fn spawn_herdr_session_refresh(&mut self) {
+        if self.herdr_refresh_pending {
+            self.herdr_refresh_stale = true;
+            return;
+        }
+        self.herdr_refresh_pending = true;
+        let tx = self.herdr_tx.clone();
+        let client = self.herdr_client.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(HerdrResult::SessionRefresh(herdr::snapshot_with(&client)));
+        });
+    }
+
     fn apply_herdr_refresh(&mut self, result: HerdrRefresh) {
         self.herdr_refresh_pending = false;
         match result {
             Ok((snapshot, worktrees)) => self.apply_herdr_snapshot(snapshot, worktrees),
-            Err(error) => self.set_status(format!("Herdr refresh failed: {error}")),
+            Err(error) => {
+                self.apply_herdr_event(herdr::EventSignal::Disconnected(error.to_string()))
+            }
         }
-        if self.herdr_refresh_stale {
+        self.spawn_queued_herdr_refresh();
+    }
+
+    fn apply_herdr_session_refresh(&mut self, result: Result<herdr::Snapshot>) {
+        self.herdr_refresh_pending = false;
+        match result {
+            Ok(snapshot) => self.apply_projected_snapshot(snapshot, None),
+            Err(error) => {
+                self.apply_herdr_event(herdr::EventSignal::Disconnected(error.to_string()))
+            }
+        }
+        self.spawn_queued_herdr_refresh();
+    }
+
+    fn spawn_queued_herdr_refresh(&mut self) {
+        if std::mem::take(&mut self.herdr_full_refresh_stale) {
             self.herdr_refresh_stale = false;
             self.spawn_herdr_refresh();
+        } else if std::mem::take(&mut self.herdr_refresh_stale) {
+            self.spawn_herdr_session_refresh();
         }
     }
 
     fn apply_herdr_snapshot(
         &mut self,
-        mut snapshot: herdr::Snapshot,
+        snapshot: herdr::Snapshot,
         worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
+    ) {
+        self.apply_projected_snapshot(snapshot, Some(worktrees));
+    }
+
+    fn apply_projected_snapshot(
+        &mut self,
+        mut snapshot: herdr::Snapshot,
+        worktrees: Option<Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>>,
     ) {
         let previous_revisions: HashMap<String, u64> = self
             .workspace
@@ -1214,14 +1376,20 @@ impl App {
         snapshot
             .panes
             .retain(|pane| !self.pending_session_kills.contains(&pane.pane_id));
-        let worktrees = self.filter_pending_deletions(worktrees);
-        if let Err(error) = ops::refresh_workspace_with_worktrees(
-            &mut self.workspace,
-            &self.config,
-            &snapshot,
-            worktrees,
-        ) {
-            self.set_status(format!("Herdr refresh rejected: {error}"));
+        let refresh = match worktrees {
+            Some(worktrees) => {
+                let worktrees = self.filter_pending_deletions(worktrees);
+                ops::refresh_workspace_with_worktrees(
+                    &mut self.workspace,
+                    &self.config,
+                    &snapshot,
+                    worktrees,
+                )
+            }
+            None => ops::refresh_sessions_from_snapshot(&mut self.workspace, &snapshot),
+        };
+        if let Err(error) = refresh {
+            self.set_error(format!("Herdr snapshot rejected: {error}"));
             return;
         }
         for session in self
@@ -1231,7 +1399,7 @@ impl App {
             .flat_map(|project| &mut project.worktrees)
             .flat_map(|worktree| &mut worktree.sessions)
         {
-            session.muted = self.muted_ids.contains(&session.pane_id);
+            session.muted = self.muted_terminal_ids.contains(&session.terminal_id);
         }
         self.rebuild_flat();
         self.clamp_selected();
@@ -1247,9 +1415,35 @@ impl App {
             current_revisions.get(pane_id.as_str()).copied()
                 == previous_revisions.get(pane_id).copied()
         });
+        self.restart_herdr_monitor_if_needed();
+        let recovered = matches!(self.herdr_health, HerdrHealth::Reconnecting { .. });
+        self.herdr_health = HerdrHealth::Healthy {
+            last_success: Instant::now(),
+        };
+        if recovered {
+            self.set_status("Herdr reconnected; workspace refreshed");
+        }
         self.mark_dirty();
         self.write_cache_if_dirty();
         self.needs_redraw = true;
+    }
+
+    fn restart_herdr_monitor_if_needed(&mut self) {
+        let pane_ids = session_pane_ids(&self.workspace);
+        if pane_ids == self.herdr_event_panes {
+            return;
+        }
+        self.herdr_monitor.take();
+        match herdr::EventMonitor::start(self.herdr_client.clone(), pane_ids.clone()) {
+            Ok((monitor, receiver)) => {
+                self.herdr_monitor = Some(monitor);
+                self.herdr_event_rx = receiver;
+                self.herdr_event_panes = pane_ids;
+            }
+            Err(error) => {
+                self.apply_herdr_event(herdr::EventSignal::Disconnected(error.to_string()))
+            }
+        }
     }
 
     fn spawn_herdr_capture(&mut self) {
@@ -1267,8 +1461,9 @@ impl App {
         };
         self.herdr_capture_pending = true;
         let tx = self.herdr_tx.clone();
+        let client = self.herdr_client.clone();
         std::thread::spawn(move || {
-            let content = herdr::read_recent_ansi(&pane_id, 200);
+            let content = herdr::read_recent_ansi_with(&client, &pane_id, 200);
             let _ = tx.send(HerdrResult::Capture {
                 pane_id,
                 revision,
@@ -1279,7 +1474,10 @@ impl App {
 
     fn apply_herdr_capture(&mut self, pane_id: String, revision: u64, content: Result<String>) {
         self.herdr_capture_pending = false;
-        let Ok(trimmed) = content else { return };
+        let Ok(trimmed) = content else {
+            self.set_error("Preview unavailable; showing the last captured output");
+            return;
+        };
         let session = self
             .workspace
             .projects
@@ -1669,9 +1867,9 @@ impl App {
     fn handle_mouse_click(&mut self, col: u16, row: u16, terminal: &mut Tui) -> Result<()> {
         let pos = Position { x: col, y: row };
         if self.tree_area.contains(pos) {
-            // Content starts after top border (y+1), ends before bottom border (y+height-1)
-            let content_top = self.tree_area.y + 1;
-            let content_bottom = self.tree_area.y + self.tree_area.height.saturating_sub(1);
+            // Borderless tree reserves two rows for the padded section heading.
+            let content_top = self.tree_area.y + 2;
+            let content_bottom = self.tree_area.y + self.tree_area.height;
             if row >= content_top && row < content_bottom {
                 let flat_idx = (row - content_top) as usize + self.tree_scroll;
                 if flat_idx < self.flat().len() {
@@ -2008,19 +2206,20 @@ impl App {
     /// ctrl-c). Mute is sticky — only an explicit interaction unmutes; pane
     /// output alone does not. Cursor navigation must NOT call this.
     fn unmute_on_interaction(&mut self, pane_id: &str) {
-        for project in &mut self.workspace.projects {
-            for wt in &mut project.worktrees {
-                for sess in &mut wt.sessions {
-                    if sess.pane_id == pane_id {
-                        if sess.muted {
-                            sess.muted = false;
-                            self.muted_ids.remove(pane_id);
-                            self.mark_dirty();
-                        }
-                        return;
-                    }
-                }
-            }
+        let terminal_id = self
+            .workspace
+            .projects
+            .iter_mut()
+            .flat_map(|project| &mut project.worktrees)
+            .flat_map(|worktree| &mut worktree.sessions)
+            .find(|session| session.pane_id == pane_id && session.muted)
+            .map(|session| {
+                session.muted = false;
+                session.terminal_id.clone()
+            });
+        if let Some(terminal_id) = terminal_id {
+            self.muted_terminal_ids.remove(&terminal_id);
+            self.mark_dirty();
         }
     }
 
@@ -2388,10 +2587,16 @@ impl App {
     fn action_send_command(&mut self) {
         if let Selection::Session(pi, wi, si) = self.current_selection() {
             if let Some(sess) = self.workspace.session(pi, wi, si) {
-                let name = sess.pane_id.clone();
+                let pane_id = sess.pane_id.clone();
+                let agent = sess.agent.clone();
+                let prompt = if agent.is_some() {
+                    "prompt: "
+                } else {
+                    "send: "
+                };
                 self.mode = Mode::Input {
-                    context: InputContext::SendCommand { pane_id: name },
-                    state: InputState::with_history("cmd: ", self.send_command_history.clone()),
+                    context: InputContext::SendCommand { pane_id, agent },
+                    state: InputState::with_history(prompt, self.send_command_history.clone()),
                 };
             }
         }
@@ -2405,7 +2610,7 @@ impl App {
                 .map(|session| session.pane_id.clone());
             if let Some(name) = name {
                 self.unmute_on_interaction(&name);
-                herdr::send_ctrl_c(&name)?;
+                herdr::send_ctrl_c_with(&self.herdr_client, &name)?;
             }
         }
         Ok(())
@@ -2504,11 +2709,11 @@ impl App {
                 }
                 sess.muted = !sess.muted;
                 let muted = sess.muted;
-                let pane_id = sess.pane_id.clone();
+                let terminal_id = sess.terminal_id.clone();
                 if muted {
-                    self.muted_ids.insert(pane_id);
+                    self.muted_terminal_ids.insert(terminal_id);
                 } else {
-                    self.muted_ids.remove(&pane_id);
+                    self.muted_terminal_ids.remove(&terminal_id);
                 }
                 self.mark_dirty();
                 self.set_status(if muted { "Muted" } else { "Unmuted" });
@@ -2611,10 +2816,14 @@ impl App {
                         self.do_rename_session(project_idx, worktree_idx, session_idx, value)?;
                     }
                 }
-                InputContext::SendCommand { pane_id } => {
+                InputContext::SendCommand { pane_id, agent } => {
                     if !value.is_empty() {
                         self.unmute_on_interaction(&pane_id);
-                        herdr::send_text(&pane_id, &value, true)?;
+                        if agent.is_some() {
+                            herdr::agent_prompt_with(&self.herdr_client, &pane_id, &value)?;
+                        } else {
+                            herdr::send_text_with(&self.herdr_client, &pane_id, &value, true)?;
+                        }
                         self.send_command_history.retain(|cmd| cmd != &value);
                         self.send_command_history.push(value);
                         if self.send_command_history.len() > 50 {
@@ -3365,6 +3574,15 @@ mod tests {
         }
     }
 
+    fn test_herdr_client() -> herdr::Client {
+        herdr::Client::new(
+            std::env::current_dir()
+                .unwrap()
+                .join(".work/tests/nonexistent-herdr.sock"),
+        )
+        .unwrap()
+    }
+
     fn make_test_app(
         config: GlobalConfig,
         workspace: WorkspaceState,
@@ -3378,6 +3596,7 @@ mod tests {
         let (git_local_tx, git_local_rx) = std::sync::mpsc::channel();
         let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
         let (herdr_tx, herdr_rx) = std::sync::mpsc::channel();
+        let (_herdr_event_tx, herdr_event_rx) = std::sync::mpsc::channel();
         let (_update_tx, update_rx) = std::sync::mpsc::channel();
         let (routine_tx, routine_rx) = std::sync::mpsc::channel();
 
@@ -3393,8 +3612,8 @@ mod tests {
             active_tab,
             visible_projects,
             send_command_history: Vec::new(),
-            status_message: None,
-            status_message_expires: None,
+            notice: None,
+            notice_expires: None,
             jobs: Vec::new(),
             spinner_frame: 0,
             bg_tx,
@@ -3418,17 +3637,24 @@ mod tests {
             git_semaphore: GitSemaphore::new(1),
             worktree_index,
             parsed_preview: std::collections::HashMap::new(),
+            herdr_client: test_herdr_client(),
+            herdr_monitor: None,
+            herdr_event_rx,
+            herdr_event_panes: Vec::new(),
+            herdr_health: HerdrHealth::Connecting,
             herdr_tx,
             herdr_rx,
             herdr_refresh_pending: false,
             herdr_refresh_stale: false,
+            herdr_full_refresh_stale: false,
             herdr_capture_pending: false,
             pending_deletions: HashSet::new(),
             pending_session_kills: HashSet::new(),
-            muted_ids: HashSet::new(),
+            muted_terminal_ids: HashSet::new(),
             update_rx,
             update_available: None,
             is_mobile: false,
+            force_mobile: false,
             scanned_repos: Vec::new(),
             repo_scan_rx: None,
             routine_tx,
@@ -3518,7 +3744,7 @@ mod tests {
         assert!(matches!(app.mode, Mode::Normal));
         assert!(matches!(app.current_selection(), Selection::Routine(0, 0)));
         assert_eq!(
-            app.status_message.as_deref(),
+            app.notice.as_ref().map(|notice| notice.title.as_str()),
             Some("Routine 'morning' not deleted: stale config revision")
         );
     }
@@ -3972,6 +4198,7 @@ mod tests {
         let (git_local_tx, git_local_rx) = std::sync::mpsc::channel();
         let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
         let (herdr_tx, herdr_rx) = std::sync::mpsc::channel();
+        let (_herdr_event_tx, herdr_event_rx) = std::sync::mpsc::channel();
         let (_update_tx, update_rx) = std::sync::mpsc::channel();
         let (routine_tx, routine_rx) = std::sync::mpsc::channel();
         let mut app = App {
@@ -3986,8 +4213,8 @@ mod tests {
             active_tab: Some("work".to_string()),
             visible_projects,
             send_command_history: Vec::new(),
-            status_message: None,
-            status_message_expires: None,
+            notice: None,
+            notice_expires: None,
             jobs: Vec::new(),
             spinner_frame: 0,
             bg_tx,
@@ -4011,17 +4238,24 @@ mod tests {
             git_semaphore: GitSemaphore::new(1),
             worktree_index: std::collections::HashMap::new(),
             parsed_preview: std::collections::HashMap::new(),
+            herdr_client: test_herdr_client(),
+            herdr_monitor: None,
+            herdr_event_rx,
+            herdr_event_panes: Vec::new(),
+            herdr_health: HerdrHealth::Connecting,
             herdr_tx,
             herdr_rx,
             herdr_refresh_pending: false,
             herdr_refresh_stale: false,
+            herdr_full_refresh_stale: false,
             herdr_capture_pending: false,
             pending_deletions: HashSet::new(),
             pending_session_kills: HashSet::new(),
-            muted_ids: HashSet::new(),
+            muted_terminal_ids: HashSet::new(),
             update_rx,
             update_available: None,
             is_mobile: false,
+            force_mobile: false,
             scanned_repos: Vec::new(),
             repo_scan_rx: None,
             routine_tx,
@@ -4072,6 +4306,7 @@ mod tests {
         wsx_core::model::workspace::SessionInfo {
             pane_id: "pane".into(),
             terminal_id: "terminal".into(),
+            agent: Some("codex".into()),
             workspace_id: "workspace".into(),
             tab_id: "tab".into(),
             display_name: "session".into(),
@@ -4259,7 +4494,7 @@ mod tests {
         assert!(app.workspace.projects[0].worktrees[0].sessions.is_empty());
         assert!(app.pending_session_kills.contains("pane"));
         assert_eq!(
-            app.status_message.as_deref(),
+            app.notice.as_ref().map(|notice| notice.title.as_str()),
             Some("Killed session: session")
         );
     }
@@ -4272,7 +4507,8 @@ mod tests {
         app.refresh_all().unwrap();
 
         assert!(app.herdr_refresh_pending);
-        assert!(app.herdr_refresh_stale);
+        assert!(app.herdr_full_refresh_stale);
+        assert!(!app.herdr_refresh_stale);
     }
 
     #[test]
@@ -4306,6 +4542,7 @@ mod tests {
             panes: vec![wsx_core::herdr::Pane {
                 pane_id: "pane".into(),
                 terminal_id: "terminal".into(),
+                agent: Some("codex".into()),
                 workspace_id: "workspace".into(),
                 tab_id: "tab".into(),
                 cwd: Some("/tmp/demo".into()),
@@ -4359,6 +4596,80 @@ mod tests {
 
         assert_eq!(visible[0].1.len(), 1);
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn responsive_agent_hints_and_long_notice_render_without_boxes_or_truncation() {
+        let mut app = make_navigation_test_app();
+        let session_index = app
+            .flat()
+            .iter()
+            .position(|entry| matches!(entry, FlatEntry::Session { .. }))
+            .unwrap();
+        app.tree_selected = session_index;
+        app.set_error(
+            "Herdr 연결 실패: a long notification remains readable outside the project column",
+        );
+        let backend = ratatui::backend::TestBackend::new(56, 16);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        assert!(app.is_mobile);
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("S:prompt"));
+        assert!(rendered.contains("Herdr"));
+        assert!(rendered.contains('연'));
+    }
+
+    #[test]
+    fn tiny_input_geometry_renders_without_underflow() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.mode = Mode::Input {
+            context: InputContext::AddProject,
+            state: InputState::new("path: "),
+        };
+        let backend = ratatui::backend::TestBackend::new(1, 1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+    }
+
+    #[test]
+    fn backend_disconnect_keeps_last_success_and_recovery_becomes_healthy() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        let last_success = Instant::now();
+        app.herdr_health = HerdrHealth::Healthy { last_success };
+        app.apply_herdr_event(herdr::EventSignal::Disconnected("socket closed".into()));
+        assert!(matches!(
+            app.herdr_health,
+            HerdrHealth::Reconnecting {
+                last_success: Some(_),
+                ..
+            }
+        ));
+        app.apply_herdr_event(herdr::EventSignal::Connected);
+        assert!(matches!(app.herdr_health, HerdrHealth::Reconnecting { .. }));
+        app.apply_projected_snapshot(
+            herdr::Snapshot {
+                version: "0.8.2".into(),
+                protocol: 20,
+                workspaces: vec![],
+                tabs: vec![],
+                panes: vec![],
+                layouts: vec![],
+                agents: vec![],
+            },
+            None,
+        );
+        assert!(matches!(app.herdr_health, HerdrHealth::Healthy { .. }));
     }
 
     #[test]

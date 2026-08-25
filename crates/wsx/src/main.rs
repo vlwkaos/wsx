@@ -17,7 +17,10 @@ use clap::Parser;
 
 fn main() -> Result<()> {
     let args = cli::Args::parse();
-    if matches!(args.command, Some(cli::Command::Routine { .. })) {
+    if matches!(
+        args.command,
+        Some(cli::Command::Routine { .. } | cli::Command::Herdr { .. })
+    ) {
         return cli::run(args.command.expect("matched Some"));
     }
     // ^ Herdr protocol boundary: https://herdr.dev/docs/socket-api/

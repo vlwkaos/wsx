@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::ui::popup_upper;
+use crate::ui::{popup_upper, theme};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Paragraph},
@@ -349,22 +349,33 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {} ", title))
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::ACCENT));
     frame.render_widget(block, popup);
+    if popup.width < 2 || popup.height < 2 {
+        return;
+    }
 
     // Input line
     let display = format!("{}{}", state.prompt, state.buffer);
-    let input_row = Rect::new(popup.x + 1, popup.y + 1, width - 2, 1);
+    let input_row = Rect::new(
+        popup.x.saturating_add(1),
+        popup.y.saturating_add(1),
+        popup.width.saturating_sub(2),
+        1.min(popup.height.saturating_sub(1)),
+    );
     frame.render_widget(Paragraph::new(display), input_row);
 
     let cursor_col = state.prompt.len() + state.display_cursor();
     let cursor_x = popup.x + 1 + cursor_col as u16;
-    frame.set_cursor_position((cursor_x.min(popup.x + popup.width - 2), popup.y + 1));
+    frame.set_cursor_position((
+        cursor_x.min(popup.x + popup.width.saturating_sub(2)),
+        popup.y.saturating_add(1),
+    ));
 
     // Completion items — left-aligned with where user types
     let prompt_w = state.prompt.chars().count() as u16;
     let comp_x = popup.x + 1 + prompt_w;
-    let comp_w = width.saturating_sub(2 + prompt_w);
+    let comp_w = popup.width.saturating_sub(2 + prompt_w);
 
     if max_show > 0 {
         for (vis_idx, (orig_idx, s)) in state
@@ -378,9 +389,9 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
             let y = popup.y + 2 + vis_idx as u16;
             let selected = state.completion_idx == Some(orig_idx);
             let style = if selected {
-                Style::default().fg(Color::Black).bg(Color::Cyan)
+                Style::default().fg(theme::BACKGROUND).bg(theme::ACCENT)
             } else {
-                Style::default().fg(Color::Rgb(140, 140, 140))
+                Style::default().fg(theme::TEXT_MUTED)
             };
             let row = Rect::new(comp_x, y, comp_w, 1);
             frame.render_widget(Paragraph::new(s.as_str()).style(style), row);

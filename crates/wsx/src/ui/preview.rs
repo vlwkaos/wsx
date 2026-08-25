@@ -5,9 +5,11 @@ use crate::ui::ansi;
 use asched_core::routine::{ipc::RoutineView, Trigger};
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
 use wsx_core::model::workspace::{FetchFailReason, Project, SessionInfo, WorktreeInfo};
+
+use super::theme;
 
 pub fn render_worktree_preview(
     frame: &mut Frame,
@@ -17,25 +19,27 @@ pub fn render_worktree_preview(
 ) {
     frame.render_widget(Clear, area);
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::NONE)
+        .padding(Padding::new(2, 1, 1, 1))
+        .style(Style::default().bg(theme::PANEL_ACTIVE))
         .title(format!(" {} ", title))
         .title_style(Style::default().bold());
 
-    let label_style = Style::default().fg(Color::Rgb(120, 120, 140));
+    let label_style = Style::default().fg(theme::TEXT_SUBTLE);
 
     let mut lines = vec![
         Line::from(vec![
             Span::styled("Branch:  ", label_style),
             Span::styled(
                 worktree.branch.clone(),
-                Style::default().fg(Color::Rgb(100, 200, 255)).bold(),
+                Style::default().fg(theme::ACCENT).bold(),
             ),
         ]),
         Line::from(vec![
             Span::styled("Path:    ", label_style),
             Span::styled(
                 worktree.path.to_string_lossy().to_string(),
-                Style::default().fg(Color::Rgb(200, 200, 210)),
+                Style::default().fg(theme::TEXT),
             ),
         ]),
     ];
@@ -46,34 +50,31 @@ pub fn render_worktree_preview(
         lines.push(Line::from(Span::styled("Remote:", label_style)));
         if let Some(remote) = &info.remote_branch {
             let (status_text, status_style) = match (info.behind, info.ahead) {
-                (0, 0) => (
-                    "in sync".to_string(),
-                    Style::default().fg(Color::Rgb(100, 200, 100)),
-                ),
+                (0, 0) => ("in sync".to_string(), Style::default().fg(theme::SUCCESS)),
                 (b, a) if b > 0 && a > 0 => (
                     format!("↓{} ↑{}  diverged — pull first", b, a),
-                    Style::default().fg(Color::Magenta),
+                    Style::default().fg(theme::ACCENT),
                 ),
                 (b, _) if b > 0 => (
                     format!("↓{}  pull needed", b),
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(theme::ERROR),
                 ),
                 (_, a) => (
                     format!("↑{}  ready to push", a),
-                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(theme::ACCENT),
                 ),
             };
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("  {} — ", remote),
-                    Style::default().fg(Color::Rgb(180, 180, 200)),
+                    Style::default().fg(theme::TEXT_MUTED),
                 ),
                 Span::styled(status_text, status_style),
             ]));
         } else {
             lines.push(Line::from(Span::styled(
                 "  no upstream tracking branch",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::TEXT_SUBTLE),
             )));
         }
 
@@ -85,8 +86,8 @@ pub fn render_worktree_preview(
                 FetchFailReason::Network => "network error",
             };
             lines.push(Line::from(vec![
-                Span::styled("  ⚠ fetch failed: ", Style::default().fg(Color::Red)),
-                Span::styled(reason_text, Style::default().fg(Color::Yellow)),
+                Span::styled("  ⚠ fetch failed: ", Style::default().fg(theme::ERROR)),
+                Span::styled(reason_text, Style::default().fg(theme::WARNING)),
             ]));
             if let Some(last) = worktree.last_fetched {
                 let interval = 60u64 * 2u64.pow(worktree.fetch_fail_count.min(4) as u32);
@@ -108,13 +109,13 @@ pub fn render_worktree_preview(
                 };
                 lines.push(Line::from(Span::styled(
                     format!("    {}", retry_text),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme::TEXT_SUBTLE),
                 )));
             }
         } else if worktree.fetch_failed {
             lines.push(Line::from(Span::styled(
                 "  ⚠ fetch failed",
-                Style::default().fg(Color::Red),
+                Style::default().fg(theme::ERROR),
             )));
         }
 
@@ -123,7 +124,7 @@ pub fn render_worktree_preview(
         if info.modified_files.is_empty() {
             lines.push(Line::from(vec![
                 Span::styled("Local:   ", label_style),
-                Span::styled("clean", Style::default().fg(Color::Rgb(100, 200, 100))),
+                Span::styled("clean", Style::default().fg(theme::SUCCESS)),
             ]));
         } else {
             lines.push(Line::from(vec![
@@ -138,19 +139,19 @@ pub fn render_worktree_preview(
                             "s"
                         }
                     ),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(theme::WARNING),
                 ),
             ]));
             for f in info.modified_files.iter().take(5) {
                 lines.push(Line::from(Span::styled(
                     format!("  {}", f),
-                    Style::default().fg(Color::Rgb(255, 150, 80)),
+                    Style::default().fg(theme::WARNING),
                 )));
             }
             if info.modified_files.len() > 5 {
                 lines.push(Line::from(Span::styled(
                     format!("  … {} more", info.modified_files.len() - 5),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme::TEXT_SUBTLE),
                 )));
             }
         }
@@ -163,12 +164,9 @@ pub fn render_worktree_preview(
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("  {} ", c.hash),
-                        Style::default().fg(Color::Rgb(255, 180, 80)),
+                        Style::default().fg(theme::WARNING),
                     ),
-                    Span::styled(
-                        c.message.clone(),
-                        Style::default().fg(Color::Rgb(210, 210, 220)),
-                    ),
+                    Span::styled(c.message.clone(), Style::default().fg(theme::TEXT)),
                 ]));
             }
         }
@@ -178,7 +176,7 @@ pub fn render_worktree_preview(
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "Sessions:",
-            Style::default().fg(Color::Rgb(120, 120, 140)),
+            Style::default().fg(theme::TEXT_SUBTLE),
         )));
         for s in &worktree.sessions {
             let dot = if session_state::derive(s).app_state() == AppSessionState::NeedsAttention {
@@ -188,7 +186,7 @@ pub fn render_worktree_preview(
             };
             lines.push(Line::from(Span::styled(
                 format!("  {}{}", s.display_name, dot),
-                Style::default().fg(Color::Rgb(100, 220, 130)),
+                Style::default().fg(theme::SUCCESS),
             )));
         }
     }
@@ -207,15 +205,20 @@ pub fn render_session_preview(
     parsed: Option<&ratatui::text::Text<'static>>,
 ) {
     frame.render_widget(Clear, area);
-    let activity = if session_state::derive(session).app_state() == AppSessionState::NeedsAttention
-    {
-        " ●"
-    } else {
-        ""
+    let status = match session.agent_status {
+        wsx_core::herdr::AgentStatus::Idle => "idle",
+        wsx_core::herdr::AgentStatus::Working => "working",
+        wsx_core::herdr::AgentStatus::Blocked => "blocked",
+        wsx_core::herdr::AgentStatus::Done => "done",
+        wsx_core::herdr::AgentStatus::Unknown => "unknown",
     };
+    let agent = session.agent.as_deref().unwrap_or("terminal");
+    let muted = if session.muted { " · muted" } else { "" };
     let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {}{} ", title, activity))
+        .borders(Borders::NONE)
+        .padding(Padding::new(2, 1, 1, 1))
+        .style(Style::default().bg(theme::PANEL_ACTIVE))
+        .title(format!(" {title} · {agent} · {status}{muted} "))
         .title_style(Style::default().bold());
 
     // Use cached parsed ANSI text when available; fall back to parsing inline.
@@ -243,21 +246,24 @@ pub fn render_project_preview(frame: &mut Frame, area: Rect, project: &Project) 
     frame.render_widget(Clear, area);
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
-            Span::styled("Path:  ", Style::default().fg(Color::Gray)),
+            Span::styled("Path:  ", Style::default().fg(theme::TEXT_MUTED)),
             Span::styled(
                 project.path.to_string_lossy().to_string(),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme::TEXT),
             ),
         ]),
         Line::from(vec![
-            Span::styled("Branch: ", Style::default().fg(Color::Gray)),
+            Span::styled("Branch: ", Style::default().fg(theme::TEXT_MUTED)),
             Span::styled(
                 project.default_branch.clone(),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::ACCENT),
             ),
         ]),
         Line::from(""),
-        Line::from(Span::styled("Worktrees:", Style::default().fg(Color::Gray))),
+        Line::from(Span::styled(
+            "Worktrees:",
+            Style::default().fg(theme::TEXT_MUTED),
+        )),
     ];
 
     for wt in &project.worktrees {
@@ -275,7 +281,7 @@ pub fn render_project_preview(frame: &mut Frame, area: Rect, project: &Project) 
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {}{}", main_mark, wt.display_name()),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::ACCENT),
             ),
             Span::styled(
                 format!(
@@ -284,7 +290,7 @@ pub fn render_project_preview(frame: &mut Frame, area: Rect, project: &Project) 
                     if sess_count == 1 { "" } else { "s" },
                     activity
                 ),
-                Style::default().fg(Color::Gray),
+                Style::default().fg(theme::TEXT_MUTED),
             ),
         ]));
     }
@@ -292,12 +298,14 @@ pub fn render_project_preview(frame: &mut Frame, area: Rect, project: &Project) 
     if project.worktrees.is_empty() {
         lines.push(Line::from(Span::styled(
             "  (no worktrees)",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme::TEXT_MUTED),
         )));
     }
 
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::NONE)
+        .padding(Padding::new(2, 1, 1, 1))
+        .style(Style::default().bg(theme::PANEL_ACTIVE))
         .title(format!(" {} ", project.name))
         .title_style(Style::default().bold());
 
@@ -310,11 +318,13 @@ pub fn render_project_preview(frame: &mut Frame, area: Rect, project: &Project) 
 pub fn render_empty_preview(frame: &mut Frame, area: Rect) {
     frame.render_widget(Clear, area);
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::NONE)
+        .padding(Padding::new(2, 1, 1, 1))
+        .style(Style::default().bg(theme::PANEL_ACTIVE))
         .title(" Preview ")
-        .title_style(Style::default().fg(Color::Gray));
+        .title_style(Style::default().fg(theme::TEXT_MUTED));
     let para = Paragraph::new("Select a project, worktree, or session")
-        .style(Style::default().fg(Color::Gray))
+        .style(Style::default().fg(theme::TEXT_MUTED))
         .block(block);
     frame.render_widget(para, area);
 }
@@ -333,7 +343,7 @@ pub fn render_routines_preview(frame: &mut Frame, area: Rect, project: &Project)
             Line::from(vec![
                 Span::styled(
                     format!("◇ {}", view.routine.name),
-                    Style::default().fg(Color::Magenta).bold(),
+                    Style::default().fg(theme::ACCENT).bold(),
                 ),
                 Span::raw(format!(
                     "  {}  last: {last}",
@@ -346,7 +356,9 @@ pub fn render_routines_preview(frame: &mut Frame, area: Rect, project: &Project)
         Paragraph::new(lines)
             .block(
                 Block::default()
-                    .borders(Borders::ALL)
+                    .borders(Borders::NONE)
+                    .padding(Padding::new(2, 1, 1, 1))
+                    .style(Style::default().bg(theme::PANEL_ACTIVE))
                     .title(format!(" {} › sched ", project.name)),
             )
             .wrap(Wrap { trim: false }),
@@ -362,7 +374,7 @@ pub fn render_routine_preview(
     scroll: u16,
 ) {
     frame.render_widget(Clear, area);
-    let label = Style::default().fg(Color::DarkGray);
+    let label = Style::default().fg(theme::TEXT_SUBTLE);
     let next = view
         .next_run_epoch
         .map(format_epoch)
@@ -436,7 +448,7 @@ pub fn render_routine_preview(
             Line::raw(""),
             Line::styled(
                 "Final agent output",
-                Style::default().fg(Color::Magenta).bold(),
+                Style::default().fg(theme::ACCENT).bold(),
             ),
             Line::raw(run.final_output.clone()),
         ]);
@@ -444,7 +456,7 @@ pub fn render_routine_preview(
             lines.push(Line::raw(""));
             lines.push(Line::styled(
                 "Recent history",
-                Style::default().fg(Color::Magenta).bold(),
+                Style::default().fg(theme::ACCENT).bold(),
             ));
             for previous in view.recent_runs.iter().rev().skip(1).take(5) {
                 lines.push(Line::raw(format!(
@@ -458,14 +470,16 @@ pub fn render_routine_preview(
     } else {
         lines.push(Line::styled(
             "No run history",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::TEXT_SUBTLE),
         ));
     }
     frame.render_widget(
         Paragraph::new(lines)
             .block(
                 Block::default()
-                    .borders(Borders::ALL)
+                    .borders(Borders::NONE)
+                    .padding(Padding::new(2, 1, 1, 1))
+                    .style(Style::default().bg(theme::PANEL_ACTIVE))
                     .title(format!(" {} › {} ", project.name, view.routine.name)),
             )
             .scroll((scroll, 0))

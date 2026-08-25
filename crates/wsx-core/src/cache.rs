@@ -22,7 +22,11 @@ pub enum CursorIdentity {
     },
     Session {
         worktree_path: String,
-        pane_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terminal_id: Option<String>,
+        /// Legacy identity read once and migrated through the live snapshot.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane_id: Option<String>,
     },
     RoutinesHeader {
         project_path: String,
@@ -45,9 +49,9 @@ pub struct WorkspaceCache {
     pub tree_selected: usize,
     #[serde(default)]
     pub cursor_identity: Option<CursorIdentity>,
-    /// Stable Herdr pane IDs muted in this local wsx UI.
-    #[serde(default)]
-    pub muted_sessions: HashSet<String>,
+    /// Stable Herdr terminal IDs muted in this local wsx UI.
+    #[serde(default, alias = "muted_sessions")]
+    pub muted_terminals: HashSet<String>,
     #[serde(default)]
     pub command_history: Vec<String>,
     #[serde(default)]
@@ -108,6 +112,7 @@ pub fn apply_cache(
     HashSet<String>,
 ) {
     let cache = WorkspaceCache::load();
+    let mut migrated_muted_terminals = HashSet::new();
     for project in &mut workspace.projects {
         let project_key = project.path.to_string_lossy().to_string();
         if let Some(expanded) = cache.project_expanded.get(&project_key) {
@@ -119,7 +124,11 @@ pub fn apply_cache(
                 worktree.expanded = *expanded;
             }
             for session in &mut worktree.sessions {
-                session.muted = cache.muted_sessions.contains(&session.pane_id);
+                session.muted = cache.muted_terminals.contains(&session.terminal_id)
+                    || cache.muted_terminals.contains(&session.pane_id);
+                if session.muted {
+                    migrated_muted_terminals.insert(session.terminal_id.clone());
+                }
             }
         }
     }
@@ -128,7 +137,7 @@ pub fn apply_cache(
         cache.cursor_identity,
         cache.command_history,
         cache.active_tab,
-        cache.muted_sessions,
+        migrated_muted_terminals,
     )
 }
 
@@ -144,11 +153,23 @@ pub fn find_cursor_index(
         CursorIdentity::Worktree { path } => flat.iter().position(|entry| {
             matches!(entry, FlatEntry::Worktree { project_idx, worktree_idx } if workspace.projects[*project_idx].worktrees[*worktree_idx].path.to_string_lossy() == path.as_str())
         }),
-        CursorIdentity::Session { worktree_path, pane_id } => flat.iter().position(|entry| {
+        CursorIdentity::Session {
+            worktree_path,
+            terminal_id,
+            pane_id,
+        } => flat.iter().position(|entry| {
             if let FlatEntry::Session { project_idx, worktree_idx, session_idx } = entry {
                 let wt = &workspace.projects[*project_idx].worktrees[*worktree_idx];
-                wt.path.to_string_lossy() == worktree_path.as_str() && wt.sessions[*session_idx].pane_id == *pane_id
-            } else { false }
+                let session = &wt.sessions[*session_idx];
+                wt.path.to_string_lossy() == worktree_path.as_str()
+                    && terminal_id
+                        .as_ref()
+                        .map(|id| session.terminal_id == *id)
+                        .or_else(|| pane_id.as_ref().map(|id| session.pane_id == *id))
+                        .unwrap_or(false)
+            } else {
+                false
+            }
         }),
         CursorIdentity::RoutinesHeader { project_path } => flat.iter().position(|entry| {
             matches!(entry, FlatEntry::RoutinesHeader { project_idx } if workspace.projects[*project_idx].path.to_string_lossy() == project_path.as_str())
@@ -185,12 +206,12 @@ pub fn save_cache(
                 worktree.path.to_string_lossy().into_owned(),
                 worktree.expanded,
             );
-            cache.muted_sessions.extend(
+            cache.muted_terminals.extend(
                 worktree
                     .sessions
                     .iter()
                     .filter(|s| s.muted)
-                    .map(|s| s.pane_id.clone()),
+                    .map(|s| s.terminal_id.clone()),
             );
         }
     }
@@ -226,7 +247,8 @@ pub fn resolve_cursor_identity(
             let wt = &workspace.projects[*project_idx].worktrees[*worktree_idx];
             Some(CursorIdentity::Session {
                 worktree_path: wt.path.to_string_lossy().into_owned(),
-                pane_id: wt.sessions[*session_idx].pane_id.clone(),
+                terminal_id: Some(wt.sessions[*session_idx].terminal_id.clone()),
+                pane_id: None,
             })
         }
         FlatEntry::RoutinesHeader { project_idx } => Some(CursorIdentity::RoutinesHeader {
@@ -264,11 +286,30 @@ muted_sessions = ["pane-1"]
 "#,
         )
         .unwrap();
-        assert_eq!(cache.muted_sessions, HashSet::from(["pane-1".to_string()]));
+        assert_eq!(cache.muted_terminals, HashSet::from(["pane-1".to_string()]));
     }
 
     #[test]
-    fn cursor_identity_round_trips_through_stable_pane_id() {
+    fn legacy_pane_cursor_identity_deserializes_for_live_migration() {
+        let cache: WorkspaceCache = toml::from_str(
+            r#"[cursor_identity.Session]
+worktree_path = "/repo"
+pane_id = "pane-1"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cache.cursor_identity,
+            Some(CursorIdentity::Session {
+                worktree_path: "/repo".into(),
+                terminal_id: None,
+                pane_id: Some("pane-1".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn cursor_identity_round_trips_through_stable_terminal_id() {
         use crate::{
             herdr::AgentStatus,
             model::workspace::{flatten_tree, Project, SessionInfo, WorktreeInfo},
@@ -287,6 +328,7 @@ muted_sessions = ["pane-1"]
                     sessions: vec![SessionInfo {
                         pane_id: "pane-1".into(),
                         terminal_id: "terminal-1".into(),
+                        agent: None,
                         workspace_id: "workspace-1".into(),
                         tab_id: "tab-1".into(),
                         display_name: "agent".into(),
@@ -317,7 +359,8 @@ muted_sessions = ["pane-1"]
             identity,
             CursorIdentity::Session {
                 worktree_path: "/repo".into(),
-                pane_id: "pane-1".into(),
+                terminal_id: Some("terminal-1".into()),
+                pane_id: None,
             }
         );
         assert_eq!(find_cursor_index(&workspace, &flat, &identity), Some(2));

@@ -61,6 +61,7 @@ mod tests {
         SessionInfo {
             pane_id: "pane-1".into(),
             terminal_id: "terminal-1".into(),
+            agent: Some("codex".into()),
             workspace_id: "workspace-1".into(),
             tab_id: "tab-1".into(),
             display_name: "agent".into(),

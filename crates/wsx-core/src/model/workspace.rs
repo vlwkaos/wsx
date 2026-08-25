@@ -39,8 +39,10 @@ pub struct ProjectConfig {
 pub struct SessionInfo {
     /// Stable Herdr pane ID.
     pub pane_id: String,
-    /// Herdr terminal ID used as the foreground attach target.
+    /// Stable Herdr terminal identity used for persistence and foreground attach.
     pub terminal_id: String,
+    /// Herdr's authoritative recognized agent label, when this pane hosts one.
+    pub agent: Option<String>,
     pub workspace_id: String,
     pub tab_id: String,
     /// Pane label shown in the UI.
