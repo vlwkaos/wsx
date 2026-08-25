@@ -18,7 +18,7 @@
 - Use typed protocol-20 socket operations for authoritative snapshots, pane and agent input, reads, workspace/session mutations, and event-driven invalidation, with a 30-second reconciliation fallback.
 - Add `wsx herdr status [--json]` for side-effect-free client, server, socket, protocol, and integration diagnostics.
 - Add explicit `session send-text` and agent-aware `session prompt` commands, plus `peek --trim`; retain `session send-keys` as a deprecated alias for send-text.
-- Refresh the TUI with semantic status colors, accessible state labels, borderless padded primary surfaces, full-frame typed notices, and automatic mobile layout below 60 columns.
+- Refresh the TUI with a neutral near-black semantic theme, accessible state labels, borderless padded primary surfaces, full-frame typed notices, and automatic mobile layout below 60 columns.
 - Add dependency-free `cargo xtask run` and `cargo xtask build` workflows that reuse compatible local Herdr installations or download and verify immutable pinned v0.8.2 host assets without globally installing them.
 
 ### Bug Fixes
@@ -28,6 +28,8 @@
 - Serialize Herdr workspace mutations across wsx processes, keep TUI session close asynchronous, reject duplicate owned workspaces, preserve mutation tombstones across refreshes, and bound/validate protocol output.
 - Refuse to replace malformed, inaccessible, or protocol-incompatible running Herdr servers during automatic startup.
 - Persist cursor and sticky mute state by Herdr terminal identity so pane movement does not lose local state; migrate legacy pane-ID cache records against the first authoritative snapshot.
+- Accept Herdr's typed `pane_info` rename response so session creation and rename no longer fail after a successful mutation, and validate every wsx-used result shape and returned identity.
+- Fall back to Herdr's ANSI-preserved visible pane when a new terminal's recent-history read is empty, avoiding blank session previews and shell peeks.
 - Keep the last accepted Herdr projection visible during reconnects, mark the backend healthy only after a validated snapshot, and close subscription sockets before joining monitor threads on exit.
 
 ## [0.17.0] - 2026-08-15

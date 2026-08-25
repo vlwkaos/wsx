@@ -335,9 +335,19 @@ pub fn create_workspace_with(client: &Client, cwd: &Path, label: &str) -> Result
     let workspace = required_object(result, "workspace", "workspace.create result")?;
     let tab = required_object(result, "tab", "workspace.create result")?;
     let root_pane = required_object(result, "root_pane", "workspace.create result")?;
+    let workspace_id = required_id(workspace, "workspace_id", "created workspace id")?;
+    let tab_id = required_id(tab, "tab_id", "created tab id")?;
+    require_matching_id(tab, "workspace_id", &workspace_id, "created tab workspace")?;
+    require_matching_id(
+        root_pane,
+        "workspace_id",
+        &workspace_id,
+        "created pane workspace",
+    )?;
+    require_matching_id(root_pane, "tab_id", &tab_id, "created pane tab")?;
     Ok(CreatedWorkspace {
-        workspace_id: required_id(workspace, "workspace_id", "created workspace id")?,
-        tab_id: required_id(tab, "tab_id", "created tab id")?,
+        workspace_id,
+        tab_id,
         root_pane_id: required_id(root_pane, "pane_id", "created root pane id")?,
     })
 }
@@ -370,8 +380,17 @@ pub fn create_tab_with(
     }
     let tab = required_object(result, "tab", "tab.create result")?;
     let root_pane = required_object(result, "root_pane", "tab.create result")?;
+    let tab_id = required_id(tab, "tab_id", "created tab id")?;
+    require_matching_id(tab, "workspace_id", workspace_id, "created tab workspace")?;
+    require_matching_id(
+        root_pane,
+        "workspace_id",
+        workspace_id,
+        "created pane workspace",
+    )?;
+    require_matching_id(root_pane, "tab_id", &tab_id, "created pane tab")?;
     Ok(CreatedTab {
-        tab_id: required_id(tab, "tab_id", "created tab id")?,
+        tab_id,
         root_pane_id: required_id(root_pane, "pane_id", "created root pane id")?,
     })
 }
@@ -379,13 +398,13 @@ pub fn create_tab_with(
 pub fn rename_pane_with(client: &Client, pane_id: &str, label: &str) -> Result<()> {
     validate_id(pane_id, "pane")?;
     validate_text(label, "pane label")?;
-    require_ok_result(
-        &client.request(
-            "pane.rename",
-            serde_json::json!({"pane_id": pane_id, "label": label}),
-        )?,
+    let result = client.request(
         "pane.rename",
-    )
+        serde_json::json!({"pane_id": pane_id, "label": label}),
+    )?;
+    let result = require_result_type(&result, "pane.rename", "pane_info")?;
+    let pane = required_object(result, "pane", "pane.rename result")?;
+    require_matching_id(pane, "pane_id", pane_id, "renamed pane")
 }
 
 pub fn close_pane_with(client: &Client, pane_id: &str) -> Result<()> {
@@ -407,11 +426,20 @@ pub fn close_workspace_with(client: &Client, workspace_id: &str) -> Result<()> {
     )
 }
 
-fn require_ok_result(result: &Value, operation: &str) -> Result<()> {
+fn require_result_type<'a>(
+    result: &'a Value,
+    operation: &str,
+    expected: &str,
+) -> Result<&'a serde_json::Map<String, Value>> {
     let result = result_object(result, &format!("{operation} result"))?;
-    if required_str(result, "type", &format!("{operation} result type"))? != "ok" {
+    if required_str(result, "type", &format!("{operation} result type"))? != expected {
         bail!("Herdr {operation} returned an unexpected response type");
     }
+    Ok(result)
+}
+
+fn require_ok_result(result: &Value, operation: &str) -> Result<()> {
+    require_result_type(result, operation, "ok")?;
     Ok(())
 }
 
@@ -421,14 +449,20 @@ pub fn send_text_with(client: &Client, pane_id: &str, text: &str, enter: bool) -
     if text.is_empty() {
         bail!("pane text must not be empty");
     }
-    client.request(
+    require_ok_result(
+        &client.request(
+            "pane.send_text",
+            serde_json::json!({"pane_id": pane_id, "text": text}),
+        )?,
         "pane.send_text",
-        serde_json::json!({"pane_id": pane_id, "text": text}),
     )?;
     if enter {
-        client.request(
+        require_ok_result(
+            &client.request(
+                "pane.send_keys",
+                serde_json::json!({"pane_id": pane_id, "keys": ["enter"]}),
+            )?,
             "pane.send_keys",
-            serde_json::json!({"pane_id": pane_id, "keys": ["enter"]}),
         )?;
     }
     Ok(())
@@ -437,40 +471,50 @@ pub fn send_text_with(client: &Client, pane_id: &str, text: &str, enter: bool) -
 pub fn agent_prompt_with(client: &Client, pane_id: &str, text: &str) -> Result<()> {
     validate_id(pane_id, "pane")?;
     validate_text(text, "agent prompt")?;
-    client.request(
+    let result = client.request(
         "agent.prompt",
         serde_json::json!({"target": pane_id, "text": text}),
     )?;
-    Ok(())
+    let result = require_result_type(&result, "agent.prompt", "agent_prompted")?;
+    let agent = required_object(result, "agent", "agent.prompt result")?;
+    require_matching_id(agent, "pane_id", pane_id, "prompted agent pane")
 }
 
 pub fn send_ctrl_c_with(client: &Client, pane_id: &str) -> Result<()> {
     validate_id(pane_id, "pane")?;
-    client.request(
+    require_ok_result(
+        &client.request(
+            "pane.send_keys",
+            serde_json::json!({"pane_id": pane_id, "keys": ["ctrl+c"]}),
+        )?,
         "pane.send_keys",
-        serde_json::json!({"pane_id": pane_id, "keys": ["ctrl+c"]}),
-    )?;
-    Ok(())
+    )
 }
 
-/// Read recent ANSI-preserved terminal output exactly as emitted by Herdr.
+/// Read recent ANSI output, falling back to the visible screen when Herdr's
+/// recent source has not populated for a newly created terminal.
 pub fn read_recent_ansi_with(client: &Client, pane_id: &str, lines: u32) -> Result<String> {
     validate_read(pane_id, lines)?;
+    let recent = read_pane_ansi_with(client, pane_id, lines, "recent")?;
+    if recent.is_empty() {
+        read_pane_ansi_with(client, pane_id, lines, "visible")
+    } else {
+        Ok(recent)
+    }
+}
+
+fn read_pane_ansi_with(client: &Client, pane_id: &str, lines: u32, source: &str) -> Result<String> {
     let result = client.request(
         "pane.read",
         serde_json::json!({
             "pane_id": pane_id,
-            "source": "recent",
+            "source": source,
             "lines": lines,
             "format": "ansi",
             "strip_ansi": false
         }),
     )?;
-    result
-        .pointer("/read/text")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow!("Herdr pane.read result has no text"))
+    read_result_text(&result, "pane.read", pane_id)
 }
 
 pub fn agent_read_with(client: &Client, pane_id: &str, lines: u32) -> Result<String> {
@@ -485,11 +529,14 @@ pub fn agent_read_with(client: &Client, pane_id: &str, lines: u32) -> Result<Str
             "strip_ansi": true
         }),
     )?;
-    result
-        .pointer("/read/text")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow!("Herdr agent.read result has no text"))
+    read_result_text(&result, "agent.read", pane_id)
+}
+
+fn read_result_text(result: &Value, operation: &str, pane_id: &str) -> Result<String> {
+    let result = require_result_type(result, operation, "pane_read")?;
+    let read = required_object(result, "read", &format!("{operation} result"))?;
+    require_matching_id(read, "pane_id", pane_id, &format!("{operation} pane"))?;
+    required_str(read, "text", &format!("{operation} result")).map(str::to_owned)
 }
 
 fn validate_read(pane_id: &str, lines: u32) -> Result<()> {
@@ -792,6 +839,19 @@ fn required_id(
     let value = required_str(object, field, owner)?;
     validate_id(value, owner)?;
     Ok(value.to_owned())
+}
+
+fn require_matching_id(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+    expected: &str,
+    owner: &str,
+) -> Result<()> {
+    let actual = required_id(object, field, owner)?;
+    if actual != expected {
+        bail!("Herdr {owner} does not match the request");
+    }
+    Ok(())
 }
 
 fn validate_id(value: &str, owner: &str) -> Result<()> {
@@ -1113,6 +1173,9 @@ mod tests {
                 "workspace.create",
                 "tab.create",
                 "pane.rename",
+                "pane.send_text",
+                "pane.send_keys",
+                "agent.prompt",
                 "pane.close",
                 "workspace.close",
             ];
@@ -1132,8 +1195,10 @@ mod tests {
                         serde_json::json!({
                             "type": "workspace_created",
                             "workspace": {"workspace_id": "w1"},
-                            "tab": {"tab_id": "w1:t1"},
-                            "root_pane": {"pane_id": "w1:p1"}
+                            "tab": {"tab_id": "w1:t1", "workspace_id": "w1"},
+                            "root_pane": {
+                                "pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1"
+                            }
                         })
                     }
                     "tab.create" => {
@@ -1141,14 +1206,35 @@ mod tests {
                         assert_eq!(params["cwd"], "/work");
                         serde_json::json!({
                             "type": "tab_created",
-                            "tab": {"tab_id": "w1:t2"},
-                            "root_pane": {"pane_id": "w1:p2"}
+                            "tab": {"tab_id": "w1:t2", "workspace_id": "w1"},
+                            "root_pane": {
+                                "pane_id": "w1:p2", "workspace_id": "w1", "tab_id": "w1:t2"
+                            }
                         })
                     }
                     "pane.rename" => {
                         assert_eq!(params["pane_id"], "w1:p2");
                         assert_eq!(params["label"], "agent");
+                        serde_json::json!({
+                            "type": "pane_info", "pane": {"pane_id": "w1:p2"}
+                        })
+                    }
+                    "pane.send_text" => {
+                        assert_eq!(params["pane_id"], "w1:p2");
+                        assert_eq!(params["text"], "hello");
                         serde_json::json!({"type": "ok"})
+                    }
+                    "pane.send_keys" => {
+                        assert_eq!(params["pane_id"], "w1:p2");
+                        assert_eq!(params["keys"], serde_json::json!(["enter"]));
+                        serde_json::json!({"type": "ok"})
+                    }
+                    "agent.prompt" => {
+                        assert_eq!(params["target"], "w1:p2");
+                        assert_eq!(params["text"], "continue");
+                        serde_json::json!({
+                            "type": "agent_prompted", "agent": {"pane_id": "w1:p2"}
+                        })
                     }
                     "pane.close" => {
                         assert_eq!(params["pane_id"], "w1:p2");
@@ -1175,8 +1261,274 @@ mod tests {
         let tab = create_tab_with(&client, "w1", Path::new("/work"), "agent").unwrap();
         assert_eq!(tab.root_pane_id, "w1:p2");
         rename_pane_with(&client, "w1:p2", "agent").unwrap();
+        send_text_with(&client, "w1:p2", "hello", true).unwrap();
+        agent_prompt_with(&client, "w1:p2", "continue").unwrap();
         close_pane_with(&client, "w1:p2").unwrap();
         close_workspace_with(&client, "w1").unwrap();
+        server.join().unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mutation_responses_reject_inconsistent_target_identity() {
+        let dir = std::env::current_dir()
+            .unwrap()
+            .join(".work/tests")
+            .join(format!(
+                "wsx-herdr-mutation-validation-{}",
+                std::process::id()
+            ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("herdr.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            let responses = [
+                (
+                    "workspace.create",
+                    serde_json::json!({
+                        "type": "workspace_created",
+                        "workspace": {"workspace_id": "w1"},
+                        "tab": {"tab_id": "w1:t1", "workspace_id": "w2"},
+                        "root_pane": {
+                            "pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1"
+                        }
+                    }),
+                ),
+                (
+                    "pane.rename",
+                    serde_json::json!({
+                        "type": "pane_info", "pane": {"pane_id": "w1:p2"}
+                    }),
+                ),
+                (
+                    "agent.prompt",
+                    serde_json::json!({
+                        "type": "agent_prompted", "agent": {"pane_id": "w1:p2"}
+                    }),
+                ),
+            ];
+            for (method, result) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                std::io::BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: Value = serde_json::from_str(&request).unwrap();
+                assert_eq!(request["method"], method);
+                writeln!(
+                    stream,
+                    "{}",
+                    serde_json::json!({"id": request["id"], "result": result})
+                )
+                .unwrap();
+            }
+        });
+
+        let client = Client::new(path).unwrap();
+        assert!(
+            create_workspace_with(&client, Path::new("/work"), "wsx:main")
+                .unwrap_err()
+                .to_string()
+                .contains("does not match")
+        );
+        assert!(rename_pane_with(&client, "w1:p1", "agent")
+            .unwrap_err()
+            .to_string()
+            .contains("does not match"));
+        assert!(agent_prompt_with(&client, "w1:p1", "continue")
+            .unwrap_err()
+            .to_string()
+            .contains("does not match"));
+        server.join().unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn empty_recent_read_falls_back_to_visible_and_validates_pane_identity() {
+        let dir = std::env::current_dir()
+            .unwrap()
+            .join(".work/tests")
+            .join(format!("wsx-herdr-read-fallback-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("herdr.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            for (source, text) in [("recent", ""), ("visible", "shell output")] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                std::io::BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: Value = serde_json::from_str(&request).unwrap();
+                assert_eq!(request["method"], "pane.read");
+                assert_eq!(
+                    request["params"],
+                    serde_json::json!({
+                        "pane_id": "w1:p1",
+                        "source": source,
+                        "lines": 20,
+                        "format": "ansi",
+                        "strip_ansi": false
+                    })
+                );
+                writeln!(
+                    stream,
+                    "{}",
+                    serde_json::json!({
+                        "id": request["id"],
+                        "result": {
+                            "type": "pane_read",
+                            "read": {"pane_id": "w1:p1", "text": text}
+                        }
+                    })
+                )
+                .unwrap();
+            }
+        });
+
+        let client = Client::new(path).unwrap();
+        assert_eq!(
+            read_recent_ansi_with(&client, "w1:p1", 20).unwrap(),
+            "shell output"
+        );
+        server.join().unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn non_empty_recent_read_does_not_request_visible() {
+        let dir = std::env::current_dir()
+            .unwrap()
+            .join(".work/tests")
+            .join(format!("wsx-herdr-read-recent-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("herdr.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            std::io::BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            let request: Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(request["method"], "pane.read");
+            assert_eq!(
+                request["params"],
+                serde_json::json!({
+                    "pane_id": "w1:p1",
+                    "source": "recent",
+                    "lines": 20,
+                    "format": "ansi",
+                    "strip_ansi": false
+                })
+            );
+            writeln!(
+                stream,
+                "{}",
+                serde_json::json!({
+                    "id": request["id"],
+                    "result": {
+                        "type": "pane_read",
+                        "read": {"pane_id": "w1:p1", "text": "recent output"}
+                    }
+                })
+            )
+            .unwrap();
+            stream.flush().unwrap();
+            drop(stream);
+            drop(listener);
+        });
+
+        let client = Client::new(path).unwrap();
+        assert_eq!(
+            read_recent_ansi_with(&client, "w1:p1", 20).unwrap(),
+            "recent output"
+        );
+        server.join().unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn public_reads_reject_wrong_type_identity_and_text() {
+        let dir = std::env::current_dir()
+            .unwrap()
+            .join(".work/tests")
+            .join(format!("wsx-herdr-read-validation-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("herdr.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            let responses = [
+                ("pane.read", serde_json::json!({"type": "wrong"})),
+                (
+                    "pane.read",
+                    serde_json::json!({
+                        "type": "pane_read",
+                        "read": {"pane_id": "w1:p2", "text": "output"}
+                    }),
+                ),
+                ("agent.read", serde_json::json!({"type": "wrong"})),
+                (
+                    "agent.read",
+                    serde_json::json!({
+                        "type": "pane_read",
+                        "read": {"pane_id": "w1:p2", "text": "output"}
+                    }),
+                ),
+                (
+                    "agent.read",
+                    serde_json::json!({
+                        "type": "pane_read",
+                        "read": {"pane_id": "w1:p1", "text": 12}
+                    }),
+                ),
+            ];
+            for (method, result) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                std::io::BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: Value = serde_json::from_str(&request).unwrap();
+                assert_eq!(request["method"], method);
+                writeln!(
+                    stream,
+                    "{}",
+                    serde_json::json!({"id": request["id"], "result": result})
+                )
+                .unwrap();
+            }
+        });
+
+        let client = Client::new(path).unwrap();
+        assert!(read_recent_ansi_with(&client, "w1:p1", 20)
+            .unwrap_err()
+            .to_string()
+            .contains("unexpected response type"));
+        assert!(read_recent_ansi_with(&client, "w1:p1", 20)
+            .unwrap_err()
+            .to_string()
+            .contains("does not match"));
+        assert!(agent_read_with(&client, "w1:p1", 20)
+            .unwrap_err()
+            .to_string()
+            .contains("unexpected response type"));
+        assert!(agent_read_with(&client, "w1:p1", 20)
+            .unwrap_err()
+            .to_string()
+            .contains("does not match"));
+        assert!(agent_read_with(&client, "w1:p1", 20)
+            .unwrap_err()
+            .to_string()
+            .contains("missing or invalid"));
         server.join().unwrap();
         let _ = fs::remove_dir_all(dir);
     }
