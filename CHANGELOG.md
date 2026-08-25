@@ -7,6 +7,7 @@
 - Replace tmux with required Herdr 0.8.2+ protocol 20 sessions. Existing tmux sessions are not imported. Herdr now owns persistent PTYs, pane output, agent lifecycle state, and native agent-session restoration; detach with `Ctrl+b q`.
 - Remove the Git command popup and its pull, push, rebase, and merge actions. Git status, worktree creation, deletion, and merged-worktree cleanup remain available.
 - Remove the `mobile_detach_key` setting. Mobile mode uses Herdr's standard detach gesture.
+- Change the public `wsx-core` session model to expose Herdr pane and terminal identities, optional agent identity, and exhaustive raw `AgentStatus`; downstream exhaustive matches and constructors must be updated.
 
 ### Features
 
@@ -14,6 +15,10 @@
 - Include Herdr v0.8.2 at `vendor/herdr` as an Apache-2.0 Git subtree and package it as a separate companion executable beside `wsx`.
 - Resolve Herdr from `WSX_HERDR_BIN`, an adjacent bundled executable, then `PATH`; start its headless server on demand with locked, bounded readiness checks.
 - Include asched v0.2.0 at `vendor/asched` as a Git subtree and use its local `asched-core` package from both wsx crates.
+- Use typed protocol-20 socket operations for authoritative snapshots, pane and agent input, reads, workspace/session mutations, and event-driven invalidation, with a 30-second reconciliation fallback.
+- Add `wsx herdr status [--json]` for side-effect-free client, server, socket, protocol, and integration diagnostics.
+- Add explicit `session send-text` and agent-aware `session prompt` commands, plus `peek --trim`; retain `session send-keys` as a deprecated alias for send-text.
+- Refresh the TUI with semantic status colors, accessible state labels, borderless padded primary surfaces, full-frame typed notices, and automatic mobile layout below 60 columns.
 
 ### Bug Fixes
 
@@ -21,6 +26,8 @@
 - Close associated Herdr workspaces before deleting or cleaning Git worktrees so persistent processes cannot retain a removed working directory.
 - Serialize Herdr workspace mutations across wsx processes, keep TUI session close asynchronous, reject duplicate owned workspaces, preserve mutation tombstones across refreshes, and bound/validate protocol output.
 - Refuse to replace malformed, inaccessible, or protocol-incompatible running Herdr servers during automatic startup.
+- Persist cursor and sticky mute state by Herdr terminal identity so pane movement does not lose local state; migrate legacy pane-ID cache records against the first authoritative snapshot.
+- Keep the last accepted Herdr projection visible during reconnects, mark the backend healthy only after a validated snapshot, and close subscription sockets before joining monitor threads on exit.
 
 ## [0.17.0] - 2026-08-15
 

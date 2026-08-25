@@ -17,9 +17,9 @@ Simply pressing `n` to iterate sessions where attention is required.
 ```
 ▼ project
   ▾ main * ↑2
-      ◉ wsx_cc_main
+      ◐ wsx_cc_main · working
   ▸ feature-auth ↓1
-      ○ wsx_cc_auth
+      ○ wsx_cc_auth · idle
 ```
 
 ```mermaid
@@ -63,8 +63,8 @@ Source builds of Herdr require Zig 0.15. Install Herdr integrations for the agen
 | **Add project** Press `p`, enter a path. Tab-completion supported. | <img width="457" height="221" alt="image" src="https://github.com/user-attachments/assets/b6c0c7bf-7252-4281-bee4-8dfa4c8d4529" /> |
 | **New worktree** Select a project, press `w`, enter a branch name. | <img width="459" height="52" alt="image" src="https://github.com/user-attachments/assets/8280c712-29a1-43d6-8504-0c7161ab9b86" /> <img width="264" height="90" alt="image" src="https://github.com/user-attachments/assets/c8183cf6-4de8-414a-88e2-1ceac1722080" /> |
 | **Sessions** Select a worktree, press `s`. Each session is a persistent Herdr pane; `d` closes it and `r` changes its label. | <img width="270" height="68" alt="image" src="https://github.com/user-attachments/assets/41569337-057f-44b8-bd39-8f1d2ffa6a1f" /> |
-| **Iterate pending** `n` / `N` to jump between `●` sessions. `x` dismisses; press again to mute `⊘`. `a` cycles active `◉` sessions. | ![Screen Recording 2026-02-27 at 9 35 16 AM](https://github.com/user-attachments/assets/46c6b7be-34b2-4f73-b959-6205d81d1a66) |
-| **Remote control** `S` sends a command to the selected session without entering it. `C` sends Ctrl+C — handy for killing a watcher the moment you spot it. | <img width="464" height="57" alt="image" src="https://github.com/user-attachments/assets/6d466d85-4d92-44c7-abe8-93ec4337f480" /> |
+| **Iterate attention** `n` / `N` jumps between blocked `×` and done `✓` sessions. `x` toggles sticky local mute `⊘`. `a` cycles working `◐` sessions. | ![Screen Recording 2026-02-27 at 9 35 16 AM](https://github.com/user-attachments/assets/46c6b7be-34b2-4f73-b959-6205d81d1a66) |
+| **Remote control** `S` prompts an agent pane or sends text to a shell pane without attaching. `C` sends Ctrl+C. | <img width="464" height="57" alt="image" src="https://github.com/user-attachments/assets/6d466d85-4d92-44c7-abe8-93ec4337f480" /> |
 | **Tabs** Press `T` to open the tab manager — create named tabs and assign projects to them. `{` / `}` cycles tabs. Active tab shown full, others abbreviated in the title bar: `[default\|pe\|wo]` | |
 
 > [!IMPORTANT]
@@ -104,9 +104,9 @@ wsx
 | `h/l` `←/→` | Collapse / expand |
 | `Enter` | Expand · attach session |
 | `[` / `]` | Jump to prev / next project |
-| `a` | Next active session `◉` |
-| `n` / `N` | Next / prev pending session `●` |
-| `x` | Dismiss · mute session |
+| `a` | Next working session `◐` |
+| `n` / `N` | Next / previous blocked `×` or done `✓` session |
+| `x` | Toggle sticky local mute `⊘` |
 | `/` | Incremental search |
 | `?` | Full key reference |
 
@@ -127,8 +127,8 @@ Mouse clicks work: click a row to select, click the preview to attach.
 | `r` | Set alias |
 | `d` | Delete; a running routine is cancelled before deletion |
 | `c` | Clean merged worktrees |
-| `e` | Edit the selected routine, otherwise view `.gtrignore` |
-| `S` | Send command to session |
+| `e` | Edit the selected routine, otherwise view `.gtrconfig` |
+| `S` | Prompt an agent pane or send text to a shell pane |
 | `C` | Send Ctrl+C to session |
 | `T` | Tab manager (add / rename / delete / reorder) |
 | `{` / `}` | Switch to prev / next tab |
@@ -139,7 +139,7 @@ Mouse clicks work: click a row to select, click the preview to attach.
 <details>
 <summary>Herdr runtime</summary>
 
-Herdr owns PTYs, persistence, pane output, agent lifecycle state, and native agent-session restoration. wsx projects Herdr's `working`, `blocked`, `done`, `idle`, and `unknown` states directly instead of inferring state from terminal activity. Install integrations with `herdr integration install <agent>`.
+Herdr owns PTYs, persistence, pane output, agent lifecycle state, and native agent-session restoration. wsx projects Herdr's `working`, `blocked`, `done`, `idle`, and `unknown` states directly instead of inferring state from terminal activity. Agent panes receive prompts through Herdr's agent API; shell panes receive terminal text. Install integrations with `herdr integration install <agent>`.
 
 Herdr's local socket is a same-user control boundary. Do not expose it to untrusted local processes; agent processes running under that user share the same trust domain.
 
@@ -151,7 +151,7 @@ Herdr's local socket is a same-user control boundary. Do not expose it to untrus
 wsx --mobile
 ```
 
-Collapses the preview panel and shows compact key hints for portrait SSH sessions. Herdr uses the same `Ctrl+b q` detach gesture.
+At widths below 60 columns, wsx automatically collapses the preview panel and shows compact key hints. `--mobile` forces this layout at any width. Herdr uses the same `Ctrl+b q` detach gesture.
 
 ## CLI
 
@@ -163,6 +163,7 @@ Collapses the preview panel and shows compact key hints for portrait SSH session
 wsx routine add nightly --cron "0 2 * * *" --arg codex --arg exec --arg=--json --arg '{prompt}' --prompt "Run maintenance" -p wsx
 wsx routine list -p wsx
 wsx routine show nightly -p wsx
+wsx routine edit nightly --cron "0 3 * * *" --arg codex --arg exec -p wsx
 wsx routine disable nightly -p wsx
 wsx routine enable nightly -p wsx
 wsx routine run nightly -p wsx
@@ -187,16 +188,25 @@ wsx worktree delete <branch> [-p <project>]
 wsx worktree list  [-p <project>] [--json]
 
 # Sessions
-wsx session send-keys <pane-id> <keys>
-wsx session peek <pane-id> [-n <lines>] [-o <offset>] [-a]
+wsx session send-text <pane-id> <text> [--no-enter]
+wsx session send-keys <pane-id> <keys> [--no-enter] # deprecated alias
+wsx session prompt <pane-id> <text>
+wsx session peek <pane-id> [-n <lines>] [-o <offset>] [--trim] [-a]
 wsx session rename <pane-id> <label>
 wsx session list   [-p <project>] [--json]
 
+# Tabs
+wsx tab ls
+wsx tab create <name>
+wsx tab rename <old> <new>
+wsx tab own <tab> <project>
+
 # Status
 wsx status [--json]
+wsx herdr status [--json]
 ```
 
-`peek` reads Herdr pane output. `-n` sets the line count (default: 200), `-o` skips lines from the bottom, and `-a` strips ANSI/decorations for agent/LLM consumption.
+`peek` reads Herdr pane output. `-n` sets the line count (default: 200), `-o` skips lines from the bottom, and `-a` strips ANSI/decorations for agent/LLM consumption. `wsx herdr status` reports diagnostics without starting or repairing Herdr.
 
 ## Config
 
@@ -205,7 +215,7 @@ wsx status [--json]
 
 Global config: `~/.config/wsx/config.toml`. Per-project config via `e` key.
 
-wsx resolves Herdr from nonempty `WSX_HERDR_BIN`, an adjacent bundled `herdr`, then `PATH`. It starts `herdr server` only when `herdr status server --json` explicitly reports `not_running`; it never replaces an incompatible running server. `ASCHED_BIN` overrides the `asched` executable used to start the routine daemon. Treat both overrides, `ASCHED_ROOT`, and their same-user sockets and state directories as trusted local controls.
+wsx resolves Herdr from nonempty `WSX_HERDR_BIN`, an adjacent bundled `herdr`, then `PATH`. It starts `herdr server` only when `herdr status server --json` explicitly reports `not_running`; it never replaces an incompatible running server. `HERDR_SOCKET_PATH` may override the reported socket with an absolute path. `ASCHED_BIN` overrides the `asched` executable used to start the routine daemon. Treat these overrides, `ASCHED_ROOT`, and their same-user sockets and state directories as trusted local controls.
 
 </details>
 

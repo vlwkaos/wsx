@@ -1,3 +1,4 @@
+use super::theme;
 use asched_core::routine::{Routine, Trigger};
 use ratatui::{
     prelude::*,
@@ -170,7 +171,7 @@ pub fn render(frame: &mut Frame, area: Rect, form: &RoutineForm, editing: bool, 
     } else {
         "Create routine"
     })
-    .style(Style::default().fg(Color::Magenta).bold())];
+    .style(Style::default().fg(theme::ACCENT).bold())];
     for (index, (label, value)) in labels.iter().zip(values).enumerate() {
         let marker = if index == form.field { "›" } else { " " };
         let locked = index == 0 && editing && !can_rename;
@@ -196,14 +197,14 @@ pub fn render(frame: &mut Frame, area: Rect, form: &RoutineForm, editing: bool, 
             ));
         }
         lines.push(Line::from(vec![
-            Span::styled(prefix, Style::default().fg(Color::DarkGray)),
+            Span::styled(prefix, Style::default().fg(theme::TEXT_SUBTLE)),
             Span::raw(value),
         ]));
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled(
         "Tab/Shift-Tab field  F1 Codex  F2 Claude  Enter save  Esc cancel",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme::TEXT_SUBTLE),
     ));
     frame.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Routine ")),

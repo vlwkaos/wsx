@@ -4,10 +4,12 @@ pub mod ansi;
 pub mod config_modal;
 pub mod confirm;
 pub mod input;
+pub mod notice;
 pub mod picker;
 pub mod preview;
 pub mod routine_editor;
 pub mod tab_manager;
+pub mod theme;
 pub mod workspace_tree;
 
 use crate::app::{App, Mode, SPINNER_FRAMES};
@@ -31,22 +33,30 @@ use wsx_core::model::workspace::Selection;
 
 /// Center a popup of given size within `area`.
 pub fn popup_center(area: Rect, w: u16, h: u16) -> Rect {
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    Rect::new(x, y, w, h)
+    let width = w.min(area.width);
+    let height = h.min(area.height);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    Rect::new(x, y, width, height)
 }
 
 /// Place a popup in the upper third of `area`.
 pub fn popup_upper(area: Rect, w: u16, h: u16) -> Rect {
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + area.height / 3;
-    Rect::new(x, y, w, h)
+    let width = w.min(area.width);
+    let height = h.min(area.height);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = (area.y + area.height / 3).min(area.bottom().saturating_sub(height));
+    Rect::new(x, y, width, height)
 }
 
 // ^ [[wsx UI Patterns]] Responsive layout, capability hints, and direct state projection.
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    app.is_mobile = app.force_mobile || area.width < 60;
     let is_mobile = app.is_mobile;
+    frame
+        .buffer_mut()
+        .set_style(area, Style::default().bg(theme::BACKGROUND));
 
     let hints = build_hints(app, is_mobile);
     let sb_height = status_bar_height(app, area.width, &hints);
@@ -80,13 +90,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     app.preview_area = preview_area;
 
     let is_move_mode = matches!(app.mode, Mode::Move { .. } | Mode::MoveSession { .. });
-    let tree_notify: Option<String> = if app.is_busy() {
-        let spinner = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-        let labels: Vec<&str> = app.jobs.iter().map(|j| j.label.as_str()).collect();
-        Some(format!("{} {}", spinner, labels.join(" · ")))
-    } else {
-        app.status_message.as_ref().map(|msg| format!("✓ {msg}"))
-    };
     render_tree(
         frame,
         tree_area,
@@ -95,10 +98,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         app.tree_selected,
         app.tree_scroll,
         is_move_mode,
-        tree_notify.as_deref(),
         app.active_tab.as_deref(),
         &app.config.tabs,
     );
+    if !is_mobile && tree_area.width > 0 {
+        let divider_x = tree_area.x + tree_area.width.saturating_sub(1);
+        let buffer = frame.buffer_mut();
+        for y in tree_area.y..tree_area.y + tree_area.height {
+            buffer[(divider_x, y)].set_symbol("│");
+            buffer[(divider_x, y)].set_style(Style::default().fg(theme::DIVIDER));
+        }
+    }
 
     if preview_area.width > 0 {
         match app.current_selection() {
@@ -180,6 +190,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     render_status_bar(frame, status_area, app, &hints);
+    notice::render(frame, area, app);
     render_overlay(frame, main_area, app);
 }
 
@@ -264,7 +275,15 @@ fn build_hints(app: &App, mobile: bool) -> String {
                 Selection::Worktree(_, _) => {
                     "Enter:expand  s:session  r:alias  d:del  ?:help".to_string()
                 }
-                Selection::Session(..) => "Enter:attach  d:kill  r:rename  ?:help".to_string(),
+                Selection::Session(pi, wi, si) => {
+                    let send = app
+                        .workspace
+                        .session(pi, wi, si)
+                        .and_then(|session| session.agent.as_ref())
+                        .map(|_| "S:prompt")
+                        .unwrap_or("S:send");
+                    format!("Enter:attach  {send}  C:interrupt  d:kill  ?:help")
+                }
                 Selection::RoutinesHeader(_) => "Enter:expand  u:new routine  ?:help".to_string(),
                 Selection::Routine(..) => {
                     "Enter:details  u:new  e:edit  d:delete  ?:help".to_string()
@@ -305,7 +324,13 @@ fn build_hints(app: &App, mobile: bool) -> String {
                     .map(|s| session_state::derive(s).app_state() == AppSessionState::Active)
                     .unwrap_or(false);
                 let dismiss = if active { "" } else { "(x)mute  ·  " };
-                format!("(m)ove  (r)ename  (d)kill  ·  {}(S)send cmd  (C)ctrl-c  ·  (C-b q)detach  ·  (s)ession  ·  (w)orktree{}  (c)lean  ·  {}", dismiss, tabs, global)
+                let send = app
+                    .workspace
+                    .session(pi, wi, si)
+                    .and_then(|session| session.agent.as_ref())
+                    .map(|_| "(S)prompt agent")
+                    .unwrap_or("(S)send text");
+                format!("(m)ove  (r)ename  (d)kill  ·  {dismiss}{send}  (C)interrupt  ·  (C-b q)detach  ·  (s)ession  ·  (w)orktree{tabs}  (c)lean  ·  {global}")
             }
             Selection::None => "(p) add project".to_string(),
             Selection::RoutinesHeader(_) => {
@@ -380,12 +405,15 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
         let spans = vec![
             Span::styled(
                 " [/] ",
-                Style::default().fg(Color::Black).bg(Color::Cyan).bold(),
+                Style::default()
+                    .fg(theme::BACKGROUND)
+                    .bg(theme::ACCENT)
+                    .bold(),
             ),
-            Span::styled(format!(" {}_", query), Style::default().fg(Color::White)),
+            Span::styled(format!(" {}_", query), Style::default().fg(theme::TEXT)),
             Span::styled(
                 "  Enter: next  Esc: exit",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::TEXT_SUBTLE),
             ),
         ];
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -395,23 +423,44 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
     let label = get_mode_label(app);
     let mode_text = format!(" [{}] ", label);
     let badge_width = mode_text.len();
-    let badge_style = Style::default().fg(Color::Black).bg(Color::Yellow).bold();
+    let badge_style = Style::default()
+        .fg(theme::BACKGROUND)
+        .bg(theme::ACCENT)
+        .bold();
 
-    let (right_text, right_style) = if let Some(v) = &app.update_available {
+    let (right_text, right_style) = if app.is_busy() {
+        let labels = app
+            .jobs
+            .iter()
+            .map(|job| job.label.as_str())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        (
+            format!(
+                " {} {} ",
+                SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()],
+                labels
+            ),
+            Style::default().fg(theme::WORKING),
+        )
+    } else if let Some(v) = &app.update_available {
         (
             format!(" ↑ update available: v{} ", v),
-            Style::default().fg(Color::Black).bg(Color::Yellow).bold(),
+            Style::default()
+                .fg(theme::BACKGROUND)
+                .bg(theme::WARNING)
+                .bold(),
         )
     } else {
         (
             format!(" v{} ", env!("CARGO_PKG_VERSION")),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::TEXT_SUBTLE),
         )
     };
 
     let available = (area.width as usize).saturating_sub(badge_width + 1);
     let hint_lines = wrap_hints(hints, available);
-    let hint_style = Style::default().fg(Color::Gray);
+    let hint_style = Style::default().fg(theme::TEXT_MUTED);
 
     if hint_lines.len() <= 1 || area.height < 2 {
         let text = hint_lines.first().map(|s| s.as_str()).unwrap_or(hints);
@@ -518,7 +567,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Help ")
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::ACCENT));
     let para = Paragraph::new(lines).block(block);
     frame.render_widget(para, popup);
 }

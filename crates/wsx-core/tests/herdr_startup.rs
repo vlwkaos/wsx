@@ -1,27 +1,33 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const HERDR_BIN_ENV: &str = "WSX_HERDR_BIN";
+const HERDR_SOCKET_ENV: &str = "HERDR_SOCKET_PATH";
 
-struct EnvironmentGuard(Option<OsString>);
+struct EnvironmentGuard {
+    name: &'static str,
+    previous: Option<OsString>,
+}
 
 impl EnvironmentGuard {
-    fn set(value: &Path) -> Self {
-        let previous = env::var_os(HERDR_BIN_ENV);
-        env::set_var(HERDR_BIN_ENV, value);
-        Self(previous)
+    fn set(name: &'static str, value: &Path) -> Self {
+        let previous = env::var_os(name);
+        env::set_var(name, value);
+        Self { name, previous }
     }
 }
 
 impl Drop for EnvironmentGuard {
     fn drop(&mut self) {
-        match self.0.take() {
-            Some(value) => env::set_var(HERDR_BIN_ENV, value),
-            None => env::remove_var(HERDR_BIN_ENV),
+        match self.previous.take() {
+            Some(value) => env::set_var(self.name, value),
+            None => env::remove_var(self.name),
         }
     }
 }
@@ -70,10 +76,6 @@ case "${{1-}}" in
     printf '%s\n' "$$" > "$PID_FILE"
     : > "$MARKER"
     exec sleep 3600
-    ;;
-  api)
-    [ "$#" -eq 2 ] && [ "$2" = snapshot ] || exit 2
-    printf '%s\n' '{{"id":"cli:api:snapshot","result":{{"type":"session_snapshot","snapshot":{{"version":"0.8.2","protocol":20,"workspaces":[],"tabs":[],"panes":[],"layouts":[],"agents":[]}}}}}}'
     ;;
   stop)
     [ "$#" -eq 1 ] || exit 2
@@ -153,7 +155,44 @@ fn shell_quote(path: &Path) -> String {
 #[test]
 fn ensure_available_starts_stopped_herdr_once() {
     let fixture = Fixture::new();
-    let _environment = EnvironmentGuard::set(&fixture.bin);
+    let socket = fixture.root.join("herdr.sock");
+    let listener = UnixListener::bind(&socket).expect("bind fake Herdr socket");
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
+        .expect("restrict fake Herdr socket");
+    let socket_server = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().expect("accept snapshot request");
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .expect("read snapshot request");
+            let request: serde_json::Value =
+                serde_json::from_str(&request).expect("parse snapshot request");
+            assert_eq!(request["method"], "session.snapshot");
+            writeln!(
+                stream,
+                "{}",
+                serde_json::json!({
+                    "id": request["id"],
+                    "result": {
+                        "type": "session_snapshot",
+                        "snapshot": {
+                            "version": "0.8.2",
+                            "protocol": 20,
+                            "workspaces": [],
+                            "tabs": [],
+                            "panes": [],
+                            "layouts": [],
+                            "agents": []
+                        }
+                    }
+                })
+            )
+            .expect("write snapshot response");
+        }
+    });
+    let _binary_environment = EnvironmentGuard::set(HERDR_BIN_ENV, &fixture.bin);
+    let _socket_environment = EnvironmentGuard::set(HERDR_SOCKET_ENV, &socket);
 
     let version = wsx_core::herdr::ensure_available()
         .expect("ensure_available should start and await fake Herdr 0.8.2");
@@ -174,6 +213,7 @@ fn ensure_available_starts_stopped_herdr_once() {
         1,
         "Herdr must start exactly once"
     );
+    socket_server.join().expect("join fake Herdr socket");
 
     fixture.stop();
 }

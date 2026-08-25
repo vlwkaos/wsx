@@ -58,10 +58,24 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: TabCmd,
     },
+    /// Inspect the required Herdr backend
+    Herdr {
+        #[command(subcommand)]
+        subcommand: HerdrCmd,
+    },
     /// Manage machine-local scheduled routines
     Routine {
         #[command(subcommand)]
         subcommand: RoutineCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HerdrCmd {
+    /// Report client, server, protocol, socket, and installed-integration health
+    Status {
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -207,13 +221,22 @@ pub enum WorktreeCmd {
 
 #[derive(Subcommand)]
 pub enum SessionCmd {
-    /// Send keys to a session (Enter appended unless --no-enter)
+    /// Deprecated alias for send-text
     SendKeys {
         session: String,
         keys: String,
         #[arg(long)]
         no_enter: bool,
     },
+    /// Send literal text to a terminal pane
+    SendText {
+        session: String,
+        text: String,
+        #[arg(long)]
+        no_enter: bool,
+    },
+    /// Submit a prompt through Herdr's agent-aware input path
+    Prompt { session: String, prompt: String },
     /// Peek at pane output (supports scrollback windowing)
     Peek {
         session: String,
@@ -267,7 +290,13 @@ pub fn run(cmd: Command) -> Result<()> {
                 session: s,
                 keys,
                 no_enter,
-            } => cmd_session_send_keys(&s, &keys, no_enter),
+            } => cmd_session_send_text(&s, &keys, no_enter),
+            SessionCmd::SendText {
+                session,
+                text,
+                no_enter,
+            } => cmd_session_send_text(&session, &text, no_enter),
+            SessionCmd::Prompt { session, prompt } => cmd_session_prompt(&session, &prompt),
             SessionCmd::Peek {
                 session: s,
                 lines,
@@ -288,6 +317,9 @@ pub fn run(cmd: Command) -> Result<()> {
             TabCmd::Create { name } => cmd_tab_create(&name),
             TabCmd::Rename { old, new_name } => cmd_tab_rename(&old, &new_name),
             TabCmd::Own { tab, project } => cmd_tab_own(&tab, &project),
+        },
+        Command::Herdr { subcommand } => match subcommand {
+            HerdrCmd::Status { json } => cmd_herdr_status(json),
         },
         Command::Routine { subcommand } => cmd_routine(subcommand),
     }
@@ -900,8 +932,57 @@ fn cmd_worktree_list(
     Ok(())
 }
 
-fn cmd_session_send_keys(pane_id: &str, keys: &str, no_enter: bool) -> Result<()> {
-    herdr::send_text(pane_id, keys, !no_enter)
+fn cmd_herdr_status(json: bool) -> Result<()> {
+    let report = herdr::diagnostics();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Herdr binary: {}", report.binary);
+    match (&report.client_version, &report.client_error) {
+        (Some(version), _) => println!("Client: {version}"),
+        (_, Some(error)) => println!("Client: unavailable ({error})"),
+        _ => println!("Client: unknown"),
+    }
+    if let Some(server) = report.server {
+        let status = server
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let version = server
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("-");
+        let protocol = server
+            .get("protocol")
+            .and_then(serde_json::Value::as_u64)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".into());
+        let socket = server
+            .get("socket")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("-");
+        println!("Server: {status} · version {version} · protocol {protocol}");
+        println!("Socket: {socket}");
+    } else if let Some(error) = report.server_error {
+        println!("Server: unavailable ({error})");
+    }
+    if let Some(notice) = report.integration_notice {
+        println!("Integrations: {notice}");
+    } else {
+        println!("Integrations: no installed integration updates reported");
+    }
+    Ok(())
+}
+
+fn cmd_session_send_text(pane_id: &str, text: &str, no_enter: bool) -> Result<()> {
+    let client = herdr::Client::local()?;
+    herdr::send_text_with(&client, pane_id, text, !no_enter)
+}
+
+fn cmd_session_prompt(pane_id: &str, prompt: &str) -> Result<()> {
+    let client = herdr::Client::local()?;
+    herdr::agent_prompt_with(&client, pane_id, prompt)
 }
 
 // ^ [[Session Peek]] Herdr read sources, bounds, ANSI, and future agent-aware reads.
@@ -913,7 +994,18 @@ fn cmd_session_peek(
     agent: bool,
 ) -> Result<()> {
     let requested = lines.unwrap_or(200);
-    let raw = herdr::read_recent_ansi(sess, requested.saturating_add(offset))?;
+    let client = herdr::Client::local()?;
+    let read_lines = requested.saturating_add(offset);
+    let recognized_agent = agent
+        && herdr::snapshot_with(&client)?
+            .panes
+            .iter()
+            .any(|pane| pane.pane_id == sess && pane.agent.is_some());
+    let raw = if recognized_agent {
+        herdr::agent_read_with(&client, sess, read_lines)?
+    } else {
+        herdr::read_recent_ansi_with(&client, sess, read_lines)?
+    };
     let kept = raw
         .lines()
         .rev()
@@ -921,7 +1013,7 @@ fn cmd_session_peek(
         .take(requested as usize)
         .collect::<Vec<_>>();
     let mut output = kept.into_iter().rev().collect::<Vec<_>>().join("\n");
-    if agent {
+    if agent && !recognized_agent {
         output = crate::ui::ansi::parse(&output)
             .lines
             .into_iter()

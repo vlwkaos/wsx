@@ -1,6 +1,6 @@
 // Delete confirmation dialog.
 
-use crate::ui::popup_upper;
+use crate::ui::{popup_upper, theme};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Paragraph},
@@ -15,7 +15,7 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, message: &str) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Confirm ")
-        .border_style(Style::default().fg(Color::Red));
+        .border_style(Style::default().fg(theme::ERROR));
 
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
@@ -45,9 +45,9 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, message: &str) {
 /// Reusable confirm/cancel action bar: `[y/Enter] Confirm  [n/Esc] Cancel`
 pub fn render_confirm_actions(frame: &mut Frame, area: Rect) {
     let line = Line::from(vec![
-        Span::styled("[y/Enter]", Style::default().fg(Color::Green).bold()),
+        Span::styled("[y/Enter]", Style::default().fg(theme::SUCCESS).bold()),
         Span::raw(" Confirm  "),
-        Span::styled("[n/Esc]", Style::default().fg(Color::Red).bold()),
+        Span::styled("[n/Esc]", Style::default().fg(theme::ERROR).bold()),
         Span::raw(" Cancel"),
     ]);
     frame.render_widget(Paragraph::new(line), area);
