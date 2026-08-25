@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/wsx",
     "crates/wsx-core",
+    "tools/xtask",
 ]
 exclude = ["vendor/asched", "vendor/herdr"]
 

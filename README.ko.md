@@ -69,6 +69,18 @@ cargo +1.96.1 install --path vendor/herdr --locked
 
 Herdr 소스 빌드에는 Zig 0.15가 필요합니다. 사용하는 agent integration도 설치해야 합니다. wsx는 Herdr protocol 20을 사용하고 headless server를 필요할 때 시작합니다.
 
+### 개발 명령
+
+```sh
+cargo xtask run                 # wsx 빌드 및 실행
+cargo xtask run -- --mobile     # wsx 인자 전달
+cargo xtask build               # target/wsx-dev/{wsx,herdr} 생성
+```
+
+`cargo xtask run`은 호환되는 `WSX_HERDR_BIN`, 인접 binary, `PATH` 설치를 순서대로 사용합니다. 찾지 못하면 host용 공식 Herdr v0.8.2 asset을 내려받아 GitHub immutable release metadata가 공개한 크기와 SHA-256, 실행 파일의 version을 검증하고 `target/wsx-tools/herdr/v0.8.2`에 cache합니다. `cargo xtask build`는 항상 이 검증된 고정 asset으로 host-native 인접 bundle과 notice를 만듭니다. 두 명령 모두 Herdr를 전역 설치하지 않습니다. 다운로드와 검증에는 macOS의 system `/usr/bin/curl`, `/usr/bin/shasum` 또는 Linux의 `/usr/bin/curl`, `/usr/bin/sha256sum`을 사용합니다. macOS와 Linux의 arm64/x86_64를 지원하며, 그 외 host의 `run`은 `WSX_HERDR_BIN`이 필요합니다.
+
+일반 `cargo build`, `cargo test`, `cargo run -p wsx`는 계속 wsx만 빌드합니다. 호환 Herdr가 이미 설치되었거나 명시적으로 설정된 경우 사용합니다. Release package는 계속 `scripts/package-companion.sh`로 source build합니다.
+
 ## 사용법
 
 ```sh

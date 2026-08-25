@@ -19,6 +19,7 @@
 - Add `wsx herdr status [--json]` for side-effect-free client, server, socket, protocol, and integration diagnostics.
 - Add explicit `session send-text` and agent-aware `session prompt` commands, plus `peek --trim`; retain `session send-keys` as a deprecated alias for send-text.
 - Refresh the TUI with semantic status colors, accessible state labels, borderless padded primary surfaces, full-frame typed notices, and automatic mobile layout below 60 columns.
+- Add dependency-free `cargo xtask run` and `cargo xtask build` workflows that reuse compatible local Herdr installations or download and verify immutable pinned v0.8.2 host assets without globally installing them.
 
 ### Bug Fixes
 
