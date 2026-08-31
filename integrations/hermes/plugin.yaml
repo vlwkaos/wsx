@@ -1,0 +1,3 @@
+name: wsx-agent-status
+version: "1.0"
+description: Report Hermes session identity to wsx

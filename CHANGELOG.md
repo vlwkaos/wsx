@@ -14,6 +14,7 @@
 ### Features
 
 - Add a persistent same-user daemon that owns PTYs, Ghostty terminal state, revisions, bounded snapshots/events, writable leases, persistence, pane mutations, normalized agent reports, and executable plugins.
+- Add secure wsx-owned integrations for the 17 agent targets supported by the former Herdr runtime, with `wsx agent install <target>`, a version-scoped TUI startup prompt for detected missing integrations, authoritative lifecycle state where vendor hooks support it, stable pane identity from wsxd, and parenthesized session identity such as `(pi)`.
 - Add semantic keyboard and mouse encoding against authoritative terminal modes, styled cell frames, application-requested cursor shape, viewport resize, explicit lease takeover, and pane split/focus/close operations.
 - Add confirmed Workspace `Q` hard quit and `wsx daemon stop`, both using graceful wsxd cleanup so saved session commands recreate on the next launch.
 - Show sessions directly below worktrees and optional pane rows below multi-pane sessions; use state icons plus authoritative agent names and aggregate automatically detected TCP listeners into sessions and worktrees.
@@ -29,7 +30,7 @@
 - Preserve stable session, pane, terminal, and known-agent identity across daemon restart; recreate each pane from its owner-only saved launch recipe, retain failed panes as exited, and reset stale agent state until its adapter reports again.
 - Harden daemon lifecycle boundaries with exclusive owner-only state tempfiles, deduplicated aggregate-bounded terminal views, and one-shot process-group teardown.
 - Keep PTY spawn, terminal I/O, process termination, and plugin callbacks outside daemon-state locks.
-- Preserve terminal frames only while the matching pane revision remains current, preventing stale output from reappearing after mutation.
+- Keep accepted terminal surfaces in one epoch-, pane-, and terminal-keyed TUI projection, independent of workspace metadata revisions, so agent reports cannot blank live terminals while daemon restart and terminal replacement still discard stale content.
 - Retain existing asynchronous Git/worktree operations, exact deletion tombstones, routines, group selections, cache state, and responsive TUI behavior during the runtime migration.
 - Replace per-key request/handshake round trips and 500 ms full-frame polling with a persistent duplex terminal stream, bounded asynchronous input, event-driven Ghostty dirty-row updates, and an 8 ms foreground wake bound.
 - Preserve Ghostty wide-cell and spacer occupancy through compact wire cells and ratatui projection so erase and wide-to-narrow redraws invalidate the correct columns.

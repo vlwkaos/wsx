@@ -42,6 +42,15 @@ Create a host-native release bundle:
 cargo xtask build  # target/wsx-dev/{wsx,wsxd}
 ```
 
+On startup, the TUI detects installed agent CLIs with missing or outdated wsx integrations and offers to install them. Declining suppresses the prompt until the next wsx version. Install one integration directly with:
+
+```bash
+wsx agent install pi
+wsx agent install claude
+```
+
+Restart the affected agent after installation. Installers honor each agent's standard configuration-directory override and preserve unrelated configuration.
+
 ## Navigation
 
 | Context | Keys |
@@ -60,7 +69,7 @@ Group chips occupy one persistent full-width header row in both Workspace and Te
 
 Use `wsx group ls|create|rename|add|remove` to manage groups. Status, worktree-list, and session-list accept one `--group <name>`. Legacy tab configuration and temporary multi-selection cache data migrate once and are rewritten; tab commands and flags are removed. Recent still accepts trusted `wsx agent report` input, but wsx never infers vendors or semantic activity from processes or terminal output.
 
-Session rows use icons for state and show the adapter-reported agent name without redundant state words: `○` idle, `◐` working, `×` blocked, `✓` done, `!` error, `·` unknown, and `⊘` muted. Ordinary shells omit the agent label. The terminal header shows `project › worktree › session`, the same state icon, the agent when known, and detected TCP listeners. Worktree previews aggregate ports from their sessions. Port detection is best effort and requires `lsof` on macOS or Linux.
+Session rows use icons for state and show the adapter-reported agent name in parentheses without redundant state words: `○` idle, `◐` working, `×` blocked, `✓` done, `!` error, `·` unknown, and `⊘` muted. Ordinary shells omit the agent label. The terminal header shows `project › worktree › session`, the same state icon, the agent when known, and detected TCP listeners. Worktree previews aggregate ports from their sessions. Port detection is best effort and requires `lsof` on macOS or Linux.
 
 Terminal mode forwards ordinary keyboard and mouse input over a persistent stream. The terminal fills the right panel below its one-row breadcrumb without wsx padding. Click the left panel to return to Workspace mode and select that row. Press `Ctrl+A`, then `W` to focus Workspace; `W` also works while Control remains held. `Ctrl+A Ctrl+A` sends a literal `Ctrl+A`; any other suffix forwards both keys to the terminal. Default terminal backgrounds remain transparent; applications such as Vim retain explicit ANSI cell backgrounds and control the visible block, underline, or bar cursor through Ghostty cursor state.
 
@@ -99,6 +108,7 @@ wsx session send-text <session-or-pane> <text>
 wsx session prompt <session-or-pane> <prompt>
 wsx session peek <session-or-pane> [-n VISIBLE_LINES] [--trim]
 wsx session rename <session-id> <label>
+wsx agent install <target>
 wsx agent report <pane> --provider <name> --state <state> [capabilities]
 wsx plugin list [--json]
 wsx plugin reload
@@ -113,7 +123,7 @@ wsx routine ...
 
 Place owner-controlled JSON manifests in `~/.config/wsx/plugins/`. A manifest declares API version `1`, a stable ID, executable argv, subscribed event names, and whether it is enabled. Relative executables resolve inside the plugin directory. wsxd rejects symlinks, group/world-writable files, wrong owners, oversized manifests, invalid tokens, and non-executable commands. Plugin calls have bounded payloads and timeouts.
 
-Agent integrations report normalized `unknown`, `idle`, `working`, `blocked`, `done`, or `error` state plus declared capabilities. Provider-specific metadata and conversation handling remain adapter-owned. wsx does not infer agent state from terminal motion or process trees.
+Agent integrations report normalized `unknown`, `idle`, `working`, `blocked`, `done`, or `error` state plus declared capabilities. Supported install targets are `pi`, `omp`, `claude`, `codex`, `copilot`, `devin`, `droid`, `kimi`, `opencode`, `kilo`, `hermes`, `qodercli`, `qwen`, `cursor`, `mastracode`, `antigravity-cli`, and `grok`. Pi, OMP, Kimi, OpenCode, Kilo, and MastraCode expose authoritative lifecycle state. Other supported hooks expose authoritative agent/session identity with unknown state. Provider-specific metadata and conversation handling remain adapter-owned. wsx does not infer agent state from terminal motion or process trees.
 
 ## Runtime and security
 
@@ -121,7 +131,7 @@ Agent integrations report normalized `unknown`, `idle`, `working`, `blocked`, `d
 - Each terminal pane has one writable client lease. A second client must request takeover explicitly.
 - Events invalidate revisions; clients reconcile from authoritative snapshots.
 - Slow clients do not block PTY parsing. Messages, frames, commands, plugins, and resource counts are bounded.
-- Terminal frames preserve Ghostty wide/spacer occupancy, defer intermediate synchronized-output frames, and use the subscribed viewport for the first baseline.
+- Terminal frames preserve Ghostty wide/spacer occupancy, defer intermediate synchronized-output frames after the first baseline, and use the subscribed viewport for that baseline. Workspace metadata refreshes never own or clear the accepted terminal surface.
 - wsxd persists project, worktree, session, pane, terminal, and known-agent identity. After daemon restart it recreates each pane from an owner-only saved launch recipe; this is a fresh process and terminal buffer, not restoration of the original process or agent conversation.
 - Remote access, live daemon handoff, graphics transport, marketplace installation, and guaranteed process or conversation restoration are not yet supported.
 

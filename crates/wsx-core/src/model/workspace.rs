@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::runtime::{AgentState, PaneId, PaneLayout, SessionId, TerminalFrame, TerminalId};
+use crate::runtime::{AgentState, PaneId, PaneLayout, SessionId, TerminalId};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,8 +50,6 @@ pub struct PaneInfo {
     pub revision: u64,
     pub exited: bool,
     pub listening_ports: Vec<u16>,
-    #[serde(skip)]
-    pub terminal_frame: Option<TerminalFrame>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,8 +64,6 @@ pub struct SessionInfo {
     pub revision: u64,
     pub layout: PaneLayout,
     pub panes: Vec<PaneInfo>,
-    #[serde(skip)]
-    pub terminal_frame: Option<TerminalFrame>,
     #[serde(skip)]
     pub muted: bool,
 }

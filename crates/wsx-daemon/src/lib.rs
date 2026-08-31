@@ -630,7 +630,9 @@ fn stream_terminal_updates(
         }
         let revision = runtime.revision();
         let synchronized_output = runtime.synchronized_output_active();
-        if !synchronized_output && baseline != Some(revision) {
+        // A new subscriber always receives one complete surface. Synchronized
+        // output suppresses only later intermediate revisions.
+        if baseline.is_none() || (!synchronized_output && baseline != Some(revision)) {
             match runtime.frame_update(baseline) {
                 Ok(update) => {
                     baseline = Some(update.revision());
@@ -1625,6 +1627,23 @@ fn bump(daemon: &Daemon, state: &mut State, entity: &str, id: u64) -> u64 {
     revision
 }
 
+// ^ [[Session Model]] Agent adapters need stable pane identity from this spawn
+// boundary; crates/wsx-core/src/integration owns installation and bundled assets.
+fn terminal_agent_environment(pane_id: PaneId) -> Vec<(String, String)> {
+    let mut environment = vec![("WSX_PANE_ID".into(), pane_id.to_string())];
+    if let Some(binary) = std::env::current_exe()
+        .ok()
+        .and_then(|daemon| daemon.parent().map(|parent| parent.join("wsx")))
+        .filter(|binary| binary.is_file())
+    {
+        environment.push((
+            "WSX_AGENT_REPORT_BIN".into(),
+            binary.to_string_lossy().into_owned(),
+        ));
+    }
+    environment
+}
+
 fn spawn_runtime(
     daemon: &Arc<Daemon>,
     pane_id: PaneId,
@@ -1662,6 +1681,7 @@ fn spawn_runtime(
         terminal_id,
         cwd,
         &recipe.command,
+        &terminal_agent_environment(pane_id),
         startup.as_deref(),
         recipe.rows,
         recipe.cols,
@@ -2237,6 +2257,14 @@ mod tests {
             state_path: path.clone(),
         });
         (daemon, path)
+    }
+
+    #[test]
+    fn terminal_agent_environment_exposes_stable_pane_identity() {
+        let environment = terminal_agent_environment(PaneId(42));
+        assert!(environment
+            .iter()
+            .any(|(name, value)| name == "WSX_PANE_ID" && value == "42"));
     }
 
     fn report_agent(daemon: &Arc<Daemon>, state: AgentState) -> Result<Response, ApiError> {

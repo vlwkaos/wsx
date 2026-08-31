@@ -78,9 +78,15 @@ impl Client {
     }
 }
 
-fn validate_hello(response: Response) -> io::Result<()> {
+struct Handshake {
+    epoch: u64,
+}
+
+fn validate_hello(response: Response) -> io::Result<Handshake> {
     match response {
-        Response::Hello { protocol, .. } if protocol == PROTOCOL_VERSION => Ok(()),
+        Response::Hello {
+            protocol, epoch, ..
+        } if protocol == PROTOCOL_VERSION => Ok(Handshake { epoch }),
         Response::Hello { protocol, .. } => Err(io::Error::other(format!(
             "protocol_mismatch: client {PROTOCOL_VERSION}, daemon {protocol}"
         ))),
@@ -147,8 +153,10 @@ const TERMINAL_INPUT_QUEUE: usize = 1024;
 const TERMINAL_UPDATE_QUEUE: usize = 64;
 
 pub struct TerminalStream {
+    epoch: u64,
     input: mpsc::SyncSender<TerminalClientMessage>,
     updates: mpsc::Receiver<TerminalServerMessage>,
+    resync: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
     socket: UnixStream,
     writer: Option<thread::JoinHandle<()>>,
@@ -166,7 +174,7 @@ impl TerminalStream {
     ) -> io::Result<Self> {
         let mut stream = client.connect()?;
         let mut reader = BufReader::with_capacity(64 * 1024, stream.try_clone()?);
-        validate_hello(round_trip_buffered(
+        let handshake = validate_hello(round_trip_buffered(
             &mut stream,
             &mut reader,
             &Request::Hello {
@@ -203,23 +211,35 @@ impl TerminalStream {
         let write_stream = stream.try_clone()?;
         let (input_tx, input_rx) = mpsc::sync_channel(TERMINAL_INPUT_QUEUE);
         let (update_tx, update_rx) = mpsc::sync_channel(TERMINAL_UPDATE_QUEUE);
+        let resync = Arc::new(AtomicBool::new(false));
         let stopping = Arc::new(AtomicBool::new(false));
+        let writer_resync = Arc::clone(&resync);
         let writer_stop = Arc::clone(&stopping);
         let writer = thread::Builder::new()
             .name("wsx-terminal-writer".into())
-            .spawn(move || terminal_writer(write_stream, input_rx, &writer_stop))?;
+            .spawn(move || terminal_writer(write_stream, input_rx, &writer_resync, &writer_stop))?;
         let reader_stop = Arc::clone(&stopping);
         let reader = thread::Builder::new()
             .name("wsx-terminal-reader".into())
             .spawn(move || terminal_reader(reader, update_tx, &reader_stop))?;
         Ok(Self {
+            epoch: handshake.epoch,
             input: input_tx,
             updates: update_rx,
+            resync,
             stopping,
             socket,
             writer: Some(writer),
             reader: Some(reader),
         })
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub fn request_resync(&self) {
+        self.resync.store(true, Ordering::Release);
     }
 
     pub fn try_send(
@@ -251,19 +271,24 @@ impl Drop for TerminalStream {
 fn terminal_writer(
     mut stream: UnixStream,
     input: mpsc::Receiver<TerminalClientMessage>,
+    resync: &AtomicBool,
     stopping: &AtomicBool,
 ) {
     let mut last_heartbeat = Instant::now();
     while !stopping.load(Ordering::Acquire) {
-        let message = match input.recv_timeout(Duration::from_millis(100)) {
-            Ok(message) => Some(message),
-            Err(mpsc::RecvTimeoutError::Timeout)
-                if last_heartbeat.elapsed() >= Duration::from_secs(1) =>
-            {
-                Some(TerminalClientMessage::Heartbeat)
+        let message = if resync.swap(false, Ordering::AcqRel) {
+            Some(TerminalClientMessage::Resync)
+        } else {
+            match input.recv_timeout(Duration::from_millis(100)) {
+                Ok(message) => Some(message),
+                Err(mpsc::RecvTimeoutError::Timeout)
+                    if last_heartbeat.elapsed() >= Duration::from_secs(1) =>
+                {
+                    Some(TerminalClientMessage::Heartbeat)
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => None,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         let Some(message) = message else { continue };
         if matches!(&message, TerminalClientMessage::Heartbeat) {

@@ -110,6 +110,7 @@ impl TerminalRuntime {
         terminal_id: TerminalId,
         cwd: &Path,
         command: &[String],
+        environment: &[(String, String)],
         initial_input: Option<&[u8]>,
         rows: u16,
         cols: u16,
@@ -140,6 +141,9 @@ impl TerminalRuntime {
         builder.args(&command[1..]);
         builder.cwd(cwd);
         builder.env("TERM", "xterm-ghostty");
+        for (name, value) in environment {
+            builder.env(name, value);
+        }
         let child = pair
             .slave
             .spawn_command(builder)
@@ -311,8 +315,9 @@ impl TerminalRuntime {
             .mouse
             .set_size(u32::from(cols), u32::from(rows), 1, 1);
         emulator.sync_input();
+        self.shared.revision.fetch_add(1, Ordering::AcqRel);
         drop(emulator);
-        self.changed();
+        (self.shared.notify)();
         Ok(())
     }
 
@@ -399,8 +404,8 @@ impl TerminalRuntime {
         if let Some(error) = lock(&self.shared.error).clone() {
             return Err(TerminalError::Runtime(error));
         }
-        let revision = self.shared.revision.load(Ordering::Acquire);
         let mut emulator = lock(&self.shared.emulator);
+        let revision = self.shared.revision.load(Ordering::Acquire);
         let Emulator {
             terminal, render, ..
         } = &mut *emulator;
@@ -534,11 +539,6 @@ impl TerminalRuntime {
         mark_exited(&self.shared);
     }
 
-    fn changed(&self) {
-        self.shared.revision.fetch_add(1, Ordering::AcqRel);
-        (self.shared.notify)();
-    }
-
     #[cfg(test)]
     fn new_for_test(rows: u16, cols: u16) -> Result<Self, TerminalError> {
         let writer: Arc<Mutex<Option<Box<dyn Write + Send>>>> =
@@ -611,8 +611,8 @@ fn spawn_reader(
                         let mut emulator = lock(&shared.emulator);
                         emulator.terminal.write(&buffer[..count]);
                         emulator.sync_input();
-                        drop(emulator);
                         shared.revision.fetch_add(1, Ordering::AcqRel);
+                        drop(emulator);
                         (shared.notify)();
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -1038,6 +1038,45 @@ mod tests {
         assert_eq!(frame.cells[0].symbol, "A");
         assert_eq!(frame.cells[0].width, wsx_core::runtime::CellWidth::Narrow);
         assert_eq!(frame.cells[1].width, wsx_core::runtime::CellWidth::Narrow);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawned_process_receives_bounded_runtime_environment() {
+        let command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "printf %s \"$WSX_TEST_MARKER\"; sleep 1".into(),
+        ];
+        let runtime = TerminalRuntime::spawn(
+            PaneId(1),
+            TerminalId(2),
+            &std::env::current_dir().unwrap(),
+            &command,
+            &[("WSX_TEST_MARKER".into(), "pane-42".into())],
+            None,
+            2,
+            40,
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        let mut observed = false;
+        for _ in 0..50 {
+            let text = runtime
+                .frame()
+                .unwrap()
+                .cells
+                .iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>();
+            if text.contains("pane-42") {
+                observed = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        runtime.terminate();
+        assert!(observed);
     }
 
     #[cfg(unix)]

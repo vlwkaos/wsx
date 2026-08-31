@@ -110,6 +110,11 @@ impl From<AgentStateArg> for runtime::AgentState {
 
 #[derive(Subcommand)]
 pub enum AgentCmd {
+    /// Install an agent lifecycle integration
+    Install {
+        #[arg(value_parser = parse_integration_target)]
+        integration: wsx_core::integration::IntegrationTarget,
+    },
     /// Submit an authoritative provider report for one pane
     Report {
         pane: String,
@@ -397,6 +402,7 @@ pub fn run(cmd: Command) -> Result<()> {
             GroupCmd::Remove { group, project } => cmd_group_remove(&group, &project),
         },
         Command::Agent { subcommand } => match subcommand {
+            AgentCmd::Install { integration } => cmd_agent_install(integration),
             AgentCmd::Report {
                 pane,
                 provider,
@@ -843,6 +849,27 @@ mod group_command_tests {
 }
 
 #[cfg(test)]
+mod agent_command_tests {
+    use super::{AgentCmd, Args, Command};
+    use clap::Parser;
+    use wsx_core::integration::IntegrationTarget;
+
+    #[test]
+    fn supported_integration_has_an_explicit_install_command() {
+        let args = Args::try_parse_from(["wsx", "agent", "install", "pi"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Agent {
+                subcommand: AgentCmd::Install {
+                    integration: IntegrationTarget::Pi
+                }
+            })
+        ));
+        assert!(Args::try_parse_from(["wsx", "agent", "install", "unsupported"]).is_err());
+    }
+}
+
+#[cfg(test)]
 mod daemon_command_tests {
     use super::{Args, Command, DaemonCmd};
     use clap::Parser;
@@ -1108,6 +1135,21 @@ fn cmd_worktree_list(
                 .unwrap_or_default();
             println!("{}/{}{} — {}", p.name, wt.branch, git, wt.path.display());
         }
+    }
+    Ok(())
+}
+
+fn parse_integration_target(
+    value: &str,
+) -> std::result::Result<wsx_core::integration::IntegrationTarget, String> {
+    value.parse()
+}
+
+fn cmd_agent_install(integration: wsx_core::integration::IntegrationTarget) -> Result<()> {
+    let installed = wsx_core::integration::install(integration)?;
+    println!("installed {} agent integration", integration.label());
+    for path in installed.paths {
+        println!("  {}", path.display());
     }
     Ok(())
 }

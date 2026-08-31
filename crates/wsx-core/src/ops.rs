@@ -353,11 +353,6 @@ fn sessions_for_worktree(
                         .ok_or_else(|| {
                             anyhow!("session {} references missing pane {}", session.id, pane_id)
                         })?;
-                    let old_pane = old.and_then(|old| {
-                        old.panes
-                            .iter()
-                            .find(|candidate| candidate.pane_id == pane.id)
-                    });
                     Ok(PaneInfo {
                         pane_id: pane.id,
                         terminal_id: pane.terminal_id,
@@ -374,24 +369,10 @@ fn sessions_for_worktree(
                             .copied()
                             .unwrap_or_default()
                             .to_vec(),
-                        terminal_frame: old_pane
-                            .filter(|old| old.revision == pane.revision)
-                            .and_then(|old| old.terminal_frame.clone()),
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
             let revision = session.revision.max(focused.revision);
-            let old_focused = old.and_then(|old| {
-                old.panes
-                    .iter()
-                    .find(|pane| pane.pane_id == focused.id)
-                    .and_then(|pane| pane.terminal_frame.clone())
-                    .or_else(|| {
-                        (old.pane_id == focused.id)
-                            .then(|| old.terminal_frame.clone())
-                            .flatten()
-                    })
-            });
             Ok(SessionInfo {
                 session_id: session.id,
                 pane_id: focused.id,
@@ -405,7 +386,6 @@ fn sessions_for_worktree(
                 revision,
                 layout: session.layout.clone(),
                 panes,
-                terminal_frame: old.filter(|old| old.revision == revision).and(old_focused),
                 muted: old.is_some_and(|session| session.muted),
             })
         })
