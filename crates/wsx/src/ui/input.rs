@@ -1,6 +1,6 @@
 // Input box with cursor movement, unicode support, and path/project completion.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::ui::{popup_upper, theme};
 use ratatui::{
@@ -14,10 +14,8 @@ pub struct InputState {
     pub prompt: String,
     pub completions: Vec<String>,
     pub completion_idx: Option<usize>,
-    history: Vec<String>,
     typed: String, // last text the user typed (before completion navigation)
     path_mode: bool,
-    history_mode: bool,
     project_search: bool,
     // Snapshot of the app's repo cache at modal open. Stays static for the
     // lifetime of the modal; the App owns the live scanner and refreshes
@@ -46,14 +44,6 @@ impl InputState {
         Self::make(prompt.into(), value, false)
     }
 
-    pub fn with_history(prompt: impl Into<String>, history: Vec<String>) -> Self {
-        let mut s = Self::make(prompt.into(), String::new(), false);
-        s.completions = history.iter().rev().cloned().collect();
-        s.history = history;
-        s.history_mode = true;
-        s
-    }
-
     fn make(prompt: String, value: String, path_mode: bool) -> Self {
         let cursor = value.len();
         Self {
@@ -62,10 +52,8 @@ impl InputState {
             prompt,
             completions: vec![],
             completion_idx: None,
-            history: vec![],
             typed: value,
             path_mode,
-            history_mode: false,
             project_search: false,
             scan_dirs: vec![],
         }
@@ -80,8 +68,6 @@ impl InputState {
             self.completions = project_search_completions(&self.buffer, &self.scan_dirs);
         } else if self.path_mode {
             self.completions = path_completions(&self.buffer);
-        } else if self.history_mode {
-            self.completions = history_completions(&self.buffer, &self.history);
         }
     }
 
@@ -100,8 +86,6 @@ impl InputState {
                 self.completions = project_completions(&self.buffer, &self.scan_dirs);
             } else if self.path_mode {
                 self.completions = path_completions(&self.buffer);
-            } else if self.history_mode {
-                self.completions = history_completions(&self.buffer, &self.history);
             }
         }
     }
@@ -196,30 +180,6 @@ fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
     }
 }
 
-fn history_completions(typed: &str, history: &[String]) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    if typed.is_empty() {
-        return history
-            .iter()
-            .rev()
-            .filter(|h| seen.insert(h.as_str()))
-            .cloned()
-            .collect();
-    }
-    let mut scored: Vec<(i32, &str)> = history
-        .iter()
-        .rev()
-        .filter_map(|h| {
-            if !seen.insert(h.as_str()) {
-                return None;
-            }
-            fuzzy_score(typed, h).map(|s| (s, h.as_str()))
-        })
-        .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
-    scored.into_iter().map(|(_, h)| h.to_string()).collect()
-}
-
 /// Path-like input (contains `/` or starts with `~`) gets filesystem
 /// completion — the background scanner can miss repos outside `~`, below
 /// `MAX_SCAN_DEPTH`, or under `SKIP_DIRS`. Bare names stay on fuzzy match
@@ -247,7 +207,7 @@ fn project_completions(query: &str, dirs: &[String]) -> Vec<String> {
             fuzzy_score(query, rel).map(|s| (s, d.as_str()))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
     scored.into_iter().map(|(_, d)| d.to_string()).collect()
 }
 
@@ -296,8 +256,8 @@ fn path_completions(input: &str) -> Vec<String> {
 
 fn expand_input(input: &str) -> (PathBuf, bool) {
     if let Some(home) = dirs::home_dir() {
-        if input.starts_with("~/") {
-            return (home.join(&input[2..]), true);
+        if let Some(stripped) = input.strip_prefix("~/") {
+            return (home.join(stripped), true);
         }
         if input == "~" {
             return (home, true);
@@ -309,7 +269,7 @@ fn expand_input(input: &str) -> (PathBuf, bool) {
     )
 }
 
-fn display_path(path: &PathBuf, prefer_tilde: bool) -> String {
+fn display_path(path: &Path, prefer_tilde: bool) -> String {
     if prefer_tilde {
         if let Some(home) = dirs::home_dir() {
             if let Ok(rel) = path.strip_prefix(&home) {
@@ -389,7 +349,7 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
             let y = popup.y + 2 + vis_idx as u16;
             let selected = state.completion_idx == Some(orig_idx);
             let style = if selected {
-                Style::default().fg(theme::BACKGROUND).bg(theme::ACCENT)
+                theme::accent_selection()
             } else {
                 Style::default().fg(theme::TEXT_MUTED)
             };

@@ -4,33 +4,43 @@
 
 ### Breaking Changes
 
-- Replace tmux with required Herdr 0.8.2+ protocol 20 sessions. Existing tmux sessions are not imported. Herdr now owns persistent PTYs, pane output, agent lifecycle state, and native agent-session restoration; detach with `Ctrl+b q`.
-- Remove the Git command popup and its pull, push, rebase, and merge actions. Git status, worktree creation, deletion, and merged-worktree cleanup remain available.
-- Remove the `mobile_detach_key` setting. Mobile mode uses Herdr's standard detach gesture.
-- Change the public `wsx-core` session model to expose Herdr pane and terminal identities, optional agent identity, and exhaustive raw `AgentStatus`; downstream exhaustive matches and constructors must be updated.
+- Replace the interim Herdr runtime with wsx-owned `wsxd`, `wsx-terminal`, typed project/session/pane APIs, and pinned `libghostty-vt`. Existing external-runtime sessions are not imported.
+- Replace foreground attach and captured previews with a writable semantic terminal viewport and Workspace/Terminal modes. The default configurable focus sequence is `Ctrl+A`, then `W`; double the prefix to send it literally.
+- Change `SessionInfo` to wsx `SessionId`, `PaneId`, and `TerminalId` identities with normalized `AgentState`, pane layouts, and subordinate pane projections.
+- Replace `wsx herdr status` with side-effect-free `wsx runtime status` and replace `WSX_HERDR_BIN` with `WSX_DAEMON_BIN`.
+- Bump the local wsxd protocol to version 6. Version 2 introduced mandatory same-connection handshakes and persistent terminal streams; version 3 added authoritative cell-width occupancy and initial viewport dimensions; version 4 added ephemeral pane listener metadata; version 5 added private restart launch recipes and bounded initial commands; version 6 adds daemon-owned Recent clearing and terminal-entry activity.
+- Replace tab commands, flags, config, cache, and single-membership behavior with canonical multi-group selection. Stored tab data migrates once; legacy CLI surfaces are removed.
 
 ### Features
 
-- Project Herdr's `working`, `blocked`, `done`, `idle`, and `unknown` states directly instead of using process and pane-motion heuristics.
-- Include Herdr v0.8.2 at `vendor/herdr` as an Apache-2.0 Git subtree and package it as a separate companion executable beside `wsx`.
-- Resolve Herdr from `WSX_HERDR_BIN`, an adjacent bundled executable, then `PATH`; start its headless server on demand with locked, bounded readiness checks.
-- Include asched v0.2.0 at `vendor/asched` as a Git subtree and use its local `asched-core` package from both wsx crates.
-- Use typed protocol-20 socket operations for authoritative snapshots, pane and agent input, reads, workspace/session mutations, and event-driven invalidation, with a 30-second reconciliation fallback.
-- Add `wsx herdr status [--json]` for side-effect-free client, server, socket, protocol, and integration diagnostics.
-- Add explicit `session send-text` and agent-aware `session prompt` commands, plus `peek --trim`; retain `session send-keys` as a deprecated alias for send-text.
-- Refresh the TUI with a neutral near-black semantic theme, accessible state labels, borderless padded primary surfaces, full-frame typed notices, and automatic mobile layout below 60 columns.
-- Add dependency-free `cargo xtask run` and `cargo xtask build` workflows that reuse compatible local Herdr installations or download and verify immutable pinned v0.8.2 host assets without globally installing them.
+- Add a persistent same-user daemon that owns PTYs, Ghostty terminal state, revisions, bounded snapshots/events, writable leases, persistence, pane mutations, normalized agent reports, and executable plugins.
+- Add semantic keyboard and mouse encoding against authoritative terminal modes, styled cell frames, application-requested cursor shape, viewport resize, explicit lease takeover, and pane split/focus/close operations.
+- Add confirmed Workspace `Q` hard quit and `wsx daemon stop`, both using graceful wsxd cleanup so saved session commands recreate on the next launch.
+- Show sessions directly below worktrees and optional pane rows below multi-pane sessions; use state icons plus authoritative agent names and aggregate automatically detected TCP listeners into sessions and worktrees.
+- Add multi-membership project Groups with one optional Workspace/CLI filter, multi-toggle assignment, a virtual lowercase `ungrouped` view, a canonical header/content/footer layout with one persistent full-width horizontally scrollable chip header and no Workspace spacer, and a left-sidebar scrollbar.
+- Add a permanent `◷ recent` virtual group backed by persisted authoritative agent `working` reports, session creation, and terminal entry from the previous 24 hours; support reversible `d` removal and preserve activity across wsxd restart without process or terminal inference.
+- Add canonical bounded `wsx.config.yml` project settings and atomically migrate equivalent `.gtrconfig` values without deleting the legacy file.
+- Package adjacent universal `wsx` and `wsxd` executables and provide dependency-free `cargo xtask run` and `cargo xtask build` workflows.
+- Add pinned Nextest 0.9.143 and strict Clippy gates on Linux and macOS CI, with doctests and the production-equivalent runtime smoke kept as explicit steps.
 
 ### Bug Fixes
 
-- Start the separately installed asched daemon on demand through `RoutineClient::request_with_start`, fixing routine commands and TUI refresh when the daemon is not already running.
-- Close associated Herdr workspaces before deleting or cleaning Git worktrees so persistent processes cannot retain a removed working directory.
-- Serialize Herdr workspace mutations across wsx processes, keep TUI session close asynchronous, reject duplicate owned workspaces, preserve mutation tombstones across refreshes, and bound/validate protocol output.
-- Refuse to replace malformed, inaccessible, or protocol-incompatible running Herdr servers during automatic startup.
-- Persist cursor and sticky mute state by Herdr terminal identity so pane movement does not lose local state; migrate legacy pane-ID cache records against the first authoritative snapshot.
-- Accept Herdr's typed `pane_info` rename response so session creation and rename no longer fail after a successful mutation, and validate every wsx-used result shape and returned identity.
-- Fall back to Herdr's ANSI-preserved visible pane when a new terminal's recent-history read is empty, avoiding blank session previews and shell peeks.
-- Keep the last accepted Herdr projection visible during reconnects, mark the backend healthy only after a validated snapshot, and close subscription sockets before joining monitor threads on exit.
+- Reuse a compatible running wsxd and gracefully replace an incompatible daemon before starting the adjacent binary, including protocol 1 and unadvertised protocol 2 shutdown paths; default additive capability fields so protocol 4 can decode and replace a protocol-3 daemon.
+- Preserve stable session, pane, terminal, and known-agent identity across daemon restart; recreate each pane from its owner-only saved launch recipe, retain failed panes as exited, and reset stale agent state until its adapter reports again.
+- Harden daemon lifecycle boundaries with exclusive owner-only state tempfiles, deduplicated aggregate-bounded terminal views, and one-shot process-group teardown.
+- Keep PTY spawn, terminal I/O, process termination, and plugin callbacks outside daemon-state locks.
+- Preserve terminal frames only while the matching pane revision remains current, preventing stale output from reappearing after mutation.
+- Retain existing asynchronous Git/worktree operations, exact deletion tombstones, routines, group selections, cache state, and responsive TUI behavior during the runtime migration.
+- Replace per-key request/handshake round trips and 500 ms full-frame polling with a persistent duplex terminal stream, bounded asynchronous input, event-driven Ghostty dirty-row updates, and an 8 ms foreground wake bound.
+- Preserve Ghostty wide-cell and spacer occupancy through compact wire cells and ratatui projection so erase and wide-to-narrow redraws invalidate the correct columns.
+- Buffer large terminal-frame reads, resize during subscription before the first baseline, and suppress intermediate frames while child synchronized-output mode is active.
+- Keep saturated terminal update queues interruptible during shutdown and recheck stream wake predicates under the daemon mutex so output notifications cannot be stranded until the fallback timeout.
+- Make `Ctrl+A`, then `W` the default Terminal-to-Workspace focus sequence; accept `W` while the prefix modifier remains held, double the prefix to send literal `Ctrl+A`, and preserve other suffixes as terminal input.
+- Keep the bottom status bar to one context-aware line with parenthesized key hints, remove TUI send-text while preserving CLI automation, restore the one-row terminal breadcrumb, let terminal content fill the remaining right panel, and treat a left-panel click as one Workspace-mode selection action.
+- Route bounded chrome backgrounds through semantic theme roles, keep primary surfaces and default terminal backgrounds transparent while preserving explicit ANSI cell backgrounds, and derive sidebar rendering and mouse hit-testing from one geometry contract.
+- Render the TUI's config-backed workspace immediately while daemon readiness and one-pass Git discovery continue in the background; remove duplicate startup worktree scans.
+- Move compact notifications above the bottom-right status line and suppress obvious Terminal/Workspace mode-change notifications.
+- Wait for runtime-smoke daemon socket removal on normal and failure cleanup so repeated tests cannot leave orphan daemons.
 
 ## [0.17.0] - 2026-08-15
 

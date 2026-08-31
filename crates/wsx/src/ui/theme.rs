@@ -1,15 +1,20 @@
-use ratatui::style::Color;
+use ratatui::{
+    prelude::Stylize,
+    style::{Color, Style},
+};
 
-// ^ Semantic wsx chrome. Terminal ANSI colors remain owned by ui/ansi.rs.
-pub const BACKGROUND: Color = Color::Rgb(8, 9, 11);
-pub const PANEL: Color = Color::Rgb(14, 16, 20);
-pub const PANEL_ACTIVE: Color = Color::Rgb(19, 22, 28);
-pub const ROW_SELECTED: Color = Color::Rgb(36, 43, 55);
-pub const ROW_MOVE: Color = Color::Rgb(27, 58, 49);
+// ^ Semantic wsx chrome. Explicit terminal-cell ANSI backgrounds remain content-owned.
+const BACKGROUND: Color = Color::Rgb(8, 9, 11);
+const PANEL: Color = Color::Rgb(14, 16, 20);
+const PANEL_ACTIVE: Color = Color::Rgb(19, 22, 28);
+const ROW_SELECTED: Color = Color::Rgb(36, 43, 55);
+const ROW_MOVE: Color = Color::Rgb(27, 58, 49);
 pub const TEXT: Color = Color::Rgb(224, 229, 237);
 pub const TEXT_MUTED: Color = Color::Rgb(143, 152, 166);
 pub const TEXT_SUBTLE: Color = Color::Rgb(99, 108, 123);
 pub const ACCENT: Color = Color::Rgb(102, 153, 255);
+const RECENT_ACCENT: Color = Color::Rgb(122, 184, 171);
+const RECENT_SURFACE: Color = Color::Rgb(22, 38, 38);
 pub const SUCCESS: Color = Color::Rgb(88, 190, 112);
 pub const WORKING: Color = Color::Rgb(226, 190, 118);
 pub const DONE: Color = Color::Rgb(91, 199, 188);
@@ -18,7 +23,60 @@ pub const UNKNOWN: Color = Color::Rgb(99, 108, 123);
 pub const WARNING: Color = Color::Rgb(224, 151, 91);
 pub const ERROR: Color = Color::Rgb(234, 105, 126);
 pub const DIVIDER: Color = Color::Rgb(34, 39, 48);
-pub const TOAST_BACKGROUND: Color = Color::Rgb(24, 28, 35);
+const TOAST_BACKGROUND: Color = Color::Rgb(24, 28, 35);
+
+// ^ [[wsx UI Patterns]] Backgrounds are bounded state affordances, never
+// whole-surface defaults. Terminal ANSI backgrounds remain content-owned.
+pub fn group_chip(active: bool) -> Style {
+    if active {
+        Style::default().fg(PANEL).bg(ACCENT).bold()
+    } else {
+        Style::default().fg(TEXT_MUTED).bg(PANEL_ACTIVE)
+    }
+}
+
+pub fn recent_group_chip(active: bool) -> Style {
+    if active {
+        Style::default().fg(PANEL).bg(RECENT_ACCENT).bold()
+    } else {
+        Style::default().fg(RECENT_ACCENT).bg(RECENT_SURFACE)
+    }
+}
+
+pub fn group_scroll_control() -> Style {
+    Style::default().fg(TEXT_MUTED).bold()
+}
+
+pub fn selected_row(move_mode: bool) -> Style {
+    Style::default()
+        .fg(TEXT)
+        .bg(if move_mode { ROW_MOVE } else { ROW_SELECTED })
+        .bold()
+}
+
+pub fn accent_selection() -> Style {
+    Style::default().fg(BACKGROUND).bg(ACCENT)
+}
+
+pub fn mode_badge() -> Style {
+    accent_selection().bold()
+}
+
+pub fn toast_surface() -> Style {
+    Style::default().bg(TOAST_BACKGROUND)
+}
+
+pub fn toast_accent(accent: Color) -> Style {
+    Style::default().bg(accent)
+}
+
+pub fn scrollbar_track() -> Style {
+    Style::default().fg(DIVIDER)
+}
+
+pub fn scrollbar_thumb() -> Style {
+    Style::default().fg(TEXT_MUTED)
+}
 
 #[cfg(test)]
 mod tests {
@@ -32,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    fn neutral_black_surfaces_and_text_keep_their_visual_hierarchy() {
+    fn semantic_palette_and_bounded_background_roles_keep_their_hierarchy() {
         for color in [
             BACKGROUND,
             PANEL,
@@ -43,6 +101,8 @@ mod tests {
             TEXT_MUTED,
             TEXT_SUBTLE,
             ACCENT,
+            RECENT_ACCENT,
+            RECENT_SURFACE,
             SUCCESS,
             WORKING,
             DONE,
@@ -61,5 +121,38 @@ mod tests {
         assert!(brightness(PANEL_ACTIVE) < brightness(ROW_SELECTED));
         assert!(brightness(TEXT_SUBTLE) < brightness(TEXT_MUTED));
         assert!(brightness(TEXT_MUTED) < brightness(TEXT));
+        assert_eq!(Style::default().bg, None);
+        assert_eq!(group_chip(true).bg, Some(ACCENT));
+        assert_eq!(group_chip(false).bg, Some(PANEL_ACTIVE));
+        assert_eq!(recent_group_chip(true).bg, Some(RECENT_ACCENT));
+        assert_eq!(recent_group_chip(false).bg, Some(RECENT_SURFACE));
+        assert_ne!(recent_group_chip(true), group_chip(true));
+        assert_eq!(selected_row(false).bg, Some(ROW_SELECTED));
+        assert_eq!(mode_badge().bg, Some(ACCENT));
+    }
+
+    #[test]
+    fn chrome_backgrounds_flow_through_semantic_theme_roles() {
+        let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui");
+        for entry in std::fs::read_dir(ui_dir).unwrap().filter_map(Result::ok) {
+            let path = entry.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            for (line_number, line) in source.lines().enumerate() {
+                if !line.contains(".bg(") || path.file_name().unwrap() == "theme.rs" {
+                    continue;
+                }
+                let terminal_ansi_background = path.file_name().unwrap() == "preview.rs"
+                    && line.contains("style = style.bg(Color::Rgb");
+                assert!(
+                    terminal_ansi_background,
+                    "direct chrome background at {}:{}",
+                    path.display(),
+                    line_number + 1
+                );
+            }
+        }
     }
 }

@@ -1,5 +1,5 @@
 // wsx — workspace manager TUI
-// Manages git worktrees + Herdr panes via ratatui.
+// Manages project worktrees and wsxd-owned terminals via ratatui.
 
 mod action;
 mod app;
@@ -19,18 +19,21 @@ fn main() -> Result<()> {
     let args = cli::Args::parse();
     if matches!(
         args.command,
-        Some(cli::Command::Routine { .. } | cli::Command::Herdr { .. })
+        Some(
+            cli::Command::Routine { .. }
+                | cli::Command::Runtime { .. }
+                | cli::Command::Daemon { .. }
+        )
     ) {
         return cli::run(args.command.expect("matched Some"));
     }
-    // ^ Herdr protocol boundary: https://herdr.dev/docs/socket-api/
-    if let Err(error) = wsx_core::herdr::ensure_available() {
-        eprintln!("wsx requires Herdr 0.8.2+ with protocol 20: {error}\nInstall or upgrade Herdr, then ensure `herdr status server --json` is available.\nhttps://herdr.dev/docs/socket-api/");
-        std::process::exit(1);
-    }
-
     match args.command {
-        Some(cmd) => cli::run(cmd),
+        Some(cmd) => {
+            // ^ [[wsx Architecture]] CLI mutations require a ready adjacent daemon.
+            wsx_core::runtime::ensure_available().context("wsxd is unavailable")?;
+            cli::run(cmd)
+        }
+        // The TUI renders its config-backed shell before background runtime discovery completes.
         None => run_tui(args.mobile),
     }
 }
@@ -39,7 +42,12 @@ fn run_tui(mobile: bool) -> Result<()> {
     // Restore terminal on panic so the shell isn't left in raw mode.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = crossterm::execute!(std::io::stderr(), crossterm::terminal::LeaveAlternateScreen,);
+        let _ = crossterm::execute!(
+            std::io::stderr(),
+            crossterm::event::DisableBracketedPaste,
+            crossterm::event::DisableMouseCapture,
+            crossterm::terminal::LeaveAlternateScreen,
+        );
         let _ = crossterm::terminal::disable_raw_mode();
         default_hook(info);
     }));

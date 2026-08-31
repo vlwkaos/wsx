@@ -1,237 +1,140 @@
 # wsx
 
-**ENG** | [한국어](README.ko.md)
+Project-first terminal workspace manager for Git worktrees.
 
-TUI workspace manager for Git worktrees and persistent Herdr sessions.
+wsx presents **Project → Worktree → Session → Pane** in a keyboard-first TUI. Sessions stay visible as task contexts. Multi-pane sessions expose optional pane rows beneath them. The adjacent `wsxd` daemon owns PTYs and pinned `libghostty-vt` state, so terminals continue running while clients disconnect.
 
-<!-- screenshot -->
-![Screen Recording 2026-03-06 at 12 02 09 AM_1](https://github.com/user-attachments/assets/8427aa7d-bfa2-4349-847e-9f374c44e7f0)
+## Features
 
-
-## The core idea
-
-Keep a live view of every project → worktree → Herdr pane in a sidebar.
-Herdr supplies agent lifecycle state and restores supported agent conversations after a server restart.
-Simply pressing `n` to iterate sessions where attention is required.
-
-```
-▼ project
-  ▾ main * ↑2
-      ◐ wsx_cc_main · working
-  ▸ feature-auth ↓1
-      ○ wsx_cc_auth · idle
-```
-
-```mermaid
-flowchart LR
-  P[Project] --> W1[Worktree main]
-  P --> W2[Worktree feature-auth]
-  W1 --> S1[Session: nvim]
-  W1 --> S2[Session: dev]
-  W2 --> S3[Session: dev]
-```
+- Git project and worktree discovery, creation, deletion, cleanup, status, aliases, and project groups
+- Persistent sessions and optional horizontal or vertical pane splits
+- Writable styled terminal viewport with application cursor shape, resize, keyboard, and mouse support
+- Workspace mode for navigation and Terminal mode for direct PTY input
+- One explicit writable lease per pane with explicit takeover
+- Typed, versioned, bounded same-user local protocol and authoritative snapshots
+- Provider-neutral agent states and capabilities
+- Trusted executable plugins with bounded versioned manifests
+- Project routines through the existing asched boundary
+- macOS and Linux runtime support
 
 ## Install
 
-**macOS (Homebrew)**
-```sh
-brew tap vlwkaos/tap
-brew install wsx
+Release archives contain adjacent `wsx` and `wsxd` executables. The Homebrew formula must be updated to the 0.18 archive before publication.
+
+### Build from source
+
+Requirements: Rust 1.96.1 and Zig 0.15. Install `cargo-nextest` 0.9.143 to run the development test suite.
+
+```bash
+cargo install cargo-nextest --version 0.9.143 --locked
 ```
 
-The Homebrew package installs both `wsx` and its Herdr 0.8.2 companion binary.
-
-**macOS / Linux (cargo)**
-```sh
-cargo install wsx
-cargo +1.96.1 install herdr --version 0.8.2 --locked
+```bash
+git clone https://github.com/vlwkaos/wsx.git
+cd wsx
+cargo +1.96.1 build --workspace --locked
+cargo xtask run
 ```
 
-**Build from source**
-```sh
-cargo install --path crates/wsx
-cargo +1.96.1 install --path vendor/herdr --locked
+Create a host-native release bundle:
+
+```bash
+cargo xtask build  # target/wsx-dev/{wsx,wsxd}
 ```
 
-Source builds of Herdr require Zig 0.15. Install Herdr integrations for the agents you use. wsx requires Herdr protocol 20 and starts the headless server on demand.
+## Navigation
 
-### Development commands
-
-```sh
-cargo xtask run                 # build and run wsx
-cargo xtask run -- --mobile     # forward arguments to wsx
-cargo xtask build               # create target/wsx-dev/{wsx,herdr}
-```
-
-`cargo xtask run` prefers a compatible `WSX_HERDR_BIN`, adjacent binary, or `PATH` installation. If none exists, it downloads the official Herdr v0.8.2 host asset, verifies the size and SHA-256 published by GitHub's immutable release metadata plus the reported version, then caches it under `target/wsx-tools/herdr/v0.8.2`. `cargo xtask build` always uses that verified pinned asset and creates a host-native adjacent bundle with notices. Neither command installs Herdr globally. Acquisition uses the system `/usr/bin/curl` and `/usr/bin/shasum` on macOS or `/usr/bin/sha256sum` on Linux. macOS and Linux on arm64 or x86_64 are supported; other hosts must provide `WSX_HERDR_BIN` for `run`.
-
-Ordinary `cargo build`, `cargo test`, and `cargo run -p wsx` still build wsx only. Use them when a compatible Herdr is already installed or explicitly configured. Release packaging remains source-based and uses `scripts/package-companion.sh`.
-
-## Guide
-
-| Feature | Screenshot |
+| Context | Keys |
 |---|---|
-| **Project config** `.gtrconfig` at repo root — post-create hook, auto-copy env files into new worktrees. Press `e` to view. | <img width="473" height="245" alt="image" src="https://github.com/user-attachments/assets/41a1ef82-9ebb-49aa-993e-4ae9f1ea0a83" /> |
-| **Add project** Press `p`, enter a path. Tab-completion supported. | <img width="457" height="221" alt="image" src="https://github.com/user-attachments/assets/b6c0c7bf-7252-4281-bee4-8dfa4c8d4529" /> |
-| **New worktree** Select a project, press `w`, enter a branch name. | <img width="459" height="52" alt="image" src="https://github.com/user-attachments/assets/8280c712-29a1-43d6-8504-0c7161ab9b86" /> <img width="264" height="90" alt="image" src="https://github.com/user-attachments/assets/c8183cf6-4de8-414a-88e2-1ceac1722080" /> |
-| **Sessions** Select a worktree, press `s`. Each session is a persistent Herdr pane; `d` closes it and `r` changes its label. | <img width="270" height="68" alt="image" src="https://github.com/user-attachments/assets/41569337-057f-44b8-bd39-8f1d2ffa6a1f" /> |
-| **Iterate attention** `n` / `N` jumps between blocked `×` and done `✓` sessions. `x` toggles sticky local mute `⊘`. `a` cycles working `◐` sessions. | ![Screen Recording 2026-02-27 at 9 35 16 AM](https://github.com/user-attachments/assets/46c6b7be-34b2-4f73-b959-6205d81d1a66) |
-| **Remote control** `S` prompts an agent pane or sends text to a shell pane without attaching. `C` sends Ctrl+C. | <img width="464" height="57" alt="image" src="https://github.com/user-attachments/assets/6d466d85-4d92-44c7-abe8-93ec4337f480" /> |
-| **Tabs** Press `T` to open the tab manager — create named tabs and assign projects to them. `{` / `}` cycles tabs. Active tab shown full, others abbreviated in the title bar: `[default\|pe\|wo]` | |
+| Workspace | `j/k` move, `h/l` collapse/expand, `Enter` select |
+| Project | `p` add project, `w` add worktree, `u` add routine, `g` assign group |
+| Worktree | `s` add session, `r` alias, `d` delete |
+| Session or pane | `Enter` Terminal mode, `C` interrupt |
+| Pane | `|` split right, `-` split down, `d` close |
+| Groups | `T` open groups, `{`/`}` switch, `g` assign selected project |
+| Global | `/` search, `R` refresh, `?` help, `q` quit TUI, `Q` confirm hard quit and stop wsxd |
 
-> [!IMPORTANT]
-> **Returning to wsx from inside a session:** press `Ctrl+b q`. Herdr keeps the pane and agent process running.
+Groups are ordered, persistent project filters. A project can belong to multiple groups, while Workspace applies at most one group filter; selecting none shows every project. The virtual **ungrouped** group matches projects with no memberships. **◷ recent** matches projects touched in the last 24 hours by an authoritative agent `working` report, session creation, or entering a terminal session. In Recent, `d` on a project removes it from Recent until the next qualifying touch without unregistering it.
 
-### .gtrconfig
+Group chips occupy one persistent full-width header row in both Workspace and Terminal modes. Workspace content begins immediately below it; in Terminal mode, the existing breadcrumb occupies the next content row. When chips exceed the row, clickable `‹`/`›` controls and the mouse wheel scroll by whole chip; no `+N` overflow is used. Project assignment mode still toggles multiple memberships, and the left sidebar adds a right-edge scrollbar when its rows overflow.
 
-Place `.gtrconfig` at the root of any project repo to automate worktree setup.
+Use `wsx group ls|create|rename|add|remove` to manage groups. Status, worktree-list, and session-list accept one `--group <name>`. Legacy tab configuration and temporary multi-selection cache data migrate once and are rewritten; tab commands and flags are removed. Recent still accepts trusted `wsx agent report` input, but wsx never infers vendors or semantic activity from processes or terminal output.
 
-> [!TIP]
-> New worktrees automatically run `postCreate` and receive copies of listed env files — no manual setup per branch.
+Session rows use icons for state and show the adapter-reported agent name without redundant state words: `○` idle, `◐` working, `×` blocked, `✓` done, `!` error, `·` unknown, and `⊘` muted. Ordinary shells omit the agent label. The terminal header shows `project › worktree › session`, the same state icon, the agent when known, and detected TCP listeners. Worktree previews aggregate ports from their sessions. Port detection is best effort and requires `lsof` on macOS or Linux.
 
-```ini
-[hooks]
-  postCreate = npm install
+Terminal mode forwards ordinary keyboard and mouse input over a persistent stream. The terminal fills the right panel below its one-row breadcrumb without wsx padding. Click the left panel to return to Workspace mode and select that row. Press `Ctrl+A`, then `W` to focus Workspace; `W` also works while Control remains held. `Ctrl+A Ctrl+A` sends a literal `Ctrl+A`; any other suffix forwards both keys to the terminal. Default terminal backgrounds remain transparent; applications such as Vim retain explicit ANSI cell backgrounds and control the visible block, underline, or bar cursor through Ghostty cursor state.
 
-[copy]
-  include = .env
-  include = .env.local
-  exclude = .env.production
+Configure the escape sequence in `~/.config/wsx/config.toml`:
+
+```toml
+terminal_escape_chord = "ctrl+a w"
 ```
 
-Press `e` on any project or worktree to view its config.
+The prefix must include a modifier. A single modified chord remains supported. Names include `ctrl`, `alt`, `shift`, `super`, `space`, `tab`, `esc`, and single characters.
 
-## Usage
+## Project configuration
 
-```sh
-wsx
+The canonical project-root configuration is `wsx.config.yml`:
+
+```yaml
+hooks:
+  postCreate: cargo build
+copy:
+  include:
+    - .env.example
+  exclude:
+    - target
 ```
 
-<details>
-<summary>Navigation</summary>
-
-| Key | Action |
-|-----|--------|
-| `j/k` `↑/↓` | Move cursor |
-| `h/l` `←/→` | Collapse / expand |
-| `Enter` | Expand · attach session |
-| `[` / `]` | Jump to prev / next project |
-| `a` | Next working session `◐` |
-| `n` / `N` | Next / previous blocked `×` or done `✓` session |
-| `x` | Toggle sticky local mute `⊘` |
-| `/` | Incremental search |
-| `?` | Full key reference |
-
-Mouse clicks work: click a row to select, click the preview to attach.
-
-</details>
-
-<details>
-<summary>Workspaces</summary>
-
-| Key | Action |
-|-----|--------|
-| `p` | Add project |
-| `w` | New worktree |
-| `s` | New session |
-| `u` | New routine for the selected project; `F1`/`F2` apply editable Codex/Claude presets |
-| `m` | Reorder project or session |
-| `r` | Set alias |
-| `d` | Delete; a running routine is cancelled before deletion |
-| `c` | Clean merged worktrees |
-| `e` | Edit the selected routine, otherwise view `.gtrconfig` |
-| `S` | Prompt an agent pane or send text to a shell pane |
-| `C` | Send Ctrl+C to session |
-| `T` | Tab manager (add / rename / delete / reorder) |
-| `{` / `}` | Switch to prev / next tab |
-| `m` + `h`/`l` | Move project to adjacent tab (in Move mode) |
-
-</details>
-
-<details>
-<summary>Herdr runtime</summary>
-
-Herdr owns PTYs, persistence, pane output, agent lifecycle state, and native agent-session restoration. wsx projects Herdr's `working`, `blocked`, `done`, `idle`, and `unknown` states directly instead of inferring state from terminal activity. Agent panes receive prompts through Herdr's agent API; shell panes receive terminal text. Install integrations with `herdr integration install <agent>`.
-
-Herdr's local socket is a same-user control boundary. Do not expose it to untrusted local processes; agent processes running under that user share the same trust domain.
-
-</details>
-
-## Mobile / SSH
-
-```sh
-wsx --mobile
-```
-
-At widths below 60 columns, wsx automatically collapses the preview panel and shows compact key hints. `--mobile` forces this layout at any width. Herdr uses the same `Ctrl+b q` detach gesture.
+If a project has `.gtrconfig` but no `wsx.config.yml`, wsx reads the legacy values and atomically creates an equivalent YAML file. It leaves `.gtrconfig` in place so you can review and remove it later. An existing `wsx.config.yml` always wins. Files larger than 64 KiB, malformed values, and unknown fields are rejected without falling back to legacy behavior.
 
 ## CLI
 
-### Machine-local routines
-
-`wsx routine` is a project-scoped client for [asched](https://github.com/vlwkaos/asched). Each wsx project node shows routines registered for the same canonical project path. Install the `asched` executable; wsx starts its single machine-local daemon on demand through `asched-core`.
-
-```sh
-wsx routine add nightly --cron "0 2 * * *" --arg codex --arg exec --arg=--json --arg '{prompt}' --prompt "Run maintenance" -p wsx
-wsx routine list -p wsx
-wsx routine show nightly -p wsx
-wsx routine edit nightly --cron "0 3 * * *" --arg codex --arg exec -p wsx
-wsx routine disable nightly -p wsx
-wsx routine enable nightly -p wsx
-wsx routine run nightly -p wsx
-wsx routine cancel nightly -p wsx
-wsx routine logs nightly -p wsx
-wsx routine fire --kind filesystem.changed --event-id delivery-123 --payload '{"path":"src/main.rs"}' -p wsx
-wsx routine delete nightly -p wsx
-```
-
-wsx and asched resolve the same platform-default state directory, overridden by `ASCHED_ROOT`. Register projects with `asched project add`; that registry remains the scheduling allowlist. The single asched daemon owns routine writes, scheduling, execution, and event deduplication. wsx sends optimistic revisions for mutations and reports conflicts, protocol mismatch, deduplicated/no-match events, and already-running routines.
-
-In the TUI, press `u` on a project or any of its entries to create the first routine, then expand its project-level `sched` section for later entries. `e` edits, and confirmed `d` deletes or cancels then deletes. The form keeps command argv as a JSON array so arguments never pass through a shell. The preview shows configuration, next/last run, log paths, currently allowed actions, and final agent output. On mobile, Enter opens the routine detail full-screen.
-
-Routine persistence, retained history/logs, cron and event semantics, execution cleanup, and daemon lifecycle belong to asched. TUI daemon I/O runs on background workers. The exact asched v0.2.0 source is included at `vendor/asched` as a Git subtree, and both wsx crates use its local `asched-core` path.
-
-Update the subtree with `git subtree pull --prefix vendor/asched https://github.com/vlwkaos/asched.git <tag> --squash`, then update the pinned version if the tag changes.
-
-```sh
-# Worktrees
-wsx worktree create <branch> [-p <project>]
-wsx worktree delete <branch> [-p <project>]
-wsx worktree list  [-p <project>] [--json]
-
-# Sessions
-wsx session send-text <pane-id> <text> [--no-enter]
-wsx session send-keys <pane-id> <keys> [--no-enter] # deprecated alias
-wsx session prompt <pane-id> <text>
-wsx session peek <pane-id> [-n <lines>] [-o <offset>] [--trim] [-a]
-wsx session rename <pane-id> <label>
-wsx session list   [-p <project>] [--json]
-
-# Tabs
-wsx tab ls
-wsx tab create <name>
-wsx tab rename <old> <new>
-wsx tab own <tab> <project>
-
-# Status
+```bash
 wsx status [--json]
-wsx herdr status [--json]
+wsx worktree list|create|delete
+wsx session list
+wsx session send-keys <session-or-pane> <keys>
+wsx session send-text <session-or-pane> <text>
+wsx session prompt <session-or-pane> <prompt>
+wsx session peek <session-or-pane> [-n VISIBLE_LINES] [--trim]
+wsx session rename <session-id> <label>
+wsx agent report <pane> --provider <name> --state <state> [capabilities]
+wsx plugin list [--json]
+wsx plugin reload
+wsx runtime status [--json]
+wsx daemon stop
+wsx routine ...
 ```
 
-`peek` reads Herdr pane output. `-n` sets the line count (default: 200), `-o` skips lines from the bottom, and `-a` strips ANSI/decorations for agent/LLM consumption. `wsx herdr status` reports diagnostics without starting or repairing Herdr.
+`wsx runtime status` and `wsx daemon stop` never start the daemon. `Q` in Workspace asks for confirmation, gracefully stops wsxd and all live PTYs, then exits the TUI. Normal wsx startup reuses a compatible running daemon. If the local protocol changed, wsx requests graceful shutdown, waits for cleanup, and starts the adjacent or `PATH`-resolved `wsxd`. Cross-version process handoff is not supported, so the old PTYs end; the new daemon preserves each wsx session and pane identity and recreates its saved launch command instead. `WSX_DAEMON_BIN` and `WSX_SOCKET` are trusted same-user overrides.
 
-## Config
+## Plugins and agents
 
-<details>
-<summary>Global config</summary>
+Place owner-controlled JSON manifests in `~/.config/wsx/plugins/`. A manifest declares API version `1`, a stable ID, executable argv, subscribed event names, and whether it is enabled. Relative executables resolve inside the plugin directory. wsxd rejects symlinks, group/world-writable files, wrong owners, oversized manifests, invalid tokens, and non-executable commands. Plugin calls have bounded payloads and timeouts.
 
-Global config: `~/.config/wsx/config.toml`. Per-project config via `e` key.
+Agent integrations report normalized `unknown`, `idle`, `working`, `blocked`, `done`, or `error` state plus declared capabilities. Provider-specific metadata and conversation handling remain adapter-owned. wsx does not infer agent state from terminal motion or process trees.
 
-wsx resolves Herdr from nonempty `WSX_HERDR_BIN`, an adjacent bundled `herdr`, then `PATH`. It starts `herdr server` only when `herdr status server --json` explicitly reports `not_running`; it never replaces an incompatible running server. `HERDR_SOCKET_PATH` may override the reported socket with an absolute path. `ASCHED_BIN` overrides the `asched` executable used to start the routine daemon. Treat these overrides, `ASCHED_ROOT`, and their same-user sockets and state directories as trusted local controls.
+## Runtime and security
 
-</details>
+- The socket and state directory are owner-only. Do not expose them to untrusted processes running as the same user.
+- Each terminal pane has one writable client lease. A second client must request takeover explicitly.
+- Events invalidate revisions; clients reconcile from authoritative snapshots.
+- Slow clients do not block PTY parsing. Messages, frames, commands, plugins, and resource counts are bounded.
+- Terminal frames preserve Ghostty wide/spacer occupancy, defer intermediate synchronized-output frames, and use the subscribed viewport for the first baseline.
+- wsxd persists project, worktree, session, pane, terminal, and known-agent identity. After daemon restart it recreates each pane from an owner-only saved launch recipe; this is a fresh process and terminal buffer, not restoration of the original process or agent conversation.
+- Remote access, live daemon handoff, graphics transport, marketplace installation, and guaranteed process or conversation restoration are not yet supported.
 
-## Inspired by
+## Development
 
-- [git-worktree-runner](https://github.com/coderabbitai/git-worktree-runner)
-- [agent-of-empires](https://github.com/njbrake/agent-of-empires)
+```bash
+cargo check --workspace --all-targets --locked
+cargo nextest run --workspace --locked
+cargo test --workspace --locked --doc
+cargo clippy --workspace --all-targets --locked -- -D warnings
+python3 scripts/runtime-smoke.py
+```
+
+Nextest runs each test in its own process. Keep the separate `cargo test --doc` step because Nextest does not run doctests.
+
+See `THIRD-PARTY-NOTICES.md` for vendored terminal dependencies.

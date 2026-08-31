@@ -1,4 +1,4 @@
-// Per-project .gtrconfig editor overlay.
+// Per-project wsx.config.yml editor overlay.
 
 use crate::ui::{popup_center, theme};
 use ratatui::{
@@ -13,8 +13,8 @@ pub fn render_config_modal(
     config: &ProjectConfig,
     project_name: &str,
 ) {
-    let width = area.width.min(60).max(40);
-    let height = area.height.min(16).max(8);
+    let width = area.width.clamp(40, 60);
+    let height = area.height.clamp(8, 16);
     let popup = popup_center(area, width, height);
 
     frame.render_widget(Clear, popup);
@@ -60,7 +60,7 @@ pub fn render_config_modal(
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "e: edit .gtrignore  Esc: close",
+        "(e)dit wsx.config.yml  Esc: close",
         Style::default().fg(theme::TEXT_MUTED),
     )));
 

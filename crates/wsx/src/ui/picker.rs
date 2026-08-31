@@ -51,8 +51,8 @@ impl PickerState {
 }
 
 pub fn render_picker(frame: &mut Frame, area: Rect, state: &mut PickerState) {
-    let width = area.width.min(60).max(30);
-    let height = area.height.min(20).max(6);
+    let width = area.width.clamp(30, 60);
+    let height = area.height.clamp(6, 20);
     let popup = popup_center(area, width, height);
 
     frame.render_widget(Clear, popup);
@@ -69,7 +69,7 @@ pub fn render_picker(frame: &mut Frame, area: Rect, state: &mut PickerState) {
                 .title(format!(" {} ", state.title))
                 .border_style(Style::default().fg(theme::ACCENT)),
         )
-        .highlight_style(Style::default().fg(theme::BACKGROUND).bg(theme::ACCENT));
+        .highlight_style(theme::accent_selection());
 
     frame.render_stateful_widget(list, popup, &mut state.list_state);
 }

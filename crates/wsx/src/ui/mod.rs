@@ -1,35 +1,48 @@
 // Layout orchestration
 
-pub mod ansi;
 pub mod config_modal;
 pub mod confirm;
+pub mod group_manager;
 pub mod input;
+pub mod layout;
 pub mod notice;
 pub mod picker;
 pub mod preview;
 pub mod routine_editor;
-pub mod tab_manager;
 pub mod theme;
+pub mod workspace_nav;
 pub mod workspace_tree;
 
-use crate::app::{App, Mode, SPINNER_FRAMES};
-use crate::session_state::{self, AppSessionState};
+use crate::app::{App, GroupManagerPurpose, Mode, SPINNER_FRAMES};
 use crate::ui::{
     config_modal::render_config_modal,
     confirm::render_confirm,
+    group_manager::{render_group_manager, GroupManagerView},
     input::render_input,
+    layout::{FrameLayout, TerminalLayout},
     preview::{
-        render_empty_preview, render_project_preview, render_session_preview,
-        render_worktree_preview,
+        render_empty_preview, render_pane_preview, render_project_preview, render_session_preview,
+        render_terminal_breadcrumb, render_worktree_preview,
     },
-    tab_manager::render_tab_manager,
-    workspace_tree::{compute_scroll, render_tree},
+    workspace_nav::{fit_group_strip, SidebarLayout, WORKSPACE_HEADER_TITLE},
+    workspace_tree::{compute_scroll, render_tree, TreeView},
 };
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Paragraph},
 };
-use wsx_core::model::workspace::Selection;
+use std::time::{SystemTime, UNIX_EPOCH};
+use wsx_core::{config::global::project_is_recent, model::workspace::Selection};
+
+fn compact_port_label(ports: &[u16]) -> Option<String> {
+    let port = ports.first()?;
+    let more = ports.len().saturating_sub(1);
+    Some(if more == 0 {
+        format!(":{port}")
+    } else {
+        format!(":{port} +{more}")
+    })
+}
 
 /// Center a popup of given size within `area`.
 pub fn popup_center(area: Rect, w: u16, h: u16) -> Rect {
@@ -49,91 +62,223 @@ pub fn popup_upper(area: Rect, w: u16, h: u16) -> Rect {
     Rect::new(x, y, width, height)
 }
 
+fn render_workspace_header(frame: &mut Frame, area: Rect, app: &App) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            WORKSPACE_HEADER_TITLE,
+            Style::default().fg(theme::TEXT).bold(),
+        )),
+        area,
+    );
+    let groups = app.config.ordered_group_keys();
+    let strip = fit_group_strip(
+        &groups,
+        app.active_group.as_ref(),
+        usize::from(area.width),
+        app.group_header_scroll,
+    );
+    if let Some(cells) = &strip.left_cells {
+        frame.render_widget(
+            Paragraph::new(Span::styled("‹", theme::group_scroll_control())),
+            Rect::new(area.x.saturating_add(cells.start as u16), area.y, 1, 1),
+        );
+    }
+    for chip in strip.chips {
+        let style = if matches!(chip.key, wsx_core::config::global::GroupKey::Recent) {
+            theme::recent_group_chip(chip.active)
+        } else {
+            theme::group_chip(chip.active)
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(format!(" {} ", chip.label), style)),
+            Rect::new(
+                area.x.saturating_add(chip.cells.start as u16),
+                area.y,
+                chip.cells.end.saturating_sub(chip.cells.start) as u16,
+                1,
+            ),
+        );
+    }
+    if let Some(cells) = &strip.right_cells {
+        frame.render_widget(
+            Paragraph::new(Span::styled("›", theme::group_scroll_control())),
+            Rect::new(area.x.saturating_add(cells.start as u16), area.y, 1, 1),
+        );
+    }
+}
+
 // ^ [[wsx UI Patterns]] Responsive layout, capability hints, and direct state projection.
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     app.is_mobile = app.force_mobile || area.width < 60;
     let is_mobile = app.is_mobile;
-    frame
-        .buffer_mut()
-        .set_style(area, Style::default().bg(theme::BACKGROUND));
+    let status = status_bar_view(app);
+    let layout = FrameLayout::new(area);
+    let main_area = layout.content;
+    app.group_header_area = layout.header;
+    render_workspace_header(frame, layout.header, app);
 
-    let hints = build_hints(app, is_mobile);
-    let sb_height = status_bar_height(app, area.width, &hints);
-    let main_area = Rect::new(
-        area.x,
-        area.y,
-        area.width,
-        area.height.saturating_sub(sb_height),
-    );
-    let status_area = Rect::new(
-        area.x,
-        area.y + area.height.saturating_sub(sb_height),
-        area.width,
-        sb_height,
-    );
-
-    let (tree_area, preview_area) = if is_mobile {
+    let (tree_area, preview_area) = if is_mobile && matches!(app.mode, Mode::Terminal { .. }) {
+        (Rect::default(), main_area)
+    } else if is_mobile {
         (main_area, Rect::default())
     } else {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(36), Constraint::Min(0)])
+            .constraints([Constraint::Length(32), Constraint::Min(0)])
             .split(main_area);
         (chunks[0], chunks[1])
     };
 
-    let visible_height = tree_area.height.saturating_sub(2) as usize;
+    let visible_height = SidebarLayout::new(tree_area).list.height as usize;
     app.tree_visible_height = visible_height;
     app.tree_scroll = compute_scroll(app.tree_selected, visible_height, app.tree_scroll);
     app.tree_area = tree_area;
     app.preview_area = preview_area;
+    let has_terminal_preview = matches!(
+        app.current_selection(),
+        Selection::Session(..) | Selection::Pane(..)
+    );
+    let terminal_layout = has_terminal_preview.then(|| TerminalLayout::new(preview_area));
+    app.terminal_area = terminal_layout.map_or(Rect::default(), |layout| layout.viewport);
+    let terminal_breadcrumb_area =
+        terminal_layout.map_or(Rect::default(), |layout| layout.breadcrumb);
 
     let is_move_mode = matches!(app.mode, Mode::Move { .. } | Mode::MoveSession { .. });
-    render_tree(
-        frame,
-        tree_area,
-        &app.workspace,
-        app.flat(),
-        app.tree_selected,
-        app.tree_scroll,
-        is_move_mode,
-        app.active_tab.as_deref(),
-        &app.config.tabs,
-    );
+    if tree_area.width > 0 && tree_area.height > 0 {
+        if let Mode::GroupManager {
+            selected,
+            scroll,
+            purpose,
+        } = &app.mode
+        {
+            let assign_path = match purpose {
+                GroupManagerPurpose::Assign { project_idx } => app
+                    .workspace
+                    .projects
+                    .get(*project_idx)
+                    .map(|p| p.path.as_path()),
+                GroupManagerPurpose::Switch => None,
+            };
+            let now_unix_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX);
+            let recent_project_count = app
+                .workspace
+                .projects
+                .iter()
+                .filter(|project| {
+                    project_is_recent(
+                        project.last_agent_active_unix_ms,
+                        project.last_terminal_active_unix_ms,
+                        now_unix_ms,
+                    )
+                })
+                .count();
+            render_group_manager(
+                frame,
+                tree_area,
+                GroupManagerView {
+                    selected: *selected,
+                    scroll: *scroll,
+                    config: &app.config,
+                    active_group: app.active_group.as_ref(),
+                    assign_path,
+                    recent_project_count,
+                },
+            );
+        } else {
+            render_tree(
+                frame,
+                tree_area,
+                TreeView {
+                    workspace: &app.workspace,
+                    flat: app.flat(),
+                    selected: app.tree_selected,
+                    scroll_offset: app.tree_scroll,
+                    is_move_mode,
+                },
+            );
+        }
+    }
     if !is_mobile && tree_area.width > 0 {
         let divider_x = tree_area.x + tree_area.width.saturating_sub(1);
+        let divider_color = if matches!(app.mode, Mode::Terminal { .. }) {
+            theme::TEXT_SUBTLE
+        } else {
+            theme::DIVIDER
+        };
         let buffer = frame.buffer_mut();
         for y in tree_area.y..tree_area.y + tree_area.height {
             buffer[(divider_x, y)].set_symbol("│");
-            buffer[(divider_x, y)].set_style(Style::default().fg(theme::DIVIDER));
+            buffer[(divider_x, y)].set_style(Style::default().fg(divider_color));
         }
     }
 
     if preview_area.width > 0 {
         match app.current_selection() {
             Selection::Session(pi, wi, si) => {
-                let found = app.workspace.projects.get(pi).and_then(|p| {
-                    let wt = p.worktrees.get(wi)?;
-                    let sess = wt.sessions.get(si)?;
-                    let title =
-                        format!("{} › {} › {}", p.name, wt.display_name(), sess.display_name);
-                    Some((&sess.pane_id, title))
-                });
-                if let Some((sess_name, title)) = found {
-                    let parsed = app.parsed_preview.get(sess_name);
-                    // Re-borrow sess for render — split borrows on different fields
-                    if let Some(sess) = app
-                        .workspace
-                        .projects
-                        .get(pi)
-                        .and_then(|p| p.worktrees.get(wi))
-                        .and_then(|wt| wt.sessions.get(si))
-                    {
-                        render_session_preview(frame, preview_area, sess, &title, parsed);
-                    } else {
-                        render_empty_preview(frame, preview_area);
-                    }
+                if let Some((project, worktree, session)) =
+                    app.workspace.projects.get(pi).and_then(|project| {
+                        project.worktrees.get(wi).and_then(|worktree| {
+                            worktree
+                                .sessions
+                                .get(si)
+                                .map(|session| (project, worktree, session))
+                        })
+                    })
+                {
+                    render_terminal_breadcrumb(
+                        frame,
+                        terminal_breadcrumb_area,
+                        &project.name,
+                        worktree.display_name(),
+                        session,
+                        None,
+                    );
+                    render_session_preview(
+                        frame,
+                        app.terminal_area,
+                        session,
+                        matches!(app.mode, Mode::Terminal { .. }),
+                    );
+                } else {
+                    render_empty_preview(frame, preview_area);
+                }
+            }
+            Selection::Pane(pi, wi, si, pane_idx) => {
+                if let Some((project, worktree, session, pane)) =
+                    app.workspace.projects.get(pi).and_then(|project| {
+                        project.worktrees.get(wi).and_then(|worktree| {
+                            worktree.sessions.get(si).and_then(|session| {
+                                session
+                                    .panes
+                                    .get(pane_idx)
+                                    .map(|pane| (project, worktree, session, pane))
+                            })
+                        })
+                    })
+                {
+                    render_terminal_breadcrumb(
+                        frame,
+                        terminal_breadcrumb_area,
+                        &project.name,
+                        worktree.display_name(),
+                        session,
+                        Some(pane),
+                    );
+                    render_pane_preview(
+                        frame,
+                        app.terminal_area,
+                        pane,
+                        matches!(app.mode, Mode::Terminal { .. }),
+                    );
                 } else {
                     render_empty_preview(frame, preview_area);
                 }
@@ -189,7 +334,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
     }
 
-    render_status_bar(frame, status_area, app, &hints);
+    render_status_bar(frame, layout.footer, app, &status);
     notice::render(frame, area, app);
     render_overlay(frame, main_area, app);
 }
@@ -212,11 +357,7 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
                 render_config_modal(frame, area, &config, &name);
             }
         }
-        Mode::Help => render_help(frame, area),
-        Mode::TabManager { selected } => {
-            let sel = *selected;
-            render_tab_manager(frame, area, sel, &app.config, app.active_tab.as_deref());
-        }
+        Mode::Help => render_help(frame, area, app),
         Mode::RoutineEditor {
             form,
             original_name,
@@ -246,266 +387,170 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
                 }
             }
         }
-        Mode::Normal | Mode::Move { .. } | Mode::MoveSession { .. } | Mode::Search { .. } => {}
+        Mode::Workspace
+        | Mode::Terminal { .. }
+        | Mode::Move { .. }
+        | Mode::MoveSession { .. }
+        | Mode::Search { .. }
+        | Mode::GroupManager { .. } => {}
     }
 }
 
-fn get_mode_label(app: &App) -> &'static str {
-    match &app.mode {
-        Mode::Normal => "NORMAL",
-        Mode::Input { .. } => "INPUT",
-        Mode::Confirm { .. } => "CONFIRM",
-        Mode::Config { .. } => "CONFIG",
-        Mode::Move { .. } | Mode::MoveSession { .. } => "MOVE",
-        Mode::Help => "HELP",
-        Mode::Search { .. } => "SEARCH",
-        Mode::TabManager { .. } => "TABS",
-        Mode::RoutineEditor { .. } => "ROUTINE",
-        Mode::RoutineDetail { .. } => "DETAIL",
-    }
+struct StatusBarView {
+    mode: &'static str,
+    hints: Vec<String>,
 }
 
-fn build_hints(app: &App, mobile: bool) -> String {
-    if mobile {
-        return match &app.mode {
-            Mode::Normal => match app.current_selection() {
+fn status_bar_view(app: &App) -> StatusBarView {
+    let (mode, hints) = match &app.mode {
+        Mode::Workspace => {
+            let hints = match app.current_selection() {
+                Selection::Project(_)
+                    if app.active_group == Some(wsx_core::config::global::GroupKey::Recent) =>
+                {
+                    vec!["(w)orktree", "(g)roup", "(d)remove recent"]
+                }
+                Selection::Project(_) if app.config.groups.is_empty() => {
+                    vec!["(w)orktree", "(T)groups", "(d)unregister"]
+                }
                 Selection::Project(_) => {
-                    "Enter:expand  w:tree  u:routine  d:del  ?:help".to_string()
+                    vec!["(w)orktree", "(g)roup", "(d)unregister"]
                 }
-                Selection::Worktree(_, _) => {
-                    "Enter:expand  s:session  r:alias  d:del  ?:help".to_string()
+                Selection::Worktree(..) => vec!["(s)ession", "(d)elete", "(?)help"],
+                Selection::Session(..) => vec!["(C)interrupt", "(d)close", "(?)help"],
+                Selection::Pane(..) => {
+                    vec!["(|)split", "(-)split", "(C)interrupt", "(d)close"]
                 }
-                Selection::Session(pi, wi, si) => {
-                    let send = app
-                        .workspace
-                        .session(pi, wi, si)
-                        .and_then(|session| session.agent.as_ref())
-                        .map(|_| "S:prompt")
-                        .unwrap_or("S:send");
-                    format!("Enter:attach  {send}  C:interrupt  d:kill  ?:help")
-                }
-                Selection::RoutinesHeader(_) => "Enter:expand  u:new routine  ?:help".to_string(),
-                Selection::Routine(..) => {
-                    "Enter:details  u:new  e:edit  d:delete  ?:help".to_string()
-                }
-                Selection::None => "p:add project".to_string(),
-            },
-            Mode::Input { .. } => "Esc: cancel".to_string(),
-            Mode::Confirm { .. } => "y:yes  n:no".to_string(),
-            _ => build_hints(app, false),
-        };
-    }
-    let has_tabs = !app.config.tabs.is_empty();
-    let global = if has_tabs {
-        "(/)search  (a/A) active  ·  ({/})tab nav  ·  (n/N) pending  ·  (e)config  (?)help"
-    } else {
-        "(/)search  (a/A) active  ·  (n/N) pending  ·  (e)config  (?)help"
-    };
-    let tabs = if has_tabs { "  (T)abs" } else { "" };
-    match &app.mode {
-        Mode::Normal => match app.current_selection() {
-            Selection::Project(_) => {
-                format!(
-                    "(m)ove  (w)orktree  (u)routine{}  (d)el  (c)lean  ·  {}",
-                    tabs, global
-                )
-            }
-            Selection::Worktree(_, _) => format!(
-                "(s)ession  (r)alias  (d)el  ·  (w)orktree{}  (c)lean  ·  {}",
-                tabs, global
+                Selection::RoutinesHeader(_) => vec!["(u)new", "(?)help"],
+                Selection::Routine(..) => vec!["(e)dit", "(d)elete", "(?)help"],
+                Selection::None => vec!["(p)add project", "(?)help"],
+            };
+            ("WORKSPACE", hints.into_iter().map(str::to_string).collect())
+        }
+        Mode::Terminal { .. } => (
+            "TERMINAL",
+            vec![format!("{} workspace", app.terminal_escape_label())],
+        ),
+        Mode::Input { .. } => ("INPUT", vec!["Enter: confirm".into(), "Esc: cancel".into()]),
+        Mode::Confirm { .. } => ("CONFIRM", vec!["(y)es".into(), "(n)o".into()]),
+        Mode::Config { .. } => ("CONFIG", vec!["(e)dit".into(), "Esc: close".into()]),
+        Mode::Move { .. } | Mode::MoveSession { .. } => {
+            ("MOVE", vec!["(j/k)reorder".into(), "Esc: done".into()])
+        }
+        Mode::Help => ("HELP", vec!["Esc: close".into()]),
+        Mode::Search { .. } => ("SEARCH", vec!["Enter: next".into(), "Esc: exit".into()]),
+        Mode::GroupManager { purpose, .. } => match purpose {
+            GroupManagerPurpose::Switch => (
+                "GROUPS",
+                vec![
+                    "(j/k)navigate".into(),
+                    "(Space)toggle".into(),
+                    "(a)dd".into(),
+                    "(r)ename".into(),
+                    "(d)elete".into(),
+                    "Esc: back".into(),
+                ],
             ),
-            Selection::Session(pi, wi, si) => {
-                let active = app
-                    .workspace
-                    .projects
-                    .get(pi)
-                    .and_then(|p| p.worktrees.get(wi))
-                    .and_then(|w| w.sessions.get(si))
-                    .map(|s| session_state::derive(s).app_state() == AppSessionState::Active)
-                    .unwrap_or(false);
-                let dismiss = if active { "" } else { "(x)mute  ·  " };
-                let send = app
-                    .workspace
-                    .session(pi, wi, si)
-                    .and_then(|session| session.agent.as_ref())
-                    .map(|_| "(S)prompt agent")
-                    .unwrap_or("(S)send text");
-                format!("(m)ove  (r)ename  (d)kill  ·  {dismiss}{send}  (C)interrupt  ·  (C-b q)detach  ·  (s)ession  ·  (w)orktree{tabs}  (c)lean  ·  {global}")
-            }
-            Selection::None => "(p) add project".to_string(),
-            Selection::RoutinesHeader(_) => {
-                "(u)new routine  Enter:expand  ·  (/)search  (?)help".to_string()
-            }
-            Selection::Routine(..) => {
-                "(u)new  (e)edit  (d)delete/cancel  Enter:details  ·  (/)search  (?)help"
-                    .to_string()
-            }
+            GroupManagerPurpose::Assign { .. } => (
+                "GROUPS",
+                vec![
+                    "(j/k)navigate".into(),
+                    "(Space)toggle".into(),
+                    "Esc: close".into(),
+                ],
+            ),
         },
-        Mode::Input { .. } => "Esc: cancel".to_string(),
-        Mode::Confirm { .. } => "(y)es  (n)o".to_string(),
-        Mode::Config { .. } => "(e)dit .gtrignore  Esc: close".to_string(),
-        Mode::Move { .. } => {
-            if has_tabs {
-                "(j/k) reorder  (h/l) change tab  Esc: done".to_string()
-            } else {
-                "(j/k) reorder  Esc: done".to_string()
-            }
-        }
-        Mode::MoveSession { .. } => "(j/k) reorder  Esc: done".to_string(),
-        Mode::Help => "Esc: close".to_string(),
-        Mode::Search { .. } => String::new(),
-        Mode::TabManager { .. } => {
-            "(a)dd  (r)ename  (d)elete  (J/K)reorder  Enter: switch  Esc: close".to_string()
-        }
-        Mode::RoutineEditor { .. } => {
-            "Tab: field  F1/F2: preset  Enter: save  Esc: cancel".to_string()
-        }
-        Mode::RoutineDetail { .. } => "j/k: scroll  Esc: close".to_string(),
-    }
+        Mode::RoutineEditor { .. } => (
+            "ROUTINE",
+            vec![
+                "Tab: field".into(),
+                "Enter: save".into(),
+                "Esc: cancel".into(),
+            ],
+        ),
+        Mode::RoutineDetail { .. } => ("DETAIL", vec!["(j/k)scroll".into(), "Esc: close".into()]),
+    };
+    StatusBarView { mode, hints }
 }
 
-// Split hints at "  ·  " scope separators to fit within `available_width` chars per line.
-fn wrap_hints(hints: &str, available_width: usize) -> Vec<String> {
-    let groups: Vec<&str> = hints.split("  ·  ").collect();
-    let mut lines: Vec<String> = Vec::new();
-    let mut current = String::new();
-    for group in &groups {
-        if current.is_empty() {
-            current = group.to_string();
+fn fit_hints(hints: &[String], available_width: usize) -> String {
+    let mut visible = String::new();
+    for hint in hints {
+        let candidate = if visible.is_empty() {
+            hint.clone()
         } else {
-            let candidate = format!("{}  {}", current, group);
-            if candidate.len() <= available_width {
-                current = candidate;
-            } else {
-                lines.push(current);
-                current = group.to_string();
-            }
+            format!("{visible}  {hint}")
+        };
+        if Line::from(candidate.as_str()).width() > available_width {
+            break;
         }
+        visible = candidate;
     }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
+    visible
 }
 
-fn status_bar_height(app: &App, width: u16, hints: &str) -> u16 {
-    if matches!(app.mode, Mode::Search { .. }) {
-        return 1;
-    }
-    let label = get_mode_label(app);
-    let badge_width = label.len() + 4; // " [LABEL] "
-    let available = (width as usize).saturating_sub(badge_width + 1);
-    let lines = wrap_hints(hints, available);
-    (lines.len() as u16).max(1)
-}
-
-fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, hints: &str) {
-    // Search mode gets its own full-bar treatment
-    if let Mode::Search { query, .. } = &app.mode {
-        let spans = vec![
-            Span::styled(
-                " [/] ",
-                Style::default()
-                    .fg(theme::BACKGROUND)
-                    .bg(theme::ACCENT)
-                    .bold(),
-            ),
-            Span::styled(format!(" {}_", query), Style::default().fg(theme::TEXT)),
-            Span::styled(
-                "  Enter: next  Esc: exit",
-                Style::default().fg(theme::TEXT_SUBTLE),
-            ),
-        ];
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarView) {
+    if area.width == 0 || area.height == 0 {
         return;
     }
+    let mode_text = format!(" {} ", view.mode);
+    let badge_width = Line::from(mode_text.as_str()).width();
+    let badge_style = theme::mode_badge();
 
-    let label = get_mode_label(app);
-    let mode_text = format!(" [{}] ", label);
-    let badge_width = mode_text.len();
-    let badge_style = Style::default()
-        .fg(theme::BACKGROUND)
-        .bg(theme::ACCENT)
-        .bold();
-
-    let (right_text, right_style) = if app.is_busy() {
+    let right = if app.is_busy() {
         let labels = app
             .jobs
             .iter()
             .map(|job| job.label.as_str())
             .collect::<Vec<_>>()
             .join(" · ");
-        (
+        Some((
             format!(
                 " {} {} ",
                 SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()],
                 labels
             ),
             Style::default().fg(theme::WORKING),
-        )
-    } else if let Some(v) = &app.update_available {
-        (
-            format!(" ↑ update available: v{} ", v),
-            Style::default()
-                .fg(theme::BACKGROUND)
-                .bg(theme::WARNING)
-                .bold(),
-        )
+        ))
     } else {
-        (
-            format!(" v{} ", env!("CARGO_PKG_VERSION")),
-            Style::default().fg(theme::TEXT_SUBTLE),
-        )
+        app.update_available.as_ref().map(|version| {
+            (
+                format!(" update v{version} "),
+                Style::default().fg(theme::WARNING).bold(),
+            )
+        })
     };
-
-    let available = (area.width as usize).saturating_sub(badge_width + 1);
-    let hint_lines = wrap_hints(hints, available);
-    let hint_style = Style::default().fg(theme::TEXT_MUTED);
-
-    if hint_lines.len() <= 1 || area.height < 2 {
-        let text = hint_lines.first().map(|s| s.as_str()).unwrap_or(hints);
-        let left = format!(" {}", text);
-        let left_len = badge_width + left.len();
-        let pad = (area.width as usize).saturating_sub(left_len + right_text.len());
-        let spans = vec![
-            Span::styled(mode_text, badge_style),
-            Span::styled(left, hint_style),
-            Span::raw(" ".repeat(pad)),
-            Span::styled(right_text, right_style),
-        ];
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    let right_width = right
+        .as_ref()
+        .map(|(text, _)| Line::from(text.as_str()).width())
+        .unwrap_or(0);
+    let available = usize::from(area.width).saturating_sub(badge_width + right_width + 1);
+    let hint_text = if let Mode::Search { query, .. } = &app.mode {
+        format!(" /{query}_")
     } else {
-        let indent = " ".repeat(badge_width);
-        let mut text_lines: Vec<Line> = vec![Line::from(vec![
-            Span::styled(mode_text, badge_style),
-            Span::styled(format!(" {}", hint_lines[0]), hint_style),
-        ])];
-        let last = hint_lines.len() - 1;
-        for (i, hl) in hint_lines[1..].iter().enumerate() {
-            let left = format!(" {}", hl);
-            if i + 1 == last {
-                let left_len = badge_width + left.len();
-                let pad = (area.width as usize).saturating_sub(left_len + right_text.len());
-                text_lines.push(Line::from(vec![
-                    Span::raw(indent.clone()),
-                    Span::styled(left, hint_style),
-                    Span::raw(" ".repeat(pad)),
-                    Span::styled(right_text.clone(), right_style),
-                ]));
-            } else {
-                text_lines.push(Line::from(vec![
-                    Span::raw(indent.clone()),
-                    Span::styled(left, hint_style),
-                ]));
-            }
+        let fitted = fit_hints(&view.hints, available.saturating_sub(1));
+        if fitted.is_empty() {
+            String::new()
+        } else {
+            format!(" {fitted}")
         }
-        frame.render_widget(Paragraph::new(Text::from(text_lines)), area);
+    };
+    let left_width = badge_width + Line::from(hint_text.as_str()).width();
+    let pad = usize::from(area.width).saturating_sub(left_width + right_width);
+    let mut spans = vec![
+        Span::styled(mode_text, badge_style),
+        Span::styled(hint_text, Style::default().fg(theme::TEXT_MUTED)),
+        Span::raw(" ".repeat(pad)),
+    ];
+    if let Some((text, style)) = right {
+        spans.push(Span::styled(text, style));
     }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn render_help(frame: &mut Frame, area: Rect) {
-    let width = area.width.min(64).max(40);
-    let height = area.height.min(40).max(12);
+fn render_help(frame: &mut Frame, area: Rect, app: &App) {
+    let width = area.width.clamp(40, 64);
+    let height = area.height.clamp(12, 40);
     let popup = popup_center(area, width, height);
 
     frame.render_widget(Clear, popup);
@@ -514,15 +559,16 @@ fn render_help(frame: &mut Frame, area: Rect) {
         " Navigation",
         "  j/k / ↑↓     Navigate tree",
         "  h/l / ←→     Collapse/expand",
-        "  Enter         Project/Worktree: toggle  |  Session: attach",
+        "  Enter         Project/Worktree: toggle  |  Session: Terminal mode",
         "",
         " Project",
         "  p             Add project (path: prompt)",
         "  u             Create routine",
         "  m             Move project (reorder list)",
+        "  g             Assign project group",
         "  d             Unregister project",
         "  c             Clean merged worktrees (batch)",
-        "  e             View config / edit .gtrignore",
+        "  e             View/edit wsx.config.yml",
         "",
         " Worktree",
         "  w             Add worktree (branch: prompt)",
@@ -530,24 +576,24 @@ fn render_help(frame: &mut Frame, area: Rect) {
         "  r             Set alias",
         "  d             Delete worktree + kill all sessions",
         "  c             Clean this worktree if merged",
-        "  e             View config / edit .gtrignore",
+        "  e             View/edit wsx.config.yml",
         "",
         " Session",
-        "  Enter         Attach",
-        "  S             Send command to session",
+        "  Enter         Enter Terminal mode",
         "  C             Send Ctrl+C to session",
         "  r             Rename",
         "  d             Kill session",
         "  x             Toggle ⊘ mute (local to wsx; interaction clears it)",
         "",
-        " Inside Session (Herdr)",
-        "  Ctrl+b q      Detach (return to wsx)",
-        "  See           https://herdr.dev/docs/socket-api/",
+        " Terminal mode",
+        "$terminal_escape",
+        "$terminal_literal",
         "",
-        " Tabs (optional)",
-        "  T             Open tab manager (add/rename/delete/reorder)",
-        "  { / }         Switch to prev / next tab",
-        "  m + h/l       Move project to adjacent tab (in Move mode)",
+        " Groups (optional)",
+        "  T             Open scrollable Groups sidebar",
+        "  { / }         Switch to previous/next group",
+        "  g             Assign selected project to a group",
+        "  a/r/d · J/K   Add/rename/delete · reorder in Groups",
         "",
         " Global",
         "  [ / ]         Jump to prev / next project",
@@ -555,13 +601,26 @@ fn render_help(frame: &mut Frame, area: Rect) {
         "  n / N         Jump to next / prev session needing attention (●)",
         "  R             Refresh",
         "  ?             Help",
-        "  q             Quit",
+        "  q             Quit TUI",
+        "  Q             Hard quit TUI and wsxd",
     ];
 
     let inner_width = (width as usize).saturating_sub(2);
     let lines: Vec<Line> = ENTRIES
         .iter()
-        .flat_map(|entry| help_wrap_line(entry, inner_width))
+        .flat_map(|entry| {
+            let text = match *entry {
+                "$terminal_escape" => {
+                    format!("  {:<14} Focus Workspace", app.terminal_escape_label())
+                }
+                "$terminal_literal" => format!(
+                    "  {:<14} Send literal prefix",
+                    app.terminal_literal_escape_label()
+                ),
+                other => other.to_string(),
+            };
+            help_wrap_line(&text, inner_width)
+        })
         .collect();
 
     let block = Block::default()
@@ -655,5 +714,21 @@ fn split_at_word(s: &str, max_chars: usize) -> (&str, &str) {
         (&s[..space], &s[space..])
     } else {
         (&s[..end_byte], &s[end_byte..])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_hints;
+
+    #[test]
+    fn status_hints_stop_before_exceeding_one_line() {
+        let hints = vec![
+            "(C)interrupt".to_string(),
+            "(d)close".to_string(),
+            "(?)help".to_string(),
+        ];
+        assert_eq!(fit_hints(&hints, 29), "(C)interrupt  (d)close");
+        assert_eq!(fit_hints(&hints, 5), "");
     }
 }

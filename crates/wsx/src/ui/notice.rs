@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, HerdrHealth, NoticeLevel};
+use crate::app::{App, NoticeLevel, RuntimeHealth};
 
 use super::theme;
 
@@ -26,13 +26,13 @@ fn notice_view(app: &App) -> Option<NoticeView<'_>> {
             sticky: notice.sticky,
         });
     }
-    match &app.herdr_health {
-        HerdrHealth::Reconnecting {
+    match &app.runtime_health {
+        RuntimeHealth::Reconnecting {
             last_success,
             error,
         } => Some(NoticeView {
             level: NoticeLevel::Error,
-            title: "Herdr disconnected; retrying",
+            title: "Runtime disconnected; retrying",
             body: Some(if last_success.is_some() {
                 error.as_str()
             } else {
@@ -40,13 +40,13 @@ fn notice_view(app: &App) -> Option<NoticeView<'_>> {
             }),
             sticky: true,
         }),
-        HerdrHealth::Connecting => Some(NoticeView {
+        RuntimeHealth::Connecting => Some(NoticeView {
             level: NoticeLevel::Info,
-            title: "Connecting to Herdr",
+            title: "Connecting to Runtime",
             body: None,
             sticky: true,
         }),
-        HerdrHealth::Healthy { .. } => None,
+        RuntimeHealth::Healthy { .. } => None,
     }
 }
 
@@ -54,7 +54,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let Some(notice) = notice_view(app) else {
         return;
     };
-    if area.width < 8 || area.height < 2 {
+    if area.width < 8 || area.height < 3 {
         return;
     }
 
@@ -62,7 +62,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let max_width = if mobile {
         area.width
     } else {
-        area.width.saturating_sub(2).min(72)
+        area.width.saturating_sub(2).min(48)
     };
     let content_width = std::iter::once(notice.title)
         .chain(notice.body.into_iter().flat_map(str::lines))
@@ -81,20 +81,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .sum::<usize>();
     let height = (wrapped_lines as u16)
         .saturating_add(2)
-        .clamp(2, 8.min(area.height));
+        .clamp(2, 4.min(area.height.saturating_sub(1)));
     let x = if mobile {
         area.x
     } else {
         area.x + area.width.saturating_sub(width + 1)
     };
-    let y = if mobile { area.y } else { area.y + 1 };
-    let rect = Rect::new(x, y, width, height.min(area.y + area.height - y));
+    let footer_y = area.bottom().saturating_sub(1);
+    let y = footer_y.saturating_sub(height).max(area.y);
+    let rect = Rect::new(x, y, width, height.min(footer_y.saturating_sub(y)));
 
     frame.render_widget(Clear, rect);
-    frame.render_widget(
-        Block::default().style(Style::default().bg(theme::TOAST_BACKGROUND)),
-        rect,
-    );
+    frame.render_widget(Block::default().style(theme::toast_surface()), rect);
     let accent = match notice.level {
         NoticeLevel::Info => theme::ACCENT,
         NoticeLevel::Success => theme::SUCCESS,
@@ -102,7 +100,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         NoticeLevel::Error => theme::ERROR,
     };
     frame.render_widget(
-        Block::default().style(Style::default().bg(accent)),
+        Block::default().style(theme::toast_accent(accent)),
         Rect::new(
             rect.x,
             rect.y,
@@ -131,7 +129,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     }
     frame.render_widget(
         Paragraph::new(lines)
-            .style(Style::default().bg(theme::TOAST_BACKGROUND))
+            .style(theme::toast_surface())
             .wrap(Wrap { trim: false }),
         content,
     );
@@ -144,7 +142,7 @@ mod tests {
     #[test]
     fn long_mixed_width_notice_stays_inside_frame() {
         let area = Rect::new(0, 0, 48, 12);
-        let title = "Herdr 연결 실패 with a deliberately long explanation";
+        let title = "Runtime 연결 실패 with a deliberately long explanation";
         let width = Line::from(title).width() as u16;
         assert!(width > 28);
         assert!(area.width >= 8);

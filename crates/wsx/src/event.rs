@@ -1,13 +1,194 @@
 use crate::action::Action;
 use anyhow::Result;
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use std::time::Duration;
 
-pub fn poll_event(timeout: Duration, in_input: bool) -> Result<Option<Action>> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KeyChord {
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    label: String,
+}
+
+impl KeyChord {
+    fn parse(value: &str, modifier_required: bool) -> Option<Self> {
+        let parts = value
+            .split('+')
+            .map(|part| part.trim().to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        let (key, modifiers) = parts.split_last()?;
+        let mut flags = KeyModifiers::empty();
+        for modifier in modifiers {
+            flags |= match modifier.as_str() {
+                "ctrl" | "control" => KeyModifiers::CONTROL,
+                "alt" => KeyModifiers::ALT,
+                "shift" => KeyModifiers::SHIFT,
+                "super" | "cmd" => KeyModifiers::SUPER,
+                _ => return None,
+            };
+        }
+        if modifier_required && flags.is_empty() {
+            return None;
+        }
+        let code = match key.as_str() {
+            "space" => KeyCode::Char(' '),
+            "escape" | "esc" => KeyCode::Esc,
+            "tab" => KeyCode::Tab,
+            value if value.chars().count() == 1 => KeyCode::Char(value.chars().next()?),
+            _ => return None,
+        };
+        let label = parts
+            .iter()
+            .map(|part| match part.as_str() {
+                "ctrl" | "control" => "Ctrl".into(),
+                "alt" => "Alt".into(),
+                "shift" => "Shift".into(),
+                "super" | "cmd" => "Super".into(),
+                "space" => "Space".into(),
+                "escape" | "esc" => "Esc".into(),
+                "tab" => "Tab".into(),
+                other => other.to_uppercase(),
+            })
+            .collect::<Vec<String>>()
+            .join("+");
+        Some(Self {
+            code,
+            modifiers: flags,
+            label,
+        })
+    }
+
+    fn matches(&self, key: KeyEvent) -> bool {
+        key.code == self.code && key.modifiers == self.modifiers
+    }
+
+    fn matches_after_prefix(&self, key: KeyEvent, prefix: &Self) -> bool {
+        self.code == key.code
+            && (key.modifiers == self.modifiers
+                || key.modifiers == self.modifiers | prefix.modifiers)
+    }
+
+    fn key_event(&self) -> KeyEvent {
+        KeyEvent::new(self.code, self.modifiers)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EscapeSequence {
+    prefix: KeyChord,
+    suffix: Option<KeyChord>,
+    pending_prefix: bool,
+    pub label: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TerminalEscapeAction {
+    Escape,
+    Forward(Vec<KeyEvent>),
+    Pending,
+}
+
+impl EscapeSequence {
+    pub fn parse(value: &str) -> Option<Self> {
+        let parts = value.split_whitespace().collect::<Vec<_>>();
+        if parts.is_empty() || parts.len() > 2 {
+            return None;
+        }
+        let prefix = KeyChord::parse(parts[0], true)?;
+        let suffix = match parts.get(1) {
+            Some(part) => Some(KeyChord::parse(part, false)?),
+            None => None,
+        };
+        let label = suffix.as_ref().map_or_else(
+            || prefix.label.clone(),
+            |suffix| format!("{} {}", prefix.label, suffix.label),
+        );
+        Some(Self {
+            prefix,
+            suffix,
+            pending_prefix: false,
+            label,
+        })
+    }
+
+    fn terminal_key(&mut self, key: KeyEvent) -> TerminalEscapeAction {
+        if key.kind == KeyEventKind::Release {
+            return TerminalEscapeAction::Pending;
+        }
+        let Some(suffix) = &self.suffix else {
+            return if self.prefix.matches(key) {
+                TerminalEscapeAction::Escape
+            } else {
+                TerminalEscapeAction::Forward(vec![key])
+            };
+        };
+        if self.pending_prefix {
+            self.pending_prefix = false;
+            if suffix.matches_after_prefix(key, &self.prefix) {
+                TerminalEscapeAction::Escape
+            } else if self.prefix.matches(key) {
+                TerminalEscapeAction::Forward(vec![self.prefix.key_event()])
+            } else {
+                TerminalEscapeAction::Forward(vec![self.prefix.key_event(), key])
+            }
+        } else if self.prefix.matches(key) {
+            self.pending_prefix = true;
+            TerminalEscapeAction::Pending
+        } else {
+            TerminalEscapeAction::Forward(vec![key])
+        }
+    }
+
+    fn take_pending_prefix(&mut self) -> Option<KeyEvent> {
+        if self.pending_prefix {
+            self.pending_prefix = false;
+            Some(self.prefix.key_event())
+        } else {
+            None
+        }
+    }
+
+    fn matches_single(&self, key: KeyEvent) -> bool {
+        self.suffix.is_none() && self.prefix.matches(key)
+    }
+
+    pub fn literal_key_event(&self) -> KeyEvent {
+        self.prefix.key_event()
+    }
+
+    pub fn literal_label(&self) -> String {
+        if self.suffix.is_some() {
+            format!("{} {}", self.prefix.label, self.prefix.label)
+        } else {
+            format!("{} in Workspace", self.prefix.label)
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.pending_prefix = false;
+    }
+}
+
+pub fn poll_event(
+    timeout: Duration,
+    in_input: bool,
+    terminal_mode: bool,
+    escape: &mut EscapeSequence,
+) -> Result<Option<Action>> {
     if event::poll(timeout)? {
         let action = match event::read()? {
+            Event::Key(key) if terminal_mode => match escape.terminal_key(key) {
+                TerminalEscapeAction::Escape => Action::InputEscape,
+                TerminalEscapeAction::Forward(keys) if keys.len() == 1 => {
+                    Action::TerminalKey(keys[0])
+                }
+                TerminalEscapeAction::Forward(keys) => Action::TerminalKeys(keys),
+                TerminalEscapeAction::Pending => Action::None,
+            },
+            Event::Key(key) if !in_input && escape.matches_single(key) => Action::LiteralEscape,
             Event::Key(key) => {
                 if in_input {
                     translate_input_key(key)
@@ -15,7 +196,17 @@ pub fn poll_event(timeout: Duration, in_input: bool) -> Result<Option<Action>> {
                     translate_key(key)
                 }
             }
+            Event::Mouse(mouse) if terminal_mode => escape
+                .take_pending_prefix()
+                .map_or(Action::TerminalMouse(mouse), |prefix| {
+                    Action::TerminalPrefixedMouse(prefix, mouse)
+                }),
             Event::Mouse(mouse) => translate_mouse(mouse),
+            Event::Paste(text) if terminal_mode => match escape.take_pending_prefix() {
+                Some(prefix) => Action::TerminalPrefixedPaste(prefix, text),
+                None => Action::TerminalPaste(text),
+            },
+            Event::Paste(_) => Action::None,
             Event::Resize(_, _) => Action::Resize,
             _ => Action::None,
         };
@@ -50,6 +241,16 @@ fn translate_mouse(mouse: MouseEvent) -> Action {
             col: mouse.column,
             row: mouse.row,
         },
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollLeft => Action::MouseScroll {
+            col: mouse.column,
+            row: mouse.row,
+            delta: -1,
+        },
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollRight => Action::MouseScroll {
+            col: mouse.column,
+            row: mouse.row,
+            delta: 1,
+        },
         _ => Action::None,
     }
 }
@@ -58,6 +259,9 @@ fn translate_mouse(mouse: MouseEvent) -> Action {
 fn translate_key(key: KeyEvent) -> Action {
     match (key.modifiers, key.code) {
         (KeyModifiers::NONE, KeyCode::Char('q')) => Action::Quit,
+        (KeyModifiers::SHIFT, KeyCode::Char('Q')) | (KeyModifiers::NONE, KeyCode::Char('Q')) => {
+            Action::HardQuit
+        }
         (KeyModifiers::NONE, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => {
             Action::NavigateDown
         }
@@ -74,6 +278,10 @@ fn translate_key(key: KeyEvent) -> Action {
         (KeyModifiers::NONE, KeyCode::Char('p')) => Action::AddProject,
         (KeyModifiers::NONE, KeyCode::Char('w')) => Action::AddWorktree,
         (KeyModifiers::NONE, KeyCode::Char('s')) => Action::AddSession,
+        (KeyModifiers::SHIFT, KeyCode::Char('|')) | (KeyModifiers::NONE, KeyCode::Char('|')) => {
+            Action::SplitPaneVertical
+        }
+        (KeyModifiers::NONE, KeyCode::Char('-')) => Action::SplitPaneHorizontal,
         (KeyModifiers::NONE, KeyCode::Char('u')) => Action::AddRoutine,
         (KeyModifiers::NONE, KeyCode::Char('d')) => Action::Delete,
         (KeyModifiers::NONE, KeyCode::Char('c')) => Action::Clean,
@@ -100,24 +308,143 @@ fn translate_key(key: KeyEvent) -> Action {
         (KeyModifiers::SHIFT, KeyCode::Char('I')) | (KeyModifiers::NONE, KeyCode::Char('I')) => {
             Action::PrevIdle
         }
-        (KeyModifiers::SHIFT, KeyCode::Char('S')) | (KeyModifiers::NONE, KeyCode::Char('S')) => {
-            Action::SendCommand
-        }
         (KeyModifiers::SHIFT, KeyCode::Char('C')) | (KeyModifiers::NONE, KeyCode::Char('C')) => {
             Action::SendCtrlC
         }
+        (KeyModifiers::NONE, KeyCode::Char('g')) => Action::AssignGroup,
         (KeyModifiers::NONE, KeyCode::Char('/')) => Action::SearchStart,
         (KeyModifiers::SHIFT, KeyCode::Char('{')) | (KeyModifiers::NONE, KeyCode::Char('{')) => {
-            Action::TabPrev
+            Action::GroupPrev
         }
         (KeyModifiers::SHIFT, KeyCode::Char('}')) | (KeyModifiers::NONE, KeyCode::Char('}')) => {
-            Action::TabNext
+            Action::GroupNext
         }
         (KeyModifiers::SHIFT, KeyCode::Char('T')) | (KeyModifiers::NONE, KeyCode::Char('T')) => {
-            Action::TabManager
+            Action::GroupManager
         }
         (KeyModifiers::NONE, KeyCode::Esc) => Action::InputEscape,
         (KeyModifiers::NONE, KeyCode::Backspace) => Action::InputBackspace,
         _ => Action::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escape_sequence_requires_a_modified_prefix_and_normalizes_its_label() {
+        assert!(EscapeSequence::parse("space w").is_none());
+        let sequence = EscapeSequence::parse("control+a w").unwrap();
+        assert_eq!(sequence.label, "Ctrl+A W");
+    }
+
+    #[test]
+    fn escape_sequence_forwards_unknown_suffix_and_doubles_literal_prefix() {
+        let prefix = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        let mut sequence = EscapeSequence::parse("ctrl+a w").unwrap();
+        assert_eq!(sequence.terminal_key(prefix), TerminalEscapeAction::Pending);
+        assert_eq!(
+            sequence.terminal_key(x),
+            TerminalEscapeAction::Forward(vec![prefix, x])
+        );
+        assert_eq!(sequence.terminal_key(prefix), TerminalEscapeAction::Pending);
+        assert_eq!(
+            sequence.terminal_key(prefix),
+            TerminalEscapeAction::Forward(vec![prefix])
+        );
+    }
+
+    #[test]
+    fn escape_sequence_flushes_pending_prefix_before_non_key_input() {
+        let prefix = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let mut sequence = EscapeSequence::parse("ctrl+a w").unwrap();
+        assert_eq!(sequence.terminal_key(prefix), TerminalEscapeAction::Pending);
+        assert_eq!(sequence.take_pending_prefix(), Some(prefix));
+        assert_eq!(sequence.take_pending_prefix(), None);
+    }
+
+    #[test]
+    fn escape_sequence_focuses_workspace_on_suffix() {
+        let mut sequence = EscapeSequence::parse("ctrl+a w").unwrap();
+        assert_eq!(
+            sequence.terminal_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            TerminalEscapeAction::Pending
+        );
+        assert_eq!(
+            sequence.terminal_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE)),
+            TerminalEscapeAction::Escape
+        );
+    }
+
+    #[test]
+    fn escape_sequence_accepts_suffix_while_prefix_modifier_is_still_held() {
+        let mut sequence = EscapeSequence::parse("ctrl+a w").unwrap();
+        assert_eq!(
+            sequence.terminal_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            TerminalEscapeAction::Pending
+        );
+        assert_eq!(
+            sequence.terminal_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)),
+            TerminalEscapeAction::Escape
+        );
+    }
+
+    #[test]
+    fn uppercase_q_is_a_distinct_hard_quit_action() {
+        assert_eq!(
+            translate_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            Action::Quit
+        );
+        let uppercase_q = KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT);
+        assert_eq!(translate_key(uppercase_q), Action::HardQuit);
+        assert_eq!(translate_input_key(uppercase_q), Action::InputChar('Q'));
+
+        let mut terminal_escape = EscapeSequence::parse("ctrl+a w").unwrap();
+        assert_eq!(
+            terminal_escape.terminal_key(uppercase_q),
+            TerminalEscapeAction::Forward(vec![uppercase_q])
+        );
+    }
+
+    #[test]
+    fn workspace_removes_send_text_but_keeps_interrupt_and_group_assignment() {
+        let send = KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT);
+        let interrupt = KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT);
+        let assign = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
+        assert_eq!(translate_key(send), Action::None);
+        assert_eq!(translate_key(interrupt), Action::SendCtrlC);
+        assert_eq!(translate_key(assign), Action::AssignGroup);
+    }
+
+    #[test]
+    fn workspace_mouse_wheel_preserves_header_coordinates_and_direction() {
+        let up = translate_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 12,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            up,
+            Action::MouseScroll {
+                col: 12,
+                row: 0,
+                delta: -1,
+            }
+        );
+    }
+
+    #[test]
+    fn pane_split_keys_are_direct_workspace_actions() {
+        assert_eq!(
+            translate_key(KeyEvent::new(KeyCode::Char('|'), KeyModifiers::SHIFT)),
+            Action::SplitPaneVertical
+        );
+        assert_eq!(
+            translate_key(KeyEvent::new(KeyCode::Char('-'), KeyModifiers::NONE)),
+            Action::SplitPaneHorizontal
+        );
     }
 }
