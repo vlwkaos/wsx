@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::runtime::{AgentState, PaneId, PaneLayout, SessionId, TerminalFrame, TerminalId};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -13,6 +14,8 @@ pub struct Project {
     pub name: String,
     pub path: PathBuf,
     pub default_branch: String,
+    pub last_agent_active_unix_ms: Option<u64>,
+    pub last_terminal_active_unix_ms: Option<u64>,
     pub worktrees: Vec<WorktreeInfo>,
     #[serde(skip)]
     pub routines: Vec<asched_core::routine::ipc::RoutineView>,
@@ -33,24 +36,38 @@ pub struct ProjectConfig {
     pub post_create: Option<String>,
     pub copy_includes: Vec<String>,
     pub copy_excludes: Vec<String>,
+    /// Migration or parse feedback for the TUI; never affects worktree behavior.
+    pub notice: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PaneInfo {
+    pub pane_id: PaneId,
+    pub terminal_id: TerminalId,
+    pub label: String,
+    pub agent: Option<String>,
+    pub agent_status: AgentState,
+    pub revision: u64,
+    pub exited: bool,
+    pub listening_ports: Vec<u16>,
+    #[serde(skip)]
+    pub terminal_frame: Option<TerminalFrame>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionInfo {
-    /// Stable Herdr pane ID.
-    pub pane_id: String,
-    /// Stable Herdr terminal identity used for persistence and foreground attach.
-    pub terminal_id: String,
-    /// Herdr's authoritative recognized agent label, when this pane hosts one.
+    pub session_id: SessionId,
+    pub pane_id: PaneId,
+    pub terminal_id: TerminalId,
+    /// Provider label reported by the pane's normalized agent adapter.
     pub agent: Option<String>,
-    pub workspace_id: String,
-    pub tab_id: String,
-    /// Pane label shown in the UI.
     pub display_name: String,
-    pub agent_status: crate::herdr::AgentStatus,
+    pub agent_status: AgentState,
     pub revision: u64,
+    pub layout: PaneLayout,
+    pub panes: Vec<PaneInfo>,
     #[serde(skip)]
-    pub pane_capture: Option<String>,
+    pub terminal_frame: Option<TerminalFrame>,
     #[serde(skip)]
     pub muted: bool,
 }
@@ -60,6 +77,19 @@ pub enum FetchFailReason {
     Auth,    // "Authentication failed", "Permission denied", "could not read Username"
     Timeout, // killed after 10s
     Network, // generic / other failure
+}
+
+impl SessionInfo {
+    pub fn listening_ports(&self) -> Vec<u16> {
+        let mut ports = self
+            .panes
+            .iter()
+            .flat_map(|pane| pane.listening_ports.iter().copied())
+            .collect::<Vec<_>>();
+        ports.sort_unstable();
+        ports.dedup();
+        ports
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,6 +113,17 @@ pub struct WorktreeInfo {
 }
 
 impl WorktreeInfo {
+    pub fn listening_ports(&self) -> Vec<u16> {
+        let mut ports = self
+            .sessions
+            .iter()
+            .flat_map(SessionInfo::listening_ports)
+            .collect::<Vec<_>>();
+        ports.sort_unstable();
+        ports.dedup();
+        ports
+    }
+
     pub fn display_name(&self) -> &str {
         self.alias.as_deref().unwrap_or(&self.name)
     }
@@ -151,6 +192,12 @@ pub enum FlatEntry {
         worktree_idx: usize,
         session_idx: usize,
     },
+    Pane {
+        project_idx: usize,
+        worktree_idx: usize,
+        session_idx: usize,
+        pane_idx: usize,
+    },
     RoutinesHeader {
         project_idx: usize,
     },
@@ -173,12 +220,22 @@ pub fn flatten_tree(workspace: &WorkspaceState) -> Vec<FlatEntry> {
                     worktree_idx: wi,
                 });
                 if wt.expanded {
-                    for (si, _) in wt.sessions.iter().enumerate() {
+                    for (si, session) in wt.sessions.iter().enumerate() {
                         result.push(FlatEntry::Session {
                             project_idx: pi,
                             worktree_idx: wi,
                             session_idx: si,
                         });
+                        if session.panes.len() > 1 {
+                            for (pane_idx, _) in session.panes.iter().enumerate() {
+                                result.push(FlatEntry::Pane {
+                                    project_idx: pi,
+                                    worktree_idx: wi,
+                                    session_idx: si,
+                                    pane_idx,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -216,12 +273,22 @@ pub fn flatten_tree_filtered(
                     worktree_idx: wi,
                 });
                 if wt.expanded {
-                    for (si, _) in wt.sessions.iter().enumerate() {
+                    for (si, session) in wt.sessions.iter().enumerate() {
                         result.push(FlatEntry::Session {
                             project_idx: pi,
                             worktree_idx: wi,
                             session_idx: si,
                         });
+                        if session.panes.len() > 1 {
+                            for (pane_idx, _) in session.panes.iter().enumerate() {
+                                result.push(FlatEntry::Pane {
+                                    project_idx: pi,
+                                    worktree_idx: wi,
+                                    session_idx: si,
+                                    pane_idx,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -247,6 +314,7 @@ pub enum Selection {
     Project(usize),
     Worktree(usize, usize),
     Session(usize, usize, usize),
+    Pane(usize, usize, usize, usize),
     RoutinesHeader(usize),
     Routine(usize, usize),
     None,
@@ -293,6 +361,12 @@ impl WorkspaceState {
                 worktree_idx,
                 session_idx,
             }) => Selection::Session(*project_idx, *worktree_idx, *session_idx),
+            Some(FlatEntry::Pane {
+                project_idx,
+                worktree_idx,
+                session_idx,
+                pane_idx,
+            }) => Selection::Pane(*project_idx, *worktree_idx, *session_idx, *pane_idx),
             Some(FlatEntry::RoutinesHeader { project_idx }) => {
                 Selection::RoutinesHeader(*project_idx)
             }

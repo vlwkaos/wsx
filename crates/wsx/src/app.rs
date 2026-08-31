@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 
@@ -15,32 +15,31 @@ use ratatui::{
 
 use crate::{
     action::Action,
-    event::poll_event,
+    event::{poll_event, EscapeSequence},
     session_state::{self, AppSessionState},
     tui::{self, Tui},
-    ui::{self, ansi, input::InputState, routine_editor::RoutineForm},
+    ui::{self, input::InputState, routine_editor::RoutineForm},
 };
 use wsx_core::{
-    config::global::GlobalConfig,
+    config::global::{project_matches_group, GlobalConfig, GroupKey},
     git::{info as git_info, worktree as git_worktree},
-    herdr,
     model::workspace::{flatten_tree_filtered, FlatEntry, GitInfo, Selection, WorkspaceState},
-    ops,
+    ops, runtime,
 };
 
 use git_info::FetchOutcome;
 
 type WorktreeSnapshot = Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>;
-type HerdrRefresh = Result<(herdr::Snapshot, WorktreeSnapshot)>;
+type RuntimeRefresh = Result<(runtime::Snapshot, WorktreeSnapshot)>;
 
-// ^ Herdr protocol boundary: https://herdr.dev/docs/socket-api/
-enum HerdrResult {
-    FullRefresh(HerdrRefresh),
-    SessionRefresh(Result<herdr::Snapshot>),
-    Capture {
-        pane_id: String,
+// ^ [[wsx Architecture]] Runtime snapshots are authoritative; events invalidate them.
+enum RuntimeResult {
+    FullRefresh(RuntimeRefresh),
+    SessionRefresh(Result<runtime::Snapshot>),
+    Frame {
+        pane_id: runtime::PaneId,
         revision: u64,
-        content: Result<String>,
+        frame: Result<runtime::TerminalFrame>,
     },
 }
 
@@ -103,14 +102,101 @@ impl Timer {
 }
 
 const TICK_MS: u64 = 100;
+const TERMINAL_TICK_MS: u64 = 8;
 const FAST_INTERVAL_MS: u64 = 500;
 const SLOW_INTERVAL_MS: u64 = 30_000;
+
+fn runtime_key_event(key: crossterm::event::KeyEvent) -> Option<runtime::KeyEvent> {
+    use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
+    let (code, text) = match key.code {
+        KeyCode::Char(ch) => (runtime::KeyCode::Text, ch.to_string()),
+        KeyCode::Enter => (runtime::KeyCode::Enter, String::new()),
+        KeyCode::Backspace => (runtime::KeyCode::Backspace, String::new()),
+        KeyCode::Tab | KeyCode::BackTab => (runtime::KeyCode::Tab, String::new()),
+        KeyCode::Esc => (runtime::KeyCode::Escape, String::new()),
+        KeyCode::Insert => (runtime::KeyCode::Insert, String::new()),
+        KeyCode::Delete => (runtime::KeyCode::Delete, String::new()),
+        KeyCode::Home => (runtime::KeyCode::Home, String::new()),
+        KeyCode::End => (runtime::KeyCode::End, String::new()),
+        KeyCode::PageUp => (runtime::KeyCode::PageUp, String::new()),
+        KeyCode::PageDown => (runtime::KeyCode::PageDown, String::new()),
+        KeyCode::Left => (runtime::KeyCode::Left, String::new()),
+        KeyCode::Right => (runtime::KeyCode::Right, String::new()),
+        KeyCode::Up => (runtime::KeyCode::Up, String::new()),
+        KeyCode::Down => (runtime::KeyCode::Down, String::new()),
+        KeyCode::F(number) => (runtime::KeyCode::Function(number), String::new()),
+        KeyCode::Null => (runtime::KeyCode::Text, "\0".into()),
+        _ => return None,
+    };
+    Some(runtime::KeyEvent {
+        code,
+        text,
+        shift: key.modifiers.contains(KeyModifiers::SHIFT) || matches!(key.code, KeyCode::BackTab),
+        control: key.modifiers.contains(KeyModifiers::CONTROL),
+        alt: key.modifiers.contains(KeyModifiers::ALT),
+        super_key: key.modifiers.contains(KeyModifiers::SUPER),
+        repeat: key.kind == KeyEventKind::Repeat,
+    })
+}
+
+fn runtime_mouse_event(
+    mouse: crossterm::event::MouseEvent,
+    viewport: Rect,
+) -> Option<runtime::MouseEvent> {
+    use crossterm::event::{KeyModifiers, MouseEventKind};
+    if !viewport.contains(Position::new(mouse.column, mouse.row)) {
+        return None;
+    }
+    let (action, button) = match mouse.kind {
+        MouseEventKind::Down(button) => (runtime::MouseAction::Press, runtime_mouse_button(button)),
+        MouseEventKind::Up(button) => (runtime::MouseAction::Release, runtime_mouse_button(button)),
+        MouseEventKind::Drag(button) => {
+            (runtime::MouseAction::Motion, runtime_mouse_button(button))
+        }
+        MouseEventKind::Moved => (runtime::MouseAction::Motion, runtime::MouseButton::None),
+        MouseEventKind::ScrollUp => (runtime::MouseAction::Press, runtime::MouseButton::WheelUp),
+        MouseEventKind::ScrollDown => {
+            (runtime::MouseAction::Press, runtime::MouseButton::WheelDown)
+        }
+        MouseEventKind::ScrollLeft => {
+            (runtime::MouseAction::Press, runtime::MouseButton::WheelLeft)
+        }
+        MouseEventKind::ScrollRight => (
+            runtime::MouseAction::Press,
+            runtime::MouseButton::WheelRight,
+        ),
+    };
+    Some(runtime::MouseEvent {
+        action,
+        button,
+        x: mouse.column.saturating_sub(viewport.x),
+        y: mouse.row.saturating_sub(viewport.y),
+        shift: mouse.modifiers.contains(KeyModifiers::SHIFT),
+        control: mouse.modifiers.contains(KeyModifiers::CONTROL),
+        alt: mouse.modifiers.contains(KeyModifiers::ALT),
+        super_key: mouse.modifiers.contains(KeyModifiers::SUPER),
+    })
+}
+
+fn runtime_mouse_button(button: crossterm::event::MouseButton) -> runtime::MouseButton {
+    match button {
+        crossterm::event::MouseButton::Left => runtime::MouseButton::Left,
+        crossterm::event::MouseButton::Middle => runtime::MouseButton::Middle,
+        crossterm::event::MouseButton::Right => runtime::MouseButton::Right,
+    }
+}
 const FETCH_INTERVAL_SECS: u64 = 60;
 
 // ── Modes ─────────────────────────────────────────────────────────────────────
 
 pub enum Mode {
-    Normal,
+    Workspace,
+    Terminal {
+        pane_id: runtime::PaneId,
+    },
     Input {
         context: InputContext,
         state: InputState,
@@ -135,8 +221,10 @@ pub enum Mode {
         query: String,
         match_idx: usize,
     },
-    TabManager {
+    GroupManager {
         selected: usize,
+        scroll: usize,
+        purpose: GroupManagerPurpose,
     },
     RoutineEditor {
         project_idx: usize,
@@ -149,6 +237,12 @@ pub enum Mode {
         routine_name: String,
         scroll: u16,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupManagerPurpose {
+    Switch,
+    Assign { project_idx: usize },
 }
 
 pub enum InputContext {
@@ -174,13 +268,9 @@ pub enum InputContext {
         worktree_idx: usize,
         session_idx: usize,
     },
-    SendCommand {
-        pane_id: String,
-        agent: Option<String>,
-    },
-    AddTab,
-    RenameTab {
-        tab_idx: usize, // index into config.tabs (0-based, not ordered_tabs)
+    AddGroup,
+    RenameGroup {
+        group_idx: usize,
     },
 }
 
@@ -193,10 +283,8 @@ impl InputContext {
             InputContext::AddSessionCmd { .. } => "New Session — command",
             InputContext::SetAlias { .. } => "Set Alias",
             InputContext::RenameSession { .. } => "Rename Session",
-            InputContext::SendCommand { agent: Some(_), .. } => "Prompt Agent",
-            InputContext::SendCommand { agent: None, .. } => "Send to Terminal",
-            InputContext::AddTab => "New Tab",
-            InputContext::RenameTab { .. } => "Rename Tab",
+            InputContext::AddGroup => "New Group",
+            InputContext::RenameGroup { .. } => "Rename Group",
         }
     }
 }
@@ -214,18 +302,23 @@ pub enum PendingAction {
         worktree_idx: usize,
         session_idx: usize,
     },
+    ClosePane {
+        pane_id: runtime::PaneId,
+        revision: u64,
+    },
     CreateWorktree {
         project_idx: usize,
         branch: String,
     },
-    DeleteTab {
-        tab_idx: usize, // index into config.tabs (0-based)
+    DeleteGroup {
+        group_idx: usize,
     },
     DeleteRoutine {
         project_path: PathBuf,
         name: String,
         revision: u64,
     },
+    ShutdownDaemon,
 }
 
 // ── Background jobs ───────────────────────────────────────────────────────────
@@ -249,7 +342,7 @@ pub enum BgOutcome {
         label: String,
     },
     SessionKilled {
-        pane_id: String,
+        session_id: runtime::SessionId,
         display_name: String,
     },
 }
@@ -332,19 +425,6 @@ fn filter_pending_deletions(
         .collect()
 }
 
-fn session_pane_ids(workspace: &WorkspaceState) -> Vec<String> {
-    let mut pane_ids = workspace
-        .projects
-        .iter()
-        .flat_map(|project| &project.worktrees)
-        .flat_map(|worktree| &worktree.sessions)
-        .map(|session| session.pane_id.clone())
-        .collect::<Vec<_>>();
-    pane_ids.sort();
-    pane_ids.dedup();
-    pane_ids
-}
-
 // ── App ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -364,7 +444,7 @@ pub struct Notice {
 }
 
 #[derive(Debug, Clone)]
-pub enum HerdrHealth {
+pub enum RuntimeHealth {
     Connecting,
     Healthy {
         last_success: Instant,
@@ -382,11 +462,13 @@ pub struct App {
     pub tree_visible_height: usize,
     pub tree_area: Rect,
     pub preview_area: Rect,
+    pub terminal_area: Rect,
     pub mode: Mode,
     pub config: GlobalConfig,
-    pub active_tab: Option<String>,
+    pub active_group: Option<GroupKey>,
+    pub group_header_scroll: usize,
+    pub group_header_area: Rect,
     visible_projects: HashSet<usize>,
-    send_command_history: Vec<String>,
     pub notice: Option<Notice>,
     notice_expires: Option<Instant>,
     pub jobs: Vec<BgJob>,
@@ -394,6 +476,7 @@ pub struct App {
     bg_tx: mpsc::Sender<BgResult>,
     bg_rx: mpsc::Receiver<BgResult>,
     needs_redraw: bool,
+    should_quit: bool,
     force_terminal_redraw: bool,
     force_preview_redraw: bool,
     /// Tracks whether the last successful desktop frame contained captured terminal content.
@@ -416,27 +499,28 @@ pub struct App {
     git_semaphore: GitSemaphore,
     /// path → (project_idx, worktree_idx) for O(1) async-result application.
     worktree_index: std::collections::HashMap<PathBuf, (usize, usize)>,
-    /// pane ID → parsed ANSI preview; invalidated when pane_capture changes.
-    pub parsed_preview: std::collections::HashMap<String, ratatui::text::Text<'static>>,
-    herdr_client: herdr::Client,
-    herdr_monitor: Option<herdr::EventMonitor>,
-    herdr_event_rx: mpsc::Receiver<herdr::EventSignal>,
-    herdr_event_panes: Vec<String>,
-    pub herdr_health: HerdrHealth,
-    herdr_tx: mpsc::Sender<HerdrResult>,
-    herdr_rx: mpsc::Receiver<HerdrResult>,
-    herdr_refresh_pending: bool,
+    runtime_client: runtime::Client,
+    _runtime_monitor: Option<runtime::EventMonitor>,
+    runtime_event_rx: mpsc::Receiver<runtime::EventSignal>,
+    pub runtime_health: RuntimeHealth,
+    runtime_tx: mpsc::Sender<RuntimeResult>,
+    runtime_rx: mpsc::Receiver<RuntimeResult>,
+    runtime_refresh_pending: bool,
+    startup_cursor_identity: Option<wsx_core::cache::CursorIdentity>,
     /// An event requested a session refresh while one was in-flight.
-    herdr_refresh_stale: bool,
-    /// A full Git plus Herdr refresh takes priority over queued event refreshes.
-    herdr_full_refresh_stale: bool,
-    herdr_capture_pending: bool,
+    runtime_refresh_stale: bool,
+    /// A full Git plus Runtime refresh takes priority over queued event refreshes.
+    runtime_full_refresh_stale: bool,
+    runtime_capture_pending: bool,
     /// Worktree paths pending bg deletion; filtered from refresh results until bg confirms.
     pending_deletions: HashSet<PathBuf>,
-    /// Pane closes awaiting confirmation by a newer Herdr snapshot.
-    pending_session_kills: HashSet<String>,
+    /// Pane closes awaiting confirmation by a newer Runtime snapshot.
+    pending_session_kills: HashSet<runtime::SessionId>,
     /// Mute is wsx-local and keyed by stable terminal ID.
     muted_terminal_ids: HashSet<String>,
+    terminal_controller_id: u64,
+    terminal_stream: Option<runtime::TerminalStream>,
+    terminal_escape_chord: EscapeSequence,
     update_rx: mpsc::Receiver<String>,
     pub update_available: Option<String>,
     /// Effective responsive mode for the current frame.
@@ -457,12 +541,31 @@ pub struct App {
 impl App {
     pub fn new(mobile: bool) -> Result<Self> {
         let (config, config_warn) = GlobalConfig::load()?;
-        let mut workspace = ops::load_workspace(&config);
-        ops::refresh_workspace(&mut workspace, &config)?;
-        let (raw_selected, cursor_identity, command_history, cached_active_tab, cached_muted) =
-            wsx_core::cache::apply_cache(&mut workspace);
+        let mut workspace = ops::workspace_from_config(&config);
+        let project_config_notice = workspace.projects.iter().find_map(|project| {
+            project
+                .config
+                .as_ref()
+                .and_then(|config| config.notice.clone())
+        });
+        let initial_notice = config_warn.or(project_config_notice);
+        let (raw_selected, cursor_identity, cached_active_group, cached_muted) =
+            wsx_core::cache::apply_cache(&mut workspace)?;
+        let cached_active_group = cached_active_group.filter(|key| match key {
+            GroupKey::Recent | GroupKey::Ungrouped => true,
+            GroupKey::Named(name) => config.named_group_exists(name),
+        });
         let visible_projects =
-            compute_visible_projects(&config, &workspace, cached_active_tab.as_deref());
+            compute_visible_projects(&config, &workspace, cached_active_group.as_ref());
+        let group_header_scroll = cached_active_group
+            .as_ref()
+            .and_then(|active| {
+                config
+                    .ordered_group_keys()
+                    .iter()
+                    .position(|candidate| candidate == active)
+            })
+            .unwrap_or(0);
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
         let tree_selected = cursor_identity
             .as_ref()
@@ -471,11 +574,10 @@ impl App {
         let (git_local_tx, git_local_rx) = mpsc::channel();
         let (fetch_tx, fetch_rx) = mpsc::channel();
         let (bg_tx, bg_rx) = mpsc::channel();
-        let (herdr_tx, herdr_rx) = mpsc::channel();
-        let herdr_client = herdr::Client::local()?;
-        let herdr_event_panes = session_pane_ids(&workspace);
-        let (herdr_monitor, herdr_event_rx) =
-            herdr::EventMonitor::start(herdr_client.clone(), herdr_event_panes.clone())?;
+        let (runtime_tx, runtime_rx) = mpsc::channel();
+        let runtime_client = runtime::Client::local();
+        let (runtime_monitor, runtime_event_rx) =
+            runtime::EventMonitor::start(runtime_client.clone())?;
         let (update_tx, update_rx) = mpsc::channel::<String>();
         let (routine_tx, routine_rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -485,6 +587,14 @@ impl App {
         });
         let worktree_index = build_worktree_index(&workspace);
         let search_cache = build_search_cache(&workspace, &cached_flat);
+        let terminal_controller_id = runtime::new_client_id();
+        let terminal_escape_chord = EscapeSequence::parse(&config.terminal_escape_chord)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "invalid terminal_escape_chord: {}",
+                    config.terminal_escape_chord
+                )
+            })?;
 
         let mut app = Self {
             workspace,
@@ -493,18 +603,20 @@ impl App {
             tree_visible_height: 20,
             tree_area: Rect::default(),
             preview_area: Rect::default(),
-            mode: Mode::Normal,
+            terminal_area: Rect::default(),
+            mode: Mode::Workspace,
             config,
-            active_tab: cached_active_tab,
+            active_group: cached_active_group,
+            group_header_scroll,
+            group_header_area: Rect::default(),
             visible_projects,
-            send_command_history: command_history,
-            notice: config_warn.clone().map(|title| Notice {
+            notice: initial_notice.clone().map(|title| Notice {
                 level: NoticeLevel::Warning,
                 title,
                 body: None,
                 sticky: false,
             }),
-            notice_expires: if config_warn.is_some() {
+            notice_expires: if initial_notice.is_some() {
                 Some(Instant::now() + Duration::from_secs(10))
             } else {
                 None
@@ -514,6 +626,7 @@ impl App {
             bg_tx,
             bg_rx,
             needs_redraw: true,
+            should_quit: false,
             force_terminal_redraw: false,
             force_preview_redraw: false,
             last_rendered_preview_was_session: false,
@@ -530,26 +643,28 @@ impl App {
             fetch_pending: HashSet::new(),
             cache_dirty: false,
             worktree_index,
-            parsed_preview: std::collections::HashMap::new(),
             git_semaphore: GitSemaphore::new(
                 std::thread::available_parallelism()
                     .map(|n| n.get())
                     .unwrap_or(4),
             ),
-            herdr_client,
-            herdr_monitor: Some(herdr_monitor),
-            herdr_event_rx,
-            herdr_event_panes,
-            herdr_health: HerdrHealth::Connecting,
-            herdr_tx,
-            herdr_rx,
-            herdr_refresh_pending: false,
-            herdr_refresh_stale: false,
-            herdr_full_refresh_stale: false,
-            herdr_capture_pending: false,
+            runtime_client,
+            _runtime_monitor: Some(runtime_monitor),
+            runtime_event_rx,
+            runtime_health: RuntimeHealth::Connecting,
+            runtime_tx,
+            runtime_rx,
+            runtime_refresh_pending: false,
+            startup_cursor_identity: cursor_identity.clone(),
+            runtime_refresh_stale: false,
+            runtime_full_refresh_stale: false,
+            runtime_capture_pending: false,
             pending_deletions: HashSet::new(),
             pending_session_kills: HashSet::new(),
             muted_terminal_ids: cached_muted,
+            terminal_controller_id,
+            terminal_stream: None,
+            terminal_escape_chord,
             update_rx,
             update_available: None,
             is_mobile: mobile,
@@ -567,6 +682,7 @@ impl App {
                 app.tree_selected = index;
             }
         }
+        app.spawn_runtime_refresh();
         app.spawn_routine_refresh();
         app.spawn_repo_scan();
         Ok(app)
@@ -586,6 +702,10 @@ impl App {
 
     fn set_status(&mut self, msg: impl Into<String>) {
         self.set_notice(NoticeLevel::Success, msg, false);
+    }
+
+    fn set_warning(&mut self, msg: impl Into<String>) {
+        self.set_notice(NoticeLevel::Warning, msg, false);
     }
 
     fn set_error(&mut self, msg: impl Into<String>) {
@@ -615,7 +735,7 @@ impl App {
     }
 
     fn shows_preview(&self) -> bool {
-        !self.is_mobile
+        !self.is_mobile || matches!(self.mode, Mode::Terminal { .. })
     }
 
     fn spawn_bg<F>(&mut self, label: impl Into<String>, f: F)
@@ -642,35 +762,35 @@ impl App {
                 // ! clear pending_deletions and refresh so any optimistic removals are restored
                 if !self.pending_deletions.is_empty() {
                     self.pending_deletions.clear();
-                    self.spawn_herdr_refresh();
+                    self.spawn_runtime_refresh();
                 }
                 self.set_error(format!("{}: {}", result.label, e));
             }
             Ok(BgOutcome::WorktreeRemoved { label }) => {
                 // ^ A live refresh clears the tombstone after Git stops reporting the path.
-                self.spawn_herdr_refresh();
+                self.spawn_runtime_refresh();
                 self.set_status(label);
             }
             Ok(BgOutcome::CleanAborted { wt_path, msg }) => {
                 // Merge check failed off-thread; restore the optimistically removed worktree
                 self.pending_deletions.remove(&wt_path);
-                self.spawn_herdr_refresh();
+                self.spawn_runtime_refresh();
                 self.set_status(msg);
             }
             Ok(BgOutcome::ProjectsCleaned { msg }) => {
-                self.spawn_herdr_refresh();
+                self.spawn_runtime_refresh();
                 self.set_status(msg);
             }
             Ok(BgOutcome::WorktreeCreated { label }) => {
-                self.spawn_herdr_refresh();
+                self.spawn_runtime_refresh();
                 self.set_status(label);
             }
             Ok(BgOutcome::SessionKilled {
-                pane_id,
+                session_id,
                 display_name,
             }) => {
                 // ^ Filter snapshots captured before the successful close.
-                self.pending_session_kills.insert(pane_id.clone());
+                self.pending_session_kills.insert(session_id);
                 for worktree in self
                     .workspace
                     .projects
@@ -679,12 +799,12 @@ impl App {
                 {
                     worktree
                         .sessions
-                        .retain(|session| session.pane_id != pane_id);
+                        .retain(|session| session.session_id != session_id);
                 }
                 self.rebuild_flat();
                 self.clamp_selected();
                 self.mark_dirty();
-                self.spawn_herdr_refresh();
+                self.spawn_runtime_refresh();
                 self.set_status(format!("Killed session: {display_name}"));
             }
         }
@@ -700,10 +820,10 @@ impl App {
 
     fn refresh_visible_projects(&mut self) {
         self.visible_projects =
-            compute_visible_projects(&self.config, &self.workspace, self.active_tab.as_deref());
+            compute_visible_projects(&self.config, &self.workspace, self.active_group.as_ref());
     }
 
-    /// Recompute visible project set from active_tab + config, then rebuild flat + clamp cursor.
+    /// Recompute visible project set from active groups, then rebuild flat and clamp cursor.
     fn recompute_visible(&mut self) {
         self.rebuild_flat();
         self.clamp_selected();
@@ -733,7 +853,7 @@ impl App {
             _ => false,
         };
         if is_stale {
-            self.mode = Mode::Normal;
+            self.mode = Mode::Workspace;
         }
     }
 
@@ -801,11 +921,16 @@ impl App {
                 self.force_terminal_redraw = false;
                 self.force_preview_redraw = false;
                 let preview_is_session = self.shows_preview()
-                    && matches!(self.current_selection(), Selection::Session(..));
+                    && matches!(
+                        self.current_selection(),
+                        Selection::Session(..) | Selection::Pane(..)
+                    );
+                let cursor = self.terminal_cursor();
                 match tui::draw_sync(
                     terminal,
                     clear_terminal,
                     clear_preview,
+                    cursor,
                     |frame, clear_preview| {
                         ui::render(frame, self);
                         if clear_preview {
@@ -823,11 +948,21 @@ impl App {
                 self.mode,
                 Mode::Input { .. }
                     | Mode::Search { .. }
-                    | Mode::TabManager { .. }
+                    | Mode::GroupManager { .. }
                     | Mode::RoutineEditor { .. }
             );
-            if let Some(action) = poll_event(Duration::from_millis(TICK_MS), in_input)? {
-                if action == Action::Quit && matches!(self.mode, Mode::Normal) {
+            let terminal_mode = matches!(self.mode, Mode::Terminal { .. });
+            if let Some(action) = poll_event(
+                Duration::from_millis(if terminal_mode {
+                    TERMINAL_TICK_MS
+                } else {
+                    TICK_MS
+                }),
+                in_input,
+                terminal_mode,
+                &mut self.terminal_escape_chord,
+            )? {
+                if action == Action::Quit && matches!(self.mode, Mode::Workspace) {
                     break;
                 }
                 if action != Action::None {
@@ -835,6 +970,9 @@ impl App {
                 }
                 if let Err(e) = self.dispatch(action, terminal) {
                     self.set_error(format!("Action failed: {e}"));
+                }
+                if self.should_quit {
+                    break;
                 }
             }
             if let Err(e) = self.tick() {
@@ -844,7 +982,92 @@ impl App {
         Ok(())
     }
 
+    fn drain_terminal_stream(&mut self) {
+        let mut messages = Vec::new();
+        if let Some(stream) = self.terminal_stream.as_ref() {
+            loop {
+                match stream.try_recv() {
+                    Ok(message) => messages.push(message),
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        messages.push(runtime::TerminalServerMessage::Error(
+                            runtime::ApiError::new(
+                                "stream_disconnected",
+                                "terminal update stream disconnected",
+                            ),
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+        for message in messages {
+            match message {
+                runtime::TerminalServerMessage::Update(update) => {
+                    self.apply_terminal_update(update)
+                }
+                runtime::TerminalServerMessage::Error(error) => {
+                    self.terminal_stream = None;
+                    self.mode = Mode::Workspace;
+                    self.set_error(format!(
+                        "Terminal stream: {}: {}",
+                        error.code, error.message
+                    ));
+                    break;
+                }
+                runtime::TerminalServerMessage::Exited => {
+                    self.terminal_stream = None;
+                    self.mode = Mode::Workspace;
+                    self.set_warning("Terminal process exited");
+                    break;
+                }
+            }
+        }
+    }
+
+    fn apply_terminal_update(&mut self, update: runtime::TerminalUpdate) {
+        let pane_id = match &update {
+            runtime::TerminalUpdate::Full(frame) => frame.pane_id,
+            runtime::TerminalUpdate::Patch { pane_id, .. } => *pane_id,
+        };
+        let mut applied = false;
+        for session in self
+            .workspace
+            .projects
+            .iter_mut()
+            .flat_map(|project| &mut project.worktrees)
+            .flat_map(|worktree| &mut worktree.sessions)
+        {
+            let Some(pane_idx) = session
+                .panes
+                .iter()
+                .position(|pane| pane.pane_id == pane_id)
+            else {
+                continue;
+            };
+            if update
+                .apply_to(&mut session.panes[pane_idx].terminal_frame)
+                .is_err()
+            {
+                if let Some(stream) = self.terminal_stream.as_ref() {
+                    let _ = stream.try_send(runtime::TerminalClientMessage::Resync);
+                }
+                return;
+            }
+            if session.pane_id == pane_id {
+                session.terminal_frame = session.panes[pane_idx].terminal_frame.clone();
+            }
+            applied = true;
+            break;
+        }
+        if applied {
+            self.needs_redraw = true;
+            self.force_preview_redraw = self.shows_preview();
+        }
+    }
+
     fn drain_async_results(&mut self) {
+        self.drain_terminal_stream();
         // Background repo discovery — survives modal opens. We dedup on the
         // spot so the list stays clean even across re-scans.
         if let Some(rx) = self.repo_scan_rx.as_ref() {
@@ -873,21 +1096,21 @@ impl App {
             self.apply_bg_result(result);
         }
         loop {
-            let signal = self.herdr_event_rx.try_recv();
+            let signal = self.runtime_event_rx.try_recv();
             match signal {
-                Ok(signal) => self.apply_herdr_event(signal),
+                Ok(signal) => self.apply_runtime_event(signal),
                 Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
             }
         }
-        while let Ok(result) = self.herdr_rx.try_recv() {
+        while let Ok(result) = self.runtime_rx.try_recv() {
             match result {
-                HerdrResult::FullRefresh(result) => self.apply_herdr_refresh(result),
-                HerdrResult::SessionRefresh(result) => self.apply_herdr_session_refresh(result),
-                HerdrResult::Capture {
+                RuntimeResult::FullRefresh(result) => self.apply_runtime_refresh(result),
+                RuntimeResult::SessionRefresh(result) => self.apply_runtime_session_refresh(result),
+                RuntimeResult::Frame {
                     pane_id,
                     revision,
-                    content,
-                } => self.apply_herdr_capture(pane_id, revision, content),
+                    frame,
+                } => self.apply_runtime_frame(pane_id, revision, frame),
             }
         }
         while let Ok(result) = self.routine_rx.try_recv() {
@@ -899,20 +1122,21 @@ impl App {
         }
     }
 
-    fn apply_herdr_event(&mut self, signal: herdr::EventSignal) {
+    fn apply_runtime_event(&mut self, signal: runtime::EventSignal) {
         match signal {
-            herdr::EventSignal::Dirty => self.spawn_herdr_session_refresh(),
-            herdr::EventSignal::Connected => {
-                // Healthy means a post-subscription authoritative snapshot was accepted.
+            runtime::EventSignal::Dirty => self.spawn_runtime_session_refresh(),
+            runtime::EventSignal::Connected => {
+                // A new connection may belong to a different daemon epoch.
+                self.spawn_runtime_session_refresh();
                 self.needs_redraw = true;
             }
-            herdr::EventSignal::Disconnected(error) => {
-                let last_success = match self.herdr_health {
-                    HerdrHealth::Healthy { last_success } => Some(last_success),
-                    HerdrHealth::Reconnecting { last_success, .. } => last_success,
-                    HerdrHealth::Connecting => None,
+            runtime::EventSignal::Disconnected(error) => {
+                let last_success = match self.runtime_health {
+                    RuntimeHealth::Healthy { last_success } => Some(last_success),
+                    RuntimeHealth::Reconnecting { last_success, .. } => last_success,
+                    RuntimeHealth::Connecting => None,
                 };
-                self.herdr_health = HerdrHealth::Reconnecting {
+                self.runtime_health = RuntimeHealth::Reconnecting {
                     last_success,
                     error,
                 };
@@ -1061,13 +1285,15 @@ impl App {
         }
 
         if self.slow_timer.ready() {
-            self.spawn_herdr_refresh();
+            // Recent is wall-clock based and can expire without any runtime event.
+            self.recompute_visible();
+            self.spawn_runtime_refresh();
             self.spawn_git_local_for_all();
             self.spawn_routine_refresh();
         }
 
         if self.fast_timer.ready() {
-            self.spawn_herdr_capture();
+            self.spawn_runtime_capture();
             self.tick_git_fetch();
             if !self.jobs.is_empty() {
                 self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
@@ -1238,8 +1464,7 @@ impl App {
             &self.workspace,
             self.tree_selected,
             self.flat(),
-            &self.send_command_history,
-            self.active_tab.as_deref(),
+            self.active_group.as_ref(),
             sync,
         ) {
             self.set_error(error);
@@ -1255,7 +1480,7 @@ impl App {
 
     pub fn refresh_all(&mut self) -> Result<()> {
         // ^ Keep one ordered refresh stream so older snapshots cannot clear mutation tombstones.
-        self.spawn_herdr_refresh();
+        self.spawn_runtime_refresh();
         Ok(())
     }
 
@@ -1272,110 +1497,108 @@ impl App {
         filter_pending_deletions(&mut self.pending_deletions, worktrees)
     }
 
-    fn spawn_herdr_refresh(&mut self) {
-        if self.herdr_refresh_pending {
-            self.herdr_full_refresh_stale = true;
+    fn spawn_runtime_refresh(&mut self) {
+        if self.runtime_refresh_pending {
+            self.runtime_full_refresh_stale = true;
             return;
         }
-        self.herdr_refresh_pending = true;
-        let tx = self.herdr_tx.clone();
-        let client = self.herdr_client.clone();
-        let project_paths: Vec<PathBuf> = self
-            .workspace
-            .projects
-            .iter()
-            .map(|project| project.path.clone())
-            .collect();
+        self.runtime_refresh_pending = true;
+        let tx = self.runtime_tx.clone();
+        let config = self.config.clone();
         std::thread::spawn(move || {
-            let result = herdr::snapshot_with(&client).map(|snapshot| {
-                let worktrees = project_paths
-                    .into_iter()
-                    .map(|path| {
-                        let entries = git_worktree::list_worktrees(&path).unwrap_or_default();
-                        (path, entries)
-                    })
-                    .collect();
-                (snapshot, worktrees)
-            });
-            let _ = tx.send(HerdrResult::FullRefresh(result));
+            let result = (|| {
+                runtime::ensure_available()?;
+                let discovery = ops::discover_workspace(&config)?;
+                let snapshot = ops::synchronize_discovery(&discovery)?;
+                Ok((snapshot, discovery.into_worktrees()))
+            })();
+            let _ = tx.send(RuntimeResult::FullRefresh(result));
         });
     }
 
-    fn spawn_herdr_session_refresh(&mut self) {
-        if self.herdr_refresh_pending {
-            self.herdr_refresh_stale = true;
+    fn spawn_runtime_session_refresh(&mut self) {
+        if self.runtime_refresh_pending {
+            self.runtime_refresh_stale = true;
             return;
         }
-        self.herdr_refresh_pending = true;
-        let tx = self.herdr_tx.clone();
-        let client = self.herdr_client.clone();
+        self.runtime_refresh_pending = true;
+        let tx = self.runtime_tx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(HerdrResult::SessionRefresh(herdr::snapshot_with(&client)));
+            let _ = tx.send(RuntimeResult::SessionRefresh(ops::runtime_snapshot()));
         });
     }
 
-    fn apply_herdr_refresh(&mut self, result: HerdrRefresh) {
-        self.herdr_refresh_pending = false;
+    fn apply_runtime_refresh(&mut self, result: RuntimeRefresh) {
+        self.runtime_refresh_pending = false;
         match result {
-            Ok((snapshot, worktrees)) => self.apply_herdr_snapshot(snapshot, worktrees),
+            Ok((snapshot, worktrees)) => self.apply_runtime_snapshot(snapshot, worktrees),
             Err(error) => {
-                self.apply_herdr_event(herdr::EventSignal::Disconnected(error.to_string()))
+                self.apply_runtime_event(runtime::EventSignal::Disconnected(error.to_string()))
             }
         }
-        self.spawn_queued_herdr_refresh();
+        self.spawn_queued_runtime_refresh();
     }
 
-    fn apply_herdr_session_refresh(&mut self, result: Result<herdr::Snapshot>) {
-        self.herdr_refresh_pending = false;
+    fn apply_runtime_session_refresh(&mut self, result: Result<runtime::Snapshot>) {
+        self.runtime_refresh_pending = false;
         match result {
             Ok(snapshot) => self.apply_projected_snapshot(snapshot, None),
             Err(error) => {
-                self.apply_herdr_event(herdr::EventSignal::Disconnected(error.to_string()))
+                self.apply_runtime_event(runtime::EventSignal::Disconnected(error.to_string()))
             }
         }
-        self.spawn_queued_herdr_refresh();
+        self.spawn_queued_runtime_refresh();
     }
 
-    fn spawn_queued_herdr_refresh(&mut self) {
-        if std::mem::take(&mut self.herdr_full_refresh_stale) {
-            self.herdr_refresh_stale = false;
-            self.spawn_herdr_refresh();
-        } else if std::mem::take(&mut self.herdr_refresh_stale) {
-            self.spawn_herdr_session_refresh();
+    fn spawn_queued_runtime_refresh(&mut self) {
+        if std::mem::take(&mut self.runtime_full_refresh_stale) {
+            self.runtime_refresh_stale = false;
+            self.spawn_runtime_refresh();
+        } else if std::mem::take(&mut self.runtime_refresh_stale) {
+            self.spawn_runtime_session_refresh();
         }
     }
 
-    fn apply_herdr_snapshot(
+    fn apply_runtime_snapshot(
         &mut self,
-        snapshot: herdr::Snapshot,
+        snapshot: runtime::Snapshot,
         worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
     ) {
         self.apply_projected_snapshot(snapshot, Some(worktrees));
+        if let Some(identity) = self.startup_cursor_identity.as_ref() {
+            if let Some(index) =
+                wsx_core::cache::find_cursor_index(&self.workspace, self.flat(), identity)
+            {
+                self.tree_selected = index;
+                self.startup_cursor_identity = None;
+                self.update_scroll();
+            }
+        }
     }
 
     fn apply_projected_snapshot(
         &mut self,
-        mut snapshot: herdr::Snapshot,
+        mut snapshot: runtime::Snapshot,
         worktrees: Option<Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>>,
     ) {
-        let previous_revisions: HashMap<String, u64> = self
-            .workspace
-            .projects
+        let live_sessions = snapshot
+            .sessions
             .iter()
-            .flat_map(|project| &project.worktrees)
-            .flat_map(|worktree| &worktree.sessions)
-            .map(|session| (session.pane_id.clone(), session.revision))
-            .collect();
-        let live: HashSet<String> = snapshot
-            .panes
-            .iter()
-            .map(|pane| pane.pane_id.clone())
-            .collect();
+            .map(|session| session.id)
+            .collect::<HashSet<_>>();
         self.pending_session_kills
-            .retain(|pane_id| live.contains(pane_id));
+            .retain(|session_id| live_sessions.contains(session_id));
+        snapshot
+            .sessions
+            .retain(|session| !self.pending_session_kills.contains(&session.id));
+        let visible_sessions = snapshot
+            .sessions
+            .iter()
+            .map(|session| session.id)
+            .collect::<HashSet<_>>();
         snapshot
             .panes
-            .retain(|pane| !self.pending_session_kills.contains(&pane.pane_id));
+            .retain(|pane| visible_sessions.contains(&pane.session_id));
         let refresh = match worktrees {
             Some(worktrees) => {
                 let worktrees = self.filter_pending_deletions(worktrees);
@@ -1389,8 +1612,22 @@ impl App {
             None => ops::refresh_sessions_from_snapshot(&mut self.workspace, &snapshot),
         };
         if let Err(error) = refresh {
-            self.set_error(format!("Herdr snapshot rejected: {error}"));
+            self.set_error(format!("Runtime snapshot rejected: {error}"));
             return;
+        }
+        if let Mode::Terminal { pane_id } = self.mode {
+            let pane_exists = self
+                .workspace
+                .projects
+                .iter()
+                .flat_map(|project| &project.worktrees)
+                .flat_map(|worktree| &worktree.sessions)
+                .flat_map(|session| &session.panes)
+                .any(|pane| pane.pane_id == pane_id && !pane.exited);
+            if !pane_exists {
+                self.mode = Mode::Workspace;
+                self.set_warning("Terminal closed");
+            }
         }
         for session in self
             .workspace
@@ -1399,83 +1636,79 @@ impl App {
             .flat_map(|project| &mut project.worktrees)
             .flat_map(|worktree| &mut worktree.sessions)
         {
-            session.muted = self.muted_terminal_ids.contains(&session.terminal_id);
+            session.muted = self
+                .muted_terminal_ids
+                .contains(&session.terminal_id.to_string());
         }
         self.rebuild_flat();
         self.clamp_selected();
-        let current_revisions: HashMap<&str, u64> = self
-            .workspace
-            .projects
-            .iter()
-            .flat_map(|project| &project.worktrees)
-            .flat_map(|worktree| &worktree.sessions)
-            .map(|session| (session.pane_id.as_str(), session.revision))
-            .collect();
-        self.parsed_preview.retain(|pane_id, _| {
-            current_revisions.get(pane_id.as_str()).copied()
-                == previous_revisions.get(pane_id).copied()
-        });
-        self.restart_herdr_monitor_if_needed();
-        let recovered = matches!(self.herdr_health, HerdrHealth::Reconnecting { .. });
-        self.herdr_health = HerdrHealth::Healthy {
+        let recovered = matches!(self.runtime_health, RuntimeHealth::Reconnecting { .. });
+        self.runtime_health = RuntimeHealth::Healthy {
             last_success: Instant::now(),
         };
         if recovered {
-            self.set_status("Herdr reconnected; workspace refreshed");
+            self.set_status("Runtime reconnected; workspace refreshed");
         }
         self.mark_dirty();
         self.write_cache_if_dirty();
         self.needs_redraw = true;
     }
 
-    fn restart_herdr_monitor_if_needed(&mut self) {
-        let pane_ids = session_pane_ids(&self.workspace);
-        if pane_ids == self.herdr_event_panes {
-            return;
-        }
-        self.herdr_monitor.take();
-        match herdr::EventMonitor::start(self.herdr_client.clone(), pane_ids.clone()) {
-            Ok((monitor, receiver)) => {
-                self.herdr_monitor = Some(monitor);
-                self.herdr_event_rx = receiver;
-                self.herdr_event_panes = pane_ids;
-            }
-            Err(error) => {
-                self.apply_herdr_event(herdr::EventSignal::Disconnected(error.to_string()))
-            }
-        }
-    }
-
-    fn spawn_herdr_capture(&mut self) {
-        if self.herdr_capture_pending || !self.shows_preview() {
+    fn spawn_runtime_capture(&mut self) {
+        if self.terminal_stream.is_some() || self.runtime_capture_pending || !self.shows_preview() {
             return;
         }
         let Some((pane_id, revision)) = (match self.current_selection() {
-            Selection::Session(pi, wi, si) => self
+            Selection::Session(pi, wi, si) => self.workspace.session(pi, wi, si).map(|session| {
+                let revision = session
+                    .panes
+                    .iter()
+                    .find(|pane| pane.pane_id == session.pane_id)
+                    .map_or(session.revision, |pane| pane.revision);
+                (session.pane_id, revision)
+            }),
+            Selection::Pane(pi, wi, si, pane_idx) => self
                 .workspace
                 .session(pi, wi, si)
-                .map(|session| (session.pane_id.clone(), session.revision)),
+                .and_then(|session| session.panes.get(pane_idx))
+                .map(|pane| (pane.pane_id, pane.revision)),
             _ => None,
         }) else {
             return;
         };
-        self.herdr_capture_pending = true;
-        let tx = self.herdr_tx.clone();
-        let client = self.herdr_client.clone();
+        self.runtime_capture_pending = true;
+        let tx = self.runtime_tx.clone();
+        let client = self.runtime_client.clone();
         std::thread::spawn(move || {
-            let content = herdr::read_recent_ansi_with(&client, &pane_id, 200);
-            let _ = tx.send(HerdrResult::Capture {
+            let frame = match client.call(&runtime::Request::View {
+                pane_ids: vec![pane_id],
+            }) {
+                Ok(runtime::Response::View { mut frames, .. }) => frames
+                    .pop()
+                    .ok_or_else(|| anyhow::anyhow!("pane frame is unavailable")),
+                Ok(runtime::Response::Error(error)) => {
+                    Err(anyhow::anyhow!("{}: {}", error.code, error.message))
+                }
+                Ok(_) => Err(anyhow::anyhow!("unexpected daemon view response")),
+                Err(error) => Err(error.into()),
+            };
+            let _ = tx.send(RuntimeResult::Frame {
                 pane_id,
                 revision,
-                content,
+                frame,
             });
         });
     }
 
-    fn apply_herdr_capture(&mut self, pane_id: String, revision: u64, content: Result<String>) {
-        self.herdr_capture_pending = false;
-        let Ok(trimmed) = content else {
-            self.set_error("Preview unavailable; showing the last captured output");
+    fn apply_runtime_frame(
+        &mut self,
+        pane_id: runtime::PaneId,
+        revision: u64,
+        frame: Result<runtime::TerminalFrame>,
+    ) {
+        self.runtime_capture_pending = false;
+        let Ok(frame) = frame else {
+            self.set_error("Terminal frame unavailable; showing the last frame");
             return;
         };
         let session = self
@@ -1484,22 +1717,26 @@ impl App {
             .iter_mut()
             .flat_map(|project| &mut project.worktrees)
             .flat_map(|worktree| &mut worktree.sessions)
-            .find(|session| session.pane_id == pane_id && session.revision == revision);
+            .find(|session| session.panes.iter().any(|pane| pane.pane_id == pane_id));
         let Some(session) = session else { return };
-        if session.pane_capture.as_deref() == Some(&trimmed) {
+        let Some(pane) = session
+            .panes
+            .iter_mut()
+            .find(|pane| pane.pane_id == pane_id && pane.revision == revision)
+        else {
+            return;
+        };
+        if pane
+            .terminal_frame
+            .as_ref()
+            .is_some_and(|old| old.revision == frame.revision)
+        {
             return;
         }
-        let mut parsed = ansi::parse(&trimmed);
-        while parsed
-            .lines
-            .last()
-            .map(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
-            .unwrap_or(false)
-        {
-            parsed.lines.pop();
+        pane.terminal_frame = Some(frame.clone());
+        if session.pane_id == pane_id {
+            session.terminal_frame = Some(frame);
         }
-        self.parsed_preview.insert(session.pane_id.clone(), parsed);
-        session.pane_capture = Some(trimmed);
         self.needs_redraw = true;
         self.force_preview_redraw = self.shows_preview();
     }
@@ -1528,6 +1765,14 @@ impl App {
         }
     }
 
+    pub fn terminal_escape_label(&self) -> &str {
+        &self.terminal_escape_chord.label
+    }
+
+    pub fn terminal_literal_escape_label(&self) -> String {
+        self.terminal_escape_chord.literal_label()
+    }
+
     pub fn current_selection(&self) -> Selection {
         self.workspace
             .get_selection(self.tree_selected, self.flat())
@@ -1535,17 +1780,11 @@ impl App {
 
     fn selected_worktree_indices(&self) -> Option<(usize, usize)> {
         match self.current_selection() {
-            Selection::Worktree(pi, wi) | Selection::Session(pi, wi, _) => Some((pi, wi)),
+            Selection::Worktree(pi, wi)
+            | Selection::Session(pi, wi, _)
+            | Selection::Pane(pi, wi, _, _) => Some((pi, wi)),
             _ => None,
         }
-    }
-
-    fn default_branch_for_project(&self, project_idx: usize) -> String {
-        self.workspace
-            .projects
-            .get(project_idx)
-            .map(|p| p.default_branch.clone())
-            .unwrap_or_else(|| "main".to_string())
     }
 
     fn clamp_selected(&mut self) {
@@ -1598,6 +1837,19 @@ impl App {
             Some(FlatEntry::Session { project_idx: pi, worktree_idx: wi, .. }) => {
                 if let Some(pos) = self.flat().iter().position(|e| {
                     matches!(e, FlatEntry::Worktree { project_idx: p, worktree_idx: w } if *p == pi && *w == wi)
+                }) {
+                    self.tree_selected = pos;
+                    self.update_scroll();
+                }
+            }
+            Some(FlatEntry::Pane {
+                project_idx: pi,
+                worktree_idx: wi,
+                session_idx: si,
+                ..
+            }) => {
+                if let Some(pos) = self.flat().iter().position(|entry| {
+                    matches!(entry, FlatEntry::Session { project_idx, worktree_idx, session_idx } if *project_idx == pi && *worktree_idx == wi && *session_idx == si)
                 }) {
                     self.tree_selected = pos;
                     self.update_scroll();
@@ -1704,19 +1956,29 @@ impl App {
         if let Mode::Config { project_idx } = &self.mode {
             let pi = *project_idx;
             if matches!(action, Action::InputEscape | Action::Quit | Action::Help) {
-                self.mode = Mode::Normal;
+                self.mode = Mode::Workspace;
             } else if action == Action::Edit {
-                let path = self
-                    .workspace
-                    .projects
-                    .get(pi)
-                    .map(|p| p.path.join(".gtrignore"));
+                let path = self.workspace.projects.get(pi).map(|project| {
+                    project
+                        .path
+                        .join(wsx_core::config::project::PROJECT_CONFIG_FILE)
+                });
                 if let Some(path) = path {
                     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
                     tui::with_raw_mode_disabled(terminal, || {
                         std::process::Command::new(&editor).arg(&path).status()?;
                         Ok(())
                     })?;
+                    let config = self.workspace.projects.get(pi).map(|project| {
+                        wsx_core::config::project::load_project_config(&project.path)
+                    });
+                    if let Some(config) = config {
+                        let notice = config.notice.clone();
+                        self.workspace.projects[pi].config = Some(config);
+                        if let Some(notice) = notice {
+                            self.set_notice(NoticeLevel::Warning, notice, false);
+                        }
+                    }
                 }
             }
             return Ok(());
@@ -1727,31 +1989,23 @@ impl App {
             match action {
                 Action::NavigateDown => self.move_project_down(pi),
                 Action::NavigateUp => self.move_project_up(pi),
-                Action::NavigateLeft => {
-                    if !self.config.tabs.is_empty() {
-                        self.move_project_to_adjacent_tab(pi, -1)?;
-                        return Ok(());
-                    }
-                }
-                Action::NavigateRight => {
-                    if !self.config.tabs.is_empty() {
-                        self.move_project_to_adjacent_tab(pi, 1)?;
-                        return Ok(());
-                    }
-                }
                 Action::Select | Action::InputEscape | Action::Quit | Action::EnterMove => {
                     self.sync_config_project_order();
                     self.config.save()?;
-                    self.mode = Mode::Normal;
+                    self.mode = Mode::Workspace;
                 }
                 _ => {}
             }
             return Ok(());
         }
 
-        if let Mode::TabManager { selected } = &self.mode {
-            let sel = *selected;
-            return self.dispatch_tab_manager(sel, action);
+        if let Mode::GroupManager {
+            selected,
+            scroll,
+            purpose,
+        } = &self.mode
+        {
+            return self.dispatch_group_manager(*selected, *scroll, *purpose, action);
         }
 
         if matches!(self.mode, Mode::RoutineEditor { .. }) {
@@ -1759,7 +2013,7 @@ impl App {
         }
         if matches!(self.mode, Mode::RoutineDetail { .. }) {
             match action {
-                Action::InputEscape | Action::Quit | Action::Select => self.mode = Mode::Normal,
+                Action::InputEscape | Action::Quit | Action::Select => self.mode = Mode::Workspace,
                 Action::NavigateDown => {
                     if let Mode::RoutineDetail { scroll, .. } = &mut self.mode {
                         *scroll = scroll.saturating_add(1);
@@ -1788,42 +2042,205 @@ impl App {
                 Action::Select | Action::InputEscape | Action::Quit | Action::EnterMove => {
                     self.mark_dirty();
                     self.write_cache_if_dirty();
-                    self.mode = Mode::Normal;
+                    self.mode = Mode::Workspace;
                 }
                 _ => {}
             }
             return Ok(());
         }
 
+        if let Mode::Terminal { pane_id } = self.mode {
+            self.dispatch_terminal(action, pane_id, terminal)?;
+            return Ok(());
+        }
+
         match &self.mode {
-            Mode::Normal => self.dispatch_normal(action, terminal)?,
+            Mode::Workspace => self.dispatch_normal(action, terminal)?,
+            Mode::Terminal { .. } => unreachable!(),
             Mode::Input { .. } => self.dispatch_input(action, terminal)?,
             Mode::Confirm { .. } => self.dispatch_confirm(action, terminal)?,
             Mode::Help => {
                 if matches!(action, Action::InputEscape | Action::Quit | Action::Help) {
-                    self.mode = Mode::Normal;
+                    self.mode = Mode::Workspace;
                 }
             }
             Mode::Search { .. } => self.dispatch_search(action, terminal)?,
             Mode::Config { .. }
             | Mode::Move { .. }
             | Mode::MoveSession { .. }
-            | Mode::TabManager { .. } => unreachable!(),
+            | Mode::GroupManager { .. } => unreachable!(),
             Mode::RoutineEditor { .. } | Mode::RoutineDetail { .. } => unreachable!(),
         }
         Ok(())
     }
 
+    fn dispatch_terminal(
+        &mut self,
+        action: Action,
+        pane_id: runtime::PaneId,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        match action {
+            Action::InputEscape => self.leave_terminal_mode(pane_id),
+            Action::Resize => {
+                self.resize_terminal_pane(pane_id, terminal);
+                self.force_terminal_redraw = true;
+                self.needs_redraw = true;
+            }
+            Action::TerminalKey(key) => self.send_terminal_keys([key]),
+            Action::TerminalKeys(keys) => self.send_terminal_keys(keys),
+            Action::TerminalPaste(text) => {
+                self.send_terminal_stream(runtime::TerminalClientMessage::Paste(text))
+            }
+            Action::TerminalPrefixedPaste(prefix, text) => {
+                self.send_terminal_keys([prefix]);
+                self.send_terminal_stream(runtime::TerminalClientMessage::Paste(text));
+            }
+            Action::TerminalMouse(mouse) => {
+                if self.handle_terminal_group_header_scroll(mouse) {
+                    return Ok(());
+                }
+                if self.is_workspace_click(mouse) {
+                    self.leave_terminal_mode(pane_id);
+                    self.handle_mouse_click(mouse.column, mouse.row, terminal)?;
+                } else {
+                    self.send_terminal_mouse(mouse);
+                }
+            }
+            Action::TerminalPrefixedMouse(prefix, mouse) => {
+                if self.handle_terminal_group_header_scroll(mouse) {
+                    return Ok(());
+                }
+                if self.is_workspace_click(mouse) {
+                    self.leave_terminal_mode(pane_id);
+                    self.handle_mouse_click(mouse.column, mouse.row, terminal)?;
+                } else {
+                    self.send_terminal_keys([prefix]);
+                    self.send_terminal_mouse(mouse);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn send_terminal_keys(&mut self, keys: impl IntoIterator<Item = crossterm::event::KeyEvent>) {
+        for key in keys {
+            if let Some(key) = runtime_key_event(key) {
+                self.send_terminal_stream(runtime::TerminalClientMessage::Key(key));
+            }
+        }
+    }
+
+    fn send_terminal_stream(&mut self, message: runtime::TerminalClientMessage) {
+        let Some(stream) = self.terminal_stream.as_ref() else {
+            self.set_error("Terminal stream is unavailable");
+            return;
+        };
+        match stream.try_send(message) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Full(_)) => {
+                self.set_error("Terminal input queue is full; input was not sent")
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.mode = Mode::Workspace;
+                self.terminal_stream = None;
+                self.set_error("Terminal stream disconnected");
+            }
+        }
+    }
+
+    fn send_terminal_bytes_once(&self, pane_id: runtime::PaneId, bytes: Vec<u8>) -> Result<()> {
+        match self
+            .runtime_client
+            .call(&runtime::Request::TerminalAcquire {
+                pane_id,
+                client_id: self.terminal_controller_id,
+                takeover: false,
+            })? {
+            runtime::Response::Ack { .. } => {}
+            runtime::Response::Error(error) => anyhow::bail!("{}: {}", error.code, error.message),
+            _ => anyhow::bail!("unexpected terminal lease response"),
+        }
+        let result = match self.runtime_client.call(&runtime::Request::TerminalInput {
+            pane_id,
+            client_id: self.terminal_controller_id,
+            bytes,
+        })? {
+            runtime::Response::Ack { .. } => Ok(()),
+            runtime::Response::Error(error) => {
+                Err(anyhow::anyhow!("{}: {}", error.code, error.message))
+            }
+            _ => Err(anyhow::anyhow!("unexpected terminal input response")),
+        };
+        let _ = self
+            .runtime_client
+            .call(&runtime::Request::TerminalRelease {
+                pane_id,
+                client_id: self.terminal_controller_id,
+            });
+        result
+    }
+
+    fn is_workspace_click(&self, mouse: crossterm::event::MouseEvent) -> bool {
+        matches!(
+            mouse.kind,
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
+        ) && (self
+            .tree_area
+            .contains(Position::new(mouse.column, mouse.row))
+            || self
+                .group_header_area
+                .contains(Position::new(mouse.column, mouse.row)))
+    }
+
+    fn handle_terminal_group_header_scroll(&mut self, mouse: crossterm::event::MouseEvent) -> bool {
+        if !self
+            .group_header_area
+            .contains(Position::new(mouse.column, mouse.row))
+        {
+            return false;
+        }
+        let delta = match mouse.kind {
+            crossterm::event::MouseEventKind::ScrollUp
+            | crossterm::event::MouseEventKind::ScrollLeft => -1,
+            crossterm::event::MouseEventKind::ScrollDown
+            | crossterm::event::MouseEventKind::ScrollRight => 1,
+            _ => return false,
+        };
+        self.scroll_group_header(delta);
+        true
+    }
+
+    fn send_terminal_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        let Some(mouse) = runtime_mouse_event(mouse, self.terminal_area) else {
+            return;
+        };
+        self.send_terminal_stream(runtime::TerminalClientMessage::Mouse(mouse));
+    }
+
     fn dispatch_normal(&mut self, action: Action, terminal: &mut Tui) -> Result<()> {
         match action {
+            Action::HardQuit => self.action_hard_quit(),
             Action::NavigateUp => self.nav_up(),
             Action::NavigateDown => self.nav_down(),
             Action::NavigateLeft => self.nav_left(),
             Action::NavigateRight => self.nav_right(),
             Action::Select => self.action_select(terminal)?,
+            Action::LiteralEscape => {
+                let key = self.terminal_escape_chord.literal_key_event();
+                self.action_select(terminal)?;
+                if matches!(self.mode, Mode::Terminal { .. }) {
+                    self.send_terminal_keys([key]);
+                }
+            }
             Action::AddProject => self.action_add_project()?,
             Action::AddWorktree => self.action_add_worktree()?,
             Action::AddSession => self.action_add_session()?,
+            Action::SplitPaneVertical => self.action_split_pane(runtime::SplitAxis::Vertical)?,
+            Action::SplitPaneHorizontal => {
+                self.action_split_pane(runtime::SplitAxis::Horizontal)?
+            }
             Action::AddRoutine => self.action_add_routine()?,
             Action::Delete => self.action_delete()?,
             Action::Clean => self.action_clean()?,
@@ -1844,8 +2261,8 @@ impl App {
             Action::PrevActive => self.action_prev_active(),
             Action::NextIdle => self.action_next_idle(),
             Action::PrevIdle => self.action_prev_idle(),
-            Action::SendCommand => self.action_send_command(),
             Action::SendCtrlC => self.action_send_ctrl_c()?,
+            Action::AssignGroup => self.action_assign_group(),
             Action::EnterMove => self.action_enter_move(),
             Action::JumpProjectDown => self.jump_project(1),
             Action::JumpProjectUp => self.jump_project(-1),
@@ -1855,10 +2272,13 @@ impl App {
                     match_idx: 0,
                 };
             }
-            Action::TabNext => self.action_tab_next(),
-            Action::TabPrev => self.action_tab_prev(),
-            Action::TabManager => self.action_tab_manager(),
+            Action::GroupNext => self.action_group_next(),
+            Action::GroupPrev => self.action_group_prev(),
+            Action::GroupManager => self.action_group_manager(),
             Action::MouseClick { col, row } => self.handle_mouse_click(col, row, terminal)?,
+            Action::MouseScroll { col, row, delta } => {
+                self.handle_workspace_mouse_scroll(col, row, delta)
+            }
             _ => {}
         }
         Ok(())
@@ -1866,33 +2286,86 @@ impl App {
 
     fn handle_mouse_click(&mut self, col: u16, row: u16, terminal: &mut Tui) -> Result<()> {
         let pos = Position { x: col, y: row };
+        if matches!(self.mode, Mode::Workspace) && self.group_header_area.contains(pos) {
+            let strip = crate::ui::workspace_nav::fit_group_strip(
+                &self.config.ordered_group_keys(),
+                self.active_group.as_ref(),
+                usize::from(self.group_header_area.width),
+                self.group_header_scroll,
+            );
+            match strip.target_at(usize::from(col - self.group_header_area.x)) {
+                Some(crate::ui::workspace_nav::GroupStripTarget::Group(key)) => {
+                    self.toggle_active_group(key)
+                }
+                Some(crate::ui::workspace_nav::GroupStripTarget::ScrollLeft) => {
+                    self.scroll_group_header(-1)
+                }
+                Some(crate::ui::workspace_nav::GroupStripTarget::ScrollRight) => {
+                    self.scroll_group_header(1)
+                }
+                None => {}
+            }
+            return Ok(());
+        }
         if self.tree_area.contains(pos) {
-            // Borderless tree reserves two rows for the padded section heading.
-            let content_top = self.tree_area.y + 2;
-            let content_bottom = self.tree_area.y + self.tree_area.height;
-            if row >= content_top && row < content_bottom {
-                let flat_idx = (row - content_top) as usize + self.tree_scroll;
-                if flat_idx < self.flat().len() {
-                    if flat_idx == self.tree_selected {
-                        self.action_select(terminal)?;
-                    } else {
-                        self.tree_selected = flat_idx;
-                        self.update_scroll();
-                    }
+            let layout = crate::ui::workspace_nav::SidebarLayout::new(self.tree_area);
+            if let Some(flat_idx) = layout.item_at(pos, self.tree_scroll, self.flat().len()) {
+                if flat_idx == self.tree_selected {
+                    self.action_select(terminal)?;
+                } else {
+                    self.tree_selected = flat_idx;
+                    self.update_scroll();
                 }
             }
         } else if self.preview_area.contains(pos)
-            && matches!(self.current_selection(), Selection::Session(..))
+            && matches!(
+                self.current_selection(),
+                Selection::Session(..) | Selection::Pane(..)
+            )
         {
             self.action_select(terminal)?;
         }
         Ok(())
     }
 
+    fn handle_workspace_mouse_scroll(&mut self, col: u16, row: u16, delta: i8) {
+        if matches!(self.mode, Mode::Workspace)
+            && self.group_header_area.contains(Position::new(col, row))
+        {
+            self.scroll_group_header(delta);
+        }
+    }
+
+    fn scroll_group_header(&mut self, delta: i8) {
+        let last = self.config.ordered_group_keys().len().saturating_sub(1);
+        self.group_header_scroll = if delta < 0 {
+            self.group_header_scroll.saturating_sub(1)
+        } else {
+            self.group_header_scroll.saturating_add(1).min(last)
+        };
+        self.needs_redraw = true;
+    }
+
     fn dispatch_input(&mut self, action: Action, terminal: &mut Tui) -> Result<()> {
         match action {
             Action::InputEscape | Action::Quit => {
-                self.mode = Mode::Normal;
+                let group_selection = match &self.mode {
+                    Mode::Input {
+                        context: InputContext::AddGroup,
+                        ..
+                    } => Some(0),
+                    Mode::Input {
+                        context: InputContext::RenameGroup { group_idx },
+                        ..
+                    } => Some(group_idx + 2),
+                    _ => None,
+                };
+                self.mode =
+                    group_selection.map_or(Mode::Workspace, |selected| Mode::GroupManager {
+                        selected,
+                        scroll: 0,
+                        purpose: GroupManagerPurpose::Switch,
+                    });
             }
             Action::Select => {
                 self.confirm_input(terminal)?;
@@ -1946,7 +2419,19 @@ impl App {
         match action {
             Action::ConfirmYes | Action::Select => self.confirm_action()?,
             Action::NextAttention | Action::InputEscape | Action::Quit => {
-                self.mode = Mode::Normal;
+                let group_selection = match &self.mode {
+                    Mode::Confirm {
+                        pending: PendingAction::DeleteGroup { group_idx },
+                        ..
+                    } => Some(group_idx + 2),
+                    _ => None,
+                };
+                self.mode =
+                    group_selection.map_or(Mode::Workspace, |selected| Mode::GroupManager {
+                        selected,
+                        scroll: 0,
+                        purpose: GroupManagerPurpose::Switch,
+                    });
             }
             _ => {}
         }
@@ -1956,7 +2441,7 @@ impl App {
     fn dispatch_search(&mut self, action: Action, _terminal: &mut Tui) -> Result<()> {
         match action {
             Action::InputEscape | Action::Quit => {
-                self.mode = Mode::Normal;
+                self.mode = Mode::Workspace;
             }
             Action::InputChar(c) => {
                 if let Mode::Search {
@@ -1988,7 +2473,7 @@ impl App {
 
     fn dispatch_routine_editor(&mut self, action: Action) -> Result<()> {
         match action {
-            Action::InputEscape | Action::Quit => self.mode = Mode::Normal,
+            Action::InputEscape | Action::Quit => self.mode = Mode::Workspace,
             Action::RoutineCodexPreset => {
                 if let Mode::RoutineEditor { form, .. } = &mut self.mode {
                     form.apply_preset(false);
@@ -2046,7 +2531,7 @@ impl App {
     }
 
     fn save_routine_form(&mut self) -> Result<()> {
-        let mode = std::mem::replace(&mut self.mode, Mode::Normal);
+        let mode = std::mem::replace(&mut self.mode, Mode::Workspace);
         let Mode::RoutineEditor {
             project_idx,
             original_name,
@@ -2149,7 +2634,7 @@ impl App {
         };
         let matches = self.search_matches(&query);
         if matches.is_empty() {
-            self.mode = Mode::Normal;
+            self.mode = Mode::Workspace;
             return;
         }
         let next = (match_idx + 1) % matches.len();
@@ -2169,6 +2654,9 @@ impl App {
         match self.current_selection() {
             Selection::Session(pi, wi, si) => {
                 self.attach_session(pi, wi, si, terminal)?;
+            }
+            Selection::Pane(pi, wi, si, pane_idx) => {
+                self.attach_pane(pi, wi, si, pane_idx, terminal)?;
             }
             Selection::Project(pi) => {
                 self.workspace.projects[pi].expanded = !self.workspace.projects[pi].expanded;
@@ -2205,26 +2693,34 @@ impl App {
     /// User interacted with a session in wsx (attach, send command, rename,
     /// ctrl-c). Mute is sticky — only an explicit interaction unmutes; pane
     /// output alone does not. Cursor navigation must NOT call this.
-    fn unmute_on_interaction(&mut self, pane_id: &str) {
-        let terminal_id = self
+    fn unmute_on_interaction(&mut self, pane_id: runtime::PaneId) {
+        let terminal_ids = self
             .workspace
             .projects
             .iter_mut()
             .flat_map(|project| &mut project.worktrees)
             .flat_map(|worktree| &mut worktree.sessions)
-            .find(|session| session.pane_id == pane_id && session.muted)
+            .find(|session| {
+                session.muted
+                    && (session.pane_id == pane_id
+                        || session.panes.iter().any(|pane| pane.pane_id == pane_id))
+            })
             .map(|session| {
                 session.muted = false;
-                session.terminal_id.clone()
+                let mut ids = session
+                    .panes
+                    .iter()
+                    .map(|pane| pane.terminal_id.to_string())
+                    .collect::<Vec<_>>();
+                ids.push(session.terminal_id.to_string());
+                ids
             });
-        if let Some(terminal_id) = terminal_id {
-            self.muted_terminal_ids.remove(&terminal_id);
+        if let Some(terminal_ids) = terminal_ids {
+            for terminal_id in terminal_ids {
+                self.muted_terminal_ids.remove(&terminal_id);
+            }
             self.mark_dirty();
         }
-    }
-
-    fn attach_to_session(&self, terminal_id: &str, terminal: &mut Tui) -> Result<()> {
-        tui::with_raw_mode_disabled(terminal, || herdr::attach_terminal_foreground(terminal_id))
     }
 
     fn attach_session(
@@ -2234,27 +2730,125 @@ impl App {
         si: usize,
         terminal: &mut Tui,
     ) -> Result<()> {
-        let target = self
+        let Some(pane_id) = self
             .workspace
             .session(pi, wi, si)
-            .map(|session| (session.pane_id.clone(), session.terminal_id.clone()));
-        let Some((pane_id, terminal_id)) = target else {
+            .map(|session| session.pane_id)
+        else {
             self.set_status("Session not found");
             return Ok(());
         };
+        self.enter_terminal(pane_id, terminal)
+    }
 
-        self.unmute_on_interaction(&pane_id);
-        self.attach_to_session(&terminal_id, terminal)?;
+    fn attach_pane(
+        &mut self,
+        pi: usize,
+        wi: usize,
+        si: usize,
+        pane_idx: usize,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        let Some(session) = self.workspace.session(pi, wi, si) else {
+            self.set_status("Session not found");
+            return Ok(());
+        };
+        let session_id = session.session_id;
+        let Some(pane_id) = session.panes.get(pane_idx).map(|pane| pane.pane_id) else {
+            self.set_status("Pane not found");
+            return Ok(());
+        };
+        let focus_revision = match self.runtime_client.call(&runtime::Request::PaneFocus {
+            session_id,
+            pane_id,
+        })? {
+            runtime::Response::Ack { revision } => revision,
+            runtime::Response::Error(error) => {
+                self.set_error(format!("{}: {}", error.code, error.message));
+                return Ok(());
+            }
+            _ => {
+                self.set_error("Unexpected pane focus response");
+                return Ok(());
+            }
+        };
+        if let Some(session) = self.workspace.session_mut(pi, wi, si) {
+            if let Some(pane) = session.panes.get(pane_idx) {
+                session.pane_id = pane.pane_id;
+                session.terminal_id = pane.terminal_id;
+                session.agent = pane.agent.clone();
+                session.agent_status = pane.agent_status;
+                session.terminal_frame = pane.terminal_frame.clone();
+                session.revision = focus_revision;
+            }
+        }
+        self.enter_terminal(pane_id, terminal)
+    }
 
-        // Trigger a refresh after returning, but keep old git_info visible until result arrives.
-        self.spawn_git_local(
-            self.workspace
-                .worktree(pi, wi)
-                .map(|w| w.path.clone())
-                .unwrap_or_default(),
-            self.default_branch_for_project(pi),
-        );
+    fn enter_terminal(&mut self, pane_id: runtime::PaneId, terminal: &Tui) -> Result<()> {
+        self.unmute_on_interaction(pane_id);
+        let (rows, cols) = self.terminal_pane_size(terminal);
+        match runtime::TerminalStream::connect(
+            &self.runtime_client,
+            pane_id,
+            self.terminal_controller_id,
+            false,
+            rows,
+            cols,
+        ) {
+            Ok(stream) => {
+                self.terminal_stream = Some(stream);
+                self.mode = Mode::Terminal { pane_id };
+                self.terminal_escape_chord.reset();
+            }
+            Err(error) => self.set_error(format!("Terminal stream failed: {error}")),
+        }
         Ok(())
+    }
+
+    fn leave_terminal_mode(&mut self, _pane_id: runtime::PaneId) {
+        self.terminal_stream = None;
+        self.terminal_escape_chord.reset();
+        self.mode = Mode::Workspace;
+    }
+
+    fn terminal_cursor(&self) -> Option<runtime::Cursor> {
+        let Mode::Terminal { pane_id } = self.mode else {
+            return None;
+        };
+        self.workspace
+            .projects
+            .iter()
+            .flat_map(|project| &project.worktrees)
+            .flat_map(|worktree| &worktree.sessions)
+            .flat_map(|session| &session.panes)
+            .find(|pane| pane.pane_id == pane_id)
+            .and_then(|pane| pane.terminal_frame.as_ref())
+            .map(|frame| frame.cursor)
+    }
+
+    fn terminal_pane_size(&self, terminal: &Tui) -> (u16, u16) {
+        let (height, width) = if self.terminal_area.width == 0 {
+            let size = terminal
+                .size()
+                .unwrap_or(ratatui::layout::Size::new(80, 24));
+            (size.height, size.width)
+        } else {
+            (self.terminal_area.height, self.terminal_area.width)
+        };
+        (height.max(1), width.max(1))
+    }
+
+    fn resize_terminal_pane(&mut self, _pane_id: runtime::PaneId, terminal: &Tui) {
+        let (rows, cols) = self.terminal_pane_size(terminal);
+        self.send_terminal_stream(runtime::TerminalClientMessage::Resize { rows, cols });
+    }
+
+    fn action_hard_quit(&mut self) {
+        self.mode = Mode::Confirm {
+            message: "Hard quit? Stops wsxd and all live processes. Saved sessions restart on next launch.".into(),
+            pending: PendingAction::ShutdownDaemon,
+        };
     }
 
     fn action_add_project(&mut self) -> Result<()> {
@@ -2274,6 +2868,7 @@ impl App {
             Selection::Project(pi)
             | Selection::Worktree(pi, _)
             | Selection::Session(pi, _, _)
+            | Selection::Pane(pi, _, _, _)
             | Selection::RoutinesHeader(pi)
             | Selection::Routine(pi, _) => pi,
             Selection::None => {
@@ -2290,7 +2885,9 @@ impl App {
 
     fn action_add_session(&mut self) -> Result<()> {
         let (pi, wi) = match self.current_selection() {
-            Selection::Worktree(pi, wi) | Selection::Session(pi, wi, _) => (pi, wi),
+            Selection::Worktree(pi, wi)
+            | Selection::Session(pi, wi, _)
+            | Selection::Pane(pi, wi, _, _) => (pi, wi),
             _ => {
                 self.set_status("Select a worktree first");
                 return Ok(());
@@ -2306,11 +2903,54 @@ impl App {
         Ok(())
     }
 
+    fn action_split_pane(&mut self, axis: runtime::SplitAxis) -> Result<()> {
+        let (pi, wi, si, target) = match self.current_selection() {
+            Selection::Session(pi, wi, si) => {
+                let session = &self.workspace.projects[pi].worktrees[wi].sessions[si];
+                (pi, wi, si, session.pane_id)
+            }
+            Selection::Pane(pi, wi, si, pane_idx) => {
+                let pane_id =
+                    self.workspace.projects[pi].worktrees[wi].sessions[si].panes[pane_idx].pane_id;
+                (pi, wi, si, pane_id)
+            }
+            _ => {
+                self.set_status("Select a session or pane first");
+                return Ok(());
+            }
+        };
+        let session = &self.workspace.projects[pi].worktrees[wi].sessions[si];
+        let rows = self.terminal_area.height.max(1);
+        let cols = self.terminal_area.width.max(1);
+        match self.runtime_client.call(&runtime::Request::PaneSplit {
+            session_id: session.session_id,
+            target,
+            axis,
+            label: format!("terminal-{}", session.panes.len() + 1),
+            command: Vec::new(),
+            initial_input: None,
+            rows,
+            cols,
+            expected_revision: session.revision,
+        })? {
+            runtime::Response::Created { .. } => {
+                self.spawn_runtime_session_refresh();
+                self.set_status("Pane created");
+            }
+            runtime::Response::Error(error) => {
+                self.set_error(format!("{}: {}", error.code, error.message));
+            }
+            _ => self.set_error("Unexpected pane split response"),
+        }
+        Ok(())
+    }
+
     fn action_add_routine(&mut self) -> Result<()> {
         let pi = match self.current_selection() {
             Selection::Project(pi)
             | Selection::Worktree(pi, _)
             | Selection::Session(pi, _, _)
+            | Selection::Pane(pi, _, _, _)
             | Selection::RoutinesHeader(pi)
             | Selection::Routine(pi, _) => pi,
             Selection::None => {
@@ -2342,6 +2982,16 @@ impl App {
                     },
                 };
             }
+            Selection::Pane(pi, wi, si, pane_idx) => {
+                let pane = &self.workspace.projects[pi].worktrees[wi].sessions[si].panes[pane_idx];
+                self.mode = Mode::Confirm {
+                    message: format!("Close pane '{}' ?", pane.label),
+                    pending: PendingAction::ClosePane {
+                        pane_id: pane.pane_id,
+                        revision: pane.revision,
+                    },
+                };
+            }
             Selection::Worktree(pi, wi) => {
                 let wt = &self.workspace.projects[pi].worktrees[wi];
                 if wt.is_main {
@@ -2362,6 +3012,19 @@ impl App {
                 };
             }
             Selection::Project(pi) => {
+                if self.active_group == Some(GroupKey::Recent) {
+                    let path = self.workspace.projects[pi].path.clone();
+                    if let Err(error) = ops::clear_project_recent(&path) {
+                        self.set_error(format!("Recent removal failed: {error}"));
+                        self.spawn_runtime_refresh();
+                        return Ok(());
+                    }
+                    self.workspace.projects[pi].last_agent_active_unix_ms = None;
+                    self.workspace.projects[pi].last_terminal_active_unix_ms = None;
+                    self.recompute_visible();
+                    self.set_status("Removed project from Recent");
+                    return Ok(());
+                }
                 let name = self.workspace.projects[pi].name.clone();
                 self.mode = Mode::Confirm {
                     message: format!("Unregister project '{}'? (files not deleted)", name),
@@ -2432,7 +3095,9 @@ impl App {
                     Ok(BgOutcome::WorktreeRemoved { label })
                 });
             }
-            Selection::Project(pi) | Selection::Session(pi, _, _) => {
+            Selection::Project(pi)
+            | Selection::Session(pi, _, _)
+            | Selection::Pane(pi, _, _, _) => {
                 let project = &self.workspace.projects[pi];
                 let path = project.path.clone();
                 let default_branch = project.default_branch.clone();
@@ -2494,6 +3159,7 @@ impl App {
             Selection::Project(pi)
             | Selection::Worktree(pi, _)
             | Selection::Session(pi, _, _)
+            | Selection::Pane(pi, _, _, _)
             | Selection::RoutinesHeader(pi) => pi,
             Selection::None => {
                 self.set_status("Select a project or worktree");
@@ -2584,34 +3250,22 @@ impl App {
         self.update_scroll();
     }
 
-    fn action_send_command(&mut self) {
-        if let Selection::Session(pi, wi, si) = self.current_selection() {
-            if let Some(sess) = self.workspace.session(pi, wi, si) {
-                let pane_id = sess.pane_id.clone();
-                let agent = sess.agent.clone();
-                let prompt = if agent.is_some() {
-                    "prompt: "
-                } else {
-                    "send: "
-                };
-                self.mode = Mode::Input {
-                    context: InputContext::SendCommand { pane_id, agent },
-                    state: InputState::with_history(prompt, self.send_command_history.clone()),
-                };
-            }
-        }
-    }
-
     fn action_send_ctrl_c(&mut self) -> Result<()> {
-        if let Selection::Session(pi, wi, si) = self.current_selection() {
-            let name = self
+        let pane_id = match self.current_selection() {
+            Selection::Session(pi, wi, si) => self
                 .workspace
                 .session(pi, wi, si)
-                .map(|session| session.pane_id.clone());
-            if let Some(name) = name {
-                self.unmute_on_interaction(&name);
-                herdr::send_ctrl_c_with(&self.herdr_client, &name)?;
-            }
+                .map(|session| session.pane_id),
+            Selection::Pane(pi, wi, si, pane_idx) => self
+                .workspace
+                .session(pi, wi, si)
+                .and_then(|session| session.panes.get(pane_idx))
+                .map(|pane| pane.pane_id),
+            _ => None,
+        };
+        if let Some(pane_id) = pane_id {
+            self.unmute_on_interaction(pane_id);
+            self.send_terminal_bytes_once(pane_id, vec![3])?;
         }
         Ok(())
     }
@@ -2709,14 +3363,13 @@ impl App {
                 }
                 sess.muted = !sess.muted;
                 let muted = sess.muted;
-                let terminal_id = sess.terminal_id.clone();
+                let terminal_id = sess.terminal_id.to_string();
                 if muted {
                     self.muted_terminal_ids.insert(terminal_id);
                 } else {
                     self.muted_terminal_ids.remove(&terminal_id);
                 }
                 self.mark_dirty();
-                self.set_status(if muted { "Muted" } else { "Unmuted" });
                 return;
             }
         }
@@ -2761,7 +3414,7 @@ impl App {
     // ── Input confirm ─────────────────────────────────────────────────────────
 
     fn confirm_input(&mut self, _terminal: &mut Tui) -> Result<()> {
-        let mode = std::mem::replace(&mut self.mode, Mode::Normal);
+        let mode = std::mem::replace(&mut self.mode, Mode::Workspace);
         if let Mode::Input { context, state } = mode {
             let value = state.value().trim().to_string();
             match context {
@@ -2816,65 +3469,54 @@ impl App {
                         self.do_rename_session(project_idx, worktree_idx, session_idx, value)?;
                     }
                 }
-                InputContext::SendCommand { pane_id, agent } => {
-                    if !value.is_empty() {
-                        self.unmute_on_interaction(&pane_id);
-                        if agent.is_some() {
-                            herdr::agent_prompt_with(&self.herdr_client, &pane_id, &value)?;
-                        } else {
-                            herdr::send_text_with(&self.herdr_client, &pane_id, &value, true)?;
-                        }
-                        self.send_command_history.retain(|cmd| cmd != &value);
-                        self.send_command_history.push(value);
-                        if self.send_command_history.len() > 50 {
-                            let overflow = self.send_command_history.len() - 50;
-                            self.send_command_history.drain(0..overflow);
-                        }
-                    }
-                }
-                InputContext::AddTab => {
+                InputContext::AddGroup => {
                     let trimmed = value.trim().to_string();
-                    if trimmed.is_empty() {
-                        self.mode = Mode::TabManager { selected: 0 };
-                    } else if self.config.tabs.contains(&trimmed) {
-                        self.set_status(format!("Tab '{}' already exists", trimmed));
-                        self.mode = Mode::TabManager { selected: 0 };
+                    if trimmed.is_empty() || GroupKey::named(trimmed.clone()).is_err() {
+                        self.set_status("Group name is empty or reserved");
+                    } else if self.config.groups.contains(&trimmed) {
+                        self.set_status(format!("Group '{}' already exists", trimmed));
                     } else {
-                        self.config.tabs.push(trimmed);
+                        self.config.groups.push(trimmed);
                         self.config.save()?;
-                        let sel = self.config.tabs.len(); // last in ordered_tabs (1-indexed)
-                        self.mode = Mode::TabManager { selected: sel };
                     }
+                    self.mode = Mode::GroupManager {
+                        selected: self.config.groups.len().saturating_add(1),
+                        scroll: 0,
+                        purpose: GroupManagerPurpose::Switch,
+                    };
                 }
-                InputContext::RenameTab { tab_idx } => {
+                InputContext::RenameGroup { group_idx } => {
                     let trimmed = value.trim().to_string();
-                    if trimmed.is_empty() || self.config.tabs.get(tab_idx) == Some(&trimmed) {
-                        self.mode = Mode::TabManager {
-                            selected: tab_idx + 1,
-                        };
-                    } else if self.config.tabs.contains(&trimmed) {
-                        self.set_status(format!("Tab '{}' already exists", trimmed));
-                        self.mode = Mode::TabManager {
-                            selected: tab_idx + 1,
-                        };
-                    } else {
-                        let old_name = self.config.tabs[tab_idx].clone();
-                        self.config.tabs[tab_idx] = trimmed.clone();
-                        // Update all projects assigned to this tab
-                        for proj in &mut self.config.projects {
-                            if proj.tab.as_deref() == Some(&old_name) {
-                                proj.tab = Some(trimmed.clone());
+                    if !trimmed.is_empty()
+                        && GroupKey::named(trimmed.clone()).is_ok()
+                        && self.config.groups.get(group_idx) != Some(&trimmed)
+                        && !self.config.groups.contains(&trimmed)
+                    {
+                        let old_name =
+                            std::mem::replace(&mut self.config.groups[group_idx], trimmed.clone());
+                        for project in &mut self.config.projects {
+                            for membership in &mut project.groups {
+                                if *membership == old_name {
+                                    *membership = trimmed.clone();
+                                }
                             }
                         }
-                        // Update active_tab if it was the renamed one
-                        if self.active_tab.as_deref() == Some(&old_name) {
-                            self.active_tab = Some(trimmed);
+                        if self.active_group == Some(GroupKey::Named(old_name)) {
+                            self.active_group = Some(GroupKey::Named(trimmed.clone()));
                         }
                         self.config.save()?;
-                        self.mode = Mode::TabManager {
-                            selected: tab_idx + 1,
-                        };
+                        self.recompute_visible();
+                        self.mark_dirty();
+                    } else if !trimmed.is_empty()
+                        && self.config.groups.get(group_idx) != Some(&trimmed)
+                    {
+                        self.set_status("Group name is reserved or already exists");
                     }
+                    self.mode = Mode::GroupManager {
+                        selected: group_idx + 2,
+                        scroll: 0,
+                        purpose: GroupManagerPurpose::Switch,
+                    };
                 }
             }
         }
@@ -2886,7 +3528,7 @@ impl App {
             self.set_status("Operation in progress");
             return Ok(());
         }
-        let mode = std::mem::replace(&mut self.mode, Mode::Normal);
+        let mode = std::mem::replace(&mut self.mode, Mode::Workspace);
         if let Mode::Confirm { pending, .. } = mode {
             match pending {
                 PendingAction::DeleteProject { project_idx } => {
@@ -2898,6 +3540,21 @@ impl App {
                     session_idx,
                 } => {
                     self.do_delete_session(project_idx, worktree_idx, session_idx)?;
+                }
+                PendingAction::ClosePane { pane_id, revision } => {
+                    match self.runtime_client.call(&runtime::Request::PaneClose {
+                        pane_id,
+                        expected_revision: revision,
+                    })? {
+                        runtime::Response::Ack { .. } => {
+                            self.spawn_runtime_session_refresh();
+                            self.set_status("Pane closed");
+                        }
+                        runtime::Response::Error(error) => {
+                            self.set_error(format!("{}: {}", error.code, error.message));
+                        }
+                        _ => self.set_error("Unexpected pane close response"),
+                    }
                 }
                 PendingAction::DeleteWorktree {
                     project_idx: pi,
@@ -2937,24 +3594,30 @@ impl App {
                         Ok(BgOutcome::WorktreeCreated { label })
                     });
                 }
-                PendingAction::DeleteTab { tab_idx } => {
-                    let tab_name = self.config.tabs[tab_idx].clone();
-                    // Move projects from deleted tab to default
-                    for proj in &mut self.config.projects {
-                        if proj.tab.as_deref() == Some(&tab_name) {
-                            proj.tab = None;
-                        }
+                PendingAction::DeleteGroup { group_idx } => {
+                    let group_name = self.config.groups.remove(group_idx);
+                    for project in &mut self.config.projects {
+                        project
+                            .groups
+                            .retain(|membership| membership != &group_name);
                     }
-                    self.config.tabs.remove(tab_idx);
-                    // If active tab was deleted, switch to default
-                    if self.active_tab.as_deref() == Some(&tab_name) {
-                        self.active_tab = None;
+                    if self.active_group == Some(GroupKey::Named(group_name.clone())) {
+                        self.active_group = None;
                     }
                     self.config.save()?;
                     self.recompute_visible();
                     self.mark_dirty();
-                    self.mode = Mode::TabManager { selected: 0 };
-                    self.set_status(format!("Deleted tab '{}'", tab_name));
+                    self.mode = Mode::GroupManager {
+                        selected: 0,
+                        scroll: 0,
+                        purpose: GroupManagerPurpose::Switch,
+                    };
+                    self.set_status(format!("Deleted group '{}'", group_name));
+                }
+                PendingAction::ShutdownDaemon => {
+                    self.persist_state(true);
+                    self.runtime_client.shutdown()?;
+                    self.should_quit = true;
                 }
                 PendingAction::DeleteRoutine {
                     project_path,
@@ -2967,7 +3630,7 @@ impl App {
                         .iter()
                         .any(|project| project.path == project_path)
                     {
-                        self.mode = Mode::Normal;
+                        self.mode = Mode::Workspace;
                         self.set_status(format!(
                             "Routine '{name}' not deleted: project is no longer registered"
                         ));
@@ -2989,7 +3652,7 @@ impl App {
     }
 
     fn restore_failed_routine_delete(&mut self, project_idx: usize, name: &str, error: String) {
-        self.mode = Mode::Normal;
+        self.mode = Mode::Workspace;
         self.select_routine(project_idx, Some(name));
         self.set_status(format!("Routine '{name}' not deleted: {error}"));
     }
@@ -3006,11 +3669,12 @@ impl App {
                 return Ok(());
             }
         };
-        // Assign new project to the currently active tab
-        if !self.config.tabs.is_empty() {
-            if let Some(entry) = self.config.projects.last_mut() {
-                entry.tab = self.active_tab.clone();
-            }
+        // Virtual filters are views; only active named groups become memberships.
+        if let Some(entry) = self.config.projects.last_mut() {
+            entry.groups = match &self.active_group {
+                Some(GroupKey::Named(name)) => vec![name.clone()],
+                Some(GroupKey::Recent | GroupKey::Ungrouped) | None => Vec::new(),
+            };
         }
         self.workspace.projects.push(project);
         self.recompute_visible();
@@ -3039,11 +3703,11 @@ impl App {
         let (_pane_id, display_name) =
             ops::create_session(&proj_name, &wt_slug, &wt_path, explicit_name, command)?;
         self.set_status(format!("Session '{}' created", display_name));
-        // Expand before the authoritative Herdr refresh reveals the new pane.
+        // Expand before the authoritative Runtime refresh reveals the new pane.
         if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
             wt.expanded = true;
         }
-        self.spawn_herdr_refresh();
+        self.spawn_runtime_refresh();
         Ok(())
     }
 
@@ -3063,12 +3727,12 @@ impl App {
 
     fn do_delete_session(&mut self, pi: usize, wi: usize, si: usize) -> Result<()> {
         let session = &self.workspace.projects[pi].worktrees[wi].sessions[si];
-        let pane_id = session.pane_id.clone();
+        let session_id = session.session_id;
         let display_name = session.display_name.clone();
         self.spawn_bg(format!("kill {display_name}"), move || {
-            ops::kill_session(&pane_id)?;
+            ops::kill_session(session_id)?;
             Ok(BgOutcome::SessionKilled {
-                pane_id,
+                session_id,
                 display_name,
             })
         });
@@ -3100,11 +3764,11 @@ impl App {
         si: usize,
         new_name: String,
     ) -> Result<()> {
-        let pane_id = self.workspace.projects[pi].worktrees[wi].sessions[si]
-            .pane_id
-            .clone();
-        self.unmute_on_interaction(&pane_id);
-        ops::rename_session(&pane_id, &new_name)?;
+        let session = &self.workspace.projects[pi].worktrees[wi].sessions[si];
+        let session_id = session.session_id;
+        let pane_id = session.pane_id;
+        self.unmute_on_interaction(pane_id);
+        ops::rename_session(session_id, &new_name)?;
         self.workspace.projects[pi].worktrees[wi].sessions[si].display_name = new_name.clone();
         self.mark_dirty();
         self.set_status(format!("Session renamed to '{}'", new_name));
@@ -3200,205 +3864,229 @@ impl App {
         self.config.projects = ordered;
     }
 
-    // ── Tab navigation ────────────────────────────────────────────────────────
+    // ── Project-group navigation ─────────────────────────────────────────────
 
-    fn action_tab_next(&mut self) {
-        if self.config.tabs.is_empty() {
-            return;
-        }
-        let tabs = self.config.ordered_tabs();
-        let cur = tabs
+    fn set_active_group(&mut self, key: GroupKey) {
+        let groups = self.config.ordered_group_keys();
+        self.group_header_scroll = groups
             .iter()
-            .position(|t| t.as_deref() == self.active_tab.as_deref())
+            .position(|candidate| candidate == &key)
             .unwrap_or(0);
-        let next = (cur + 1) % tabs.len();
-        self.active_tab = tabs[next].map(|s| s.to_string());
+        self.active_group = Some(key);
         self.recompute_visible();
         self.update_scroll();
         self.mark_dirty();
     }
 
-    fn action_tab_prev(&mut self) {
-        if self.config.tabs.is_empty() {
+    fn toggle_active_group(&mut self, key: GroupKey) {
+        if self.active_group.as_ref() == Some(&key) {
+            self.active_group = None;
+        } else {
+            self.set_active_group(key);
             return;
         }
-        let tabs = self.config.ordered_tabs();
-        let cur = tabs
-            .iter()
-            .position(|t| t.as_deref() == self.active_tab.as_deref())
-            .unwrap_or(0);
-        let prev = if cur == 0 { tabs.len() - 1 } else { cur - 1 };
-        self.active_tab = tabs[prev].map(|s| s.to_string());
         self.recompute_visible();
         self.update_scroll();
         self.mark_dirty();
     }
 
-    fn action_tab_manager(&mut self) {
-        let tabs = self.config.ordered_tabs();
-        let selected = tabs
-            .iter()
-            .position(|t| t.as_deref() == self.active_tab.as_deref())
-            .unwrap_or(0);
-        self.mode = Mode::TabManager { selected };
+    fn action_group_next(&mut self) {
+        let groups = self.config.ordered_group_keys();
+        let current = self
+            .active_group
+            .as_ref()
+            .and_then(|active| groups.iter().position(|key| key == active));
+        let next = current.map_or(0, |index| (index + 1) % groups.len());
+        self.set_active_group(groups[next].clone());
     }
 
-    fn dispatch_tab_manager(&mut self, selected: usize, action: Action) -> Result<()> {
-        match action {
-            Action::InputEscape => {
-                self.mode = Mode::Normal;
-            }
-            Action::InputChar('j') | Action::NavigateDown => {
-                let len = self.config.tabs.len() + 1; // +1 for default
-                self.mode = Mode::TabManager {
-                    selected: (selected + 1) % len,
-                };
-            }
-            Action::InputChar('k') | Action::NavigateUp => {
-                let len = self.config.tabs.len() + 1;
-                let prev = if selected == 0 { len - 1 } else { selected - 1 };
-                self.mode = Mode::TabManager { selected: prev };
-            }
-            Action::Select => {
-                // Switch active tab to the selected one
-                let tabs = self.config.ordered_tabs();
-                if let Some(&tab) = tabs.get(selected) {
-                    self.active_tab = tab.map(|s| s.to_string());
-                    self.recompute_visible();
-                    self.mark_dirty();
+    fn action_group_prev(&mut self) {
+        let groups = self.config.ordered_group_keys();
+        let current = self
+            .active_group
+            .as_ref()
+            .and_then(|active| groups.iter().position(|key| key == active))
+            .unwrap_or(0);
+        let previous = current.checked_sub(1).unwrap_or(groups.len() - 1);
+        self.set_active_group(groups[previous].clone());
+    }
+
+    fn action_group_manager(&mut self) {
+        let groups = self.config.ordered_group_keys();
+        let selected = self
+            .active_group
+            .as_ref()
+            .and_then(|active| groups.iter().position(|key| key == active))
+            .unwrap_or(0);
+        self.mode = Mode::GroupManager {
+            selected,
+            scroll: 0,
+            purpose: GroupManagerPurpose::Switch,
+        };
+    }
+
+    fn action_assign_group(&mut self) {
+        let Selection::Project(project_idx) = self.current_selection() else {
+            return;
+        };
+        if self.config.groups.is_empty() {
+            self.set_status("Create a group first with T");
+            return;
+        }
+        self.mode = Mode::GroupManager {
+            selected: 0,
+            scroll: 0,
+            purpose: GroupManagerPurpose::Assign { project_idx },
+        };
+    }
+
+    fn dispatch_group_manager(
+        &mut self,
+        selected: usize,
+        scroll: usize,
+        purpose: GroupManagerPurpose,
+        action: Action,
+    ) -> Result<()> {
+        let group_count = match purpose {
+            GroupManagerPurpose::Switch => self.config.groups.len() + 2,
+            GroupManagerPurpose::Assign { .. } => self.config.groups.len(),
+        };
+        let layout = crate::ui::workspace_nav::SidebarLayout::new(self.tree_area);
+        let visible_height = layout.list.height.max(1) as usize;
+        let manager_mode = |selected: usize, scroll: usize| Mode::GroupManager {
+            selected,
+            scroll: crate::ui::workspace_tree::compute_scroll(selected, visible_height, scroll),
+            purpose,
+        };
+        let toggle = |app: &mut Self, index: usize| -> Result<()> {
+            match purpose {
+                GroupManagerPurpose::Switch => {
+                    if let Some(key) = app.config.ordered_group_keys().get(index).cloned() {
+                        app.toggle_active_group(key);
+                    }
                 }
-                self.mode = Mode::Normal;
-            }
-            Action::InputChar('a') => {
-                self.mode = Mode::Input {
-                    context: InputContext::AddTab,
-                    state: InputState::new("tab name: "),
-                };
-            }
-            Action::InputChar('r') => {
-                if selected == 0 {
-                    self.set_status("Cannot rename default tab");
-                    return Ok(());
-                }
-                let tab_idx = selected - 1;
-                if let Some(name) = self.config.tabs.get(tab_idx) {
-                    let name = name.clone();
-                    self.mode = Mode::Input {
-                        context: InputContext::RenameTab { tab_idx },
-                        state: InputState::with_value("new name: ", name),
+                GroupManagerPurpose::Assign { project_idx } => {
+                    let Some(project) = app.workspace.projects.get(project_idx) else {
+                        app.set_status("Project is no longer available");
+                        return Ok(());
                     };
-                }
-            }
-            Action::InputChar('d') => {
-                if selected == 0 {
-                    self.set_status("Cannot delete default tab");
-                    return Ok(());
-                }
-                let tab_idx = selected - 1;
-                if let Some(name) = self.config.tabs.get(tab_idx) {
-                    let name = name.clone();
-                    let count = self
-                        .config
-                        .projects
-                        .iter()
-                        .filter(|p| p.tab.as_deref() == Some(&name))
-                        .count();
-                    let msg = if count > 0 {
-                        format!("Delete tab '{}'? {} projects move to default", name, count)
+                    let Some(group) = app.config.groups.get(index).cloned() else {
+                        return Ok(());
+                    };
+                    let path = project.path.clone();
+                    if app.config.project_groups(&path).contains(&group) {
+                        app.config.remove_project_from_group(&path, &group);
                     } else {
-                        format!("Delete tab '{}'?", name)
-                    };
-                    self.mode = Mode::Confirm {
-                        message: msg,
-                        pending: PendingAction::DeleteTab { tab_idx },
-                    };
+                        app.config.add_project_to_group(&path, &group);
+                    }
+                    app.config.save()?;
+                    app.recompute_visible();
                 }
             }
-            Action::InputChar('J') => {
-                // Reorder: move tab down (later in list)
-                if selected == 0 {
-                    return Ok(());
-                }
-                let idx = selected - 1;
-                if idx + 1 < self.config.tabs.len() {
-                    self.config.tabs.swap(idx, idx + 1);
-                    self.mode = Mode::TabManager {
-                        selected: selected + 1,
-                    };
-                    self.config.save()?;
+            Ok(())
+        };
+        match action {
+            Action::InputEscape | Action::Quit | Action::GroupManager => {
+                self.mode = Mode::Workspace
+            }
+            Action::InputChar('j') | Action::NavigateDown if group_count > 0 => {
+                self.mode = manager_mode((selected + 1) % group_count, scroll)
+            }
+            Action::InputChar('k') | Action::NavigateUp if group_count > 0 => {
+                self.mode = manager_mode(selected.checked_sub(1).unwrap_or(group_count - 1), scroll)
+            }
+            Action::MouseClick { col, row } => {
+                if let Some(index) = layout.item_at(Position::new(col, row), scroll, group_count) {
+                    toggle(self, index)?;
+                    self.mode = manager_mode(index, scroll);
                 }
             }
-            Action::InputChar('K') => {
-                // Reorder: move tab up (earlier in list)
-                if selected == 0 {
-                    return Ok(());
+            Action::Select | Action::InputChar(' ') => {
+                toggle(self, selected)?;
+                self.mode = manager_mode(selected, scroll);
+            }
+            Action::InputChar('a') if purpose == GroupManagerPurpose::Switch => {
+                self.mode = Mode::Input {
+                    context: InputContext::AddGroup,
+                    state: InputState::new("group name: "),
+                };
+            }
+            Action::InputChar('r') if purpose == GroupManagerPurpose::Switch => {
+                if selected < 2 {
+                    self.set_status("Virtual groups cannot be renamed");
+                } else {
+                    let group_idx = selected - 2;
+                    if let Some(name) = self.config.groups.get(group_idx) {
+                        self.mode = Mode::Input {
+                            context: InputContext::RenameGroup { group_idx },
+                            state: InputState::with_value("new name: ", name.clone()),
+                        };
+                    }
                 }
-                let idx = selected - 1;
-                if idx > 0 {
-                    self.config.tabs.swap(idx - 1, idx);
-                    self.mode = Mode::TabManager {
-                        selected: selected - 1,
-                    };
+            }
+            Action::InputChar('d') if purpose == GroupManagerPurpose::Switch => {
+                if selected < 2 {
+                    self.set_status("Virtual groups cannot be deleted");
+                } else {
+                    let group_idx = selected - 2;
+                    if let Some(name) = self.config.groups.get(group_idx) {
+                        let count = self
+                            .config
+                            .projects
+                            .iter()
+                            .filter(|project| project.groups.contains(name))
+                            .count();
+                        self.mode = Mode::Confirm {
+                            message: format!("Delete group '{name}'? Removes {count} memberships"),
+                            pending: PendingAction::DeleteGroup { group_idx },
+                        };
+                    }
+                }
+            }
+            Action::InputChar('J') if purpose == GroupManagerPurpose::Switch && selected >= 2 => {
+                let group_idx = selected - 2;
+                if group_idx + 1 < self.config.groups.len() {
+                    self.config.groups.swap(group_idx, group_idx + 1);
                     self.config.save()?;
+                    self.mode = manager_mode(selected + 1, scroll);
                 }
+            }
+            Action::InputChar('K') if purpose == GroupManagerPurpose::Switch && selected > 2 => {
+                let group_idx = selected - 2;
+                self.config.groups.swap(group_idx - 1, group_idx);
+                self.config.save()?;
+                self.mode = manager_mode(selected - 1, scroll);
             }
             _ => {}
         }
         Ok(())
     }
-
-    fn move_project_to_adjacent_tab(&mut self, pi: usize, dir: isize) -> Result<()> {
-        let proj_path = self.workspace.projects[pi].path.clone();
-        let proj_name = self.workspace.projects[pi].name.clone();
-        let tabs = self.config.ordered_tabs();
-        let current_tab = self
-            .config
-            .projects
-            .iter()
-            .find(|c| c.path == proj_path)
-            .and_then(|c| c.tab.as_deref());
-        let cur_idx = tabs
-            .iter()
-            .position(|t| t.as_deref() == current_tab)
-            .unwrap_or(0);
-        let target_idx = (cur_idx as isize + dir).rem_euclid(tabs.len() as isize) as usize;
-        let target_tab = tabs[target_idx].map(|s| s.to_string());
-        let target_name = target_tab.clone().unwrap_or_else(|| "default".to_string());
-        self.config.move_project_tab(&proj_path, target_tab);
-        self.config.save()?;
-        self.mode = Mode::Normal;
-        self.recompute_visible();
-        self.set_status(format!("Moved '{}' to '{}'", proj_name, target_name));
-        Ok(())
-    }
 }
 
-/// Compute the set of project indices visible in `active_tab`.
-/// When config.tabs is empty, all projects are visible (single implicit tab).
-// ^ [[Tab Grouping]] wsx tabs filter projects and are distinct from Herdr tabs.
+/// Projects can have multiple memberships, but the Workspace applies one optional group filter.
+// ^ [[wsx Architecture]] Project grouping and filtering have separate cardinality.
 fn compute_visible_projects(
     config: &GlobalConfig,
     workspace: &WorkspaceState,
-    active_tab: Option<&str>,
+    active_group: Option<&GroupKey>,
 ) -> HashSet<usize> {
-    if config.tabs.is_empty() {
-        return (0..workspace.projects.len()).collect();
-    }
+    let now_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
     workspace
         .projects
         .iter()
         .enumerate()
-        .filter_map(|(i, wp)| {
-            let tab = config
-                .projects
-                .iter()
-                .find(|c| c.path == wp.path)
-                .and_then(|c| c.tab.as_deref());
-            if tab == active_tab {
-                Some(i)
-            } else {
-                None
-            }
+        .filter_map(|(index, project)| {
+            project_matches_group(
+                config.project_groups(&project.path),
+                project.last_agent_active_unix_ms,
+                project.last_terminal_active_unix_ms,
+                active_group,
+                now_unix_ms,
+            )
+            .then_some(index)
         })
         .collect()
 }
@@ -3441,6 +4129,20 @@ fn search_text_for(workspace: &WorkspaceState, entry: &FlatEntry) -> String {
         } => workspace.projects[*pi].worktrees[*wi].sessions[*si]
             .display_name
             .to_lowercase(),
+        FlatEntry::Pane {
+            project_idx: pi,
+            worktree_idx: wi,
+            session_idx: si,
+            pane_idx,
+        } => {
+            let pane = &workspace.projects[*pi].worktrees[*wi].sessions[*si].panes[*pane_idx];
+            format!(
+                "{} {}",
+                pane.label,
+                pane.agent.as_deref().unwrap_or("terminal")
+            )
+            .to_lowercase()
+        }
         FlatEntry::RoutinesHeader { project_idx } => {
             format!("{} routines", workspace.projects[*project_idx].name).to_lowercase()
         }
@@ -3536,6 +4238,8 @@ mod tests {
             name: name.to_string(),
             path: std::path::PathBuf::from(format!("/tmp/{name}")),
             default_branch: "main".to_string(),
+            last_agent_active_unix_ms: None,
+            last_terminal_active_unix_ms: None,
             worktrees: vec![],
             routines: Vec::new(),
             routine_revision: 0,
@@ -3574,31 +4278,41 @@ mod tests {
         }
     }
 
-    fn test_herdr_client() -> herdr::Client {
-        herdr::Client::new(
+    fn test_runtime_client() -> runtime::Client {
+        runtime::Client::new(
             std::env::current_dir()
                 .unwrap()
-                .join(".work/tests/nonexistent-herdr.sock"),
+                .join(".work/tests/nonexistent-runtime.sock"),
         )
-        .unwrap()
     }
 
     fn make_test_app(
         config: GlobalConfig,
         workspace: WorkspaceState,
-        active_tab: Option<String>,
+        active_group: Option<String>,
     ) -> App {
-        let visible_projects = compute_visible_projects(&config, &workspace, active_tab.as_deref());
+        let active_group = active_group.map(GroupKey::Named);
+        let visible_projects = compute_visible_projects(&config, &workspace, active_group.as_ref());
+        let group_header_scroll = active_group
+            .as_ref()
+            .and_then(|active| {
+                config
+                    .ordered_group_keys()
+                    .iter()
+                    .position(|candidate| candidate == active)
+            })
+            .unwrap_or(0);
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
         let search_cache = build_search_cache(&workspace, &cached_flat);
         let worktree_index = build_worktree_index(&workspace);
         let (bg_tx, bg_rx) = std::sync::mpsc::channel();
         let (git_local_tx, git_local_rx) = std::sync::mpsc::channel();
         let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
-        let (herdr_tx, herdr_rx) = std::sync::mpsc::channel();
-        let (_herdr_event_tx, herdr_event_rx) = std::sync::mpsc::channel();
+        let (runtime_tx, runtime_rx) = std::sync::mpsc::channel();
+        let (_runtime_event_tx, runtime_event_rx) = std::sync::mpsc::channel();
         let (_update_tx, update_rx) = std::sync::mpsc::channel();
         let (routine_tx, routine_rx) = std::sync::mpsc::channel();
+        let terminal_escape_chord = EscapeSequence::parse(&config.terminal_escape_chord).unwrap();
 
         App {
             workspace,
@@ -3607,11 +4321,13 @@ mod tests {
             tree_visible_height: 20,
             tree_area: Rect::default(),
             preview_area: Rect::default(),
-            mode: Mode::Normal,
+            terminal_area: Rect::default(),
+            mode: Mode::Workspace,
             config,
-            active_tab,
+            active_group,
+            group_header_scroll,
+            group_header_area: Rect::default(),
             visible_projects,
-            send_command_history: Vec::new(),
             notice: None,
             notice_expires: None,
             jobs: Vec::new(),
@@ -3619,6 +4335,7 @@ mod tests {
             bg_tx,
             bg_rx,
             needs_redraw: false,
+            should_quit: false,
             force_terminal_redraw: false,
             force_preview_redraw: false,
             last_rendered_preview_was_session: false,
@@ -3636,21 +4353,23 @@ mod tests {
             cache_dirty: false,
             git_semaphore: GitSemaphore::new(1),
             worktree_index,
-            parsed_preview: std::collections::HashMap::new(),
-            herdr_client: test_herdr_client(),
-            herdr_monitor: None,
-            herdr_event_rx,
-            herdr_event_panes: Vec::new(),
-            herdr_health: HerdrHealth::Connecting,
-            herdr_tx,
-            herdr_rx,
-            herdr_refresh_pending: false,
-            herdr_refresh_stale: false,
-            herdr_full_refresh_stale: false,
-            herdr_capture_pending: false,
+            runtime_client: test_runtime_client(),
+            _runtime_monitor: None,
+            runtime_event_rx,
+            runtime_health: RuntimeHealth::Connecting,
+            runtime_tx,
+            runtime_rx,
+            runtime_refresh_pending: false,
+            startup_cursor_identity: None,
+            runtime_refresh_stale: false,
+            runtime_full_refresh_stale: false,
+            runtime_capture_pending: false,
             pending_deletions: HashSet::new(),
             pending_session_kills: HashSet::new(),
             muted_terminal_ids: HashSet::new(),
+            terminal_controller_id: runtime::new_client_id(),
+            terminal_stream: None,
+            terminal_escape_chord,
             update_rx,
             update_available: None,
             is_mobile: false,
@@ -3663,11 +4382,14 @@ mod tests {
         }
     }
 
-    fn make_project_entry(name: &str, tab: Option<&str>) -> wsx_core::config::global::ProjectEntry {
+    fn make_project_entry(
+        name: &str,
+        group: Option<&str>,
+    ) -> wsx_core::config::global::ProjectEntry {
         wsx_core::config::global::ProjectEntry {
             name: name.to_string(),
             path: std::path::PathBuf::from(format!("/tmp/{name}")),
-            tab: tab.map(|tab| tab.to_string()),
+            groups: group.into_iter().map(str::to_string).collect(),
             aliases: Default::default(),
         }
     }
@@ -3686,6 +4408,22 @@ mod tests {
             latest_run: None,
             recent_runs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn hard_quit_requires_confirmation() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+
+        app.action_hard_quit();
+
+        assert!(matches!(
+            app.mode,
+            Mode::Confirm {
+                pending: PendingAction::ShutdownDaemon,
+                ..
+            }
+        ));
+        assert!(!app.should_quit);
     }
 
     #[test]
@@ -3741,7 +4479,7 @@ mod tests {
             },
         };
         app.restore_failed_routine_delete(0, "morning", "stale config revision".into());
-        assert!(matches!(app.mode, Mode::Normal));
+        assert!(matches!(app.mode, Mode::Workspace));
         assert!(matches!(app.current_selection(), Selection::Routine(0, 0)));
         assert_eq!(
             app.notice.as_ref().map(|notice| notice.title.as_str()),
@@ -3974,7 +4712,7 @@ mod tests {
 
         app.drain_async_results();
 
-        assert!(matches!(app.mode, Mode::Normal));
+        assert!(matches!(app.mode, Mode::Workspace));
     }
 
     #[test]
@@ -4175,15 +4913,16 @@ mod tests {
     }
 
     #[test]
-    fn given_project_removed_from_tab_when_flat_rebuilt_then_shifted_project_does_not_leak() {
+    fn given_project_removed_from_group_when_flat_rebuilt_then_shifted_project_does_not_leak() {
         let config = GlobalConfig {
-            tabs: vec!["work".to_string(), "personal".to_string()],
+            groups: vec!["work".to_string(), "personal".to_string()],
             projects: vec![
                 make_project_entry("work-a", Some("work")),
                 make_project_entry("personal", Some("personal")),
                 make_project_entry("work-b", Some("work")),
             ],
             exclude_worktree_paths: vec![],
+            terminal_escape_chord: "ctrl+a w".into(),
         };
         let workspace = WorkspaceState {
             projects: vec![
@@ -4192,76 +4931,7 @@ mod tests {
                 make_project("work-b"),
             ],
         };
-        let visible_projects = compute_visible_projects(&config, &workspace, Some("work"));
-
-        let (bg_tx, bg_rx) = std::sync::mpsc::channel();
-        let (git_local_tx, git_local_rx) = std::sync::mpsc::channel();
-        let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
-        let (herdr_tx, herdr_rx) = std::sync::mpsc::channel();
-        let (_herdr_event_tx, herdr_event_rx) = std::sync::mpsc::channel();
-        let (_update_tx, update_rx) = std::sync::mpsc::channel();
-        let (routine_tx, routine_rx) = std::sync::mpsc::channel();
-        let mut app = App {
-            workspace,
-            tree_selected: 0,
-            tree_scroll: 0,
-            tree_visible_height: 20,
-            tree_area: Rect::default(),
-            preview_area: Rect::default(),
-            mode: Mode::Normal,
-            config,
-            active_tab: Some("work".to_string()),
-            visible_projects,
-            send_command_history: Vec::new(),
-            notice: None,
-            notice_expires: None,
-            jobs: Vec::new(),
-            spinner_frame: 0,
-            bg_tx,
-            bg_rx,
-            needs_redraw: false,
-            force_terminal_redraw: false,
-            force_preview_redraw: false,
-            last_rendered_preview_was_session: false,
-            fast_timer: Timer::new(FAST_INTERVAL_MS),
-            slow_timer: Timer::new(SLOW_INTERVAL_MS),
-            cached_flat: Vec::new(),
-            flat_dirty: false,
-            search_cache: Vec::new(),
-            git_local_tx,
-            git_local_rx,
-            git_local_pending: HashSet::new(),
-            fetch_tx,
-            fetch_rx,
-            fetch_pending: HashSet::new(),
-            cache_dirty: false,
-            git_semaphore: GitSemaphore::new(1),
-            worktree_index: std::collections::HashMap::new(),
-            parsed_preview: std::collections::HashMap::new(),
-            herdr_client: test_herdr_client(),
-            herdr_monitor: None,
-            herdr_event_rx,
-            herdr_event_panes: Vec::new(),
-            herdr_health: HerdrHealth::Connecting,
-            herdr_tx,
-            herdr_rx,
-            herdr_refresh_pending: false,
-            herdr_refresh_stale: false,
-            herdr_full_refresh_stale: false,
-            herdr_capture_pending: false,
-            pending_deletions: HashSet::new(),
-            pending_session_kills: HashSet::new(),
-            muted_terminal_ids: HashSet::new(),
-            update_rx,
-            update_available: None,
-            is_mobile: false,
-            force_mobile: false,
-            scanned_repos: Vec::new(),
-            repo_scan_rx: None,
-            routine_tx,
-            routine_rx,
-            routine_refresh_generation: HashMap::new(),
-        };
+        let mut app = make_test_app(config, workspace, Some("work".to_string()));
 
         app.workspace.projects.remove(0);
         app.config
@@ -4301,18 +4971,31 @@ mod tests {
 
     fn make_sess(
         muted: bool,
-        status: wsx_core::herdr::AgentStatus,
+        status: wsx_core::runtime::AgentState,
     ) -> wsx_core::model::workspace::SessionInfo {
         wsx_core::model::workspace::SessionInfo {
-            pane_id: "pane".into(),
-            terminal_id: "terminal".into(),
+            session_id: runtime::SessionId(1),
+            pane_id: runtime::PaneId(1),
+            terminal_id: runtime::TerminalId(1),
             agent: Some("codex".into()),
-            workspace_id: "workspace".into(),
-            tab_id: "tab".into(),
             display_name: "session".into(),
             agent_status: status,
             revision: 1,
-            pane_capture: None,
+            layout: runtime::PaneLayout::Leaf {
+                pane_id: runtime::PaneId(1),
+            },
+            panes: vec![wsx_core::model::workspace::PaneInfo {
+                pane_id: runtime::PaneId(1),
+                terminal_id: runtime::TerminalId(1),
+                label: "terminal".into(),
+                agent: Some("codex".into()),
+                agent_status: status,
+                revision: 1,
+                exited: false,
+                listening_ports: vec![],
+                terminal_frame: None,
+            }],
+            terminal_frame: None,
             muted,
         }
     }
@@ -4321,8 +5004,8 @@ mod tests {
         let mut project = make_project("navigation");
         let mut worktree = make_worktree("./navigation");
         worktree.sessions = vec![
-            make_sess(false, wsx_core::herdr::AgentStatus::Idle),
-            make_sess(false, wsx_core::herdr::AgentStatus::Idle),
+            make_sess(false, wsx_core::runtime::AgentState::Idle),
+            make_sess(false, wsx_core::runtime::AgentState::Idle),
         ];
         project.worktrees = vec![worktree];
         project.routines = vec![routine_view("morning")];
@@ -4445,15 +5128,309 @@ mod tests {
         assert!(!app.force_terminal_redraw);
     }
 
+    fn add_split_pane(session: &mut wsx_core::model::workspace::SessionInfo) {
+        session.panes.push(wsx_core::model::workspace::PaneInfo {
+            pane_id: runtime::PaneId(2),
+            terminal_id: runtime::TerminalId(2),
+            label: "split".into(),
+            agent: None,
+            agent_status: runtime::AgentState::Idle,
+            revision: 1,
+            exited: false,
+            listening_ports: vec![],
+            terminal_frame: None,
+        });
+        session.layout = runtime::PaneLayout::Split {
+            axis: runtime::SplitAxis::Vertical,
+            ratio_millis: 500,
+            first: Box::new(runtime::PaneLayout::Leaf {
+                pane_id: runtime::PaneId(1),
+            }),
+            second: Box::new(runtime::PaneLayout::Leaf {
+                pane_id: runtime::PaneId(2),
+            }),
+        };
+    }
+
+    #[test]
+    fn multi_pane_session_keeps_session_visible_and_adds_subordinate_rows() {
+        let mut project = make_project("panes");
+        let mut worktree = make_worktree("/tmp/panes");
+        let mut session = make_sess(false, runtime::AgentState::Idle);
+        add_split_pane(&mut session);
+        worktree.sessions.push(session);
+        project.worktrees.push(worktree);
+        let app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        assert!(matches!(app.flat()[2], FlatEntry::Session { .. }));
+        assert!(matches!(app.flat()[3], FlatEntry::Pane { pane_idx: 0, .. }));
+        assert!(matches!(app.flat()[4], FlatEntry::Pane { pane_idx: 1, .. }));
+    }
+
+    #[test]
+    fn leaving_terminal_mode_does_not_show_an_obvious_mode_notification() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.mode = Mode::Terminal {
+            pane_id: runtime::PaneId(1),
+        };
+
+        app.leave_terminal_mode(runtime::PaneId(1));
+
+        assert!(matches!(app.mode, Mode::Workspace));
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
+    fn global_header_spans_both_modes_without_workspace_spacer() {
+        let project = make_project("demo");
+        let config = GlobalConfig {
+            groups: vec!["work".into(), "personal".into()],
+            projects: vec![wsx_core::config::global::ProjectEntry {
+                name: "demo".into(),
+                path: project.path.clone(),
+                groups: vec!["work".into()],
+                aliases: HashMap::new(),
+            }],
+            ..GlobalConfig::default()
+        };
+        let mut app = make_test_app(
+            config,
+            WorkspaceState {
+                projects: vec![project],
+            },
+            Some("work".into()),
+        );
+        let backend = ratatui::backend::TestBackend::new(100, 16);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+
+        assert_eq!(app.tree_area.width, 32);
+        let groups = (0..100)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+            .collect::<String>();
+        for label in ["workspace", "recent", "ungrouped", "work", "personal"] {
+            assert!(groups.contains(label), "missing {label}: {groups:?}");
+        }
+        assert!(
+            !groups.contains("+N") && !groups.contains("… +"),
+            "{groups:?}"
+        );
+        let strip = crate::ui::workspace_nav::fit_group_strip(
+            &app.config.ordered_group_keys(),
+            app.active_group.as_ref(),
+            100,
+            app.group_header_scroll,
+        );
+        let recent = strip
+            .chips
+            .iter()
+            .find(|chip| chip.key == GroupKey::Recent)
+            .unwrap();
+        let work = strip
+            .chips
+            .iter()
+            .find(|chip| chip.key == GroupKey::Named("work".into()))
+            .unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(recent.cells.start as u16, 0)].bg,
+            crate::ui::theme::recent_group_chip(false).bg.unwrap()
+        );
+        assert_eq!(
+            terminal.backend().buffer()[(work.cells.start as u16, 0)].bg,
+            crate::ui::theme::group_chip(true).bg.unwrap()
+        );
+        assert_eq!(
+            terminal.backend().buffer()[(99, 0)].bg,
+            ratatui::style::Color::Reset
+        );
+        assert!(groups.contains("workspace"), "{groups:?}");
+        assert!(!groups.contains("Workspace"), "{groups:?}");
+        let projects = (0..30)
+            .map(|x| terminal.backend().buffer()[(x, 1)].symbol())
+            .collect::<String>();
+        assert!(projects.contains("demo"), "{projects:?}");
+        let footer = (0..100)
+            .map(|x| terminal.backend().buffer()[(x, 15)].symbol())
+            .collect::<String>();
+        assert!(!footer.contains("Enter:"), "{footer:?}");
+        assert!(footer.contains(" WORKSPACE "), "{footer:?}");
+        assert!(!footer.contains("[WORKSPACE]"), "{footer:?}");
+        assert_eq!(
+            terminal.backend().buffer()[(0, 15)].bg,
+            crate::ui::theme::ACCENT
+        );
+        assert_eq!(
+            terminal.backend().buffer()[(30, 15)].bg,
+            ratatui::style::Color::Reset
+        );
+        assert_eq!(
+            terminal.backend().buffer()[(99, 14)].bg,
+            ratatui::style::Color::Reset
+        );
+
+        app.mode = Mode::Terminal {
+            pane_id: runtime::PaneId(1),
+        };
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        let terminal_header = (0..100)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+            .collect::<String>();
+        assert!(terminal_header.contains("workspace"), "{terminal_header:?}");
+        assert_eq!(
+            terminal.backend().buffer()[(31, 1)].fg,
+            crate::ui::theme::TEXT_SUBTLE
+        );
+    }
+
+    #[test]
+    fn recent_project_footer_advertises_reversible_removal() {
+        let mut project = make_project("recent");
+        project.last_terminal_active_unix_ms = Some(u64::MAX);
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        app.set_active_group(GroupKey::Recent);
+        let backend = ratatui::backend::TestBackend::new(80, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+
+        let footer = (0..80)
+            .map(|x| terminal.backend().buffer()[(x, 11)].symbol())
+            .collect::<String>();
+        assert!(footer.contains("(d)remove recent"), "{footer:?}");
+        assert!(!footer.contains("unregister"), "{footer:?}");
+    }
+
+    #[test]
+    fn workspace_header_scrolls_to_keep_the_active_group_visible() {
+        let project = make_project("demo");
+        let groups = (0..10).map(|index| format!("group-{index}")).collect();
+        let config = GlobalConfig {
+            groups,
+            projects: vec![wsx_core::config::global::ProjectEntry {
+                name: "demo".into(),
+                path: project.path.clone(),
+                groups: vec!["group-9".into()],
+                aliases: HashMap::new(),
+            }],
+            ..GlobalConfig::default()
+        };
+        let mut app = make_test_app(
+            config,
+            WorkspaceState {
+                projects: vec![project],
+            },
+            Some("group-9".into()),
+        );
+        let backend = ratatui::backend::TestBackend::new(100, 16);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+
+        let header = (0..100)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+            .collect::<String>();
+        assert!(header.contains("workspace"), "{header:?}");
+        assert!(header.contains("group-9"), "{header:?}");
+        assert!(header.contains('‹'), "{header:?}");
+        assert!(!header.contains("… +"), "{header:?}");
+    }
+
+    #[test]
+    fn mobile_terminal_mode_keeps_global_header_and_breadcrumb_above_viewport() {
+        let mut project = make_project("mobile-terminal");
+        let mut worktree = make_worktree("/tmp/mobile-terminal");
+        let mut session = make_sess(false, runtime::AgentState::Idle);
+        session.terminal_frame = Some(runtime::TerminalFrame {
+            pane_id: runtime::PaneId(1),
+            terminal_id: runtime::TerminalId(1),
+            revision: 1,
+            cols: 5,
+            rows: 1,
+            cells: "hello"
+                .chars()
+                .map(|ch| runtime::Cell {
+                    symbol: ch.to_string(),
+                    ..runtime::Cell::default()
+                })
+                .collect(),
+            cursor: runtime::Cursor {
+                x: 0,
+                y: 0,
+                visible: false,
+                blinking: false,
+                shape: 0,
+            },
+        });
+        worktree.sessions.push(session);
+        project.worktrees.push(worktree);
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        app.visible_projects.insert(0);
+        app.cached_flat = flatten_tree_filtered(&app.workspace, &app.visible_projects);
+        app.flat_dirty = false;
+        app.tree_selected = 2;
+        app.mode = Mode::Terminal {
+            pane_id: runtime::PaneId(1),
+        };
+        app.runtime_health = RuntimeHealth::Healthy {
+            last_success: Instant::now(),
+        };
+        let backend = ratatui::backend::TestBackend::new(56, 16);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        assert!(app.is_mobile);
+        assert_eq!(app.tree_area, Rect::default());
+        assert_eq!(app.group_header_area, Rect::new(0, 0, 56, 1));
+        assert_eq!(app.preview_area, Rect::new(0, 1, 56, 14));
+        assert_eq!(app.terminal_area, Rect::new(0, 2, 56, 13));
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("workspace"), "{rendered:?}");
+        assert!(rendered.contains("mobile-terminal ›"), "{rendered:?}");
+        assert!(rendered.contains("hello"), "{rendered:?}");
+    }
+
     #[test]
     fn blocked_session_needs_attention() {
-        let session = make_sess(false, wsx_core::herdr::AgentStatus::Blocked);
+        let session = make_sess(false, wsx_core::runtime::AgentState::Blocked);
         assert!(session_needs_attention(&session));
     }
 
     #[test]
     fn muted_blocked_session_does_not_need_attention() {
-        let session = make_sess(true, wsx_core::herdr::AgentStatus::Blocked);
+        let session = make_sess(true, wsx_core::runtime::AgentState::Blocked);
         assert!(!session_needs_attention(&session));
     }
 
@@ -4470,7 +5447,7 @@ mod tests {
     fn successful_background_session_close_removes_pane_and_registers_tombstone() {
         let mut project = make_project("demo");
         let mut worktree = make_worktree("/tmp/demo");
-        worktree.sessions = vec![make_sess(false, wsx_core::herdr::AgentStatus::Idle)];
+        worktree.sessions = vec![make_sess(false, wsx_core::runtime::AgentState::Idle)];
         project.worktrees = vec![worktree];
         let mut app = make_test_app(
             GlobalConfig::default(),
@@ -4486,13 +5463,13 @@ mod tests {
         app.apply_bg_result(BgResult {
             label: "kill session".into(),
             outcome: Ok(BgOutcome::SessionKilled {
-                pane_id: "pane".into(),
+                session_id: runtime::SessionId(1),
                 display_name: "session".into(),
             }),
         });
 
         assert!(app.workspace.projects[0].worktrees[0].sessions.is_empty());
-        assert!(app.pending_session_kills.contains("pane"));
+        assert!(app.pending_session_kills.contains(&runtime::SessionId(1)));
         assert_eq!(
             app.notice.as_ref().map(|notice| notice.title.as_str()),
             Some("Killed session: session")
@@ -4502,20 +5479,20 @@ mod tests {
     #[test]
     fn manual_refresh_queues_behind_an_inflight_snapshot() {
         let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
-        app.herdr_refresh_pending = true;
+        app.runtime_refresh_pending = true;
 
         app.refresh_all().unwrap();
 
-        assert!(app.herdr_refresh_pending);
-        assert!(app.herdr_full_refresh_stale);
-        assert!(!app.herdr_refresh_stale);
+        assert!(app.runtime_refresh_pending);
+        assert!(app.runtime_full_refresh_stale);
+        assert!(!app.runtime_refresh_stale);
     }
 
     #[test]
-    fn changed_herdr_revision_invalidates_parsed_preview() {
+    fn changed_runtime_revision_invalidates_stale_terminal_frame() {
         let mut project = make_project("demo");
         let mut worktree = make_worktree("/tmp/demo");
-        worktree.sessions = vec![make_sess(false, wsx_core::herdr::AgentStatus::Working)];
+        worktree.sessions = vec![make_sess(false, wsx_core::runtime::AgentState::Working)];
         project.worktrees = vec![worktree];
         let mut app = make_test_app(
             GlobalConfig::default(),
@@ -4524,38 +5501,79 @@ mod tests {
             },
             None,
         );
-        app.parsed_preview
-            .insert("pane".into(), ratatui::text::Text::raw("old"));
-        let snapshot = wsx_core::herdr::Snapshot {
-            version: "0.8.2".into(),
-            protocol: 20,
-            workspaces: vec![wsx_core::herdr::Workspace {
-                workspace_id: "workspace".into(),
-                label: "wsx:demo-main".into(),
-                tokens: Default::default(),
+        app.startup_cursor_identity = Some(wsx_core::cache::CursorIdentity::Session {
+            worktree_path: "/tmp/demo".into(),
+            terminal_id: Some("1".into()),
+            pane_id: None,
+        });
+        app.workspace.projects[0].worktrees[0].sessions[0].terminal_frame =
+            Some(runtime::TerminalFrame {
+                pane_id: runtime::PaneId(1),
+                terminal_id: runtime::TerminalId(1),
+                revision: 1,
+                cols: 1,
+                rows: 1,
+                cells: vec![runtime::Cell::default()],
+                cursor: runtime::Cursor {
+                    x: 0,
+                    y: 0,
+                    visible: true,
+                    blinking: false,
+                    shape: 0,
+                },
+            });
+        let snapshot = runtime::Snapshot {
+            protocol: runtime::PROTOCOL_VERSION,
+            epoch: 1,
+            revision: 2,
+            projects: vec![runtime::Project {
+                id: runtime::ProjectId(1),
+                path: PathBuf::from("/tmp/demo"),
+                name: "demo".into(),
+                revision: 1,
+                last_agent_active_unix_ms: None,
+                last_terminal_active_unix_ms: None,
             }],
-            tabs: vec![wsx_core::herdr::Tab {
-                tab_id: "tab".into(),
-                workspace_id: "workspace".into(),
+            worktrees: vec![runtime::Worktree {
+                id: runtime::WorktreeId(1),
+                project_id: runtime::ProjectId(1),
+                path: PathBuf::from("/tmp/demo"),
+                branch: "branch".into(),
+                revision: 1,
+            }],
+            sessions: vec![runtime::Session {
+                id: runtime::SessionId(1),
+                worktree_id: runtime::WorktreeId(1),
                 label: "session".into(),
-            }],
-            panes: vec![wsx_core::herdr::Pane {
-                pane_id: "pane".into(),
-                terminal_id: "terminal".into(),
-                agent: Some("codex".into()),
-                workspace_id: "workspace".into(),
-                tab_id: "tab".into(),
-                cwd: Some("/tmp/demo".into()),
-                label: Some("session".into()),
-                agent_status: wsx_core::herdr::AgentStatus::Working,
+                primary_pane: runtime::PaneId(1),
+                focused_pane: runtime::PaneId(1),
+                panes: vec![runtime::PaneId(1)],
+                layout: runtime::PaneLayout::Leaf {
+                    pane_id: runtime::PaneId(1),
+                },
                 revision: 2,
-                tokens: Default::default(),
             }],
-            layouts: vec![],
-            agents: vec![],
+            panes: vec![runtime::Pane {
+                id: runtime::PaneId(1),
+                terminal_id: runtime::TerminalId(1),
+                session_id: runtime::SessionId(1),
+                label: "session".into(),
+                agent: Some(runtime::AgentInfo {
+                    id: runtime::AgentInstanceId(1),
+                    provider: "codex".into(),
+                    state: runtime::AgentState::Working,
+                    conversation_id: None,
+                    capabilities: runtime::AgentCapabilities::default(),
+                    source: "test".into(),
+                }),
+                exited: false,
+                revision: 2,
+            }],
+            listening_ports: vec![],
+            capabilities: runtime::Capabilities::default(),
         };
 
-        app.apply_herdr_snapshot(
+        app.apply_runtime_snapshot(
             snapshot,
             vec![(
                 PathBuf::from("/tmp/demo"),
@@ -4563,7 +5581,14 @@ mod tests {
             )],
         );
 
-        assert!(!app.parsed_preview.contains_key("pane"));
+        assert!(app.workspace.projects[0].worktrees[0].sessions[0]
+            .terminal_frame
+            .is_none());
+        assert!(matches!(
+            app.flat()[app.tree_selected],
+            FlatEntry::Session { .. }
+        ));
+        assert!(app.startup_cursor_identity.is_none());
     }
 
     #[test]
@@ -4599,7 +5624,7 @@ mod tests {
     }
 
     #[test]
-    fn responsive_agent_hints_and_long_notice_render_without_boxes_or_truncation() {
+    fn single_line_workspace_hints_and_compact_notice_render_safely() {
         let mut app = make_navigation_test_app();
         let session_index = app
             .flat()
@@ -4608,7 +5633,7 @@ mod tests {
             .unwrap();
         app.tree_selected = session_index;
         app.set_error(
-            "Herdr 연결 실패: a long notification remains readable outside the project column",
+            "Runtime 연결 실패: a long notification remains readable outside the project column",
         );
         let backend = ratatui::backend::TestBackend::new(56, 16);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -4623,8 +5648,15 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains("S:prompt"));
-        assert!(rendered.contains("Herdr"));
+        let status_row = terminal.backend().buffer().area.height - 1;
+        let status = (0..terminal.backend().buffer().area.width)
+            .map(|x| terminal.backend().buffer()[(x, status_row)].symbol())
+            .collect::<String>();
+        assert!(status.contains(" WORKSPACE "));
+        assert!(!status.contains("[WORKSPACE]"));
+        assert!(status.contains("(C)interrupt"));
+        assert!(!rendered.contains("S:prompt"));
+        assert!(rendered.contains("Runtime"));
         assert!(rendered.contains('연'));
     }
 
@@ -4646,30 +5678,86 @@ mod tests {
     fn backend_disconnect_keeps_last_success_and_recovery_becomes_healthy() {
         let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
         let last_success = Instant::now();
-        app.herdr_health = HerdrHealth::Healthy { last_success };
-        app.apply_herdr_event(herdr::EventSignal::Disconnected("socket closed".into()));
+        app.runtime_health = RuntimeHealth::Healthy { last_success };
+        app.apply_runtime_event(runtime::EventSignal::Disconnected("socket closed".into()));
         assert!(matches!(
-            app.herdr_health,
-            HerdrHealth::Reconnecting {
+            app.runtime_health,
+            RuntimeHealth::Reconnecting {
                 last_success: Some(_),
                 ..
             }
         ));
-        app.apply_herdr_event(herdr::EventSignal::Connected);
-        assert!(matches!(app.herdr_health, HerdrHealth::Reconnecting { .. }));
+        app.apply_runtime_event(runtime::EventSignal::Connected);
+        assert!(matches!(
+            app.runtime_health,
+            RuntimeHealth::Reconnecting { .. }
+        ));
+        assert!(app.runtime_refresh_pending);
         app.apply_projected_snapshot(
-            herdr::Snapshot {
-                version: "0.8.2".into(),
-                protocol: 20,
-                workspaces: vec![],
-                tabs: vec![],
+            runtime::Snapshot {
+                protocol: runtime::PROTOCOL_VERSION,
+                epoch: 1,
+                revision: 1,
+                projects: vec![],
+                worktrees: vec![],
+                sessions: vec![],
                 panes: vec![],
-                layouts: vec![],
-                agents: vec![],
+                listening_ports: vec![],
+                capabilities: runtime::Capabilities::default(),
             },
             None,
         );
-        assert!(matches!(app.herdr_health, HerdrHealth::Healthy { .. }));
+        assert!(matches!(app.runtime_health, RuntimeHealth::Healthy { .. }));
+    }
+
+    #[test]
+    fn terminal_mouse_coordinates_start_at_the_panel_origin() {
+        let mouse = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 42,
+            row: 7,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        let projected = runtime_mouse_event(mouse, Rect::new(36, 1, 60, 20)).unwrap();
+        assert_eq!((projected.x, projected.y), (6, 6));
+    }
+
+    #[test]
+    fn left_panel_click_is_a_workspace_target_while_terminal_is_focused() {
+        let workspace = WorkspaceState {
+            projects: vec![make_project("demo")],
+        };
+        let mut app = make_test_app(GlobalConfig::default(), workspace, None);
+        app.tree_area = Rect::new(0, 1, 36, 19);
+        app.group_header_area = Rect::new(0, 0, 80, 1);
+        app.mode = Mode::Terminal {
+            pane_id: runtime::PaneId(1),
+        };
+        let left_click = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 4,
+            row: 3,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        let header_click = crossterm::event::MouseEvent {
+            column: 40,
+            row: 0,
+            ..left_click
+        };
+        let right_click = crossterm::event::MouseEvent {
+            column: 40,
+            ..left_click
+        };
+        assert!(app.is_workspace_click(left_click));
+        assert!(app.is_workspace_click(header_click));
+        assert!(!app.is_workspace_click(right_click));
+
+        let header_scroll = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            ..header_click
+        };
+        assert!(app.handle_terminal_group_header_scroll(header_scroll));
+        assert_eq!(app.group_header_scroll, 1);
     }
 
     #[test]

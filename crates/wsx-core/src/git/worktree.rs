@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+#[derive(Debug, Clone)]
 pub struct WorktreeEntry {
     pub name: String,
     pub path: PathBuf,

@@ -1,17 +1,19 @@
 //! Persistent wsx UI state and local mute flags.
 //!
-//! Herdr is authoritative for sessions. Legacy tmux/session fields in older TOML
-//! files are ignored by serde and are never imported.
+//! The wsx daemon is authoritative for sessions. Legacy backend/session fields
+//! in older TOML files are ignored by serde and are never imported.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::model::workspace::{FlatEntry, WorkspaceState};
-use serde::{Deserialize, Serialize};
+use crate::{
+    config::global::{atomic_write_private, GroupKey},
+    model::workspace::{FlatEntry, WorkspaceState},
+};
+use serde::{Deserialize, Deserializer, Serialize};
 
-/// Stable cursor identity for projects, worktrees, Herdr panes, and routines.
+/// Stable cursor identity for projects, worktrees, terminal panes, and routines.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum CursorIdentity {
     Project {
@@ -37,7 +39,7 @@ pub enum CursorIdentity {
     },
 }
 
-#[derive(Serialize, Deserialize, Default, Clone)]
+#[derive(Serialize, Default, Clone)]
 pub struct WorkspaceCache {
     #[serde(default)]
     pub written_at_unix_ms: Option<u64>,
@@ -49,38 +51,84 @@ pub struct WorkspaceCache {
     pub tree_selected: usize,
     #[serde(default)]
     pub cursor_identity: Option<CursorIdentity>,
-    /// Stable Herdr terminal IDs muted in this local wsx UI.
-    #[serde(default, alias = "muted_sessions")]
+    /// Stable wsx terminal IDs muted in this local UI.
+    #[serde(default)]
     pub muted_terminals: HashSet<String>,
-    #[serde(default)]
-    pub command_history: Vec<String>,
-    #[serde(default)]
-    pub active_tab: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_group: Option<GroupKey>,
+    #[serde(skip)]
+    migration_needed: bool,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct WorkspaceCacheWire {
+    written_at_unix_ms: Option<u64>,
+    worktree_expanded: HashMap<String, bool>,
+    project_expanded: HashMap<String, bool>,
+    tree_selected: usize,
+    cursor_identity: Option<CursorIdentity>,
+    #[serde(alias = "muted_sessions")]
+    muted_terminals: HashSet<String>,
+    active_group: Option<String>,
+    active_groups: Option<Vec<String>>,
+    active_tab: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for WorkspaceCache {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = WorkspaceCacheWire::deserialize(deserializer)?;
+        let migration_needed = wire.active_groups.is_some() || wire.active_tab.is_some();
+        let raw_active = wire
+            .active_group
+            .or_else(|| wire.active_groups.into_iter().flatten().next())
+            .or(wire.active_tab);
+        let active_group = raw_active
+            .map(|value| {
+                if value.eq_ignore_ascii_case("default") {
+                    Ok(GroupKey::Ungrouped)
+                } else {
+                    toml::Value::String(value)
+                        .try_into()
+                        .map_err(serde::de::Error::custom)
+                }
+            })
+            .transpose()?;
+        Ok(Self {
+            written_at_unix_ms: wire.written_at_unix_ms,
+            worktree_expanded: wire.worktree_expanded,
+            project_expanded: wire.project_expanded,
+            tree_selected: wire.tree_selected,
+            cursor_identity: wire.cursor_identity,
+            muted_terminals: wire.muted_terminals,
+            active_group,
+            migration_needed,
+        })
+    }
 }
 
 impl WorkspaceCache {
-    pub fn load() -> Self {
+    pub fn load() -> anyhow::Result<Self> {
         let Ok(content) = std::fs::read_to_string(cache_path()) else {
-            return Self::default();
+            return Ok(Self::default());
         };
-        toml::from_str(&content).unwrap_or_default()
+        let mut cache: Self = toml::from_str(&content).unwrap_or_default();
+        if cache.migration_needed {
+            cache.save(false)?;
+            cache.migration_needed = false;
+        }
+        Ok(cache)
     }
 
     pub fn save(&self, sync: bool) -> anyhow::Result<()> {
         let mut cache = self.clone();
         cache.written_at_unix_ms = Some(now_unix_ms());
         let path = cache_path();
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("toml.tmp");
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(toml::to_string(&cache)?.as_bytes())?;
-        if sync {
-            file.sync_all()?;
-        }
-        drop(file);
-        std::fs::rename(tmp, path)?;
+        let text = toml::to_string(&cache)?;
+        atomic_write_private(&path, text.as_bytes(), sync)?;
         Ok(())
     }
 }
@@ -101,17 +149,16 @@ fn cache_path() -> PathBuf {
         .join("workspace.toml")
 }
 
-/// Apply only cached UI and local mute state. Sessions always come from Herdr.
-pub fn apply_cache(
-    workspace: &mut WorkspaceState,
-) -> (
+pub type AppliedCache = (
     usize,
     Option<CursorIdentity>,
-    Vec<String>,
-    Option<String>,
+    Option<GroupKey>,
     HashSet<String>,
-) {
-    let cache = WorkspaceCache::load();
+);
+
+/// Apply only cached UI and local mute state. Sessions always come from wsxd.
+pub fn apply_cache(workspace: &mut WorkspaceState) -> anyhow::Result<AppliedCache> {
+    let cache = WorkspaceCache::load()?;
     let mut migrated_muted_terminals = HashSet::new();
     for project in &mut workspace.projects {
         let project_key = project.path.to_string_lossy().to_string();
@@ -124,21 +171,22 @@ pub fn apply_cache(
                 worktree.expanded = *expanded;
             }
             for session in &mut worktree.sessions {
-                session.muted = cache.muted_terminals.contains(&session.terminal_id)
-                    || cache.muted_terminals.contains(&session.pane_id);
+                session.muted = cache
+                    .muted_terminals
+                    .contains(&session.terminal_id.to_string())
+                    || cache.muted_terminals.contains(&session.pane_id.to_string());
                 if session.muted {
-                    migrated_muted_terminals.insert(session.terminal_id.clone());
+                    migrated_muted_terminals.insert(session.terminal_id.to_string());
                 }
             }
         }
     }
-    (
+    Ok((
         cache.tree_selected,
         cache.cursor_identity,
-        cache.command_history,
-        cache.active_tab,
+        cache.active_group,
         migrated_muted_terminals,
-    )
+    ))
 }
 
 pub fn find_cursor_index(
@@ -158,18 +206,26 @@ pub fn find_cursor_index(
             terminal_id,
             pane_id,
         } => flat.iter().position(|entry| {
-            if let FlatEntry::Session { project_idx, worktree_idx, session_idx } = entry {
-                let wt = &workspace.projects[*project_idx].worktrees[*worktree_idx];
-                let session = &wt.sessions[*session_idx];
-                wt.path.to_string_lossy() == worktree_path.as_str()
-                    && terminal_id
-                        .as_ref()
-                        .map(|id| session.terminal_id == *id)
-                        .or_else(|| pane_id.as_ref().map(|id| session.pane_id == *id))
-                        .unwrap_or(false)
-            } else {
-                false
-            }
+            let (project_idx, worktree_idx, session_idx, pane_idx) = match entry {
+                FlatEntry::Session { project_idx, worktree_idx, session_idx } => {
+                    (*project_idx, *worktree_idx, *session_idx, None)
+                }
+                FlatEntry::Pane { project_idx, worktree_idx, session_idx, pane_idx } => {
+                    (*project_idx, *worktree_idx, *session_idx, Some(*pane_idx))
+                }
+                _ => return false,
+            };
+            let wt = &workspace.projects[project_idx].worktrees[worktree_idx];
+            let session = &wt.sessions[session_idx];
+            let (terminal, pane) = pane_idx
+                .and_then(|idx| session.panes.get(idx))
+                .map_or((session.terminal_id, session.pane_id), |pane| (pane.terminal_id, pane.pane_id));
+            wt.path.to_string_lossy() == worktree_path.as_str()
+                && terminal_id
+                    .as_ref()
+                    .map(|id| terminal.to_string() == *id)
+                    .or_else(|| pane_id.as_ref().map(|id| pane.to_string() == *id))
+                    .unwrap_or(false)
         }),
         CursorIdentity::RoutinesHeader { project_path } => flat.iter().position(|entry| {
             matches!(entry, FlatEntry::RoutinesHeader { project_idx } if workspace.projects[*project_idx].path.to_string_lossy() == project_path.as_str())
@@ -184,16 +240,14 @@ pub fn save_cache(
     workspace: &WorkspaceState,
     tree_selected: usize,
     flat: &[FlatEntry],
-    command_history: &[String],
-    active_tab: Option<&str>,
+    active_group: Option<&GroupKey>,
     sync: bool,
 ) -> Option<String> {
     let mut cache = WorkspaceCache {
         written_at_unix_ms: Some(now_unix_ms()),
         tree_selected,
         cursor_identity: resolve_cursor_identity(workspace, flat, tree_selected),
-        command_history: command_history.to_vec(),
-        active_tab: active_tab.map(str::to_owned),
+        active_group: active_group.cloned(),
         ..Default::default()
     };
     for project in &workspace.projects {
@@ -211,7 +265,7 @@ pub fn save_cache(
                     .sessions
                     .iter()
                     .filter(|s| s.muted)
-                    .map(|s| s.terminal_id.clone()),
+                    .map(|s| s.terminal_id.to_string()),
             );
         }
     }
@@ -247,7 +301,24 @@ pub fn resolve_cursor_identity(
             let wt = &workspace.projects[*project_idx].worktrees[*worktree_idx];
             Some(CursorIdentity::Session {
                 worktree_path: wt.path.to_string_lossy().into_owned(),
-                terminal_id: Some(wt.sessions[*session_idx].terminal_id.clone()),
+                terminal_id: Some(wt.sessions[*session_idx].terminal_id.to_string()),
+                pane_id: None,
+            })
+        }
+        FlatEntry::Pane {
+            project_idx,
+            worktree_idx,
+            session_idx,
+            pane_idx,
+        } => {
+            let wt = &workspace.projects[*project_idx].worktrees[*worktree_idx];
+            Some(CursorIdentity::Session {
+                worktree_path: wt.path.to_string_lossy().into_owned(),
+                terminal_id: Some(
+                    wt.sessions[*session_idx].panes[*pane_idx]
+                        .terminal_id
+                        .to_string(),
+                ),
                 pane_id: None,
             })
         }
@@ -309,16 +380,42 @@ pane_id = "pane-1"
     }
 
     #[test]
+    fn legacy_active_group_shapes_migrate_to_one_canonical_group() {
+        for legacy in [
+            "active_tab = \"work\"\n",
+            "active_groups = [\"work\", \"other\"]\n",
+        ] {
+            let cache: WorkspaceCache = toml::from_str(legacy).unwrap();
+            assert_eq!(cache.active_group, Some(GroupKey::Named("work".into())));
+            assert!(cache.migration_needed);
+            let encoded = toml::to_string(&cache).unwrap();
+            assert!(encoded.contains("active_group = \"work\""));
+            assert!(!encoded.contains("active_groups"));
+            assert!(!encoded.contains("active_tab"));
+        }
+    }
+
+    #[test]
+    fn empty_multi_selection_cache_still_requests_scalar_rewrite() {
+        let cache: WorkspaceCache = toml::from_str("active_groups = []\n").unwrap();
+        assert_eq!(cache.active_group, None);
+        assert!(cache.migration_needed);
+        assert!(!toml::to_string(&cache).unwrap().contains("active_groups"));
+    }
+
+    #[test]
     fn cursor_identity_round_trips_through_stable_terminal_id() {
         use crate::{
-            herdr::AgentStatus,
             model::workspace::{flatten_tree, Project, SessionInfo, WorktreeInfo},
+            runtime::{AgentState, PaneId, SessionId, TerminalId},
         };
         let workspace = WorkspaceState {
             projects: vec![Project {
                 name: "repo".into(),
                 path: "/repo".into(),
                 default_branch: "main".into(),
+                last_agent_active_unix_ms: None,
+                last_terminal_active_unix_ms: None,
                 worktrees: vec![WorktreeInfo {
                     name: "main".into(),
                     branch: "main".into(),
@@ -326,15 +423,16 @@ pane_id = "pane-1"
                     is_main: true,
                     alias: None,
                     sessions: vec![SessionInfo {
-                        pane_id: "pane-1".into(),
-                        terminal_id: "terminal-1".into(),
+                        session_id: SessionId(1),
+                        pane_id: PaneId(1),
+                        terminal_id: TerminalId(1),
                         agent: None,
-                        workspace_id: "workspace-1".into(),
-                        tab_id: "tab-1".into(),
                         display_name: "agent".into(),
-                        agent_status: AgentStatus::Working,
+                        agent_status: AgentState::Working,
                         revision: 1,
-                        pane_capture: None,
+                        layout: crate::runtime::PaneLayout::Leaf { pane_id: PaneId(1) },
+                        panes: vec![],
+                        terminal_frame: None,
                         muted: false,
                     }],
                     expanded: true,
@@ -359,7 +457,7 @@ pane_id = "pane-1"
             identity,
             CursorIdentity::Session {
                 worktree_path: "/repo".into(),
-                terminal_id: Some("terminal-1".into()),
+                terminal_id: Some("1".into()),
                 pane_id: None,
             }
         );

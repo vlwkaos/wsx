@@ -1,0 +1,22 @@
+[package]
+name = "wsx-daemon"
+description = "Persistent wsx project/session/PTY authority"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "wsxd"
+path = "src/main.rs"
+
+[dependencies]
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wsx-core = { path = "../wsx-core", version = "=0.18.0" }
+wsx-terminal = { path = "../wsx-terminal", version = "=0.18.0" }

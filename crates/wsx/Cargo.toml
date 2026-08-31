@@ -1,12 +1,13 @@
 [package]
 name = "wsx"
-description = "TUI workspace manager — git worktrees + Herdr panes in one tree"
+description = "Project-first terminal workspace manager for Git worktrees"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 readme = "../../README.md"
-keywords = ["tui", "git", "herdr", "worktree", "workspace"]
+keywords = ["tui", "git", "terminal", "worktree", "workspace"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
@@ -14,7 +15,7 @@ name = "wsx"
 path = "src/main.rs"
 
 [dependencies]
-wsx-core = { path = "../wsx-core", version = "=0.17.0" }
+wsx-core = { path = "../wsx-core", version = "=0.18.0" }
 asched-core = { workspace = true }
 
 ratatui = { workspace = true }

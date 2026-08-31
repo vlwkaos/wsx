@@ -1,6 +1,6 @@
-// Direct projection of Herdr's protocol-20 agent state.
+// Direct projection of the provider-neutral wsx agent state.
 
-use wsx_core::{herdr::AgentStatus, model::workspace::SessionInfo};
+use wsx_core::{model::workspace::SessionInfo, runtime::AgentState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppSessionState {
@@ -17,6 +17,7 @@ pub enum SessionHeuristic {
     Blocked,
     Done,
     Unknown,
+    Error,
 }
 
 impl SessionHeuristic {
@@ -24,7 +25,7 @@ impl SessionHeuristic {
         match self {
             Self::Muted | Self::Idle | Self::Unknown => AppSessionState::Idle,
             Self::Working => AppSessionState::Active,
-            Self::Blocked | Self::Done => AppSessionState::NeedsAttention,
+            Self::Blocked | Self::Done | Self::Error => AppSessionState::NeedsAttention,
         }
     }
 }
@@ -34,11 +35,12 @@ pub fn derive(session: &SessionInfo) -> SessionHeuristic {
         return SessionHeuristic::Muted;
     }
     match session.agent_status {
-        AgentStatus::Idle => SessionHeuristic::Idle,
-        AgentStatus::Working => SessionHeuristic::Working,
-        AgentStatus::Blocked => SessionHeuristic::Blocked,
-        AgentStatus::Done => SessionHeuristic::Done,
-        AgentStatus::Unknown => SessionHeuristic::Unknown,
+        AgentState::Idle => SessionHeuristic::Idle,
+        AgentState::Working => SessionHeuristic::Working,
+        AgentState::Blocked => SessionHeuristic::Blocked,
+        AgentState::Done => SessionHeuristic::Done,
+        AgentState::Unknown => SessionHeuristic::Unknown,
+        AgentState::Error => SessionHeuristic::Error,
     }
 }
 
@@ -50,82 +52,83 @@ pub fn status_label(session: &SessionInfo) -> &'static str {
         SessionHeuristic::Blocked => "blocked",
         SessionHeuristic::Done => "done",
         SessionHeuristic::Unknown => "unknown",
+        SessionHeuristic::Error => "error",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wsx_core::runtime::{PaneId, SessionId, TerminalId};
 
-    fn session(status: AgentStatus, muted: bool) -> SessionInfo {
+    fn session(status: AgentState, muted: bool) -> SessionInfo {
         SessionInfo {
-            pane_id: "pane-1".into(),
-            terminal_id: "terminal-1".into(),
+            session_id: SessionId(1),
+            pane_id: PaneId(1),
+            terminal_id: TerminalId(1),
             agent: Some("codex".into()),
-            workspace_id: "workspace-1".into(),
-            tab_id: "tab-1".into(),
             display_name: "agent".into(),
             agent_status: status,
             revision: 1,
-            pane_capture: None,
+            layout: wsx_core::runtime::PaneLayout::Leaf { pane_id: PaneId(1) },
+            panes: vec![],
+            terminal_frame: None,
             muted,
         }
     }
 
     #[test]
-    fn projects_every_herdr_status_exhaustively() {
+    fn projects_every_runtime_status_exhaustively() {
         let cases = [
             (
-                AgentStatus::Idle,
+                AgentState::Idle,
                 SessionHeuristic::Idle,
                 AppSessionState::Idle,
                 "idle",
             ),
             (
-                AgentStatus::Working,
+                AgentState::Working,
                 SessionHeuristic::Working,
                 AppSessionState::Active,
                 "working",
             ),
             (
-                AgentStatus::Blocked,
+                AgentState::Blocked,
                 SessionHeuristic::Blocked,
                 AppSessionState::NeedsAttention,
                 "blocked",
             ),
             (
-                AgentStatus::Done,
+                AgentState::Done,
                 SessionHeuristic::Done,
                 AppSessionState::NeedsAttention,
                 "done",
             ),
             (
-                AgentStatus::Unknown,
+                AgentState::Unknown,
                 SessionHeuristic::Unknown,
                 AppSessionState::Idle,
                 "unknown",
             ),
+            (
+                AgentState::Error,
+                SessionHeuristic::Error,
+                AppSessionState::NeedsAttention,
+                "error",
+            ),
         ];
-        for (status, heuristic, projected, label) in cases {
+        for (status, heuristic, state, label) in cases {
             let session = session(status, false);
             assert_eq!(derive(&session), heuristic);
-            assert_eq!(heuristic.app_state(), projected);
+            assert_eq!(heuristic.app_state(), state);
             assert_eq!(status_label(&session), label);
         }
     }
 
     #[test]
-    fn mute_takes_precedence_over_every_herdr_status() {
-        for status in [
-            AgentStatus::Idle,
-            AgentStatus::Working,
-            AgentStatus::Blocked,
-            AgentStatus::Done,
-            AgentStatus::Unknown,
-        ] {
-            let session = session(status, true);
-            assert_eq!(derive(&session), SessionHeuristic::Muted);
-            assert_eq!(status_label(&session), "muted");
-        }
+    fn mute_overrides_runtime_state() {
+        let session = session(AgentState::Blocked, true);
+        assert_eq!(derive(&session), SessionHeuristic::Muted);
+        assert_eq!(status_label(&session), "muted");
     }
 }

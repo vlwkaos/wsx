@@ -1,6 +1,6 @@
 [package]
 name = "wsx-core"
-description = "Library crate for wsx: Git worktrees, required Herdr runtime, hooks, config, and model primitives."
+description = "Composable project, Git worktree, terminal runtime, hook, and model primitives for wsx."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,6 +13,7 @@ path = "src/lib.rs"
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+yaml_serde = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }

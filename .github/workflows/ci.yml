@@ -1,0 +1,55 @@
+name: CI
+
+"on":
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.96.1 --profile minimal --component clippy
+          rustup default 1.96.1
+
+      # https://nexte.st/docs/installation/pre-built-binaries/#using-nextest-in-github-actions
+      - name: Install Zig and Nextest
+        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2
+        with:
+          tool: zig@0.15.2,nextest@0.9.143
+          fallback: none
+
+      - name: Check workspace
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Run tests
+        run: cargo nextest run --workspace --locked --profile ci
+
+      - name: Run doctests
+        run: cargo test --workspace --locked --doc
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run runtime smoke test
+        run: python3 scripts/runtime-smoke.py
