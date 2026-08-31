@@ -1,0 +1,2 @@
+# Preserve pinned upstream bytes; project-owned files remain whitespace checked.
+vendor/libghostty-vt/** -whitespace
