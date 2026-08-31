@@ -238,10 +238,29 @@ assert listener_snapshot is not None and any(
 listener_record = next(
     item for item in listener_snapshot["sessions"] if item["id"] == listener_session_id
 )
+listener_pane_id = listener_record["focused_pane"]
+assert any(
+    item["pane_id"] == listener_pane_id and listener_port in item["tcp"]
+    for item in listener_snapshot.get("listening_ports", [])
+), listener_snapshot
 assert call("session_close", {
     "session_id": listener_session_id,
     "expected_revision": listener_record["revision"],
 })["type"] == "ack"
+cleanup_snapshot = None
+deadline = time.monotonic() + 6
+while time.monotonic() < deadline:
+    cleanup_snapshot = call("snapshot")["data"]
+    if not any(
+        item["pane_id"] == listener_pane_id
+        for item in cleanup_snapshot.get("listening_ports", [])
+    ):
+        break
+    time.sleep(0.1)
+assert cleanup_snapshot is not None and not any(
+    item["pane_id"] == listener_pane_id
+    for item in cleanup_snapshot.get("listening_ports", [])
+), cleanup_snapshot
 created = call("session_create", {
     "worktree_id": worktree_id,
     "label": "smoke-session",
