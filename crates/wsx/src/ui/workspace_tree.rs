@@ -150,11 +150,8 @@ pub fn render_tree(frame: &mut Frame, area: Rect, view: TreeView<'_>) {
                         Style::default().fg(theme::TEXT),
                     ),
                 ];
-                if let Some(agent) = &sess.agent {
-                    spans.push(Span::styled(
-                        format!(" · {agent}"),
-                        Style::default().fg(icon_color),
-                    ));
+                if let Some(agent_label) = session_state::agent_label(sess.agent.as_deref()) {
+                    spans.push(Span::styled(agent_label, Style::default().fg(icon_color)));
                 }
                 let ports = sess.listening_ports();
                 if let Some(label) = compact_port_label(&ports) {
@@ -303,7 +300,6 @@ mod tests {
             revision: 1,
             layout: wsx_core::runtime::PaneLayout::Leaf { pane_id: PaneId(1) },
             panes: vec![],
-            terminal_frame: None,
             muted,
         }
     }

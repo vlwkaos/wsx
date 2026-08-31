@@ -365,6 +365,17 @@ pub enum TerminalUpdate {
 }
 
 impl TerminalUpdate {
+    pub fn identity(&self) -> (PaneId, TerminalId) {
+        match self {
+            Self::Full(frame) => (frame.pane_id, frame.terminal_id),
+            Self::Patch {
+                pane_id,
+                terminal_id,
+                ..
+            } => (*pane_id, *terminal_id),
+        }
+    }
+
     pub fn revision(&self) -> u64 {
         match self {
             Self::Full(frame) => frame.revision,

@@ -17,6 +17,7 @@ use crate::{
     action::Action,
     event::{poll_event, EscapeSequence},
     session_state::{self, AppSessionState},
+    terminal_surface::{SurfaceUpdate, TerminalSurfaces},
     tui::{self, Tui},
     ui::{self, input::InputState, routine_editor::RoutineForm},
 };
@@ -36,11 +37,15 @@ type RuntimeRefresh = Result<(runtime::Snapshot, WorktreeSnapshot)>;
 enum RuntimeResult {
     FullRefresh(RuntimeRefresh),
     SessionRefresh(Result<runtime::Snapshot>),
-    Frame {
-        pane_id: runtime::PaneId,
-        revision: u64,
-        frame: Result<runtime::TerminalFrame>,
-    },
+    Frame(Result<(u64, runtime::TerminalFrame)>),
+}
+
+struct ActiveTerminalStream {
+    epoch: u64,
+    pane_id: runtime::PaneId,
+    terminal_id: runtime::TerminalId,
+    generation: u64,
+    stream: runtime::TerminalStream,
 }
 
 // ── Git concurrency limiter ───────────────────────────────────────────────────
@@ -319,6 +324,9 @@ pub enum PendingAction {
         revision: u64,
     },
     ShutdownDaemon,
+    InstallIntegrations {
+        targets: Vec<wsx_core::integration::IntegrationTarget>,
+    },
 }
 
 // ── Background jobs ───────────────────────────────────────────────────────────
@@ -344,6 +352,10 @@ pub enum BgOutcome {
     SessionKilled {
         session_id: runtime::SessionId,
         display_name: String,
+    },
+    IntegrationsInstalled {
+        labels: Vec<&'static str>,
+        failures: Vec<String>,
     },
 }
 
@@ -403,6 +415,19 @@ fn routine_error_text(error: &anyhow::Error) -> String {
 }
 
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+fn integration_prompt_label(targets: &[wsx_core::integration::IntegrationTarget]) -> String {
+    let visible = targets
+        .iter()
+        .take(3)
+        .map(|target| target.label())
+        .collect::<Vec<_>>()
+        .join(", ");
+    match targets.len().saturating_sub(3) {
+        0 => visible,
+        remaining => format!("{visible}, and {remaining} more"),
+    }
+}
 
 fn filter_pending_deletions(
     pending: &mut HashSet<PathBuf>,
@@ -519,7 +544,9 @@ pub struct App {
     /// Mute is wsx-local and keyed by stable terminal ID.
     muted_terminal_ids: HashSet<String>,
     terminal_controller_id: u64,
-    terminal_stream: Option<runtime::TerminalStream>,
+    terminal_surfaces: TerminalSurfaces,
+    terminal_stream: Option<ActiveTerminalStream>,
+    terminal_stream_generation: u64,
     terminal_escape_chord: EscapeSequence,
     update_rx: mpsc::Receiver<String>,
     pub update_available: Option<String>,
@@ -536,6 +563,9 @@ pub struct App {
     routine_tx: mpsc::Sender<RoutineRefreshResult>,
     routine_rx: mpsc::Receiver<RoutineRefreshResult>,
     routine_refresh_generation: HashMap<PathBuf, u64>,
+    integration_scan_rx: mpsc::Receiver<Result<Vec<wsx_core::integration::IntegrationMetadata>>>,
+    pending_integration_prompt: Vec<wsx_core::integration::IntegrationTarget>,
+    integration_prompt_version: Option<String>,
 }
 
 impl App {
@@ -549,8 +579,13 @@ impl App {
                 .and_then(|config| config.notice.clone())
         });
         let initial_notice = config_warn.or(project_config_notice);
-        let (raw_selected, cursor_identity, cached_active_group, cached_muted) =
-            wsx_core::cache::apply_cache(&mut workspace)?;
+        let (
+            raw_selected,
+            cursor_identity,
+            cached_active_group,
+            cached_muted,
+            integration_prompt_version,
+        ) = wsx_core::cache::apply_cache(&mut workspace)?;
         let cached_active_group = cached_active_group.filter(|key| match key {
             GroupKey::Recent | GroupKey::Ungrouped => true,
             GroupKey::Named(name) => config.named_group_exists(name),
@@ -580,6 +615,11 @@ impl App {
             runtime::EventMonitor::start(runtime_client.clone())?;
         let (update_tx, update_rx) = mpsc::channel::<String>();
         let (routine_tx, routine_rx) = mpsc::channel();
+        let (integration_scan_tx, integration_scan_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = wsx_core::integration::scan_needing_install().map_err(Into::into);
+            let _ = integration_scan_tx.send(result);
+        });
         std::thread::spawn(move || {
             if let Some(v) = crate::update::fetch_latest_version() {
                 let _ = update_tx.send(v);
@@ -663,7 +703,9 @@ impl App {
             pending_session_kills: HashSet::new(),
             muted_terminal_ids: cached_muted,
             terminal_controller_id,
+            terminal_surfaces: TerminalSurfaces::default(),
             terminal_stream: None,
+            terminal_stream_generation: 0,
             terminal_escape_chord,
             update_rx,
             update_available: None,
@@ -674,6 +716,9 @@ impl App {
             routine_tx,
             routine_rx,
             routine_refresh_generation: HashMap::new(),
+            integration_scan_rx,
+            pending_integration_prompt: Vec::new(),
+            integration_prompt_version,
         };
         if let Some(identity) = cursor_identity.as_ref() {
             if let Some(index) =
@@ -806,6 +851,26 @@ impl App {
                 self.mark_dirty();
                 self.spawn_runtime_refresh();
                 self.set_status(format!("Killed session: {display_name}"));
+            }
+            Ok(BgOutcome::IntegrationsInstalled { labels, failures }) => {
+                if failures.is_empty() {
+                    self.integration_prompt_version = Some(env!("CARGO_PKG_VERSION").into());
+                    self.mark_dirty();
+                    self.set_status(format!(
+                        "Installed agent integrations: {}. Restart those agents to enable status.",
+                        labels.join(", ")
+                    ));
+                } else {
+                    let installed = if labels.is_empty() {
+                        String::new()
+                    } else {
+                        format!("Installed {}. ", labels.join(", "))
+                    };
+                    self.set_error(format!(
+                        "{installed}Some agent integrations failed: {}",
+                        failures.join("; ")
+                    ));
+                }
             }
         }
     }
@@ -984,27 +1049,36 @@ impl App {
 
     fn drain_terminal_stream(&mut self) {
         let mut messages = Vec::new();
-        if let Some(stream) = self.terminal_stream.as_ref() {
+        if let Some(active) = self.terminal_stream.as_ref() {
             loop {
-                match stream.try_recv() {
-                    Ok(message) => messages.push(message),
+                match active.stream.try_recv() {
+                    Ok(message) => messages.push((active.generation, active.epoch, message)),
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
-                        messages.push(runtime::TerminalServerMessage::Error(
-                            runtime::ApiError::new(
+                        messages.push((
+                            active.generation,
+                            active.epoch,
+                            runtime::TerminalServerMessage::Error(runtime::ApiError::new(
                                 "stream_disconnected",
                                 "terminal update stream disconnected",
-                            ),
+                            )),
                         ));
                         break;
                     }
                 }
             }
         }
-        for message in messages {
+        for (generation, epoch, message) in messages {
+            if self
+                .terminal_stream
+                .as_ref()
+                .is_none_or(|active| active.generation != generation)
+            {
+                continue;
+            }
             match message {
                 runtime::TerminalServerMessage::Update(update) => {
-                    self.apply_terminal_update(update)
+                    self.apply_terminal_update(generation, epoch, update)
                 }
                 runtime::TerminalServerMessage::Error(error) => {
                     self.terminal_stream = None;
@@ -1025,44 +1099,46 @@ impl App {
         }
     }
 
-    fn apply_terminal_update(&mut self, update: runtime::TerminalUpdate) {
-        let pane_id = match &update {
-            runtime::TerminalUpdate::Full(frame) => frame.pane_id,
-            runtime::TerminalUpdate::Patch { pane_id, .. } => *pane_id,
+    fn apply_terminal_update(
+        &mut self,
+        generation: u64,
+        epoch: u64,
+        update: runtime::TerminalUpdate,
+    ) {
+        let (pane_id, terminal_id) = update.identity();
+        let stream_identity = self.terminal_stream.as_ref().and_then(|active| {
+            (active.generation == generation && active.epoch == epoch && active.pane_id == pane_id)
+                .then_some(active.terminal_id)
+        });
+        let Some(expected_terminal_id) = stream_identity else {
+            return;
         };
-        let mut applied = false;
-        for session in self
-            .workspace
-            .projects
-            .iter_mut()
-            .flat_map(|project| &mut project.worktrees)
-            .flat_map(|worktree| &mut worktree.sessions)
-        {
-            let Some(pane_idx) = session
-                .panes
-                .iter()
-                .position(|pane| pane.pane_id == pane_id)
-            else {
-                continue;
-            };
-            if update
-                .apply_to(&mut session.panes[pane_idx].terminal_frame)
-                .is_err()
-            {
-                if let Some(stream) = self.terminal_stream.as_ref() {
-                    let _ = stream.try_send(runtime::TerminalClientMessage::Resync);
-                }
-                return;
-            }
-            if session.pane_id == pane_id {
-                session.terminal_frame = session.panes[pane_idx].terminal_frame.clone();
-            }
-            applied = true;
-            break;
+        let new_epoch = self.terminal_surfaces.epoch() != Some(epoch);
+        if terminal_id != expected_terminal_id && !new_epoch {
+            return;
         }
-        if applied {
-            self.needs_redraw = true;
-            self.force_preview_redraw = self.shows_preview();
+        if new_epoch || !self.terminal_surfaces.contains(epoch, pane_id, terminal_id) {
+            self.terminal_surfaces
+                .activate_stream(epoch, pane_id, terminal_id);
+            if let Some(active) = self.terminal_stream.as_mut() {
+                active.terminal_id = terminal_id;
+            }
+        }
+        match self.terminal_surfaces.apply(epoch, update) {
+            SurfaceUpdate::Applied => {
+                self.needs_redraw = true;
+                self.force_preview_redraw = self.shows_preview();
+            }
+            SurfaceUpdate::Resync => {
+                if let Some(active) = self
+                    .terminal_stream
+                    .as_ref()
+                    .filter(|active| active.generation == generation)
+                {
+                    active.stream.request_resync();
+                }
+            }
+            SurfaceUpdate::Ignored => {}
         }
     }
 
@@ -1106,11 +1182,7 @@ impl App {
             match result {
                 RuntimeResult::FullRefresh(result) => self.apply_runtime_refresh(result),
                 RuntimeResult::SessionRefresh(result) => self.apply_runtime_session_refresh(result),
-                RuntimeResult::Frame {
-                    pane_id,
-                    revision,
-                    frame,
-                } => self.apply_runtime_frame(pane_id, revision, frame),
+                RuntimeResult::Frame(frame) => self.apply_runtime_frame(frame),
             }
         }
         while let Ok(result) = self.routine_rx.try_recv() {
@@ -1120,6 +1192,44 @@ impl App {
             self.update_available = Some(v);
             self.needs_redraw = true;
         }
+        if let Ok(result) = self.integration_scan_rx.try_recv() {
+            self.apply_integration_scan(result);
+        }
+        self.show_integration_prompt_if_ready();
+    }
+
+    fn apply_integration_scan(
+        &mut self,
+        result: Result<Vec<wsx_core::integration::IntegrationMetadata>>,
+    ) {
+        if self.integration_prompt_version.as_deref() == Some(env!("CARGO_PKG_VERSION")) {
+            return;
+        }
+        match result {
+            Ok(metadata) => {
+                self.pending_integration_prompt =
+                    metadata.into_iter().map(|item| item.target).collect();
+            }
+            Err(error) => self.set_warning(format!("Agent integration scan failed: {error}")),
+        }
+    }
+
+    fn show_integration_prompt_if_ready(&mut self) {
+        if !matches!(self.mode, Mode::Workspace)
+            || self.is_busy()
+            || self.pending_integration_prompt.is_empty()
+        {
+            return;
+        }
+        let targets = std::mem::take(&mut self.pending_integration_prompt);
+        let labels = integration_prompt_label(&targets);
+        self.mode = Mode::Confirm {
+            message: format!(
+                "Install status integrations for detected agents: {labels}? This updates their user configuration."
+            ),
+            pending: PendingAction::InstallIntegrations { targets },
+        };
+        self.needs_redraw = true;
     }
 
     fn apply_runtime_event(&mut self, signal: runtime::EventSignal) {
@@ -1465,6 +1575,7 @@ impl App {
             self.tree_selected,
             self.flat(),
             self.active_group.as_ref(),
+            self.integration_prompt_version.as_deref(),
             sync,
         ) {
             self.set_error(error);
@@ -1599,6 +1710,15 @@ impl App {
         snapshot
             .panes
             .retain(|pane| visible_sessions.contains(&pane.session_id));
+        self.terminal_surfaces.reconcile(&snapshot);
+        let stream_is_stale = self.terminal_stream.as_ref().is_some_and(|active| {
+            !self
+                .terminal_surfaces
+                .contains(active.epoch, active.pane_id, active.terminal_id)
+        });
+        if stream_is_stale {
+            self.terminal_stream = None;
+        }
         let refresh = match worktrees {
             Some(worktrees) => {
                 let worktrees = self.filter_pending_deletions(worktrees);
@@ -1615,19 +1735,9 @@ impl App {
             self.set_error(format!("Runtime snapshot rejected: {error}"));
             return;
         }
-        if let Mode::Terminal { pane_id } = self.mode {
-            let pane_exists = self
-                .workspace
-                .projects
-                .iter()
-                .flat_map(|project| &project.worktrees)
-                .flat_map(|worktree| &worktree.sessions)
-                .flat_map(|session| &session.panes)
-                .any(|pane| pane.pane_id == pane_id && !pane.exited);
-            if !pane_exists {
-                self.mode = Mode::Workspace;
-                self.set_warning("Terminal closed");
-            }
+        if matches!(self.mode, Mode::Terminal { .. }) && self.terminal_stream.is_none() {
+            self.mode = Mode::Workspace;
+            self.set_warning("Terminal closed");
         }
         for session in self
             .workspace
@@ -1654,26 +1764,26 @@ impl App {
         self.needs_redraw = true;
     }
 
-    fn spawn_runtime_capture(&mut self) {
-        if self.terminal_stream.is_some() || self.runtime_capture_pending || !self.shows_preview() {
-            return;
-        }
-        let Some((pane_id, revision)) = (match self.current_selection() {
-            Selection::Session(pi, wi, si) => self.workspace.session(pi, wi, si).map(|session| {
-                let revision = session
-                    .panes
-                    .iter()
-                    .find(|pane| pane.pane_id == session.pane_id)
-                    .map_or(session.revision, |pane| pane.revision);
-                (session.pane_id, revision)
-            }),
+    fn selected_terminal_identity(&self) -> Option<(runtime::PaneId, runtime::TerminalId)> {
+        match self.current_selection() {
+            Selection::Session(pi, wi, si) => self
+                .workspace
+                .session(pi, wi, si)
+                .map(|session| (session.pane_id, session.terminal_id)),
             Selection::Pane(pi, wi, si, pane_idx) => self
                 .workspace
                 .session(pi, wi, si)
                 .and_then(|session| session.panes.get(pane_idx))
-                .map(|pane| (pane.pane_id, pane.revision)),
+                .map(|pane| (pane.pane_id, pane.terminal_id)),
             _ => None,
-        }) else {
+        }
+    }
+
+    fn spawn_runtime_capture(&mut self) {
+        if self.terminal_stream.is_some() || self.runtime_capture_pending || !self.shows_preview() {
+            return;
+        }
+        let Some((pane_id, _)) = self.selected_terminal_identity() else {
             return;
         };
         self.runtime_capture_pending = true;
@@ -1683,8 +1793,12 @@ impl App {
             let frame = match client.call(&runtime::Request::View {
                 pane_ids: vec![pane_id],
             }) {
-                Ok(runtime::Response::View { mut frames, .. }) => frames
+                Ok(runtime::Response::View {
+                    snapshot,
+                    mut frames,
+                }) => frames
                     .pop()
+                    .map(|frame| (snapshot.epoch, frame))
                     .ok_or_else(|| anyhow::anyhow!("pane frame is unavailable")),
                 Ok(runtime::Response::Error(error)) => {
                     Err(anyhow::anyhow!("{}: {}", error.code, error.message))
@@ -1692,53 +1806,29 @@ impl App {
                 Ok(_) => Err(anyhow::anyhow!("unexpected daemon view response")),
                 Err(error) => Err(error.into()),
             };
-            let _ = tx.send(RuntimeResult::Frame {
-                pane_id,
-                revision,
-                frame,
-            });
+            let _ = tx.send(RuntimeResult::Frame(frame));
         });
     }
 
-    fn apply_runtime_frame(
-        &mut self,
-        pane_id: runtime::PaneId,
-        revision: u64,
-        frame: Result<runtime::TerminalFrame>,
-    ) {
+    fn apply_runtime_frame(&mut self, frame: Result<(u64, runtime::TerminalFrame)>) {
         self.runtime_capture_pending = false;
-        let Ok(frame) = frame else {
+        let Ok((epoch, frame)) = frame else {
             self.set_error("Terminal frame unavailable; showing the last frame");
             return;
         };
-        let session = self
-            .workspace
-            .projects
-            .iter_mut()
-            .flat_map(|project| &mut project.worktrees)
-            .flat_map(|worktree| &mut worktree.sessions)
-            .find(|session| session.panes.iter().any(|pane| pane.pane_id == pane_id));
-        let Some(session) = session else { return };
-        let Some(pane) = session
-            .panes
-            .iter_mut()
-            .find(|pane| pane.pane_id == pane_id && pane.revision == revision)
-        else {
-            return;
-        };
-        if pane
-            .terminal_frame
-            .as_ref()
-            .is_some_and(|old| old.revision == frame.revision)
+        if self.terminal_stream.is_some()
+            || self.selected_terminal_identity() != Some((frame.pane_id, frame.terminal_id))
         {
             return;
         }
-        pane.terminal_frame = Some(frame.clone());
-        if session.pane_id == pane_id {
-            session.terminal_frame = Some(frame);
+        match self.terminal_surfaces.install_full(epoch, frame) {
+            SurfaceUpdate::Applied => {
+                self.needs_redraw = true;
+                self.force_preview_redraw = self.shows_preview();
+            }
+            SurfaceUpdate::Resync => self.set_error("Terminal returned an invalid full frame"),
+            SurfaceUpdate::Ignored => {}
         }
-        self.needs_redraw = true;
-        self.force_preview_redraw = self.shows_preview();
     }
 
     /// Git fetch trigger — called from the fast timer tick.
@@ -2133,11 +2223,11 @@ impl App {
     }
 
     fn send_terminal_stream(&mut self, message: runtime::TerminalClientMessage) {
-        let Some(stream) = self.terminal_stream.as_ref() else {
+        let Some(active) = self.terminal_stream.as_ref() else {
             self.set_error("Terminal stream is unavailable");
             return;
         };
-        match stream.try_send(message) {
+        match active.stream.try_send(message) {
             Ok(()) => {}
             Err(mpsc::TrySendError::Full(_)) => {
                 self.set_error("Terminal input queue is full; input was not sent")
@@ -2419,12 +2509,16 @@ impl App {
         match action {
             Action::ConfirmYes | Action::Select => self.confirm_action()?,
             Action::NextAttention | Action::InputEscape | Action::Quit => {
-                let group_selection = match &self.mode {
+                let (group_selection, dismissed_integrations) = match &self.mode {
                     Mode::Confirm {
                         pending: PendingAction::DeleteGroup { group_idx },
                         ..
-                    } => Some(group_idx + 2),
-                    _ => None,
+                    } => (Some(group_idx + 2), false),
+                    Mode::Confirm {
+                        pending: PendingAction::InstallIntegrations { .. },
+                        ..
+                    } => (None, true),
+                    _ => (None, false),
                 };
                 self.mode =
                     group_selection.map_or(Mode::Workspace, |selected| Mode::GroupManager {
@@ -2432,6 +2526,10 @@ impl App {
                         scroll: 0,
                         purpose: GroupManagerPurpose::Switch,
                     });
+                if dismissed_integrations {
+                    self.integration_prompt_version = Some(env!("CARGO_PKG_VERSION").into());
+                    self.mark_dirty();
+                }
             }
             _ => {}
         }
@@ -2730,15 +2828,15 @@ impl App {
         si: usize,
         terminal: &mut Tui,
     ) -> Result<()> {
-        let Some(pane_id) = self
+        let Some((pane_id, terminal_id)) = self
             .workspace
             .session(pi, wi, si)
-            .map(|session| session.pane_id)
+            .map(|session| (session.pane_id, session.terminal_id))
         else {
             self.set_status("Session not found");
             return Ok(());
         };
-        self.enter_terminal(pane_id, terminal)
+        self.enter_terminal(pane_id, terminal_id, terminal)
     }
 
     fn attach_pane(
@@ -2754,7 +2852,11 @@ impl App {
             return Ok(());
         };
         let session_id = session.session_id;
-        let Some(pane_id) = session.panes.get(pane_idx).map(|pane| pane.pane_id) else {
+        let Some((pane_id, terminal_id)) = session
+            .panes
+            .get(pane_idx)
+            .map(|pane| (pane.pane_id, pane.terminal_id))
+        else {
             self.set_status("Pane not found");
             return Ok(());
         };
@@ -2778,14 +2880,18 @@ impl App {
                 session.terminal_id = pane.terminal_id;
                 session.agent = pane.agent.clone();
                 session.agent_status = pane.agent_status;
-                session.terminal_frame = pane.terminal_frame.clone();
                 session.revision = focus_revision;
             }
         }
-        self.enter_terminal(pane_id, terminal)
+        self.enter_terminal(pane_id, terminal_id, terminal)
     }
 
-    fn enter_terminal(&mut self, pane_id: runtime::PaneId, terminal: &Tui) -> Result<()> {
+    fn enter_terminal(
+        &mut self,
+        pane_id: runtime::PaneId,
+        terminal_id: runtime::TerminalId,
+        terminal: &Tui,
+    ) -> Result<()> {
         self.unmute_on_interaction(pane_id);
         let (rows, cols) = self.terminal_pane_size(terminal);
         match runtime::TerminalStream::connect(
@@ -2797,7 +2903,14 @@ impl App {
             cols,
         ) {
             Ok(stream) => {
-                self.terminal_stream = Some(stream);
+                self.terminal_stream_generation = self.terminal_stream_generation.wrapping_add(1);
+                self.terminal_stream = Some(ActiveTerminalStream {
+                    epoch: stream.epoch(),
+                    pane_id,
+                    terminal_id,
+                    generation: self.terminal_stream_generation,
+                    stream,
+                });
                 self.mode = Mode::Terminal { pane_id };
                 self.terminal_escape_chord.reset();
             }
@@ -2813,18 +2926,18 @@ impl App {
     }
 
     fn terminal_cursor(&self) -> Option<runtime::Cursor> {
-        let Mode::Terminal { pane_id } = self.mode else {
-            return None;
-        };
-        self.workspace
-            .projects
-            .iter()
-            .flat_map(|project| &project.worktrees)
-            .flat_map(|worktree| &worktree.sessions)
-            .flat_map(|session| &session.panes)
-            .find(|pane| pane.pane_id == pane_id)
-            .and_then(|pane| pane.terminal_frame.as_ref())
+        let active = self.terminal_stream.as_ref()?;
+        self.terminal_surfaces
+            .frame(active.pane_id, active.terminal_id)
             .map(|frame| frame.cursor)
+    }
+
+    pub(crate) fn terminal_surface(
+        &self,
+        pane_id: runtime::PaneId,
+        terminal_id: runtime::TerminalId,
+    ) -> Option<&runtime::TerminalFrame> {
+        self.terminal_surfaces.frame(pane_id, terminal_id)
     }
 
     fn terminal_pane_size(&self, terminal: &Tui) -> (u16, u16) {
@@ -3619,6 +3732,19 @@ impl App {
                     self.runtime_client.shutdown()?;
                     self.should_quit = true;
                 }
+                PendingAction::InstallIntegrations { targets } => {
+                    self.spawn_bg("install agent integrations", move || {
+                        let mut labels = Vec::new();
+                        let mut failures = Vec::new();
+                        for target in targets {
+                            match wsx_core::integration::install(target) {
+                                Ok(_) => labels.push(target.label()),
+                                Err(error) => failures.push(format!("{}: {error}", target.label())),
+                            }
+                        }
+                        Ok(BgOutcome::IntegrationsInstalled { labels, failures })
+                    });
+                }
                 PendingAction::DeleteRoutine {
                     project_path,
                     name,
@@ -4312,6 +4438,7 @@ mod tests {
         let (_runtime_event_tx, runtime_event_rx) = std::sync::mpsc::channel();
         let (_update_tx, update_rx) = std::sync::mpsc::channel();
         let (routine_tx, routine_rx) = std::sync::mpsc::channel();
+        let (_integration_scan_tx, integration_scan_rx) = std::sync::mpsc::channel();
         let terminal_escape_chord = EscapeSequence::parse(&config.terminal_escape_chord).unwrap();
 
         App {
@@ -4368,7 +4495,9 @@ mod tests {
             pending_session_kills: HashSet::new(),
             muted_terminal_ids: HashSet::new(),
             terminal_controller_id: runtime::new_client_id(),
+            terminal_surfaces: TerminalSurfaces::default(),
             terminal_stream: None,
+            terminal_stream_generation: 0,
             terminal_escape_chord,
             update_rx,
             update_available: None,
@@ -4379,6 +4508,9 @@ mod tests {
             routine_tx,
             routine_rx,
             routine_refresh_generation: HashMap::new(),
+            integration_scan_rx,
+            pending_integration_prompt: Vec::new(),
+            integration_prompt_version: None,
         }
     }
 
@@ -4424,6 +4556,62 @@ mod tests {
             }
         ));
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn integration_prompt_label_bounds_long_target_lists() {
+        assert_eq!(
+            integration_prompt_label(&[
+                wsx_core::integration::IntegrationTarget::Pi,
+                wsx_core::integration::IntegrationTarget::Claude,
+                wsx_core::integration::IntegrationTarget::Codex,
+                wsx_core::integration::IntegrationTarget::Kimi,
+                wsx_core::integration::IntegrationTarget::Opencode,
+            ]),
+            "Pi, Claude Code, Codex, and 2 more"
+        );
+    }
+
+    #[test]
+    fn startup_integration_prompt_lists_detected_missing_targets() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.pending_integration_prompt = vec![
+            wsx_core::integration::IntegrationTarget::Pi,
+            wsx_core::integration::IntegrationTarget::Claude,
+        ];
+
+        app.show_integration_prompt_if_ready();
+
+        assert!(matches!(
+            &app.mode,
+            Mode::Confirm {
+                message,
+                pending: PendingAction::InstallIntegrations { targets },
+            } if message.contains("Pi")
+                && message.contains("Claude Code")
+                && targets.len() == 2
+        ));
+    }
+
+    #[test]
+    fn current_version_dismissal_suppresses_scan_result() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.integration_prompt_version = Some(env!("CARGO_PKG_VERSION").into());
+        let metadata = wsx_core::integration::IntegrationMetadata {
+            target: wsx_core::integration::IntegrationTarget::Pi,
+            cli_value: "pi",
+            label: "Pi",
+            lifecycle: wsx_core::integration::LifecycleCapability::Authoritative,
+            available: true,
+            install_status: wsx_core::integration::InstallStatus::Missing,
+            installed_version: None,
+            expected_version: 8,
+        };
+
+        app.apply_integration_scan(Ok(vec![metadata]));
+
+        assert!(app.pending_integration_prompt.is_empty());
+        assert!(matches!(app.mode, Mode::Workspace));
     }
 
     #[test]
@@ -4993,9 +5181,7 @@ mod tests {
                 revision: 1,
                 exited: false,
                 listening_ports: vec![],
-                terminal_frame: None,
             }],
-            terminal_frame: None,
             muted,
         }
     }
@@ -5138,7 +5324,6 @@ mod tests {
             revision: 1,
             exited: false,
             listening_ports: vec![],
-            terminal_frame: None,
         });
         session.layout = runtime::PaneLayout::Split {
             axis: runtime::SplitAxis::Vertical,
@@ -5359,8 +5544,8 @@ mod tests {
     fn mobile_terminal_mode_keeps_global_header_and_breadcrumb_above_viewport() {
         let mut project = make_project("mobile-terminal");
         let mut worktree = make_worktree("/tmp/mobile-terminal");
-        let mut session = make_sess(false, runtime::AgentState::Idle);
-        session.terminal_frame = Some(runtime::TerminalFrame {
+        let session = make_sess(false, runtime::AgentState::Idle);
+        let terminal_frame = runtime::TerminalFrame {
             pane_id: runtime::PaneId(1),
             terminal_id: runtime::TerminalId(1),
             revision: 1,
@@ -5380,7 +5565,7 @@ mod tests {
                 blinking: false,
                 shape: 0,
             },
-        });
+        };
         worktree.sessions.push(session);
         project.worktrees.push(worktree);
         let mut app = make_test_app(
@@ -5389,6 +5574,29 @@ mod tests {
                 projects: vec![project],
             },
             None,
+        );
+        app.terminal_surfaces.reconcile(&runtime::Snapshot {
+            protocol: runtime::PROTOCOL_VERSION,
+            epoch: 1,
+            revision: 1,
+            projects: vec![],
+            worktrees: vec![],
+            sessions: vec![],
+            panes: vec![runtime::Pane {
+                id: runtime::PaneId(1),
+                terminal_id: runtime::TerminalId(1),
+                session_id: runtime::SessionId(1),
+                label: "terminal".into(),
+                agent: None,
+                exited: false,
+                revision: 1,
+            }],
+            listening_ports: vec![],
+            capabilities: runtime::Capabilities::default(),
+        });
+        assert_eq!(
+            app.terminal_surfaces.install_full(1, terminal_frame),
+            SurfaceUpdate::Applied
         );
         app.visible_projects.insert(0);
         app.cached_flat = flatten_tree_filtered(&app.workspace, &app.visible_projects);
@@ -5486,109 +5694,6 @@ mod tests {
         assert!(app.runtime_refresh_pending);
         assert!(app.runtime_full_refresh_stale);
         assert!(!app.runtime_refresh_stale);
-    }
-
-    #[test]
-    fn changed_runtime_revision_invalidates_stale_terminal_frame() {
-        let mut project = make_project("demo");
-        let mut worktree = make_worktree("/tmp/demo");
-        worktree.sessions = vec![make_sess(false, wsx_core::runtime::AgentState::Working)];
-        project.worktrees = vec![worktree];
-        let mut app = make_test_app(
-            GlobalConfig::default(),
-            WorkspaceState {
-                projects: vec![project],
-            },
-            None,
-        );
-        app.startup_cursor_identity = Some(wsx_core::cache::CursorIdentity::Session {
-            worktree_path: "/tmp/demo".into(),
-            terminal_id: Some("1".into()),
-            pane_id: None,
-        });
-        app.workspace.projects[0].worktrees[0].sessions[0].terminal_frame =
-            Some(runtime::TerminalFrame {
-                pane_id: runtime::PaneId(1),
-                terminal_id: runtime::TerminalId(1),
-                revision: 1,
-                cols: 1,
-                rows: 1,
-                cells: vec![runtime::Cell::default()],
-                cursor: runtime::Cursor {
-                    x: 0,
-                    y: 0,
-                    visible: true,
-                    blinking: false,
-                    shape: 0,
-                },
-            });
-        let snapshot = runtime::Snapshot {
-            protocol: runtime::PROTOCOL_VERSION,
-            epoch: 1,
-            revision: 2,
-            projects: vec![runtime::Project {
-                id: runtime::ProjectId(1),
-                path: PathBuf::from("/tmp/demo"),
-                name: "demo".into(),
-                revision: 1,
-                last_agent_active_unix_ms: None,
-                last_terminal_active_unix_ms: None,
-            }],
-            worktrees: vec![runtime::Worktree {
-                id: runtime::WorktreeId(1),
-                project_id: runtime::ProjectId(1),
-                path: PathBuf::from("/tmp/demo"),
-                branch: "branch".into(),
-                revision: 1,
-            }],
-            sessions: vec![runtime::Session {
-                id: runtime::SessionId(1),
-                worktree_id: runtime::WorktreeId(1),
-                label: "session".into(),
-                primary_pane: runtime::PaneId(1),
-                focused_pane: runtime::PaneId(1),
-                panes: vec![runtime::PaneId(1)],
-                layout: runtime::PaneLayout::Leaf {
-                    pane_id: runtime::PaneId(1),
-                },
-                revision: 2,
-            }],
-            panes: vec![runtime::Pane {
-                id: runtime::PaneId(1),
-                terminal_id: runtime::TerminalId(1),
-                session_id: runtime::SessionId(1),
-                label: "session".into(),
-                agent: Some(runtime::AgentInfo {
-                    id: runtime::AgentInstanceId(1),
-                    provider: "codex".into(),
-                    state: runtime::AgentState::Working,
-                    conversation_id: None,
-                    capabilities: runtime::AgentCapabilities::default(),
-                    source: "test".into(),
-                }),
-                exited: false,
-                revision: 2,
-            }],
-            listening_ports: vec![],
-            capabilities: runtime::Capabilities::default(),
-        };
-
-        app.apply_runtime_snapshot(
-            snapshot,
-            vec![(
-                PathBuf::from("/tmp/demo"),
-                vec![worktree_entry("/tmp/demo")],
-            )],
-        );
-
-        assert!(app.workspace.projects[0].worktrees[0].sessions[0]
-            .terminal_frame
-            .is_none());
-        assert!(matches!(
-            app.flat()[app.tree_selected],
-            FlatEntry::Session { .. }
-        ));
-        assert!(app.startup_cursor_identity.is_none());
     }
 
     #[test]

@@ -44,6 +44,10 @@ pub fn derive(session: &SessionInfo) -> SessionHeuristic {
     }
 }
 
+pub fn agent_label(agent: Option<&str>) -> Option<String> {
+    agent.map(|agent| format!(" ({agent})"))
+}
+
 pub fn status_label(session: &SessionInfo) -> &'static str {
     match derive(session) {
         SessionHeuristic::Muted => "muted",
@@ -72,7 +76,6 @@ mod tests {
             revision: 1,
             layout: wsx_core::runtime::PaneLayout::Leaf { pane_id: PaneId(1) },
             panes: vec![],
-            terminal_frame: None,
             muted,
         }
     }
@@ -123,6 +126,12 @@ mod tests {
             assert_eq!(heuristic.app_state(), state);
             assert_eq!(status_label(&session), label);
         }
+    }
+
+    #[test]
+    fn agent_identity_is_parenthesized_only_when_reported() {
+        assert_eq!(agent_label(Some("pi")).as_deref(), Some(" (pi)"));
+        assert_eq!(agent_label(None), None);
     }
 
     #[test]

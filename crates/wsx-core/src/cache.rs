@@ -56,6 +56,9 @@ pub struct WorkspaceCache {
     pub muted_terminals: HashSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_group: Option<GroupKey>,
+    /// wsx version for which the user dismissed the integration setup prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_prompt_version: Option<String>,
     #[serde(skip)]
     migration_needed: bool,
 }
@@ -73,6 +76,7 @@ struct WorkspaceCacheWire {
     active_group: Option<String>,
     active_groups: Option<Vec<String>>,
     active_tab: Option<String>,
+    integration_prompt_version: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for WorkspaceCache {
@@ -105,6 +109,7 @@ impl<'de> Deserialize<'de> for WorkspaceCache {
             cursor_identity: wire.cursor_identity,
             muted_terminals: wire.muted_terminals,
             active_group,
+            integration_prompt_version: wire.integration_prompt_version,
             migration_needed,
         })
     }
@@ -154,6 +159,7 @@ pub type AppliedCache = (
     Option<CursorIdentity>,
     Option<GroupKey>,
     HashSet<String>,
+    Option<String>,
 );
 
 /// Apply only cached UI and local mute state. Sessions always come from wsxd.
@@ -186,6 +192,7 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> anyhow::Result<AppliedCach
         cache.cursor_identity,
         cache.active_group,
         migrated_muted_terminals,
+        cache.integration_prompt_version,
     ))
 }
 
@@ -241,6 +248,7 @@ pub fn save_cache(
     tree_selected: usize,
     flat: &[FlatEntry],
     active_group: Option<&GroupKey>,
+    integration_prompt_version: Option<&str>,
     sync: bool,
 ) -> Option<String> {
     let mut cache = WorkspaceCache {
@@ -248,6 +256,7 @@ pub fn save_cache(
         tree_selected,
         cursor_identity: resolve_cursor_identity(workspace, flat, tree_selected),
         active_group: active_group.cloned(),
+        integration_prompt_version: integration_prompt_version.map(str::to_owned),
         ..Default::default()
     };
     for project in &workspace.projects {
@@ -349,6 +358,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_cache_defaults_missing_integration_prompt_version() {
+        let cache: WorkspaceCache = toml::from_str("tree_selected = 2\n").unwrap();
+        assert_eq!(cache.integration_prompt_version, None);
+    }
+
+    #[test]
+    fn integration_prompt_version_round_trips() {
+        let cache = WorkspaceCache {
+            integration_prompt_version: Some("0.18.0".into()),
+            ..Default::default()
+        };
+        let decoded: WorkspaceCache = toml::from_str(&toml::to_string(&cache).unwrap()).unwrap();
+        assert_eq!(
+            decoded.integration_prompt_version.as_deref(),
+            Some("0.18.0")
+        );
+    }
+
+    #[test]
     fn legacy_tmux_and_session_fields_are_ignored() {
         let cache: WorkspaceCache = toml::from_str(
             r#"tmux_server_pid = 123
@@ -432,7 +460,6 @@ pane_id = "pane-1"
                         revision: 1,
                         layout: crate::runtime::PaneLayout::Leaf { pane_id: PaneId(1) },
                         panes: vec![],
-                        terminal_frame: None,
                         muted: false,
                     }],
                     expanded: true,

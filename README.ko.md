@@ -35,6 +35,15 @@ cargo xtask run
 cargo xtask build  # target/wsx-dev/{wsx,wsxd}
 ```
 
+TUI는 시작할 때 설치된 agent CLI 중 wsx integration이 없거나 오래된 항목을 감지하고 설치 여부를 묻습니다. 거절하면 다음 wsx version까지 다시 묻지 않습니다. 개별 integration은 직접 설치할 수도 있습니다.
+
+```bash
+wsx agent install pi
+wsx agent install claude
+```
+
+설치 후 해당 agent를 다시 시작합니다. Installer는 각 agent의 표준 config directory override를 따르며 관련 없는 설정을 보존합니다.
+
 ## 조작
 
 | Context | Key |
@@ -53,7 +62,7 @@ Group chip은 Workspace와 Terminal mode 모두에서 유지되는 전체 너비
 
 `wsx group ls|create|rename|add|remove`로 group을 관리합니다. status, worktree list, session list는 하나의 `--group <name>`을 받습니다. 기존 tab config와 임시 multi-selection cache data는 한 번 migration한 뒤 다시 저장하며, tab command와 flag는 제거되었습니다. Recent는 trusted `wsx agent report` 입력도 사용하지만, wsx는 process나 terminal output으로 vendor 또는 semantic activity를 추론하지 않습니다.
 
-Session row는 상태를 icon으로 표시하고 adapter가 보고한 agent 이름만 덧붙입니다. `○` idle, `◐` working, `×` blocked, `✓` done, `!` error, `·` unknown, `⊘` muted입니다. 일반 shell에는 agent label을 표시하지 않습니다. Terminal header는 `project › worktree › session`, 상태 icon, 알려진 agent, 감지된 TCP listener를 표시합니다. Worktree preview는 session port를 합산합니다. Port 감지는 best effort이며 macOS/Linux에서 `lsof`가 필요합니다.
+Session row는 상태를 icon으로 표시하고 adapter가 보고한 agent 이름을 괄호 안에 덧붙입니다. `○` idle, `◐` working, `×` blocked, `✓` done, `!` error, `·` unknown, `⊘` muted입니다. 일반 shell에는 agent label을 표시하지 않습니다. Terminal header는 `project › worktree › session`, 상태 icon, 알려진 agent, 감지된 TCP listener를 표시합니다. Worktree preview는 session port를 합산합니다. Port 감지는 best effort이며 macOS/Linux에서 `lsof`가 필요합니다.
 
 Terminal mode에서는 persistent stream으로 일반 keyboard와 mouse 입력을 PTY로 전달하며 한 줄 breadcrumb 아래의 오른쪽 panel을 wsx padding 없이 사용합니다. 왼쪽 panel을 클릭하면 Workspace mode로 돌아가면서 해당 row를 선택합니다. `Ctrl+A`를 누른 다음 `W`를 누르면 Workspace로 focus가 이동하며, Control을 계속 누른 상태의 `W`도 동작합니다. `Ctrl+A Ctrl+A`는 literal `Ctrl+A`를 보내며, 다른 suffix는 prefix와 함께 terminal로 전달합니다. 기본 terminal background는 투명하게 유지하고 application이 지정한 ANSI cell background는 보존합니다. Vim 같은 application이 요청한 block, underline, bar cursor shape도 반영합니다.
 
@@ -90,6 +99,7 @@ wsx session send-text <session-or-pane> <text>
 wsx session prompt <session-or-pane> <prompt>
 wsx session peek <session-or-pane> [-n VISIBLE_LINES] [--trim]
 wsx session rename <session-id> <label>
+wsx agent install <target>
 wsx agent report <pane> --provider <name> --state <state> [capabilities]
 wsx plugin list [--json]
 wsx plugin reload
@@ -104,7 +114,7 @@ wsx routine ...
 
 Owner가 관리하는 JSON manifest를 `~/.config/wsx/plugins/`에 둡니다. Manifest는 API version `1`, stable ID, executable argv, event 목록, enabled 상태를 선언합니다. wsxd는 symlink, 잘못된 owner/permission, oversized manifest, invalid token, non-executable command를 거부합니다. Plugin payload와 실행 시간은 제한됩니다.
 
-Agent integration은 `unknown`, `idle`, `working`, `blocked`, `done`, `error` 중 하나와 capability를 보고합니다. Provider-specific metadata와 conversation 처리는 adapter가 소유합니다. wsx는 terminal motion이나 process tree로 agent 상태를 추측하지 않습니다.
+Agent integration은 `unknown`, `idle`, `working`, `blocked`, `done`, `error` 중 하나와 capability를 보고합니다. 지원 target은 `pi`, `omp`, `claude`, `codex`, `copilot`, `devin`, `droid`, `kimi`, `opencode`, `kilo`, `hermes`, `qodercli`, `qwen`, `cursor`, `mastracode`, `antigravity-cli`, `grok`입니다. Pi, OMP, Kimi, OpenCode, Kilo, MastraCode는 authoritative lifecycle state를 제공합니다. 나머지 hook은 authoritative agent/session identity와 unknown state를 제공합니다. Provider-specific metadata와 conversation 처리는 adapter가 소유합니다. wsx는 terminal motion이나 process tree로 agent 상태를 추측하지 않습니다.
 
 ## Runtime과 보안
 
@@ -112,7 +122,7 @@ Agent integration은 `unknown`, `idle`, `working`, `blocked`, `done`, `error` �
 - Terminal pane마다 writable client lease는 하나입니다. 다른 client는 takeover를 명시해야 합니다.
 - Event는 revision을 invalidate하며 authoritative snapshot으로 복구합니다.
 - Message, frame, command, plugin, resource count는 bounded입니다.
-- Terminal frame은 Ghostty wide/spacer occupancy를 보존하고 synchronized-output 중간 frame을 억제하며 subscribe viewport를 첫 baseline에 적용합니다.
+- Terminal frame은 Ghostty wide/spacer occupancy를 보존하고 첫 baseline 이후 synchronized-output 중간 frame을 억제하며 subscribe viewport를 baseline에 적용합니다. Workspace metadata refresh는 수락된 terminal surface를 소유하거나 지우지 않습니다.
 - wsxd는 project, worktree, session, pane, terminal, known-agent identity를 저장합니다. daemon restart 후 owner-only launch recipe로 각 pane을 다시 생성하지만, 이는 기존 process, terminal buffer, agent conversation의 복원이 아닙니다.
 - Remote access, live daemon handoff, graphics transport, marketplace, guaranteed process 또는 conversation restoration은 아직 지원하지 않습니다.
 

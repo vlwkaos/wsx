@@ -21,8 +21,8 @@ use crate::ui::{
     input::render_input,
     layout::{FrameLayout, TerminalLayout},
     preview::{
-        render_empty_preview, render_pane_preview, render_project_preview, render_session_preview,
-        render_terminal_breadcrumb, render_worktree_preview,
+        render_empty_preview, render_project_preview, render_terminal_breadcrumb,
+        render_terminal_preview, render_worktree_preview,
     },
     workspace_nav::{fit_group_strip, SidebarLayout, WORKSPACE_HEADER_TITLE},
     workspace_tree::{compute_scroll, render_tree, TreeView},
@@ -242,10 +242,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         session,
                         None,
                     );
-                    render_session_preview(
+                    render_terminal_preview(
                         frame,
                         app.terminal_area,
-                        session,
+                        app.terminal_surface(session.pane_id, session.terminal_id),
                         matches!(app.mode, Mode::Terminal { .. }),
                     );
                 } else {
@@ -273,10 +273,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         session,
                         Some(pane),
                     );
-                    render_pane_preview(
+                    render_terminal_preview(
                         frame,
                         app.terminal_area,
-                        pane,
+                        app.terminal_surface(pane.pane_id, pane.terminal_id),
                         matches!(app.mode, Mode::Terminal { .. }),
                     );
                 } else {

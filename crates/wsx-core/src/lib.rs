@@ -7,6 +7,7 @@ pub mod cache;
 pub mod config;
 pub mod git;
 pub mod hooks;
+pub mod integration;
 pub mod model;
 pub mod ops;
 pub mod runtime;

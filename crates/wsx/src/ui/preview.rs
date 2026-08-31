@@ -59,9 +59,9 @@ pub fn render_terminal_breadcrumb(
         format!("  {icon}"),
         Style::default().fg(icon_color),
     ));
-    if let Some(agent) = agent {
+    if let Some(agent_label) = session_state::agent_label(agent) {
         spans.push(Span::styled(
-            format!(" {agent}"),
+            agent_label,
             Style::default().fg(theme::TEXT_MUTED),
         ));
     }
@@ -274,12 +274,13 @@ pub fn render_worktree_preview(
     frame.render_widget(para, area);
 }
 
-pub fn render_session_preview(frame: &mut Frame, area: Rect, session: &SessionInfo, focused: bool) {
-    render_terminal_frame(frame, area, session.terminal_frame.as_ref(), focused);
-}
-
-pub fn render_pane_preview(frame: &mut Frame, area: Rect, pane: &PaneInfo, focused: bool) {
-    render_terminal_frame(frame, area, pane.terminal_frame.as_ref(), focused);
+pub fn render_terminal_preview(
+    frame: &mut Frame,
+    area: Rect,
+    terminal: Option<&wsx_core::runtime::TerminalFrame>,
+    focused: bool,
+) {
+    render_terminal_frame(frame, area, terminal, focused);
 }
 
 fn render_terminal_frame(
@@ -290,14 +291,7 @@ fn render_terminal_frame(
 ) {
     frame.render_widget(Clear, area);
     let inner = area;
-    let Some(terminal) = terminal else {
-        frame.render_widget(
-            Paragraph::new("Waiting for terminal frame…")
-                .style(Style::default().fg(theme::TEXT_MUTED)),
-            inner,
-        );
-        return;
-    };
+    let Some(terminal) = terminal else { return };
     let visible_rows = inner.height.min(terminal.rows);
     let visible_cols = inner.width.min(terminal.cols);
     let buffer = frame.buffer_mut();
@@ -677,9 +671,7 @@ mod tests {
                 revision: 1,
                 exited: false,
                 listening_ports: vec![3000, 5173],
-                terminal_frame: None,
             }],
-            terminal_frame: None,
             muted: false,
         };
 
@@ -694,7 +686,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(text.contains("wsx › main › review"));
-        assert!(text.contains("codex"));
+        assert!(text.contains("(codex)"));
         assert!(text.contains(":3000 +1"));
         assert!(!text.contains("idle"));
     }
@@ -713,7 +705,6 @@ mod tests {
             revision: 1,
             layout: PaneLayout::Leaf { pane_id: PaneId(1) },
             panes: vec![],
-            terminal_frame: None,
             muted: false,
         };
 

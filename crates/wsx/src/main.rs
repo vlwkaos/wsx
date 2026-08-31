@@ -7,6 +7,9 @@ mod cli;
 mod event;
 mod repo_scan;
 mod session_state;
+mod terminal_surface;
+#[cfg(test)]
+mod terminal_surface_tests;
 mod tui;
 mod ui;
 mod update;
@@ -23,6 +26,9 @@ fn main() -> Result<()> {
             cli::Command::Routine { .. }
                 | cli::Command::Runtime { .. }
                 | cli::Command::Daemon { .. }
+                | cli::Command::Agent {
+                    subcommand: cli::AgentCmd::Install { .. },
+                }
         )
     ) {
         return cli::run(args.command.expect("matched Some"));
