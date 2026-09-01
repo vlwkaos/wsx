@@ -6,7 +6,9 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
-use wsx_core::model::workspace::{FetchFailReason, PaneInfo, Project, SessionInfo, WorktreeInfo};
+use wsx_core::model::workspace::{
+    FetchFailReason, PaneInfo, Project, SessionInfo, SubmoduleCommitState, WorktreeInfo,
+};
 
 use super::{compact_port_label, git_remote_status_color, theme, workspace_tree::agent_state_icon};
 
@@ -60,10 +62,7 @@ pub fn render_terminal_breadcrumb(
         Style::default().fg(icon_color),
     ));
     if let Some(agent_label) = session_state::agent_label(agent) {
-        spans.push(Span::styled(
-            agent_label,
-            Style::default().fg(theme::TEXT_MUTED),
-        ));
+        spans.push(Span::styled(agent_label, theme::agent_label()));
     }
     if let Some(label) = compact_port_label(&ports) {
         spans.push(Span::styled(
@@ -225,6 +224,93 @@ pub fn render_worktree_preview(
                     format!("  … {} more", info.modified_files.len() - 5),
                     Style::default().fg(theme::TEXT_SUBTLE),
                 )));
+            }
+        }
+
+        // ── Nested Git sources ────────────────────────────────────────────────
+        match &info.submodules {
+            None => {
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::styled("Submodules: ", label_style),
+                    Span::styled("status unavailable", Style::default().fg(theme::ERROR)),
+                ]));
+            }
+            Some(submodules) if !submodules.is_empty() => {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled("Submodules:", label_style)));
+                for submodule in submodules {
+                    let (state, mut color) = match submodule.commit_state {
+                        SubmoduleCommitState::InSync => ("in sync", theme::SUCCESS),
+                        SubmoduleCommitState::CommitChanged => {
+                            ("commit differs from parent", theme::WARNING)
+                        }
+                        SubmoduleCommitState::Uninitialized => ("not initialized", theme::WARNING),
+                        SubmoduleCommitState::Conflict => ("conflicted", theme::ERROR),
+                    };
+                    if submodule.commit_state == SubmoduleCommitState::InSync
+                        && (submodule.modified_content || submodule.untracked_content)
+                    {
+                        color = theme::WARNING;
+                    }
+                    let mut details = vec![state];
+                    if submodule.modified_content {
+                        details.push("modified content");
+                    }
+                    if submodule.untracked_content {
+                        details.push("untracked content");
+                    }
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("  {} — ", submodule.path),
+                            Style::default().fg(theme::TEXT_MUTED),
+                        ),
+                        Span::styled(details.join(", "), Style::default().fg(color)),
+                    ]));
+                }
+            }
+            Some(_) => {}
+        }
+
+        if !info.subtrees.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("Subtrees:", label_style)));
+            for subtree in &info.subtrees {
+                let (status, color) = if subtree.modified_files.is_empty() {
+                    ("clean".to_string(), theme::SUCCESS)
+                } else {
+                    (
+                        format!(
+                            "{} local change{}",
+                            subtree.modified_files.len(),
+                            if subtree.modified_files.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        ),
+                        theme::WARNING,
+                    )
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {} — ", subtree.path),
+                        Style::default().fg(theme::TEXT_MUTED),
+                    ),
+                    Span::styled(status, Style::default().fg(color)),
+                ]));
+                for file in subtree.modified_files.iter().take(3) {
+                    lines.push(Line::from(Span::styled(
+                        format!("    {file}"),
+                        Style::default().fg(theme::WARNING),
+                    )));
+                }
+                if subtree.modified_files.len() > 3 {
+                    lines.push(Line::from(Span::styled(
+                        format!("    … {} more", subtree.modified_files.len() - 3),
+                        Style::default().fg(theme::TEXT_SUBTLE),
+                    )));
+                }
             }
         }
 
@@ -621,9 +707,12 @@ fn format_epoch(epoch: i64) -> String {
 mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
-    use wsx_core::runtime::{
-        AgentState, Cell, CellWidth, Cursor, PaneId, PaneLayout, SessionId, TerminalFrame,
-        TerminalId,
+    use wsx_core::{
+        model::workspace::{GitInfo, SubmoduleInfo, SubtreeInfo},
+        runtime::{
+            AgentState, Cell, CellWidth, Cursor, PaneId, PaneLayout, SessionId, TerminalFrame,
+            TerminalId,
+        },
     };
 
     fn terminal_frame(cells: Vec<Cell>) -> TerminalFrame {
@@ -642,6 +731,62 @@ mod tests {
                 shape: 0,
             },
         }
+    }
+
+    #[test]
+    fn worktree_preview_separates_submodules_and_configured_subtrees() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let worktree = WorktreeInfo {
+            name: "main".into(),
+            branch: "main".into(),
+            path: "/repo".into(),
+            is_main: true,
+            alias: None,
+            sessions: vec![],
+            expanded: true,
+            git_info: Some(GitInfo {
+                recent_commits: vec![],
+                modified_files: vec!["ordinary.txt".into()],
+                submodules: Some(vec![SubmoduleInfo {
+                    path: "vendor/module".into(),
+                    commit_state: SubmoduleCommitState::InSync,
+                    modified_content: true,
+                    untracked_content: false,
+                }]),
+                subtrees: vec![SubtreeInfo {
+                    path: "vendor/asched".into(),
+                    modified_files: vec![],
+                }],
+                ahead: 0,
+                behind: 0,
+                remote_branch: Some("origin/main".into()),
+            }),
+            fetch_failed: false,
+            fetch_fail_count: 0,
+            fetch_fail_reason: None,
+            last_fetched: None,
+            git_info_fetched_at: None,
+        };
+
+        terminal
+            .draw(|frame| render_worktree_preview(frame, frame.area(), &worktree, "wsx"))
+            .unwrap();
+
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Local:"), "{text:?}");
+        assert!(text.contains("1 file modified"), "{text:?}");
+        assert!(text.contains("Submodules:"), "{text:?}");
+        assert!(text.contains("vendor/module"), "{text:?}");
+        assert!(text.contains("modified content"), "{text:?}");
+        assert!(text.contains("Subtrees:"), "{text:?}");
+        assert!(text.contains("vendor/asched"), "{text:?}");
     }
 
     #[test]

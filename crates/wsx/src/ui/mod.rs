@@ -419,14 +419,15 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
 
 struct StatusBarView {
     mode: &'static str,
+    badge: theme::ModeBadge,
     hints: Vec<String>,
     global_hints: Vec<String>,
 }
 
 fn status_bar_view(app: &App) -> StatusBarView {
-    let (mode, hints) = match &app.mode {
+    let (mode, badge, hints) = match &app.mode {
         Mode::Workspace => {
-            let hints = match app.current_selection() {
+            let mut hints = match app.current_selection() {
                 Selection::Project(_)
                     if app.active_group == Some(wsx_core::config::global::GroupKey::Recent) =>
                 {
@@ -446,27 +447,38 @@ fn status_bar_view(app: &App) -> StatusBarView {
                 Selection::RoutinesHeader(_) => vec!["(u)new", "(?)help"],
                 Selection::Routine(..) => vec!["(e)dit", "(d)elete", "(?)help"],
                 Selection::None => vec!["(p)add project", "(?)help"],
-            };
-            ("WORKSPACE", hints.into_iter().map(str::to_string).collect())
+            }
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+            hints.extend(["(i)idle", "(a)active", "(n)attention"].map(str::to_string));
+            ("WORKSPACE", theme::ModeBadge::Navigation, hints)
         }
         Mode::Terminal { .. } => {
             let mut hints = vec![app.terminal_workspace_hint()];
             if let Some(quit) = app.terminal_quit_hint() {
                 hints.push(quit);
             }
-            ("TERMINAL", hints)
+            ("TERMINAL", theme::ModeBadge::Terminal, hints)
         }
-        Mode::Input { .. } => ("INPUT", Vec::new()),
-        Mode::Confirm { .. } => ("CONFIRM", Vec::new()),
-        Mode::Config { .. } => ("CONFIG", Vec::new()),
-        Mode::Move { .. } | Mode::MoveSession { .. } => {
-            ("MOVE", vec!["(j/k)reorder".into(), "Esc: done".into()])
-        }
-        Mode::Help => ("HELP", Vec::new()),
-        Mode::Search { .. } => ("SEARCH", vec!["Enter: next".into(), "Esc: exit".into()]),
+        Mode::Input { .. } => ("INPUT", theme::ModeBadge::Input, Vec::new()),
+        Mode::Confirm { .. } => ("CONFIRM", theme::ModeBadge::Confirm, Vec::new()),
+        Mode::Config { .. } => ("CONFIG", theme::ModeBadge::Config, Vec::new()),
+        Mode::Move { .. } | Mode::MoveSession { .. } => (
+            "MOVE",
+            theme::ModeBadge::Move,
+            vec!["(j/k)reorder".into(), "Esc: done".into()],
+        ),
+        Mode::Help => ("HELP", theme::ModeBadge::Info, Vec::new()),
+        Mode::Search { .. } => (
+            "SEARCH",
+            theme::ModeBadge::Input,
+            vec!["Enter: next".into(), "Esc: exit".into()],
+        ),
         Mode::GroupManager { purpose, .. } => match purpose {
             GroupManagerPurpose::Switch => (
                 "GROUPS",
+                theme::ModeBadge::Config,
                 vec![
                     "(j/k)navigate".into(),
                     "(Space)toggle".into(),
@@ -478,6 +490,7 @@ fn status_bar_view(app: &App) -> StatusBarView {
             ),
             GroupManagerPurpose::Assign { .. } => (
                 "GROUPS",
+                theme::ModeBadge::Config,
                 vec![
                     "(j/k)navigate".into(),
                     "(Space)toggle".into(),
@@ -485,8 +498,12 @@ fn status_bar_view(app: &App) -> StatusBarView {
                 ],
             ),
         },
-        Mode::RoutineEditor { .. } => ("ROUTINE", Vec::new()),
-        Mode::RoutineDetail { .. } => ("DETAIL", vec!["(j/k)scroll".into(), "Esc: close".into()]),
+        Mode::RoutineEditor { .. } => ("ROUTINE", theme::ModeBadge::Routine, Vec::new()),
+        Mode::RoutineDetail { .. } => (
+            "DETAIL",
+            theme::ModeBadge::Info,
+            vec!["(j/k)scroll".into(), "Esc: close".into()],
+        ),
     };
     let global_hints = if matches!(app.mode, Mode::Workspace) {
         vec!["(,)config".into(), "(q)quit".into()]
@@ -495,6 +512,7 @@ fn status_bar_view(app: &App) -> StatusBarView {
     };
     StatusBarView {
         mode,
+        badge,
         hints,
         global_hints,
     }
@@ -522,7 +540,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
     }
     let mode_text = format!(" {} ", view.mode);
     let badge_width = Line::from(mode_text.as_str()).width();
-    let badge_style = theme::mode_badge();
+    let badge_style = theme::mode_badge(view.badge);
 
     let activity = if app.is_busy() {
         let labels = app

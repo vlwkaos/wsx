@@ -222,6 +222,14 @@ impl GroupStrip {
     }
 }
 
+fn scrollable_positions(content_len: usize, viewport_len: usize) -> usize {
+    if content_len > viewport_len {
+        content_len - viewport_len + 1
+    } else {
+        0
+    }
+}
+
 pub fn render_scrollbar(
     frame: &mut Frame,
     area: Rect,
@@ -237,7 +245,9 @@ pub fn render_scrollbar(
         .end_symbol(None)
         .track_style(theme::scrollbar_track())
         .thumb_style(theme::scrollbar_thumb());
-    let mut state = ScrollbarState::new(content_len)
+    // ^ [[wsx UI Patterns]] Ratatui adds the viewport length when sizing the thumb,
+    // so its content length is the number of valid top-row positions, not total rows.
+    let mut state = ScrollbarState::new(scrollable_positions(content_len, viewport_len))
         .position(position)
         .viewport_content_length(viewport_len);
     frame.render_stateful_widget(scrollbar, area, &mut state);
@@ -319,5 +329,32 @@ mod tests {
         assert_eq!(strip.chips.len(), 1);
         assert!(strip.chips[0].cells.end <= 18);
         assert!(fit_group_strip(&unicode, None, 0, 0).chips.is_empty());
+    }
+
+    #[test]
+    fn scrollbar_content_length_tracks_valid_rendered_row_positions() {
+        assert_eq!(scrollable_positions(100, 20), 81);
+        assert_eq!(scrollable_positions(21, 20), 2);
+        assert_eq!(scrollable_positions(20, 20), 0);
+        assert_eq!(scrollable_positions(0, 0), 0);
+    }
+
+    #[test]
+    fn scrollbar_thumb_height_matches_visible_fraction_of_rendered_rows() {
+        let backend = ratatui::backend::TestBackend::new(1, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render_scrollbar(frame, frame.area(), 100, 20, 0))
+            .unwrap();
+
+        let thumb_height = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|cell| cell.symbol() == "█")
+            .count();
+        assert_eq!(thumb_height, 4);
     }
 }

@@ -24,6 +24,20 @@ pub const WARNING: Color = Color::Rgb(224, 151, 91);
 pub const ERROR: Color = Color::Rgb(234, 105, 126);
 pub const DIVIDER: Color = Color::Rgb(34, 39, 48);
 const TOAST_BACKGROUND: Color = Color::Rgb(24, 28, 35);
+const MODE_INPUT: Color = Color::Rgb(150, 126, 224);
+const MODE_CONFIG: Color = Color::Rgb(184, 132, 224);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeBadge {
+    Navigation,
+    Terminal,
+    Input,
+    Confirm,
+    Config,
+    Move,
+    Info,
+    Routine,
+}
 
 // ^ [[wsx UI Patterns]] Backgrounds are bounded state affordances, never
 // whole-surface defaults. Terminal ANSI backgrounds remain content-owned.
@@ -58,8 +72,18 @@ pub fn accent_selection() -> Style {
     Style::default().fg(BACKGROUND).bg(ACCENT)
 }
 
-pub fn mode_badge() -> Style {
-    accent_selection().bold()
+pub fn mode_badge(role: ModeBadge) -> Style {
+    let background = match role {
+        ModeBadge::Navigation => ACCENT,
+        ModeBadge::Terminal => DONE,
+        ModeBadge::Input => MODE_INPUT,
+        ModeBadge::Confirm => BLOCKED,
+        ModeBadge::Config => MODE_CONFIG,
+        ModeBadge::Move => WORKING,
+        ModeBadge::Info => TEXT_MUTED,
+        ModeBadge::Routine => SUCCESS,
+    };
+    Style::default().fg(BACKGROUND).bg(background).bold()
 }
 
 pub fn toast_surface() -> Style {
@@ -75,6 +99,10 @@ pub fn scrollbar_track() -> Style {
 }
 
 pub fn scrollbar_thumb() -> Style {
+    Style::default().fg(TEXT_MUTED)
+}
+
+pub fn agent_label() -> Style {
     Style::default().fg(TEXT_MUTED)
 }
 
@@ -112,6 +140,8 @@ mod tests {
             ERROR,
             DIVIDER,
             TOAST_BACKGROUND,
+            MODE_INPUT,
+            MODE_CONFIG,
         ] {
             assert!(matches!(color, Color::Rgb(..)));
         }
@@ -128,7 +158,15 @@ mod tests {
         assert_eq!(recent_group_chip(false).bg, Some(RECENT_SURFACE));
         assert_ne!(recent_group_chip(true), group_chip(true));
         assert_eq!(selected_row(false).bg, Some(ROW_SELECTED));
-        assert_eq!(mode_badge().bg, Some(ACCENT));
+        assert_eq!(agent_label().fg, Some(TEXT_MUTED));
+        assert_eq!(mode_badge(ModeBadge::Navigation).bg, Some(ACCENT));
+        assert_eq!(mode_badge(ModeBadge::Terminal).bg, Some(DONE));
+        assert_eq!(mode_badge(ModeBadge::Input).bg, Some(MODE_INPUT));
+        assert_eq!(mode_badge(ModeBadge::Confirm).bg, Some(BLOCKED));
+        assert_eq!(mode_badge(ModeBadge::Config).bg, Some(MODE_CONFIG));
+        assert_eq!(mode_badge(ModeBadge::Move).bg, Some(WORKING));
+        assert_eq!(mode_badge(ModeBadge::Info).bg, Some(TEXT_MUTED));
+        assert_eq!(mode_badge(ModeBadge::Routine).bg, Some(SUCCESS));
     }
 
     #[test]

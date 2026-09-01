@@ -1,0 +1,9 @@
+hooks:
+  postCreate:
+copy:
+  include: []
+  exclude: []
+git:
+  subtrees:
+    - vendor/asched
+    - vendor/herdr

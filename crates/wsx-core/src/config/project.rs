@@ -13,7 +13,7 @@ pub const PROJECT_CONFIG_FILE: &str = "wsx.config.yml";
 const LEGACY_CONFIG_FILE: &str = ".gtrconfig";
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 const PROJECT_CONFIG_TEMPLATE: &str =
-    "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\n";
+    "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\ngit:\n  subtrees: []\n";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy)]
@@ -27,6 +27,7 @@ enum PublishMode {
 struct ProjectConfigFile {
     hooks: HookConfig,
     copy: CopyConfig,
+    git: GitConfig,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -43,6 +44,13 @@ struct CopyConfig {
     include: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     exclude: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct GitConfig {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    subtrees: Vec<PathBuf>,
 }
 
 pub fn load_project_config(repo_path: &Path) -> ProjectConfig {
@@ -119,11 +127,21 @@ fn load_yaml(path: &Path) -> ProjectConfig {
         }
     };
     match yaml_serde::from_str::<ProjectConfigFile>(&text) {
-        Ok(file) => ProjectConfig {
-            post_create: file.hooks.post_create,
-            copy_includes: file.copy.include,
-            copy_excludes: file.copy.exclude,
-            notice: None,
+        Ok(file) => match validate_subtree_paths(file.git.subtrees) {
+            Ok(git_subtrees) => ProjectConfig {
+                post_create: file.hooks.post_create,
+                copy_includes: file.copy.include,
+                copy_excludes: file.copy.exclude,
+                git_subtrees,
+                notice: None,
+            },
+            Err(error) => ProjectConfig {
+                notice: Some(format!(
+                    "Could not parse {} (using defaults): {error}",
+                    path.display()
+                )),
+                ..ProjectConfig::default()
+            },
         },
         Err(error) => ProjectConfig {
             notice: Some(format!(
@@ -133,6 +151,29 @@ fn load_yaml(path: &Path) -> ProjectConfig {
             ..ProjectConfig::default()
         },
     }
+}
+
+fn validate_subtree_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
+    let mut validated = Vec::with_capacity(paths.len());
+    for path in paths {
+        let text = path.to_string_lossy();
+        let valid = !text.is_empty()
+            && !text.chars().any(char::is_control)
+            && !path.is_absolute()
+            && path
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_)));
+        if !valid {
+            return Err(format!(
+                "git.subtrees path must be a normalized relative path: {}",
+                path.display()
+            ));
+        }
+        if !validated.contains(&path) {
+            validated.push(path);
+        }
+    }
+    Ok(validated)
 }
 
 fn read_bounded(path: &Path) -> Result<String, String> {
@@ -154,6 +195,9 @@ fn write_yaml(path: &Path, config: &ProjectConfig) -> Result<(), String> {
         copy: CopyConfig {
             include: config.copy_includes.clone(),
             exclude: config.copy_excludes.clone(),
+        },
+        git: GitConfig {
+            subtrees: config.git_subtrees.clone(),
         },
     };
     let text = yaml_serde::to_string(&document).map_err(|error| error.to_string())?;
@@ -203,6 +247,7 @@ fn load_legacy(config_path: &Path) -> ProjectConfig {
         post_create: git_config_get(&path, "hooks.postCreate"),
         copy_includes: git_config_get_all(&path, "copy.include"),
         copy_excludes: git_config_get_all(&path, "copy.exclude"),
+        git_subtrees: Vec::new(),
         notice: None,
     }
 }
@@ -269,7 +314,7 @@ mod tests {
         let dir = TestDir::new("yaml");
         fs::write(
             dir.0.join(PROJECT_CONFIG_FILE),
-            "hooks:\n  postCreate: cargo build\ncopy:\n  include: [.env]\n  exclude: [target]\n",
+            "hooks:\n  postCreate: cargo build\ncopy:\n  include: [.env]\n  exclude: [target]\ngit:\n  subtrees: [vendor/asched, vendor/herdr]\n",
         )
         .unwrap();
 
@@ -278,6 +323,13 @@ mod tests {
         assert_eq!(config.post_create.as_deref(), Some("cargo build"));
         assert_eq!(config.copy_includes, [".env"]);
         assert_eq!(config.copy_excludes, ["target"]);
+        assert_eq!(
+            config.git_subtrees,
+            [
+                PathBuf::from("vendor/asched"),
+                PathBuf::from("vendor/herdr")
+            ]
+        );
         assert!(config.notice.is_none());
     }
 
@@ -326,6 +378,44 @@ mod tests {
             .as_deref()
             .is_some_and(|notice| notice.contains("maximum")));
         assert!(!dir.0.join(PROJECT_CONFIG_FILE).exists());
+    }
+
+    #[test]
+    fn invalid_subtree_path_fails_the_strict_project_config() {
+        let dir = TestDir::new("invalid-subtree");
+        fs::write(
+            dir.0.join(PROJECT_CONFIG_FILE),
+            "git:\n  subtrees: [../outside]\n",
+        )
+        .unwrap();
+
+        let config = load_project_config(&dir.0);
+
+        assert!(config.git_subtrees.is_empty());
+        assert!(config
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("normalized relative path")));
+    }
+
+    #[test]
+    fn duplicate_subtree_paths_are_deduplicated_in_order() {
+        let dir = TestDir::new("duplicate-subtree");
+        fs::write(
+            dir.0.join(PROJECT_CONFIG_FILE),
+            "git:\n  subtrees: [vendor/asched, vendor/asched, vendor/herdr]\n",
+        )
+        .unwrap();
+
+        let config = load_project_config(&dir.0);
+
+        assert_eq!(
+            config.git_subtrees,
+            [
+                PathBuf::from("vendor/asched"),
+                PathBuf::from("vendor/herdr")
+            ]
+        );
     }
 
     #[test]

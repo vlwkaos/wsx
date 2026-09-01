@@ -151,7 +151,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                     ),
                 ];
                 if let Some(agent_label) = session_state::agent_label(sess.agent.as_deref()) {
-                    spans.push(Span::styled(agent_label, Style::default().fg(icon_color)));
+                    spans.push(Span::styled(agent_label, theme::agent_label()));
                 }
                 let ports = sess.listening_ports();
                 if let Some(label) = compact_port_label(&ports) {
@@ -258,9 +258,9 @@ pub(super) fn agent_state_icon(
     }
     match state {
         AgentState::Blocked => ("×", theme::BLOCKED),
-        AgentState::Done => ("✓", theme::DONE),
-        AgentState::Working => ("◐", theme::WORKING),
-        AgentState::Idle => ("○", theme::SUCCESS),
+        AgentState::Done => ("✓", theme::SUCCESS),
+        AgentState::Working => ("◐", theme::SUCCESS),
+        AgentState::Idle => ("○", theme::WORKING),
         AgentState::Unknown => ("·", theme::UNKNOWN),
         AgentState::Error => ("!", theme::BLOCKED),
     }
@@ -335,22 +335,27 @@ mod tests {
             (
                 AgentState::Done,
                 AppSessionState::NeedsAttention,
-                ("✓", theme::DONE),
+                ("✓", theme::SUCCESS),
             ),
             (
                 AgentState::Working,
                 AppSessionState::Active,
-                ("◐", theme::WORKING),
+                ("◐", theme::SUCCESS),
             ),
             (
                 AgentState::Idle,
                 AppSessionState::Idle,
-                ("○", theme::SUCCESS),
+                ("○", theme::WORKING),
             ),
             (
                 AgentState::Unknown,
                 AppSessionState::Idle,
                 ("·", theme::UNKNOWN),
+            ),
+            (
+                AgentState::Error,
+                AppSessionState::NeedsAttention,
+                ("!", theme::BLOCKED),
             ),
         ] {
             assert_eq!(session_icon(&session(false, status), app_state), expected);
