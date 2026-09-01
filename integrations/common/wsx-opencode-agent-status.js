@@ -12,7 +12,7 @@ function report(state, id) {
   const args = [
     "agent", "report", pane, "--provider", provider, "--state", state, "--lifecycle",
   ];
-  if (id) args.push("--conversation-id", id);
+  if (id) args.push("--session-id", id);
   execFile(process.env.WSX_AGENT_REPORT_BIN || "wsx", args,
     { timeout: 1000, windowsHide: true }, () => {});
 }

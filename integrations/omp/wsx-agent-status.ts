@@ -1,6 +1,7 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=8
+// WSX_INTEGRATION_VERSION=9
 import { execFile } from "node:child_process";
+import path from "node:path";
 
 const pane = process.env.WSX_PANE_ID;
 let blocked = 0;
@@ -8,16 +9,25 @@ let active = false;
 
 function report(state: "idle" | "working" | "blocked" | "done", ctx: any): void {
   if (!pane) return;
-  let id: string | undefined;
+  let sessionPath: string | undefined;
+  let sessionId: string | undefined;
   try {
-    id = ctx?.sessionManager?.getSessionId?.();
+    const value = ctx?.sessionManager?.getSessionFile?.();
+    sessionPath = typeof value === "string" && path.isAbsolute(value) ? value : undefined;
   } catch {
-    id = undefined;
+    sessionPath = undefined;
+  }
+  try {
+    const value = ctx?.sessionManager?.getSessionId?.();
+    sessionId = typeof value === "string" && value ? value : undefined;
+  } catch {
+    sessionId = undefined;
   }
   const args = [
     "agent", "report", pane, "--provider", "omp", "--state", state, "--lifecycle",
   ];
-  if (id) args.push("--conversation-id", id);
+  if (sessionPath) args.push("--session-path", sessionPath);
+  else if (sessionId) args.push("--session-id", sessionId);
   execFile(process.env.WSX_AGENT_REPORT_BIN || "wsx", args,
     { timeout: 1000, windowsHide: true }, () => {});
 }

@@ -155,6 +155,47 @@ pub enum AgentState {
     Error,
 }
 
+const MAX_AGENT_SESSION_ID_BYTES: usize = 512;
+const MAX_AGENT_SESSION_PATH_BYTES: usize = 4096;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSessionRefKind {
+    Id,
+    Path,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AgentSessionRef {
+    pub kind: AgentSessionRefKind,
+    pub value: String,
+}
+
+impl AgentSessionRef {
+    pub fn id(value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        (valid_agent_session_value(&value, MAX_AGENT_SESSION_ID_BYTES) && !value.starts_with('-'))
+            .then_some(Self {
+                kind: AgentSessionRefKind::Id,
+                value,
+            })
+    }
+
+    pub fn path(value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        (valid_agent_session_value(&value, MAX_AGENT_SESSION_PATH_BYTES)
+            && PathBuf::from(&value).is_absolute())
+        .then_some(Self {
+            kind: AgentSessionRefKind::Path,
+            value,
+        })
+    }
+}
+
+fn valid_agent_session_value(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty() && value.len() <= max_bytes && !value.chars().any(char::is_control)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct AgentCapabilities {
@@ -168,7 +209,10 @@ pub struct AgentInfo {
     pub id: AgentInstanceId,
     pub provider: String,
     pub state: AgentState,
+    #[serde(default)]
     pub conversation_id: Option<String>,
+    #[serde(default)]
+    pub session_ref: Option<AgentSessionRef>,
     pub capabilities: AgentCapabilities,
     pub source: String,
 }
@@ -211,6 +255,7 @@ pub struct Capabilities {
     pub pane_splits: bool,
     pub plugins: bool,
     pub agent_reports: bool,
+    pub agent_session_restore: bool,
     pub listening_ports: bool,
     pub process_restore: bool,
 }

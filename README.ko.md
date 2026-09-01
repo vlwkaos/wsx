@@ -42,7 +42,7 @@ wsx agent install pi
 wsx agent install claude
 ```
 
-설치 후 해당 agent를 다시 시작합니다. Installer는 각 agent의 표준 config directory override를 따르며 관련 없는 설정을 보존합니다.
+설치 후 해당 agent를 다시 시작합니다. Installer는 각 agent의 표준 config directory override를 따르며 관련 없는 설정을 보존합니다. 최신 integration은 provider의 native session ID 또는 path도 보고합니다. wsxd가 완전히 재시작되면 wsx는 새 process에서 provider별 resume command를 실행해 보고된 conversation을 이어갑니다. Reference가 없으면 저장된 generic launch recipe를 사용합니다. Unsupported, malformed, duplicate reference는 새 agent conversation을 시작하지 않고 clean shell을 엽니다.
 
 ## 조작
 
@@ -70,7 +70,10 @@ Terminal mode에서는 persistent stream으로 일반 keyboard와 mouse 입력�
 
 ```toml
 terminal_escape_chord = "ctrl+a w"
+resume_agents_on_restore = true
 ```
+
+Native agent conversation 복원은 기본으로 활성화됩니다. wsxd restart 후 generic saved launch recipe를 유지하려면 `resume_agents_on_restore = false`로 설정합니다. Global config가 malformed이거나 읽을 수 없으면 해당 startup에서는 복원을 비활성화합니다. 변경은 wsxd를 다시 시작한 뒤 적용됩니다.
 
 한 개의 modified chord 설정은 Workspace focus 용도로 계속 지원하지만 별도의 prefixed quit는 제공하지 않습니다. 두 chord 설정에서는 suffix `q`를 TUI quit 용도로 예약하므로 Workspace-focus suffix로 설정할 수 없습니다. Workspace에서 `,`를 누르면 `$EDITOR`로 global config를 엽니다. Editor가 닫히면 config를 검증하며, 유효한 변경은 다음 실행부터 적용됩니다.
 
@@ -102,7 +105,7 @@ wsx session prompt <session-or-pane> <prompt>
 wsx session peek <session-or-pane> [-n VISIBLE_LINES] [--trim]
 wsx session rename <session-id> <label>
 wsx agent install <target>
-wsx agent report <pane> --provider <name> --state <state> [capabilities]
+wsx agent report <pane> --provider <name> --state <state> [--session-id <id>|--session-path <path>] [capabilities]
 wsx plugin list [--json]
 wsx plugin reload
 wsx runtime status [--json]
@@ -110,7 +113,7 @@ wsx daemon stop
 wsx routine ...
 ```
 
-`wsx runtime status`와 `wsx daemon stop`은 daemon을 시작하지 않습니다. Workspace에서 `Q`를 누르면 확인 후 wsxd와 모든 live PTY를 정상 종료하고 TUI를 끝냅니다. 일반 wsx 시작은 호환되는 실행 중 daemon을 재사용합니다. local protocol이 바뀌었으면 wsx가 정상 종료를 요청하고 cleanup을 기다린 뒤 인접 executable 또는 `PATH`의 `wsxd`를 시작합니다. cross-version process handoff는 지원하지 않으므로 기존 PTY는 종료되지만, 새 daemon은 wsx session과 pane identity를 유지하고 저장된 launch command로 process를 다시 생성합니다. `WSX_DAEMON_BIN`, `WSX_SOCKET`은 신뢰된 동일 사용자 override입니다.
+`wsx runtime status`와 `wsx daemon stop`은 daemon을 시작하지 않습니다. Workspace에서 `Q`를 누르면 확인 후 wsxd와 모든 live PTY를 정상 종료하고 TUI를 끝냅니다. 일반 wsx 시작은 호환되는 실행 중 daemon을 재사용합니다. local protocol이 바뀌었으면 wsx가 정상 종료를 요청하고 cleanup을 기다린 뒤 인접 executable 또는 `PATH`의 `wsxd`를 시작합니다. cross-version process handoff는 지원하지 않으므로 기존 PTY는 종료되지만, 새 daemon은 wsx session과 pane identity를 유지하고 adapter가 보고한 eligible agent conversation을 resume하며, 그 외에는 저장된 launch command로 process를 다시 생성합니다. `WSX_DAEMON_BIN`, `WSX_SOCKET`은 신뢰된 동일 사용자 override입니다.
 
 ## Plugin과 agent
 
@@ -125,8 +128,9 @@ Agent integration은 `unknown`, `idle`, `working`, `blocked`, `done`, `error` �
 - Event는 revision을 invalidate하며 authoritative snapshot으로 복구합니다.
 - Message, frame, command, plugin, resource count는 bounded입니다.
 - Terminal frame은 Ghostty wide/spacer occupancy를 보존하고 첫 baseline 이후 synchronized-output 중간 frame을 억제하며 subscribe viewport를 baseline에 적용합니다. Workspace metadata refresh는 수락된 terminal surface를 소유하거나 지우지 않습니다.
-- wsxd는 project, worktree, session, pane, terminal, known-agent identity를 저장합니다. daemon restart 후 owner-only launch recipe로 각 pane을 다시 생성하지만, 이는 기존 process, terminal buffer, agent conversation의 복원이 아닙니다.
-- Remote access, live daemon handoff, graphics transport, marketplace, guaranteed process 또는 conversation restoration은 아직 지원하지 않습니다.
+- wsxd는 project, worktree, session, pane, terminal, known-agent identity와 검증된 native session reference를 저장합니다. daemon restart 후 eligible agent는 `codex resume <id>`, `pi --session <path>` 같은 direct vendor argv로 conversation을 resume하며 lifecycle state는 adapter가 다시 보고할 때까지 unknown입니다.
+- Native resume은 항상 새 process, PTY, terminal buffer를 생성합니다. 임의 shell process, terminal history, lease, unsupported agent conversation은 보존하지 않습니다.
+- Remote access, live daemon handoff, graphics transport, marketplace, original-process restoration은 아직 지원하지 않습니다.
 
 ## 개발
 

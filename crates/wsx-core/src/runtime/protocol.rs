@@ -2,7 +2,7 @@ use super::domain::*;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -115,7 +115,10 @@ pub enum Request {
         pane_id: PaneId,
         provider: String,
         state: AgentState,
+        #[serde(default)]
         conversation_id: Option<String>,
+        #[serde(default)]
+        session_ref: Option<AgentSessionRef>,
         capabilities: AgentCapabilities,
     },
     PluginList,
@@ -244,7 +247,21 @@ mod tests {
             panic!("expected hello response");
         };
         assert!(capabilities.pane_splits);
+        assert!(!capabilities.agent_session_restore);
         assert!(!capabilities.listening_ports);
+    }
+
+    #[test]
+    fn legacy_agent_report_defaults_missing_session_reference() {
+        let request = serde_json::from_str::<Request>(
+            r#"{"method":"agent_report","params":{"pane_id":1,"provider":"pi","state":"idle","conversation_id":"legacy","capabilities":{}}}"#,
+        )
+        .unwrap();
+
+        let Request::AgentReport { session_ref, .. } = request else {
+            panic!("expected agent report request");
+        };
+        assert_eq!(session_ref, None);
     }
 
     #[test]

@@ -11,6 +11,7 @@ mod install;
 mod model;
 mod opencode_config;
 mod paths;
+pub mod resume;
 mod status;
 
 pub use availability::is_available;
@@ -213,6 +214,45 @@ mod tests {
         assert!(kimi.contains("PermissionRequest") && kimi.contains("model"));
         let yaml = config_edit::hermes_yaml("theme: dark\n");
         assert!(yaml.contains("wsx-agent-status") && yaml.contains("theme"));
+    }
+
+    #[test]
+    fn primary_assets_report_version_and_native_session_ids() {
+        for target in IntegrationTarget::ALL {
+            let asset = assets::primary(target);
+            let marker = format!("WSX_INTEGRATION_VERSION={}", target.expected_version());
+            assert!(asset.contains(&marker), "{target}: missing {marker}");
+            assert!(
+                asset.contains("--session-id"),
+                "{target}: missing --session-id"
+            );
+            assert!(
+                !asset.contains("--conversation-id"),
+                "{target}: unexpected --conversation-id"
+            );
+        }
+    }
+
+    #[test]
+    fn pi_and_omp_primary_assets_prefer_session_paths_and_report_lifecycle() {
+        for target in [IntegrationTarget::Pi, IntegrationTarget::Omp] {
+            let asset = assets::primary(target);
+            let path = asset
+                .find("--session-path")
+                .expect("session path assertion requires a path branch");
+            let id = asset
+                .find("--session-id")
+                .expect("session path assertion requires an ID branch");
+            assert!(path < id, "{target}: path branch must precede ID branch");
+            assert!(
+                asset.contains(&format!("\"--provider\", \"{}\"", target.cli_value())),
+                "{target}: missing exact provider reporting"
+            );
+            assert!(
+                asset.contains("--lifecycle"),
+                "{target}: missing lifecycle reporting"
+            );
+        }
     }
 
     #[test]

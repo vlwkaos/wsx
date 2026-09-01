@@ -1,5 +1,5 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=10
+// WSX_INTEGRATION_VERSION=11
 import { execFile } from "node:child_process";
 
 function report(sessionID) {
@@ -7,7 +7,7 @@ function report(sessionID) {
   if (!pane || !sessionID) return Promise.resolve();
   const args = [
     "agent", "report", pane, "--provider", "opencode", "--state", "unknown",
-    "--conversation-id", sessionID,
+    "--session-id", sessionID,
   ];
   return new Promise((resolve) => {
     execFile(process.env.WSX_AGENT_REPORT_BIN || "wsx", args,

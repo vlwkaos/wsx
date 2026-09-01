@@ -100,14 +100,14 @@ impl IntegrationTarget {
 
     pub const fn expected_version(self) -> u32 {
         match self {
-            Self::Pi | Self::Omp | Self::Claude | Self::Codex => 8,
-            Self::Copilot | Self::Droid | Self::Qodercli => 3,
-            Self::Devin | Self::Mastracode | Self::AntigravityCli => 2,
-            Self::Kimi => 7,
-            Self::Opencode => 10,
-            Self::Kilo => 4,
-            Self::Hermes => 5,
-            Self::Qwen | Self::Cursor | Self::Grok => 1,
+            Self::Pi | Self::Omp | Self::Claude | Self::Codex => 9,
+            Self::Copilot | Self::Droid | Self::Qodercli => 4,
+            Self::Devin | Self::Mastracode | Self::AntigravityCli => 3,
+            Self::Kimi => 8,
+            Self::Opencode => 11,
+            Self::Kilo => 5,
+            Self::Hermes => 6,
+            Self::Qwen | Self::Cursor | Self::Grok => 2,
         }
     }
 }

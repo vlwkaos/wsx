@@ -122,8 +122,12 @@ pub enum AgentCmd {
         provider: String,
         #[arg(long, value_enum)]
         state: AgentStateArg,
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["session_id", "session_path"])]
         conversation_id: Option<String>,
+        #[arg(long, conflicts_with = "session_path")]
+        session_id: Option<String>,
+        #[arg(long)]
+        session_path: Option<String>,
         #[arg(long)]
         prompt: bool,
         #[arg(long)]
@@ -408,6 +412,8 @@ pub fn run(cmd: Command) -> Result<()> {
                 provider,
                 state,
                 conversation_id,
+                session_id,
+                session_path,
                 prompt,
                 resume,
                 lifecycle,
@@ -416,6 +422,8 @@ pub fn run(cmd: Command) -> Result<()> {
                 provider,
                 state.into(),
                 conversation_id,
+                session_id,
+                session_path,
                 runtime::AgentCapabilities {
                     prompt,
                     resume,
@@ -867,6 +875,132 @@ mod agent_command_tests {
         ));
         assert!(Args::try_parse_from(["wsx", "agent", "install", "unsupported"]).is_err());
     }
+
+    #[test]
+    fn report_accepts_session_id_without_other_session_identifiers() {
+        let args = Args::try_parse_from([
+            "wsx",
+            "agent",
+            "report",
+            "7",
+            "--provider",
+            "pi",
+            "--state",
+            "idle",
+            "--session-id",
+            "abc",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            args.command,
+            Some(Command::Agent {
+                subcommand: AgentCmd::Report {
+                    session_id,
+                    session_path,
+                    conversation_id,
+                    ..
+                }
+            }) if session_id == Some("abc".into())
+                && session_path.is_none()
+                && conversation_id.is_none()
+        ));
+    }
+
+    #[test]
+    fn report_accepts_session_path_without_other_session_identifiers() {
+        let args = Args::try_parse_from([
+            "wsx",
+            "agent",
+            "report",
+            "7",
+            "--provider",
+            "pi",
+            "--state",
+            "idle",
+            "--session-path",
+            "/absolute/session.jsonl",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            args.command,
+            Some(Command::Agent {
+                subcommand: AgentCmd::Report {
+                    session_id,
+                    session_path,
+                    conversation_id,
+                    ..
+                }
+            }) if session_path == Some("/absolute/session.jsonl".into())
+                && session_id.is_none()
+                && conversation_id.is_none()
+        ));
+    }
+
+    #[test]
+    fn report_keeps_legacy_conversation_id() {
+        let args = Args::try_parse_from([
+            "wsx",
+            "agent",
+            "report",
+            "7",
+            "--provider",
+            "pi",
+            "--state",
+            "idle",
+            "--conversation-id",
+            "legacy",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            args.command,
+            Some(Command::Agent {
+                subcommand: AgentCmd::Report {
+                    conversation_id,
+                    session_id,
+                    session_path,
+                    ..
+                }
+            }) if conversation_id == Some("legacy".into())
+                && session_id.is_none()
+                && session_path.is_none()
+        ));
+    }
+
+    #[test]
+    fn report_rejects_conflicting_session_identifiers() {
+        let base = [
+            "wsx",
+            "agent",
+            "report",
+            "7",
+            "--provider",
+            "pi",
+            "--state",
+            "idle",
+        ];
+
+        for extra in [
+            ["--conversation-id", "legacy", "--session-id", "abc"],
+            [
+                "--conversation-id",
+                "legacy",
+                "--session-path",
+                "/absolute/session.jsonl",
+            ],
+            [
+                "--session-id",
+                "abc",
+                "--session-path",
+                "/absolute/session.jsonl",
+            ],
+        ] {
+            let argv = base.into_iter().chain(extra).collect::<Vec<_>>();
+            assert!(Args::try_parse_from(argv).is_err());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1159,14 +1293,35 @@ fn cmd_agent_report(
     provider: String,
     state: runtime::AgentState,
     conversation_id: Option<String>,
+    session_id: Option<String>,
+    session_path: Option<String>,
     capabilities: runtime::AgentCapabilities,
 ) -> Result<()> {
     let pane_id = resolve_pane(selector)?;
+    let session_ref = if let Some(value) = session_path {
+        Some(
+            runtime::AgentSessionRef::path(value)
+                .ok_or_else(|| anyhow::anyhow!("invalid absolute agent session path"))?,
+        )
+    } else if let Some(value) = session_id {
+        Some(
+            runtime::AgentSessionRef::id(value)
+                .ok_or_else(|| anyhow::anyhow!("invalid agent session ID"))?,
+        )
+    } else {
+        None
+    };
+    let conversation_id = conversation_id.or_else(|| {
+        session_ref
+            .as_ref()
+            .map(|session_ref| session_ref.value.clone())
+    });
     match runtime::Client::local().call(&runtime::Request::AgentReport {
         pane_id,
         provider,
         state,
         conversation_id,
+        session_ref,
         capabilities,
     })? {
         runtime::Response::Ack { revision } => {

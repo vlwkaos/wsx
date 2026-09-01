@@ -5180,6 +5180,7 @@ mod tests {
             ],
             exclude_worktree_paths: vec![],
             terminal_escape_chord: "ctrl+a w".into(),
+            resume_agents_on_restore: true,
         };
         let workspace = WorkspaceState {
             projects: vec![

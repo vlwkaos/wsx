@@ -24,7 +24,7 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use wsx_core::runtime::*;
+use wsx_core::{config::global::GlobalConfig, integration::resume, runtime::*};
 use wsx_terminal::{validate_launch, TerminalRuntime};
 
 const EVENT_LIMIT: usize = 1024;
@@ -45,6 +45,11 @@ struct LaunchRecipe {
     initial_input: Option<String>,
     rows: u16,
     cols: u16,
+}
+
+struct RecoveryLaunch {
+    recipe: LaunchRecipe,
+    resume_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -145,7 +150,7 @@ struct Daemon {
     state_path: PathBuf,
 }
 
-fn recover_runtimes(daemon: &Arc<Daemon>) -> io::Result<()> {
+fn recover_runtimes(daemon: &Arc<Daemon>, resume_agents: bool) -> io::Result<()> {
     let attempts = {
         let mut state = lock(&daemon.state);
         let session_worktrees = state
@@ -163,25 +168,24 @@ fn recover_runtimes(daemon: &Arc<Daemon>) -> io::Result<()> {
         let mut attempts = Vec::new();
         for pane in &mut state.persisted.panes {
             pane.exited = true;
-            if let Some(agent) = &mut pane.agent {
-                agent.state = AgentState::Unknown;
-                agent.capabilities = AgentCapabilities::default();
-                agent.source = "persisted".into();
-            }
             if pane.recovery_quarantined {
                 continue;
             }
             if pane.recovery.is_none() {
                 pane.recovery = Some(default_launch_recipe());
             }
-            let Some(recipe) = pane.recovery.as_ref() else {
+            let Some(saved_recipe) = pane.recovery.clone() else {
                 continue;
             };
-            if let Err(error) = validate_recipe(recipe) {
+            if let Err(error) = validate_recipe(&saved_recipe) {
                 eprintln!("wsxd recovery pane {}: {error}", pane.id.0);
                 pane.recovery = None;
                 pane.recovery_quarantined = true;
                 continue;
+            }
+            let launch = recovery_launch(pane.agent.as_mut(), &saved_recipe, resume_agents);
+            if let Some(agent) = &mut pane.agent {
+                reset_recovered_agent(agent);
             }
             let Some(cwd) = session_worktrees
                 .get(&pane.session_id)
@@ -191,13 +195,15 @@ fn recover_runtimes(daemon: &Arc<Daemon>) -> io::Result<()> {
                 eprintln!("wsxd recovery pane {}: worktree is absent", pane.id.0);
                 continue;
             };
-            attempts.push((pane.id, pane.terminal_id, cwd, recipe.clone()));
+            attempts.push((pane.id, pane.terminal_id, cwd, launch));
         }
         attempts
     };
 
-    for (pane_id, terminal_id, cwd, recipe) in attempts {
-        let runtime = match spawn_runtime(daemon, pane_id, terminal_id, &cwd, &recipe) {
+    let mut resumed_sessions = HashSet::new();
+    for (pane_id, terminal_id, cwd, launch) in attempts {
+        let launch = deduplicate_recovery_launch(launch, &resumed_sessions);
+        let runtime = match spawn_runtime(daemon, pane_id, terminal_id, &cwd, &launch.recipe) {
             Ok(runtime) => Arc::new(runtime),
             Err(error) => {
                 eprintln!("wsxd recovery pane {}: {}", pane_id.0, error.message);
@@ -208,17 +214,109 @@ fn recover_runtimes(daemon: &Arc<Daemon>) -> io::Result<()> {
         state.runtimes.insert(pane_id, Arc::clone(&runtime));
         if runtime.exited() {
             record_terminal_exit(daemon, &mut state, pane_id);
-        } else if let Some(pane) = state
-            .persisted
-            .panes
-            .iter_mut()
-            .find(|pane| pane.id == pane_id)
-        {
-            pane.exited = false;
+        } else {
+            resumed_sessions.extend(launch.resume_key);
+            if let Some(pane) = state
+                .persisted
+                .panes
+                .iter_mut()
+                .find(|pane| pane.id == pane_id)
+            {
+                pane.exited = false;
+            }
         }
     }
     let state = lock(&daemon.state);
     save_state(&daemon.state_path, &state.persisted)
+}
+
+fn reset_recovered_agent(agent: &mut AgentInfo) {
+    agent.state = AgentState::Unknown;
+    agent.capabilities = AgentCapabilities::default();
+    agent.source = "persisted".into();
+}
+
+fn recovery_launch(
+    agent: Option<&mut AgentInfo>,
+    saved_recipe: &LaunchRecipe,
+    resume_agents: bool,
+) -> RecoveryLaunch {
+    if !resume_agents {
+        return RecoveryLaunch {
+            recipe: saved_recipe.clone(),
+            resume_key: None,
+        };
+    }
+    let Some(agent) = agent else {
+        return RecoveryLaunch {
+            recipe: saved_recipe.clone(),
+            resume_key: None,
+        };
+    };
+    let session_ref = agent.session_ref.clone().or_else(|| {
+        agent
+            .conversation_id
+            .as_ref()
+            .and_then(|value| AgentSessionRef::id(value.clone()))
+    });
+    let Some(session_ref) = session_ref else {
+        return RecoveryLaunch {
+            recipe: saved_recipe.clone(),
+            resume_key: None,
+        };
+    };
+    agent.session_ref = Some(session_ref.clone());
+    let Some(plan) = resume::plan(&agent.provider, &session_ref) else {
+        return RecoveryLaunch {
+            recipe: shell_launch_recipe(saved_recipe.rows, saved_recipe.cols),
+            resume_key: None,
+        };
+    };
+    RecoveryLaunch {
+        recipe: LaunchRecipe {
+            command: plan.argv,
+            initial_input: None,
+            rows: saved_recipe.rows,
+            cols: saved_recipe.cols,
+        },
+        resume_key: Some(plan.dedupe_key),
+    }
+}
+
+fn deduplicate_recovery_launch(
+    launch: RecoveryLaunch,
+    resumed_sessions: &HashSet<String>,
+) -> RecoveryLaunch {
+    if launch
+        .resume_key
+        .as_ref()
+        .is_some_and(|key| resumed_sessions.contains(key))
+    {
+        RecoveryLaunch {
+            recipe: shell_launch_recipe(launch.recipe.rows, launch.recipe.cols),
+            resume_key: None,
+        }
+    } else {
+        launch
+    }
+}
+
+fn shell_launch_recipe(rows: u16, cols: u16) -> LaunchRecipe {
+    launch_recipe(Vec::new(), None, rows, cols).unwrap_or_else(|_| default_launch_recipe())
+}
+
+fn resume_agents_on_restore() -> bool {
+    match GlobalConfig::load() {
+        Ok((config, None)) => config.resume_agents_on_restore,
+        Ok((_, Some(warning))) => {
+            eprintln!("wsxd agent restoration disabled: {warning}");
+            false
+        }
+        Err(error) => {
+            eprintln!("wsxd agent restoration disabled: {error:#}");
+            false
+        }
+    }
 }
 
 pub fn run() -> io::Result<()> {
@@ -248,9 +346,9 @@ pub fn run() -> io::Result<()> {
         epoch: epoch(),
         state_path,
     });
-    // ^ [[Session Model]] Session identity remains durable even when wsxd must
-    // recreate the process behind a pane rather than restore that process.
-    recover_runtimes(&daemon)?;
+    // ^ [[Session Model]] Session identity remains durable while native agent
+    // resume or the saved recipe recreates a process; neither restores the old PTY.
+    recover_runtimes(&daemon, resume_agents_on_restore())?;
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
@@ -884,6 +982,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             provider,
             state: agent_state,
             conversation_id,
+            session_ref,
             capabilities,
         } => agent_report(
             daemon,
@@ -891,6 +990,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             provider,
             agent_state,
             conversation_id,
+            session_ref,
             capabilities,
         ),
         Request::PluginList => Ok(Response::Plugins(lock(&daemon.state).plugins.clone())),
@@ -916,6 +1016,7 @@ fn capabilities() -> Capabilities {
         pane_splits: true,
         plugins: true,
         agent_reports: true,
+        agent_session_restore: true,
         listening_ports: true,
         process_restore: false,
     }
@@ -1525,10 +1626,28 @@ fn agent_report(
     provider: String,
     agent_state: AgentState,
     conversation_id: Option<String>,
-    capabilities: AgentCapabilities,
+    session_ref: Option<AgentSessionRef>,
+    mut capabilities: AgentCapabilities,
 ) -> Result<Response, ApiError> {
     let provider = bounded_provider(provider)?;
     let conversation_id = conversation_id.map(|value| truncate_utf8(value, 512));
+    let explicit_session_ref = validated_session_ref(session_ref)?;
+    if explicit_session_ref
+        .as_ref()
+        .is_some_and(|session_ref| resume::plan(&provider, session_ref).is_none())
+    {
+        return Err(api(
+            "invalid_agent_session",
+            "provider does not support this agent session reference",
+        ));
+    }
+    let session_ref = explicit_session_ref.or_else(|| {
+        conversation_id
+            .as_ref()
+            .and_then(|value| AgentSessionRef::id(value.clone()))
+            .filter(|session_ref| resume::plan(&provider, session_ref).is_some())
+    });
+    capabilities.resume |= session_ref.is_some();
     let mut state = lock(&daemon.state);
     let mut persisted = state.persisted.clone();
 
@@ -1555,6 +1674,7 @@ fn agent_report(
         provider,
         state: agent_state,
         conversation_id,
+        session_ref,
         capabilities,
         source: "adapter".into(),
     });
@@ -1947,6 +2067,20 @@ fn bounded_provider(value: String) -> Result<String, ApiError> {
         Ok(value)
     }
 }
+fn validated_session_ref(
+    session_ref: Option<AgentSessionRef>,
+) -> Result<Option<AgentSessionRef>, ApiError> {
+    let Some(session_ref) = session_ref else {
+        return Ok(None);
+    };
+    let validated = match session_ref.kind {
+        AgentSessionRefKind::Id => AgentSessionRef::id(session_ref.value),
+        AgentSessionRefKind::Path => AgentSessionRef::path(session_ref.value),
+    }
+    .ok_or_else(|| api("invalid_agent_session", "invalid agent session reference"))?;
+    Ok(Some(validated))
+}
+
 fn truncate_utf8(mut value: String, max: usize) -> String {
     if value.len() > max {
         let boundary = value
@@ -2260,6 +2394,97 @@ mod tests {
     }
 
     #[test]
+    fn legacy_agent_report_promotes_conversation_id_to_session_ref() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+
+        let response = agent_report(
+            &daemon,
+            PaneId(4),
+            "codex".into(),
+            AgentState::Idle,
+            Some("legacy-id".into()),
+            None,
+            AgentCapabilities::default(),
+        )
+        .unwrap();
+        assert!(matches!(response, Response::Ack { revision: 8 }));
+
+        let state = lock(&daemon.state);
+        let agent = state.persisted.panes[0].agent.as_ref().unwrap();
+        assert_eq!(agent.conversation_id.as_deref(), Some("legacy-id"));
+        assert_eq!(
+            agent.session_ref.as_ref().unwrap().kind,
+            AgentSessionRefKind::Id
+        );
+        assert_eq!(agent.session_ref.as_ref().unwrap().value, "legacy-id");
+        assert!(agent.capabilities.resume);
+        drop(state);
+        let persisted = load_state(&path).unwrap();
+        let agent = persisted.panes[0].agent.as_ref().unwrap();
+        assert_eq!(agent.conversation_id.as_deref(), Some("legacy-id"));
+        assert_eq!(
+            agent.session_ref.as_ref().unwrap().kind,
+            AgentSessionRefKind::Id
+        );
+        assert_eq!(agent.session_ref.as_ref().unwrap().value, "legacy-id");
+        assert!(agent.capabilities.resume);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn agent_report_rejects_provider_mismatch_without_mutation() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
+
+        let error = agent_report(
+            &daemon,
+            PaneId(4),
+            "claude".into(),
+            AgentState::Working,
+            None,
+            Some(AgentSessionRef::path("/absolute/session").unwrap()),
+            AgentCapabilities::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "invalid_agent_session");
+
+        let state = lock(&daemon.state);
+        assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
+        assert_eq!(state.revision, 7);
+        assert!(state.events.is_empty());
+        drop(state);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn agent_report_rejects_invalid_structured_id_without_mutation() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
+
+        let error = agent_report(
+            &daemon,
+            PaneId(4),
+            "codex".into(),
+            AgentState::Working,
+            None,
+            Some(AgentSessionRef {
+                kind: AgentSessionRefKind::Id,
+                value: "invalid\nid".into(),
+            }),
+            AgentCapabilities::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "invalid_agent_session");
+
+        let state = lock(&daemon.state);
+        assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
+        assert_eq!(state.revision, 7);
+        assert!(state.events.is_empty());
+        drop(state);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn terminal_agent_environment_exposes_stable_pane_identity() {
         let environment = terminal_agent_environment(PaneId(42));
         assert!(environment
@@ -2274,6 +2499,7 @@ mod tests {
             "codex".into(),
             state,
             Some("conversation".into()),
+            None,
             AgentCapabilities::default(),
         )
     }
@@ -2603,5 +2829,150 @@ mod tests {
 
         assert_eq!(ports.get(&42), Some(&vec![3000]));
         assert_eq!(ports.get(&43), Some(&vec![5173]));
+    }
+
+    const CODEX_SESSION_ID: &str = "0195d8f4-8c88-7b32-8aee-7d3a6c32c5f8";
+
+    fn recovery_test_agent(provider: &str, conversation_id: Option<&str>) -> AgentInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": 18,
+            "provider": provider,
+            "state": "unknown",
+            "conversation_id": conversation_id,
+            "capabilities": {"prompt": false, "resume": false, "lifecycle": false},
+            "source": "persisted"
+        }))
+        .unwrap()
+    }
+
+    fn recovery_test_recipe() -> LaunchRecipe {
+        LaunchRecipe {
+            command: vec!["saved-agent".into(), "--restore".into()],
+            initial_input: Some("saved agent-start input".into()),
+            rows: 37,
+            cols: 113,
+        }
+    }
+
+    fn assert_recipe_matches(actual: &LaunchRecipe, expected: &LaunchRecipe) {
+        assert_eq!(actual.command, expected.command);
+        assert_eq!(actual.initial_input, expected.initial_input);
+        assert_eq!(actual.rows, expected.rows);
+        assert_eq!(actual.cols, expected.cols);
+    }
+
+    fn assert_clean_shell_recipe(recipe: &LaunchRecipe, saved_recipe: &LaunchRecipe) {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        assert_eq!(recipe.command, vec![shell]);
+        assert_eq!(recipe.initial_input, None);
+        assert_eq!(recipe.rows, saved_recipe.rows);
+        assert_eq!(recipe.cols, saved_recipe.cols);
+    }
+
+    #[test]
+    fn recovery_launch_valid_codex_id_provides_a_resume_key() {
+        let saved_recipe = recovery_test_recipe();
+        let mut agent = recovery_test_agent("codex", Some(CODEX_SESSION_ID));
+
+        let launch = recovery_launch(Some(&mut agent), &saved_recipe, true);
+
+        assert_eq!(
+            launch.recipe.command,
+            vec![
+                "codex".to_string(),
+                "resume".to_string(),
+                CODEX_SESSION_ID.to_string(),
+            ]
+        );
+        assert_eq!(launch.recipe.initial_input, None);
+        assert_eq!(launch.recipe.rows, saved_recipe.rows);
+        assert_eq!(launch.recipe.cols, saved_recipe.cols);
+        assert!(launch.resume_key.is_some());
+    }
+
+    #[test]
+    fn recovery_launch_disabled_leaves_saved_recipe_without_a_resume_key() {
+        let saved_recipe = recovery_test_recipe();
+        let mut agent = recovery_test_agent("codex", Some(CODEX_SESSION_ID));
+
+        let launch = recovery_launch(Some(&mut agent), &saved_recipe, false);
+
+        assert_recipe_matches(&launch.recipe, &saved_recipe);
+        assert!(launch.resume_key.is_none());
+    }
+
+    #[test]
+    fn recovery_launch_without_agent_or_session_ref_leaves_saved_recipe_unchanged() {
+        let saved_recipe = recovery_test_recipe();
+
+        let launch = recovery_launch(None, &saved_recipe, true);
+        assert_recipe_matches(&launch.recipe, &saved_recipe);
+        assert!(launch.resume_key.is_none());
+
+        let mut agent_without_ref = recovery_test_agent("codex", None);
+        let launch = recovery_launch(Some(&mut agent_without_ref), &saved_recipe, true);
+        assert_recipe_matches(&launch.recipe, &saved_recipe);
+        assert!(launch.resume_key.is_none());
+    }
+
+    #[test]
+    fn recovery_launch_legacy_codex_conversation_migrates_to_session_ref() {
+        let saved_recipe = recovery_test_recipe();
+        let mut agent = recovery_test_agent("codex", Some(CODEX_SESSION_ID));
+
+        let launch = recovery_launch(Some(&mut agent), &saved_recipe, true);
+
+        assert_eq!(
+            launch.recipe.command,
+            vec![
+                "codex".to_string(),
+                "resume".to_string(),
+                CODEX_SESSION_ID.to_string(),
+            ]
+        );
+        assert!(agent.session_ref.is_some());
+    }
+
+    #[test]
+    fn recovery_launch_unsupported_or_malformed_ref_uses_clean_shell() {
+        let saved_recipe = recovery_test_recipe();
+        let mut seeded = recovery_test_agent("codex", Some(CODEX_SESSION_ID));
+        recovery_launch(Some(&mut seeded), &saved_recipe, true);
+
+        let mut unsupported = seeded.clone();
+        unsupported.provider = "unsupported".into();
+        let unsupported_launch = recovery_launch(Some(&mut unsupported), &saved_recipe, true);
+        assert_clean_shell_recipe(&unsupported_launch.recipe, &saved_recipe);
+        assert!(unsupported_launch.resume_key.is_none());
+
+        let malformed_id = format!("{CODEX_SESSION_ID}\\n");
+        let encoded = serde_json::to_string(&seeded)
+            .unwrap()
+            .replace(CODEX_SESSION_ID, &malformed_id);
+        let mut malformed: AgentInfo = serde_json::from_str(&encoded).unwrap();
+        let malformed_launch = recovery_launch(Some(&mut malformed), &saved_recipe, true);
+        assert_clean_shell_recipe(&malformed_launch.recipe, &saved_recipe);
+        assert!(malformed_launch.resume_key.is_none());
+    }
+
+    #[test]
+    fn reset_recovered_agent_preserves_identity_and_marks_persisted_unknown() {
+        let mut agent = recovery_test_agent("codex", Some(CODEX_SESSION_ID));
+        let saved_recipe = recovery_test_recipe();
+        recovery_launch(Some(&mut agent), &saved_recipe, true);
+        let id = agent.id;
+        let provider = agent.provider.clone();
+        let conversation_id = agent.conversation_id.clone();
+        let session_ref = agent.session_ref.clone();
+
+        reset_recovered_agent(&mut agent);
+
+        assert_eq!(agent.id, id);
+        assert_eq!(agent.provider, provider);
+        assert_eq!(agent.conversation_id, conversation_id);
+        assert_eq!(agent.session_ref, session_ref);
+        assert_eq!(agent.state, AgentState::Unknown);
+        assert_eq!(agent.capabilities, AgentCapabilities::default());
+        assert_eq!(agent.source, "persisted");
     }
 }

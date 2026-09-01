@@ -60,6 +60,7 @@ fn agent(id: u64, state: AgentState) -> AgentInfo {
         provider: "test-agent".into(),
         state,
         conversation_id: None,
+        session_ref: None,
         capabilities: AgentCapabilities::default(),
         source: "test".into(),
     }

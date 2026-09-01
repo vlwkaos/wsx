@@ -109,6 +109,10 @@ fn default_terminal_escape_chord() -> String {
     "ctrl+a w".to_string()
 }
 
+fn default_resume_agents_on_restore() -> bool {
+    true
+}
+
 /// Canonical form used for project-path identity. A trailing `/` is the only
 /// divergence we've seen between a user-typed path and its stored form, and an
 /// un-normalized duplicate silently breaks dedup / delete / cache lookups.
@@ -127,6 +131,8 @@ pub struct GlobalConfig {
     pub exclude_worktree_paths: Vec<String>,
     #[serde(default = "default_terminal_escape_chord")]
     pub terminal_escape_chord: String,
+    #[serde(default = "default_resume_agents_on_restore")]
+    pub resume_agents_on_restore: bool,
 }
 
 impl Default for GlobalConfig {
@@ -136,6 +142,7 @@ impl Default for GlobalConfig {
             projects: vec![],
             exclude_worktree_paths: default_exclude_worktree_paths(),
             terminal_escape_chord: default_terminal_escape_chord(),
+            resume_agents_on_restore: default_resume_agents_on_restore(),
         }
     }
 }
@@ -179,6 +186,8 @@ struct GlobalConfigWire {
     exclude_worktree_paths: Vec<String>,
     #[serde(default = "default_terminal_escape_chord")]
     terminal_escape_chord: String,
+    #[serde(default = "default_resume_agents_on_restore")]
+    resume_agents_on_restore: bool,
 }
 
 #[derive(Deserialize)]
@@ -245,6 +254,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
             projects,
             exclude_worktree_paths: wire.exclude_worktree_paths,
             terminal_escape_chord: wire.terminal_escape_chord,
+            resume_agents_on_restore: wire.resume_agents_on_restore,
         };
         config.migrate_reserved_names();
         Ok(config)

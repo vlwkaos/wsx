@@ -8,27 +8,27 @@
 - Replace foreground attach and captured previews with a writable semantic terminal viewport and Workspace/Terminal modes. The default configurable focus sequence is `Ctrl+A`, then `W`; double the prefix to send it literally.
 - Change `SessionInfo` to wsx `SessionId`, `PaneId`, and `TerminalId` identities with normalized `AgentState`, pane layouts, and subordinate pane projections.
 - Replace `wsx herdr status` with side-effect-free `wsx runtime status` and replace `WSX_HERDR_BIN` with `WSX_DAEMON_BIN`.
-- Bump the local wsxd protocol to version 6. Version 2 introduced mandatory same-connection handshakes and persistent terminal streams; version 3 added authoritative cell-width occupancy and initial viewport dimensions; version 4 added ephemeral pane listener metadata; version 5 added private restart launch recipes and bounded initial commands; version 6 adds daemon-owned Recent clearing and terminal-entry activity.
+- Bump the local wsxd protocol to version 7. Version 2 introduced mandatory same-connection handshakes and persistent terminal streams; version 3 added authoritative cell-width occupancy and initial viewport dimensions; version 4 added ephemeral pane listener metadata; version 5 added private restart launch recipes and bounded initial commands; version 6 added daemon-owned Recent clearing and terminal-entry activity; version 7 adds typed native agent-session references and restoration capability.
 - Replace tab commands, flags, config, cache, and single-membership behavior with canonical multi-group selection. Stored tab data migrates once; legacy CLI surfaces are removed.
 - Reserve suffix `q` in two-chord `terminal_escape_chord` values for TUI-only quit. Existing configurations that used `q` to focus Workspace must choose another suffix; single-chord focus configurations remain unchanged.
 
 ### Features
 
 - Add a persistent same-user daemon that owns PTYs, Ghostty terminal state, revisions, bounded snapshots/events, writable leases, persistence, pane mutations, normalized agent reports, and executable plugins.
-- Add secure wsx-owned integrations for the 17 agent targets supported by the former Herdr runtime, with `wsx agent install <target>`, a version-scoped TUI startup prompt for detected missing integrations, authoritative lifecycle state where vendor hooks support it, stable pane identity from wsxd, and parenthesized session identity such as `(pi)`.
+- Add secure wsx-owned integrations for the 17 agent targets supported by the former Herdr runtime, with `wsx agent install <target>`, a version-scoped TUI startup prompt for detected missing integrations, authoritative lifecycle state where vendor hooks support it, stable pane identity from wsxd, parenthesized session identity such as `(pi)`, and typed native session references for cold conversation restoration.
 - Add semantic keyboard and mouse encoding against authoritative terminal modes, styled cell frames, application-requested cursor shape, viewport resize, explicit lease takeover, and pane split/focus/close operations.
 - Add confirmed Workspace `Q` hard quit and `wsx daemon stop`, both using graceful wsxd cleanup so saved session commands recreate on the next launch.
 - Show sessions directly below worktrees and optional pane rows below multi-pane sessions; use state icons plus authoritative agent names and aggregate automatically detected TCP listeners into sessions and worktrees.
 - Add multi-membership project Groups with one optional Workspace/CLI filter, multi-toggle assignment, a virtual lowercase `ungrouped` view, a canonical header/content/footer layout with one persistent full-width horizontally scrollable chip header and no Workspace spacer, a left-sidebar scrollbar, a stable full focus frame around Workspace navigation, and green push-ready Git status.
 - Add a permanent `◷ recent` virtual group selected on every TUI startup and backed by persisted authoritative agent `working` reports, session creation, and terminal entry from the previous 24 hours; support reversible `d` removal and preserve activity across wsxd restart without process or terminal inference.
-- Add canonical bounded `wsx.config.yml` project settings, edit-time schema templates, atomic `.gtrconfig` migration without deleting the legacy file, Workspace shortcuts for project and global config editing.
+- Add canonical bounded `wsx.config.yml` project settings, edit-time schema templates, atomic `.gtrconfig` migration without deleting the legacy file, Workspace shortcuts for project and global config editing, and default-on `resume_agents_on_restore` policy with a fail-closed opt-out.
 - Package adjacent universal `wsx` and `wsxd` executables and provide dependency-free `cargo xtask run` and `cargo xtask build` workflows.
 - Add pinned Nextest 0.9.143 and strict Clippy gates on Linux and macOS CI, with doctests and the production-equivalent runtime smoke kept as explicit steps.
 
 ### Bug Fixes
 
 - Reuse a compatible running wsxd and gracefully replace an incompatible daemon before starting the adjacent binary, including protocol 1 and unadvertised protocol 2 shutdown paths; default additive capability fields so protocol 4 can decode and replace a protocol-3 daemon.
-- Preserve stable session, pane, terminal, and known-agent identity across daemon restart; recreate each pane from its owner-only saved launch recipe, retain failed panes as exited, and reset stale agent state until its adapter reports again.
+- Preserve stable session, pane, terminal, and known-agent identity across daemon restart; resume valid unique integration-reported conversations with direct vendor argv for all 17 supported agents, safely fall back for invalid or duplicate references, retain failed panes as exited, and reset stale agent state until its adapter reports again.
 - Harden daemon lifecycle boundaries with exclusive owner-only state tempfiles, deduplicated aggregate-bounded terminal views, and one-shot process-group teardown.
 - Keep PTY spawn, terminal I/O, process termination, and plugin callbacks outside daemon-state locks.
 - Keep accepted terminal surfaces in one epoch-, pane-, and terminal-keyed TUI projection, independent of workspace metadata revisions, so agent reports cannot blank live terminals while daemon restart and terminal replacement still discard stale content.
