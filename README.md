@@ -49,7 +49,7 @@ wsx agent install pi
 wsx agent install claude
 ```
 
-Restart the affected agent after installation. Installers honor each agent's standard configuration-directory override and preserve unrelated configuration.
+Restart the affected agent after installation. Installers honor each agent's standard configuration-directory override and preserve unrelated configuration. Current integrations also report the provider's native session ID or path. After a cold wsxd restart, wsx starts a fresh process with that provider's resume command and continues the reported conversation. Panes without a reference keep their saved generic launch recipe. Unsupported, malformed, or duplicate references open a clean shell instead of starting a new agent conversation.
 
 ## Navigation
 
@@ -77,7 +77,10 @@ Configure the escape sequence in `~/.config/wsx/config.toml`:
 
 ```toml
 terminal_escape_chord = "ctrl+a w"
+resume_agents_on_restore = true
 ```
+
+Native agent conversation restoration is enabled by default. Set `resume_agents_on_restore = false` to preserve generic saved launch recipes after wsxd restarts. A malformed or unreadable global config disables restoration for that startup. Changes apply after wsxd restarts.
 
 The prefix must include a modifier. A single modified chord remains supported for Workspace focus but has no separate prefixed-quit sequence. In a two-chord configuration, suffix `q` is reserved for TUI quit and cannot be the Workspace-focus suffix. Names include `ctrl`, `alt`, `shift`, `super`, `space`, `tab`, `esc`, and single characters. Press `,` in Workspace to open the global config in `$EDITOR`; wsx validates it when the editor closes, and valid changes apply on the next launch.
 
@@ -109,7 +112,7 @@ wsx session prompt <session-or-pane> <prompt>
 wsx session peek <session-or-pane> [-n VISIBLE_LINES] [--trim]
 wsx session rename <session-id> <label>
 wsx agent install <target>
-wsx agent report <pane> --provider <name> --state <state> [capabilities]
+wsx agent report <pane> --provider <name> --state <state> [--session-id <id>|--session-path <path>] [capabilities]
 wsx plugin list [--json]
 wsx plugin reload
 wsx runtime status [--json]
@@ -117,7 +120,7 @@ wsx daemon stop
 wsx routine ...
 ```
 
-`wsx runtime status` and `wsx daemon stop` never start the daemon. `Q` in Workspace asks for confirmation, gracefully stops wsxd and all live PTYs, then exits the TUI. Normal wsx startup reuses a compatible running daemon. If the local protocol changed, wsx requests graceful shutdown, waits for cleanup, and starts the adjacent or `PATH`-resolved `wsxd`. Cross-version process handoff is not supported, so the old PTYs end; the new daemon preserves each wsx session and pane identity and recreates its saved launch command instead. `WSX_DAEMON_BIN` and `WSX_SOCKET` are trusted same-user overrides.
+`wsx runtime status` and `wsx daemon stop` never start the daemon. `Q` in Workspace asks for confirmation, gracefully stops wsxd and all live PTYs, then exits the TUI. Normal wsx startup reuses a compatible running daemon. If the local protocol changed, wsx requests graceful shutdown, waits for cleanup, and starts the adjacent or `PATH`-resolved `wsxd`. Cross-version process handoff is not supported, so the old PTYs end; the new daemon preserves each wsx session and pane identity, resumes eligible adapter-reported agent conversations, and otherwise recreates the saved launch command. `WSX_DAEMON_BIN` and `WSX_SOCKET` are trusted same-user overrides.
 
 ## Plugins and agents
 
@@ -132,8 +135,9 @@ Agent integrations report normalized `unknown`, `idle`, `working`, `blocked`, `d
 - Events invalidate revisions; clients reconcile from authoritative snapshots.
 - Slow clients do not block PTY parsing. Messages, frames, commands, plugins, and resource counts are bounded.
 - Terminal frames preserve Ghostty wide/spacer occupancy, defer intermediate synchronized-output frames after the first baseline, and use the subscribed viewport for that baseline. Workspace metadata refreshes never own or clear the accepted terminal surface.
-- wsxd persists project, worktree, session, pane, terminal, and known-agent identity. After daemon restart it recreates each pane from an owner-only saved launch recipe; this is a fresh process and terminal buffer, not restoration of the original process or agent conversation.
-- Remote access, live daemon handoff, graphics transport, marketplace installation, and guaranteed process or conversation restoration are not yet supported.
+- wsxd persists project, worktree, session, pane, terminal, known-agent identity, and validated native session references. After daemon restart, eligible supported agents resume through direct vendor argv such as `codex resume <id>` or `pi --session <path>`; lifecycle state remains unknown until the adapter reports again.
+- Native resume always creates a fresh process, PTY, and terminal buffer. It does not preserve arbitrary shell processes, terminal history, leases, or unsupported agent conversations.
+- Remote access, live daemon handoff, graphics transport, marketplace installation, and original-process restoration are not yet supported.
 
 ## Development
 

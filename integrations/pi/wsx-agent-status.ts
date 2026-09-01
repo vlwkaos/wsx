@@ -1,7 +1,8 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=8
+// WSX_INTEGRATION_VERSION=9
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
+import path from "node:path";
 
 const REPORT_TIMEOUT_MS = 1_000;
 const paneId = process.env.WSX_PANE_ID;
@@ -9,16 +10,17 @@ const reportBin = process.env.WSX_AGENT_REPORT_BIN || "wsx";
 const enabled = typeof paneId === "string" && /^[1-9][0-9]*$/.test(paneId);
 
 type ReportState = "idle" | "working" | "blocked" | "done";
+type SessionRef = { id?: string; path?: string };
 
 let sendInFlight = false;
-let pending: { state: ReportState; conversationId?: string } | undefined;
+let pending: { state: ReportState; sessionRef?: SessionRef } | undefined;
 let agentActive = false;
 let blockedCount = 0;
-let currentConversationId: string | undefined;
+let currentSessionRef: SessionRef | undefined;
 
-function report(state: ReportState, conversationId = currentConversationId): void {
+function report(state: ReportState, sessionRef = currentSessionRef): void {
   if (!enabled) return;
-  pending = { state, conversationId };
+  pending = { state, sessionRef };
   drain();
 }
 
@@ -28,17 +30,27 @@ function drain(): void {
   pending = undefined;
   sendInFlight = true;
   const args = ["agent", "report", paneId, "--provider", "pi", "--state", next.state, "--lifecycle"];
-  if (next.conversationId) args.push("--conversation-id", next.conversationId);
+  if (next.sessionRef?.path) args.push("--session-path", next.sessionRef.path);
+  else if (next.sessionRef?.id) args.push("--session-id", next.sessionRef.id);
   execFile(reportBin, args, { timeout: REPORT_TIMEOUT_MS, windowsHide: true }, () => {
     sendInFlight = false;
     drain();
   });
 }
 
-function conversationId(ctx: unknown): string | undefined {
-  const value = (ctx as { sessionManager?: { getSessionId?: () => unknown } } | undefined)
-    ?.sessionManager?.getSessionId?.();
-  return typeof value === "string" && value ? value : undefined;
+function sessionRef(ctx: unknown): SessionRef | undefined {
+  const manager = (ctx as {
+    sessionManager?: { getSessionFile?: () => unknown; getSessionId?: () => unknown };
+  } | undefined)?.sessionManager;
+  try {
+    const value = manager?.getSessionFile?.();
+    if (typeof value === "string" && path.isAbsolute(value)) return { path: value };
+  } catch {}
+  try {
+    const value = manager?.getSessionId?.();
+    if (typeof value === "string" && value) return { id: value };
+  } catch {}
+  return undefined;
 }
 
 // ^ [[Session Model]] integrations/pi/wsx-agent-status.ts -> crates/wsx-core/src/runtime/domain.rs
@@ -52,21 +64,21 @@ export default function wsxAgentStatus(pi: ExtensionAPI): void {
     publish();
   });
   pi.on("session_start", (_event, ctx) => {
-    currentConversationId = conversationId(ctx);
+    currentSessionRef = sessionRef(ctx);
     agentActive = ctx.isIdle() === false;
     publish();
   });
   pi.on("agent_start", (_event, ctx) => {
-    currentConversationId = conversationId(ctx);
+    currentSessionRef = sessionRef(ctx);
     agentActive = true;
     publish();
   });
   pi.on("agent_settled", (_event, ctx) => {
-    currentConversationId = conversationId(ctx);
+    currentSessionRef = sessionRef(ctx);
     agentActive = false;
     publish();
   });
   pi.on("session_shutdown", (event, ctx) => {
-    if (event.reason === "quit") report("done", conversationId(ctx));
+    if (event.reason === "quit") report("done", sessionRef(ctx));
   });
 }

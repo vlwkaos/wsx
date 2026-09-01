@@ -16,5 +16,5 @@ except Exception: pass' 2>/dev/null || true)"
 fi
 set -- agent report "$WSX_PANE_ID" --provider "@PROVIDER@" --state "$state"
 [ "@LIFECYCLE@" = "yes" ] && set -- "$@" --lifecycle
-[ -n "$conversation" ] && set -- "$@" --conversation-id "$conversation"
+[ -n "$conversation" ] && set -- "$@" --session-id "$conversation"
 "${WSX_AGENT_REPORT_BIN:-wsx}" "$@" >/dev/null 2>&1 || true

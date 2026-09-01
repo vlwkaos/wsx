@@ -965,6 +965,19 @@ mod tests {
                 &mut mismatch,
                 &Response::Error(super::super::protocol::ApiError::new(
                     "protocol_mismatch",
+                    "client 7, daemon 2",
+                )),
+            );
+
+            let (mut protocol_six, _) = listener.accept().unwrap();
+            assert_eq!(
+                read_json_line::<Request>(&mut protocol_six, MAX_RESPONSE_BYTES).unwrap(),
+                Request::Hello { protocol: 6 }
+            );
+            send_response(
+                &mut protocol_six,
+                &Response::Error(super::super::protocol::ApiError::new(
+                    "protocol_mismatch",
                     "client 6, daemon 2",
                 )),
             );
@@ -1060,6 +1073,19 @@ mod tests {
             );
             send_response(
                 &mut mismatch,
+                &Response::Error(super::super::protocol::ApiError::new(
+                    "protocol_mismatch",
+                    "client 7, daemon 1",
+                )),
+            );
+
+            let (mut protocol_six, _) = listener.accept().unwrap();
+            assert_eq!(
+                read_json_line::<Request>(&mut protocol_six, MAX_RESPONSE_BYTES).unwrap(),
+                Request::Hello { protocol: 6 }
+            );
+            send_response(
+                &mut protocol_six,
                 &Response::Error(super::super::protocol::ApiError::new(
                     "protocol_mismatch",
                     "client 6, daemon 1",
