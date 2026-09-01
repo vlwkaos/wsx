@@ -19,7 +19,7 @@ wsx presents **Project → Worktree → Session → Pane** in a keyboard-first T
 
 ## Install
 
-Release archives contain adjacent `wsx` and `wsxd` executables. The Homebrew formula must be updated to the 0.18 archive before publication.
+Release archives contain adjacent `wsx` and `wsxd` executables. The Homebrew formula must be updated to the 0.20 archive before publication.
 
 ### Build from source
 
@@ -55,7 +55,7 @@ Restart the affected agent after installation. Installers honor each agent's sta
 
 | Context | Keys |
 |---|---|
-| Workspace | `j/k` move, `h/l` collapse/expand, `Enter` select |
+| Workspace | `j/k` move, `h/l` collapse/expand, `Enter` select, `i` next idle, `a` next active, `n` next needing attention |
 | Project | `p` add project, `w` add worktree, `u` add routine, `e` view/edit project config, `g` assign group |
 | Worktree | `s` add session, `r` alias, `d` delete |
 | Session or pane | `Enter` Terminal mode, `C` interrupt |
@@ -71,9 +71,9 @@ Use `wsx group ls|create|rename|add|remove` to manage groups. Status, worktree-l
 
 Session rows use icons for state and show the adapter-reported agent name in parentheses without redundant state words: `○` idle, `◐` working, `×` blocked, `✓` done, `!` error, `·` unknown, and `⊘` muted. Ordinary shells omit the agent label. The terminal header shows `project › worktree › session`, the same state icon, the agent when known, and detected TCP listeners. Worktree previews aggregate ports from their sessions. Port detection is best effort and requires `lsof` on macOS or Linux.
 
-Terminal mode forwards ordinary keyboard and mouse input over a persistent stream. The terminal fills the right panel below its one-row breadcrumb without wsx padding. Click the left panel to return to Workspace mode and select that row. Press `Ctrl+A`, then `W` to focus Workspace; `W` also works while Control remains held. Press `Ctrl+A`, then `Q` to quit only the TUI while wsxd sessions continue; the same sequence works in Workspace, where unprefixed `q` already quits. Unprefixed `q` still reaches the terminal. `Ctrl+A Ctrl+A` sends a literal `Ctrl+A`; any other suffix forwards both keys to the terminal. Footer hints use the standard `(Ctrl+A W)workspace  (Ctrl+A Q)quit` form. Default terminal backgrounds remain transparent; applications such as Vim retain explicit ANSI cell backgrounds and control the visible block, underline, or bar cursor through Ghostty cursor state.
+The bottom-left status badge uses semantic background-color families to distinguish navigation, Terminal, input, confirmation, configuration, movement, information, and routine modes. Terminal mode forwards ordinary keyboard and mouse input over a persistent stream. The terminal fills the right panel below its one-row breadcrumb without wsx padding. Click the left panel to return to Workspace mode and select that row. Press `Ctrl+A`, then `W` to focus Workspace; `W` also works while Control remains held. Press `Ctrl+A`, then `Q` to quit only the TUI while wsxd sessions continue; the same sequence works in Workspace, where unprefixed `q` already quits. Unprefixed `q` still reaches the terminal. `Ctrl+A Ctrl+A` sends a literal `Ctrl+A`; any other suffix forwards both keys to the terminal. Footer hints use the standard `(Ctrl+A W)workspace  (Ctrl+A Q)quit` form. Default terminal backgrounds remain transparent; applications such as Vim retain explicit ANSI cell backgrounds and control the visible block, underline, or bar cursor through Ghostty cursor state.
 
-Configure the escape sequence in `~/.config/wsx/config.toml`:
+Configure the escape sequence in `~/.config/wsx/config-v2.toml` on Linux or the platform-equivalent wsx configuration directory:
 
 ```toml
 terminal_escape_chord = "ctrl+a w"
@@ -82,7 +82,7 @@ resume_agents_on_restore = true
 
 Native agent conversation restoration is enabled by default. Set `resume_agents_on_restore = false` to preserve generic saved launch recipes after wsxd restarts. A malformed or unreadable global config disables restoration for that startup. Changes apply after wsxd restarts.
 
-The prefix must include a modifier. A single modified chord remains supported for Workspace focus but has no separate prefixed-quit sequence. In a two-chord configuration, suffix `q` is reserved for TUI quit and cannot be the Workspace-focus suffix. Names include `ctrl`, `alt`, `shift`, `super`, `space`, `tab`, `esc`, and single characters. Press `,` in Workspace to open the global config in `$EDITOR`; wsx validates it when the editor closes, and valid changes apply on the next launch.
+The prefix must include a modifier. A single modified chord remains supported for Workspace focus but has no separate prefixed-quit sequence. In a two-chord configuration, suffix `q` is reserved for TUI quit and cannot be the Workspace-focus suffix. Names include `ctrl`, `alt`, `shift`, `super`, `space`, `tab`, `esc`, and single characters. Press `,` in Workspace to open the global config in `$EDITOR`; wsx validates it when the editor closes, and valid changes apply on the next launch. On first 0.20 launch, wsx imports legacy `config.toml` tabs or groups into `config-v2.toml` and legacy `workspace.toml` UI state into `workspace-v2.toml`. The old files remain untouched so wsx 0.17 cannot overwrite 0.20 state.
 
 ## Project configuration
 
@@ -96,9 +96,15 @@ copy:
     - .env.example
   exclude:
     - target
+git:
+  subtrees:
+    - vendor/asched
+    - vendor/herdr
 ```
 
-If a project has `.gtrconfig` but no `wsx.config.yml`, wsx reads the legacy values and atomically creates an equivalent YAML file. It leaves `.gtrconfig` in place so you can review and remove it later. An existing `wsx.config.yml` always wins. Files larger than 64 KiB, malformed values, and unknown fields are rejected without falling back to legacy behavior. Press `e` on a project to view its config, then `e` again to edit it. Only that edit action initializes a missing or empty canonical file with the valid schema template; opening the viewer does not create files.
+If a project has `.gtrconfig` but no `wsx.config.yml`, wsx reads the legacy values and atomically creates an equivalent YAML file. It leaves `.gtrconfig` in place so you can review and remove it later. An existing `wsx.config.yml` always wins. Files larger than 64 KiB, malformed values, unknown fields, and non-normalized subtree paths are rejected without falling back to legacy behavior. Press `e` on a project to view its config, then `e` again to edit it. Only that edit action initializes a missing or empty canonical file with the valid schema template; opening the viewer does not create files.
+
+Worktree previews discover Git submodules automatically and render a separate **Submodules** section. Each row reports whether its checked-out commit matches the parent gitlink, is uninitialized or conflicted, and has modified or untracked content. This check is local and performs no submodule network fetch. Git subtrees have no authoritative persistent registry, so declare their normalized relative roots under `git.subtrees`; wsx then separates their local changes from ordinary modified files in a **Subtrees** section.
 
 ## CLI
 
@@ -136,7 +142,7 @@ Agent integrations report normalized `unknown`, `idle`, `working`, `blocked`, `d
 - Slow clients do not block PTY parsing. Messages, frames, commands, plugins, and resource counts are bounded.
 - Terminal frames preserve Ghostty wide/spacer occupancy, defer intermediate synchronized-output frames after the first baseline, and use the subscribed viewport for that baseline. Workspace metadata refreshes never own or clear the accepted terminal surface.
 - wsxd persists project, worktree, session, pane, terminal, known-agent identity, and validated native session references. After daemon restart, eligible supported agents resume through direct vendor argv such as `codex resume <id>` or `pi --session <path>`; lifecycle state remains unknown until the adapter reports again.
-- Native resume always creates a fresh process, PTY, and terminal buffer. It does not preserve arbitrary shell processes, terminal history, leases, or unsupported agent conversations.
+- Native resume always creates a fresh process, PTY, and terminal buffer. A wsxd supervisor launches the provider with direct argv and opens a fresh shell when that provider exits. It does not preserve arbitrary shell processes, terminal history, leases, or unsupported agent conversations.
 - Remote access, live daemon handoff, graphics transport, marketplace installation, and original-process restoration are not yet supported.
 
 ## Development

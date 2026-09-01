@@ -19,7 +19,7 @@ wsx는 **Project → Worktree → Session → Pane** 구조를 키보드 중심 
 
 ## 설치
 
-Release archive는 인접한 `wsx`, `wsxd` executable을 포함합니다. Homebrew formula는 배포 전에 0.18 archive로 갱신해야 합니다.
+Release archive는 인접한 `wsx`, `wsxd` executable을 포함합니다. Homebrew formula는 배포 전에 0.20 archive로 갱신해야 합니다.
 
 소스 빌드에는 Rust 1.96.1과 Zig 0.15가 필요합니다. 개발 test suite를 실행하려면 `cargo-nextest` 0.9.143을 설치합니다.
 
@@ -48,7 +48,7 @@ wsx agent install claude
 
 | Context | Key |
 |---|---|
-| Workspace | `j/k` 이동, `h/l` 접기/펼치기, `Enter` 선택 |
+| Workspace | `j/k` 이동, `h/l` 접기/펼치기, `Enter` 선택, `i` idle, `a` active, `n` attention session으로 이동 |
 | Project | `p` project 추가, `w` worktree 추가, `u` routine 추가, `e` project config 보기/편집, `g` group 지정 |
 | Worktree | `s` session 추가, `r` alias, `d` 삭제 |
 | Session/Pane | `Enter` Terminal mode, `C` interrupt |
@@ -64,9 +64,9 @@ Group chip은 Workspace와 Terminal mode 모두에서 유지되는 전체 너비
 
 Session row는 상태를 icon으로 표시하고 adapter가 보고한 agent 이름을 괄호 안에 덧붙입니다. `○` idle, `◐` working, `×` blocked, `✓` done, `!` error, `·` unknown, `⊘` muted입니다. 일반 shell에는 agent label을 표시하지 않습니다. Terminal header는 `project › worktree › session`, 상태 icon, 알려진 agent, 감지된 TCP listener를 표시합니다. Worktree preview는 session port를 합산합니다. Port 감지는 best effort이며 macOS/Linux에서 `lsof`가 필요합니다.
 
-Terminal mode에서는 persistent stream으로 일반 keyboard와 mouse 입력을 PTY로 전달하며 한 줄 breadcrumb 아래의 오른쪽 panel을 wsx padding 없이 사용합니다. 왼쪽 panel을 클릭하면 Workspace mode로 돌아가면서 해당 row를 선택합니다. `Ctrl+A`를 누른 다음 `W`를 누르면 Workspace로 focus가 이동하며, Control을 계속 누른 상태의 `W`도 동작합니다. `Ctrl+A` 다음 `Q`를 누르면 wsxd session은 유지한 채 TUI만 종료합니다. 같은 sequence는 Workspace에서도 동작하며, Workspace에서는 prefix 없는 `q`도 종료합니다. Prefix 없는 Terminal `q`는 계속 terminal로 전달합니다. `Ctrl+A Ctrl+A`는 literal `Ctrl+A`를 보내며, 다른 suffix는 prefix와 함께 terminal로 전달합니다. Footer hint는 `(Ctrl+A W)workspace  (Ctrl+A Q)quit` 형식을 사용합니다. 기본 terminal background는 투명하게 유지하고 application이 지정한 ANSI cell background는 보존합니다. Vim 같은 application이 요청한 block, underline, bar cursor shape도 반영합니다.
+왼쪽 아래 status badge는 navigation, Terminal, input, confirmation, configuration, move, information, routine mode를 semantic background-color family로 구분합니다. Terminal mode에서는 persistent stream으로 일반 keyboard와 mouse 입력을 PTY로 전달하며 한 줄 breadcrumb 아래의 오른쪽 panel을 wsx padding 없이 사용합니다. 왼쪽 panel을 클릭하면 Workspace mode로 돌아가면서 해당 row를 선택합니다. `Ctrl+A`를 누른 다음 `W`를 누르면 Workspace로 focus가 이동하며, Control을 계속 누른 상태의 `W`도 동작합니다. `Ctrl+A` 다음 `Q`를 누르면 wsxd session은 유지한 채 TUI만 종료합니다. 같은 sequence는 Workspace에서도 동작하며, Workspace에서는 prefix 없는 `q`도 종료합니다. Prefix 없는 Terminal `q`는 계속 terminal로 전달합니다. `Ctrl+A Ctrl+A`는 literal `Ctrl+A`를 보내며, 다른 suffix는 prefix와 함께 terminal로 전달합니다. Footer hint는 `(Ctrl+A W)workspace  (Ctrl+A Q)quit` 형식을 사용합니다. 기본 terminal background는 투명하게 유지하고 application이 지정한 ANSI cell background는 보존합니다. Vim 같은 application이 요청한 block, underline, bar cursor shape도 반영합니다.
 
-`~/.config/wsx/config.toml`에서 escape sequence를 설정할 수 있습니다.
+Linux에서는 `~/.config/wsx/config-v2.toml`, macOS에서는 platform-equivalent wsx config directory에서 escape sequence를 설정할 수 있습니다.
 
 ```toml
 terminal_escape_chord = "ctrl+a w"
@@ -75,7 +75,7 @@ resume_agents_on_restore = true
 
 Native agent conversation 복원은 기본으로 활성화됩니다. wsxd restart 후 generic saved launch recipe를 유지하려면 `resume_agents_on_restore = false`로 설정합니다. Global config가 malformed이거나 읽을 수 없으면 해당 startup에서는 복원을 비활성화합니다. 변경은 wsxd를 다시 시작한 뒤 적용됩니다.
 
-한 개의 modified chord 설정은 Workspace focus 용도로 계속 지원하지만 별도의 prefixed quit는 제공하지 않습니다. 두 chord 설정에서는 suffix `q`를 TUI quit 용도로 예약하므로 Workspace-focus suffix로 설정할 수 없습니다. Workspace에서 `,`를 누르면 `$EDITOR`로 global config를 엽니다. Editor가 닫히면 config를 검증하며, 유효한 변경은 다음 실행부터 적용됩니다.
+한 개의 modified chord 설정은 Workspace focus 용도로 계속 지원하지만 별도의 prefixed quit는 제공하지 않습니다. 두 chord 설정에서는 suffix `q`를 TUI quit 용도로 예약하므로 Workspace-focus suffix로 설정할 수 없습니다. Workspace에서 `,`를 누르면 `$EDITOR`로 global config를 엽니다. Editor가 닫히면 config를 검증하며, 유효한 변경은 다음 실행부터 적용됩니다. 0.20을 처음 실행하면 legacy `config.toml`의 tab/group을 `config-v2.toml`로, `workspace.toml` UI state를 `workspace-v2.toml`로 한 번 import합니다. 기존 파일은 수정하지 않으므로 wsx 0.17이 0.20 state를 덮어쓸 수 없습니다.
 
 ## Project config
 
@@ -89,9 +89,15 @@ copy:
     - .env.example
   exclude:
     - target
+git:
+  subtrees:
+    - vendor/asched
+    - vendor/herdr
 ```
 
-`.gtrconfig`만 있으면 wsx가 legacy 값을 읽고 같은 내용의 `wsx.config.yml`을 atomic하게 생성합니다. 기존 `.gtrconfig`는 검토 후 직접 삭제할 수 있도록 남겨 둡니다. `wsx.config.yml`이 이미 있으면 항상 그 파일을 사용합니다. 64 KiB를 넘거나 malformed/unknown field가 있는 YAML은 거부합니다. Project에서 `e`를 눌러 config를 확인하고 다시 `e`를 누르면 편집할 수 있습니다. Viewer를 여는 것만으로는 파일을 만들지 않으며, 실제 편집을 시작할 때만 누락되었거나 비어 있는 canonical file을 유효한 schema template으로 초기화합니다.
+`.gtrconfig`만 있으면 wsx가 legacy 값을 읽고 같은 내용의 `wsx.config.yml`을 atomic하게 생성합니다. 기존 `.gtrconfig`는 검토 후 직접 삭제할 수 있도록 남겨 둡니다. `wsx.config.yml`이 이미 있으면 항상 그 파일을 사용합니다. 64 KiB를 넘거나 malformed/unknown field가 있거나 normalized relative path가 아닌 subtree를 포함한 YAML은 거부합니다. Project에서 `e`를 눌러 config를 확인하고 다시 `e`를 누르면 편집할 수 있습니다. Viewer를 여는 것만으로는 파일을 만들지 않으며, 실제 편집을 시작할 때만 누락되었거나 비어 있는 canonical file을 유효한 schema template으로 초기화합니다.
+
+Worktree preview는 Git submodule을 자동으로 발견해 별도 **Submodules** section에 표시합니다. 각 row는 checkout commit이 parent gitlink와 일치하는지, initialize/conflict 상태인지, modified 또는 untracked content가 있는지를 보여 줍니다. 이 검사는 local-only이며 submodule network fetch를 실행하지 않습니다. Git subtree에는 authoritative persistent registry가 없으므로 `git.subtrees`에 normalized relative root를 명시합니다. wsx는 해당 root의 local change를 일반 modified file과 분리해 **Subtrees** section에 표시합니다.
 
 ## CLI
 
@@ -129,7 +135,7 @@ Agent integration은 `unknown`, `idle`, `working`, `blocked`, `done`, `error` �
 - Message, frame, command, plugin, resource count는 bounded입니다.
 - Terminal frame은 Ghostty wide/spacer occupancy를 보존하고 첫 baseline 이후 synchronized-output 중간 frame을 억제하며 subscribe viewport를 baseline에 적용합니다. Workspace metadata refresh는 수락된 terminal surface를 소유하거나 지우지 않습니다.
 - wsxd는 project, worktree, session, pane, terminal, known-agent identity와 검증된 native session reference를 저장합니다. daemon restart 후 eligible agent는 `codex resume <id>`, `pi --session <path>` 같은 direct vendor argv로 conversation을 resume하며 lifecycle state는 adapter가 다시 보고할 때까지 unknown입니다.
-- Native resume은 항상 새 process, PTY, terminal buffer를 생성합니다. 임의 shell process, terminal history, lease, unsupported agent conversation은 보존하지 않습니다.
+- Native resume은 항상 새 process, PTY, terminal buffer를 생성합니다. wsxd supervisor가 provider를 direct argv로 실행하고 provider가 끝나면 fresh shell을 엽니다. 임의 shell process, terminal history, lease, unsupported agent conversation은 보존하지 않습니다.
 - Remote access, live daemon handoff, graphics transport, marketplace, original-process restoration은 아직 지원하지 않습니다.
 
 ## 개발
