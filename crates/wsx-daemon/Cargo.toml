@@ -18,5 +18,5 @@ path = "src/main.rs"
 libc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-wsx-core = { path = "../wsx-core", version = "=0.18.0" }
-wsx-terminal = { path = "../wsx-terminal", version = "=0.18.0" }
+wsx-core = { path = "../wsx-core", version = "=0.20.0" }
+wsx-terminal = { path = "../wsx-terminal", version = "=0.20.0" }

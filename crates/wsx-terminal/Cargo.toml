@@ -11,4 +11,4 @@ build = "build.rs"
 [dependencies]
 libc = { workspace = true }
 portable-pty = { path = "../../vendor/portable-pty", version = "=0.9.0" }
-wsx-core = { path = "../wsx-core", version = "=0.18.0" }
+wsx-core = { path = "../wsx-core", version = "=0.20.0" }
