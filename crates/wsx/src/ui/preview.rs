@@ -8,7 +8,7 @@ use ratatui::{
 };
 use wsx_core::model::workspace::{FetchFailReason, PaneInfo, Project, SessionInfo, WorktreeInfo};
 
-use super::{compact_port_label, theme, workspace_tree::agent_state_icon};
+use super::{compact_port_label, git_remote_status_color, theme, workspace_tree::agent_state_icon};
 
 pub fn render_terminal_breadcrumb(
     frame: &mut Frame,
@@ -126,21 +126,16 @@ pub fn render_worktree_preview(
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("Remote:", label_style)));
         if let Some(remote) = &info.remote_branch {
-            let (status_text, status_style) = match (info.behind, info.ahead) {
-                (0, 0) => ("in sync".to_string(), Style::default().fg(theme::SUCCESS)),
-                (b, a) if b > 0 && a > 0 => (
-                    format!("↓{} ↑{}  diverged — pull first", b, a),
-                    Style::default().fg(theme::ACCENT),
-                ),
-                (b, _) if b > 0 => (
-                    format!("↓{}  pull needed", b),
-                    Style::default().fg(theme::ERROR),
-                ),
-                (_, a) => (
-                    format!("↑{}  ready to push", a),
-                    Style::default().fg(theme::ACCENT),
-                ),
+            let status_text = match (info.behind, info.ahead) {
+                (0, 0) => "in sync".to_string(),
+                (b, a) if b > 0 && a > 0 => {
+                    format!("↓{} ↑{}  diverged — pull first", b, a)
+                }
+                (b, _) if b > 0 => format!("↓{}  pull needed", b),
+                (_, a) => format!("↑{}  ready to push", a),
             };
+            let status_style =
+                Style::default().fg(git_remote_status_color(info.behind, info.ahead));
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("  {} — ", remote),

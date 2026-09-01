@@ -1,8 +1,8 @@
-use super::theme;
+use super::{popup_block, theme};
 use asched_core::routine::{Routine, Trigger};
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Clear, Paragraph},
 };
 
 #[derive(Clone)]
@@ -201,15 +201,22 @@ pub fn render(frame: &mut Frame, area: Rect, form: &RoutineForm, editing: bool, 
             Span::raw(value),
         ]));
     }
-    lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        "Tab/Shift-Tab field  F1 Codex  F2 Claude  Enter save  Esc cancel",
-        Style::default().fg(theme::TEXT_SUBTLE),
-    ));
-    frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Routine ")),
-        popup,
+    let hints = Line::from(vec![
+        Span::styled(
+            " Tab/Shift-Tab field",
+            Style::default().fg(theme::TEXT_SUBTLE),
+        ),
+        Span::styled("  F1 Codex", Style::default().fg(theme::TEXT_MUTED)),
+        Span::styled("  F2 Claude", Style::default().fg(theme::TEXT_MUTED)),
+        Span::styled("  Enter save", Style::default().fg(theme::TEXT)),
+        Span::styled("  Esc cancel ", Style::default().fg(theme::TEXT_MUTED)),
+    ]);
+    let block = popup_block(
+        Line::from(" Routine "),
+        hints,
+        Style::default().fg(theme::ACCENT),
     );
+    frame.render_widget(Paragraph::new(lines).block(block), popup);
     if let Some(position) = cursor_position {
         frame.set_cursor_position(position);
     }
@@ -354,6 +361,45 @@ mod tests {
         terminal
             .draw(|frame| render(frame, frame.area(), &form, false, true))
             .unwrap();
+    }
+
+    #[test]
+    fn routine_actions_render_on_the_bottom_border() {
+        let form = RoutineForm::codex();
+        let backend = ratatui::backend::TestBackend::new(88, 13);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render(frame, frame.area(), &form, false, true))
+            .unwrap();
+
+        let rows = (0..13)
+            .map(|y| {
+                (0..88)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let bottom_y = rows
+            .iter()
+            .position(|row| row.contains("Enter save"))
+            .expect("routine hints");
+        let bottom = &rows[bottom_y];
+        assert!(bottom.contains("Esc cancel"), "{bottom:?}");
+        assert_eq!(
+            terminal.backend().buffer()[(2, bottom_y as u16)].symbol(),
+            "└"
+        );
+        assert_eq!(
+            terminal.backend().buffer()[(85, bottom_y as u16)].symbol(),
+            "┘"
+        );
+        for (y, row) in rows.iter().enumerate() {
+            if y != bottom_y {
+                assert!(!row.contains("Enter save"), "{row:?}");
+                assert!(!row.contains("Esc cancel"), "{row:?}");
+            }
+        }
     }
 
     #[test]

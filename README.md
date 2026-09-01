@@ -56,22 +56,22 @@ Restart the affected agent after installation. Installers honor each agent's sta
 | Context | Keys |
 |---|---|
 | Workspace | `j/k` move, `h/l` collapse/expand, `Enter` select |
-| Project | `p` add project, `w` add worktree, `u` add routine, `g` assign group |
+| Project | `p` add project, `w` add worktree, `u` add routine, `e` view/edit project config, `g` assign group |
 | Worktree | `s` add session, `r` alias, `d` delete |
 | Session or pane | `Enter` Terminal mode, `C` interrupt |
 | Pane | `|` split right, `-` split down, `d` close |
 | Groups | `T` open groups, `{`/`}` switch, `g` assign selected project |
-| Global | `/` search, `R` refresh, `?` help, `q` quit TUI, `Q` confirm hard quit and stop wsxd |
+| Global | `/` search, `,` edit global config, `R` refresh, `?` help, `q` quit TUI, `Q` confirm hard quit and stop wsxd |
 
 Groups are ordered, persistent project filters. A project can belong to multiple groups, while Workspace applies at most one group filter; selecting none shows every project. The virtual **ungrouped** group matches projects with no memberships. **◷ recent** matches projects touched in the last 24 hours by an authoritative agent `working` report, session creation, or entering a terminal session. In Recent, `d` on a project removes it from Recent until the next qualifying touch without unregistering it.
 
 Group chips occupy one persistent full-width header row in both Workspace and Terminal modes. Workspace content begins immediately below it; in Terminal mode, the existing breadcrumb occupies the next content row. When chips exceed the row, clickable `‹`/`›` controls and the mouse wheel scroll by whole chip; no `+N` overflow is used. Project assignment mode still toggles multiple memberships, and the left sidebar adds a right-edge scrollbar when its rows overflow.
 
-Use `wsx group ls|create|rename|add|remove` to manage groups. Status, worktree-list, and session-list accept one `--group <name>`. Legacy tab configuration and temporary multi-selection cache data migrate once and are rewritten; tab commands and flags are removed. Recent still accepts trusted `wsx agent report` input, but wsx never infers vendors or semantic activity from processes or terminal output.
+Use `wsx group ls|create|rename|add|remove` to manage groups. Status, worktree-list, and session-list accept one `--group <name>`. The TUI starts with Recent selected; group changes remain available for the running session. Legacy tab configuration and temporary multi-selection cache data migrate once and are rewritten; tab commands and flags are removed. Recent still accepts trusted `wsx agent report` input, but wsx never infers vendors or semantic activity from processes or terminal output.
 
 Session rows use icons for state and show the adapter-reported agent name in parentheses without redundant state words: `○` idle, `◐` working, `×` blocked, `✓` done, `!` error, `·` unknown, and `⊘` muted. Ordinary shells omit the agent label. The terminal header shows `project › worktree › session`, the same state icon, the agent when known, and detected TCP listeners. Worktree previews aggregate ports from their sessions. Port detection is best effort and requires `lsof` on macOS or Linux.
 
-Terminal mode forwards ordinary keyboard and mouse input over a persistent stream. The terminal fills the right panel below its one-row breadcrumb without wsx padding. Click the left panel to return to Workspace mode and select that row. Press `Ctrl+A`, then `W` to focus Workspace; `W` also works while Control remains held. `Ctrl+A Ctrl+A` sends a literal `Ctrl+A`; any other suffix forwards both keys to the terminal. Default terminal backgrounds remain transparent; applications such as Vim retain explicit ANSI cell backgrounds and control the visible block, underline, or bar cursor through Ghostty cursor state.
+Terminal mode forwards ordinary keyboard and mouse input over a persistent stream. The terminal fills the right panel below its one-row breadcrumb without wsx padding. Click the left panel to return to Workspace mode and select that row. Press `Ctrl+A`, then `W` to focus Workspace; `W` also works while Control remains held. Press `Ctrl+A`, then `Q` to quit only the TUI while wsxd sessions continue; the same sequence works in Workspace, where unprefixed `q` already quits. Unprefixed `q` still reaches the terminal. `Ctrl+A Ctrl+A` sends a literal `Ctrl+A`; any other suffix forwards both keys to the terminal. Footer hints use the standard `(Ctrl+A W)workspace  (Ctrl+A Q)quit` form. Default terminal backgrounds remain transparent; applications such as Vim retain explicit ANSI cell backgrounds and control the visible block, underline, or bar cursor through Ghostty cursor state.
 
 Configure the escape sequence in `~/.config/wsx/config.toml`:
 
@@ -79,7 +79,7 @@ Configure the escape sequence in `~/.config/wsx/config.toml`:
 terminal_escape_chord = "ctrl+a w"
 ```
 
-The prefix must include a modifier. A single modified chord remains supported. Names include `ctrl`, `alt`, `shift`, `super`, `space`, `tab`, `esc`, and single characters.
+The prefix must include a modifier. A single modified chord remains supported for Workspace focus but has no separate prefixed-quit sequence. In a two-chord configuration, suffix `q` is reserved for TUI quit and cannot be the Workspace-focus suffix. Names include `ctrl`, `alt`, `shift`, `super`, `space`, `tab`, `esc`, and single characters. Press `,` in Workspace to open the global config in `$EDITOR`; wsx validates it when the editor closes, and valid changes apply on the next launch.
 
 ## Project configuration
 
@@ -95,7 +95,7 @@ copy:
     - target
 ```
 
-If a project has `.gtrconfig` but no `wsx.config.yml`, wsx reads the legacy values and atomically creates an equivalent YAML file. It leaves `.gtrconfig` in place so you can review and remove it later. An existing `wsx.config.yml` always wins. Files larger than 64 KiB, malformed values, and unknown fields are rejected without falling back to legacy behavior.
+If a project has `.gtrconfig` but no `wsx.config.yml`, wsx reads the legacy values and atomically creates an equivalent YAML file. It leaves `.gtrconfig` in place so you can review and remove it later. An existing `wsx.config.yml` always wins. Files larger than 64 KiB, malformed values, and unknown fields are rejected without falling back to legacy behavior. Press `e` on a project to view its config, then `e` again to edit it. Only that edit action initializes a missing or empty canonical file with the valid schema template; opening the viewer does not create files.
 
 ## CLI
 

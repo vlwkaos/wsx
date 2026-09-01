@@ -16,6 +16,7 @@ pub enum Action {
     Delete,
     Clean,
     Edit,
+    EditGlobalConfig,
     SetAlias,
     Refresh,
     Help,

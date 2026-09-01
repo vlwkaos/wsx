@@ -21,6 +21,17 @@ impl SidebarLayout {
         Self::from_area(area, false)
     }
 
+    /// ^ Stable navigation frame. Gutters stay reserved when focus border
+    /// glyphs are hidden, so rows do not move between Workspace and Terminal.
+    pub fn bordered(area: Rect) -> Self {
+        let mut layout = Self::from_area(area, false);
+        layout.list.y = layout.list.y.saturating_add(1);
+        layout.list.height = layout.list.height.saturating_sub(2);
+        layout.scrollbar.y = layout.scrollbar.y.saturating_add(1);
+        layout.scrollbar.height = layout.scrollbar.height.saturating_sub(2);
+        layout
+    }
+
     /// Sidebar content with a local title and one blank row, used by Group Manager.
     pub fn with_header(area: Rect) -> Self {
         Self::from_area(area, true)
@@ -243,6 +254,28 @@ mod tests {
             GroupKey::Named("personal".into()),
             GroupKey::Named("work".into()),
         ]
+    }
+
+    #[test]
+    fn bordered_sidebar_keeps_stable_content_gutters() {
+        let area = Rect::new(4, 5, 32, 10);
+        let plain = SidebarLayout::new(area);
+        let bordered = SidebarLayout::bordered(area);
+
+        assert_eq!(
+            (bordered.list.x, bordered.list.width),
+            (plain.list.x, plain.list.width)
+        );
+        assert_eq!(bordered.scrollbar.x, plain.scrollbar.x);
+        assert_eq!((bordered.list.y, bordered.list.height), (6, 8));
+        assert_eq!(bordered.item_at(Position::new(5, 5), 0, 20), None);
+        assert_eq!(bordered.item_at(Position::new(5, 6), 3, 20), Some(3));
+
+        for height in 0..=2 {
+            let tiny = SidebarLayout::bordered(Rect::new(0, 0, 1, height));
+            assert_eq!(tiny.list.height, 0);
+            assert_eq!(tiny.item_at(Position::new(0, 0), 0, 1), None);
+        }
     }
 
     #[test]
