@@ -1,4 +1,4 @@
-// ~/.config/wsx/config.toml
+// ~/.config/wsx/config-v2.toml
 // ref: toml crate — https://docs.rs/toml/
 // ^ [[wsx Architecture]] Groups are the sole project organization and workspace selection contract.
 
@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const RECENT_GROUP_WINDOW_MS: u64 = 24 * 60 * 60 * 1_000;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const CONFIG_V2_FILE: &str = "config-v2.toml";
+const LEGACY_CONFIG_FILE: &str = "config.toml";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum GroupKey {
@@ -348,36 +350,72 @@ impl GlobalConfig {
     }
 
     pub fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("wsx").join("config.toml"))
+        dirs::config_dir().map(|directory| directory.join("wsx").join(CONFIG_V2_FILE))
     }
 
-    /// Returns `(config, warning)`. Parse errors retain the historical default
-    /// fallback; migration write failures are returned to avoid hiding data loss.
+    fn legacy_config_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|directory| directory.join("wsx").join(LEGACY_CONFIG_FILE))
+    }
+
+    /// Returns `(config, warning)`. The v2 path isolates wsx 0.20 from older
+    /// whole-file serializers; first load copies either legacy tabs or current
+    /// group data without modifying the old path.
     pub fn load() -> Result<(Self, Option<String>)> {
-        let path = Self::config_path().context("no config dir")?;
-        if !path.exists() {
+        let canonical = Self::config_path().context("no config dir")?;
+        let legacy = Self::legacy_config_path().context("no config dir")?;
+        Self::load_from_paths(&canonical, &legacy)
+    }
+
+    fn load_from_paths(canonical: &Path, legacy: &Path) -> Result<(Self, Option<String>)> {
+        if canonical.exists() {
+            let text = std::fs::read_to_string(canonical)
+                .with_context(|| format!("reading {}", canonical.display()))?;
+            return match toml::from_str::<Self>(&text) {
+                Err(error) => Ok((
+                    Self::default(),
+                    Some(format!("config parse error (using defaults): {error}")),
+                )),
+                Ok(config) => {
+                    if stored_data_needs_migration(&text) {
+                        config.save_to(canonical)?;
+                    }
+                    Ok((config, None))
+                }
+            };
+        }
+        if !legacy.exists() {
             return Ok((Self::default(), None));
         }
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let text = std::fs::read_to_string(legacy)
+            .with_context(|| format!("reading {}", legacy.display()))?;
         match toml::from_str::<Self>(&text) {
-            Err(e) => Ok((
+            Err(error) => Ok((
                 Self::default(),
-                Some(format!("config parse error (using defaults): {e}")),
+                Some(format!("config parse error (using defaults): {error}")),
             )),
             Ok(config) => {
-                if stored_data_needs_migration(&text) {
-                    config.save()?;
+                let encoded = toml::to_string_pretty(&config)?;
+                match atomic_create_private(canonical, encoded.as_bytes(), true) {
+                    Ok(()) => Ok((config, None)),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        Self::load_from_paths(canonical, legacy)
+                    }
+                    Err(error) => {
+                        Err(error).with_context(|| format!("writing {}", canonical.display()))
+                    }
                 }
-                Ok((config, None))
             }
         }
     }
 
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path().context("no config dir")?;
+        self.save_to(&path)
+    }
+
+    fn save_to(&self, path: &Path) -> Result<()> {
         let text = toml::to_string_pretty(self)?;
-        atomic_write_private(&path, text.as_bytes(), true)
+        atomic_write_private(path, text.as_bytes(), true)
             .with_context(|| format!("writing {}", path.display()))
     }
 
@@ -626,6 +664,62 @@ mod tests {
             PathBuf::from("/foo//bar")
         );
         assert_eq!(normalize_project_path(Path::new("///")), PathBuf::from(""));
+    }
+
+    #[test]
+    fn first_v2_load_migrates_legacy_tabs_without_rewriting_legacy_file() {
+        let dir = TestDir::new("v2-migration");
+        let canonical = dir.0.join(CONFIG_V2_FILE);
+        let legacy = dir.0.join(LEGACY_CONFIG_FILE);
+        let legacy_text = "tabs = [\"personal\"]\n[[projects]]\nname = \"p\"\npath = \"/p\"\ntab = \"personal\"\n";
+        std::fs::write(&legacy, legacy_text).unwrap();
+
+        let (config, warning) = GlobalConfig::load_from_paths(&canonical, &legacy).unwrap();
+
+        assert!(warning.is_none());
+        assert_eq!(config.groups, ["personal"]);
+        assert_eq!(config.projects[0].groups, ["personal"]);
+        assert_eq!(std::fs::read_to_string(&legacy).unwrap(), legacy_text);
+        let canonical_text = std::fs::read_to_string(&canonical).unwrap();
+        assert!(canonical_text.contains("groups = [\"personal\"]"));
+        assert!(!canonical_text.contains("tabs"));
+        assert!(!canonical_text.contains("tab ="));
+    }
+
+    #[test]
+    fn first_v2_load_copies_existing_group_format_without_rewriting_source() {
+        let dir = TestDir::new("v2-current-copy");
+        let canonical = dir.0.join(CONFIG_V2_FILE);
+        let legacy = dir.0.join(LEGACY_CONFIG_FILE);
+        let source = "groups = [\"personal\"]\n[[projects]]\nname = \"p\"\npath = \"/p\"\ngroups = [\"personal\"]\n";
+        std::fs::write(&legacy, source).unwrap();
+
+        let (config, warning) = GlobalConfig::load_from_paths(&canonical, &legacy).unwrap();
+
+        assert!(warning.is_none());
+        assert_eq!(config.groups, ["personal"]);
+        assert_eq!(std::fs::read_to_string(&legacy).unwrap(), source);
+        assert_eq!(
+            toml::from_str::<GlobalConfig>(&std::fs::read_to_string(canonical).unwrap())
+                .unwrap()
+                .groups,
+            ["personal"]
+        );
+    }
+
+    #[test]
+    fn existing_v2_config_wins_even_when_malformed() {
+        let dir = TestDir::new("v2-wins");
+        let canonical = dir.0.join(CONFIG_V2_FILE);
+        let legacy = dir.0.join(LEGACY_CONFIG_FILE);
+        std::fs::write(&canonical, "groups = [\n").unwrap();
+        std::fs::write(&legacy, "tabs = [\"personal\"]\n").unwrap();
+
+        let (config, warning) = GlobalConfig::load_from_paths(&canonical, &legacy).unwrap();
+
+        assert!(config.groups.is_empty());
+        assert!(warning.is_some_and(|warning| warning.contains("config parse error")));
+        assert_eq!(std::fs::read_to_string(canonical).unwrap(), "groups = [\n");
     }
 
     #[test]

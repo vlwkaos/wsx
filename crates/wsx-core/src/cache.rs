@@ -117,23 +117,38 @@ impl<'de> Deserialize<'de> for WorkspaceCache {
 
 impl WorkspaceCache {
     pub fn load() -> anyhow::Result<Self> {
-        let Ok(content) = std::fs::read_to_string(cache_path()) else {
-            return Ok(Self::default());
+        Self::load_from_paths(&cache_path(), &legacy_cache_path())
+    }
+
+    fn load_from_paths(
+        canonical: &std::path::Path,
+        legacy: &std::path::Path,
+    ) -> anyhow::Result<Self> {
+        let (content, imported_legacy) = match std::fs::read_to_string(canonical) {
+            Ok(content) => (content, false),
+            Err(_) if !canonical.exists() => match std::fs::read_to_string(legacy) {
+                Ok(content) => (content, true),
+                Err(_) => return Ok(Self::default()),
+            },
+            Err(_) => return Ok(Self::default()),
         };
         let mut cache: Self = toml::from_str(&content).unwrap_or_default();
-        if cache.migration_needed {
-            cache.save(false)?;
+        if imported_legacy || cache.migration_needed {
+            cache.save_to(canonical, false)?;
             cache.migration_needed = false;
         }
         Ok(cache)
     }
 
     pub fn save(&self, sync: bool) -> anyhow::Result<()> {
+        self.save_to(&cache_path(), sync)
+    }
+
+    fn save_to(&self, path: &std::path::Path, sync: bool) -> anyhow::Result<()> {
         let mut cache = self.clone();
         cache.written_at_unix_ms = Some(now_unix_ms());
-        let path = cache_path();
         let text = toml::to_string(&cache)?;
-        atomic_write_private(&path, text.as_bytes(), sync)?;
+        atomic_write_private(path, text.as_bytes(), sync)?;
         Ok(())
     }
 }
@@ -148,6 +163,13 @@ fn now_unix_ms() -> u64 {
 }
 
 fn cache_path() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("wsx")
+        .join("workspace-v2.toml")
+}
+
+fn legacy_cache_path() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("wsx")
@@ -429,6 +451,59 @@ pane_id = "pane-1"
         assert_eq!(cache.active_group, None);
         assert!(cache.migration_needed);
         assert!(!toml::to_string(&cache).unwrap().contains("active_groups"));
+    }
+
+    #[test]
+    fn first_v2_cache_load_imports_active_tab_without_rewriting_legacy() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::current_dir()
+            .unwrap()
+            .join(".work/cache-v2-tests")
+            .join(format!("{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let canonical = directory.join("workspace-v2.toml");
+        let legacy = directory.join("workspace.toml");
+        let legacy_text = "active_tab = \"personal\"\ntree_selected = 3\n";
+        std::fs::write(&legacy, legacy_text).unwrap();
+
+        let cache = WorkspaceCache::load_from_paths(&canonical, &legacy).unwrap();
+
+        assert_eq!(cache.active_group, Some(GroupKey::Named("personal".into())));
+        assert_eq!(cache.tree_selected, 3);
+        assert_eq!(std::fs::read_to_string(&legacy).unwrap(), legacy_text);
+        let canonical_text = std::fs::read_to_string(&canonical).unwrap();
+        assert!(canonical_text.contains("active_group = \"personal\""));
+        assert!(!canonical_text.contains("active_tab"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn malformed_v2_cache_wins_without_falling_back_to_legacy() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::current_dir()
+            .unwrap()
+            .join(".work/cache-v2-tests")
+            .join(format!("malformed-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let canonical = directory.join("workspace-v2.toml");
+        let legacy = directory.join("workspace.toml");
+        std::fs::write(&canonical, "active_group = [\n").unwrap();
+        std::fs::write(&legacy, "active_tab = \"personal\"\n").unwrap();
+
+        let cache = WorkspaceCache::load_from_paths(&canonical, &legacy).unwrap();
+
+        assert_eq!(cache.active_group, None);
+        assert_eq!(
+            std::fs::read_to_string(&canonical).unwrap(),
+            "active_group = [\n"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
