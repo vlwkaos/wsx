@@ -1,8 +1,10 @@
 // Git info via CLI — branch, commits, modified files, ahead/behind
 
 use super::git_cmd;
-use crate::model::workspace::{CommitSummary, FetchFailReason, GitInfo};
-use std::path::Path;
+use crate::model::workspace::{
+    CommitSummary, FetchFailReason, GitInfo, SubmoduleCommitState, SubmoduleInfo, SubtreeInfo,
+};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub struct FetchOutcome {
@@ -10,28 +12,96 @@ pub struct FetchOutcome {
     pub reason: Option<FetchFailReason>,
 }
 
-pub fn get_git_info(worktree_path: &Path, _default_branch: &str) -> Option<GitInfo> {
-    // Single subprocess: captures branch, upstream, ahead/behind, and modified files.
-    // If status fails (e.g. corrupt index), do not overwrite existing UI state.
-    let (branch, remote_branch, ahead, behind, modified_files) = status_porcelain2(worktree_path)?;
-    let _ = branch; // branch confirmed valid; value unused for now
-    let recent_commits = recent_commits(worktree_path, 3);
+pub fn get_git_info(
+    worktree_path: &Path,
+    _default_branch: &str,
+    configured_subtrees: &[PathBuf],
+) -> Option<GitInfo> {
+    // ^ [[Worktree Model]] Git owns submodule gitlinks; project config only
+    // declares otherwise-indistinguishable subtree roots.
+    let status = status_porcelain2(worktree_path)?;
+    let mut submodules = submodule_status(worktree_path);
+    let mut ordinary_files = Vec::new();
+    for entry in status.entries {
+        let Some(token) = entry.submodule else {
+            ordinary_files.push(entry.path);
+            continue;
+        };
+        if let Some(submodules) = &mut submodules {
+            let info = submodules
+                .iter_mut()
+                .find(|submodule| submodule.path == entry.path);
+            let submodule = match info {
+                Some(submodule) => submodule,
+                None => {
+                    submodules.push(SubmoduleInfo {
+                        path: entry.path.clone(),
+                        commit_state: SubmoduleCommitState::InSync,
+                        modified_content: false,
+                        untracked_content: false,
+                    });
+                    submodules.last_mut().expect("just inserted submodule")
+                }
+            };
+            if entry.unmerged {
+                submodule.commit_state = SubmoduleCommitState::Conflict;
+            } else if token.as_bytes().get(1) == Some(&b'C') {
+                submodule.commit_state = SubmoduleCommitState::CommitChanged;
+            }
+            submodule.modified_content |= token.as_bytes().get(2) == Some(&b'M');
+            submodule.untracked_content |= token.as_bytes().get(3) == Some(&b'U');
+        }
+    }
+
+    let mut subtrees = configured_subtrees
+        .iter()
+        .map(|path| SubtreeInfo {
+            path: path.to_string_lossy().into_owned(),
+            modified_files: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let mut modified_files = Vec::new();
+    for file in ordinary_files {
+        let file_path = Path::new(&file);
+        if let Some(subtree) = subtrees
+            .iter_mut()
+            .find(|subtree| file_path.starts_with(Path::new(&subtree.path)))
+        {
+            subtree.modified_files.push(file);
+        } else {
+            modified_files.push(file);
+        }
+    }
+
     Some(GitInfo {
-        recent_commits,
+        recent_commits: recent_commits(worktree_path, 3),
         modified_files,
-        ahead,
-        behind,
-        remote_branch,
+        submodules,
+        subtrees,
+        ahead: status.ahead,
+        behind: status.behind,
+        remote_branch: status.upstream,
     })
 }
 
-type StatusResult = (String, Option<String>, usize, usize, Vec<String>);
+struct StatusEntry {
+    path: String,
+    submodule: Option<String>,
+    unmerged: bool,
+}
 
-/// Parse `git status --porcelain=2 --branch` output.
-/// Returns (branch, upstream, ahead, behind, modified_files) or None on failure.
+struct StatusResult {
+    upstream: Option<String>,
+    ahead: usize,
+    behind: usize,
+    entries: Vec<StatusEntry>,
+}
+
+/// Parse `git status --porcelain=2 --branch` output without collapsing
+/// submodule gitlinks into ordinary modified-file rows.
 fn status_porcelain2(path: &Path) -> Option<StatusResult> {
     let out = super::output_with_timeout(
-        git_read(path).args(["status", "--porcelain=2", "--branch"]),
+        git_read(path).args(["status", "--porcelain=2", "--branch", "-z"]),
         std::time::Duration::from_secs(10),
     )
     .ok()?;
@@ -40,62 +110,126 @@ fn status_porcelain2(path: &Path) -> Option<StatusResult> {
     }
     let text = String::from_utf8_lossy(&out.stdout);
     let mut branch = String::new();
-    let mut upstream: Option<String> = None;
+    let mut upstream = None;
     let mut ahead = 0usize;
     let mut behind = 0usize;
-    let mut modified_files: Vec<String> = Vec::new();
+    let mut entries = Vec::new();
 
-    for line in text.lines() {
-        if let Some(val) = line.strip_prefix("# branch.head ") {
-            branch = val.trim().to_string();
-        } else if let Some(val) = line.strip_prefix("# branch.upstream ") {
-            let u = val.trim().to_string();
-            if !u.is_empty() {
-                upstream = Some(u);
+    let mut skip_rename_source = false;
+    for line in text.split('\0').filter(|line| !line.is_empty()) {
+        if skip_rename_source {
+            skip_rename_source = false;
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("# branch.head ") {
+            branch = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("# branch.upstream ") {
+            let value = value.trim();
+            if !value.is_empty() {
+                upstream = Some(value.to_string());
             }
-        } else if let Some(val) = line.strip_prefix("# branch.ab ") {
-            // "+<ahead> -<behind>"
-            let mut parts = val.split_whitespace();
-            if let Some(a) = parts.next() {
-                ahead = a.trim_start_matches('+').parse().unwrap_or(0);
+        } else if let Some(value) = line.strip_prefix("# branch.ab ") {
+            let mut parts = value.split_whitespace();
+            if let Some(value) = parts.next() {
+                ahead = value.trim_start_matches('+').parse().unwrap_or(0);
             }
-            if let Some(b) = parts.next() {
-                behind = b.trim_start_matches('-').parse().unwrap_or(0);
+            if let Some(value) = parts.next() {
+                behind = value.trim_start_matches('-').parse().unwrap_or(0);
             }
-        } else if line.starts_with("1 ") || line.starts_with("2 ") || line.starts_with("u ") {
-            // Type "1": "1 XY ... path" — path is last whitespace token
-            // Type "2": "2 XY ... score path\toldpath" — tab separates new/old paths
-            let path_str = if line.starts_with("2 ") {
-                // Split off the tab-separated part first, take the new path
-                line.split('\t')
-                    .next()
-                    .and_then(|before_tab| before_tab.split_whitespace().last())
-            } else {
-                line.split_whitespace().last()
-            };
-            if let Some(path_part) = path_str {
-                if modified_files.len() < 10 {
-                    modified_files.push(path_part.to_string());
-                }
-            }
-        } else if line.starts_with("? ") {
-            // Untracked file
-            if let Some(path_part) = line.strip_prefix("? ") {
-                if modified_files.len() < 10 {
-                    modified_files.push(path_part.trim().to_string());
-                }
-            }
+        } else if let Some(entry) = parse_status_entry(line) {
+            skip_rename_source = line.starts_with("2 ");
+            entries.push(entry);
         }
     }
-
-    if branch.is_empty() || branch == "(detached)" {
-        // Confirm we're in a real worktree with a branch
-        if branch.is_empty() {
-            return None;
-        }
+    if branch.is_empty() {
+        return None;
     }
+    Some(StatusResult {
+        upstream,
+        ahead,
+        behind,
+        entries,
+    })
+}
 
-    Some((branch, upstream, ahead, behind, modified_files))
+fn parse_status_entry(line: &str) -> Option<StatusEntry> {
+    if let Some(path) = line.strip_prefix("? ") {
+        return Some(StatusEntry {
+            path: path.trim().to_string(),
+            submodule: None,
+            unmerged: false,
+        });
+    }
+    let (field_count, unmerged) = if line.starts_with("1 ") {
+        (9, false)
+    } else if line.starts_with("2 ") {
+        (10, false)
+    } else if line.starts_with("u ") {
+        (11, true)
+    } else {
+        return None;
+    };
+    let fields = line.splitn(field_count, ' ').collect::<Vec<_>>();
+    if fields.len() != field_count {
+        return None;
+    }
+    let token = fields.get(2)?.to_string();
+    let path = fields.last()?.split('\t').next()?.to_string();
+    Some(StatusEntry {
+        path,
+        submodule: token.starts_with('S').then_some(token),
+        unmerged,
+    })
+}
+
+fn submodule_status(path: &Path) -> Option<Vec<SubmoduleInfo>> {
+    if !path.join(".gitmodules").exists() {
+        return Some(Vec::new());
+    }
+    let out = super::output_with_timeout(
+        git_read(path).args(["submodule", "status", "--recursive"]),
+        std::time::Duration::from_secs(10),
+    )
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(parse_submodule_status_line)
+            .collect(),
+    )
+}
+
+fn parse_submodule_status_line(line: &str) -> Option<SubmoduleInfo> {
+    let marker = line.chars().next()?;
+    let rest = line.get(1..)?.trim_start();
+    let mut fields = rest.splitn(2, ' ');
+    let commit = fields.next()?;
+    if commit.len() < 7
+        || !commit
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let path = fields.next()?.split(" (").next()?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let commit_state = match marker {
+        '+' => SubmoduleCommitState::CommitChanged,
+        '-' => SubmoduleCommitState::Uninitialized,
+        'U' => SubmoduleCommitState::Conflict,
+        _ => SubmoduleCommitState::InSync,
+    };
+    Some(SubmoduleInfo {
+        path: path.to_string(),
+        commit_state,
+        modified_content: false,
+        untracked_content: false,
+    })
 }
 
 /// Advisory cross-process lockfile for git fetch. Created with O_CREAT|O_EXCL.
@@ -239,7 +373,11 @@ fn git_read(path: &Path) -> Command {
 
 #[cfg(test)]
 mod tests {
-    use super::{get_git_info, try_fetch_lock, FetchLockGuard};
+    use super::{
+        get_git_info, parse_status_entry, parse_submodule_status_line, try_fetch_lock,
+        FetchLockGuard,
+    };
+    use crate::model::workspace::SubmoduleCommitState;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -332,7 +470,7 @@ mod tests {
     fn get_git_info_reports_dirty_file() {
         let repo = init_temp_repo();
         fs::write(repo.join("tracked.txt"), "changed\n").expect("tracked file should be updated");
-        let info = get_git_info(&repo, "main").expect("git info should be available");
+        let info = get_git_info(&repo, "main", &[]).expect("git info should be available");
         assert!(
             info.modified_files.iter().any(|f| f == "tracked.txt"),
             "expected tracked.txt in modified files, got {:?}",
@@ -342,12 +480,121 @@ mod tests {
     }
 
     #[test]
+    fn porcelain_submodule_entry_retains_structured_flags_and_spaced_path() {
+        let entry = parse_status_entry(
+            "1 .M SCMU 160000 160000 160000 aaaaaaa bbbbbbb vendor/module with spaces",
+        )
+        .unwrap();
+        assert_eq!(entry.path, "vendor/module with spaces");
+        assert_eq!(entry.submodule.as_deref(), Some("SCMU"));
+        assert!(!entry.unmerged);
+    }
+
+    #[test]
+    fn nul_porcelain_preserves_spaced_and_renamed_paths() {
+        let repo = init_temp_repo();
+        fs::write(repo.join("old name.txt"), "one\n").unwrap();
+        git(&repo, &["add", "old name.txt"]);
+        git(&repo, &["commit", "-m", "add spaced file", "-q"]);
+        git(&repo, &["mv", "old name.txt", "new name.txt"]);
+
+        let info = get_git_info(&repo, "main", &[]).unwrap();
+
+        assert!(
+            info.modified_files
+                .iter()
+                .any(|path| path == "new name.txt"),
+            "{:?}",
+            info.modified_files
+        );
+        assert!(!info
+            .modified_files
+            .iter()
+            .any(|path| path == "old name.txt"));
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn submodule_status_marker_maps_parent_gitlink_state() {
+        for (marker, expected) in [
+            (' ', SubmoduleCommitState::InSync),
+            ('+', SubmoduleCommitState::CommitChanged),
+            ('-', SubmoduleCommitState::Uninitialized),
+            ('U', SubmoduleCommitState::Conflict),
+        ] {
+            let line = format!("{marker}0123456789abcdef vendor/module (heads/main)");
+            let info = parse_submodule_status_line(&line).unwrap();
+            assert_eq!(info.path, "vendor/module");
+            assert_eq!(info.commit_state, expected);
+        }
+    }
+
+    #[test]
+    fn submodule_changes_are_separate_from_ordinary_local_files() {
+        let child = init_temp_repo();
+        let parent = init_temp_repo();
+        git(
+            &parent,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                child.to_str().unwrap(),
+                "vendor/module with spaces",
+            ],
+        );
+        git(&parent, &["commit", "-m", "add submodule", "-q"]);
+        let checkout = parent.join("vendor/module with spaces");
+        fs::write(checkout.join("tracked.txt"), "dirty\n").unwrap();
+
+        let dirty = get_git_info(&parent, "main", &[]).unwrap();
+
+        assert!(dirty.modified_files.is_empty());
+        let submodule = &dirty.submodules.as_ref().unwrap()[0];
+        assert_eq!(submodule.path, "vendor/module with spaces");
+        assert_eq!(submodule.commit_state, SubmoduleCommitState::InSync);
+        assert!(submodule.modified_content);
+
+        git(&checkout, &["config", "user.email", "test@example.com"]);
+        git(&checkout, &["config", "user.name", "Test User"]);
+        git(&checkout, &["add", "tracked.txt"]);
+        git(&checkout, &["commit", "-m", "advance submodule", "-q"]);
+        let advanced = get_git_info(&parent, "main", &[]).unwrap();
+        let submodule = &advanced.submodules.as_ref().unwrap()[0];
+        assert_eq!(submodule.commit_state, SubmoduleCommitState::CommitChanged);
+
+        let _ = fs::remove_dir_all(parent);
+        let _ = fs::remove_dir_all(child);
+    }
+
+    #[test]
+    fn configured_subtree_changes_are_separate_from_local_files() {
+        let repo = init_temp_repo();
+        fs::create_dir_all(repo.join("vendor/asched")).unwrap();
+        fs::write(repo.join("vendor/asched/source.rs"), "one\n").unwrap();
+        fs::write(repo.join("ordinary.txt"), "one\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "add files", "-q"]);
+        fs::write(repo.join("vendor/asched/source.rs"), "two\n").unwrap();
+        fs::write(repo.join("ordinary.txt"), "two\n").unwrap();
+
+        let info = get_git_info(&repo, "main", &[PathBuf::from("vendor/asched")]).unwrap();
+
+        assert_eq!(info.modified_files, ["ordinary.txt"]);
+        assert_eq!(info.subtrees.len(), 1);
+        assert_eq!(info.subtrees[0].path, "vendor/asched");
+        assert_eq!(info.subtrees[0].modified_files, ["vendor/asched/source.rs"]);
+        let _ = fs::remove_dir_all(repo);
+    }
+
+    #[test]
     fn get_git_info_returns_none_when_status_fails() {
         let repo = init_temp_repo();
         // Corrupt index so branch detection still works but status exits non-zero.
         fs::write(repo.join(".git").join("index"), "broken").expect("index should be overwritten");
 
-        let info = get_git_info(&repo, "main");
+        let info = get_git_info(&repo, "main", &[]);
         assert!(
             info.is_none(),
             "expected None when status fails, got {:?}",

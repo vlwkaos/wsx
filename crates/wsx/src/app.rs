@@ -1497,12 +1497,19 @@ impl App {
                 }
             }
         }
+        let subtrees = self
+            .worktree_index
+            .get(&path)
+            .and_then(|(project_idx, _)| self.workspace.projects.get(*project_idx))
+            .and_then(|project| project.config.as_ref())
+            .map(|config| config.git_subtrees.clone())
+            .unwrap_or_default();
         self.git_local_pending.insert(path.clone());
         let tx = self.git_local_tx.clone();
         let sem = self.git_semaphore.clone();
         std::thread::spawn(move || {
             let _permit = sem.acquire();
-            let info = git_info::get_git_info(&path, &default_branch);
+            let info = git_info::get_git_info(&path, &default_branch, &subtrees);
             let _ = tx.send((path, info));
         });
     }
@@ -3381,7 +3388,9 @@ impl App {
                     return None;
                 };
                 let sess = self.workspace.session(*pi, *wi, *si)?;
-                if session_state::derive(sess).app_state() == AppSessionState::Idle {
+                if sess.agent.is_some()
+                    && session_state::derive(sess).app_state() == AppSessionState::Idle
+                {
                     Some(i)
                 } else {
                     None
@@ -4458,6 +4467,8 @@ mod tests {
         GitInfo {
             recent_commits: vec![],
             modified_files: vec![],
+            submodules: Some(vec![]),
+            subtrees: vec![],
             ahead: 1,
             behind: 0,
             remote_branch: Some("origin/main".to_string()),
@@ -5275,6 +5286,31 @@ mod tests {
         )
     }
 
+    #[test]
+    fn idle_navigation_skips_sessions_without_an_agent() {
+        let mut project = make_project("idle-navigation");
+        let mut worktree = make_worktree("./idle-navigation");
+        let mut shell = make_sess(false, runtime::AgentState::Idle);
+        shell.agent = None;
+        let agent = make_sess(false, runtime::AgentState::Idle);
+        worktree.sessions = vec![shell, agent];
+        project.worktrees = vec![worktree];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+
+        app.action_next_idle();
+        assert_eq!(app.current_selection(), Selection::Session(0, 0, 1));
+
+        app.tree_selected = 0;
+        app.action_prev_idle();
+        assert_eq!(app.current_selection(), Selection::Session(0, 0, 1));
+    }
+
     fn select_rendered_navigation_entry(app: &mut App, selection: Selection) {
         let index = (0..app.flat().len())
             .find(|&index| app.workspace.get_selection(index, app.flat()) == selection)
@@ -5592,6 +5628,18 @@ mod tests {
         let terminal_footer = (0..100)
             .map(|x| terminal.backend().buffer()[(x, 15)].symbol())
             .collect::<String>();
+        assert_eq!(
+            terminal.backend().buffer()[(0, 15)].bg,
+            crate::ui::theme::mode_badge(crate::ui::theme::ModeBadge::Terminal)
+                .bg
+                .unwrap()
+        );
+        assert_ne!(
+            terminal.backend().buffer()[(0, 15)].bg,
+            crate::ui::theme::mode_badge(crate::ui::theme::ModeBadge::Navigation)
+                .bg
+                .unwrap()
+        );
         assert!(
             terminal_footer.contains("(Alt+G Z)workspace"),
             "{terminal_footer:?}"
@@ -5654,6 +5702,24 @@ mod tests {
         {
             assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), symbol);
         }
+    }
+
+    #[test]
+    fn workspace_footer_advertises_session_state_navigation() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        let backend = ratatui::backend::TestBackend::new(160, 8);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+
+        let footer = (0..160)
+            .map(|x| terminal.backend().buffer()[(x, 7)].symbol())
+            .collect::<String>();
+        assert!(footer.contains("(i)idle"), "{footer:?}");
+        assert!(footer.contains("(a)active"), "{footer:?}");
+        assert!(footer.contains("(n)attention"), "{footer:?}");
     }
 
     #[test]

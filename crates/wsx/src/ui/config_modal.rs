@@ -58,6 +58,23 @@ pub fn render_config_modal(
         )));
     }
 
+    lines.push(Line::from(vec![
+        Span::styled("git.subtrees: ", Style::default().fg(theme::TEXT_MUTED)),
+        Span::styled(
+            if config.git_subtrees.is_empty() {
+                "(none)".to_string()
+            } else {
+                config
+                    .git_subtrees
+                    .iter()
+                    .map(|path| path.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+            Style::default().fg(theme::WARNING),
+        ),
+    ]));
+
     let hints = Line::from(vec![
         Span::styled(" (e)dit wsx.config.yml", Style::default().fg(theme::TEXT)),
         Span::styled("  Esc close ", Style::default().fg(theme::TEXT_MUTED)),

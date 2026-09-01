@@ -36,6 +36,8 @@ pub struct ProjectConfig {
     pub post_create: Option<String>,
     pub copy_includes: Vec<String>,
     pub copy_excludes: Vec<String>,
+    /// Explicit Git subtree roots relative to the project worktree.
+    pub git_subtrees: Vec<PathBuf>,
     /// Migration or parse feedback for the TUI; never affects worktree behavior.
     pub notice: Option<String>,
 }
@@ -162,9 +164,35 @@ mod tests {
 pub struct GitInfo {
     pub recent_commits: Vec<CommitSummary>,
     pub modified_files: Vec<String>,
+    /// `None` means Git could not inspect configured submodules.
+    pub submodules: Option<Vec<SubmoduleInfo>>,
+    pub subtrees: Vec<SubtreeInfo>,
     pub ahead: usize,
     pub behind: usize,
     pub remote_branch: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmoduleCommitState {
+    InSync,
+    CommitChanged,
+    Uninitialized,
+    Conflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SubmoduleInfo {
+    pub path: String,
+    pub commit_state: SubmoduleCommitState,
+    pub modified_content: bool,
+    pub untracked_content: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SubtreeInfo {
+    pub path: String,
+    pub modified_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
