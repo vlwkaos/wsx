@@ -248,6 +248,7 @@ mod tests {
         };
         assert!(capabilities.pane_splits);
         assert!(!capabilities.agent_session_restore);
+        assert!(!capabilities.resume_shell_fallback);
         assert!(!capabilities.listening_ports);
     }
 

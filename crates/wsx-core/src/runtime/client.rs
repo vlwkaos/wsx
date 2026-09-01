@@ -483,7 +483,11 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
             protocol: PROTOCOL_VERSION,
         },
     )? {
-        Response::Hello { protocol, .. } if protocol == PROTOCOL_VERSION => {
+        Response::Hello {
+            protocol,
+            capabilities,
+            ..
+        } if protocol == PROTOCOL_VERSION && capabilities.resume_shell_fallback => {
             match round_trip(&mut stream, &Request::Snapshot)? {
                 Response::Snapshot(_) => Ok(ExistingDaemon::Ready),
                 Response::Error(error) => Err(io::Error::other(format!(
@@ -763,6 +767,13 @@ mod tests {
         stream.write_all(&encode_line(response).unwrap()).unwrap();
     }
 
+    fn current_capabilities() -> super::super::domain::Capabilities {
+        super::super::domain::Capabilities {
+            resume_shell_fallback: true,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn compatible_daemon_is_reused_without_shutdown() {
         let (path, listener) = test_listener("compatible-reuse");
@@ -780,7 +791,7 @@ mod tests {
                 &Response::Hello {
                     protocol: PROTOCOL_VERSION,
                     epoch: 1,
-                    capabilities: super::super::domain::Capabilities::default(),
+                    capabilities: current_capabilities(),
                 },
             );
             assert_eq!(
@@ -798,7 +809,7 @@ mod tests {
                     sessions: Vec::new(),
                     panes: Vec::new(),
                     listening_ports: Vec::new(),
-                    capabilities: super::super::domain::Capabilities::default(),
+                    capabilities: current_capabilities(),
                 }),
             );
             drop(listener);
@@ -809,6 +820,52 @@ mod tests {
             probe_existing_daemon(&Client::new(path)).unwrap(),
             ExistingDaemon::Ready
         ));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn same_protocol_daemon_without_required_shell_fallback_is_replaced() {
+        let (path, listener) = test_listener("missing-shell-fallback");
+        let server_path = path.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert_eq!(
+                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+                Request::Hello {
+                    protocol: PROTOCOL_VERSION
+                }
+            );
+            send_response(
+                &mut stream,
+                &Response::Hello {
+                    protocol: PROTOCOL_VERSION,
+                    epoch: 1,
+                    capabilities: super::super::domain::Capabilities::default(),
+                },
+            );
+            assert_eq!(
+                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+                Request::Shutdown
+            );
+            send_response(&mut stream, &Response::Ack { revision: 1 });
+            drop(listener);
+            std::fs::remove_file(server_path).unwrap();
+        });
+
+        let client = Client::new(path);
+        let ExistingDaemon::Incompatible {
+            stream,
+            advertised_protocol,
+        } = probe_existing_daemon(&client).unwrap()
+        else {
+            panic!("daemon without required capability should be incompatible");
+        };
+        assert_eq!(advertised_protocol, Some(PROTOCOL_VERSION));
+        shutdown_incompatible_daemon(&client, stream, advertised_protocol).unwrap();
+        assert_eq!(
+            wait_for_compatible_or_stopped(&client).unwrap(),
+            ExistingDaemonAfterShutdown::Stopped
+        );
         server.join().unwrap();
     }
 
@@ -965,61 +1022,24 @@ mod tests {
                 &mut mismatch,
                 &Response::Error(super::super::protocol::ApiError::new(
                     "protocol_mismatch",
-                    "client 7, daemon 2",
+                    format!("client {PROTOCOL_VERSION}, daemon 2"),
                 )),
             );
 
-            let (mut protocol_six, _) = listener.accept().unwrap();
-            assert_eq!(
-                read_json_line::<Request>(&mut protocol_six, MAX_RESPONSE_BYTES).unwrap(),
-                Request::Hello { protocol: 6 }
-            );
-            send_response(
-                &mut protocol_six,
-                &Response::Error(super::super::protocol::ApiError::new(
-                    "protocol_mismatch",
-                    "client 6, daemon 2",
-                )),
-            );
-
-            let (mut protocol_five, _) = listener.accept().unwrap();
-            assert_eq!(
-                read_json_line::<Request>(&mut protocol_five, MAX_RESPONSE_BYTES).unwrap(),
-                Request::Hello { protocol: 5 }
-            );
-            send_response(
-                &mut protocol_five,
-                &Response::Error(super::super::protocol::ApiError::new(
-                    "protocol_mismatch",
-                    "client 5, daemon 2",
-                )),
-            );
-
-            let (mut protocol_four, _) = listener.accept().unwrap();
-            assert_eq!(
-                read_json_line::<Request>(&mut protocol_four, MAX_RESPONSE_BYTES).unwrap(),
-                Request::Hello { protocol: 4 }
-            );
-            send_response(
-                &mut protocol_four,
-                &Response::Error(super::super::protocol::ApiError::new(
-                    "protocol_mismatch",
-                    "client 4, daemon 2",
-                )),
-            );
-
-            let (mut protocol_three, _) = listener.accept().unwrap();
-            assert_eq!(
-                read_json_line::<Request>(&mut protocol_three, MAX_RESPONSE_BYTES).unwrap(),
-                Request::Hello { protocol: 3 }
-            );
-            send_response(
-                &mut protocol_three,
-                &Response::Error(super::super::protocol::ApiError::new(
-                    "protocol_mismatch",
-                    "client 3, daemon 2",
-                )),
-            );
+            for protocol in (3..PROTOCOL_VERSION).rev() {
+                let (mut probe, _) = listener.accept().unwrap();
+                assert_eq!(
+                    read_json_line::<Request>(&mut probe, MAX_RESPONSE_BYTES).unwrap(),
+                    Request::Hello { protocol }
+                );
+                send_response(
+                    &mut probe,
+                    &Response::Error(super::super::protocol::ApiError::new(
+                        "protocol_mismatch",
+                        format!("client {protocol}, daemon 2"),
+                    )),
+                );
+            }
 
             let (mut protocol_two, _) = listener.accept().unwrap();
             assert_eq!(
@@ -1075,74 +1095,24 @@ mod tests {
                 &mut mismatch,
                 &Response::Error(super::super::protocol::ApiError::new(
                     "protocol_mismatch",
-                    "client 7, daemon 1",
+                    format!("client {PROTOCOL_VERSION}, daemon 1"),
                 )),
             );
 
-            let (mut protocol_six, _) = listener.accept().unwrap();
-            assert_eq!(
-                read_json_line::<Request>(&mut protocol_six, MAX_RESPONSE_BYTES).unwrap(),
-                Request::Hello { protocol: 6 }
-            );
-            send_response(
-                &mut protocol_six,
-                &Response::Error(super::super::protocol::ApiError::new(
-                    "protocol_mismatch",
-                    "client 6, daemon 1",
-                )),
-            );
-
-            let (mut protocol_five, _) = listener.accept().unwrap();
-            assert_eq!(
-                read_json_line::<Request>(&mut protocol_five, MAX_RESPONSE_BYTES).unwrap(),
-                Request::Hello { protocol: 5 }
-            );
-            send_response(
-                &mut protocol_five,
-                &Response::Error(super::super::protocol::ApiError::new(
-                    "protocol_mismatch",
-                    "client 5, daemon 1",
-                )),
-            );
-
-            let (mut protocol_four, _) = listener.accept().unwrap();
-            assert_eq!(
-                read_json_line::<Request>(&mut protocol_four, MAX_RESPONSE_BYTES).unwrap(),
-                Request::Hello { protocol: 4 }
-            );
-            send_response(
-                &mut protocol_four,
-                &Response::Error(super::super::protocol::ApiError::new(
-                    "protocol_mismatch",
-                    "client 4, daemon 1",
-                )),
-            );
-
-            let (mut protocol_three, _) = listener.accept().unwrap();
-            assert_eq!(
-                read_json_line::<Request>(&mut protocol_three, MAX_RESPONSE_BYTES).unwrap(),
-                Request::Hello { protocol: 3 }
-            );
-            send_response(
-                &mut protocol_three,
-                &Response::Error(super::super::protocol::ApiError::new(
-                    "protocol_mismatch",
-                    "client 3, daemon 1",
-                )),
-            );
-
-            let (mut protocol_two, _) = listener.accept().unwrap();
-            assert_eq!(
-                read_json_line::<Request>(&mut protocol_two, MAX_RESPONSE_BYTES).unwrap(),
-                Request::Hello { protocol: 2 }
-            );
-            send_response(
-                &mut protocol_two,
-                &Response::Error(super::super::protocol::ApiError::new(
-                    "protocol_mismatch",
-                    "client 2, daemon 1",
-                )),
-            );
+            for protocol in (2..PROTOCOL_VERSION).rev() {
+                let (mut probe, _) = listener.accept().unwrap();
+                assert_eq!(
+                    read_json_line::<Request>(&mut probe, MAX_RESPONSE_BYTES).unwrap(),
+                    Request::Hello { protocol }
+                );
+                send_response(
+                    &mut probe,
+                    &Response::Error(super::super::protocol::ApiError::new(
+                        "protocol_mismatch",
+                        format!("client {protocol}, daemon 1"),
+                    )),
+                );
+            }
 
             let (mut hello, _) = listener.accept().unwrap();
             assert_eq!(

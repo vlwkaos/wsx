@@ -256,6 +256,7 @@ pub struct Capabilities {
     pub plugins: bool,
     pub agent_reports: bool,
     pub agent_session_restore: bool,
+    pub resume_shell_fallback: bool,
     pub listening_ports: bool,
     pub process_restore: bool,
 }

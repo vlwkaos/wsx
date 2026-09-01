@@ -6,6 +6,7 @@ mod plugins;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    ffi::OsString,
     fs,
     io::{self, BufRead, BufReader, Read, Write},
     net::Shutdown,
@@ -14,6 +15,7 @@ use std::{
         fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         io::AsRawFd,
         net::{UnixListener, UnixStream},
+        process::CommandExt,
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -37,6 +39,7 @@ const LEASE_TTL: Duration = Duration::from_secs(3);
 const PORT_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const PORT_SCAN_TIMEOUT: Duration = Duration::from_millis(750);
 const MAX_PORT_SCAN_BYTES: u64 = 256 * 1024;
+pub const RESUME_SUPERVISOR_ARG: &str = "__wsx_resume_supervisor";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LaunchRecipe {
@@ -203,6 +206,13 @@ fn recover_runtimes(daemon: &Arc<Daemon>, resume_agents: bool) -> io::Result<()>
     let mut resumed_sessions = HashSet::new();
     for (pane_id, terminal_id, cwd, launch) in attempts {
         let launch = deduplicate_recovery_launch(launch, &resumed_sessions);
+        let launch = match prepare_recovery_launch(launch, &cwd) {
+            Ok(launch) => launch,
+            Err(error) => {
+                eprintln!("wsxd recovery pane {}: {error}", pane_id.0);
+                continue;
+            }
+        };
         let runtime = match spawn_runtime(daemon, pane_id, terminal_id, &cwd, &launch.recipe) {
             Ok(runtime) => Arc::new(runtime),
             Err(error) => {
@@ -303,6 +313,136 @@ fn deduplicate_recovery_launch(
 
 fn shell_launch_recipe(rows: u16, cols: u16) -> LaunchRecipe {
     launch_recipe(Vec::new(), None, rows, cols).unwrap_or_else(|_| default_launch_recipe())
+}
+
+fn prepare_recovery_launch(
+    mut launch: RecoveryLaunch,
+    cwd: &Path,
+) -> Result<RecoveryLaunch, String> {
+    if launch.resume_key.is_none() {
+        return Ok(launch);
+    }
+    let executable = launch
+        .recipe
+        .command
+        .first()
+        .ok_or_else(|| "native resume command is empty".to_string())?;
+    let resolved = resolve_executable(cwd, executable)
+        .ok_or_else(|| format!("native resume executable is unavailable: {executable}"))?;
+    launch.recipe.command[0] = resolved
+        .to_str()
+        .ok_or_else(|| "native resume executable path is not UTF-8".to_string())?
+        .to_string();
+    let supervisor = std::env::current_exe()
+        .map_err(|error| format!("resolve wsxd resume supervisor: {error}"))?;
+    let supervisor = supervisor
+        .to_str()
+        .ok_or_else(|| "wsxd resume supervisor path is not UTF-8".to_string())?;
+    let mut command = vec![supervisor.to_string(), RESUME_SUPERVISOR_ARG.to_string()];
+    command.extend(launch.recipe.command);
+    launch.recipe.command = command;
+    Ok(launch)
+}
+
+fn resolve_executable(cwd: &Path, executable: &str) -> Option<PathBuf> {
+    let executable_path = Path::new(executable);
+    let candidates = if executable_path.components().count() > 1 {
+        vec![if executable_path.is_absolute() {
+            executable_path.to_path_buf()
+        } else {
+            cwd.join(executable_path)
+        }]
+    } else {
+        std::env::var_os("PATH")
+            .map(|path| {
+                std::env::split_paths(&path)
+                    .map(|directory| {
+                        if directory.is_absolute() {
+                            directory.join(executable_path)
+                        } else {
+                            cwd.join(directory).join(executable_path)
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    candidates.into_iter().find(|candidate| {
+        fs::metadata(candidate)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    })
+}
+
+pub fn run_resume_supervisor(mut arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
+    let executable = arguments.next().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "resume supervisor command is empty",
+        )
+    })?;
+    let mut command = Command::new(executable);
+    command.args(arguments);
+    command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    let signals = InteractiveSignalGuard::ignore()?;
+    reset_child_interactive_signals(&mut command);
+    let status = command.status()?;
+    drop(signals);
+    if !status.success() {
+        eprintln!("wsxd resumed agent exited with {status}; opening a shell");
+    }
+    let shell = std::env::var_os("SHELL").unwrap_or_else(|| OsString::from("/bin/sh"));
+    let error = Command::new(shell).exec();
+    Err(error)
+}
+
+struct InteractiveSignalGuard {
+    previous: Vec<(libc::c_int, libc::sighandler_t)>,
+}
+
+impl InteractiveSignalGuard {
+    fn ignore() -> io::Result<Self> {
+        let mut previous = Vec::new();
+        for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP] {
+            // SAFETY: setting a process signal disposition is async-signal-safe;
+            // the prior disposition is restored before this supervisor execs a shell.
+            let prior = unsafe { libc::signal(signal, libc::SIG_IGN) };
+            if prior == libc::SIG_ERR {
+                for (restore_signal, disposition) in previous.drain(..).rev() {
+                    // SAFETY: restoring a disposition returned by libc::signal.
+                    unsafe { libc::signal(restore_signal, disposition) };
+                }
+                return Err(io::Error::last_os_error());
+            }
+            previous.push((signal, prior));
+        }
+        Ok(Self { previous })
+    }
+}
+
+impl Drop for InteractiveSignalGuard {
+    fn drop(&mut self) {
+        for (signal, disposition) in self.previous.drain(..).rev() {
+            // SAFETY: restoring a disposition returned by libc::signal.
+            unsafe { libc::signal(signal, disposition) };
+        }
+    }
+}
+
+fn reset_child_interactive_signals(command: &mut Command) {
+    // SAFETY: pre_exec only calls async-signal-safe libc::signal operations.
+    unsafe {
+        command.pre_exec(|| {
+            for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP] {
+                if libc::signal(signal, libc::SIG_DFL) == libc::SIG_ERR {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
 }
 
 fn resume_agents_on_restore() -> bool {
@@ -1017,6 +1157,7 @@ fn capabilities() -> Capabilities {
         plugins: true,
         agent_reports: true,
         agent_session_restore: true,
+        resume_shell_fallback: true,
         listening_ports: true,
         process_restore: false,
     }
