@@ -59,4 +59,5 @@ fn legacy_capabilities_default_missing_agent_session_restore_to_disabled() {
     .expect("legacy capabilities JSON must decode");
 
     assert!(!capabilities.agent_session_restore);
+    assert!(!capabilities.resume_shell_fallback);
 }

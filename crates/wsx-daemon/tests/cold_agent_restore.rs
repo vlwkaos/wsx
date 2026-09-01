@@ -106,6 +106,19 @@ fn cold_recovery_resumes_codex_with_the_authoritative_session_id() {
 }
 
 #[test]
+fn cold_recovery_opens_a_shell_after_the_resumed_agent_exits() {
+    let (log, mut daemon) = start_cold_recovery(None);
+    let shell_marker = daemon.root.join("fallback-shell-started");
+
+    wait_for_invocation(&log, &mut daemon);
+    wait_for_file(&shell_marker, &mut daemon, "fallback shell");
+    let status = daemon.stop().expect("gracefully shut down wsxd");
+
+    assert!(status.success(), "wsxd exited unsuccessfully: {status}");
+    assert_eq!(fs::read_to_string(shell_marker).unwrap(), "shell\n");
+}
+
+#[test]
 fn cold_recovery_releases_duplicate_after_provider_spawn_failure() {
     let (log, mut daemon) = start_cold_recovery_with_seed(None, seed_duplicate_state);
 
@@ -180,6 +193,9 @@ fn start_cold_recovery_with_seed(
     let worktree_bin = worktree.join("bin");
     private_dir(&worktree_bin);
     write_fake_codex(&worktree_bin.join("codex"));
+    let fallback_shell = root.join("fallback-shell");
+    write_fake_shell(&fallback_shell);
+    let shell_marker = root.join("fallback-shell-started");
 
     let wsx_state = state_home.join("wsx");
     private_dir(&wsx_state);
@@ -204,6 +220,8 @@ fn start_cold_recovery_with_seed(
         .env("XDG_CACHE_HOME", &cache_home)
         .env("WSX_SOCKET", &socket)
         .env("WSX_TEST_CODEX_MARKER", &log)
+        .env("WSX_TEST_SHELL_MARKER", &shell_marker)
+        .env("SHELL", &fallback_shell)
         .env("PATH", child_path)
         .spawn()
         .expect("start wsxd");
@@ -269,6 +287,17 @@ log = os.environ["WSX_TEST_CODEX_MARKER"]
 with open(log, "a", encoding="utf-8") as output:
     output.write(json.dumps(sys.argv[1:]) + "\n")
     output.flush()
+"##,
+        0o700,
+    );
+}
+
+fn write_fake_shell(path: &Path) {
+    private_file(
+        path,
+        br##"#!/bin/sh
+printf 'shell\n' >> "$WSX_TEST_SHELL_MARKER"
+while :; do sleep 60; done
 "##,
         0o700,
     );
@@ -465,6 +494,32 @@ fn wait_for_invocation(log: &Path, daemon: &mut DaemonGuard) {
         assert!(
             Instant::now() < deadline,
             "timed out waiting for fake codex"
+        );
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn wait_for_file(path: &Path, daemon: &mut DaemonGuard, description: &str) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        if path.is_file() {
+            return;
+        }
+        if let Some(status) = daemon
+            .child
+            .as_mut()
+            .expect("daemon child is missing")
+            .try_wait()
+            .expect("poll wsxd")
+        {
+            panic!(
+                "wsxd exited before {description}: {status}; stderr: {}",
+                child_stderr(daemon)
+            );
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {description}"
         );
         thread::sleep(POLL_INTERVAL);
     }
