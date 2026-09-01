@@ -10,6 +10,7 @@
 - Replace `wsx herdr status` with side-effect-free `wsx runtime status` and replace `WSX_HERDR_BIN` with `WSX_DAEMON_BIN`.
 - Bump the local wsxd protocol to version 6. Version 2 introduced mandatory same-connection handshakes and persistent terminal streams; version 3 added authoritative cell-width occupancy and initial viewport dimensions; version 4 added ephemeral pane listener metadata; version 5 added private restart launch recipes and bounded initial commands; version 6 adds daemon-owned Recent clearing and terminal-entry activity.
 - Replace tab commands, flags, config, cache, and single-membership behavior with canonical multi-group selection. Stored tab data migrates once; legacy CLI surfaces are removed.
+- Reserve suffix `q` in two-chord `terminal_escape_chord` values for TUI-only quit. Existing configurations that used `q` to focus Workspace must choose another suffix; single-chord focus configurations remain unchanged.
 
 ### Features
 
@@ -18,9 +19,9 @@
 - Add semantic keyboard and mouse encoding against authoritative terminal modes, styled cell frames, application-requested cursor shape, viewport resize, explicit lease takeover, and pane split/focus/close operations.
 - Add confirmed Workspace `Q` hard quit and `wsx daemon stop`, both using graceful wsxd cleanup so saved session commands recreate on the next launch.
 - Show sessions directly below worktrees and optional pane rows below multi-pane sessions; use state icons plus authoritative agent names and aggregate automatically detected TCP listeners into sessions and worktrees.
-- Add multi-membership project Groups with one optional Workspace/CLI filter, multi-toggle assignment, a virtual lowercase `ungrouped` view, a canonical header/content/footer layout with one persistent full-width horizontally scrollable chip header and no Workspace spacer, and a left-sidebar scrollbar.
-- Add a permanent `◷ recent` virtual group backed by persisted authoritative agent `working` reports, session creation, and terminal entry from the previous 24 hours; support reversible `d` removal and preserve activity across wsxd restart without process or terminal inference.
-- Add canonical bounded `wsx.config.yml` project settings and atomically migrate equivalent `.gtrconfig` values without deleting the legacy file.
+- Add multi-membership project Groups with one optional Workspace/CLI filter, multi-toggle assignment, a virtual lowercase `ungrouped` view, a canonical header/content/footer layout with one persistent full-width horizontally scrollable chip header and no Workspace spacer, a left-sidebar scrollbar, a stable full focus frame around Workspace navigation, and green push-ready Git status.
+- Add a permanent `◷ recent` virtual group selected on every TUI startup and backed by persisted authoritative agent `working` reports, session creation, and terminal entry from the previous 24 hours; support reversible `d` removal and preserve activity across wsxd restart without process or terminal inference.
+- Add canonical bounded `wsx.config.yml` project settings, edit-time schema templates, atomic `.gtrconfig` migration without deleting the legacy file, Workspace shortcuts for project and global config editing.
 - Package adjacent universal `wsx` and `wsxd` executables and provide dependency-free `cargo xtask run` and `cargo xtask build` workflows.
 - Add pinned Nextest 0.9.143 and strict Clippy gates on Linux and macOS CI, with doctests and the production-equivalent runtime smoke kept as explicit steps.
 
@@ -36,8 +37,8 @@
 - Preserve Ghostty wide-cell and spacer occupancy through compact wire cells and ratatui projection so erase and wide-to-narrow redraws invalidate the correct columns.
 - Buffer large terminal-frame reads, resize during subscription before the first baseline, and suppress intermediate frames while child synchronized-output mode is active.
 - Keep saturated terminal update queues interruptible during shutdown and recheck stream wake predicates under the daemon mutex so output notifications cannot be stranded until the fallback timeout.
-- Make `Ctrl+A`, then `W` the default Terminal-to-Workspace focus sequence; accept `W` while the prefix modifier remains held, double the prefix to send literal `Ctrl+A`, and preserve other suffixes as terminal input.
-- Keep the bottom status bar to one context-aware line with parenthesized key hints, remove TUI send-text while preserving CLI automation, restore the one-row terminal breadcrumb, let terminal content fill the remaining right panel, and treat a left-panel click as one Workspace-mode selection action.
+- Make `Ctrl+A`, then `W` the default Terminal-to-Workspace focus sequence; accept `W` while the prefix modifier remains held, reserve prefix then `Q` for TUI-only quit, double the prefix to send literal `Ctrl+A`, and preserve unprefixed `q` and other suffixes as terminal input.
+- Keep the bottom status bar to one context-aware line with parenthesized key hints, format multi-chord actions as `(Ctrl+A W)workspace`, place popup-specific controls on bottom border titles, keep unprefixed Terminal `q` available to applications, remove TUI send-text while preserving CLI automation, restore the one-row terminal breadcrumb, let terminal content fill the remaining right panel, and treat a left-panel click as one Workspace-mode selection action.
 - Route bounded chrome backgrounds through semantic theme roles, keep primary surfaces and default terminal backgrounds transparent while preserving explicit ANSI cell backgrounds, and derive sidebar rendering and mouse hit-testing from one geometry contract.
 - Render the TUI's config-backed workspace immediately while daemon readiness and one-pass Git discovery continue in the background; remove duplicate startup worktree scans.
 - Move compact notifications above the bottom-right status line and suppress obvious Terminal/Workspace mode-change notifications.

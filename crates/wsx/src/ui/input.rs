@@ -2,10 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::ui::{popup_upper, theme};
+use crate::ui::{popup_block, popup_upper, theme};
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Clear, Paragraph},
 };
 
 pub struct InputState {
@@ -306,10 +306,15 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
 
     frame.render_widget(Clear, popup);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {} ", title))
-        .border_style(Style::default().fg(theme::ACCENT));
+    let hints = Line::from(vec![
+        Span::styled(" Enter confirm", Style::default().fg(theme::TEXT)),
+        Span::styled("  Esc cancel ", Style::default().fg(theme::TEXT_MUTED)),
+    ]);
+    let block = popup_block(
+        Line::from(format!(" {} ", title)),
+        hints,
+        Style::default().fg(theme::ACCENT),
+    );
     frame.render_widget(block, popup);
     if popup.width < 2 || popup.height < 2 {
         return;
@@ -356,5 +361,60 @@ pub fn render_input(frame: &mut Frame, area: Rect, state: &InputState, title: &s
             let row = Rect::new(comp_x, y, comp_w, 1);
             frame.render_widget(Paragraph::new(s.as_str()).style(style), row);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_actions_render_on_the_bottom_border() {
+        let backend = ratatui::backend::TestBackend::new(60, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let state = InputState::new("> ");
+
+        terminal
+            .draw(|frame| render_input(frame, frame.area(), &state, "Name"))
+            .unwrap();
+
+        let rows = (0..12)
+            .map(|y| {
+                (0..60)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let bottom_y = rows
+            .iter()
+            .position(|row| row.contains("Enter confirm"))
+            .expect("input hints");
+        let bottom = &rows[bottom_y];
+        assert!(bottom.contains("Esc cancel"), "{bottom:?}");
+        assert_eq!(
+            terminal.backend().buffer()[(0, bottom_y as u16)].symbol(),
+            "└"
+        );
+        assert_eq!(
+            terminal.backend().buffer()[(59, bottom_y as u16)].symbol(),
+            "┘"
+        );
+        for (y, row) in rows.iter().enumerate() {
+            if y != bottom_y {
+                assert!(!row.contains("Enter confirm"), "{row:?}");
+                assert!(!row.contains("Esc cancel"), "{row:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_input_render_is_safe() {
+        let backend = ratatui::backend::TestBackend::new(20, 6);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let state = InputState::new("> ");
+
+        terminal
+            .draw(|frame| render_input(frame, frame.area(), &state, "Name"))
+            .unwrap();
     }
 }

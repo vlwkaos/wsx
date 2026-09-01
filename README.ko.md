@@ -49,28 +49,30 @@ wsx agent install claude
 | Context | Key |
 |---|---|
 | Workspace | `j/k` 이동, `h/l` 접기/펼치기, `Enter` 선택 |
-| Project | `p` project 추가, `w` worktree 추가, `u` routine 추가, `g` group 지정 |
+| Project | `p` project 추가, `w` worktree 추가, `u` routine 추가, `e` project config 보기/편집, `g` group 지정 |
 | Worktree | `s` session 추가, `r` alias, `d` 삭제 |
 | Session/Pane | `Enter` Terminal mode, `C` interrupt |
 | Pane | `|` 오른쪽 분할, `-` 아래 분할, `d` 닫기 |
 | Group | `T` group 열기, `{`/`}` 전환, `g` 선택 project 지정 |
-| Global | `/` 검색, `R` 새로고침, `?` 도움말, `q` TUI 종료, `Q` 확인 후 wsxd까지 종료 |
+| Global | `/` 검색, `,` global config 편집, `R` 새로고침, `?` 도움말, `q` TUI 종료, `Q` 확인 후 wsxd까지 종료 |
 
 Group은 순서와 이름이 저장되는 project filter이며, 한 project가 여러 group에 속할 수 있습니다. Workspace filter는 한 번에 하나만 선택하며, 선택하지 않으면 모든 project를 표시합니다. 가상 **ungrouped** group은 membership이 없는 project를 표시합니다. **◷ recent**는 최근 24시간 안에 authoritative agent `working` report, session 생성, 또는 terminal session 진입이 있었던 project를 표시합니다. Recent에서 project row에 `d`를 누르면 project 등록은 유지한 채 다음 qualifying touch 전까지 Recent에서만 제거합니다.
 
 Group chip은 Workspace와 Terminal mode 모두에서 유지되는 전체 너비의 한 줄 header에 표시됩니다. Workspace content는 바로 아래에서 시작하고, Terminal mode에서는 기존 breadcrumb가 다음 content row를 차지합니다. 한 줄을 넘으면 `+N` 대신 클릭 가능한 `‹`/`›`와 mouse wheel로 chip 단위 수평 scroll을 합니다. Project assignment mode에서는 여러 membership을 계속 toggle할 수 있으며, 왼쪽 sidebar row가 넘치면 오른쪽 가장자리에 scrollbar가 표시됩니다.
 
-`wsx group ls|create|rename|add|remove`로 group을 관리합니다. status, worktree list, session list는 하나의 `--group <name>`을 받습니다. 기존 tab config와 임시 multi-selection cache data는 한 번 migration한 뒤 다시 저장하며, tab command와 flag는 제거되었습니다. Recent는 trusted `wsx agent report` 입력도 사용하지만, wsx는 process나 terminal output으로 vendor 또는 semantic activity를 추론하지 않습니다.
+`wsx group ls|create|rename|add|remove`로 group을 관리합니다. status, worktree list, session list는 하나의 `--group <name>`을 받습니다. TUI는 시작할 때 Recent를 선택하며, 실행 중에는 다른 group으로 전환할 수 있습니다. 기존 tab config와 임시 multi-selection cache data는 한 번 migration한 뒤 다시 저장하며, tab command와 flag는 제거되었습니다. Recent는 trusted `wsx agent report` 입력도 사용하지만, wsx는 process나 terminal output으로 vendor 또는 semantic activity를 추론하지 않습니다.
 
 Session row는 상태를 icon으로 표시하고 adapter가 보고한 agent 이름을 괄호 안에 덧붙입니다. `○` idle, `◐` working, `×` blocked, `✓` done, `!` error, `·` unknown, `⊘` muted입니다. 일반 shell에는 agent label을 표시하지 않습니다. Terminal header는 `project › worktree › session`, 상태 icon, 알려진 agent, 감지된 TCP listener를 표시합니다. Worktree preview는 session port를 합산합니다. Port 감지는 best effort이며 macOS/Linux에서 `lsof`가 필요합니다.
 
-Terminal mode에서는 persistent stream으로 일반 keyboard와 mouse 입력을 PTY로 전달하며 한 줄 breadcrumb 아래의 오른쪽 panel을 wsx padding 없이 사용합니다. 왼쪽 panel을 클릭하면 Workspace mode로 돌아가면서 해당 row를 선택합니다. `Ctrl+A`를 누른 다음 `W`를 누르면 Workspace로 focus가 이동하며, Control을 계속 누른 상태의 `W`도 동작합니다. `Ctrl+A Ctrl+A`는 literal `Ctrl+A`를 보내며, 다른 suffix는 prefix와 함께 terminal로 전달합니다. 기본 terminal background는 투명하게 유지하고 application이 지정한 ANSI cell background는 보존합니다. Vim 같은 application이 요청한 block, underline, bar cursor shape도 반영합니다.
+Terminal mode에서는 persistent stream으로 일반 keyboard와 mouse 입력을 PTY로 전달하며 한 줄 breadcrumb 아래의 오른쪽 panel을 wsx padding 없이 사용합니다. 왼쪽 panel을 클릭하면 Workspace mode로 돌아가면서 해당 row를 선택합니다. `Ctrl+A`를 누른 다음 `W`를 누르면 Workspace로 focus가 이동하며, Control을 계속 누른 상태의 `W`도 동작합니다. `Ctrl+A` 다음 `Q`를 누르면 wsxd session은 유지한 채 TUI만 종료합니다. 같은 sequence는 Workspace에서도 동작하며, Workspace에서는 prefix 없는 `q`도 종료합니다. Prefix 없는 Terminal `q`는 계속 terminal로 전달합니다. `Ctrl+A Ctrl+A`는 literal `Ctrl+A`를 보내며, 다른 suffix는 prefix와 함께 terminal로 전달합니다. Footer hint는 `(Ctrl+A W)workspace  (Ctrl+A Q)quit` 형식을 사용합니다. 기본 terminal background는 투명하게 유지하고 application이 지정한 ANSI cell background는 보존합니다. Vim 같은 application이 요청한 block, underline, bar cursor shape도 반영합니다.
 
 `~/.config/wsx/config.toml`에서 escape sequence를 설정할 수 있습니다.
 
 ```toml
 terminal_escape_chord = "ctrl+a w"
 ```
+
+한 개의 modified chord 설정은 Workspace focus 용도로 계속 지원하지만 별도의 prefixed quit는 제공하지 않습니다. 두 chord 설정에서는 suffix `q`를 TUI quit 용도로 예약하므로 Workspace-focus suffix로 설정할 수 없습니다. Workspace에서 `,`를 누르면 `$EDITOR`로 global config를 엽니다. Editor가 닫히면 config를 검증하며, 유효한 변경은 다음 실행부터 적용됩니다.
 
 ## Project config
 
@@ -86,7 +88,7 @@ copy:
     - target
 ```
 
-`.gtrconfig`만 있으면 wsx가 legacy 값을 읽고 같은 내용의 `wsx.config.yml`을 atomic하게 생성합니다. 기존 `.gtrconfig`는 검토 후 직접 삭제할 수 있도록 남겨 둡니다. `wsx.config.yml`이 이미 있으면 항상 그 파일을 사용합니다. 64 KiB를 넘거나 malformed/unknown field가 있는 YAML은 거부합니다.
+`.gtrconfig`만 있으면 wsx가 legacy 값을 읽고 같은 내용의 `wsx.config.yml`을 atomic하게 생성합니다. 기존 `.gtrconfig`는 검토 후 직접 삭제할 수 있도록 남겨 둡니다. `wsx.config.yml`이 이미 있으면 항상 그 파일을 사용합니다. 64 KiB를 넘거나 malformed/unknown field가 있는 YAML은 거부합니다. Project에서 `e`를 눌러 config를 확인하고 다시 `e`를 누르면 편집할 수 있습니다. Viewer를 여는 것만으로는 파일을 만들지 않으며, 실제 편집을 시작할 때만 누락되었거나 비어 있는 canonical file을 유효한 schema template으로 초기화합니다.
 
 ## CLI
 

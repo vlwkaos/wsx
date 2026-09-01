@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const RECENT_GROUP_WINDOW_MS: u64 = 24 * 60 * 60 * 1_000;
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum GroupKey {
@@ -370,6 +371,16 @@ impl GlobalConfig {
             .with_context(|| format!("writing {}", path.display()))
     }
 
+    /// Ensures the global config has editable content without replacing an
+    /// existing nonempty or nonregular path.
+    pub fn prepare_for_edit(&self) -> Result<PathBuf> {
+        let path = Self::config_path().context("no config dir")?;
+        let text = toml::to_string_pretty(self)?;
+        prepare_private_file_for_edit(&path, text.as_bytes())
+            .with_context(|| format!("preparing {}", path.display()))?;
+        Ok(path)
+    }
+
     pub fn is_worktree_excluded(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy();
         self.exclude_worktree_paths
@@ -446,18 +457,72 @@ impl GlobalConfig {
     }
 }
 
-pub(crate) fn atomic_write_private(path: &Path, bytes: &[u8], sync: bool) -> io::Result<()> {
-    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+fn prepare_private_file_for_edit(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "config path is not a regular file",
+                ));
+            }
+            let existing = std::fs::read_to_string(path)?;
+            if existing.trim().is_empty() {
+                atomic_write_private(path, bytes, true)?;
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            atomic_create_private(path, bytes, true)
+        }
+        Err(error) => Err(error),
+    }
+}
 
+fn atomic_create_private(path: &Path, bytes: &[u8], sync: bool) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     std::fs::create_dir_all(parent)?;
-    let temporary = path.with_extension(format!(
+    let temporary = private_temporary_path(path);
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)?;
+        file.write_all(bytes)?;
+        if sync {
+            file.sync_all()?;
+        }
+        drop(file);
+        std::fs::hard_link(&temporary, path)?;
+        let _ = std::fs::remove_file(&temporary);
+        if sync {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn private_temporary_path(path: &Path) -> PathBuf {
+    path.with_extension(format!(
         "tmp.{}.{}",
         std::process::id(),
         TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
+    ))
+}
+
+pub(crate) fn atomic_write_private(path: &Path, bytes: &[u8], sync: bool) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    let temporary = private_temporary_path(path);
     let result = (|| {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -484,6 +549,65 @@ pub(crate) fn atomic_write_private(path: &Path, bytes: &[u8], sync: bool) -> io:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::current_dir()
+                .unwrap()
+                .join(".work/global-config-tests")
+                .join(format!("{name}-{}-{unique}", std::process::id()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn edit_preparation_initializes_missing_and_empty_private_files() {
+        let dir = TestDir::new("edit-empty");
+        let missing = dir.0.join("missing.toml");
+        prepare_private_file_for_edit(&missing, b"value = 1\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&missing).unwrap(), "value = 1\n");
+
+        let empty = dir.0.join("empty.toml");
+        std::fs::write(&empty, " \n").unwrap();
+        prepare_private_file_for_edit(&empty, b"value = 2\n").unwrap();
+        assert_eq!(std::fs::read_to_string(empty).unwrap(), "value = 2\n");
+    }
+
+    #[test]
+    fn edit_preparation_preserves_nonempty_private_file() {
+        let dir = TestDir::new("edit-existing");
+        let path = dir.0.join("config.toml");
+        std::fs::write(&path, "malformed = [\n").unwrap();
+
+        prepare_private_file_for_edit(&path, b"replacement = true\n").unwrap();
+
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "malformed = [\n");
+    }
+
+    #[test]
+    fn edit_preparation_rejects_nonregular_private_path() {
+        let dir = TestDir::new("edit-directory");
+        let path = dir.0.join("config.toml");
+        std::fs::create_dir(&path).unwrap();
+
+        let error = prepare_private_file_for_edit(&path, b"value = 1\n").unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
 
     #[test]
     fn path_normalization_strips_only_trailing_slashes() {

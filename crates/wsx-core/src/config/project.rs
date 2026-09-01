@@ -7,10 +7,20 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const PROJECT_CONFIG_FILE: &str = "wsx.config.yml";
 const LEGACY_CONFIG_FILE: &str = ".gtrconfig";
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
+const PROJECT_CONFIG_TEMPLATE: &str =
+    "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\n";
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy)]
+enum PublishMode {
+    Create,
+    Replace,
+}
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -64,6 +74,40 @@ pub fn load_project_config(repo_path: &Path) -> ProjectConfig {
     config
 }
 
+/// Creates a useful canonical template only when editing begins. Existing
+/// nonempty regular files are never replaced, including malformed files.
+pub fn prepare_project_config_for_edit(repo_path: &Path) -> Result<PathBuf, String> {
+    let canonical = repo_path.join(PROJECT_CONFIG_FILE);
+    match fs::symlink_metadata(&canonical) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_file() {
+                return Err(format!("{} is not a regular file", canonical.display()));
+            }
+            let text = read_bounded(&canonical)?;
+            if text.trim().is_empty() {
+                write_text_atomic(&canonical, PROJECT_CONFIG_TEMPLATE, PublishMode::Replace)?;
+            }
+            return Ok(canonical);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+
+    let legacy = repo_path.join(LEGACY_CONFIG_FILE);
+    if legacy.exists() {
+        let migrated = load_project_config(repo_path);
+        if canonical.exists() {
+            return Ok(canonical);
+        }
+        return Err(migrated.notice.unwrap_or_else(|| {
+            format!("could not create {PROJECT_CONFIG_FILE} from {LEGACY_CONFIG_FILE}")
+        }));
+    }
+
+    write_text_atomic(&canonical, PROJECT_CONFIG_TEMPLATE, PublishMode::Create)?;
+    Ok(canonical)
+}
+
 fn load_yaml(path: &Path) -> ProjectConfig {
     let text = match read_bounded(path) {
         Ok(text) => text,
@@ -113,14 +157,29 @@ fn write_yaml(path: &Path, config: &ProjectConfig) -> Result<(), String> {
         },
     };
     let text = yaml_serde::to_string(&document).map_err(|error| error.to_string())?;
+    write_text_atomic(path, &text, PublishMode::Create)
+}
+
+fn write_text_atomic(path: &Path, text: &str, mode: PublishMode) -> Result<(), String> {
     let tmp = temporary_path(path);
     let result = (|| {
-        let mut file = fs::File::create(&tmp).map_err(|error| error.to_string())?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|error| error.to_string())?;
         file.write_all(text.as_bytes())
             .map_err(|error| error.to_string())?;
         file.sync_all().map_err(|error| error.to_string())?;
         drop(file);
-        fs::rename(&tmp, path).map_err(|error| error.to_string())
+        match mode {
+            PublishMode::Replace => fs::rename(&tmp, path).map_err(|error| error.to_string()),
+            PublishMode::Create => {
+                fs::hard_link(&tmp, path).map_err(|error| error.to_string())?;
+                let _ = fs::remove_file(&tmp);
+                Ok(())
+            }
+        }
     })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -130,7 +189,11 @@ fn write_yaml(path: &Path, config: &ProjectConfig) -> Result<(), String> {
 
 fn temporary_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
-    name.push(format!(".{}.tmp", std::process::id()));
+    name.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
     PathBuf::from(name)
 }
 
@@ -282,5 +345,87 @@ mod tests {
             .notice
             .as_deref()
             .is_some_and(|notice| notice.contains("Could not parse")));
+    }
+
+    #[test]
+    fn edit_preparation_creates_a_valid_template_only_when_missing() {
+        let dir = TestDir::new("edit-missing");
+
+        let path = prepare_project_config_for_edit(&dir.0).unwrap();
+
+        assert_eq!(path, dir.0.join(PROJECT_CONFIG_FILE));
+        assert_eq!(fs::read_to_string(&path).unwrap(), PROJECT_CONFIG_TEMPLATE);
+        let config = load_project_config(&dir.0);
+        assert!(config.post_create.is_none());
+        assert!(config.copy_includes.is_empty());
+        assert!(config.copy_excludes.is_empty());
+        assert!(config.notice.is_none());
+    }
+
+    #[test]
+    fn edit_preparation_replaces_whitespace_only_config() {
+        let dir = TestDir::new("edit-empty");
+        let path = dir.0.join(PROJECT_CONFIG_FILE);
+        fs::write(&path, "  \n\t").unwrap();
+
+        prepare_project_config_for_edit(&dir.0).unwrap();
+
+        assert_eq!(fs::read_to_string(path).unwrap(), PROJECT_CONFIG_TEMPLATE);
+    }
+
+    #[test]
+    fn edit_preparation_preserves_nonempty_malformed_config() {
+        let dir = TestDir::new("edit-invalid");
+        let path = dir.0.join(PROJECT_CONFIG_FILE);
+        let malformed = "hooks: [invalid]\n";
+        fs::write(&path, malformed).unwrap();
+
+        prepare_project_config_for_edit(&dir.0).unwrap();
+
+        assert_eq!(fs::read_to_string(path).unwrap(), malformed);
+    }
+
+    #[test]
+    fn edit_preparation_migrates_legacy_content_before_editing() {
+        let dir = TestDir::new("edit-legacy");
+        fs::write(
+            dir.0.join(LEGACY_CONFIG_FILE),
+            "[hooks]\n\tpostCreate = cargo check\n",
+        )
+        .unwrap();
+
+        let path = prepare_project_config_for_edit(&dir.0).unwrap();
+        let config = load_project_config(&dir.0);
+
+        assert_eq!(path, dir.0.join(PROJECT_CONFIG_FILE));
+        assert!(path.is_file());
+        assert_eq!(config.post_create.as_deref(), Some("cargo check"));
+        let serialized = fs::read_to_string(&path).unwrap();
+        assert!(
+            serialized.contains("postCreate: cargo check"),
+            "{serialized}"
+        );
+    }
+
+    #[test]
+    fn edit_preparation_rejects_nonregular_canonical_path() {
+        let dir = TestDir::new("edit-directory");
+        let path = dir.0.join(PROJECT_CONFIG_FILE);
+        fs::create_dir(&path).unwrap();
+
+        assert!(prepare_project_config_for_edit(&dir.0).is_err());
+        assert!(path.is_dir());
+    }
+
+    #[test]
+    fn edit_preparation_rejects_oversized_canonical_without_replacing_it() {
+        let dir = TestDir::new("edit-oversized");
+        let path = dir.0.join(PROJECT_CONFIG_FILE);
+        let content = "x".repeat(MAX_CONFIG_BYTES as usize + 1);
+        fs::write(&path, &content).unwrap();
+
+        assert!(prepare_project_config_for_edit(&dir.0).is_err());
+        assert_eq!(fs::metadata(&path).unwrap().len(), content.len() as u64);
+        assert_eq!(fs::read_to_string(&path).unwrap(), content);
     }
 }

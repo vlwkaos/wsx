@@ -8,7 +8,7 @@ use ratatui::{
 use wsx_core::model::workspace::{FlatEntry, WorkspaceState};
 
 use super::{
-    compact_port_label, theme,
+    compact_port_label, git_remote_status_color, theme,
     workspace_nav::{render_scrollbar, SidebarLayout},
 };
 // ref: ratatui Block title — title() accepts &str or String
@@ -30,7 +30,7 @@ pub struct TreeView<'a> {
     pub is_move_mode: bool,
 }
 
-pub fn render_tree(frame: &mut Frame, area: Rect, view: TreeView<'_>) {
+pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>) {
     let TreeView {
         workspace,
         flat,
@@ -114,15 +114,15 @@ pub fn render_tree(frame: &mut Frame, area: Rect, view: TreeView<'_>) {
                     match (gi.behind, gi.ahead) {
                         (b, a) if b > 0 && a > 0 => spans.push(Span::styled(
                             format!(" ↓{}↑{}", b, a),
-                            Style::default().fg(theme::WARNING),
+                            Style::default().fg(git_remote_status_color(b, a)),
                         )),
                         (b, _) if b > 0 => spans.push(Span::styled(
                             format!(" ↓{}", b),
-                            Style::default().fg(theme::BLOCKED),
+                            Style::default().fg(git_remote_status_color(b, 0)),
                         )),
                         (_, a) if a > 0 => spans.push(Span::styled(
                             format!(" ↑{}", a),
-                            Style::default().fg(theme::ACCENT),
+                            Style::default().fg(git_remote_status_color(0, a)),
                         )),
                         _ => {}
                     }
@@ -226,7 +226,6 @@ pub fn render_tree(frame: &mut Frame, area: Rect, view: TreeView<'_>) {
         list_state.select(Some(selected.min(flat.len().saturating_sub(1))));
     }
 
-    let layout = SidebarLayout::new(area);
     let list = List::new(items)
         .style(Style::default().fg(theme::TEXT))
         .highlight_style(theme::selected_row(is_move_mode))

@@ -34,6 +34,14 @@ use ratatui::{
 use std::time::{SystemTime, UNIX_EPOCH};
 use wsx_core::{config::global::project_is_recent, model::workspace::Selection};
 
+fn git_remote_status_color(behind: usize, ahead: usize) -> Color {
+    match (behind, ahead) {
+        (0, _) => theme::SUCCESS,
+        (_, 0) => theme::ERROR,
+        _ => theme::WARNING,
+    }
+}
+
 fn compact_port_label(ports: &[u16]) -> Option<String> {
     let port = ports.first()?;
     let more = ports.len().saturating_sub(1);
@@ -60,6 +68,14 @@ pub fn popup_upper(area: Rect, w: u16, h: u16) -> Rect {
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = (area.y + area.height / 3).min(area.bottom().saturating_sub(height));
     Rect::new(x, y, width, height)
+}
+
+pub(crate) fn popup_block<'a>(title: Line<'a>, hints: Line<'a>, border_style: Style) -> Block<'a> {
+    Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_bottom(hints.right_aligned())
+        .border_style(border_style)
 }
 
 fn render_workspace_header(frame: &mut Frame, area: Rect, app: &App) {
@@ -133,7 +149,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         (chunks[0], chunks[1])
     };
 
-    let visible_height = SidebarLayout::new(tree_area).list.height as usize;
+    let workspace_focused = matches!(app.mode, Mode::Workspace);
+    let sidebar_layout = SidebarLayout::bordered(tree_area);
+    let visible_height = sidebar_layout.list.height as usize;
     app.tree_visible_height = visible_height;
     app.tree_scroll = compute_scroll(app.tree_selected, visible_height, app.tree_scroll);
     app.tree_area = tree_area;
@@ -149,6 +167,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let is_move_mode = matches!(app.mode, Mode::Move { .. } | Mode::MoveSession { .. });
     if tree_area.width > 0 && tree_area.height > 0 {
+        if workspace_focused {
+            frame.render_widget(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme::TEXT_SUBTLE)),
+                tree_area,
+            );
+        }
         if let Mode::GroupManager {
             selected,
             scroll,
@@ -196,7 +222,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         } else {
             render_tree(
                 frame,
-                tree_area,
+                sidebar_layout,
                 TreeView {
                     workspace: &app.workspace,
                     flat: app.flat(),
@@ -207,17 +233,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             );
         }
     }
-    if !is_mobile && tree_area.width > 0 {
+    if !is_mobile && !workspace_focused && tree_area.width > 0 {
         let divider_x = tree_area.x + tree_area.width.saturating_sub(1);
-        let divider_color = if matches!(app.mode, Mode::Terminal { .. }) {
-            theme::TEXT_SUBTLE
-        } else {
-            theme::DIVIDER
-        };
         let buffer = frame.buffer_mut();
         for y in tree_area.y..tree_area.y + tree_area.height {
             buffer[(divider_x, y)].set_symbol("│");
-            buffer[(divider_x, y)].set_style(Style::default().fg(divider_color));
+            buffer[(divider_x, y)].set_style(Style::default().fg(theme::DIVIDER));
         }
     }
 
@@ -399,6 +420,7 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
 struct StatusBarView {
     mode: &'static str,
     hints: Vec<String>,
+    global_hints: Vec<String>,
 }
 
 fn status_bar_view(app: &App) -> StatusBarView {
@@ -408,13 +430,13 @@ fn status_bar_view(app: &App) -> StatusBarView {
                 Selection::Project(_)
                     if app.active_group == Some(wsx_core::config::global::GroupKey::Recent) =>
                 {
-                    vec!["(w)orktree", "(g)roup", "(d)remove recent"]
+                    vec!["(e)dit", "(w)orktree", "(g)roup", "(d)remove recent"]
                 }
                 Selection::Project(_) if app.config.groups.is_empty() => {
-                    vec!["(w)orktree", "(T)groups", "(d)unregister"]
+                    vec!["(e)dit", "(w)orktree", "(T)groups", "(d)unregister"]
                 }
                 Selection::Project(_) => {
-                    vec!["(w)orktree", "(g)roup", "(d)unregister"]
+                    vec!["(e)dit", "(w)orktree", "(g)roup", "(d)unregister"]
                 }
                 Selection::Worktree(..) => vec!["(s)ession", "(d)elete", "(?)help"],
                 Selection::Session(..) => vec!["(C)interrupt", "(d)close", "(?)help"],
@@ -427,17 +449,20 @@ fn status_bar_view(app: &App) -> StatusBarView {
             };
             ("WORKSPACE", hints.into_iter().map(str::to_string).collect())
         }
-        Mode::Terminal { .. } => (
-            "TERMINAL",
-            vec![format!("{} workspace", app.terminal_escape_label())],
-        ),
-        Mode::Input { .. } => ("INPUT", vec!["Enter: confirm".into(), "Esc: cancel".into()]),
-        Mode::Confirm { .. } => ("CONFIRM", vec!["(y)es".into(), "(n)o".into()]),
-        Mode::Config { .. } => ("CONFIG", vec!["(e)dit".into(), "Esc: close".into()]),
+        Mode::Terminal { .. } => {
+            let mut hints = vec![app.terminal_workspace_hint()];
+            if let Some(quit) = app.terminal_quit_hint() {
+                hints.push(quit);
+            }
+            ("TERMINAL", hints)
+        }
+        Mode::Input { .. } => ("INPUT", Vec::new()),
+        Mode::Confirm { .. } => ("CONFIRM", Vec::new()),
+        Mode::Config { .. } => ("CONFIG", Vec::new()),
         Mode::Move { .. } | Mode::MoveSession { .. } => {
             ("MOVE", vec!["(j/k)reorder".into(), "Esc: done".into()])
         }
-        Mode::Help => ("HELP", vec!["Esc: close".into()]),
+        Mode::Help => ("HELP", Vec::new()),
         Mode::Search { .. } => ("SEARCH", vec!["Enter: next".into(), "Esc: exit".into()]),
         Mode::GroupManager { purpose, .. } => match purpose {
             GroupManagerPurpose::Switch => (
@@ -460,17 +485,19 @@ fn status_bar_view(app: &App) -> StatusBarView {
                 ],
             ),
         },
-        Mode::RoutineEditor { .. } => (
-            "ROUTINE",
-            vec![
-                "Tab: field".into(),
-                "Enter: save".into(),
-                "Esc: cancel".into(),
-            ],
-        ),
+        Mode::RoutineEditor { .. } => ("ROUTINE", Vec::new()),
         Mode::RoutineDetail { .. } => ("DETAIL", vec!["(j/k)scroll".into(), "Esc: close".into()]),
     };
-    StatusBarView { mode, hints }
+    let global_hints = if matches!(app.mode, Mode::Workspace) {
+        vec!["(,)config".into(), "(q)quit".into()]
+    } else {
+        Vec::new()
+    };
+    StatusBarView {
+        mode,
+        hints,
+        global_hints,
+    }
 }
 
 fn fit_hints(hints: &[String], available_width: usize) -> String {
@@ -497,7 +524,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
     let badge_width = Line::from(mode_text.as_str()).width();
     let badge_style = theme::mode_badge();
 
-    let right = if app.is_busy() {
+    let activity = if app.is_busy() {
         let labels = app
             .jobs
             .iter()
@@ -520,11 +547,20 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
             )
         })
     };
-    let right_width = right
+    let activity_width = activity
         .as_ref()
         .map(|(text, _)| Line::from(text.as_str()).width())
         .unwrap_or(0);
-    let available = usize::from(area.width).saturating_sub(badge_width + right_width + 1);
+    let global_available = usize::from(area.width).saturating_sub(badge_width + activity_width + 1);
+    let global = fit_hints(&view.global_hints, global_available.saturating_sub(2));
+    let global_text = if global.is_empty() {
+        String::new()
+    } else {
+        format!(" {global} ")
+    };
+    let global_width = Line::from(global_text.as_str()).width();
+    let available =
+        usize::from(area.width).saturating_sub(badge_width + global_width + activity_width + 1);
     let hint_text = if let Mode::Search { query, .. } = &app.mode {
         format!(" /{query}_")
     } else {
@@ -536,13 +572,14 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
         }
     };
     let left_width = badge_width + Line::from(hint_text.as_str()).width();
-    let pad = usize::from(area.width).saturating_sub(left_width + right_width);
+    let pad = usize::from(area.width).saturating_sub(left_width + global_width + activity_width);
     let mut spans = vec![
         Span::styled(mode_text, badge_style),
         Span::styled(hint_text, Style::default().fg(theme::TEXT_MUTED)),
         Span::raw(" ".repeat(pad)),
+        Span::styled(global_text, Style::default().fg(theme::TEXT_MUTED)),
     ];
-    if let Some((text, style)) = right {
+    if let Some((text, style)) = activity {
         spans.push(Span::styled(text, style));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -587,6 +624,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "",
         " Terminal mode",
         "$terminal_escape",
+        "$terminal_quit",
         "$terminal_literal",
         "",
         " Groups (optional)",
@@ -600,6 +638,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  a / A         Jump to next / prev active session (◉)",
         "  n / N         Jump to next / prev session needing attention (●)",
         "  R             Refresh",
+        "  ,             Edit global config",
         "  ?             Help",
         "  q             Quit TUI",
         "  Q             Hard quit TUI and wsxd",
@@ -610,23 +649,28 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .flat_map(|entry| {
             let text = match *entry {
-                "$terminal_escape" => {
-                    format!("  {:<14} Focus Workspace", app.terminal_escape_label())
-                }
-                "$terminal_literal" => format!(
+                "$terminal_escape" => Some(format!(
+                    "  {:<14} Focus Workspace",
+                    app.terminal_escape_label()
+                )),
+                "$terminal_quit" => app
+                    .terminal_quit_label()
+                    .map(|label| format!("  {label:<14} Quit TUI")),
+                "$terminal_literal" => Some(format!(
                     "  {:<14} Send literal prefix",
                     app.terminal_literal_escape_label()
-                ),
-                other => other.to_string(),
+                )),
+                other => Some(other.to_string()),
             };
-            help_wrap_line(&text, inner_width)
+            text.map_or_else(Vec::new, |text| help_wrap_line(&text, inner_width))
         })
         .collect();
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Help ")
-        .border_style(Style::default().fg(theme::ACCENT));
+    let block = popup_block(
+        Line::from(" Help "),
+        Line::styled(" Esc close ", Style::default().fg(theme::TEXT_MUTED)),
+        Style::default().fg(theme::ACCENT),
+    );
     let para = Paragraph::new(lines).block(block);
     frame.render_widget(para, popup);
 }
@@ -719,7 +763,15 @@ fn split_at_word(s: &str, max_chars: usize) -> (&str, &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::fit_hints;
+    use super::{fit_hints, git_remote_status_color, theme};
+
+    #[test]
+    fn git_remote_status_uses_actionable_semantic_colors() {
+        assert_eq!(git_remote_status_color(0, 0), theme::SUCCESS);
+        assert_eq!(git_remote_status_color(0, 2), theme::SUCCESS);
+        assert_eq!(git_remote_status_color(2, 0), theme::ERROR);
+        assert_eq!(git_remote_status_color(2, 1), theme::WARNING);
+    }
 
     #[test]
     fn status_hints_stop_before_exceeding_one_line() {

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use ratatui::{
     layout::{Position, Rect},
@@ -15,7 +15,7 @@ use ratatui::{
 
 use crate::{
     action::Action,
-    event::{poll_event, EscapeSequence},
+    event::{poll_event, EscapeSequence, EventMode},
     session_state::{self, AppSessionState},
     terminal_surface::{SurfaceUpdate, TerminalSurfaces},
     tui::{self, Tui},
@@ -414,7 +414,25 @@ fn routine_error_text(error: &anyhow::Error) -> String {
     }
 }
 
+fn edit_file(terminal: &mut Tui, path: &Path) -> Result<()> {
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    tui::with_raw_mode_disabled(terminal, || {
+        let status = std::process::Command::new(&editor)
+            .arg(path)
+            .status()
+            .with_context(|| format!("launching {editor}"))?;
+        if !status.success() {
+            anyhow::bail!("{editor} exited with {status}");
+        }
+        Ok(())
+    })
+}
+
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+fn startup_active_group(_cached: Option<GroupKey>) -> GroupKey {
+    GroupKey::Recent
+}
 
 fn integration_prompt_label(targets: &[wsx_core::integration::IntegrationTarget]) -> String {
     let visible = targets
@@ -586,13 +604,9 @@ impl App {
             cached_muted,
             integration_prompt_version,
         ) = wsx_core::cache::apply_cache(&mut workspace)?;
-        let cached_active_group = cached_active_group.filter(|key| match key {
-            GroupKey::Recent | GroupKey::Ungrouped => true,
-            GroupKey::Named(name) => config.named_group_exists(name),
-        });
-        let visible_projects =
-            compute_visible_projects(&config, &workspace, cached_active_group.as_ref());
-        let group_header_scroll = cached_active_group
+        let active_group = Some(startup_active_group(cached_active_group));
+        let visible_projects = compute_visible_projects(&config, &workspace, active_group.as_ref());
+        let group_header_scroll = active_group
             .as_ref()
             .and_then(|active| {
                 config
@@ -646,7 +660,7 @@ impl App {
             terminal_area: Rect::default(),
             mode: Mode::Workspace,
             config,
-            active_group: cached_active_group,
+            active_group,
             group_header_scroll,
             group_header_area: Rect::default(),
             visible_projects,
@@ -1009,22 +1023,22 @@ impl App {
                 self.needs_redraw = false;
             }
 
-            let in_input = matches!(
-                self.mode,
+            let event_mode = match &self.mode {
+                Mode::Workspace => EventMode::Workspace,
+                Mode::Terminal { .. } => EventMode::Terminal,
                 Mode::Input { .. }
-                    | Mode::Search { .. }
-                    | Mode::GroupManager { .. }
-                    | Mode::RoutineEditor { .. }
-            );
-            let terminal_mode = matches!(self.mode, Mode::Terminal { .. });
+                | Mode::Search { .. }
+                | Mode::GroupManager { .. }
+                | Mode::RoutineEditor { .. } => EventMode::Input,
+                _ => EventMode::Normal,
+            };
             if let Some(action) = poll_event(
-                Duration::from_millis(if terminal_mode {
+                Duration::from_millis(if event_mode == EventMode::Terminal {
                     TERMINAL_TICK_MS
                 } else {
                     TICK_MS
                 }),
-                in_input,
-                terminal_mode,
+                event_mode,
                 &mut self.terminal_escape_chord,
             )? {
                 if action == Action::Quit && matches!(self.mode, Mode::Workspace) {
@@ -1863,6 +1877,19 @@ impl App {
         self.terminal_escape_chord.literal_label()
     }
 
+    pub fn terminal_workspace_hint(&self) -> String {
+        format!("({})workspace", self.terminal_escape_chord.label)
+    }
+
+    pub fn terminal_quit_label(&self) -> Option<String> {
+        self.terminal_escape_chord.quit_label()
+    }
+
+    pub fn terminal_quit_hint(&self) -> Option<String> {
+        self.terminal_quit_label()
+            .map(|label| format!("({label})quit"))
+    }
+
     pub fn current_selection(&self) -> Selection {
         self.workspace
             .get_selection(self.tree_selected, self.flat())
@@ -2048,27 +2075,31 @@ impl App {
             if matches!(action, Action::InputEscape | Action::Quit | Action::Help) {
                 self.mode = Mode::Workspace;
             } else if action == Action::Edit {
-                let path = self.workspace.projects.get(pi).map(|project| {
-                    project
-                        .path
-                        .join(wsx_core::config::project::PROJECT_CONFIG_FILE)
-                });
-                if let Some(path) = path {
-                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-                    tui::with_raw_mode_disabled(terminal, || {
-                        std::process::Command::new(&editor).arg(&path).status()?;
-                        Ok(())
-                    })?;
-                    let config = self.workspace.projects.get(pi).map(|project| {
-                        wsx_core::config::project::load_project_config(&project.path)
-                    });
-                    if let Some(config) = config {
-                        let notice = config.notice.clone();
-                        self.workspace.projects[pi].config = Some(config);
-                        if let Some(notice) = notice {
-                            self.set_notice(NoticeLevel::Warning, notice, false);
+                let Some(repo_path) = self
+                    .workspace
+                    .projects
+                    .get(pi)
+                    .map(|project| project.path.clone())
+                else {
+                    return Ok(());
+                };
+                let path =
+                    match wsx_core::config::project::prepare_project_config_for_edit(&repo_path) {
+                        Ok(path) => path,
+                        Err(error) => {
+                            self.set_error(format!("Could not prepare project config: {error}"));
+                            return Ok(());
                         }
-                    }
+                    };
+                if let Err(error) = edit_file(terminal, &path) {
+                    self.set_error(format!("Could not edit project config: {error}"));
+                    return Ok(());
+                }
+                let config = wsx_core::config::project::load_project_config(&repo_path);
+                let notice = config.notice.clone();
+                self.workspace.projects[pi].config = Some(config);
+                if let Some(notice) = notice {
+                    self.set_notice(NoticeLevel::Warning, notice, false);
                 }
             }
             return Ok(());
@@ -2172,6 +2203,7 @@ impl App {
     ) -> Result<()> {
         match action {
             Action::InputEscape => self.leave_terminal_mode(pane_id),
+            Action::Quit => self.should_quit = true,
             Action::Resize => {
                 self.resize_terminal_pane(pane_id, terminal);
                 self.force_terminal_redraw = true;
@@ -2335,6 +2367,7 @@ impl App {
             Action::Delete => self.action_delete()?,
             Action::Clean => self.action_clean()?,
             Action::Edit => self.action_edit()?,
+            Action::EditGlobalConfig => self.action_edit_global_config(terminal),
             Action::SetAlias => self.action_set_alias()?,
             Action::Refresh => self.refresh_all()?,
             Action::Resize => {
@@ -2398,7 +2431,7 @@ impl App {
             return Ok(());
         }
         if self.tree_area.contains(pos) {
-            let layout = crate::ui::workspace_nav::SidebarLayout::new(self.tree_area);
+            let layout = crate::ui::workspace_nav::SidebarLayout::bordered(self.tree_area);
             if let Some(flat_idx) = layout.item_at(pos, self.tree_scroll, self.flat().len()) {
                 if flat_idx == self.tree_selected {
                     self.action_select(terminal)?;
@@ -3246,6 +3279,33 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn action_edit_global_config(&mut self, terminal: &mut Tui) {
+        let path = match self.config.prepare_for_edit() {
+            Ok(path) => path,
+            Err(error) => {
+                self.set_error(format!("Could not prepare global config: {error}"));
+                return;
+            }
+        };
+        if let Err(error) = edit_file(terminal, &path) {
+            self.set_error(format!("Could not edit global config: {error}"));
+            return;
+        }
+        match GlobalConfig::load() {
+            Err(error) => self.set_error(format!("Could not validate global config: {error}")),
+            Ok((_, Some(warning))) => self.set_error(warning),
+            Ok((config, None))
+                if EscapeSequence::parse(&config.terminal_escape_chord).is_none() =>
+            {
+                self.set_error(format!(
+                    "Invalid terminal_escape_chord: {}",
+                    config.terminal_escape_chord
+                ));
+            }
+            Ok((_, None)) => self.set_status("Global config valid; restart wsx to apply changes"),
+        }
     }
 
     fn action_edit(&mut self) -> Result<()> {
@@ -4559,6 +4619,15 @@ mod tests {
     }
 
     #[test]
+    fn startup_always_selects_recent_over_cached_group() {
+        assert_eq!(startup_active_group(None), GroupKey::Recent);
+        assert_eq!(
+            startup_active_group(Some(GroupKey::Named("work".into()))),
+            GroupKey::Recent
+        );
+    }
+
+    #[test]
     fn integration_prompt_label_bounds_long_target_lists() {
         assert_eq!(
             integration_prompt_label(&[
@@ -5371,10 +5440,33 @@ mod tests {
     }
 
     #[test]
+    fn terminal_quit_action_exits_only_the_tui() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.mode = Mode::Terminal {
+            pane_id: runtime::PaneId(1),
+        };
+        let backend = ratatui::backend::CrosstermBackend::new(std::io::stdout());
+        let mut terminal = ratatui::Terminal::with_options(
+            backend,
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Fixed(Rect::new(0, 0, 20, 8)),
+            },
+        )
+        .unwrap();
+
+        app.dispatch(Action::Quit, &mut terminal).unwrap();
+
+        assert!(app.should_quit);
+        assert!(matches!(app.mode, Mode::Terminal { .. }));
+        assert!(app.workspace.projects.is_empty());
+    }
+
+    #[test]
     fn global_header_spans_both_modes_without_workspace_spacer() {
         let project = make_project("demo");
         let config = GlobalConfig {
             groups: vec!["work".into(), "personal".into()],
+            terminal_escape_chord: "alt+g z".into(),
             projects: vec![wsx_core::config::global::ProjectEntry {
                 name: "demo".into(),
                 path: project.path.clone(),
@@ -5439,7 +5531,7 @@ mod tests {
         assert!(groups.contains("workspace"), "{groups:?}");
         assert!(!groups.contains("Workspace"), "{groups:?}");
         let projects = (0..30)
-            .map(|x| terminal.backend().buffer()[(x, 1)].symbol())
+            .map(|x| terminal.backend().buffer()[(x, 2)].symbol())
             .collect::<String>();
         assert!(projects.contains("demo"), "{projects:?}");
         let footer = (0..100)
@@ -5460,6 +5552,19 @@ mod tests {
             terminal.backend().buffer()[(99, 14)].bg,
             ratatui::style::Color::Reset
         );
+        for ((x, y), symbol) in [
+            ((0, 1), "┌"),
+            ((31, 1), "┐"),
+            ((0, 14), "└"),
+            ((31, 14), "┘"),
+        ] {
+            assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), symbol);
+            assert_eq!(
+                terminal.backend().buffer()[(x, y)].fg,
+                crate::ui::theme::TEXT_SUBTLE
+            );
+        }
+        let workspace_tree_height = app.tree_visible_height;
 
         app.mode = Mode::Terminal {
             pane_id: runtime::PaneId(1),
@@ -5471,10 +5576,83 @@ mod tests {
             .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
             .collect::<String>();
         assert!(terminal_header.contains("workspace"), "{terminal_header:?}");
+        assert_eq!(app.tree_visible_height, workspace_tree_height);
+        let terminal_projects = (0..30)
+            .map(|x| terminal.backend().buffer()[(x, 2)].symbol())
+            .collect::<String>();
+        assert!(terminal_projects.contains("demo"), "{terminal_projects:?}");
+        assert_eq!(terminal.backend().buffer()[(0, 1)].symbol(), " ");
+        assert_eq!(terminal.backend().buffer()[(0, 14)].symbol(), " ");
+        assert_eq!(terminal.backend().buffer()[(31, 1)].symbol(), "│");
         assert_eq!(
             terminal.backend().buffer()[(31, 1)].fg,
-            crate::ui::theme::TEXT_SUBTLE
+            crate::ui::theme::DIVIDER
         );
+        let terminal_footer = (0..100)
+            .map(|x| terminal.backend().buffer()[(x, 15)].symbol())
+            .collect::<String>();
+        assert!(
+            terminal_footer.contains("(Alt+G Z)workspace"),
+            "{terminal_footer:?}"
+        );
+        assert!(
+            terminal_footer.contains("(Alt+G Q)quit"),
+            "{terminal_footer:?}"
+        );
+        assert!(
+            !terminal_footer.contains("(Ctrl+A W)workspace"),
+            "{terminal_footer:?}"
+        );
+        assert!(!terminal_footer.contains("(q)quit"), "{terminal_footer:?}");
+    }
+
+    #[test]
+    fn help_actions_render_on_the_popup_bottom_border() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.mode = Mode::Help;
+        let backend = ratatui::backend::TestBackend::new(40, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+
+        let bottom_y = (0..12)
+            .find(|&y| {
+                (0..40)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains("Esc close")
+            })
+            .expect("help hint");
+        assert_eq!(terminal.backend().buffer()[(0, bottom_y)].symbol(), "└");
+        assert_eq!(terminal.backend().buffer()[(39, bottom_y)].symbol(), "┘");
+        for y in 0..bottom_y {
+            let row = (0..40)
+                .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                .collect::<String>();
+            assert!(!row.contains("Esc close"), "{row:?}");
+        }
+    }
+
+    #[test]
+    fn mobile_workspace_focus_box_uses_the_content_bounds() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.runtime_health = RuntimeHealth::Healthy {
+            last_success: Instant::now(),
+        };
+        let backend = ratatui::backend::TestBackend::new(40, 8);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+
+        assert!(app.is_mobile);
+        for ((x, y), symbol) in [((0, 1), "┌"), ((39, 1), "┐"), ((0, 6), "└"), ((39, 6), "┘")]
+        {
+            assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), symbol);
+        }
     }
 
     #[test]
@@ -5499,7 +5677,10 @@ mod tests {
         let footer = (0..80)
             .map(|x| terminal.backend().buffer()[(x, 11)].symbol())
             .collect::<String>();
+        assert!(footer.contains("(e)dit"), "{footer:?}");
         assert!(footer.contains("(d)remove recent"), "{footer:?}");
+        assert!(footer.contains("(,)config"), "{footer:?}");
+        assert!(footer.contains("(q)quit"), "{footer:?}");
         assert!(!footer.contains("unregister"), "{footer:?}");
     }
 
