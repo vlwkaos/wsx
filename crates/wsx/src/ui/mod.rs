@@ -2,6 +2,7 @@
 
 pub mod config_modal;
 pub mod confirm;
+pub mod global_settings;
 pub mod group_manager;
 pub mod input;
 pub mod layout;
@@ -17,21 +18,22 @@ use crate::app::{App, GroupManagerPurpose, Mode, SPINNER_FRAMES};
 use crate::ui::{
     config_modal::render_config_modal,
     confirm::render_confirm,
+    global_settings::render as render_global_settings,
     group_manager::{render_group_manager, GroupManagerView},
     input::render_input,
-    layout::{FrameLayout, TerminalLayout},
+    layout::{terminal_sidebar_width, FrameLayout, TerminalLayout, EXPANDED_SIDEBAR_WIDTH},
     preview::{
         render_empty_preview, render_project_preview, render_terminal_breadcrumb,
-        render_terminal_preview, render_worktree_preview,
+        render_terminal_preview, render_worktree_preview, TerminalBreadcrumbView,
     },
     workspace_nav::{fit_group_strip, SidebarLayout, WORKSPACE_HEADER_TITLE},
-    workspace_tree::{compute_scroll, render_tree, TreeView},
+    workspace_tree::{compute_scroll, render_compact_tree, render_tree, CompactTreeView, TreeView},
 };
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Paragraph},
 };
-use wsx_core::model::workspace::Selection;
+use wsx_core::{config::global::TerminalSidebar, model::workspace::Selection};
 
 fn git_remote_status_color(behind: usize, ahead: usize) -> Color {
     match (behind, ahead) {
@@ -41,17 +43,7 @@ fn git_remote_status_color(behind: usize, ahead: usize) -> Color {
     }
 }
 
-fn compact_port_label(ports: &[u16]) -> Option<String> {
-    let port = ports.first()?;
-    let more = ports.len().saturating_sub(1);
-    Some(if more == 0 {
-        format!(":{port}")
-    } else {
-        format!(":{port} +{more}")
-    })
-}
-
-fn compact_port_label_with_width(ports: &[u16], max_width: usize) -> Option<String> {
+fn compact_port_label(ports: &[u16], max_width: usize) -> Option<String> {
     let mut best = None;
     for shown in 1..=ports.len() {
         let mut label = ports[..shown]
@@ -111,7 +103,7 @@ fn render_workspace_header(frame: &mut Frame, area: Rect, app: &App) {
     let groups = app.config.ordered_group_keys();
     let strip = fit_group_strip(
         &groups,
-        app.active_group.as_ref(),
+        &app.active_group,
         usize::from(area.width),
         app.group_header_scroll,
     );
@@ -152,20 +144,32 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     app.group_header_area = layout.header;
     render_workspace_header(frame, layout.header, app);
 
-    let (tree_area, preview_area) = if is_mobile && matches!(app.mode, Mode::Terminal { .. }) {
+    let terminal_mode = matches!(app.mode, Mode::Terminal { .. });
+    let compact_terminal =
+        !is_mobile && terminal_mode && app.config.terminal_sidebar == TerminalSidebar::Compact;
+    let (tree_area, preview_area) = if is_mobile && terminal_mode {
         (Rect::default(), main_area)
     } else if is_mobile {
         (main_area, Rect::default())
     } else {
+        let sidebar_width = if terminal_mode {
+            terminal_sidebar_width(app.config.terminal_sidebar)
+        } else {
+            EXPANDED_SIDEBAR_WIDTH
+        };
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(32), Constraint::Min(0)])
+            .constraints([Constraint::Length(sidebar_width), Constraint::Min(0)])
             .split(main_area);
         (chunks[0], chunks[1])
     };
 
     let workspace_focused = matches!(app.mode, Mode::Workspace);
-    let sidebar_layout = SidebarLayout::bordered(tree_area);
+    let sidebar_layout = if compact_terminal {
+        SidebarLayout::compact_rail(tree_area)
+    } else {
+        SidebarLayout::bordered(tree_area)
+    };
     let visible_height = sidebar_layout.list.height as usize;
     app.tree_visible_height = visible_height;
     if app.tree_scroll_manual {
@@ -221,24 +225,41 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     selected: *selected,
                     scroll: *scroll,
                     config: &app.config,
-                    active_group: app.active_group.as_ref(),
+                    active_group: &app.active_group,
                     assign_path,
                 },
             );
         } else {
             let stale_projects = app.stale_project_indices();
-            render_tree(
-                frame,
-                sidebar_layout,
-                TreeView {
-                    workspace: &app.workspace,
-                    flat: app.flat(),
-                    stale_projects: &stale_projects,
-                    selected: app.tree_selected,
-                    scroll_offset: app.tree_scroll,
-                    is_move_mode,
-                },
-            );
+            if compact_terminal {
+                render_compact_tree(
+                    frame,
+                    sidebar_layout,
+                    CompactTreeView {
+                        workspace: &app.workspace,
+                        flat: app.flat(),
+                        stale_projects: &stale_projects,
+                        selected: app.tree_selected,
+                        scroll_offset: app.tree_scroll,
+                        animation_frame: app.spinner_frame,
+                    },
+                );
+            } else {
+                render_tree(
+                    frame,
+                    sidebar_layout,
+                    TreeView {
+                        workspace: &app.workspace,
+                        flat: app.flat(),
+                        stale_projects: &stale_projects,
+                        selected: app.tree_selected,
+                        scroll_offset: app.tree_scroll,
+                        is_move_mode,
+                        port_visibility: app.config.port_visibility,
+                        animation_frame: app.spinner_frame,
+                    },
+                );
+            }
         }
     }
     if !is_mobile && !workspace_focused && tree_area.width > 0 {
@@ -266,10 +287,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     render_terminal_breadcrumb(
                         frame,
                         terminal_breadcrumb_area,
-                        &project.name,
-                        worktree.display_name(),
-                        session,
-                        None,
+                        TerminalBreadcrumbView {
+                            project: &project.name,
+                            worktree: worktree.display_name(),
+                            session,
+                            pane: None,
+                            port_visibility: app.config.port_visibility,
+                            animation_frame: app.spinner_frame,
+                        },
                     );
                     render_terminal_preview(
                         frame,
@@ -297,10 +322,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     render_terminal_breadcrumb(
                         frame,
                         terminal_breadcrumb_area,
-                        &project.name,
-                        worktree.display_name(),
-                        session,
-                        Some(pane),
+                        TerminalBreadcrumbView {
+                            project: &project.name,
+                            worktree: worktree.display_name(),
+                            session,
+                            pane: Some(pane),
+                            port_visibility: app.config.port_visibility,
+                            animation_frame: app.spinner_frame,
+                        },
                     );
                     render_terminal_preview(
                         frame,
@@ -386,7 +415,11 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
                 render_config_modal(frame, area, &config, &name);
             }
         }
+        Mode::GlobalSettings { form } => render_global_settings(frame, area, form),
         Mode::Help => render_help(frame, area, app),
+        Mode::RoutinePresetPicker { selected, .. } => {
+            routine_editor::render_preset_picker(frame, area, *selected)
+        }
         Mode::RoutineEditor {
             form,
             original_name,
@@ -430,43 +463,77 @@ struct StatusBarView {
     badge: theme::ModeBadge,
     hints: Vec<String>,
     global_hints: Vec<String>,
+    release: StatusReleaseView,
+}
+
+struct StatusReleaseView {
+    current: &'static str,
+    update: Option<String>,
+    visible: bool,
 }
 
 fn status_bar_view(app: &App) -> StatusBarView {
     let (mode, badge, hints) = match &app.mode {
         Mode::Workspace => {
             let mut hints = match app.current_selection() {
-                Selection::Project(_) if app.config.groups.is_empty() => {
-                    vec!["(e)dit", "(w)orktree", "(T)groups", "(d)unregister"]
+                Selection::Project(_) if app.config.groups.is_empty() => vec![
+                    "(e)dit",
+                    "(w)orktree",
+                    "(u)routine",
+                    "(T)groups",
+                    "(d)unregister",
+                ],
+                Selection::Project(_) => vec![
+                    "(e)dit",
+                    "(w)orktree",
+                    "(u)routine",
+                    "(g)roup",
+                    "(d)unregister",
+                ],
+                Selection::Worktree(..) => {
+                    vec!["(s)ession", "(u)routine", "(d)elete", "(?)help"]
                 }
-                Selection::Project(_) => {
-                    vec!["(e)dit", "(w)orktree", "(g)roup", "(d)unregister"]
+                Selection::Session(..) => {
+                    vec!["(C)interrupt", "(u)routine", "(d)close", "(?)help"]
                 }
-                Selection::Worktree(..) => vec!["(s)ession", "(d)elete", "(?)help"],
-                Selection::Session(..) => vec!["(C)interrupt", "(d)close", "(?)help"],
-                Selection::Pane(..) => {
-                    vec!["(|)split", "(-)split", "(C)interrupt", "(d)close"]
-                }
+                Selection::Pane(..) => vec![
+                    "(|)split",
+                    "(-)split",
+                    "(C)interrupt",
+                    "(u)routine",
+                    "(d)close",
+                ],
                 Selection::RoutinesHeader(_) => vec!["(u)new", "(?)help"],
-                Selection::Routine(..) => vec!["(e)dit", "(d)elete", "(?)help"],
+                Selection::Routine(project_idx, routine_idx) => {
+                    let view = &app.workspace.projects[project_idx].routines[routine_idx];
+                    let mut hints = Vec::new();
+                    if view.capabilities.can_edit {
+                        hints.push("(e)dit");
+                    }
+                    if view.capabilities.can_delete {
+                        hints.push("(d)elete");
+                    }
+                    hints.push("(?)help");
+                    hints
+                }
                 Selection::None => vec!["(p)add project", "(?)help"],
             }
             .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>();
-            hints.extend(["(i)idle", "(a)active", "(n)attention"].map(str::to_string));
+            hints.extend(["(i)dle iter.", "(a)ctive iter.", "(n)eeds"].map(str::to_string));
             ("WORKSPACE", theme::ModeBadge::Navigation, hints)
         }
-        Mode::Terminal { .. } => {
-            let mut hints = vec![app.terminal_workspace_hint()];
-            if let Some(quit) = app.terminal_quit_hint() {
-                hints.push(quit);
-            }
-            ("TERMINAL", theme::ModeBadge::Terminal, hints)
-        }
+        Mode::Terminal { .. } => (
+            "TERMINAL",
+            theme::ModeBadge::Terminal,
+            vec![app.terminal_workspace_hint()],
+        ),
         Mode::Input { .. } => ("INPUT", theme::ModeBadge::Input, Vec::new()),
         Mode::Confirm { .. } => ("CONFIRM", theme::ModeBadge::Confirm, Vec::new()),
-        Mode::Config { .. } => ("CONFIG", theme::ModeBadge::Config, Vec::new()),
+        Mode::Config { .. } | Mode::GlobalSettings { .. } => {
+            ("CONFIG", theme::ModeBadge::Config, Vec::new())
+        }
         Mode::Move { .. } | Mode::MoveSession { .. } => (
             "MOVE",
             theme::ModeBadge::Move,
@@ -501,6 +568,7 @@ fn status_bar_view(app: &App) -> StatusBarView {
                 ],
             ),
         },
+        Mode::RoutinePresetPicker { .. } => ("RUNNER", theme::ModeBadge::Routine, Vec::new()),
         Mode::RoutineEditor { .. } => ("ROUTINE", theme::ModeBadge::Routine, Vec::new()),
         Mode::RoutineDetail { .. } => (
             "DETAIL",
@@ -508,16 +576,22 @@ fn status_bar_view(app: &App) -> StatusBarView {
             vec!["(j/k)scroll".into(), "Esc: close".into()],
         ),
     };
-    let global_hints = if matches!(app.mode, Mode::Workspace) {
-        vec!["(,)config".into(), "(q)quit".into()]
-    } else {
-        Vec::new()
+    // ^ Global quit hints stay right-aligned; single-key labels complete the word after the key.
+    let global_hints = match &app.mode {
+        Mode::Workspace => vec!["(,)config".into(), "(q)uit".into()],
+        Mode::Terminal { .. } => app.terminal_quit_hint().into_iter().collect(),
+        _ => Vec::new(),
     };
     StatusBarView {
         mode,
         badge,
         hints,
         global_hints,
+        release: StatusReleaseView {
+            current: env!("CARGO_PKG_VERSION"),
+            update: app.update_available.clone(),
+            visible: app.config.show_release_status,
+        },
     }
 }
 
@@ -537,12 +611,65 @@ fn fit_hints(hints: &[String], available_width: usize) -> String {
     visible
 }
 
+fn status_release_line(view: &StatusReleaseView, available_width: usize) -> Line<'static> {
+    if !view.visible {
+        return Line::default();
+    }
+    let current = format!(" v{} ", view.current);
+    if let Some(update) = &view.update {
+        let update = format!("↑ v{update} ");
+        if Line::from(format!("{current}{update}")).width() <= available_width {
+            return Line::from(vec![
+                Span::styled(current.clone(), Style::default().fg(theme::TEXT_MUTED)),
+                Span::styled(update, Style::default().fg(theme::WARNING).bold()),
+            ]);
+        }
+    }
+    if Line::from(current.as_str()).width() <= available_width {
+        return Line::from(Span::styled(
+            current,
+            Style::default().fg(theme::TEXT_MUTED),
+        ));
+    }
+    Line::default()
+}
+
+fn status_regions(area: Rect, release_width: usize) -> (Rect, Rect) {
+    let release_width = u16::try_from(release_width)
+        .unwrap_or(u16::MAX)
+        .min(area.width);
+    let content_width = area.width.saturating_sub(release_width);
+    (
+        Rect::new(area.x, area.y, content_width, area.height),
+        Rect::new(
+            area.x.saturating_add(content_width),
+            area.y,
+            release_width,
+            area.height,
+        ),
+    )
+}
+
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarView) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let mode_text = format!(" {} ", view.mode);
     let badge_width = Line::from(mode_text.as_str()).width();
+    let context_min_width = if let Mode::Search { query, .. } = &app.mode {
+        Line::from(format!(" /{query}_")).width()
+    } else {
+        view.hints
+            .first()
+            .map(|hint| Line::from(format!(" {hint}")).width())
+            .unwrap_or(0)
+    };
+    let release = status_release_line(
+        &view.release,
+        usize::from(area.width).saturating_sub(badge_width + context_min_width),
+    );
+    let release_width = release.width();
+    let (content_area, release_area) = status_regions(area, release_width);
     let badge_style = theme::mode_badge(view.badge);
 
     let activity = if app.is_busy() {
@@ -561,18 +688,15 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
             Style::default().fg(theme::WORKING),
         ))
     } else {
-        app.update_available.as_ref().map(|version| {
-            (
-                format!(" update v{version} "),
-                Style::default().fg(theme::WARNING).bold(),
-            )
-        })
+        None
     };
     let activity_width = activity
         .as_ref()
         .map(|(text, _)| Line::from(text.as_str()).width())
         .unwrap_or(0);
-    let global_available = usize::from(area.width).saturating_sub(badge_width + activity_width + 1);
+    let content_width = usize::from(content_area.width);
+    let global_available =
+        content_width.saturating_sub(badge_width + activity_width + context_min_width);
     let global = fit_hints(&view.global_hints, global_available.saturating_sub(2));
     let global_text = if global.is_empty() {
         String::new()
@@ -580,8 +704,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
         format!(" {global} ")
     };
     let global_width = Line::from(global_text.as_str()).width();
-    let available =
-        usize::from(area.width).saturating_sub(badge_width + global_width + activity_width + 1);
+    let available = content_width.saturating_sub(badge_width + global_width + activity_width + 1);
     let hint_text = if let Mode::Search { query, .. } = &app.mode {
         format!(" /{query}_")
     } else {
@@ -593,7 +716,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
         }
     };
     let left_width = badge_width + Line::from(hint_text.as_str()).width();
-    let pad = usize::from(area.width).saturating_sub(left_width + global_width + activity_width);
+    let pad = content_width.saturating_sub(left_width + global_width + activity_width);
     let mut spans = vec![
         Span::styled(mode_text, badge_style),
         Span::styled(hint_text, Style::default().fg(theme::TEXT_MUTED)),
@@ -603,7 +726,15 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
     if let Some((text, style)) = activity {
         spans.push(Span::styled(text, style));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    if content_area.width > 0 {
+        frame.render_widget(Paragraph::new(Line::from(spans)), content_area);
+    }
+    if release_area.width > 0 {
+        frame.render_widget(
+            Paragraph::new(release).alignment(Alignment::Right),
+            release_area,
+        );
+    }
 }
 
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
@@ -659,7 +790,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  a / A         Jump to next / prev active session (◉)",
         "  n / N         Jump to next / prev session needing attention (●)",
         "  R             Refresh",
-        "  ,             Edit global config",
+        "  ,             Open global settings",
         "  ?             Help",
         "  q             Quit TUI",
         "  Q             Hard quit TUI and wsxd",
@@ -784,7 +915,17 @@ fn split_at_word(s: &str, max_chars: usize) -> (&str, &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{compact_port_label_with_width, fit_hints, git_remote_status_color, theme};
+    use super::{
+        compact_port_label, fit_hints, git_remote_status_color, status_regions,
+        status_release_line, theme, StatusReleaseView,
+    };
+
+    fn line_text(line: &ratatui::text::Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
 
     #[test]
     fn git_remote_status_uses_actionable_semantic_colors() {
@@ -799,14 +940,11 @@ mod tests {
         let ports = [5173, 8081, 9000];
 
         assert_eq!(
-            compact_port_label_with_width(&ports, 18).as_deref(),
+            compact_port_label(&ports, 18).as_deref(),
             Some(":5173 :8081 :9000")
         );
-        assert_eq!(
-            compact_port_label_with_width(&ports, 13).as_deref(),
-            Some(":5173 +2")
-        );
-        assert_eq!(compact_port_label_with_width(&ports, 7), None);
+        assert_eq!(compact_port_label(&ports, 13).as_deref(), Some(":5173 +2"));
+        assert_eq!(compact_port_label(&ports, 7), None);
     }
 
     #[test]
@@ -818,5 +956,106 @@ mod tests {
         ];
         assert_eq!(fit_hints(&hints, 29), "(C)interrupt  (d)close");
         assert_eq!(fit_hints(&hints, 5), "");
+    }
+
+    #[test]
+    fn status_release_always_shows_the_running_version() {
+        let view = StatusReleaseView {
+            current: "0.20.0",
+            update: None,
+            visible: true,
+        };
+
+        let current = status_release_line(&view, 80);
+        assert_eq!(line_text(&current), " v0.20.0 ");
+        assert_eq!(current.spans[0].style.fg, Some(theme::TEXT_MUTED));
+    }
+
+    #[test]
+    fn status_release_shows_current_and_available_versions() {
+        let view = StatusReleaseView {
+            current: "0.20.0",
+            update: Some("0.21.0".into()),
+            visible: true,
+        };
+
+        let full = status_release_line(&view, 80);
+        assert_eq!(line_text(&full), " v0.20.0 ↑ v0.21.0 ");
+        assert_eq!(full.spans[0].style.fg, Some(theme::TEXT_MUTED));
+        assert_eq!(full.spans[1].style.fg, Some(theme::WARNING));
+    }
+
+    #[test]
+    fn narrow_status_drops_update_before_running_version() {
+        let view = StatusReleaseView {
+            current: "0.20.0",
+            update: Some("0.21.0".into()),
+            visible: true,
+        };
+
+        assert_eq!(line_text(&status_release_line(&view, 13)), " v0.20.0 ");
+        assert_eq!(line_text(&status_release_line(&view, 9)), " v0.20.0 ");
+        assert!(status_release_line(&view, 8).spans.is_empty());
+    }
+
+    #[test]
+    fn hidden_release_status_reserves_no_footer_space() {
+        let view = StatusReleaseView {
+            current: "0.20.0",
+            update: Some("0.21.0".into()),
+            visible: false,
+        };
+
+        assert!(status_release_line(&view, 80).spans.is_empty());
+    }
+
+    #[test]
+    fn rust_ui_sources_reject_duplicated_parenthesized_mnemonics() {
+        fn rust_files(directory: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(directory).unwrap().filter_map(Result::ok) {
+                let path = entry.path();
+                if path.is_dir() {
+                    rust_files(&path, files);
+                } else if path.extension().and_then(|value| value.to_str()) == Some("rs") {
+                    files.push(path);
+                }
+            }
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rust_files(&root, &mut files);
+        let mut violations = Vec::new();
+        for path in files {
+            let source = std::fs::read(&path).unwrap();
+            for (index, window) in source.windows(4).enumerate() {
+                if window[0] == b'('
+                    && window[1].is_ascii_alphabetic()
+                    && window[2] == b')'
+                    && window[1].eq_ignore_ascii_case(&window[3])
+                {
+                    let line = source[..index]
+                        .iter()
+                        .filter(|byte| **byte == b'\n')
+                        .count()
+                        + 1;
+                    violations.push(format!("{}:{line}", path.display()));
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "mnemonic key is repeated after its parenthesized prefix: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn release_region_stays_at_the_bottom_right_boundary() {
+        let area = ratatui::layout::Rect::new(4, 9, 80, 1);
+        let (content, release) = status_regions(area, 14);
+
+        assert_eq!(content, ratatui::layout::Rect::new(4, 9, 66, 1));
+        assert_eq!(release, ratatui::layout::Rect::new(70, 9, 14, 1));
+        assert_eq!(release.right(), area.right());
     }
 }

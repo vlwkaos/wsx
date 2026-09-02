@@ -108,6 +108,21 @@ impl TerminalSurfaces {
             .flatten()
     }
 
+    pub(crate) fn clear_selection(&mut self, pane_id: PaneId, terminal_id: TerminalId) -> bool {
+        if self.identities.get(&pane_id) != Some(&terminal_id) {
+            return false;
+        }
+        let Some(frame) = self
+            .frames
+            .get_mut(&pane_id)
+            .filter(|frame| frame.terminal_id == terminal_id && !frame.selection.is_empty())
+        else {
+            return false;
+        };
+        frame.selection.clear();
+        true
+    }
+
     pub(crate) fn contains(&self, epoch: u64, pane_id: PaneId, terminal_id: TerminalId) -> bool {
         self.matches(epoch, pane_id, terminal_id)
     }

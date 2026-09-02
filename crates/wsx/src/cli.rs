@@ -775,7 +775,8 @@ fn format_argv(argv: &[String]) -> String {
 
 #[cfg(test)]
 mod routine_output_tests {
-    use super::format_argv;
+    use super::{format_argv, Args, Command, RoutineCmd};
+    use clap::Parser;
 
     #[test]
     fn plain_routine_argv_preserves_argument_boundaries() {
@@ -783,6 +784,40 @@ mod routine_output_tests {
             format_argv(&["printf".into(), "two words".into(), "".into()]),
             r#"["printf","two words",""]"#
         );
+    }
+
+    #[test]
+    fn pi_routine_cli_accepts_flag_argv_as_explicit_values() {
+        let parsed = Args::try_parse_from([
+            "wsx",
+            "routine",
+            "add",
+            "weekday-review",
+            "--cron",
+            "0 9 * * 1-5",
+            "--arg=pi",
+            "--arg=-p",
+            "--arg={prompt}",
+            "--prompt",
+            "Review the project",
+        ])
+        .unwrap();
+
+        let Some(Command::Routine {
+            subcommand:
+                RoutineCmd::Add {
+                    name,
+                    command,
+                    prompt,
+                    ..
+                },
+        }) = parsed.command
+        else {
+            panic!("expected routine add command");
+        };
+        assert_eq!(name, "weekday-review");
+        assert_eq!(command, ["pi", "-p", "{prompt}"]);
+        assert_eq!(prompt, "Review the project");
     }
 }
 

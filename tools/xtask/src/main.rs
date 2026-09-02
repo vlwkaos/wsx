@@ -43,11 +43,22 @@ fn usage() -> String {
 }
 
 fn workspace_root() -> Result<PathBuf, String> {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .ok_or_else(|| "could not resolve workspace root".into())
+    let current_dir = env::current_dir()
+        .map_err(|error| format!("could not read the current directory: {error}"))?;
+    workspace_root_from(&current_dir).ok_or_else(|| {
+        format!(
+            "could not find the wsx workspace above {}",
+            current_dir.display()
+        )
+    })
+}
+
+fn workspace_root_from(start: &Path) -> Option<PathBuf> {
+    start.ancestors().find_map(|candidate| {
+        (candidate.join("Cargo.toml").is_file()
+            && candidate.join("tools/xtask/Cargo.toml").is_file())
+        .then(|| candidate.to_path_buf())
+    })
 }
 
 fn target_dir(root: &Path) -> PathBuf {
@@ -143,6 +154,12 @@ fn executable_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn workspace_root_is_discovered_at_runtime() {
+        let root = workspace_root().expect("workspace root");
+        assert_eq!(workspace_root_from(&root.join("crates/wsx")), Some(root));
+    }
+
     #[test]
     fn relative_target_directory_is_workspace_relative() {
         let root = Path::new("/repo");

@@ -19,7 +19,12 @@ use crate::{
     session_state::{self, AppSessionState},
     terminal_surface::{SurfaceUpdate, TerminalSurfaces},
     tui::{self, Tui},
-    ui::{self, input::InputState, routine_editor::RoutineForm},
+    ui::{
+        self,
+        global_settings::GlobalSettingsForm,
+        input::InputState,
+        routine_editor::{RoutineForm, RoutinePreset},
+    },
 };
 use wsx_core::{
     config::global::{project_has_activity_within, project_matches_group, GlobalConfig, GroupKey},
@@ -52,6 +57,25 @@ struct ActiveTerminalStream {
     terminal_id: runtime::TerminalId,
     generation: u64,
     stream: runtime::TerminalStream,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingTerminalEntry {
+    pane_id: runtime::PaneId,
+    terminal_id: runtime::TerminalId,
+    generation: u64,
+    rows: u16,
+    cols: u16,
+}
+
+impl PendingTerminalEntry {
+    fn matches_frame(self, generation: u64, frame: &runtime::TerminalFrame) -> bool {
+        self.generation == generation
+            && self.pane_id == frame.pane_id
+            && self.terminal_id == frame.terminal_id
+            && self.rows == frame.rows
+            && self.cols == frame.cols
+    }
 }
 
 struct PendingTerminalResume {
@@ -280,7 +304,11 @@ fn runtime_mouse_event(
     viewport: Rect,
 ) -> Option<runtime::MouseEvent> {
     use crossterm::event::{KeyModifiers, MouseEventKind};
-    if !viewport.contains(Position::new(mouse.column, mouse.row)) {
+    if viewport.is_empty() {
+        return None;
+    }
+    let in_bounds = viewport.contains(Position::new(mouse.column, mouse.row));
+    if !in_bounds && !matches!(mouse.kind, MouseEventKind::Up(_)) {
         return None;
     }
     let (action, button) = match mouse.kind {
@@ -305,8 +333,15 @@ fn runtime_mouse_event(
     Some(runtime::MouseEvent {
         action,
         button,
-        x: mouse.column.saturating_sub(viewport.x),
-        y: mouse.row.saturating_sub(viewport.y),
+        x: mouse
+            .column
+            .saturating_sub(viewport.x)
+            .min(viewport.width.saturating_sub(1)),
+        y: mouse
+            .row
+            .saturating_sub(viewport.y)
+            .min(viewport.height.saturating_sub(1)),
+        in_bounds,
         shift: mouse.modifiers.contains(KeyModifiers::SHIFT),
         control: mouse.modifiers.contains(KeyModifiers::CONTROL),
         alt: mouse.modifiers.contains(KeyModifiers::ALT),
@@ -325,6 +360,12 @@ const FETCH_INTERVAL_SECS: u64 = 60;
 
 // ── Modes ─────────────────────────────────────────────────────────────────────
 
+struct PendingSessionOrder {
+    moved_session_id: runtime::SessionId,
+    revision: u64,
+    session_ids: Vec<runtime::SessionId>,
+}
+
 pub enum Mode {
     Workspace,
     Terminal {
@@ -340,6 +381,9 @@ pub enum Mode {
     },
     Config {
         project_idx: usize,
+    },
+    GlobalSettings {
+        form: GlobalSettingsForm,
     },
     Move {
         project_idx: usize,
@@ -358,6 +402,10 @@ pub enum Mode {
         selected: usize,
         scroll: usize,
         purpose: GroupManagerPurpose,
+    },
+    RoutinePresetPicker {
+        project_idx: usize,
+        selected: usize,
     },
     RoutineEditor {
         project_idx: usize,
@@ -558,8 +606,18 @@ fn edit_file(terminal: &mut Tui, path: &Path) -> Result<()> {
 
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-fn startup_active_group(_cached: Option<GroupKey>) -> Option<GroupKey> {
-    None
+fn terminal_stream_error_notice(error: &std::io::Error, target: &str) -> String {
+    let detail = error.to_string();
+    let title = detail
+        .strip_prefix("terminal_busy: ")
+        .map(|reason| {
+            format!(
+                "Terminal busy: {}",
+                reason.strip_prefix("pane has ").unwrap_or(reason)
+            )
+        })
+        .unwrap_or_else(|| format!("Terminal stream failed: {detail}"));
+    format!("{title}\nTarget: {target}")
 }
 
 fn integration_prompt_label(targets: &[wsx_core::integration::IntegrationTarget]) -> String {
@@ -611,7 +669,6 @@ pub struct Notice {
     pub level: NoticeLevel,
     pub title: String,
     pub body: Option<String>,
-    pub sticky: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -637,13 +694,13 @@ pub struct App {
     pub terminal_area: Rect,
     pub mode: Mode,
     pub config: GlobalConfig,
-    pub active_group: Option<GroupKey>,
+    pub active_group: GroupKey,
     pub group_header_scroll: usize,
     pub group_header_area: Rect,
     visible_projects: HashSet<usize>,
     freshened_projects: HashSet<PathBuf>,
     pub notice: Option<Notice>,
-    notice_expires: Option<Instant>,
+    notice_started: Option<Instant>,
     pub jobs: Vec<BgJob>,
     pub spinner_frame: usize,
     bg_tx: mpsc::Sender<BgResult>,
@@ -689,12 +746,17 @@ pub struct App {
     pending_deletions: HashSet<PathBuf>,
     /// Pane closes awaiting confirmation by a newer Runtime snapshot.
     pending_session_kills: HashSet<runtime::SessionId>,
+    /// Session orders awaiting confirmation by an equal-or-newer Runtime snapshot.
+    pending_session_orders: HashMap<PathBuf, PendingSessionOrder>,
     /// Mute is wsx-local and keyed by stable terminal ID.
     muted_terminal_ids: HashSet<String>,
+    /// Exact done revisions acknowledged by explicit interaction, keyed by stable terminal ID.
+    acknowledged_outcomes: HashMap<String, u64>,
     terminal_controller_id: u64,
     terminal_surfaces: TerminalSurfaces,
     terminal_stream: Option<ActiveTerminalStream>,
     terminal_stream_generation: u64,
+    pending_terminal_entry: Option<PendingTerminalEntry>,
     pending_terminal_resume: Option<PendingTerminalResume>,
     suspend_detector: SuspendDetector,
     terminal_escape_chord: EscapeSequence,
@@ -716,6 +778,7 @@ pub struct App {
     integration_scan_rx: mpsc::Receiver<Result<Vec<wsx_core::integration::IntegrationMetadata>>>,
     pending_integration_prompt: Vec<wsx_core::integration::IntegrationTarget>,
     integration_prompt_version: Option<String>,
+    persist_group_selection: bool,
 }
 
 impl App {
@@ -728,24 +791,36 @@ impl App {
                 .as_ref()
                 .and_then(|config| config.notice.clone())
         });
-        let initial_notice = config_warn.or(project_config_notice);
+        let mut initial_notice = config_warn.or(project_config_notice);
         let (
             raw_selected,
             cursor_identity,
-            cached_active_group,
             cached_muted,
+            acknowledged_outcomes,
             integration_prompt_version,
         ) = wsx_core::cache::apply_cache(&mut workspace)?;
-        let active_group = startup_active_group(cached_active_group);
-        let visible_projects = compute_visible_projects(&config, &workspace, active_group.as_ref());
-        let group_header_scroll = active_group
-            .as_ref()
-            .and_then(|active| {
-                config
-                    .ordered_group_keys()
-                    .iter()
-                    .position(|candidate| candidate == active)
-            })
+        let stored_group = match wsx_core::cache::load_group_selection() {
+            Ok(group) => group,
+            Err(error) => {
+                initial_notice.get_or_insert_with(|| {
+                    format!("Could not read the saved group selection: {error}")
+                });
+                None
+            }
+        };
+        let selected_group = initial_active_group(&config, stored_group.clone());
+        if stored_group.as_ref() != Some(&selected_group) {
+            if let Err(error) = wsx_core::cache::save_group_selection(&selected_group) {
+                initial_notice
+                    .get_or_insert_with(|| format!("Could not save the group selection: {error}"));
+            }
+        }
+        let active_group = selected_group;
+        let visible_projects = compute_visible_projects(&config, &workspace, Some(&active_group));
+        let group_header_scroll = config
+            .ordered_group_keys()
+            .iter()
+            .position(|candidate| candidate == &active_group)
             .unwrap_or(0);
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
         let tree_selected = cursor_identity
@@ -802,13 +877,8 @@ impl App {
                 level: NoticeLevel::Warning,
                 title,
                 body: None,
-                sticky: false,
             }),
-            notice_expires: if initial_notice.is_some() {
-                Some(Instant::now() + Duration::from_secs(10))
-            } else {
-                None
-            },
+            notice_started: initial_notice.as_ref().map(|_| Instant::now()),
             jobs: vec![],
             spinner_frame: 0,
             bg_tx,
@@ -849,11 +919,14 @@ impl App {
             runtime_capture_pending: false,
             pending_deletions: HashSet::new(),
             pending_session_kills: HashSet::new(),
+            pending_session_orders: HashMap::new(),
             muted_terminal_ids: cached_muted,
+            acknowledged_outcomes,
             terminal_controller_id,
             terminal_surfaces: TerminalSurfaces::default(),
             terminal_stream: None,
             terminal_stream_generation: 0,
+            pending_terminal_entry: None,
             pending_terminal_resume: None,
             suspend_detector: SuspendDetector::new(),
             terminal_escape_chord,
@@ -869,6 +942,7 @@ impl App {
             integration_scan_rx,
             pending_integration_prompt: Vec::new(),
             integration_prompt_version,
+            persist_group_selection: true,
         };
         if let Some(identity) = cursor_identity.as_ref() {
             if let Some(index) =
@@ -896,18 +970,18 @@ impl App {
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
-        self.set_notice(NoticeLevel::Success, msg, false);
+        self.set_notice(NoticeLevel::Success, msg);
     }
 
     fn set_warning(&mut self, msg: impl Into<String>) {
-        self.set_notice(NoticeLevel::Warning, msg, false);
+        self.set_notice(NoticeLevel::Warning, msg);
     }
 
     fn set_error(&mut self, msg: impl Into<String>) {
-        self.set_notice(NoticeLevel::Error, msg, true);
+        self.set_notice(NoticeLevel::Error, msg);
     }
 
-    fn set_notice(&mut self, level: NoticeLevel, msg: impl Into<String>, sticky: bool) {
+    fn set_notice(&mut self, level: NoticeLevel, msg: impl Into<String>) {
         let message = msg.into();
         let mut lines = message.lines();
         let title = lines.next().unwrap_or_default().to_string();
@@ -915,18 +989,28 @@ impl App {
             let rest = lines.collect::<Vec<_>>().join("\n");
             (!rest.is_empty()).then_some(rest)
         };
-        self.notice = Some(Notice {
-            level,
-            title,
-            body,
-            sticky,
-        });
-        self.notice_expires = (!sticky).then(|| Instant::now() + Duration::from_secs(4));
+        self.notice = Some(Notice { level, title, body });
+        self.notice_started = Some(Instant::now());
         self.needs_redraw = true;
     }
 
     pub fn is_busy(&self) -> bool {
         !self.jobs.is_empty()
+    }
+
+    fn has_working_agent(&self) -> bool {
+        self.workspace.projects.iter().any(|project| {
+            project.worktrees.iter().any(|worktree| {
+                worktree.sessions.iter().any(|session| {
+                    !session.muted
+                        && (session.agent_status == runtime::AgentState::Working
+                            || session.panes.iter().any(|pane| {
+                                pane.agent_status == runtime::AgentState::Working
+                                    && pane.agent.is_some()
+                            }))
+                })
+            })
+        })
     }
 
     fn shows_preview(&self) -> bool {
@@ -1035,7 +1119,7 @@ impl App {
 
     fn refresh_visible_projects(&mut self) {
         self.visible_projects =
-            compute_visible_projects(&self.config, &self.workspace, self.active_group.as_ref());
+            compute_visible_projects(&self.config, &self.workspace, Some(&self.active_group));
     }
 
     /// Recompute visible project set from active groups, then rebuild flat and clamp cursor.
@@ -1202,15 +1286,19 @@ impl App {
                 Mode::Input { .. }
                 | Mode::Search { .. }
                 | Mode::GroupManager { .. }
+                | Mode::GlobalSettings { .. }
+                | Mode::RoutinePresetPicker { .. }
                 | Mode::RoutineEditor { .. } => EventMode::Input,
                 _ => EventMode::Normal,
             };
             if let Some(action) = poll_event(
-                Duration::from_millis(if event_mode == EventMode::Terminal {
-                    TERMINAL_TICK_MS
-                } else {
-                    TICK_MS
-                }),
+                Duration::from_millis(
+                    if event_mode == EventMode::Terminal || self.pending_terminal_entry.is_some() {
+                        TERMINAL_TICK_MS
+                    } else {
+                        TICK_MS
+                    },
+                ),
                 event_mode,
                 &mut self.terminal_escape_chord,
             )? {
@@ -1273,7 +1361,9 @@ impl App {
                     }
                 }
                 runtime::TerminalServerMessage::Error(error) => {
+                    self.clear_active_terminal_selection();
                     self.terminal_stream = None;
+                    self.pending_terminal_entry = None;
                     self.mode = Mode::Workspace;
                     self.set_error(format!(
                         "Terminal stream: {}: {}",
@@ -1282,7 +1372,9 @@ impl App {
                     break;
                 }
                 runtime::TerminalServerMessage::Exited => {
+                    self.clear_active_terminal_selection();
                     self.terminal_stream = None;
+                    self.pending_terminal_entry = None;
                     self.mode = Mode::Workspace;
                     self.set_warning("Terminal process exited");
                     break;
@@ -1309,6 +1401,23 @@ impl App {
         if stream_identity != Some((generation, epoch, pane_id, terminal_id)) {
             return;
         }
+        let pending_frame = match self.pending_terminal_entry {
+            Some(pending) => match &update {
+                runtime::TerminalUpdate::Full(frame)
+                    if pending.matches_frame(generation, frame) =>
+                {
+                    Some((
+                        pending,
+                        self.terminal_surfaces.frame(pane_id, terminal_id) == Some(frame),
+                    ))
+                }
+                _ => {
+                    self.request_terminal_resync(generation);
+                    return;
+                }
+            },
+            None => None,
+        };
         let new_epoch = self.terminal_surfaces.epoch() != Some(epoch);
         if new_epoch || !self.terminal_surfaces.contains(epoch, pane_id, terminal_id) {
             self.terminal_surfaces
@@ -1316,20 +1425,61 @@ impl App {
         }
         match self.terminal_surfaces.apply(epoch, update) {
             SurfaceUpdate::Applied => {
+                if let Some((pending, _)) = pending_frame {
+                    self.activate_pending_terminal_entry(pending);
+                }
                 // Streamed terminal frames are complete projections. Let Ratatui diff one draw;
                 // transition-only stale-glyph cleanup remains owned by update_scroll.
                 self.needs_redraw = true;
             }
-            SurfaceUpdate::Resync => {
-                if let Some(active) = self
-                    .terminal_stream
-                    .as_ref()
-                    .filter(|active| active.generation == generation)
-                {
-                    active.stream.request_resync();
+            SurfaceUpdate::Resync => self.request_terminal_resync(generation),
+            SurfaceUpdate::Ignored => match pending_frame {
+                Some((pending, true)) => {
+                    self.activate_pending_terminal_entry(pending);
+                    self.needs_redraw = true;
                 }
-            }
-            SurfaceUpdate::Ignored => {}
+                Some(_) => self.request_terminal_resync(generation),
+                None => {}
+            },
+        }
+    }
+
+    fn request_terminal_resync(&self, generation: u64) {
+        if let Some(active) = self
+            .terminal_stream
+            .as_ref()
+            .filter(|active| active.generation == generation)
+        {
+            active.stream.request_resync();
+        }
+    }
+
+    fn activate_pending_terminal_entry(&mut self, pending: PendingTerminalEntry) {
+        if self.pending_terminal_entry != Some(pending) {
+            return;
+        }
+        if !matches!(self.mode, Mode::Workspace)
+            || self.selected_terminal_identity() != Some((pending.pane_id, pending.terminal_id))
+        {
+            self.pending_terminal_entry = None;
+            self.terminal_stream = None;
+            return;
+        }
+        self.pending_terminal_entry = None;
+        self.mode = Mode::Terminal {
+            pane_id: pending.pane_id,
+        };
+        self.terminal_escape_chord.reset();
+    }
+
+    fn cancel_pending_terminal_entry_if_stale(&mut self) {
+        let stale = self.pending_terminal_entry.is_some_and(|pending| {
+            !matches!(self.mode, Mode::Workspace)
+                || self.selected_terminal_identity() != Some((pending.pane_id, pending.terminal_id))
+        });
+        if stale {
+            self.pending_terminal_entry = None;
+            self.terminal_stream = None;
         }
     }
 
@@ -1393,6 +1543,10 @@ impl App {
     }
 
     fn prepare_terminal_resume(&mut self) -> Option<u64> {
+        if self.pending_terminal_entry.take().is_some() {
+            self.terminal_stream = None;
+            return None;
+        }
         let active_identity = self
             .terminal_stream
             .take()
@@ -1691,16 +1845,10 @@ impl App {
     }
 
     fn tick(&mut self) -> Result<()> {
-        if let Some(expires) = self.notice_expires {
-            if Instant::now() >= expires {
-                self.notice = None;
-                self.notice_expires = None;
-                self.needs_redraw = true;
-            }
-        }
+        self.expire_notice(Instant::now());
 
         if self.slow_timer.ready() {
-            // Staleness is wall-clock based and can change without any runtime event.
+            // Staleness is wall-clock based and can change without a runtime event.
             self.collapse_stale_projects();
             self.recompute_visible();
             self.spawn_runtime_refresh();
@@ -1711,12 +1859,24 @@ impl App {
         if self.fast_timer.ready() {
             self.spawn_runtime_capture();
             self.tick_git_fetch();
-            if !self.jobs.is_empty() {
-                self.spinner_frame = (self.spinner_frame + 1) % SPINNER_FRAMES.len();
+            if !self.jobs.is_empty() || self.has_working_agent() {
+                self.spinner_frame = self.spinner_frame.wrapping_add(1);
                 self.needs_redraw = true;
             }
         }
         Ok(())
+    }
+
+    fn expire_notice(&mut self, now: Instant) {
+        let timeout = Duration::from_secs(self.config.notification_timeout_seconds);
+        if self
+            .notice_started
+            .is_some_and(|started| now.saturating_duration_since(started) >= timeout)
+        {
+            self.notice = None;
+            self.notice_started = None;
+            self.needs_redraw = true;
+        }
     }
 
     fn spawn_routine_refresh(&mut self) {
@@ -1887,7 +2047,6 @@ impl App {
             &self.workspace,
             self.tree_selected,
             self.flat(),
-            self.active_group.as_ref(),
             self.integration_prompt_version.as_deref(),
             sync,
         ) {
@@ -2031,6 +2190,7 @@ impl App {
         });
         if stream_is_stale {
             self.terminal_stream = None;
+            self.pending_terminal_entry = None;
         }
         let refresh = match worktrees {
             Some(worktrees) => {
@@ -2048,6 +2208,7 @@ impl App {
             self.set_error(format!("Runtime snapshot rejected: {error}"));
             return;
         }
+        self.reconcile_pending_session_orders();
         self.collapse_stale_projects();
         if matches!(self.mode, Mode::Terminal { .. })
             && self.terminal_stream.is_none()
@@ -2066,9 +2227,22 @@ impl App {
             session.muted = self
                 .muted_terminal_ids
                 .contains(&session.terminal_id.to_string());
+            for pane in &mut session.panes {
+                pane.outcome_acknowledged = pane.agent_status == runtime::AgentState::Done
+                    && self
+                        .acknowledged_outcomes
+                        .get(&pane.terminal_id.to_string())
+                        == Some(&pane.revision);
+            }
+            session.outcome_acknowledged = session
+                .panes
+                .iter()
+                .find(|pane| pane.pane_id == session.pane_id)
+                .is_some_and(|pane| pane.outcome_acknowledged);
         }
         self.rebuild_flat();
         self.clamp_selected();
+        self.cancel_pending_terminal_entry_if_stale();
         let recovered = matches!(self.runtime_health, RuntimeHealth::Reconnecting { .. });
         self.runtime_health = RuntimeHealth::Healthy {
             last_success: Instant::now(),
@@ -2079,6 +2253,48 @@ impl App {
         self.mark_dirty();
         self.write_cache_if_dirty();
         self.needs_redraw = true;
+    }
+
+    fn reconcile_pending_session_orders(&mut self) {
+        let workspace = &mut self.workspace;
+        self.pending_session_orders.retain(|path, pending| {
+            let Some(sessions) = workspace
+                .projects
+                .iter_mut()
+                .flat_map(|project| &mut project.worktrees)
+                .find(|worktree| worktree.path == *path)
+                .map(|worktree| &mut worktree.sessions)
+            else {
+                return false;
+            };
+            let order_matches = sessions
+                .iter()
+                .map(|session| session.session_id)
+                .eq(pending.session_ids.iter().copied());
+            if order_matches {
+                return false;
+            }
+            let snapshot_is_stale = sessions
+                .iter()
+                .find(|session| session.session_id == pending.moved_session_id)
+                .is_some_and(|session| session.revision < pending.revision);
+            if !snapshot_is_stale {
+                return false;
+            }
+            let positions = pending
+                .session_ids
+                .iter()
+                .enumerate()
+                .map(|(index, session_id)| (*session_id, index))
+                .collect::<HashMap<_, _>>();
+            sessions.sort_by_key(|session| {
+                positions
+                    .get(&session.session_id)
+                    .copied()
+                    .unwrap_or(usize::MAX)
+            });
+            true
+        });
     }
 
     fn selected_terminal_identity(&self) -> Option<(runtime::PaneId, runtime::TerminalId)> {
@@ -2410,7 +2626,7 @@ impl App {
                 let notice = config.notice.clone();
                 self.workspace.projects[pi].config = Some(config);
                 if let Some(notice) = notice {
-                    self.set_notice(NoticeLevel::Warning, notice, false);
+                    self.set_notice(NoticeLevel::Warning, notice);
                 }
             }
             return Ok(());
@@ -2440,6 +2656,12 @@ impl App {
             return self.dispatch_group_manager(*selected, *scroll, *purpose, action);
         }
 
+        if matches!(self.mode, Mode::GlobalSettings { .. }) {
+            return self.dispatch_global_settings(action, terminal);
+        }
+        if matches!(self.mode, Mode::RoutinePresetPicker { .. }) {
+            return self.dispatch_routine_preset_picker(action);
+        }
         if matches!(self.mode, Mode::RoutineEditor { .. }) {
             return self.dispatch_routine_editor(action);
         }
@@ -2469,8 +2691,8 @@ impl App {
         {
             let (pi, wi, si) = (*project_idx, *worktree_idx, *session_idx);
             match action {
-                Action::NavigateDown => self.move_session(pi, wi, si, 1),
-                Action::NavigateUp => self.move_session(pi, wi, si, -1),
+                Action::NavigateDown => self.move_session(pi, wi, si, 1)?,
+                Action::NavigateUp => self.move_session(pi, wi, si, -1)?,
                 Action::Select | Action::InputEscape | Action::Quit | Action::EnterMove => {
                     self.mark_dirty();
                     self.write_cache_if_dirty();
@@ -2487,7 +2709,10 @@ impl App {
         }
 
         match &self.mode {
-            Mode::Workspace => self.dispatch_normal(action, terminal)?,
+            Mode::Workspace => {
+                self.dispatch_normal(action, terminal)?;
+                self.cancel_pending_terminal_entry_if_stale();
+            }
             Mode::Terminal { .. } => unreachable!(),
             Mode::Input { .. } => self.dispatch_input(action, terminal)?,
             Mode::Confirm { .. } => self.dispatch_confirm(action, terminal)?,
@@ -2498,10 +2723,13 @@ impl App {
             }
             Mode::Search { .. } => self.dispatch_search(action, terminal)?,
             Mode::Config { .. }
+            | Mode::GlobalSettings { .. }
             | Mode::Move { .. }
             | Mode::MoveSession { .. }
             | Mode::GroupManager { .. } => unreachable!(),
-            Mode::RoutineEditor { .. } | Mode::RoutineDetail { .. } => unreachable!(),
+            Mode::RoutinePresetPicker { .. }
+            | Mode::RoutineEditor { .. }
+            | Mode::RoutineDetail { .. } => unreachable!(),
         }
         Ok(())
     }
@@ -2534,8 +2762,11 @@ impl App {
                     return Ok(());
                 }
                 if self.is_workspace_click(mouse) {
+                    let compact_tree = self.config.terminal_sidebar
+                        == wsx_core::config::global::TerminalSidebar::Compact;
                     self.leave_terminal_mode(pane_id);
-                    self.handle_mouse_click(mouse.column, mouse.row, terminal)?;
+                    self.handle_mouse_click(mouse.column, mouse.row, terminal, compact_tree)?;
+                    self.needs_redraw = true;
                 } else {
                     self.send_terminal_mouse(mouse);
                 }
@@ -2545,8 +2776,11 @@ impl App {
                     return Ok(());
                 }
                 if self.is_workspace_click(mouse) {
+                    let compact_tree = self.config.terminal_sidebar
+                        == wsx_core::config::global::TerminalSidebar::Compact;
                     self.leave_terminal_mode(pane_id);
-                    self.handle_mouse_click(mouse.column, mouse.row, terminal)?;
+                    self.handle_mouse_click(mouse.column, mouse.row, terminal, compact_tree)?;
+                    self.needs_redraw = true;
                 } else {
                     self.send_terminal_keys([prefix]);
                     self.send_terminal_mouse(mouse);
@@ -2576,8 +2810,10 @@ impl App {
                 self.set_error("Terminal input queue is full; input was not sent")
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.clear_active_terminal_selection();
                 self.mode = Mode::Workspace;
                 self.terminal_stream = None;
+                self.pending_terminal_entry = None;
                 self.set_error("Terminal stream disconnected");
             }
         }
@@ -2682,6 +2918,9 @@ impl App {
             Action::SetAlias => self.action_set_alias()?,
             Action::Refresh => self.refresh_all()?,
             Action::Resize => {
+                if self.pending_terminal_entry.is_some() {
+                    self.resize_pending_terminal_entry(terminal);
+                }
                 self.force_terminal_redraw = true;
                 self.needs_redraw = true;
             }
@@ -2709,7 +2948,9 @@ impl App {
             Action::GroupNext => self.action_group_next(),
             Action::GroupPrev => self.action_group_prev(),
             Action::GroupManager => self.action_group_manager(),
-            Action::MouseClick { col, row } => self.handle_mouse_click(col, row, terminal)?,
+            Action::MouseClick { col, row } => {
+                self.handle_mouse_click(col, row, terminal, false)?
+            }
             Action::MouseScroll { col, row, delta } => {
                 self.handle_workspace_mouse_scroll(col, row, delta)
             }
@@ -2718,12 +2959,18 @@ impl App {
         Ok(())
     }
 
-    fn handle_mouse_click(&mut self, col: u16, row: u16, terminal: &mut Tui) -> Result<()> {
+    fn handle_mouse_click(
+        &mut self,
+        col: u16,
+        row: u16,
+        terminal: &mut Tui,
+        compact_tree: bool,
+    ) -> Result<()> {
         let pos = Position { x: col, y: row };
         if matches!(self.mode, Mode::Workspace) && self.group_header_area.contains(pos) {
             let strip = crate::ui::workspace_nav::fit_group_strip(
                 &self.config.ordered_group_keys(),
-                self.active_group.as_ref(),
+                &self.active_group,
                 usize::from(self.group_header_area.width),
                 self.group_header_scroll,
             );
@@ -2742,7 +2989,11 @@ impl App {
             return Ok(());
         }
         if self.tree_area.contains(pos) {
-            let layout = crate::ui::workspace_nav::SidebarLayout::bordered(self.tree_area);
+            let layout = if compact_tree {
+                crate::ui::workspace_nav::SidebarLayout::compact_rail(self.tree_area)
+            } else {
+                crate::ui::workspace_nav::SidebarLayout::bordered(self.tree_area)
+            };
             if let Some(flat_idx) = layout.item_at(pos, self.tree_scroll, self.flat().len()) {
                 if flat_idx == self.tree_selected {
                     self.action_select(terminal)?;
@@ -2936,19 +3187,40 @@ impl App {
         Ok(())
     }
 
+    fn dispatch_routine_preset_picker(&mut self, action: Action) -> Result<()> {
+        let Mode::RoutinePresetPicker {
+            project_idx,
+            selected,
+        } = &mut self.mode
+        else {
+            return Ok(());
+        };
+        match action {
+            Action::InputEscape | Action::Quit => self.mode = Mode::Workspace,
+            Action::NavigateDown | Action::InputChar('j') => {
+                *selected = (*selected + 1) % RoutinePreset::ALL.len();
+            }
+            Action::NavigateUp | Action::InputChar('k') => {
+                *selected = (*selected + RoutinePreset::ALL.len() - 1) % RoutinePreset::ALL.len();
+            }
+            Action::Select => {
+                let project_idx = *project_idx;
+                let form = RoutinePreset::ALL[*selected].form();
+                self.mode = Mode::RoutineEditor {
+                    project_idx,
+                    original_name: None,
+                    can_rename: true,
+                    form,
+                };
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn dispatch_routine_editor(&mut self, action: Action) -> Result<()> {
         match action {
             Action::InputEscape | Action::Quit => self.mode = Mode::Workspace,
-            Action::RoutineCodexPreset => {
-                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
-                    form.apply_preset(false);
-                }
-            }
-            Action::RoutineClaudePreset => {
-                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
-                    form.apply_preset(true);
-                }
-            }
             Action::InputChar(c) => {
                 if let Mode::RoutineEditor {
                     form, can_rename, ..
@@ -3159,35 +3431,56 @@ impl App {
         Ok(())
     }
 
-    /// User interacted with a session in wsx (attach, send command, rename,
-    /// ctrl-c). Mute is sticky — only an explicit interaction unmutes; pane
-    /// output alone does not. Cursor navigation must NOT call this.
+    /// Explicit session interaction clears local mute and acknowledges the exact
+    /// provider-completion revision. Cursor navigation and pane output do neither.
     fn unmute_on_interaction(&mut self, pane_id: runtime::PaneId) {
-        let terminal_ids = self
+        let result = self
             .workspace
             .projects
             .iter_mut()
             .flat_map(|project| &mut project.worktrees)
             .flat_map(|worktree| &mut worktree.sessions)
             .find(|session| {
-                session.muted
-                    && (session.pane_id == pane_id
-                        || session.panes.iter().any(|pane| pane.pane_id == pane_id))
+                session.pane_id == pane_id
+                    || session.panes.iter().any(|pane| pane.pane_id == pane_id)
             })
             .map(|session| {
+                let was_muted = session.muted;
                 session.muted = false;
-                let mut ids = session
+                let muted_ids = session
                     .panes
                     .iter()
                     .map(|pane| pane.terminal_id.to_string())
+                    .chain(std::iter::once(session.terminal_id.to_string()))
                     .collect::<Vec<_>>();
-                ids.push(session.terminal_id.to_string());
-                ids
+                let acknowledged = session
+                    .panes
+                    .iter_mut()
+                    .find(|pane| pane.pane_id == pane_id)
+                    .and_then(|pane| {
+                        (pane.agent_status == runtime::AgentState::Done).then(|| {
+                            pane.outcome_acknowledged = true;
+                            (pane.terminal_id.to_string(), pane.revision)
+                        })
+                    });
+                if session.pane_id == pane_id && acknowledged.is_some() {
+                    session.outcome_acknowledged = true;
+                }
+                (was_muted, muted_ids, acknowledged)
             });
-        if let Some(terminal_ids) = terminal_ids {
-            for terminal_id in terminal_ids {
+        let Some((was_muted, muted_ids, acknowledged)) = result else {
+            return;
+        };
+        if was_muted {
+            for terminal_id in muted_ids {
                 self.muted_terminal_ids.remove(&terminal_id);
             }
+        }
+        if let Some((terminal_id, revision)) = acknowledged.as_ref() {
+            self.acknowledged_outcomes
+                .insert(terminal_id.clone(), *revision);
+        }
+        if was_muted || acknowledged.is_some() {
             self.mark_dirty();
         }
     }
@@ -3207,7 +3500,10 @@ impl App {
             self.set_status("Session not found");
             return Ok(());
         };
-        self.enter_terminal(pane_id, terminal_id, terminal)
+        let target = self
+            .terminal_target_label(pi, wi, si, pane_id)
+            .unwrap_or_else(|| format!("pane {}", pane_id.0));
+        self.enter_terminal(pane_id, terminal_id, target, terminal)
     }
 
     fn attach_pane(
@@ -3254,15 +3550,42 @@ impl App {
                 session.revision = focus_revision;
             }
         }
-        self.enter_terminal(pane_id, terminal_id, terminal)
+        let target = self
+            .terminal_target_label(pi, wi, si, pane_id)
+            .unwrap_or_else(|| format!("pane {}", pane_id.0));
+        self.enter_terminal(pane_id, terminal_id, target, terminal)
+    }
+
+    fn terminal_target_label(
+        &self,
+        pi: usize,
+        wi: usize,
+        si: usize,
+        pane_id: runtime::PaneId,
+    ) -> Option<String> {
+        let project = self.workspace.projects.get(pi)?;
+        let worktree = project.worktrees.get(wi)?;
+        let session = worktree.sessions.get(si)?;
+        let pane = session.panes.iter().find(|pane| pane.pane_id == pane_id)?;
+        Some(format!(
+            "{} › {} › {} › {}",
+            project.name,
+            worktree.display_name(),
+            session.display_name,
+            pane.label
+        ))
     }
 
     fn enter_terminal(
         &mut self,
         pane_id: runtime::PaneId,
         terminal_id: runtime::TerminalId,
+        target: String,
         terminal: &Tui,
     ) -> Result<()> {
+        self.pending_terminal_entry = None;
+        self.pending_terminal_resume = None;
+        self.terminal_stream = None;
         self.unmute_on_interaction(pane_id);
         let (rows, cols) = self.terminal_pane_size(terminal);
         match runtime::TerminalStream::connect(
@@ -3275,28 +3598,53 @@ impl App {
         ) {
             Ok(stream) => {
                 self.terminal_stream_generation = self.terminal_stream_generation.wrapping_add(1);
+                let generation = self.terminal_stream_generation;
                 self.terminal_stream = Some(ActiveTerminalStream {
                     epoch: stream.epoch(),
                     pane_id,
                     terminal_id,
-                    generation: self.terminal_stream_generation,
+                    generation,
                     stream,
                 });
-                self.mode = Mode::Terminal { pane_id };
+                self.pending_terminal_entry = Some(PendingTerminalEntry {
+                    pane_id,
+                    terminal_id,
+                    generation,
+                    rows,
+                    cols,
+                });
                 self.terminal_escape_chord.reset();
             }
-            Err(error) => self.set_error(format!("Terminal stream failed: {error}")),
+            Err(error) => self.set_error(terminal_stream_error_notice(&error, &target)),
         }
         Ok(())
     }
 
     fn leave_terminal_mode(&mut self, _pane_id: runtime::PaneId) {
+        self.clear_active_terminal_selection();
         self.terminal_stream = None;
+        self.pending_terminal_entry = None;
+        self.pending_terminal_resume = None;
         self.terminal_escape_chord.reset();
         self.mode = Mode::Workspace;
     }
 
+    fn clear_active_terminal_selection(&mut self) {
+        let Some(active) = self.terminal_stream.as_ref() else {
+            return;
+        };
+        if self
+            .terminal_surfaces
+            .clear_selection(active.pane_id, active.terminal_id)
+        {
+            self.needs_redraw = true;
+        }
+    }
+
     fn terminal_cursor(&self) -> Option<runtime::Cursor> {
+        if !matches!(self.mode, Mode::Terminal { .. }) {
+            return None;
+        }
         let active = self.terminal_stream.as_ref()?;
         self.terminal_surfaces
             .frame(active.pane_id, active.terminal_id)
@@ -3312,19 +3660,28 @@ impl App {
     }
 
     fn terminal_pane_size(&self, terminal: &Tui) -> (u16, u16) {
-        let (height, width) = if self.terminal_area.width == 0 {
-            let size = terminal
-                .size()
-                .unwrap_or(ratatui::layout::Size::new(80, 24));
-            (size.height, size.width)
-        } else {
-            (self.terminal_area.height, self.terminal_area.width)
-        };
-        (height.max(1), width.max(1))
+        let size = terminal
+            .size()
+            .unwrap_or(ratatui::layout::Size::new(80, 24));
+        let area = Rect::new(0, 0, size.width, size.height);
+        let mobile = self.force_mobile || size.width < 60;
+        let viewport =
+            crate::ui::layout::terminal_viewport(area, mobile, self.config.terminal_sidebar);
+        (viewport.height.max(1), viewport.width.max(1))
     }
 
     fn resize_terminal_pane(&mut self, _pane_id: runtime::PaneId, terminal: &Tui) {
         let (rows, cols) = self.terminal_pane_size(terminal);
+        self.send_terminal_stream(runtime::TerminalClientMessage::Resize { rows, cols });
+    }
+
+    fn resize_pending_terminal_entry(&mut self, terminal: &Tui) {
+        let (rows, cols) = self.terminal_pane_size(terminal);
+        let Some(pending) = self.pending_terminal_entry.as_mut() else {
+            return;
+        };
+        pending.rows = rows;
+        pending.cols = cols;
         self.send_terminal_stream(runtime::TerminalClientMessage::Resize { rows, cols });
     }
 
@@ -3442,11 +3799,9 @@ impl App {
                 return Ok(());
             }
         };
-        self.mode = Mode::RoutineEditor {
+        self.mode = Mode::RoutinePresetPicker {
             project_idx: pi,
-            original_name: None,
-            can_rename: true,
-            form: RoutineForm::codex(),
+            selected: 0,
         };
         Ok(())
     }
@@ -3606,7 +3961,151 @@ impl App {
         Ok(())
     }
 
-    fn action_edit_global_config(&mut self, terminal: &mut Tui) {
+    fn action_edit_global_config(&mut self, _terminal: &mut Tui) {
+        self.mode = Mode::GlobalSettings {
+            form: GlobalSettingsForm::new(self.config.clone()),
+        };
+    }
+
+    fn dispatch_global_settings(&mut self, action: Action, terminal: &mut Tui) -> Result<()> {
+        let accepts_text = matches!(
+            &self.mode,
+            Mode::GlobalSettings { form } if form.accepts_text()
+        );
+        match action {
+            Action::InputEscape | Action::Quit => {
+                let cancelled_editor = match &mut self.mode {
+                    Mode::GlobalSettings { form } => form.cancel_editor(),
+                    _ => false,
+                };
+                if !cancelled_editor {
+                    self.mode = Mode::Workspace;
+                }
+            }
+            Action::Select => {
+                let result = match &mut self.mode {
+                    Mode::GlobalSettings { form } => form.begin_or_commit(),
+                    _ => Ok(()),
+                };
+                if let Err(error) = result {
+                    self.set_error(error);
+                }
+            }
+            Action::NavigateUp | Action::InputBackTab => {
+                if let Mode::GlobalSettings { form } = &mut self.mode {
+                    form.next_field(true);
+                }
+            }
+            Action::NavigateDown | Action::InputTab => {
+                if let Mode::GlobalSettings { form } = &mut self.mode {
+                    form.next_field(false);
+                }
+            }
+            Action::NavigateLeft => {
+                if let Mode::GlobalSettings { form } = &mut self.mode {
+                    form.left();
+                }
+            }
+            Action::NavigateRight => {
+                if let Mode::GlobalSettings { form } = &mut self.mode {
+                    form.right();
+                }
+            }
+            Action::InputBackspace => {
+                if let Mode::GlobalSettings { form } = &mut self.mode {
+                    form.backspace();
+                }
+            }
+            Action::InputChar(character) if accepts_text => {
+                if let Mode::GlobalSettings { form } = &mut self.mode {
+                    form.insert(character);
+                }
+            }
+            Action::InputChar('j') => {
+                if let Mode::GlobalSettings { form } = &mut self.mode {
+                    form.next_field(false);
+                }
+            }
+            Action::InputChar('k') => {
+                if let Mode::GlobalSettings { form } = &mut self.mode {
+                    form.next_field(true);
+                }
+            }
+            Action::InputChar('h') => {
+                if let Mode::GlobalSettings { form } = &mut self.mode {
+                    form.left();
+                }
+            }
+            Action::InputChar('l') => {
+                if let Mode::GlobalSettings { form } = &mut self.mode {
+                    form.right();
+                }
+            }
+            Action::InputChar(' ') => {
+                if let Mode::GlobalSettings { form } = &mut self.mode {
+                    form.toggle();
+                }
+            }
+            Action::InputChar('a') => {
+                if let Mode::GlobalSettings { form } = &mut self.mode {
+                    form.add_list_item();
+                }
+            }
+            Action::InputChar('d') => {
+                if let Mode::GlobalSettings { form } = &mut self.mode {
+                    form.delete_list_items();
+                }
+            }
+            Action::InputChar('e') => {
+                let list_is_open = matches!(
+                    &self.mode,
+                    Mode::GlobalSettings { form } if form.is_editing()
+                );
+                if list_is_open {
+                    if let Mode::GlobalSettings { form } = &mut self.mode {
+                        form.edit_list_item();
+                    }
+                } else {
+                    self.edit_raw_global_config(terminal);
+                }
+            }
+            Action::InputChar('s') => self.save_global_settings()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn save_global_settings(&mut self) -> Result<()> {
+        let Some(config) = (match &self.mode {
+            Mode::GlobalSettings { form } if !form.is_editing() => Some(form.draft().clone()),
+            _ => None,
+        }) else {
+            return Ok(());
+        };
+        let Some(escape) = EscapeSequence::parse(&config.terminal_escape_chord) else {
+            self.set_error(format!(
+                "Invalid terminal_escape_chord: {}",
+                config.terminal_escape_chord
+            ));
+            return Ok(());
+        };
+        config.save()?;
+        self.terminal_escape_chord = escape;
+        self.config = config;
+        self.mode = Mode::Workspace;
+        self.set_status("Global settings saved");
+        Ok(())
+    }
+
+    fn edit_raw_global_config(&mut self, terminal: &mut Tui) {
+        let is_dirty = matches!(
+            &self.mode,
+            Mode::GlobalSettings { form } if form.is_dirty()
+        );
+        if is_dirty {
+            self.set_status("Save or discard settings before opening raw TOML");
+            return;
+        }
         let path = match self.config.prepare_for_edit() {
             Ok(path) => path,
             Err(error) => {
@@ -3621,15 +4120,21 @@ impl App {
         match GlobalConfig::load() {
             Err(error) => self.set_error(format!("Could not validate global config: {error}")),
             Ok((_, Some(warning))) => self.set_error(warning),
-            Ok((config, None))
-                if EscapeSequence::parse(&config.terminal_escape_chord).is_none() =>
-            {
-                self.set_error(format!(
-                    "Invalid terminal_escape_chord: {}",
-                    config.terminal_escape_chord
-                ));
+            Ok((config, None)) => {
+                let Some(escape) = EscapeSequence::parse(&config.terminal_escape_chord) else {
+                    self.set_error(format!(
+                        "Invalid terminal_escape_chord: {}",
+                        config.terminal_escape_chord
+                    ));
+                    return;
+                };
+                self.terminal_escape_chord = escape;
+                self.config = config.clone();
+                if let Mode::GlobalSettings { form } = &mut self.mode {
+                    form.reset_saved(config);
+                }
+                self.set_status("Global config reloaded");
             }
-            Ok((_, None)) => self.set_status("Global config valid; restart wsx to apply changes"),
         }
     }
 
@@ -4001,8 +4506,9 @@ impl App {
                                 }
                             }
                         }
-                        if self.active_group == Some(GroupKey::Named(old_name)) {
-                            self.active_group = Some(GroupKey::Named(trimmed.clone()));
+                        if self.active_group == GroupKey::Named(old_name) {
+                            self.active_group = GroupKey::Named(trimmed.clone());
+                            self.persist_active_group();
                         }
                         self.config.save()?;
                         self.recompute_visible();
@@ -4101,8 +4607,9 @@ impl App {
                             .groups
                             .retain(|membership| membership != &group_name);
                     }
-                    if self.active_group == Some(GroupKey::Named(group_name.clone())) {
-                        self.active_group = None;
+                    if self.active_group == GroupKey::Named(group_name.clone()) {
+                        self.active_group = GroupKey::Ungrouped;
+                        self.persist_active_group();
                     }
                     self.config.save()?;
                     self.recompute_visible();
@@ -4185,8 +4692,8 @@ impl App {
         // Virtual filters are views; only active named groups become memberships.
         if let Some(entry) = self.config.projects.last_mut() {
             entry.groups = match &self.active_group {
-                Some(GroupKey::Named(name)) => vec![name.clone()],
-                Some(GroupKey::Ungrouped) | None => Vec::new(),
+                GroupKey::Named(name) => vec![name.clone()],
+                GroupKey::Ungrouped => Vec::new(),
             };
         }
         self.workspace.projects.push(project);
@@ -4335,17 +4842,41 @@ impl App {
         self.move_project(pi, -1);
     }
 
-    fn move_session(&mut self, pi: usize, wi: usize, si: usize, delta: isize) {
+    fn move_session(&mut self, pi: usize, wi: usize, si: usize, delta: isize) -> Result<()> {
         let new_si = si as isize + delta;
         if new_si < 0 {
-            return;
+            return Ok(());
         }
         let new_si = new_si as usize;
         let sessions = &mut self.workspace.projects[pi].worktrees[wi].sessions;
         if new_si >= sessions.len() {
-            return;
+            return Ok(());
         }
+        let session_id = sessions[si].session_id;
+        let target_session_id = sessions[new_si].session_id;
+        let placement = if delta < 0 {
+            runtime::SessionPlacement::Before
+        } else {
+            runtime::SessionPlacement::After
+        };
+        let revision = ops::reorder_session(
+            session_id,
+            target_session_id,
+            placement,
+            sessions[si].revision,
+        )?;
         sessions.swap(si, new_si);
+        sessions[new_si].revision = revision;
+        let session_ids = sessions.iter().map(|session| session.session_id).collect();
+        let worktree_path = self.workspace.projects[pi].worktrees[wi].path.clone();
+        self.pending_session_orders.insert(
+            worktree_path,
+            PendingSessionOrder {
+                moved_session_id: session_id,
+                revision,
+                session_ids,
+            },
+        );
         self.mode = Mode::MoveSession {
             project_idx: pi,
             worktree_idx: wi,
@@ -4359,6 +4890,7 @@ impl App {
             self.tree_selected = pos;
             self.update_scroll();
         }
+        Ok(())
     }
 
     fn sync_config_project_order(&mut self) {
@@ -4379,46 +4911,50 @@ impl App {
 
     // ── Project-group navigation ─────────────────────────────────────────────
 
+    fn persist_active_group(&mut self) {
+        if !self.persist_group_selection {
+            return;
+        }
+        if let Err(error) = wsx_core::cache::save_group_selection(&self.active_group) {
+            self.set_warning(format!("Could not save group selection: {error}"));
+        }
+    }
+
     fn set_active_group(&mut self, key: GroupKey) {
         let groups = self.config.ordered_group_keys();
         self.group_header_scroll = groups
             .iter()
             .position(|candidate| candidate == &key)
             .unwrap_or(0);
-        self.active_group = Some(key);
+        if self.active_group == key {
+            return;
+        }
+        self.active_group = key;
+        self.persist_active_group();
         self.recompute_visible();
         self.update_scroll();
         self.mark_dirty();
     }
 
     fn toggle_active_group(&mut self, key: GroupKey) {
-        if self.active_group.as_ref() == Some(&key) {
-            self.active_group = None;
-        } else {
-            self.set_active_group(key);
-            return;
-        }
-        self.recompute_visible();
-        self.update_scroll();
-        self.mark_dirty();
+        self.set_active_group(key);
     }
 
     fn action_group_next(&mut self) {
         let groups = self.config.ordered_group_keys();
-        let current = self
-            .active_group
-            .as_ref()
-            .and_then(|active| groups.iter().position(|key| key == active));
-        let next = current.map_or(0, |index| (index + 1) % groups.len());
+        let current = groups
+            .iter()
+            .position(|key| key == &self.active_group)
+            .unwrap_or(0);
+        let next = (current + 1) % groups.len();
         self.set_active_group(groups[next].clone());
     }
 
     fn action_group_prev(&mut self) {
         let groups = self.config.ordered_group_keys();
-        let current = self
-            .active_group
-            .as_ref()
-            .and_then(|active| groups.iter().position(|key| key == active))
+        let current = groups
+            .iter()
+            .position(|key| key == &self.active_group)
             .unwrap_or(0);
         let previous = current.checked_sub(1).unwrap_or(groups.len() - 1);
         self.set_active_group(groups[previous].clone());
@@ -4426,10 +4962,9 @@ impl App {
 
     fn action_group_manager(&mut self) {
         let groups = self.config.ordered_group_keys();
-        let selected = self
-            .active_group
-            .as_ref()
-            .and_then(|active| groups.iter().position(|key| key == active))
+        let selected = groups
+            .iter()
+            .position(|key| key == &self.active_group)
             .unwrap_or(0);
         self.mode = Mode::GroupManager {
             selected,
@@ -4578,6 +5113,12 @@ impl App {
 
 /// Projects can have multiple memberships, but the Workspace applies one optional group filter.
 // ^ [[wsx Architecture]] Project grouping and filtering have separate cardinality.
+fn initial_active_group(config: &GlobalConfig, stored: Option<GroupKey>) -> GroupKey {
+    stored
+        .filter(|candidate| config.ordered_group_keys().contains(candidate))
+        .unwrap_or(GroupKey::Ungrouped)
+}
+
 fn compute_visible_projects(
     config: &GlobalConfig,
     workspace: &WorkspaceState,
@@ -4704,6 +5245,8 @@ fn build_worktree_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::{fs::PermissionsExt, net::UnixListener};
 
     #[test]
     fn search_matches_empty_query_returns_nothing() {
@@ -4771,6 +5314,64 @@ mod tests {
         }
     }
 
+    fn test_terminal_frame(
+        pane_id: runtime::PaneId,
+        terminal_id: runtime::TerminalId,
+        revision: u64,
+        rows: u16,
+        cols: u16,
+    ) -> runtime::TerminalFrame {
+        runtime::TerminalFrame {
+            pane_id,
+            terminal_id,
+            revision,
+            rows,
+            cols,
+            cells: vec![runtime::Cell::default(); usize::from(rows) * usize::from(cols)],
+            cursor: runtime::Cursor {
+                x: 0,
+                y: rows.saturating_sub(1),
+                visible: true,
+                blinking: false,
+                shape: 0,
+            },
+            selection: Vec::new(),
+        }
+    }
+
+    fn terminal_stream_listener(name: &str) -> (PathBuf, UnixListener) {
+        let directory = std::env::current_dir().unwrap().join(".work/s");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!(
+            "{name}-{}-{}.sock",
+            std::process::id(),
+            runtime::new_client_id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        (path, listener)
+    }
+
+    fn read_runtime_request(reader: &mut impl BufRead) -> runtime::Request {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    fn read_terminal_client_message(reader: &mut impl BufRead) -> runtime::TerminalClientMessage {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    fn write_runtime_message(stream: &mut impl Write, message: &impl serde::Serialize) {
+        stream
+            .write_all(&runtime::encode_line(message).unwrap())
+            .unwrap();
+        stream.flush().unwrap();
+    }
+
     fn make_git_info() -> GitInfo {
         GitInfo {
             recent_commits: vec![],
@@ -4796,16 +5397,14 @@ mod tests {
         workspace: WorkspaceState,
         active_group: Option<String>,
     ) -> App {
-        let active_group = active_group.map(GroupKey::Named);
-        let visible_projects = compute_visible_projects(&config, &workspace, active_group.as_ref());
-        let group_header_scroll = active_group
-            .as_ref()
-            .and_then(|active| {
-                config
-                    .ordered_group_keys()
-                    .iter()
-                    .position(|candidate| candidate == active)
-            })
+        let active_group = active_group
+            .map(GroupKey::Named)
+            .unwrap_or(GroupKey::Ungrouped);
+        let visible_projects = compute_visible_projects(&config, &workspace, Some(&active_group));
+        let group_header_scroll = config
+            .ordered_group_keys()
+            .iter()
+            .position(|candidate| candidate == &active_group)
             .unwrap_or(0);
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
         let search_cache = build_search_cache(&workspace, &cached_flat);
@@ -4837,7 +5436,7 @@ mod tests {
             visible_projects,
             freshened_projects: HashSet::new(),
             notice: None,
-            notice_expires: None,
+            notice_started: None,
             jobs: Vec::new(),
             spinner_frame: 0,
             bg_tx,
@@ -4874,11 +5473,14 @@ mod tests {
             runtime_capture_pending: false,
             pending_deletions: HashSet::new(),
             pending_session_kills: HashSet::new(),
+            pending_session_orders: HashMap::new(),
             muted_terminal_ids: HashSet::new(),
+            acknowledged_outcomes: HashMap::new(),
             terminal_controller_id: runtime::new_client_id(),
             terminal_surfaces: TerminalSurfaces::default(),
             terminal_stream: None,
             terminal_stream_generation: 0,
+            pending_terminal_entry: None,
             pending_terminal_resume: None,
             suspend_detector: SuspendDetector::new(),
             terminal_escape_chord,
@@ -4894,6 +5496,7 @@ mod tests {
             integration_scan_rx,
             pending_integration_prompt: Vec::new(),
             integration_prompt_version: None,
+            persist_group_selection: false,
         }
     }
 
@@ -4942,7 +5545,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_ignores_cached_group_and_keeps_all_projects_visible() {
+    fn default_ungrouped_filter_keeps_only_projects_without_memberships() {
         let config = GlobalConfig {
             groups: vec!["work".into()],
             projects: vec![
@@ -4957,12 +5560,11 @@ mod tests {
                 make_project("ungrouped-project"),
             ],
         };
-        let active = startup_active_group(Some(GroupKey::Named("work".into())));
+        let active = GroupKey::Ungrouped;
 
-        assert_eq!(active, None);
         assert_eq!(
-            compute_visible_projects(&config, &workspace, active.as_ref()),
-            HashSet::from([0, 1])
+            compute_visible_projects(&config, &workspace, Some(&active)),
+            HashSet::from([1])
         );
     }
 
@@ -4987,6 +5589,209 @@ mod tests {
             active: Duration::from_secs(13),
             continuous: Duration::from_secs(25),
         }));
+    }
+
+    #[test]
+    fn pending_terminal_entry_accepts_only_the_exact_full_baseline() {
+        let pending = PendingTerminalEntry {
+            pane_id: runtime::PaneId(3),
+            terminal_id: runtime::TerminalId(4),
+            generation: 5,
+            rows: 6,
+            cols: 7,
+        };
+        let exact = test_terminal_frame(runtime::PaneId(3), runtime::TerminalId(4), 9, 6, 7);
+
+        assert!(pending.matches_frame(5, &exact));
+        assert!(!pending.matches_frame(4, &exact));
+        assert!(!pending.matches_frame(
+            5,
+            &test_terminal_frame(runtime::PaneId(8), runtime::TerminalId(4), 9, 6, 7,)
+        ));
+        assert!(!pending.matches_frame(
+            5,
+            &test_terminal_frame(runtime::PaneId(3), runtime::TerminalId(8), 9, 6, 7,)
+        ));
+        assert!(!pending.matches_frame(
+            5,
+            &test_terminal_frame(runtime::PaneId(3), runtime::TerminalId(4), 9, 5, 7,)
+        ));
+        assert!(!pending.matches_frame(
+            5,
+            &test_terminal_frame(runtime::PaneId(3), runtime::TerminalId(4), 9, 6, 8,)
+        ));
+    }
+
+    #[test]
+    fn pending_terminal_entry_cancels_on_selection_change_and_suspend() {
+        let mut project = make_project("cancel-entry");
+        let mut worktree = make_worktree("/tmp/cancel-entry");
+        worktree
+            .sessions
+            .push(make_sess(false, runtime::AgentState::Idle));
+        project.worktrees.push(worktree);
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        let session_index = app
+            .flat()
+            .iter()
+            .position(|entry| matches!(entry, FlatEntry::Session { .. }))
+            .unwrap();
+        let pending = PendingTerminalEntry {
+            pane_id: runtime::PaneId(1),
+            terminal_id: runtime::TerminalId(1),
+            generation: 1,
+            rows: 5,
+            cols: 20,
+        };
+        app.tree_selected = session_index;
+        app.pending_terminal_entry = Some(pending);
+
+        app.tree_selected = 0;
+        app.cancel_pending_terminal_entry_if_stale();
+        assert!(app.pending_terminal_entry.is_none());
+        assert!(matches!(app.mode, Mode::Workspace));
+
+        app.pending_terminal_entry = Some(pending);
+        assert_eq!(app.prepare_terminal_resume(), None);
+        assert!(app.pending_terminal_entry.is_none());
+        assert!(app.terminal_stream.is_none());
+        assert!(matches!(app.mode, Mode::Workspace));
+    }
+
+    #[test]
+    fn terminal_entry_waits_for_the_resized_full_baseline_before_switching_mode() {
+        let pane_id = runtime::PaneId(1);
+        let terminal_id = runtime::TerminalId(1);
+        let mut project = make_project("baseline-entry");
+        let mut worktree = make_worktree("/tmp/baseline-entry");
+        worktree
+            .sessions
+            .push(make_sess(false, runtime::AgentState::Idle));
+        project.worktrees.push(worktree);
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        app.tree_selected = app
+            .flat()
+            .iter()
+            .position(|entry| matches!(entry, FlatEntry::Session { .. }))
+            .unwrap();
+        app.terminal_surfaces
+            .activate_stream(7, pane_id, terminal_id);
+        assert_eq!(
+            app.terminal_surfaces
+                .install_full(7, test_terminal_frame(pane_id, terminal_id, 1, 2, 20)),
+            SurfaceUpdate::Applied
+        );
+
+        let (socket_path, listener) = terminal_stream_listener("baseline-entry");
+        app.runtime_client = runtime::Client::new(socket_path.clone());
+        let (patch_tx, patch_rx) = mpsc::channel();
+        let (resync_tx, resync_rx) = mpsc::channel();
+        let (baseline_tx, baseline_rx) = mpsc::channel();
+        let server_path = socket_path.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            assert_eq!(
+                read_runtime_request(&mut reader),
+                runtime::Request::Hello {
+                    protocol: runtime::PROTOCOL_VERSION,
+                }
+            );
+            write_runtime_message(
+                &mut stream,
+                &runtime::Response::Hello {
+                    protocol: runtime::PROTOCOL_VERSION,
+                    epoch: 7,
+                    capabilities: runtime::Capabilities::default(),
+                },
+            );
+            let (rows, cols) = match read_runtime_request(&mut reader) {
+                runtime::Request::TerminalSubscribe {
+                    pane_id: requested,
+                    rows,
+                    cols,
+                    ..
+                } => {
+                    assert_eq!(requested, pane_id);
+                    (rows, cols)
+                }
+                request => panic!("unexpected request: {request:?}"),
+            };
+            write_runtime_message(&mut stream, &runtime::Response::Ack { revision: 1 });
+            patch_rx.recv().unwrap();
+            write_runtime_message(
+                &mut stream,
+                &runtime::TerminalServerMessage::Update(runtime::TerminalUpdate::Patch {
+                    pane_id,
+                    terminal_id,
+                    base_revision: 1,
+                    revision: 2,
+                    cols,
+                    rows,
+                    changed_rows: Vec::new(),
+                    cursor: test_terminal_frame(pane_id, terminal_id, 2, rows, cols).cursor,
+                    selection: Vec::new(),
+                }),
+            );
+            assert_eq!(
+                read_terminal_client_message(&mut reader),
+                runtime::TerminalClientMessage::Resync
+            );
+            resync_tx.send(()).unwrap();
+            baseline_rx.recv().unwrap();
+            write_runtime_message(
+                &mut stream,
+                &runtime::TerminalServerMessage::Update(runtime::TerminalUpdate::Full(
+                    test_terminal_frame(pane_id, terminal_id, 3, rows, cols),
+                )),
+            );
+            std::thread::sleep(Duration::from_millis(25));
+            drop(listener);
+            let _ = std::fs::remove_file(server_path);
+        });
+
+        let terminal = workspace_terminal();
+        app.enter_terminal(pane_id, terminal_id, "baseline entry".into(), &terminal)
+            .unwrap();
+        assert!(matches!(app.mode, Mode::Workspace));
+        assert!(app.pending_terminal_entry.is_some());
+        assert_eq!(app.terminal_cursor(), None);
+
+        patch_tx.send(()).unwrap();
+        let resync_deadline = Instant::now() + Duration::from_secs(1);
+        while resync_rx.try_recv().is_err() && Instant::now() < resync_deadline {
+            app.drain_terminal_stream();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(matches!(app.mode, Mode::Workspace));
+        assert!(app.pending_terminal_entry.is_some());
+
+        baseline_tx.send(()).unwrap();
+        let baseline_deadline = Instant::now() + Duration::from_secs(1);
+        while !matches!(app.mode, Mode::Terminal { .. }) && Instant::now() < baseline_deadline {
+            app.drain_terminal_stream();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(matches!(app.mode, Mode::Terminal { pane_id: id } if id == pane_id));
+        assert!(app.pending_terminal_entry.is_none());
+        let frame = app.terminal_surface(pane_id, terminal_id).unwrap();
+        let (rows, cols) = app.terminal_pane_size(&terminal);
+        assert_eq!((frame.rows, frame.cols), (rows, cols));
+
+        app.terminal_stream = None;
+        server.join().unwrap();
     }
 
     #[test]
@@ -5030,6 +5835,7 @@ mod tests {
                 sessions: vec![],
                 panes,
                 listening_ports: vec![],
+                pane_activity: vec![],
                 capabilities: runtime::Capabilities::default(),
             }
         }
@@ -5313,7 +6119,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_project_has_no_routines_header_but_can_open_first_creation_form() {
+    fn empty_project_opens_runner_picker_before_first_creation_form() {
         let workspace = WorkspaceState {
             projects: vec![make_project("demo")],
         };
@@ -5325,13 +6131,53 @@ mod tests {
         app.action_add_routine().unwrap();
         assert!(matches!(
             app.mode,
-            Mode::RoutineEditor {
+            Mode::RoutinePresetPicker {
                 project_idx: 0,
-                original_name: None,
-                can_rename: true,
-                ..
+                selected: 0
             }
         ));
+
+        app.dispatch_routine_preset_picker(Action::InputChar('j'))
+            .unwrap();
+        app.dispatch_routine_preset_picker(Action::NavigateDown)
+            .unwrap();
+        app.dispatch_routine_preset_picker(Action::Select).unwrap();
+        let Mode::RoutineEditor {
+            project_idx,
+            original_name,
+            can_rename,
+            form,
+        } = &app.mode
+        else {
+            panic!("runner selection did not open the editor");
+        };
+        assert_eq!(*project_idx, 0);
+        assert_eq!(original_name, &None);
+        assert!(*can_rename);
+        let mut form = form.clone();
+        form.name = "review".into();
+        assert_eq!(
+            form.routine().unwrap().command,
+            vec!["pi", "-p", "{prompt}"]
+        );
+    }
+
+    #[test]
+    fn runner_picker_wraps_and_escape_cancels() {
+        let workspace = WorkspaceState {
+            projects: vec![make_project("demo")],
+        };
+        let mut app = make_test_app(GlobalConfig::default(), workspace, None);
+        app.action_add_routine().unwrap();
+        app.dispatch_routine_preset_picker(Action::InputChar('k'))
+            .unwrap();
+        assert!(matches!(
+            app.mode,
+            Mode::RoutinePresetPicker { selected: 3, .. }
+        ));
+        app.dispatch_routine_preset_picker(Action::InputEscape)
+            .unwrap();
+        assert!(matches!(app.mode, Mode::Workspace));
     }
 
     #[test]
@@ -5669,6 +6515,8 @@ mod tests {
             terminal_escape_chord: "ctrl+a w".into(),
             resume_agents_on_restore: true,
             auto_collapse_after_hours: 24,
+            notification_timeout_seconds: 4,
+            ..GlobalConfig::default()
         };
         let workspace = WorkspaceState {
             projects: vec![
@@ -5739,8 +6587,11 @@ mod tests {
                 revision: 1,
                 exited: false,
                 listening_ports: vec![],
+                foreground_job: false,
+                outcome_acknowledged: false,
             }],
             muted,
+            outcome_acknowledged: false,
         }
     }
 
@@ -5907,6 +6758,8 @@ mod tests {
             revision: 1,
             exited: false,
             listening_ports: vec![],
+            foreground_job: false,
+            outcome_acknowledged: false,
         });
         session.layout = runtime::PaneLayout::Split {
             axis: runtime::SplitAxis::Vertical,
@@ -5994,7 +6847,7 @@ mod tests {
             WorkspaceState {
                 projects: vec![project],
             },
-            None,
+            Some("work".into()),
         );
         let backend = ratatui::backend::TestBackend::new(100, 16);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -6020,7 +6873,7 @@ mod tests {
         );
         let strip = crate::ui::workspace_nav::fit_group_strip(
             &app.config.ordered_group_keys(),
-            app.active_group.as_ref(),
+            &app.active_group,
             100,
             app.group_header_scroll,
         );
@@ -6040,7 +6893,7 @@ mod tests {
         );
         assert_eq!(
             terminal.backend().buffer()[(work.cells.start as u16, 0)].bg,
-            crate::ui::theme::group_chip(false).bg.unwrap()
+            crate::ui::theme::group_chip(true).bg.unwrap()
         );
         assert_eq!(
             terminal.backend().buffer()[(99, 0)].bg,
@@ -6095,12 +6948,24 @@ mod tests {
             .collect::<String>();
         assert!(terminal_header.contains("workspace"), "{terminal_header:?}");
         assert_eq!(app.tree_visible_height, workspace_tree_height);
+        assert_eq!(app.tree_area.width, 2);
+        assert_eq!(app.preview_area.x, 2);
+        assert_eq!(terminal.backend().buffer()[(0, 2)].symbol(), "·");
+        assert_eq!(terminal.backend().buffer()[(1, 1)].symbol(), "│");
+        assert_eq!(
+            terminal.backend().buffer()[(1, 1)].fg,
+            crate::ui::theme::DIVIDER
+        );
+
+        app.config.terminal_sidebar = wsx_core::config::global::TerminalSidebar::Expanded;
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.tree_area.width, 32);
         let terminal_projects = (0..30)
             .map(|x| terminal.backend().buffer()[(x, 2)].symbol())
             .collect::<String>();
         assert!(terminal_projects.contains("demo"), "{terminal_projects:?}");
-        assert_eq!(terminal.backend().buffer()[(0, 1)].symbol(), " ");
-        assert_eq!(terminal.backend().buffer()[(0, 14)].symbol(), " ");
         assert_eq!(terminal.backend().buffer()[(31, 1)].symbol(), "│");
         assert_eq!(
             terminal.backend().buffer()[(31, 1)].fg,
@@ -6133,7 +6998,83 @@ mod tests {
             !terminal_footer.contains("(Ctrl+A W)workspace"),
             "{terminal_footer:?}"
         );
-        assert!(!terminal_footer.contains("(q)quit"), "{terminal_footer:?}");
+        assert!(!terminal_footer.contains("(q)uit"), "{terminal_footer:?}");
+        assert!(
+            terminal_footer.find("(Alt+G Z)workspace") < terminal_footer.find("(Alt+G Q)quit"),
+            "{terminal_footer:?}"
+        );
+        assert!(
+            terminal_footer.contains(&format!("(Alt+G Q)quit  v{}", env!("CARGO_PKG_VERSION"))),
+            "{terminal_footer:?}"
+        );
+    }
+
+    #[test]
+    fn compact_terminal_sidebar_mirrors_session_status_and_preserves_terminal_geometry() {
+        let mut project = make_project("compact");
+        let mut worktree = make_worktree("/tmp/compact");
+        worktree.sessions = vec![make_sess(false, runtime::AgentState::Blocked)];
+        project.worktrees = vec![worktree];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        app.tree_selected = 2;
+        app.mode = Mode::Terminal {
+            pane_id: runtime::PaneId(1),
+        };
+        app.runtime_health = RuntimeHealth::Healthy {
+            last_success: Instant::now(),
+        };
+        let backend = ratatui::backend::TestBackend::new(80, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+
+        assert_eq!(app.tree_area, Rect::new(0, 1, 2, 8));
+        assert_eq!(app.preview_area, Rect::new(2, 1, 78, 8));
+        assert_eq!(app.terminal_area, Rect::new(2, 2, 78, 7));
+        assert_eq!(terminal.backend().buffer()[(0, 2)].symbol(), "·");
+        assert_eq!(terminal.backend().buffer()[(0, 3)].symbol(), "▾");
+        assert_eq!(terminal.backend().buffer()[(0, 4)].symbol(), "◐");
+        assert_eq!(
+            terminal.backend().buffer()[(0, 4)].fg,
+            crate::ui::theme::TEXT
+        );
+        assert_eq!(
+            terminal.backend().buffer()[(0, 4)].bg,
+            crate::ui::theme::selected_row(false).bg.unwrap()
+        );
+        for y in 1..9 {
+            assert_eq!(terminal.backend().buffer()[(1, y)].symbol(), "│");
+            assert_eq!(
+                terminal.backend().buffer()[(1, y)].fg,
+                crate::ui::theme::DIVIDER
+            );
+        }
+    }
+
+    #[test]
+    fn compact_terminal_sidebar_tiny_height_degrades_without_panicking() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.mode = Mode::Terminal {
+            pane_id: runtime::PaneId(1),
+        };
+        let backend = ratatui::backend::TestBackend::new(60, 2);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+
+        assert_eq!(app.tree_area, Rect::new(0, 1, 2, 0));
+        assert_eq!(app.preview_area, Rect::new(2, 1, 58, 0));
+        assert_eq!(app.terminal_area, Rect::default());
     }
 
     #[test]
@@ -6198,9 +7139,70 @@ mod tests {
         let footer = (0..160)
             .map(|x| terminal.backend().buffer()[(x, 7)].symbol())
             .collect::<String>();
-        assert!(footer.contains("(i)idle"), "{footer:?}");
-        assert!(footer.contains("(a)active"), "{footer:?}");
-        assert!(footer.contains("(n)attention"), "{footer:?}");
+        assert!(footer.contains("(i)dle iter."), "{footer:?}");
+        assert!(footer.contains("(a)ctive iter."), "{footer:?}");
+        assert!(footer.contains("(n)eeds"), "{footer:?}");
+    }
+
+    #[test]
+    fn workspace_footer_shows_compact_capability_aware_routine_hints() {
+        let mut project = make_project("routines");
+        project.routines = vec![routine_view("build")];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        let routine_index = app
+            .flat()
+            .iter()
+            .position(|entry| matches!(entry, FlatEntry::Routine { .. }))
+            .unwrap();
+        app.tree_selected = routine_index;
+        let backend = ratatui::backend::TestBackend::new(160, 8);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        let footer = (0..160)
+            .map(|x| terminal.backend().buffer()[(x, 7)].symbol())
+            .collect::<String>();
+        assert!(footer.contains("(e)dit"), "{footer:?}");
+        assert!(footer.contains("(d)elete"), "{footer:?}");
+
+        app.workspace.projects[0].routines[0].capabilities.can_edit = false;
+        app.workspace.projects[0].routines[0]
+            .capabilities
+            .can_delete = false;
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        let footer = (0..160)
+            .map(|x| terminal.backend().buffer()[(x, 7)].symbol())
+            .collect::<String>();
+        assert!(!footer.contains("(e)dit"), "{footer:?}");
+        assert!(!footer.contains("(d)elete"), "{footer:?}");
+        assert!(footer.contains("(?)help"), "{footer:?}");
+    }
+
+    #[test]
+    fn startup_restores_valid_group_and_defaults_missing_or_invalid_to_ungrouped() {
+        let config = GlobalConfig {
+            groups: vec!["recent".into(), "work".into()],
+            ..GlobalConfig::default()
+        };
+
+        assert_eq!(initial_active_group(&config, None), GroupKey::Ungrouped);
+        assert_eq!(
+            initial_active_group(&config, Some(GroupKey::Named("deleted".into()))),
+            GroupKey::Ungrouped
+        );
+        assert_eq!(
+            initial_active_group(&config, Some(GroupKey::Named("work".into()))),
+            GroupKey::Named("work".into())
+        );
     }
 
     #[test]
@@ -6225,10 +7227,17 @@ mod tests {
             .map(|x| terminal.backend().buffer()[(x, 11)].symbol())
             .collect::<String>();
         assert!(footer.contains("(e)dit"), "{footer:?}");
+        assert!(footer.contains("(u)routine"), "{footer:?}");
         assert!(footer.contains("(d)unregister"), "{footer:?}");
         assert!(!footer.contains("remove recent"), "{footer:?}");
         assert!(footer.contains("(,)config"), "{footer:?}");
-        assert!(footer.contains("(q)quit"), "{footer:?}");
+        assert!(footer.contains("(q)uit"), "{footer:?}");
+        let malformed_quit_hint = ["(q)", "quit"].concat();
+        assert!(!footer.contains(&malformed_quit_hint), "{footer:?}");
+        assert!(
+            footer.contains(&format!("(q)uit  v{}", env!("CARGO_PKG_VERSION"))),
+            "{footer:?}"
+        );
     }
 
     #[test]
@@ -6293,6 +7302,7 @@ mod tests {
                 blinking: false,
                 shape: 0,
             },
+            selection: Vec::new(),
         };
         worktree.sessions.push(session);
         project.worktrees.push(worktree);
@@ -6320,6 +7330,7 @@ mod tests {
                 revision: 1,
             }],
             listening_ports: vec![],
+            pane_activity: vec![],
             capabilities: runtime::Capabilities::default(),
         });
         assert_eq!(
@@ -6370,6 +7381,41 @@ mod tests {
         assert!(!session_needs_attention(&session));
     }
 
+    #[test]
+    fn explicit_interaction_acknowledges_only_the_current_done_revision() {
+        let mut project = make_project("acknowledge");
+        let mut worktree = make_worktree("./acknowledge");
+        worktree.sessions = vec![make_sess(false, runtime::AgentState::Done)];
+        project.worktrees = vec![worktree];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+
+        app.unmute_on_interaction(runtime::PaneId(1));
+
+        let session = &app.workspace.projects[0].worktrees[0].sessions[0];
+        assert!(session.outcome_acknowledged);
+        assert!(session.panes[0].outcome_acknowledged);
+        assert_eq!(
+            session_state::derive(session),
+            session_state::SessionHeuristic::Idle
+        );
+        assert_eq!(app.acknowledged_outcomes.get("1"), Some(&1));
+
+        let session = &mut app.workspace.projects[0].worktrees[0].sessions[0];
+        session.panes[0].revision = 2;
+        session.panes[0].outcome_acknowledged = false;
+        session.outcome_acknowledged = false;
+        assert_eq!(
+            session_state::derive(session),
+            session_state::SessionHeuristic::Done
+        );
+    }
+
     fn worktree_entry(path: &str) -> git_worktree::WorktreeEntry {
         git_worktree::WorktreeEntry {
             name: path.to_string(),
@@ -6409,6 +7455,60 @@ mod tests {
         assert_eq!(
             app.notice.as_ref().map(|notice| notice.title.as_str()),
             Some("Killed session: session")
+        );
+    }
+
+    #[test]
+    fn all_app_notice_levels_expire_after_the_configured_timeout() {
+        let mut app = make_test_app(
+            GlobalConfig {
+                notification_timeout_seconds: 2,
+                ..GlobalConfig::default()
+            },
+            WorkspaceState::empty(),
+            None,
+        );
+        let started = Instant::now();
+
+        for level in [
+            NoticeLevel::Success,
+            NoticeLevel::Warning,
+            NoticeLevel::Error,
+        ] {
+            app.set_notice(level, "notice");
+            app.notice_started = Some(started);
+            app.expire_notice(started + Duration::from_secs(1));
+            assert!(app.notice.is_some());
+            app.expire_notice(started + Duration::from_secs(2));
+            assert!(app.notice.is_none());
+        }
+    }
+
+    #[test]
+    fn terminal_stream_errors_include_the_authoritative_compact_target() {
+        let mut project = make_project("kgeditor");
+        let mut worktree = make_worktree("/tmp/kgeditor-feature--312");
+        worktree.name = "feature/#312".into();
+        let mut session = make_sess(false, wsx_core::runtime::AgentState::Idle);
+        session.display_name = "ss".into();
+        session.panes[0].label = "terminal".into();
+        let pane_id = session.pane_id;
+        worktree.sessions.push(session);
+        project.worktrees.push(worktree);
+        let app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        let target = app.terminal_target_label(0, 0, 0, pane_id).unwrap();
+        let error = std::io::Error::other("terminal_busy: pane has another writable controller");
+
+        assert_eq!(target, "kgeditor › feature/#312 › ss › terminal");
+        assert_eq!(
+            terminal_stream_error_notice(&error, &target),
+            "Terminal busy: another writable controller\nTarget: kgeditor › feature/#312 › ss › terminal"
         );
     }
 
@@ -6487,7 +7587,11 @@ mod tests {
             .collect::<String>();
         assert!(status.contains(" WORKSPACE "));
         assert!(!status.contains("[WORKSPACE]"));
-        assert!(status.contains("(C)interrupt"));
+        assert!(status.contains("(C)interrupt"), "{status:?}");
+        assert!(
+            status.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))),
+            "{status:?}"
+        );
         assert!(!rendered.contains("S:prompt"));
         assert!(rendered.contains("Runtime"));
         assert!(rendered.contains('연'));
@@ -6536,6 +7640,7 @@ mod tests {
                 sessions: vec![],
                 panes: vec![],
                 listening_ports: vec![],
+                pane_activity: vec![],
                 capabilities: runtime::Capabilities::default(),
             },
             None,
@@ -6553,6 +7658,26 @@ mod tests {
         };
         let projected = runtime_mouse_event(mouse, Rect::new(36, 1, 60, 20)).unwrap();
         assert_eq!((projected.x, projected.y), (6, 6));
+        assert!(projected.in_bounds);
+    }
+
+    #[test]
+    fn terminal_mouse_release_outside_the_panel_is_forwarded_without_a_cell_reference() {
+        let release = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+            column: 2,
+            row: 30,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        let projected = runtime_mouse_event(release, Rect::new(36, 1, 60, 20)).unwrap();
+        assert_eq!((projected.x, projected.y), (0, 19));
+        assert!(!projected.in_bounds);
+
+        let drag = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+            ..release
+        };
+        assert!(runtime_mouse_event(drag, Rect::new(36, 1, 60, 20)).is_none());
     }
 
     #[test]
@@ -6598,22 +7723,6 @@ mod tests {
         };
         assert!(app.handle_terminal_group_header_scroll(header_scroll));
         assert_eq!(app.group_header_scroll, 1);
-    }
-
-    #[test]
-    fn pending_deletion_matches_exact_paths_only() {
-        let mut pending = HashSet::from([PathBuf::from("/repo/issue")]);
-
-        let visible = filter_pending_deletions(
-            &mut pending,
-            vec![(
-                PathBuf::from("/repo"),
-                vec![worktree_entry("/repo/issue-2")],
-            )],
-        );
-
-        assert_eq!(visible[0].1.len(), 1);
-        assert!(pending.is_empty());
     }
 
     fn workspace_terminal() -> ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>
@@ -6974,6 +8083,37 @@ mod tests {
         assert!(!reconstructed.workspace.projects[0].expanded);
     }
 
+    #[test]
+    fn global_settings_keys_navigate_typed_fields_without_mutating_config_until_save() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        let mut terminal = workspace_terminal();
+
+        app.dispatch(Action::EditGlobalConfig, &mut terminal)
+            .unwrap();
+        app.dispatch(Action::InputChar('j'), &mut terminal).unwrap();
+        app.dispatch(Action::Select, &mut terminal).unwrap();
+        let Mode::GlobalSettings { form } = &app.mode else {
+            panic!("comma action must open global settings");
+        };
+        assert!(
+            form.is_editing(),
+            "j must move down to the editable path list"
+        );
+        app.dispatch(Action::InputEscape, &mut terminal).unwrap();
+
+        app.dispatch(Action::InputChar('l'), &mut terminal).unwrap();
+        app.dispatch(Action::InputChar(' '), &mut terminal).unwrap();
+        let Mode::GlobalSettings { form } = &app.mode else {
+            panic!("settings must stay open while changing sections");
+        };
+        assert!(!form.draft().show_release_status);
+        assert!(app.config.show_release_status);
+
+        app.dispatch(Action::InputEscape, &mut terminal).unwrap();
+        assert!(matches!(app.mode, Mode::Workspace));
+        assert!(app.config.show_release_status);
+    }
+
     fn app_with_port_session(name: &str) -> App {
         let mut project = make_project("ports");
         let mut worktree = make_worktree("/tmp/ports");
@@ -6983,7 +8123,10 @@ mod tests {
         worktree.sessions.push(session);
         project.worktrees.push(worktree);
         make_test_app(
-            GlobalConfig::default(),
+            GlobalConfig {
+                port_visibility: wsx_core::config::global::PortVisibility::All,
+                ..GlobalConfig::default()
+            },
             WorkspaceState {
                 projects: vec![project],
             },
@@ -7049,5 +8192,76 @@ mod tests {
         assert_eq!(&row[port_start..=port_end], [":", "3", "0", "0", "0"]);
         assert!(!row.contains(&"·"));
         assert!(row[..port_start].contains(&"…"));
+    }
+
+    #[test]
+    fn stale_snapshot_cannot_restore_an_acknowledged_session_order() {
+        let mut project = make_project("ordering");
+        let mut worktree = make_worktree("/tmp/ordering");
+        let mut first = make_sess(false, runtime::AgentState::Idle);
+        first.session_id = runtime::SessionId(1);
+        first.revision = 7;
+        let mut second = make_sess(false, runtime::AgentState::Idle);
+        second.session_id = runtime::SessionId(2);
+        second.revision = 7;
+        worktree.sessions = vec![first, second];
+        project.worktrees.push(worktree);
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        app.pending_session_orders.insert(
+            PathBuf::from("/tmp/ordering"),
+            PendingSessionOrder {
+                moved_session_id: runtime::SessionId(2),
+                revision: 8,
+                session_ids: vec![runtime::SessionId(2), runtime::SessionId(1)],
+            },
+        );
+
+        app.reconcile_pending_session_orders();
+
+        assert_eq!(
+            app.workspace.projects[0].worktrees[0]
+                .sessions
+                .iter()
+                .map(|session| session.session_id)
+                .collect::<Vec<_>>(),
+            [runtime::SessionId(2), runtime::SessionId(1)]
+        );
+        assert_eq!(app.pending_session_orders.len(), 1);
+
+        app.workspace.projects[0].worktrees[0].sessions.swap(0, 1);
+        app.workspace.projects[0].worktrees[0].sessions[1].revision = 8;
+        app.reconcile_pending_session_orders();
+
+        assert_eq!(
+            app.workspace.projects[0].worktrees[0]
+                .sessions
+                .iter()
+                .map(|session| session.session_id)
+                .collect::<Vec<_>>(),
+            [runtime::SessionId(1), runtime::SessionId(2)]
+        );
+        assert!(app.pending_session_orders.is_empty());
+    }
+
+    #[test]
+    fn pending_deletion_matches_exact_paths_only() {
+        let mut pending = HashSet::from([PathBuf::from("/repo/issue")]);
+
+        let visible = filter_pending_deletions(
+            &mut pending,
+            vec![(
+                PathBuf::from("/repo"),
+                vec![worktree_entry("/repo/issue-2")],
+            )],
+        );
+
+        assert_eq!(visible[0].1.len(), 1);
+        assert!(pending.is_empty());
     }
 }

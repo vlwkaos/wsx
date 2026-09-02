@@ -6,26 +6,41 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
-use wsx_core::model::workspace::{
-    FetchFailReason, PaneInfo, Project, SessionInfo, SubmoduleCommitState, WorktreeInfo,
+use wsx_core::{
+    config::global::PortVisibility,
+    model::workspace::{
+        FetchFailReason, PaneInfo, Project, SessionInfo, SubmoduleCommitState, WorktreeInfo,
+    },
 };
 
 use super::{compact_port_label, git_remote_status_color, theme, workspace_tree::agent_state_icon};
 
-pub fn render_terminal_breadcrumb(
-    frame: &mut Frame,
-    area: Rect,
-    project: &str,
-    worktree: &str,
-    session: &SessionInfo,
-    pane: Option<&PaneInfo>,
-) {
-    let (agent, state, ports) = pane.map_or_else(
+pub struct TerminalBreadcrumbView<'a> {
+    pub project: &'a str,
+    pub worktree: &'a str,
+    pub session: &'a SessionInfo,
+    pub pane: Option<&'a PaneInfo>,
+    pub port_visibility: PortVisibility,
+    pub animation_frame: usize,
+}
+
+pub fn render_terminal_breadcrumb(frame: &mut Frame, area: Rect, view: TerminalBreadcrumbView<'_>) {
+    let TerminalBreadcrumbView {
+        project,
+        worktree,
+        session,
+        pane,
+        port_visibility,
+        animation_frame,
+    } = view;
+    let (agent, state, ports, outcome_acknowledged, foreground_job) = pane.map_or_else(
         || {
             (
                 session.agent.as_deref(),
                 session.agent_status,
                 session.listening_ports(),
+                session.outcome_acknowledged,
+                !session.is_agentic() && session.has_foreground_job(),
             )
         },
         |pane| {
@@ -33,10 +48,18 @@ pub fn render_terminal_breadcrumb(
                 pane.agent.as_deref(),
                 pane.agent_status,
                 pane.listening_ports.clone(),
+                pane.outcome_acknowledged,
+                pane.agent.is_none() && pane.foreground_job,
             )
         },
     );
-    let (icon, icon_color) = agent_state_icon(state, session.muted);
+    let (icon, icon_color) = agent_state_icon(
+        state,
+        session.muted,
+        outcome_acknowledged,
+        foreground_job,
+        animation_frame,
+    );
     let mut spans = vec![
         Span::styled(
             format!(" {project}"),
@@ -64,7 +87,14 @@ pub fn render_terminal_breadcrumb(
     if let Some(agent_label) = session_state::agent_label(agent) {
         spans.push(Span::styled(agent_label, theme::agent_label()));
     }
-    if let Some(label) = compact_port_label(&ports) {
+    let port_width =
+        usize::from(area.width).saturating_sub(Line::from(spans.clone()).width().saturating_add(2));
+    let is_agentic = session.is_agentic();
+    if let Some(label) = port_visibility
+        .shows_session(is_agentic)
+        .then(|| compact_port_label(&ports, port_width))
+        .flatten()
+    {
         spans.push(Span::styled(
             format!("  {label}"),
             Style::default().fg(theme::ACCENT),
@@ -359,40 +389,72 @@ pub fn render_terminal_preview(
     frame: &mut Frame,
     area: Rect,
     terminal: Option<&wsx_core::runtime::TerminalFrame>,
-    focused: bool,
+    interactive: bool,
 ) {
-    render_terminal_frame(frame, area, terminal, focused);
+    render_terminal_frame(frame, area, terminal, interactive);
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TerminalRowProjection {
+    source_start: u16,
+    len: u16,
+}
+
+impl TerminalRowProjection {
+    fn target_row(self, source_row: u16) -> Option<u16> {
+        let projected_row = source_row.checked_sub(self.source_start)?;
+        (projected_row < self.len).then_some(projected_row)
+    }
+}
+
+// ^ [[wsx UI Patterns]] Frame projection may crop authoritative rows, but never resize them.
+fn terminal_row_projection(source_rows: u16, target_rows: u16) -> TerminalRowProjection {
+    TerminalRowProjection {
+        source_start: source_rows.saturating_sub(target_rows),
+        len: source_rows.min(target_rows),
+    }
 }
 
 fn render_terminal_frame(
     frame: &mut Frame,
     area: Rect,
     terminal: Option<&wsx_core::runtime::TerminalFrame>,
-    focused: bool,
+    interactive: bool,
 ) {
     frame.render_widget(Clear, area);
     let inner = area;
     let Some(terminal) = terminal else { return };
-    let visible_rows = inner.height.min(terminal.rows);
+    let rows = terminal_row_projection(terminal.rows, inner.height);
     let visible_cols = inner.width.min(terminal.cols);
     let buffer = frame.buffer_mut();
-    for y in 0..visible_rows {
+    for projected_y in 0..rows.len {
+        let source_y = rows.source_start + projected_y;
+        let target_y = projected_y;
+        let selection = terminal
+            .selection
+            .binary_search_by_key(&source_y, |selection| selection.row)
+            .ok()
+            .map(|index| terminal.selection[index]);
         for x in 0..visible_cols {
             let Some(cell) = terminal
                 .cells
-                .get(usize::from(y) * usize::from(terminal.cols) + usize::from(x))
+                .get(usize::from(source_y) * usize::from(terminal.cols) + usize::from(x))
             else {
                 continue;
             };
-            project_terminal_cell(&mut buffer[(inner.x + x, inner.y + y)], cell);
+            let target = &mut buffer[(inner.x + x, inner.y + target_y)];
+            project_terminal_cell(target, cell);
+            if selection
+                .is_some_and(|selection| (selection.start_col..=selection.end_col).contains(&x))
+            {
+                target.set_style(theme::terminal_selection());
+            }
         }
     }
-    if focused
-        && terminal.cursor.visible
-        && terminal.cursor.x < visible_cols
-        && terminal.cursor.y < visible_rows
-    {
-        frame.set_cursor_position((inner.x + terminal.cursor.x, inner.y + terminal.cursor.y));
+    if interactive && terminal.cursor.visible && terminal.cursor.x < visible_cols {
+        if let Some(cursor_y) = rows.target_row(terminal.cursor.y) {
+            frame.set_cursor_position((inner.x + terminal.cursor.x, inner.y + cursor_y));
+        }
     }
 }
 
@@ -711,7 +773,7 @@ mod tests {
         model::workspace::{GitInfo, SubmoduleInfo, SubtreeInfo},
         runtime::{
             AgentState, Cell, CellWidth, Cursor, PaneId, PaneLayout, SessionId, TerminalFrame,
-            TerminalId,
+            TerminalId, TerminalSelectionRange,
         },
     };
 
@@ -730,7 +792,30 @@ mod tests {
                 blinking: false,
                 shape: 0,
             },
+            selection: Vec::new(),
         }
+    }
+
+    fn terminal_frame_rows(rows: &[&str]) -> TerminalFrame {
+        let cells = rows
+            .iter()
+            .flat_map(|row| {
+                assert_eq!(row.chars().count(), 3);
+                row.chars().map(|symbol| Cell {
+                    symbol: symbol.to_string(),
+                    ..Cell::default()
+                })
+            })
+            .collect();
+        let mut frame = terminal_frame(cells);
+        frame.rows = rows.len() as u16;
+        frame
+    }
+
+    fn buffer_row(buffer: &ratatui::buffer::Buffer, area: Rect, y: u16) -> String {
+        (area.x..area.right())
+            .map(|x| buffer[(x, y)].symbol())
+            .collect()
     }
 
     #[test]
@@ -743,7 +828,30 @@ mod tests {
             path: "/repo".into(),
             is_main: true,
             alias: None,
-            sessions: vec![],
+            sessions: vec![SessionInfo {
+                session_id: SessionId(1),
+                pane_id: PaneId(1),
+                terminal_id: TerminalId(1),
+                agent: Some("codex".into()),
+                display_name: "agent".into(),
+                agent_status: AgentState::Working,
+                revision: 1,
+                layout: PaneLayout::Leaf { pane_id: PaneId(1) },
+                panes: vec![PaneInfo {
+                    pane_id: PaneId(1),
+                    terminal_id: TerminalId(1),
+                    label: "terminal".into(),
+                    agent: Some("codex".into()),
+                    agent_status: AgentState::Working,
+                    revision: 1,
+                    exited: false,
+                    listening_ports: vec![5173],
+                    foreground_job: false,
+                    outcome_acknowledged: false,
+                }],
+                muted: false,
+                outcome_acknowledged: false,
+            }],
             expanded: true,
             git_info: Some(GitInfo {
                 recent_commits: vec![],
@@ -780,6 +888,8 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
+        assert!(text.contains("Ports:"), "{text:?}");
+        assert!(text.contains(":5173"), "{text:?}");
         assert!(text.contains("Local:"), "{text:?}");
         assert!(text.contains("1 file modified"), "{text:?}");
         assert!(text.contains("Submodules:"), "{text:?}");
@@ -811,13 +921,27 @@ mod tests {
                 revision: 1,
                 exited: false,
                 listening_ports: vec![3000, 5173],
+                foreground_job: false,
+                outcome_acknowledged: false,
             }],
             muted: false,
+            outcome_acknowledged: false,
         };
 
         terminal
             .draw(|frame| {
-                render_terminal_breadcrumb(frame, frame.area(), "wsx", "main", &session, None)
+                render_terminal_breadcrumb(
+                    frame,
+                    frame.area(),
+                    TerminalBreadcrumbView {
+                        project: "wsx",
+                        worktree: "main",
+                        session: &session,
+                        pane: None,
+                        port_visibility: PortVisibility::All,
+                        animation_frame: 0,
+                    },
+                )
             })
             .unwrap();
 
@@ -827,8 +951,35 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("wsx › main › review"));
         assert!(text.contains("(codex)"));
-        assert!(text.contains(":3000 +1"));
+        assert!(text.contains(":3000 :5173"));
         assert!(!text.contains("idle"));
+
+        let backend = TestBackend::new(64, 1);
+        let mut default_policy = Terminal::new(backend).unwrap();
+        default_policy
+            .draw(|frame| {
+                render_terminal_breadcrumb(
+                    frame,
+                    frame.area(),
+                    TerminalBreadcrumbView {
+                        project: "wsx",
+                        worktree: "main",
+                        session: &session,
+                        pane: None,
+                        port_visibility: PortVisibility::NonAgentic,
+                        animation_frame: 0,
+                    },
+                )
+            })
+            .unwrap();
+        let text = default_policy
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!text.contains(":3000"));
     }
 
     #[test]
@@ -846,11 +997,23 @@ mod tests {
             layout: PaneLayout::Leaf { pane_id: PaneId(1) },
             panes: vec![],
             muted: false,
+            outcome_acknowledged: false,
         };
 
         terminal
             .draw(|frame| {
-                render_terminal_breadcrumb(frame, frame.area(), "wsx", "main", &session, None)
+                render_terminal_breadcrumb(
+                    frame,
+                    frame.area(),
+                    TerminalBreadcrumbView {
+                        project: "wsx",
+                        worktree: "main",
+                        session: &session,
+                        pane: None,
+                        port_visibility: PortVisibility::All,
+                        animation_frame: 0,
+                    },
+                )
             })
             .unwrap();
 
@@ -864,6 +1027,150 @@ mod tests {
         assert!(text.contains("shell-session"));
         assert!(!text.contains("unknown"));
         assert!(!text.contains(" · shell"));
+    }
+
+    #[test]
+    fn terminal_row_projection_top_aligns_short_frames_and_tail_crops_tall_frames() {
+        let short = terminal_row_projection(2, 4);
+        assert_eq!(
+            short,
+            TerminalRowProjection {
+                source_start: 0,
+                len: 2,
+            }
+        );
+        assert_eq!(short.target_row(0), Some(0));
+        assert_eq!(short.target_row(1), Some(1));
+
+        let cropped = terminal_row_projection(4, 2);
+        assert_eq!(
+            cropped,
+            TerminalRowProjection {
+                source_start: 2,
+                len: 2,
+            }
+        );
+        assert_eq!(cropped.target_row(0), None);
+        assert_eq!(cropped.target_row(2), Some(0));
+        assert_eq!(cropped.target_row(3), Some(1));
+
+        assert_eq!(
+            terminal_row_projection(4, 0),
+            TerminalRowProjection {
+                source_start: 4,
+                len: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_preview_top_aligns_a_shorter_terminal_frame() {
+        let backend = TestBackend::new(5, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let terminal_frame = terminal_frame_rows(&["abc", "def"]);
+        let area = Rect::new(1, 1, 3, 4);
+
+        terminal
+            .draw(|frame| render_terminal_frame(frame, area, Some(&terminal_frame), false))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer_row(buffer, area, 1), "abc");
+        assert_eq!(buffer_row(buffer, area, 2), "def");
+        assert_eq!(buffer_row(buffer, area, 3), "   ");
+        assert_eq!(buffer_row(buffer, area, 4), "   ");
+    }
+
+    #[test]
+    fn workspace_preview_crops_a_taller_terminal_frame_from_the_top() {
+        let backend = TestBackend::new(3, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let terminal_frame = terminal_frame_rows(&["abc", "def", "ghi", "jkl"]);
+
+        terminal
+            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&terminal_frame), false))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer_row(buffer, buffer.area, 0), "ghi");
+        assert_eq!(buffer_row(buffer, buffer.area, 1), "jkl");
+    }
+
+    #[test]
+    fn interactive_terminal_handoff_keeps_a_mismatched_frame_bottom_anchored() {
+        let backend = TestBackend::new(3, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let terminal_frame = terminal_frame_rows(&["abc", "def", "ghi", "jkl"]);
+
+        terminal
+            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&terminal_frame), true))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer_row(buffer, buffer.area, 0), "ghi");
+        assert_eq!(buffer_row(buffer, buffer.area, 1), "jkl");
+    }
+
+    #[test]
+    fn interactive_terminal_matching_baseline_keeps_its_top_origin() {
+        let backend = TestBackend::new(3, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let terminal_frame = terminal_frame_rows(&["abc", "def"]);
+
+        terminal
+            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&terminal_frame), true))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer_row(buffer, buffer.area, 0), "abc");
+        assert_eq!(buffer_row(buffer, buffer.area, 1), "def");
+    }
+
+    #[test]
+    fn interactive_terminal_cursor_follows_the_projected_source_row() {
+        let backend = TestBackend::new(3, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut terminal_frame = terminal_frame_rows(&["abc", "def"]);
+        terminal_frame.cursor = Cursor {
+            x: 1,
+            y: 1,
+            visible: true,
+            blinking: false,
+            shape: 0,
+        };
+
+        terminal
+            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&terminal_frame), true))
+            .unwrap();
+
+        terminal
+            .backend_mut()
+            .assert_cursor_position(Position::new(1, 1));
+    }
+
+    #[test]
+    fn terminal_selection_overlay_follows_cropped_source_rows_and_wide_cells() {
+        let backend = TestBackend::new(3, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut terminal_frame = terminal_frame_rows(&["abc", "def", "界 x", "jkl"]);
+        terminal_frame.cells[6].width = CellWidth::Wide;
+        terminal_frame.cells[7].symbol.clear();
+        terminal_frame.cells[7].width = CellWidth::SpacerTail;
+        terminal_frame.selection = vec![TerminalSelectionRange {
+            row: 2,
+            start_col: 0,
+            end_col: 1,
+        }];
+
+        terminal
+            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&terminal_frame), true))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let selection_style = theme::terminal_selection();
+        assert_eq!(buffer[(0, 0)].bg, selection_style.bg.unwrap());
+        assert_eq!(buffer[(2, 0)].bg, Color::Reset);
+        assert_eq!(buffer[(0, 1)].bg, Color::Reset);
     }
 
     #[test]

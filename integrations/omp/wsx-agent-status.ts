@@ -1,5 +1,5 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=9
+// WSX_INTEGRATION_VERSION=10
 import { execFile } from "node:child_process";
 import path from "node:path";
 
@@ -46,7 +46,8 @@ export default function wsxOmpAgentStatus(pi: any): void {
   });
   pi.on("agent_end", (_event: any, ctx: any) => {
     active = false;
-    current(ctx);
+    blocked = 0;
+    report("done", ctx);
   });
   pi.on("tool_approval_requested", (_event: any, ctx: any) => {
     blocked += 1;
@@ -68,5 +69,4 @@ export default function wsxOmpAgentStatus(pi: any): void {
       current(ctx);
     }
   });
-  pi.on("session_shutdown", (_event: any, ctx: any) => report("done", ctx));
 }

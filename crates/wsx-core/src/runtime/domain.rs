@@ -131,6 +131,13 @@ impl PaneLayout {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionPlacement {
+    Before,
+    After,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
     pub id: SessionId,
@@ -234,6 +241,12 @@ pub struct PanePorts {
     pub tcp: Vec<u16>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneActivity {
+    pub pane_id: PaneId,
+    pub foreground_job: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub protocol: u32,
@@ -245,6 +258,8 @@ pub struct Snapshot {
     pub panes: Vec<Pane>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub listening_ports: Vec<PanePorts>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pane_activity: Vec<PaneActivity>,
     #[serde(default)]
     pub capabilities: Capabilities,
 }
@@ -258,6 +273,7 @@ pub struct Capabilities {
     pub agent_session_restore: bool,
     pub resume_shell_fallback: bool,
     pub listening_ports: bool,
+    pub foreground_jobs: bool,
     pub process_restore: bool,
 }
 
@@ -377,6 +393,15 @@ pub struct Cursor {
     pub shape: u8,
 }
 
+// ^ [[Terminal Presentation and Latency]] Range changes must stay aligned with
+// Ghostty projection, legacy protocol defaults, daemon lease cleanup, and TUI rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalSelectionRange {
+    pub row: u16,
+    pub start_col: u16,
+    pub end_col: u16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalFrame {
     pub pane_id: PaneId,
@@ -386,6 +411,8 @@ pub struct TerminalFrame {
     pub rows: u16,
     pub cells: Vec<Cell>,
     pub cursor: Cursor,
+    #[serde(default)]
+    pub selection: Vec<TerminalSelectionRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -407,6 +434,8 @@ pub enum TerminalUpdate {
         rows: u16,
         changed_rows: Vec<TerminalRowPatch>,
         cursor: Cursor,
+        #[serde(default)]
+        selection: Vec<TerminalSelectionRange>,
     },
 }
 
@@ -430,39 +459,55 @@ impl TerminalUpdate {
     }
 
     pub fn apply_to(self, frame: &mut Option<TerminalFrame>) -> Result<(), &'static str> {
-        let (pane_id, terminal_id, base_revision, revision, cols, rows, changed_rows, cursor) =
-            match self {
-                Self::Full(full) => {
-                    if full.rows == 0
-                        || full.cols == 0
-                        || full.cells.len() != usize::from(full.cols) * usize::from(full.rows)
-                    {
-                        return Err("terminal full frame dimensions are invalid");
-                    }
-                    *frame = Some(full);
-                    return Ok(());
+        let (
+            pane_id,
+            terminal_id,
+            base_revision,
+            revision,
+            cols,
+            rows,
+            changed_rows,
+            cursor,
+            selection,
+        ) = match self {
+            Self::Full(full) => {
+                if full.rows == 0
+                    || full.cols == 0
+                    || full.cells.len() != usize::from(full.cols) * usize::from(full.rows)
+                    || !valid_terminal_selection(&full.selection, full.rows, full.cols)
+                {
+                    return Err("terminal full frame dimensions are invalid");
                 }
-                Self::Patch {
-                    pane_id,
-                    terminal_id,
-                    base_revision,
-                    revision,
-                    cols,
-                    rows,
-                    changed_rows,
-                    cursor,
-                } => (
-                    pane_id,
-                    terminal_id,
-                    base_revision,
-                    revision,
-                    cols,
-                    rows,
-                    changed_rows,
-                    cursor,
-                ),
-            };
-        if rows == 0 || cols == 0 || changed_rows.len() > usize::from(rows) {
+                *frame = Some(full);
+                return Ok(());
+            }
+            Self::Patch {
+                pane_id,
+                terminal_id,
+                base_revision,
+                revision,
+                cols,
+                rows,
+                changed_rows,
+                cursor,
+                selection,
+            } => (
+                pane_id,
+                terminal_id,
+                base_revision,
+                revision,
+                cols,
+                rows,
+                changed_rows,
+                cursor,
+                selection,
+            ),
+        };
+        if rows == 0
+            || cols == 0
+            || changed_rows.len() > usize::from(rows)
+            || !valid_terminal_selection(&selection, rows, cols)
+        {
             return Err("terminal patch dimensions are invalid");
         }
         let current = frame.as_mut().ok_or("terminal patch has no baseline")?;
@@ -484,8 +529,17 @@ impl TerminalUpdate {
         }
         current.revision = revision;
         current.cursor = cursor;
+        current.selection = selection;
         Ok(())
     }
+}
+
+fn valid_terminal_selection(selection: &[TerminalSelectionRange], rows: u16, cols: u16) -> bool {
+    selection.len() <= usize::from(rows)
+        && selection.iter().all(|range| {
+            range.row < rows && range.start_col <= range.end_col && range.end_col < cols
+        })
+        && selection.windows(2).all(|pair| pair[0].row < pair[1].row)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -547,10 +601,16 @@ pub struct MouseEvent {
     pub button: MouseButton,
     pub x: u16,
     pub y: u16,
+    #[serde(default = "default_true")]
+    pub in_bounds: bool,
     pub shift: bool,
     pub control: bool,
     pub alt: bool,
     pub super_key: bool,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -623,6 +683,31 @@ mod tests {
                 blinking: false,
                 shape: 0,
             },
+            selection: Vec::new(),
+        })
+        .apply_to(&mut baseline)
+        .is_err());
+        assert!(baseline.is_none());
+
+        assert!(TerminalUpdate::Full(TerminalFrame {
+            pane_id: PaneId(1),
+            terminal_id: TerminalId(2),
+            revision: 1,
+            cols: 2,
+            rows: 2,
+            cells: vec![Cell::default(); 4],
+            cursor: Cursor {
+                x: 0,
+                y: 0,
+                visible: false,
+                blinking: false,
+                shape: 0,
+            },
+            selection: vec![TerminalSelectionRange {
+                row: 0,
+                start_col: 0,
+                end_col: 2,
+            }],
         })
         .apply_to(&mut baseline)
         .is_err());
@@ -646,6 +731,7 @@ mod tests {
             rows: 2,
             cells: vec![Cell::default(); 4],
             cursor,
+            selection: Vec::new(),
         });
         TerminalUpdate::Patch {
             pane_id: PaneId(1),
@@ -669,6 +755,11 @@ mod tests {
                 y: 1,
                 ..cursor
             },
+            selection: vec![TerminalSelectionRange {
+                row: 1,
+                start_col: 0,
+                end_col: 1,
+            }],
         }
         .apply_to(&mut frame)
         .unwrap();
@@ -676,6 +767,7 @@ mod tests {
         assert_eq!(frame.revision, 4);
         assert_eq!(frame.cells[2].symbol, "x");
         assert_eq!((frame.cursor.x, frame.cursor.y), (1, 1));
+        assert_eq!(frame.selection.len(), 1);
 
         let mut frame = Some(frame);
         assert!(TerminalUpdate::Patch {
@@ -687,6 +779,7 @@ mod tests {
             rows: 2,
             changed_rows: vec![],
             cursor,
+            selection: Vec::new(),
         }
         .apply_to(&mut frame)
         .is_err());

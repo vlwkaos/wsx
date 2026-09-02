@@ -5,8 +5,11 @@ import { execFile } from "node:child_process";
 const provider = "@PROVIDER@";
 let rootSession;
 const childSessions = new Set();
+const activeSessions = new Set();
 
 function report(state, id) {
+  if (id && ["working", "blocked"].includes(state)) activeSessions.add(id);
+  if (id && ["idle", "done"].includes(state)) activeSessions.delete(id);
   const pane = process.env.WSX_PANE_ID;
   if (!pane) return;
   const args = [
@@ -55,11 +58,12 @@ export const WsxAgentStatusPlugin = async () => ({
     if (!rootSession || id !== rootSession) return;
     if (type === "session.status") {
       const state = statusState(properties.status);
-      if (state) report(state, id);
+      if (state === "idle") report(activeSessions.has(id) ? "done" : "idle", id);
+      else if (state) report(state, id);
     } else if (["permission.asked", "question.asked", "session.error"].includes(type)) {
       report("blocked", id);
     } else if (type === "session.idle") {
-      report("idle", id);
+      report(activeSessions.has(id) ? "done" : "idle", id);
     } else if ([
       "tool.execute.before", "tool.execute.after", "permission.replied",
       "question.replied", "question.rejected", "session.compacted",

@@ -19,7 +19,7 @@ pub struct GroupRow {
 
 pub fn group_rows(
     config: &GlobalConfig,
-    active_group: Option<&GroupKey>,
+    active_group: &GroupKey,
     assign_path: Option<&Path>,
 ) -> Vec<GroupRow> {
     let keys = if assign_path.is_some() {
@@ -44,7 +44,7 @@ pub fn group_rows(
             let checked = if let Some(path) = assign_path {
                 matches!(&key, GroupKey::Named(name) if config.project_groups(path).contains(name))
             } else {
-                active_group == Some(&key)
+                active_group == &key
             };
             GroupRow {
                 name: group_label(&key).to_string(),
@@ -60,7 +60,7 @@ pub struct GroupManagerView<'a> {
     pub selected: usize,
     pub scroll: usize,
     pub config: &'a GlobalConfig,
-    pub active_group: Option<&'a GroupKey>,
+    pub active_group: &'a GroupKey,
     pub assign_path: Option<&'a Path>,
 }
 
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn switch_has_ungrouped_then_named_rows_and_assign_has_named_only() {
         let config = config();
-        let switch = group_rows(&config, None, None);
+        let switch = group_rows(&config, &GroupKey::Ungrouped, None);
         assert_eq!(
             switch.iter().map(|r| &r.key).collect::<Vec<_>>(),
             vec![
@@ -155,7 +155,7 @@ mod tests {
         );
         assert_eq!(switch[1].project_count, 1);
 
-        let assign = group_rows(&config, None, Some(Path::new("/wsx")));
+        let assign = group_rows(&config, &GroupKey::Ungrouped, Some(Path::new("/wsx")));
         assert_eq!(
             assign.iter().map(|r| &r.key).collect::<Vec<_>>(),
             vec![

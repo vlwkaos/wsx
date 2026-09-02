@@ -10,12 +10,13 @@ use crate::{
         WorktreeInfo,
     },
     runtime::{
-        AgentState, Client, ProjectSpec, Request, Response, SessionId, Snapshot, WorktreeSpec,
+        AgentState, Client, ProjectSpec, Request, Response, SessionId, SessionPlacement, Snapshot,
+        WorktreeSpec,
     },
 };
 use anyhow::{anyhow, bail, Result};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -309,6 +310,11 @@ fn sessions_for_worktree(
         .iter()
         .map(|ports| (ports.pane_id, ports.tcp.as_slice()))
         .collect::<HashMap<_, _>>();
+    let foreground_jobs = snapshot
+        .pane_activity
+        .iter()
+        .filter_map(|activity| activity.foreground_job.then_some(activity.pane_id))
+        .collect::<HashSet<_>>();
     snapshot
         .sessions
         .iter()
@@ -347,10 +353,25 @@ fn sessions_for_worktree(
                             .copied()
                             .unwrap_or_default()
                             .to_vec(),
+                        foreground_job: foreground_jobs.contains(&pane.id),
+                        outcome_acknowledged: old
+                            .and_then(|session| {
+                                session
+                                    .panes
+                                    .iter()
+                                    .find(|previous| previous.terminal_id == pane.terminal_id)
+                            })
+                            .is_some_and(|previous| {
+                                previous.revision == pane.revision && previous.outcome_acknowledged
+                            }),
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
             let revision = session.revision.max(focused.revision);
+            let outcome_acknowledged = panes
+                .iter()
+                .find(|pane| pane.pane_id == focused.id)
+                .is_some_and(|pane| pane.outcome_acknowledged);
             Ok(SessionInfo {
                 session_id: session.id,
                 pane_id: focused.id,
@@ -365,6 +386,7 @@ fn sessions_for_worktree(
                 layout: session.layout.clone(),
                 panes,
                 muted: old.is_some_and(|session| session.muted),
+                outcome_acknowledged,
             })
         })
         .collect()
@@ -521,6 +543,20 @@ pub fn create_session(
     Ok((session_id, label))
 }
 
+pub fn reorder_session(
+    session_id: SessionId,
+    target_session_id: SessionId,
+    placement: SessionPlacement,
+    expected_revision: u64,
+) -> Result<u64> {
+    expect_ack_revision(Client::local().call(&Request::SessionReorder {
+        session_id,
+        target_session_id,
+        placement,
+        expected_revision,
+    })?)
+}
+
 pub fn rename_session(session_id: SessionId, new_label: &str) -> Result<()> {
     let snapshot = runtime_snapshot()?;
     let session = snapshot
@@ -548,8 +584,12 @@ pub fn kill_session(session_id: SessionId) -> Result<()> {
 }
 
 fn expect_ack(response: Response) -> Result<()> {
+    expect_ack_revision(response).map(|_| ())
+}
+
+fn expect_ack_revision(response: Response) -> Result<u64> {
     match response {
-        Response::Ack { .. } => Ok(()),
+        Response::Ack { revision } => Ok(revision),
         Response::Error(error) => bail!("{}: {}", error.code, error.message),
         _ => bail!("wsx daemon returned an unexpected mutation response"),
     }
@@ -632,6 +672,10 @@ mod tests {
                     tcp: vec![3000, 5173],
                 },
             ],
+            pane_activity: vec![runtime::PaneActivity {
+                pane_id: PaneId(6),
+                foreground_job: true,
+            }],
             capabilities: Capabilities::default(),
         };
         let sessions = sessions_for_worktree(&snapshot, Path::new("/repo"), &[]).unwrap();
@@ -643,6 +687,7 @@ mod tests {
         assert_eq!(sessions[0].panes[0].label, "primary");
         assert_eq!(sessions[0].panes[1].label, "split");
         assert_eq!(sessions[0].listening_ports(), vec![3000, 5173]);
+        assert!(sessions[0].has_foreground_job());
 
         let mut workspace = WorkspaceState {
             projects: vec![Project {

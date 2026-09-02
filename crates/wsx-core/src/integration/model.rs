@@ -91,21 +91,27 @@ impl IntegrationTarget {
 
     pub const fn lifecycle(self) -> LifecycleCapability {
         match self {
-            Self::Pi | Self::Omp | Self::Kimi | Self::Opencode | Self::Kilo | Self::Mastracode => {
-                LifecycleCapability::Authoritative
-            }
+            Self::Pi
+            | Self::Omp
+            | Self::Claude
+            | Self::Kimi
+            | Self::Opencode
+            | Self::Kilo
+            | Self::Mastracode => LifecycleCapability::Authoritative,
             _ => LifecycleCapability::IdentityOnly,
         }
     }
 
     pub const fn expected_version(self) -> u32 {
         match self {
-            Self::Pi | Self::Omp | Self::Claude | Self::Codex => 9,
+            Self::Pi | Self::Omp | Self::Claude => 10,
+            Self::Codex => 9,
             Self::Copilot | Self::Droid | Self::Qodercli => 4,
-            Self::Devin | Self::Mastracode | Self::AntigravityCli => 3,
-            Self::Kimi => 8,
-            Self::Opencode => 11,
-            Self::Kilo => 5,
+            Self::Devin | Self::AntigravityCli => 3,
+            Self::Mastracode => 4,
+            Self::Kimi => 9,
+            Self::Opencode => 12,
+            Self::Kilo => 6,
             Self::Hermes => 6,
             Self::Qwen | Self::Cursor | Self::Grok => 2,
         }
