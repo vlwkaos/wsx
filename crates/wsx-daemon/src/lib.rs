@@ -36,6 +36,8 @@ const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_VIEW_PANES: usize = 32;
 const MAX_VIEW_CELLS: usize = 1_000_000;
 const LEASE_TTL: Duration = Duration::from_secs(3);
+const PRESENTATION_CADENCE: Duration = Duration::from_millis(8);
+static NEXT_LEASE_GENERATION: AtomicU64 = AtomicU64::new(1);
 const PORT_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const PORT_SCAN_TIMEOUT: Duration = Duration::from_millis(750);
 const MAX_PORT_SCAN_BYTES: u64 = 256 * 1024;
@@ -130,13 +132,28 @@ impl Default for Persisted {
 #[derive(Debug, Clone, Copy)]
 struct Lease {
     client_id: u64,
+    generation: u64,
     expires_at: Instant,
 }
+
+#[derive(Clone, Copy)]
+enum LeaseAccess {
+    Client(u64),
+    Stream { client_id: u64, generation: u64 },
+}
+
+#[derive(Clone, Copy)]
+struct StreamLease {
+    pane_id: PaneId,
+    client_id: u64,
+    generation: u64,
+}
+
 struct State {
     persisted: Persisted,
     revision: u64,
     runtimes: HashMap<PaneId, Arc<TerminalRuntime>>,
-    resize_locks: HashMap<PaneId, Arc<Mutex<()>>>,
+    terminal_operation_locks: HashMap<PaneId, Arc<Mutex<()>>>,
     listening_ports: HashMap<PaneId, Vec<u16>>,
     leases: HashMap<PaneId, Lease>,
     events: VecDeque<Event>,
@@ -472,7 +489,7 @@ pub fn run() -> io::Result<()> {
             persisted,
             revision: 1,
             runtimes: HashMap::new(),
-            resize_locks: HashMap::new(),
+            terminal_operation_locks: HashMap::new(),
             listening_ports: HashMap::new(),
             leases: HashMap::new(),
             events: VecDeque::new(),
@@ -697,38 +714,44 @@ fn serve_terminal_stream(
     rows: u16,
     cols: u16,
 ) -> io::Result<()> {
-    let acquired = handle(
-        &daemon,
-        Request::TerminalAcquire {
-            pane_id,
-            client_id,
-            takeover,
-        },
-    );
-    if !matches!(acquired, Response::Ack { .. }) {
-        write_response(&mut stream, acquired)?;
-        return Ok(());
-    }
+    let (acquire_revision, lease_generation) =
+        match acquire_terminal_lease(&daemon, pane_id, client_id, takeover) {
+            Ok(acquired) => acquired,
+            Err(error) => {
+                write_response(&mut stream, Response::Error(error))?;
+                return Ok(());
+            }
+        };
     if let Err(error) = touch_terminal_project(&daemon, pane_id) {
-        release_stream_lease(&daemon, pane_id, client_id);
+        release_stream_lease(&daemon, pane_id, client_id, lease_generation);
         write_response(&mut stream, Response::Error(error))?;
         return Ok(());
     }
-    let resized = handle(
-        &daemon,
-        Request::TerminalResize {
-            pane_id,
-            client_id,
-            rows,
-            cols,
-        },
-    );
-    if !matches!(resized, Response::Ack { .. }) {
-        release_stream_lease(&daemon, pane_id, client_id);
-        write_response(&mut stream, resized)?;
+    let resized =
+        resize_terminal_for_stream(&daemon, pane_id, client_id, lease_generation, rows, cols);
+    if let Err(error) = resized {
+        release_stream_lease(&daemon, pane_id, client_id, lease_generation);
+        write_response(&mut stream, Response::Error(error))?;
         return Ok(());
     }
-    write_response(&mut stream, resized)?;
+    // Clipboard writes are effects for the client that was attached when they occurred.
+    // Never replay writes captured before this stream became active.
+    if let Err(error) =
+        with_stream_runtime(&daemon, pane_id, client_id, lease_generation, |runtime| {
+            let _ = runtime.take_clipboard_writes();
+            Ok(())
+        })
+    {
+        release_stream_lease(&daemon, pane_id, client_id, lease_generation);
+        write_response(&mut stream, Response::Error(error))?;
+        return Ok(());
+    }
+    write_response(
+        &mut stream,
+        Response::Ack {
+            revision: acquire_revision,
+        },
+    )?;
 
     stream.set_read_timeout(None)?;
     let active = Arc::new(AtomicBool::new(true));
@@ -760,46 +783,25 @@ fn serve_terminal_stream(
                         break;
                     }
                 };
-                let request = match message {
-                    TerminalClientMessage::Key(key) => Request::TerminalKey {
-                        pane_id,
-                        client_id,
-                        key,
-                    },
-                    TerminalClientMessage::Paste(text) => Request::TerminalPaste {
-                        pane_id,
-                        client_id,
-                        text,
-                    },
-                    TerminalClientMessage::Mouse(mouse) => Request::TerminalMouse {
-                        pane_id,
-                        client_id,
-                        mouse,
-                    },
-                    TerminalClientMessage::Input(bytes) => Request::TerminalInput {
-                        pane_id,
-                        client_id,
-                        bytes,
-                    },
-                    TerminalClientMessage::Resize { rows, cols } => Request::TerminalResize {
-                        pane_id,
-                        client_id,
-                        rows,
-                        cols,
-                    },
-                    TerminalClientMessage::Heartbeat => {
-                        Request::TerminalHeartbeat { pane_id, client_id }
-                    }
+                match message {
                     TerminalClientMessage::Resync => {
                         input_resync.store(true, Ordering::Release);
                         input_daemon.changed.notify_all();
                         continue;
                     }
                     TerminalClientMessage::Detach => break,
-                };
-                if let Response::Error(error) = handle(&input_daemon, request) {
-                    *lock(&input_error_slot) = Some(error);
-                    break;
+                    message => {
+                        if let Err(error) = handle_terminal_stream_input(
+                            &input_daemon,
+                            pane_id,
+                            client_id,
+                            lease_generation,
+                            message,
+                        ) {
+                            *lock(&input_error_slot) = Some(error);
+                            break;
+                        }
+                    }
                 }
             }
             input_active.store(false, Ordering::Release);
@@ -809,8 +811,11 @@ fn serve_terminal_stream(
     let result = stream_terminal_updates(
         &mut stream,
         &daemon,
-        pane_id,
-        client_id,
+        StreamLease {
+            pane_id,
+            client_id,
+            generation: lease_generation,
+        },
         &active,
         &resync,
         &input_error,
@@ -818,35 +823,35 @@ fn serve_terminal_stream(
     active.store(false, Ordering::Release);
     let _ = stream.shutdown(Shutdown::Both);
     let _ = input_thread.join();
-    release_stream_lease(&daemon, pane_id, client_id);
+    release_stream_lease(&daemon, pane_id, client_id, lease_generation);
     result
 }
 
 fn stream_terminal_updates(
     stream: &mut UnixStream,
     daemon: &Arc<Daemon>,
-    pane_id: PaneId,
-    client_id: u64,
+    lease: StreamLease,
     active: &AtomicBool,
     resync: &AtomicBool,
     input_error: &Mutex<Option<ApiError>>,
 ) -> io::Result<()> {
     let mut baseline = None;
+    let mut last_frame_sent = Instant::now();
     while active.load(Ordering::Acquire) {
-        if let Some(error) = lock(input_error).take() {
-            write_stream_message(stream, &TerminalServerMessage::Error(error))?;
-            break;
-        }
+        let operation_lock = terminal_operation_lock(daemon, lease.pane_id);
+        let operation = lock(&operation_lock);
         let runtime = {
             let state = lock(&daemon.state);
             if state.stopping
-                || !state.leases.get(&pane_id).is_some_and(|lease| {
-                    lease.client_id == client_id && lease.expires_at > Instant::now()
+                || !state.leases.get(&lease.pane_id).is_some_and(|current| {
+                    current.client_id == lease.client_id
+                        && current.generation == lease.generation
+                        && current.expires_at > Instant::now()
                 })
             {
                 None
             } else {
-                state.runtimes.get(&pane_id).cloned()
+                state.runtimes.get(&lease.pane_id).cloned()
             }
         };
         let Some(runtime) = runtime else {
@@ -859,51 +864,61 @@ fn stream_terminal_updates(
             )?;
             break;
         };
-        if runtime.exited() {
-            write_stream_message(stream, &TerminalServerMessage::Exited)?;
-            break;
-        }
+        let exited = runtime.exited();
         if resync.swap(false, Ordering::AcqRel) {
             baseline = None;
         }
-        let revision = runtime.revision();
-        let synchronized_output = runtime.synchronized_output_active();
-        // A new subscriber always receives one complete surface. Synchronized
-        // output suppresses only later intermediate revisions.
-        if baseline.is_none() || (!synchronized_output && baseline != Some(revision)) {
-            match runtime.frame_update(baseline) {
-                Ok(update) => {
-                    baseline = Some(update.revision());
-                    write_stream_message(stream, &TerminalServerMessage::Update(update))?;
-                }
-                Err(error) => {
-                    write_stream_message(
-                        stream,
-                        &TerminalServerMessage::Error(ApiError::new(
-                            "frame_failed",
-                            error.to_string(),
-                        )),
-                    )?;
-                    break;
-                }
+        let frame_due = baseline.is_none() || last_frame_sent.elapsed() >= PRESENTATION_CADENCE;
+        let sample = runtime.presentation_sample(baseline, frame_due);
+        for write in sample.clipboard_writes {
+            write_stream_message(stream, &TerminalServerMessage::ClipboardWrite(write))?;
+        }
+        if let Some(error) = lock(input_error).take() {
+            write_stream_message(stream, &TerminalServerMessage::Error(error))?;
+            break;
+        }
+        if exited {
+            write_stream_message(stream, &TerminalServerMessage::Exited)?;
+            break;
+        }
+        match sample.update {
+            Ok(Some(update)) => {
+                baseline = Some(update.revision());
+                write_stream_message(stream, &TerminalServerMessage::Update(update))?;
+                last_frame_sent = Instant::now();
+            }
+            Ok(None) => {}
+            Err(error) => {
+                write_stream_message(
+                    stream,
+                    &TerminalServerMessage::Error(ApiError::new("frame_failed", error.to_string())),
+                )?;
+                break;
             }
         }
+        drop(operation);
         let state = lock(&daemon.state);
-        // ^ [[wsx Architecture]] Recheck every wake predicate while
-        // holding the notifier mutex so output cannot be stranded for 250 ms.
+        // ^ [[wsx Architecture]] Recheck every wake predicate while holding the
+        // notifier mutex. Frames wait only for the bounded presentation cadence;
+        // effects bypass it in the atomically sampled FIFO above.
         if !active.load(Ordering::Acquire) || resync.load(Ordering::Acquire) {
             continue;
         }
-        if synchronized_output {
-            if revision != runtime.revision() {
-                continue;
-            }
-        } else if baseline != Some(runtime.revision()) {
+        let current_revision = runtime.revision();
+        if sample.synchronized_output && sample.revision != current_revision {
+            continue;
+        }
+        let wait = if !sample.synchronized_output && baseline != Some(current_revision) {
+            PRESENTATION_CADENCE.saturating_sub(last_frame_sent.elapsed())
+        } else {
+            Duration::from_millis(250)
+        };
+        if wait.is_zero() {
             continue;
         }
         let _ = daemon
             .changed
-            .wait_timeout(state, Duration::from_millis(250))
+            .wait_timeout(state, wait)
             .unwrap_or_else(|poisoned| poisoned.into_inner());
     }
     Ok(())
@@ -923,15 +938,116 @@ fn write_stream_message(
     stream.write_all(&bytes)
 }
 
-fn release_stream_lease(daemon: &Daemon, pane_id: PaneId, client_id: u64) {
+fn release_stream_lease(daemon: &Daemon, pane_id: PaneId, client_id: u64, lease_generation: u64) {
+    let operation_lock = terminal_operation_lock(daemon, pane_id);
+    let _operation = lock(&operation_lock);
     let mut state = lock(&daemon.state);
     if state
         .leases
         .get(&pane_id)
-        .is_some_and(|lease| lease.client_id == client_id)
+        .is_some_and(|lease| lease.client_id == client_id && lease.generation == lease_generation)
     {
         state.leases.remove(&pane_id);
     }
+}
+
+fn with_stream_runtime<T>(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    client_id: u64,
+    lease_generation: u64,
+    operation: impl FnOnce(&TerminalRuntime) -> Result<T, ApiError>,
+) -> Result<T, ApiError> {
+    let operation_lock = terminal_operation_lock(daemon, pane_id);
+    let _operation = lock(&operation_lock);
+    let (runtime, _) = leased_runtime_for_stream(daemon, pane_id, client_id, lease_generation)?;
+    operation(&runtime)
+}
+
+fn handle_terminal_stream_input(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    client_id: u64,
+    lease_generation: u64,
+    message: TerminalClientMessage,
+) -> Result<(), ApiError> {
+    match message {
+        TerminalClientMessage::Input(bytes) => {
+            if bytes.len() > MAX_INPUT_BYTES {
+                return Err(api("invalid_input", "input exceeds limit"));
+            }
+            with_stream_runtime(daemon, pane_id, client_id, lease_generation, |runtime| {
+                runtime.write(&bytes).map_err(terminal_api)
+            })
+        }
+        TerminalClientMessage::Key(key) => {
+            with_stream_runtime(daemon, pane_id, client_id, lease_generation, |runtime| {
+                runtime.key(&key).map_err(terminal_api)
+            })
+        }
+        TerminalClientMessage::Paste(text) => {
+            if text.len() > MAX_INPUT_BYTES {
+                return Err(api("invalid_input", "paste exceeds limit"));
+            }
+            with_stream_runtime(daemon, pane_id, client_id, lease_generation, |runtime| {
+                runtime.paste(&text).map_err(terminal_api)
+            })
+        }
+        TerminalClientMessage::Mouse(mouse) => {
+            with_stream_runtime(daemon, pane_id, client_id, lease_generation, |runtime| {
+                runtime.mouse(&mouse).map_err(terminal_api)
+            })
+        }
+        TerminalClientMessage::Resize { rows, cols } => {
+            resize_terminal_for_stream(daemon, pane_id, client_id, lease_generation, rows, cols)?;
+            Ok(())
+        }
+        TerminalClientMessage::Heartbeat => {
+            let mut state = lock(&daemon.state);
+            refresh_lease_with_access(
+                &mut state,
+                pane_id,
+                LeaseAccess::Stream {
+                    client_id,
+                    generation: lease_generation,
+                },
+            )
+        }
+        TerminalClientMessage::Resync | TerminalClientMessage::Detach => Err(api(
+            "invalid_stream_message",
+            "stream control message reached the input handler",
+        )),
+    }
+}
+
+fn acquire_terminal_lease(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    client_id: u64,
+    takeover: bool,
+) -> Result<(u64, u64), ApiError> {
+    let operation_lock = terminal_operation_lock(daemon, pane_id);
+    let _operation = lock(&operation_lock);
+    let mut state = lock(&daemon.state);
+    require_runtime(&state, pane_id)?;
+    if state
+        .leases
+        .get(&pane_id)
+        .is_some_and(|lease| lease.expires_at > Instant::now() && lease.client_id != client_id)
+        && !takeover
+    {
+        return Err(api("terminal_busy", "pane has another writable controller"));
+    }
+    let generation = NEXT_LEASE_GENERATION.fetch_add(1, Ordering::Relaxed);
+    state.leases.insert(
+        pane_id,
+        Lease {
+            client_id,
+            generation,
+            expires_at: Instant::now() + LEASE_TTL,
+        },
+    );
+    Ok((state.revision, generation))
 }
 
 fn handle(daemon: &Arc<Daemon>, request: Request) -> Response {
@@ -962,10 +1078,6 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             timeout_ms,
         } => poll(daemon, after_revision, timeout_ms),
         Request::SynchronizeProjects { projects } => synchronize_projects(daemon, projects),
-        Request::ProjectRecentClear {
-            project_id,
-            expected_revision,
-        } => clear_project_recent(daemon, project_id, expected_revision),
         Request::SessionCreate {
             worktree_id,
             label,
@@ -1039,23 +1151,10 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             pane_id,
             client_id,
             takeover,
-        } => mutate_runtime(daemon, |state| {
-            require_runtime(state, pane_id)?;
-            if state.leases.get(&pane_id).is_some_and(|lease| {
-                lease.expires_at > Instant::now() && lease.client_id != client_id
-            }) && !takeover
-            {
-                return Err(api("terminal_busy", "pane has another writable controller"));
-            }
-            state.leases.insert(
-                pane_id,
-                Lease {
-                    client_id,
-                    expires_at: Instant::now() + LEASE_TTL,
-                },
-            );
-            Ok(())
-        }),
+        } => {
+            let (revision, _) = acquire_terminal_lease(daemon, pane_id, client_id, takeover)?;
+            Ok(Response::Ack { revision })
+        }
         Request::TerminalRelease { pane_id, client_id } => mutate_runtime(daemon, |state| {
             require_lease(state, pane_id, client_id)?;
             state.leases.remove(&pane_id);
@@ -1566,7 +1665,7 @@ fn close_session(daemon: &Arc<Daemon>, id: SessionId, expected: u64) -> Result<R
             runtimes.push(runtime);
         }
         state.leases.remove(pane_id);
-        state.resize_locks.remove(pane_id);
+        state.terminal_operation_locks.remove(pane_id);
         state.listening_ports.remove(pane_id);
     }
     state.persisted.panes.retain(|pane| pane.session_id != id);
@@ -1609,7 +1708,7 @@ fn close_pane(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Respons
     }
     let runtime = state.runtimes.remove(&id);
     state.leases.remove(&id);
-    state.resize_locks.remove(&id);
+    state.terminal_operation_locks.remove(&id);
     state.listening_ports.remove(&id);
     state.persisted.panes.retain(|pane| pane.id != id);
     let revision = bump(daemon, &mut state, "pane.closed", id.0);
@@ -1636,18 +1735,39 @@ fn resize_terminal(
     rows: u16,
     cols: u16,
 ) -> Result<Response, ApiError> {
-    let resize_lock = {
-        let mut state = lock(&daemon.state);
-        refresh_lease(&mut state, pane_id, client_id)?;
-        Arc::clone(
-            state
-                .resize_locks
-                .entry(pane_id)
-                .or_insert_with(|| Arc::new(Mutex::new(()))),
-        )
-    };
-    let _resize = lock(&resize_lock);
-    let (runtime, _) = leased_runtime(daemon, pane_id, client_id)?;
+    resize_terminal_with_access(daemon, pane_id, LeaseAccess::Client(client_id), rows, cols)
+}
+
+fn resize_terminal_for_stream(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    client_id: u64,
+    generation: u64,
+    rows: u16,
+    cols: u16,
+) -> Result<Response, ApiError> {
+    resize_terminal_with_access(
+        daemon,
+        pane_id,
+        LeaseAccess::Stream {
+            client_id,
+            generation,
+        },
+        rows,
+        cols,
+    )
+}
+
+fn resize_terminal_with_access(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    access: LeaseAccess,
+    rows: u16,
+    cols: u16,
+) -> Result<Response, ApiError> {
+    let operation_lock = terminal_operation_lock(daemon, pane_id);
+    let _operation = lock(&operation_lock);
+    let (runtime, _) = leased_runtime_with_access(daemon, pane_id, access)?;
     runtime.resize(rows, cols).map_err(terminal_api)?;
     let mut state = lock(&daemon.state);
     if let Some(recipe) = state
@@ -1736,29 +1856,6 @@ fn touch_terminal_project(daemon: &Arc<Daemon>, pane_id: PaneId) -> Result<(), A
     state.persisted = persisted;
     bump(daemon, &mut state, "project.terminal_entered", pane_id.0);
     Ok(())
-}
-
-fn clear_project_recent(
-    daemon: &Arc<Daemon>,
-    project_id: ProjectId,
-    expected_revision: u64,
-) -> Result<Response, ApiError> {
-    let mut state = lock(&daemon.state);
-    let mut persisted = state.persisted.clone();
-    let project = persisted
-        .projects
-        .iter_mut()
-        .find(|project| project.id == project_id)
-        .ok_or_else(|| api("not_found", "project not found"))?;
-    expect_revision(project.revision, expected_revision)?;
-    let revision = state.revision.saturating_add(1);
-    project.last_agent_active_unix_ms = None;
-    project.last_terminal_active_unix_ms = None;
-    project.revision = revision;
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
-    let revision = bump(daemon, &mut state, "project.recent_cleared", project_id.0);
-    Ok(Response::Ack { revision })
 }
 
 fn agent_report(
@@ -2127,13 +2224,47 @@ fn spawn_plugin_dispatcher(daemon: &Arc<Daemon>) -> io::Result<thread::JoinHandl
         })
 }
 
+fn terminal_operation_lock(daemon: &Daemon, pane_id: PaneId) -> Arc<Mutex<()>> {
+    let mut state = lock(&daemon.state);
+    Arc::clone(
+        state
+            .terminal_operation_locks
+            .entry(pane_id)
+            .or_insert_with(|| Arc::new(Mutex::new(()))),
+    )
+}
+
 fn leased_runtime(
     daemon: &Daemon,
     pane_id: PaneId,
     client_id: u64,
 ) -> Result<(Arc<TerminalRuntime>, u64), ApiError> {
+    leased_runtime_with_access(daemon, pane_id, LeaseAccess::Client(client_id))
+}
+
+fn leased_runtime_for_stream(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    client_id: u64,
+    generation: u64,
+) -> Result<(Arc<TerminalRuntime>, u64), ApiError> {
+    leased_runtime_with_access(
+        daemon,
+        pane_id,
+        LeaseAccess::Stream {
+            client_id,
+            generation,
+        },
+    )
+}
+
+fn leased_runtime_with_access(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    access: LeaseAccess,
+) -> Result<(Arc<TerminalRuntime>, u64), ApiError> {
     let mut state = lock(&daemon.state);
-    refresh_lease(&mut state, pane_id, client_id)?;
+    refresh_lease_with_access(&mut state, pane_id, access)?;
     Ok((
         Arc::clone(require_runtime(&state, pane_id)?),
         state.revision,
@@ -2146,17 +2277,44 @@ fn require_runtime(state: &State, pane_id: PaneId) -> Result<&Arc<TerminalRuntim
         .ok_or_else(|| api("terminal_unavailable", "terminal process is not running"))
 }
 fn require_lease(state: &State, pane_id: PaneId, client_id: u64) -> Result<(), ApiError> {
-    match state.leases.get(&pane_id) {
-        Some(lease) if lease.client_id == client_id && lease.expires_at > Instant::now() => Ok(()),
-        _ => Err(api(
+    require_lease_with_access(state, pane_id, LeaseAccess::Client(client_id))
+}
+
+fn require_lease_with_access(
+    state: &State,
+    pane_id: PaneId,
+    access: LeaseAccess,
+) -> Result<(), ApiError> {
+    let owned = state.leases.get(&pane_id).is_some_and(|lease| {
+        let identity_matches = match access {
+            LeaseAccess::Client(client_id) => lease.client_id == client_id,
+            LeaseAccess::Stream {
+                client_id,
+                generation,
+            } => lease.client_id == client_id && lease.generation == generation,
+        };
+        identity_matches && lease.expires_at > Instant::now()
+    });
+    if owned {
+        Ok(())
+    } else {
+        Err(api(
             "lease_required",
             "client does not own an active terminal lease",
-        )),
+        ))
     }
 }
 
 fn refresh_lease(state: &mut State, pane_id: PaneId, client_id: u64) -> Result<(), ApiError> {
-    require_lease(state, pane_id, client_id)?;
+    refresh_lease_with_access(state, pane_id, LeaseAccess::Client(client_id))
+}
+
+fn refresh_lease_with_access(
+    state: &mut State,
+    pane_id: PaneId,
+    access: LeaseAccess,
+) -> Result<(), ApiError> {
+    require_lease_with_access(state, pane_id, access)?;
     if let Some(lease) = state.leases.get_mut(&pane_id) {
         lease.expires_at = Instant::now() + LEASE_TTL;
     }
@@ -2517,7 +2675,7 @@ mod tests {
                 persisted,
                 revision: 7,
                 runtimes: HashMap::new(),
-                resize_locks: HashMap::new(),
+                terminal_operation_locks: HashMap::new(),
                 listening_ports: HashMap::new(),
                 leases: HashMap::new(),
                 events: VecDeque::new(),
@@ -2532,6 +2690,96 @@ mod tests {
             state_path: path.clone(),
         });
         (daemon, path)
+    }
+
+    #[test]
+    fn stale_stream_generation_cannot_use_or_release_reacquired_same_client_lease() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        {
+            let mut state = lock(&daemon.state);
+            state.leases.insert(
+                pane_id,
+                Lease {
+                    client_id: 9,
+                    generation: 2,
+                    expires_at: Instant::now() + LEASE_TTL,
+                },
+            );
+            let stale = LeaseAccess::Stream {
+                client_id: 9,
+                generation: 1,
+            };
+            assert_eq!(
+                require_lease_with_access(&state, pane_id, stale)
+                    .unwrap_err()
+                    .code,
+                "lease_required"
+            );
+        }
+
+        release_stream_lease(&daemon, pane_id, 9, 1);
+        assert!(lock(&daemon.state).leases.contains_key(&pane_id));
+        release_stream_lease(&daemon, pane_id, 9, 2);
+        assert!(!lock(&daemon.state).leases.contains_key(&pane_id));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn terminal_takeover_waits_for_the_inflight_generation_operation() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let runtime = Arc::new(
+            spawn_runtime(
+                &daemon,
+                pane_id,
+                TerminalId(5),
+                Path::new("/"),
+                &LaunchRecipe {
+                    command: vec!["/bin/cat".into()],
+                    initial_input: None,
+                    rows: 3,
+                    cols: 4,
+                },
+            )
+            .unwrap(),
+        );
+        lock(&daemon.state)
+            .runtimes
+            .insert(pane_id, Arc::clone(&runtime));
+        let (_, generation) = acquire_terminal_lease(&daemon, pane_id, 9, true).unwrap();
+        let operation_lock = terminal_operation_lock(&daemon, pane_id);
+        let operation = lock(&operation_lock);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+        let takeover_daemon = Arc::clone(&daemon);
+        let takeover = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            completed_tx
+                .send(acquire_terminal_lease(&takeover_daemon, pane_id, 9, true))
+                .unwrap();
+        });
+
+        started_rx.recv().unwrap();
+        assert!(completed_rx
+            .recv_timeout(Duration::from_millis(50))
+            .is_err());
+        drop(operation);
+        let (_, takeover_generation) = completed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        takeover.join().unwrap();
+
+        assert_ne!(generation, takeover_generation);
+        assert_eq!(
+            with_stream_runtime(&daemon, pane_id, 9, generation, |_| Ok(()))
+                .unwrap_err()
+                .code,
+            "lease_required"
+        );
+        runtime.terminate();
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -2699,67 +2947,6 @@ mod tests {
             first_agent_id
         );
         drop(state);
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn recent_clear_removes_both_sources_and_later_terminal_entry_readds_project() {
-        let mut persisted = agent_test_persisted();
-        persisted.projects[0].last_agent_active_unix_ms = Some(10);
-        persisted.projects[0].last_terminal_active_unix_ms = Some(20);
-        let (daemon, path) = agent_test_daemon(persisted);
-
-        clear_project_recent(&daemon, ProjectId(1), 7).unwrap();
-        {
-            let state = lock(&daemon.state);
-            assert_eq!(state.persisted.projects[0].last_agent_active_unix_ms, None);
-            assert_eq!(
-                state.persisted.projects[0].last_terminal_active_unix_ms,
-                None
-            );
-            assert_eq!(state.persisted.projects[0].revision, 8);
-        }
-
-        touch_terminal_project(&daemon, PaneId(4)).unwrap();
-        let state = lock(&daemon.state);
-        assert!(state.persisted.projects[0]
-            .last_terminal_active_unix_ms
-            .is_some());
-        assert_eq!(state.persisted.projects[0].last_agent_active_unix_ms, None);
-        drop(state);
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn recent_clear_save_failure_keeps_live_state_unchanged() {
-        let mut persisted = agent_test_persisted();
-        persisted.projects[0].last_agent_active_unix_ms = Some(10);
-        persisted.projects[0].last_terminal_active_unix_ms = Some(20);
-        let (daemon, path) = agent_test_daemon(persisted);
-        fs::create_dir(&path).unwrap();
-        let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
-
-        assert!(clear_project_recent(&daemon, ProjectId(1), 7).is_err());
-        let state = lock(&daemon.state);
-        assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
-        assert_eq!(state.revision, 7);
-        assert!(state.events.is_empty());
-        drop(state);
-        fs::remove_dir(&path).unwrap();
-    }
-
-    #[test]
-    fn recent_clear_rejects_stale_revision_without_mutation() {
-        let mut persisted = agent_test_persisted();
-        persisted.projects[0].last_agent_active_unix_ms = Some(10);
-        let (daemon, path) = agent_test_daemon(persisted);
-
-        let error = clear_project_recent(&daemon, ProjectId(1), 6).unwrap_err();
-        assert_eq!(error.code, "revision_conflict");
-        assert_eq!(
-            lock(&daemon.state).persisted.projects[0].last_agent_active_unix_ms,
-            Some(10)
-        );
         let _ = fs::remove_file(path);
     }
 

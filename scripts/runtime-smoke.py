@@ -8,8 +8,10 @@ import socket
 import subprocess
 import sys
 import time
+import weakref
 
 ROOT = Path(__file__).resolve().parents[1]
+PROTOCOL = 8
 WORK = ROOT / ".work" / "runtime-smoke"
 if WORK.exists():
     shutil.rmtree(WORK)
@@ -18,6 +20,13 @@ STATE = WORK / "state"
 PROJECT = WORK / "project"
 for path in (HOME, STATE, PROJECT):
     path.mkdir(parents=True, exist_ok=True)
+CONFIG_DIR = (
+    HOME / "Library" / "Application Support" / "wsx"
+    if sys.platform == "darwin"
+    else WORK / "config" / "wsx"
+)
+CONFIG_DIR.mkdir(parents=True, mode=0o700)
+(CONFIG_DIR / "config-v2.toml").write_text("resume_agents_on_restore = false\n")
 PLUGIN_DIR = WORK / "config" / "wsx" / "plugins"
 PLUGIN_DIR.mkdir(parents=True, mode=0o700)
 PLUGIN_MARKER = WORK / "plugin-events.jsonl"
@@ -51,16 +60,21 @@ DAEMON = Path(os.environ.get("WSX_SMOKE_DAEMON", ROOT / "target" / "debug" / "ws
 WSX = Path(os.environ.get("WSX_SMOKE_WSX", ROOT / "target" / "debug" / "wsx"))
 
 
+RECV_BUFFERS = weakref.WeakKeyDictionary()
+
+
 def recv_line(client):
-    data = b""
-    while not data.endswith(b"\n"):
+    data = RECV_BUFFERS.get(client, b"")
+    while b"\n" not in data:
         chunk = client.recv(65536)
         if not chunk:
             raise RuntimeError("wsxd closed response")
         data += chunk
         if len(data) > 32 * 1024 * 1024:
             raise RuntimeError("oversized response")
-    return json.loads(data)
+    line, remainder = data.split(b"\n", 1)
+    RECV_BUFFERS[client] = remainder
+    return json.loads(line)
 
 
 def raw_call(payload):
@@ -78,7 +92,7 @@ def call(method, params=None):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(5)
         client.connect(str(SOCKET))
-        client.sendall(json.dumps({"method": "hello", "params": {"protocol": 6}}).encode() + b"\n")
+        client.sendall(json.dumps({"method": "hello", "params": {"protocol": PROTOCOL}}).encode() + b"\n")
         hello = recv_line(client)
         assert hello["type"] == "hello", hello
         client.sendall(json.dumps(request).encode() + b"\n")
@@ -141,7 +155,7 @@ def shutdown_from_incompatible_client(process):
         client.connect(str(SOCKET))
         client.sendall(json.dumps({"method": "hello", "params": {"protocol": 999}}).encode() + b"\n")
         hello = recv_line(client)
-        assert hello["type"] == "hello" and hello["data"]["protocol"] == 6, hello
+        assert hello["type"] == "hello" and hello["data"]["protocol"] == PROTOCOL, hello
         client.sendall(json.dumps({"method": "shutdown"}).encode() + b"\n")
         response = recv_line(client)
         assert response["type"] == "ack", response
@@ -164,7 +178,7 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as incompatible:
     incompatible.connect(str(SOCKET))
     incompatible.sendall(json.dumps({"method": "hello", "params": {"protocol": 999}}).encode() + b"\n")
     advertised = recv_line(incompatible)
-    assert advertised["type"] == "hello" and advertised["data"]["protocol"] == 6, advertised
+    assert advertised["type"] == "hello" and advertised["data"]["protocol"] == PROTOCOL, advertised
     incompatible.sendall(json.dumps({"method": "snapshot"}).encode() + b"\n")
     rejected = recv_line(incompatible)
     assert rejected["type"] == "error" and rejected["data"]["code"] == "protocol_mismatch", rejected
@@ -294,14 +308,7 @@ assert reported_pane["agent"]["provider"] == "codex"
 assert reported_pane["agent"]["state"] == "working"
 project = next(item for item in reported_snapshot["projects"] if item["id"] == project_id)
 assert isinstance(project["last_agent_active_unix_ms"], int), project
-cleared = call("project_recent_clear", {
-    "project_id": project_id,
-    "expected_revision": project["revision"],
-})
-assert cleared["type"] == "ack", cleared
-project = next(item for item in call("snapshot")["data"]["projects"] if item["id"] == project_id)
-assert project["last_agent_active_unix_ms"] is None, project
-assert project["last_terminal_active_unix_ms"] is None, project
+assert isinstance(project["last_terminal_active_unix_ms"], int), project
 session = next(item for item in call("snapshot")["data"]["sessions"] if item["id"] == session_id)
 conflict = call("session_rename", {
     "session_id": session_id,
@@ -331,12 +338,12 @@ expired = call("terminal_input", {"pane_id": pane_id, "client_id": 20, "bytes": 
 assert expired["type"] == "error" and expired["data"]["code"] == "lease_required", expired
 assert call("terminal_release", {"pane_id": pane_id, "client_id": 21})["type"] == "ack"
 project = next(item for item in call("snapshot")["data"]["projects"] if item["id"] == project_id)
-assert project["last_terminal_active_unix_ms"] is None, project
+assert isinstance(project["last_terminal_active_unix_ms"], int), project
 
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as terminal:
     terminal.settimeout(2)
     terminal.connect(str(SOCKET))
-    terminal.sendall(json.dumps({"method": "hello", "params": {"protocol": 6}}).encode() + b"\n")
+    terminal.sendall(json.dumps({"method": "hello", "params": {"protocol": PROTOCOL}}).encode() + b"\n")
     assert recv_line(terminal)["type"] == "hello"
     terminal.sendall(json.dumps({
         "method": "terminal_subscribe",
@@ -351,7 +358,7 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as terminal:
     assert recv_line(terminal)["type"] == "ack"
     project = next(item for item in call("snapshot")["data"]["projects"] if item["id"] == project_id)
     assert isinstance(project["last_terminal_active_unix_ms"], int), project
-    assert project["last_agent_active_unix_ms"] is None, project
+    assert isinstance(project["last_agent_active_unix_ms"], int), project
     initial = recv_line(terminal)
     assert initial["type"] == "update" and initial["data"]["kind"] == "full", initial
     frame = initial["data"]["data"]
@@ -378,7 +385,67 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as terminal:
             break
     assert "stream-input" in stream_text, stream_text
     assert time.monotonic() - started < 1
+    terminal.sendall(json.dumps({
+        "type": "input",
+        "data": list(b"\x1b]52;c;Zmlyc3Q=\x07\x1b]52;c;c2Vjb25k\x07\n"),
+    }).encode() + b"\n")
+    deadline = time.monotonic() + 2
+    clipboard_writes = []
+    while time.monotonic() < deadline and len(clipboard_writes) < 2:
+        message = recv_line(terminal)
+        if message["type"] == "clipboard_write":
+            clipboard_writes.append(bytes(message["data"]))
+            continue
+        assert message["type"] == "update", message
+    assert clipboard_writes == [b"first", b"second"], clipboard_writes
     terminal.sendall(json.dumps({"type": "detach"}).encode() + b"\n")
+
+exit_effect = call("session_create", {
+    "worktree_id": worktree_id,
+    "label": "exit-effect",
+    "command": ["/bin/sh", "-c", "sleep 0.2; printf '\\033]52;c;ZXhpdA==\\007'"],
+    "rows": 2,
+    "cols": 12,
+})
+assert exit_effect["type"] == "created", exit_effect
+exit_session_id = exit_effect["data"]["id"]
+exit_snapshot = call("snapshot")["data"]
+exit_session = next(item for item in exit_snapshot["sessions"] if item["id"] == exit_session_id)
+exit_pane_id = exit_session["focused_pane"]
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as terminal:
+    terminal.settimeout(2)
+    terminal.connect(str(SOCKET))
+    terminal.sendall(json.dumps({"method": "hello", "params": {"protocol": PROTOCOL}}).encode() + b"\n")
+    assert recv_line(terminal)["type"] == "hello"
+    terminal.sendall(json.dumps({
+        "method": "terminal_subscribe",
+        "params": {
+            "pane_id": exit_pane_id,
+            "client_id": 31,
+            "takeover": False,
+            "rows": 2,
+            "cols": 12,
+        },
+    }).encode() + b"\n")
+    assert recv_line(terminal)["type"] == "ack"
+    ordered_effects = []
+    while "exited" not in ordered_effects:
+        message = recv_line(terminal)
+        if message["type"] == "clipboard_write":
+            assert bytes(message["data"]) == b"exit", message
+            ordered_effects.append("clipboard_write")
+        elif message["type"] == "exited":
+            ordered_effects.append("exited")
+        else:
+            assert message["type"] == "update", message
+    assert ordered_effects == ["clipboard_write", "exited"], ordered_effects
+exit_session = next(
+    item for item in call("snapshot")["data"]["sessions"] if item["id"] == exit_session_id
+)
+assert call("session_close", {
+    "session_id": exit_session_id,
+    "expected_revision": exit_session["revision"],
+})["type"] == "ack"
 
 deadline = time.monotonic() + 3
 text = ""
@@ -535,4 +602,9 @@ after = subprocess.run(
 assert json.loads(after.stdout)["running"] is True
 assert call("shutdown")["type"] == "ack"
 wait_socket_stopped()
+subprocess.run(
+    [sys.executable, str(ROOT / "scripts" / "terminal-latency.py")],
+    cwd=ROOT,
+    check=True,
+)
 print("wsxd runtime smoke: PASS")

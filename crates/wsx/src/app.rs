@@ -22,9 +22,11 @@ use crate::{
     ui::{self, input::InputState, routine_editor::RoutineForm},
 };
 use wsx_core::{
-    config::global::{project_matches_group, GlobalConfig, GroupKey},
+    config::global::{project_has_activity_within, project_matches_group, GlobalConfig, GroupKey},
     git::{info as git_info, worktree as git_worktree},
-    model::workspace::{flatten_tree_filtered, FlatEntry, GitInfo, Selection, WorkspaceState},
+    model::workspace::{
+        flatten_tree_filtered, FlatEntry, GitInfo, Project, Selection, WorkspaceState,
+    },
     ops, runtime,
 };
 
@@ -37,6 +39,10 @@ type RuntimeRefresh = Result<(runtime::Snapshot, WorktreeSnapshot)>;
 enum RuntimeResult {
     FullRefresh(RuntimeRefresh),
     SessionRefresh(Result<runtime::Snapshot>),
+    ResumeRefresh {
+        generation: u64,
+        result: Result<runtime::Snapshot>,
+    },
     Frame(Result<(u64, runtime::TerminalFrame)>),
 }
 
@@ -46,6 +52,13 @@ struct ActiveTerminalStream {
     terminal_id: runtime::TerminalId,
     generation: u64,
     stream: runtime::TerminalStream,
+}
+
+struct PendingTerminalResume {
+    pane_id: runtime::PaneId,
+    terminal_id: runtime::TerminalId,
+    generation: u64,
+    snapshot_ready: bool,
 }
 
 // ── Git concurrency limiter ───────────────────────────────────────────────────
@@ -104,12 +117,127 @@ impl Timer {
             false
         }
     }
+
+    fn reset(&mut self) {
+        self.last = Instant::now();
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LifecycleClockSample {
+    active: Duration,
+    continuous: Duration,
+}
+
+struct SuspendDetector {
+    previous: Option<LifecycleClockSample>,
+}
+
+impl SuspendDetector {
+    fn new() -> Self {
+        Self {
+            previous: lifecycle_clock_sample(),
+        }
+    }
+
+    fn resumed(&mut self) -> bool {
+        lifecycle_clock_sample().is_some_and(|sample| self.observe(sample))
+    }
+
+    fn observe(&mut self, sample: LifecycleClockSample) -> bool {
+        let previous = self.previous.replace(sample);
+        let Some(previous) = previous else {
+            return false;
+        };
+        let Some(active_elapsed) = sample.active.checked_sub(previous.active) else {
+            return false;
+        };
+        let Some(continuous_elapsed) = sample.continuous.checked_sub(previous.continuous) else {
+            return false;
+        };
+        continuous_elapsed.saturating_sub(active_elapsed) >= Duration::from_millis(250)
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn clock_duration(clock_id: libc::clockid_t) -> Option<Duration> {
+    let mut value = std::mem::MaybeUninit::<libc::timespec>::uninit();
+    // SAFETY: clock_gettime initializes the supplied timespec on success.
+    if unsafe { libc::clock_gettime(clock_id, value.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: the successful call initialized value.
+    let value = unsafe { value.assume_init() };
+    let seconds = u64::try_from(value.tv_sec).ok()?;
+    let nanos = u32::try_from(value.tv_nsec).ok()?;
+    (nanos < 1_000_000_000).then(|| Duration::new(seconds, nanos))
+}
+
+#[cfg(target_os = "linux")]
+fn lifecycle_clock_sample() -> Option<LifecycleClockSample> {
+    // ^ https://man7.org/linux/man-pages/man2/clock_gettime.2.html
+    // CLOCK_MONOTONIC excludes suspend while CLOCK_BOOTTIME includes it.
+    Some(LifecycleClockSample {
+        active: clock_duration(libc::CLOCK_MONOTONIC)?,
+        continuous: clock_duration(libc::CLOCK_BOOTTIME)?,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn lifecycle_clock_sample() -> Option<LifecycleClockSample> {
+    // ^ https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/clock_gettime.3.html
+    // UPTIME_RAW excludes sleep while MONOTONIC_RAW uses continuous time.
+    Some(LifecycleClockSample {
+        active: clock_duration(libc::CLOCK_UPTIME_RAW)?,
+        continuous: clock_duration(libc::CLOCK_MONOTONIC_RAW)?,
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn lifecycle_clock_sample() -> Option<LifecycleClockSample> {
+    None
 }
 
 const TICK_MS: u64 = 100;
 const TERMINAL_TICK_MS: u64 = 8;
 const FAST_INTERVAL_MS: u64 = 500;
 const SLOW_INTERVAL_MS: u64 = 30_000;
+const WORKSPACE_SCROLL_LINES: isize = 3;
+
+fn unix_time_millis() -> u64 {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    u64::try_from(millis).unwrap_or(u64::MAX)
+}
+
+fn project_is_stale(
+    project: &Project,
+    freshened_projects: &HashSet<PathBuf>,
+    now_unix_ms: u64,
+    window_ms: u64,
+) -> bool {
+    !freshened_projects.contains(&project.path)
+        && !project_has_activity_within(
+            project.last_agent_active_unix_ms,
+            project.last_terminal_active_unix_ms,
+            now_unix_ms,
+            window_ms,
+        )
+}
+
+fn action_needs_immediate_redraw(action: &Action) -> bool {
+    !matches!(
+        action,
+        Action::TerminalKey(_)
+            | Action::TerminalKeys(_)
+            | Action::TerminalPaste(_)
+            | Action::TerminalPrefixedPaste(_, _)
+            | Action::TerminalMouse(_)
+            | Action::TerminalPrefixedMouse(_, _)
+    )
+}
 
 fn runtime_key_event(key: crossterm::event::KeyEvent) -> Option<runtime::KeyEvent> {
     use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
@@ -430,8 +558,8 @@ fn edit_file(terminal: &mut Tui, path: &Path) -> Result<()> {
 
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-fn startup_active_group(_cached: Option<GroupKey>) -> GroupKey {
-    GroupKey::Recent
+fn startup_active_group(_cached: Option<GroupKey>) -> Option<GroupKey> {
+    None
 }
 
 fn integration_prompt_label(targets: &[wsx_core::integration::IntegrationTarget]) -> String {
@@ -503,6 +631,7 @@ pub struct App {
     pub tree_selected: usize,
     pub tree_scroll: usize,
     pub tree_visible_height: usize,
+    pub tree_scroll_manual: bool,
     pub tree_area: Rect,
     pub preview_area: Rect,
     pub terminal_area: Rect,
@@ -512,6 +641,7 @@ pub struct App {
     pub group_header_scroll: usize,
     pub group_header_area: Rect,
     visible_projects: HashSet<usize>,
+    freshened_projects: HashSet<PathBuf>,
     pub notice: Option<Notice>,
     notice_expires: Option<Instant>,
     pub jobs: Vec<BgJob>,
@@ -565,6 +695,8 @@ pub struct App {
     terminal_surfaces: TerminalSurfaces,
     terminal_stream: Option<ActiveTerminalStream>,
     terminal_stream_generation: u64,
+    pending_terminal_resume: Option<PendingTerminalResume>,
+    suspend_detector: SuspendDetector,
     terminal_escape_chord: EscapeSequence,
     update_rx: mpsc::Receiver<String>,
     pub update_available: Option<String>,
@@ -604,7 +736,7 @@ impl App {
             cached_muted,
             integration_prompt_version,
         ) = wsx_core::cache::apply_cache(&mut workspace)?;
-        let active_group = Some(startup_active_group(cached_active_group));
+        let active_group = startup_active_group(cached_active_group);
         let visible_projects = compute_visible_projects(&config, &workspace, active_group.as_ref());
         let group_header_scroll = active_group
             .as_ref()
@@ -655,6 +787,7 @@ impl App {
             tree_selected,
             tree_scroll: 0,
             tree_visible_height: 20,
+            tree_scroll_manual: false,
             tree_area: Rect::default(),
             preview_area: Rect::default(),
             terminal_area: Rect::default(),
@@ -664,6 +797,7 @@ impl App {
             group_header_scroll,
             group_header_area: Rect::default(),
             visible_projects,
+            freshened_projects: HashSet::new(),
             notice: initial_notice.clone().map(|title| Notice {
                 level: NoticeLevel::Warning,
                 title,
@@ -720,6 +854,8 @@ impl App {
             terminal_surfaces: TerminalSurfaces::default(),
             terminal_stream: None,
             terminal_stream_generation: 0,
+            pending_terminal_resume: None,
+            suspend_detector: SuspendDetector::new(),
             terminal_escape_chord,
             update_rx,
             update_available: None,
@@ -908,6 +1044,39 @@ impl App {
         self.clamp_selected();
     }
 
+    // ^ [[wsx UI Patterns]] Staleness can only collapse an expanded project.
+    // Explicit expansion clears stale presentation for this process; activity never opens a row.
+    fn collapse_stale_projects(&mut self) {
+        let Some(window_ms) = self.config.auto_collapse_window_ms() else {
+            return;
+        };
+        let now_unix_ms = unix_time_millis();
+        for project in &mut self.workspace.projects {
+            if !project.expanded {
+                continue;
+            }
+            if project_is_stale(project, &self.freshened_projects, now_unix_ms, window_ms) {
+                project.expanded = false;
+            }
+        }
+    }
+
+    pub(crate) fn stale_project_indices(&self) -> HashSet<usize> {
+        let Some(window_ms) = self.config.auto_collapse_window_ms() else {
+            return HashSet::new();
+        };
+        let now_unix_ms = unix_time_millis();
+        self.workspace
+            .projects
+            .iter()
+            .enumerate()
+            .filter_map(|(index, project)| {
+                project_is_stale(project, &self.freshened_projects, now_unix_ms, window_ms)
+                    .then_some(index)
+            })
+            .collect()
+    }
+
     fn rebuild_flat(&mut self) {
         self.refresh_visible_projects();
         self.flat_dirty = true;
@@ -990,8 +1159,12 @@ impl App {
         // Results arrive via drain_async_results() in the main loop without blocking.
         self.spawn_git_local_for_all();
         loop {
+            if self.suspend_detector.resumed() {
+                self.begin_resume_boundary();
+            }
             // Drain async results every iteration so they're never blocked by UI events.
             self.drain_async_results();
+            self.reconnect_terminal_after_resume(terminal);
 
             if self.needs_redraw {
                 self.ensure_flat();
@@ -1044,7 +1217,7 @@ impl App {
                 if action == Action::Quit && matches!(self.mode, Mode::Workspace) {
                     break;
                 }
-                if action != Action::None {
+                if action != Action::None && action_needs_immediate_redraw(&action) {
                     self.needs_redraw = true;
                 }
                 if let Err(e) = self.dispatch(action, terminal) {
@@ -1094,6 +1267,11 @@ impl App {
                 runtime::TerminalServerMessage::Update(update) => {
                     self.apply_terminal_update(generation, epoch, update)
                 }
+                runtime::TerminalServerMessage::ClipboardWrite(text) => {
+                    if let Err(error) = crate::tui::copy_to_clipboard(&text) {
+                        self.set_error(format!("Clipboard write failed: {error}"));
+                    }
+                }
                 runtime::TerminalServerMessage::Error(error) => {
                     self.terminal_stream = None;
                     self.mode = Mode::Workspace;
@@ -1120,28 +1298,27 @@ impl App {
         update: runtime::TerminalUpdate,
     ) {
         let (pane_id, terminal_id) = update.identity();
-        let stream_identity = self.terminal_stream.as_ref().and_then(|active| {
-            (active.generation == generation && active.epoch == epoch && active.pane_id == pane_id)
-                .then_some(active.terminal_id)
+        let stream_identity = self.terminal_stream.as_ref().map(|active| {
+            (
+                active.generation,
+                active.epoch,
+                active.pane_id,
+                active.terminal_id,
+            )
         });
-        let Some(expected_terminal_id) = stream_identity else {
-            return;
-        };
-        let new_epoch = self.terminal_surfaces.epoch() != Some(epoch);
-        if terminal_id != expected_terminal_id && !new_epoch {
+        if stream_identity != Some((generation, epoch, pane_id, terminal_id)) {
             return;
         }
+        let new_epoch = self.terminal_surfaces.epoch() != Some(epoch);
         if new_epoch || !self.terminal_surfaces.contains(epoch, pane_id, terminal_id) {
             self.terminal_surfaces
                 .activate_stream(epoch, pane_id, terminal_id);
-            if let Some(active) = self.terminal_stream.as_mut() {
-                active.terminal_id = terminal_id;
-            }
         }
         match self.terminal_surfaces.apply(epoch, update) {
             SurfaceUpdate::Applied => {
+                // Streamed terminal frames are complete projections. Let Ratatui diff one draw;
+                // transition-only stale-glyph cleanup remains owned by update_scroll.
                 self.needs_redraw = true;
-                self.force_preview_redraw = self.shows_preview();
             }
             SurfaceUpdate::Resync => {
                 if let Some(active) = self
@@ -1196,6 +1373,9 @@ impl App {
             match result {
                 RuntimeResult::FullRefresh(result) => self.apply_runtime_refresh(result),
                 RuntimeResult::SessionRefresh(result) => self.apply_runtime_session_refresh(result),
+                RuntimeResult::ResumeRefresh { generation, result } => {
+                    self.apply_resume_refresh(generation, result)
+                }
                 RuntimeResult::Frame(frame) => self.apply_runtime_frame(frame),
             }
         }
@@ -1210,6 +1390,117 @@ impl App {
             self.apply_integration_scan(result);
         }
         self.show_integration_prompt_if_ready();
+    }
+
+    fn prepare_terminal_resume(&mut self) -> Option<u64> {
+        let active_identity = self
+            .terminal_stream
+            .take()
+            .map(|active| (active.pane_id, active.terminal_id))
+            .or_else(|| {
+                self.pending_terminal_resume
+                    .take()
+                    .map(|pending| (pending.pane_id, pending.terminal_id))
+            })?;
+        self.terminal_surfaces.reset();
+        self.terminal_stream_generation = self.terminal_stream_generation.wrapping_add(1);
+        let generation = self.terminal_stream_generation;
+        self.pending_terminal_resume = Some(PendingTerminalResume {
+            pane_id: active_identity.0,
+            terminal_id: active_identity.1,
+            generation,
+            snapshot_ready: false,
+        });
+        Some(generation)
+    }
+
+    fn begin_resume_boundary(&mut self) {
+        self.fast_timer.reset();
+        self.slow_timer.reset();
+        let Some(generation) = self.prepare_terminal_resume() else {
+            self.terminal_surfaces.reset();
+            self.spawn_runtime_session_refresh();
+            self.needs_redraw = true;
+            return;
+        };
+        let tx = self.runtime_tx.clone();
+        std::thread::spawn(move || {
+            let result = ops::runtime_snapshot();
+            let _ = tx.send(RuntimeResult::ResumeRefresh { generation, result });
+        });
+        self.needs_redraw = true;
+    }
+
+    fn apply_resume_refresh(&mut self, generation: u64, result: Result<runtime::Snapshot>) {
+        let Some(target) = self
+            .pending_terminal_resume
+            .as_ref()
+            .filter(|target| target.generation == generation)
+        else {
+            return;
+        };
+        let (pane_id, terminal_id) = (target.pane_id, target.terminal_id);
+        let snapshot = match result {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.pending_terminal_resume = None;
+                self.mode = Mode::Workspace;
+                self.apply_runtime_event(runtime::EventSignal::Disconnected(error.to_string()));
+                return;
+            }
+        };
+        let target_is_live = snapshot
+            .panes
+            .iter()
+            .any(|pane| pane.id == pane_id && pane.terminal_id == terminal_id && !pane.exited);
+        self.apply_projected_snapshot(snapshot, None);
+        if target_is_live {
+            if let Some(target) = self.pending_terminal_resume.as_mut() {
+                target.snapshot_ready = true;
+            }
+        } else {
+            self.pending_terminal_resume = None;
+            self.mode = Mode::Workspace;
+            self.set_warning("Terminal closed while the system was suspended");
+        }
+    }
+
+    fn reconnect_terminal_after_resume(&mut self, terminal: &Tui) {
+        let Some(target) = self
+            .pending_terminal_resume
+            .as_ref()
+            .filter(|target| target.snapshot_ready)
+        else {
+            return;
+        };
+        let (pane_id, terminal_id) = (target.pane_id, target.terminal_id);
+        self.pending_terminal_resume = None;
+        let (rows, cols) = self.terminal_pane_size(terminal);
+        match runtime::TerminalStream::connect(
+            &self.runtime_client,
+            pane_id,
+            self.terminal_controller_id,
+            true,
+            rows,
+            cols,
+        ) {
+            Ok(stream) => {
+                self.terminal_stream_generation = self.terminal_stream_generation.wrapping_add(1);
+                self.terminal_stream = Some(ActiveTerminalStream {
+                    epoch: stream.epoch(),
+                    pane_id,
+                    terminal_id,
+                    generation: self.terminal_stream_generation,
+                    stream,
+                });
+                self.mode = Mode::Terminal { pane_id };
+                self.terminal_escape_chord.reset();
+            }
+            Err(error) => {
+                self.mode = Mode::Workspace;
+                self.set_error(format!("Terminal resume failed: {error}"));
+            }
+        }
     }
 
     fn apply_integration_scan(
@@ -1409,7 +1700,8 @@ impl App {
         }
 
         if self.slow_timer.ready() {
-            // Recent is wall-clock based and can expire without any runtime event.
+            // Staleness is wall-clock based and can change without any runtime event.
+            self.collapse_stale_projects();
             self.recompute_visible();
             self.spawn_runtime_refresh();
             self.spawn_git_local_for_all();
@@ -1756,7 +2048,11 @@ impl App {
             self.set_error(format!("Runtime snapshot rejected: {error}"));
             return;
         }
-        if matches!(self.mode, Mode::Terminal { .. }) && self.terminal_stream.is_none() {
+        self.collapse_stale_projects();
+        if matches!(self.mode, Mode::Terminal { .. })
+            && self.terminal_stream.is_none()
+            && self.pending_terminal_resume.is_none()
+        {
             self.mode = Mode::Workspace;
             self.set_warning("Terminal closed");
         }
@@ -1922,6 +2218,13 @@ impl App {
 
     // ── Navigation ────────────────────────────────────────────────────────────
 
+    fn manually_expand_project(&mut self, project_idx: usize) {
+        if let Some(project) = self.workspace.projects.get_mut(project_idx) {
+            project.expanded = true;
+            self.freshened_projects.insert(project.path.clone());
+        }
+    }
+
     fn nav_up(&mut self) {
         if self.tree_selected > 0 {
             self.tree_selected -= 1;
@@ -2002,7 +2305,7 @@ impl App {
         match entry {
             Some(FlatEntry::Project { idx: pi }) => {
                 if !self.workspace.projects[pi].expanded {
-                    self.workspace.projects[pi].expanded = true;
+                    self.manually_expand_project(pi);
                     self.rebuild_flat();
                 } else if !self.workspace.projects[pi].worktrees.is_empty() {
                     self.tree_selected += 1;
@@ -2060,6 +2363,7 @@ impl App {
     fn update_scroll(&mut self) {
         // tree_visible_height is set each frame from actual terminal size; fall back to 20
         let visible = self.tree_visible_height.max(1);
+        self.tree_scroll_manual = false;
         self.tree_scroll = crate::ui::workspace_tree::compute_scroll(
             self.tree_selected,
             visible,
@@ -2280,11 +2584,14 @@ impl App {
     }
 
     fn send_terminal_bytes_once(&self, pane_id: runtime::PaneId, bytes: Vec<u8>) -> Result<()> {
+        // ^ A one-shot Workspace action must never share identity with a live or
+        // reconnecting Terminal stream, whose lease has a separate incarnation.
+        let client_id = runtime::new_client_id();
         match self
             .runtime_client
             .call(&runtime::Request::TerminalAcquire {
                 pane_id,
-                client_id: self.terminal_controller_id,
+                client_id,
                 takeover: false,
             })? {
             runtime::Response::Ack { .. } => {}
@@ -2293,7 +2600,7 @@ impl App {
         }
         let result = match self.runtime_client.call(&runtime::Request::TerminalInput {
             pane_id,
-            client_id: self.terminal_controller_id,
+            client_id,
             bytes,
         })? {
             runtime::Response::Ack { .. } => Ok(()),
@@ -2304,10 +2611,7 @@ impl App {
         };
         let _ = self
             .runtime_client
-            .call(&runtime::Request::TerminalRelease {
-                pane_id,
-                client_id: self.terminal_controller_id,
-            });
+            .call(&runtime::Request::TerminalRelease { pane_id, client_id });
         result
     }
 
@@ -2459,11 +2763,34 @@ impl App {
     }
 
     fn handle_workspace_mouse_scroll(&mut self, col: u16, row: u16, delta: i8) {
-        if matches!(self.mode, Mode::Workspace)
-            && self.group_header_area.contains(Position::new(col, row))
-        {
-            self.scroll_group_header(delta);
+        if !matches!(self.mode, Mode::Workspace) {
+            return;
         }
+        let position = Position::new(col, row);
+        if self.group_header_area.contains(position) {
+            self.scroll_group_header(delta);
+            return;
+        }
+        if !self.tree_area.contains(position) {
+            return;
+        }
+        let previous_selection = self.tree_selected;
+        let (scroll, selected) = crate::ui::workspace_tree::scroll_viewport(
+            self.tree_scroll,
+            self.tree_selected,
+            self.tree_visible_height.max(1),
+            self.flat().len(),
+            isize::from(delta) * WORKSPACE_SCROLL_LINES,
+        );
+        self.tree_scroll = scroll;
+        self.tree_selected = selected;
+        self.tree_scroll_manual = true;
+        if self.tree_selected != previous_selection {
+            self.force_preview_redraw |= self.shows_preview()
+                && (self.last_rendered_preview_was_session
+                    || matches!(self.current_selection(), Selection::Session(..)));
+        }
+        self.needs_redraw = true;
     }
 
     fn scroll_group_header(&mut self, delta: i8) {
@@ -2487,7 +2814,7 @@ impl App {
                     Mode::Input {
                         context: InputContext::RenameGroup { group_idx },
                         ..
-                    } => Some(group_idx + 2),
+                    } => Some(group_idx + 1),
                     _ => None,
                 };
                 self.mode =
@@ -2553,7 +2880,7 @@ impl App {
                     Mode::Confirm {
                         pending: PendingAction::DeleteGroup { group_idx },
                         ..
-                    } => (Some(group_idx + 2), false),
+                    } => (Some(group_idx + 1), false),
                     Mode::Confirm {
                         pending: PendingAction::InstallIntegrations { .. },
                         ..
@@ -2797,7 +3124,11 @@ impl App {
                 self.attach_pane(pi, wi, si, pane_idx, terminal)?;
             }
             Selection::Project(pi) => {
-                self.workspace.projects[pi].expanded = !self.workspace.projects[pi].expanded;
+                if self.workspace.projects[pi].expanded {
+                    self.workspace.projects[pi].expanded = false;
+                } else {
+                    self.manually_expand_project(pi);
+                }
                 self.rebuild_flat();
                 self.clamp_selected();
             }
@@ -3165,19 +3496,6 @@ impl App {
                 };
             }
             Selection::Project(pi) => {
-                if self.active_group == Some(GroupKey::Recent) {
-                    let path = self.workspace.projects[pi].path.clone();
-                    if let Err(error) = ops::clear_project_recent(&path) {
-                        self.set_error(format!("Recent removal failed: {error}"));
-                        self.spawn_runtime_refresh();
-                        return Ok(());
-                    }
-                    self.workspace.projects[pi].last_agent_active_unix_ms = None;
-                    self.workspace.projects[pi].last_terminal_active_unix_ms = None;
-                    self.recompute_visible();
-                    self.set_status("Removed project from Recent");
-                    return Ok(());
-                }
                 let name = self.workspace.projects[pi].name.clone();
                 self.mode = Mode::Confirm {
                     message: format!("Unregister project '{}'? (files not deleted)", name),
@@ -3695,7 +4013,7 @@ impl App {
                         self.set_status("Group name is reserved or already exists");
                     }
                     self.mode = Mode::GroupManager {
-                        selected: group_idx + 2,
+                        selected: group_idx + 1,
                         scroll: 0,
                         purpose: GroupManagerPurpose::Switch,
                     };
@@ -3868,7 +4186,7 @@ impl App {
         if let Some(entry) = self.config.projects.last_mut() {
             entry.groups = match &self.active_group {
                 Some(GroupKey::Named(name)) => vec![name.clone()],
-                Some(GroupKey::Recent | GroupKey::Ungrouped) | None => Vec::new(),
+                Some(GroupKey::Ungrouped) | None => Vec::new(),
             };
         }
         self.workspace.projects.push(project);
@@ -4143,7 +4461,7 @@ impl App {
         action: Action,
     ) -> Result<()> {
         let group_count = match purpose {
-            GroupManagerPurpose::Switch => self.config.groups.len() + 2,
+            GroupManagerPurpose::Switch => self.config.groups.len() + 1,
             GroupManagerPurpose::Assign { .. } => self.config.groups.len(),
         };
         let layout = crate::ui::workspace_nav::SidebarLayout::new(self.tree_area);
@@ -4207,10 +4525,10 @@ impl App {
                 };
             }
             Action::InputChar('r') if purpose == GroupManagerPurpose::Switch => {
-                if selected < 2 {
+                if selected < 1 {
                     self.set_status("Virtual groups cannot be renamed");
                 } else {
-                    let group_idx = selected - 2;
+                    let group_idx = selected - 1;
                     if let Some(name) = self.config.groups.get(group_idx) {
                         self.mode = Mode::Input {
                             context: InputContext::RenameGroup { group_idx },
@@ -4220,10 +4538,10 @@ impl App {
                 }
             }
             Action::InputChar('d') if purpose == GroupManagerPurpose::Switch => {
-                if selected < 2 {
+                if selected < 1 {
                     self.set_status("Virtual groups cannot be deleted");
                 } else {
-                    let group_idx = selected - 2;
+                    let group_idx = selected - 1;
                     if let Some(name) = self.config.groups.get(group_idx) {
                         let count = self
                             .config
@@ -4238,16 +4556,16 @@ impl App {
                     }
                 }
             }
-            Action::InputChar('J') if purpose == GroupManagerPurpose::Switch && selected >= 2 => {
-                let group_idx = selected - 2;
+            Action::InputChar('J') if purpose == GroupManagerPurpose::Switch && selected >= 1 => {
+                let group_idx = selected - 1;
                 if group_idx + 1 < self.config.groups.len() {
                     self.config.groups.swap(group_idx, group_idx + 1);
                     self.config.save()?;
                     self.mode = manager_mode(selected + 1, scroll);
                 }
             }
-            Action::InputChar('K') if purpose == GroupManagerPurpose::Switch && selected > 2 => {
-                let group_idx = selected - 2;
+            Action::InputChar('K') if purpose == GroupManagerPurpose::Switch && selected > 1 => {
+                let group_idx = selected - 1;
                 self.config.groups.swap(group_idx - 1, group_idx);
                 self.config.save()?;
                 self.mode = manager_mode(selected - 1, scroll);
@@ -4265,23 +4583,13 @@ fn compute_visible_projects(
     workspace: &WorkspaceState,
     active_group: Option<&GroupKey>,
 ) -> HashSet<usize> {
-    let now_unix_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
     workspace
         .projects
         .iter()
         .enumerate()
         .filter_map(|(index, project)| {
-            project_matches_group(
-                config.project_groups(&project.path),
-                project.last_agent_active_unix_ms,
-                project.last_terminal_active_unix_ms,
-                active_group,
-                now_unix_ms,
-            )
-            .then_some(index)
+            project_matches_group(config.project_groups(&project.path), active_group)
+                .then_some(index)
         })
         .collect()
 }
@@ -4517,6 +4825,7 @@ mod tests {
             tree_selected: 0,
             tree_scroll: 0,
             tree_visible_height: 20,
+            tree_scroll_manual: false,
             tree_area: Rect::default(),
             preview_area: Rect::default(),
             terminal_area: Rect::default(),
@@ -4526,6 +4835,7 @@ mod tests {
             group_header_scroll,
             group_header_area: Rect::default(),
             visible_projects,
+            freshened_projects: HashSet::new(),
             notice: None,
             notice_expires: None,
             jobs: Vec::new(),
@@ -4569,6 +4879,8 @@ mod tests {
             terminal_surfaces: TerminalSurfaces::default(),
             terminal_stream: None,
             terminal_stream_generation: 0,
+            pending_terminal_resume: None,
+            suspend_detector: SuspendDetector::new(),
             terminal_escape_chord,
             update_rx,
             update_available: None,
@@ -4630,12 +4942,176 @@ mod tests {
     }
 
     #[test]
-    fn startup_always_selects_recent_over_cached_group() {
-        assert_eq!(startup_active_group(None), GroupKey::Recent);
+    fn startup_ignores_cached_group_and_keeps_all_projects_visible() {
+        let config = GlobalConfig {
+            groups: vec!["work".into()],
+            projects: vec![
+                make_project_entry("work-project", Some("work")),
+                make_project_entry("ungrouped-project", None),
+            ],
+            ..GlobalConfig::default()
+        };
+        let workspace = WorkspaceState {
+            projects: vec![
+                make_project("work-project"),
+                make_project("ungrouped-project"),
+            ],
+        };
+        let active = startup_active_group(Some(GroupKey::Named("work".into())));
+
+        assert_eq!(active, None);
         assert_eq!(
-            startup_active_group(Some(GroupKey::Named("work".into()))),
-            GroupKey::Recent
+            compute_visible_projects(&config, &workspace, active.as_ref()),
+            HashSet::from([0, 1])
         );
+    }
+
+    #[test]
+    fn suspend_detector_requires_continuous_clock_to_outpace_active_clock() {
+        let mut detector = SuspendDetector {
+            previous: Some(LifecycleClockSample {
+                active: Duration::from_secs(10),
+                continuous: Duration::from_secs(20),
+            }),
+        };
+
+        assert!(!detector.observe(LifecycleClockSample {
+            active: Duration::from_secs(11),
+            continuous: Duration::from_secs(21),
+        }));
+        assert!(detector.observe(LifecycleClockSample {
+            active: Duration::from_secs(12),
+            continuous: Duration::from_secs(24),
+        }));
+        assert!(!detector.observe(LifecycleClockSample {
+            active: Duration::from_secs(13),
+            continuous: Duration::from_secs(25),
+        }));
+    }
+
+    #[test]
+    fn repeated_suspend_restarts_pending_terminal_resume_with_the_same_identity() {
+        let pane_id = runtime::PaneId(3);
+        let terminal_id = runtime::TerminalId(4);
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.terminal_stream_generation = 2;
+        app.pending_terminal_resume = Some(PendingTerminalResume {
+            pane_id,
+            terminal_id,
+            generation: 2,
+            snapshot_ready: true,
+        });
+
+        assert_eq!(app.prepare_terminal_resume(), Some(3));
+        assert!(app.pending_terminal_resume.as_ref().is_some_and(|pending| {
+            pending.pane_id == pane_id
+                && pending.terminal_id == terminal_id
+                && pending.generation == 3
+                && !pending.snapshot_ready
+        }));
+        assert_eq!(app.prepare_terminal_resume(), Some(4));
+        assert!(app.pending_terminal_resume.as_ref().is_some_and(|pending| {
+            pending.pane_id == pane_id
+                && pending.terminal_id == terminal_id
+                && pending.generation == 4
+                && !pending.snapshot_ready
+        }));
+    }
+
+    #[test]
+    fn resume_snapshot_must_confirm_the_exact_live_terminal_before_reconnect() {
+        fn snapshot(panes: Vec<runtime::Pane>) -> runtime::Snapshot {
+            runtime::Snapshot {
+                protocol: runtime::PROTOCOL_VERSION,
+                epoch: 7,
+                revision: 9,
+                projects: vec![],
+                worktrees: vec![],
+                sessions: vec![],
+                panes,
+                listening_ports: vec![],
+                capabilities: runtime::Capabilities::default(),
+            }
+        }
+
+        let pane_id = runtime::PaneId(3);
+        let terminal_id = runtime::TerminalId(4);
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.mode = Mode::Terminal { pane_id };
+        app.pending_terminal_resume = Some(PendingTerminalResume {
+            pane_id,
+            terminal_id,
+            generation: 2,
+            snapshot_ready: false,
+        });
+        app.apply_resume_refresh(
+            2,
+            Ok(snapshot(vec![runtime::Pane {
+                id: pane_id,
+                terminal_id,
+                session_id: runtime::SessionId(1),
+                label: "terminal".into(),
+                agent: None,
+                exited: false,
+                revision: 9,
+            }])),
+        );
+        assert!(app
+            .pending_terminal_resume
+            .as_ref()
+            .is_some_and(|pending| pending.snapshot_ready));
+        assert!(matches!(app.mode, Mode::Terminal { .. }));
+
+        app.pending_terminal_resume = Some(PendingTerminalResume {
+            pane_id,
+            terminal_id,
+            generation: 3,
+            snapshot_ready: false,
+        });
+        app.apply_resume_refresh(3, Ok(snapshot(vec![])));
+        assert!(app.pending_terminal_resume.is_none());
+        assert!(matches!(app.mode, Mode::Workspace));
+    }
+
+    #[test]
+    fn group_manager_modal_cancel_returns_to_named_row_after_one_virtual_row() {
+        let mut app = make_test_app(
+            GlobalConfig {
+                groups: vec!["work".into(), "personal".into()],
+                ..GlobalConfig::default()
+            },
+            WorkspaceState::empty(),
+            None,
+        );
+        let mut terminal = workspace_terminal();
+
+        app.mode = Mode::Input {
+            context: InputContext::RenameGroup { group_idx: 0 },
+            state: InputState::new("new name: "),
+        };
+        app.dispatch(Action::InputEscape, &mut terminal).unwrap();
+        assert!(matches!(
+            app.mode,
+            Mode::GroupManager {
+                selected: 1,
+                purpose: GroupManagerPurpose::Switch,
+                ..
+            }
+        ));
+
+        app.mode = Mode::Confirm {
+            message: "Delete group?".into(),
+            pending: PendingAction::DeleteGroup { group_idx: 1 },
+        };
+        app.dispatch(Action::InputEscape, &mut terminal).unwrap();
+        assert!(matches!(
+            app.mode,
+            Mode::GroupManager {
+                selected: 2,
+                purpose: GroupManagerPurpose::Switch,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -5192,6 +5668,7 @@ mod tests {
             exclude_worktree_paths: vec![],
             terminal_escape_chord: "ctrl+a w".into(),
             resume_agents_on_restore: true,
+            auto_collapse_after_hours: 24,
         };
         let workspace = WorkspaceState {
             projects: vec![
@@ -5517,7 +5994,7 @@ mod tests {
             WorkspaceState {
                 projects: vec![project],
             },
-            Some("work".into()),
+            None,
         );
         let backend = ratatui::backend::TestBackend::new(100, 16);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -5530,9 +6007,13 @@ mod tests {
         let groups = (0..100)
             .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
             .collect::<String>();
-        for label in ["workspace", "recent", "ungrouped", "work", "personal"] {
+        for label in ["workspace", "ungrouped", "work", "personal"] {
             assert!(groups.contains(label), "missing {label}: {groups:?}");
         }
+        assert!(
+            !groups.contains("recent"),
+            "unexpected Recent group: {groups:?}"
+        );
         assert!(
             !groups.contains("+N") && !groups.contains("… +"),
             "{groups:?}"
@@ -5543,10 +6024,10 @@ mod tests {
             100,
             app.group_header_scroll,
         );
-        let recent = strip
+        let ungrouped = strip
             .chips
             .iter()
-            .find(|chip| chip.key == GroupKey::Recent)
+            .find(|chip| chip.key == GroupKey::Ungrouped)
             .unwrap();
         let work = strip
             .chips
@@ -5554,12 +6035,12 @@ mod tests {
             .find(|chip| chip.key == GroupKey::Named("work".into()))
             .unwrap();
         assert_eq!(
-            terminal.backend().buffer()[(recent.cells.start as u16, 0)].bg,
-            crate::ui::theme::recent_group_chip(false).bg.unwrap()
+            terminal.backend().buffer()[(ungrouped.cells.start as u16, 0)].bg,
+            crate::ui::theme::group_chip(false).bg.unwrap()
         );
         assert_eq!(
             terminal.backend().buffer()[(work.cells.start as u16, 0)].bg,
-            crate::ui::theme::group_chip(true).bg.unwrap()
+            crate::ui::theme::group_chip(false).bg.unwrap()
         );
         assert_eq!(
             terminal.backend().buffer()[(99, 0)].bg,
@@ -5723,8 +6204,8 @@ mod tests {
     }
 
     #[test]
-    fn recent_project_footer_advertises_reversible_removal() {
-        let mut project = make_project("recent");
+    fn workspace_footer_uses_normal_unregister_behavior_without_recent_hint() {
+        let mut project = make_project("registered");
         project.last_terminal_active_unix_ms = Some(u64::MAX);
         let mut app = make_test_app(
             GlobalConfig::default(),
@@ -5733,22 +6214,21 @@ mod tests {
             },
             None,
         );
-        app.set_active_group(GroupKey::Recent);
-        let backend = ratatui::backend::TestBackend::new(80, 12);
+        let backend = ratatui::backend::TestBackend::new(100, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
         terminal
             .draw(|frame| crate::ui::render(frame, &mut app))
             .unwrap();
 
-        let footer = (0..80)
+        let footer = (0..100)
             .map(|x| terminal.backend().buffer()[(x, 11)].symbol())
             .collect::<String>();
         assert!(footer.contains("(e)dit"), "{footer:?}");
-        assert!(footer.contains("(d)remove recent"), "{footer:?}");
+        assert!(footer.contains("(d)unregister"), "{footer:?}");
+        assert!(!footer.contains("remove recent"), "{footer:?}");
         assert!(footer.contains("(,)config"), "{footer:?}");
         assert!(footer.contains("(q)quit"), "{footer:?}");
-        assert!(!footer.contains("unregister"), "{footer:?}");
     }
 
     #[test]
@@ -6080,7 +6560,14 @@ mod tests {
         let workspace = WorkspaceState {
             projects: vec![make_project("demo")],
         };
-        let mut app = make_test_app(GlobalConfig::default(), workspace, None);
+        let mut app = make_test_app(
+            GlobalConfig {
+                groups: vec!["work".into()],
+                ..GlobalConfig::default()
+            },
+            workspace,
+            None,
+        );
         app.tree_area = Rect::new(0, 1, 36, 19);
         app.group_header_area = Rect::new(0, 0, 80, 1);
         app.mode = Mode::Terminal {
@@ -6127,5 +6614,440 @@ mod tests {
 
         assert_eq!(visible[0].1.len(), 1);
         assert!(pending.is_empty());
+    }
+
+    fn workspace_terminal() -> ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>
+    {
+        let backend = ratatui::backend::CrosstermBackend::new(std::io::stdout());
+        ratatui::Terminal::with_options(
+            backend,
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Fixed(Rect::new(0, 0, 20, 8)),
+            },
+        )
+        .unwrap()
+    }
+
+    fn projects_for_tree(count: usize) -> WorkspaceState {
+        WorkspaceState {
+            projects: (0..count)
+                .map(|index| make_project(&format!("project-{index}")))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn workspace_wheel_scrolls_three_rows_without_changing_a_visible_selection() {
+        let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(10), None);
+        app.tree_area = Rect::new(0, 1, 20, 4);
+        app.tree_visible_height = 4;
+        app.tree_scroll = 1;
+        app.tree_selected = 4;
+        let mut terminal = workspace_terminal();
+
+        app.dispatch(
+            Action::MouseScroll {
+                col: 1,
+                row: 2,
+                delta: 1,
+            },
+            &mut terminal,
+        )
+        .unwrap();
+
+        assert_eq!(
+            (app.tree_scroll, app.current_selection()),
+            (4, Selection::Project(4))
+        );
+    }
+
+    #[test]
+    fn workspace_wheel_moves_selection_only_when_its_row_leaves_the_viewport() {
+        let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(10), None);
+        app.tree_area = Rect::new(0, 1, 20, 3);
+        app.tree_visible_height = 3;
+        app.tree_selected = 1;
+        let mut terminal = workspace_terminal();
+
+        app.dispatch(
+            Action::MouseScroll {
+                col: 1,
+                row: 2,
+                delta: 1,
+            },
+            &mut terminal,
+        )
+        .unwrap();
+
+        assert_eq!(
+            (app.tree_scroll, app.current_selection()),
+            (3, Selection::Project(3))
+        );
+    }
+
+    #[test]
+    fn workspace_header_wheel_changes_only_the_header_offset() {
+        let config = GlobalConfig {
+            groups: (0..10).map(|index| format!("group-{index}")).collect(),
+            ..GlobalConfig::default()
+        };
+        let mut app = make_test_app(config, projects_for_tree(10), None);
+        app.group_header_area = Rect::new(0, 0, 20, 1);
+        app.tree_area = Rect::new(0, 1, 20, 4);
+        app.tree_visible_height = 4;
+        app.tree_scroll = 1;
+        app.tree_selected = 2;
+        let before = (app.tree_scroll, app.current_selection());
+        let header_offset = app.group_header_scroll;
+        let mut terminal = workspace_terminal();
+
+        app.dispatch(
+            Action::MouseScroll {
+                col: 1,
+                row: 0,
+                delta: 1,
+            },
+            &mut terminal,
+        )
+        .unwrap();
+
+        assert_eq!((app.tree_scroll, app.current_selection()), before);
+        assert_ne!(app.group_header_scroll, header_offset);
+    }
+
+    #[test]
+    fn workspace_wheel_clamps_for_empty_and_bottom_viewports() {
+        let mut empty = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        empty.tree_area = Rect::new(0, 1, 20, 0);
+        empty.tree_visible_height = 0;
+        let mut terminal = workspace_terminal();
+        empty
+            .dispatch(
+                Action::MouseScroll {
+                    col: 1,
+                    row: 1,
+                    delta: 1,
+                },
+                &mut terminal,
+            )
+            .unwrap();
+
+        let mut top = make_test_app(GlobalConfig::default(), projects_for_tree(4), None);
+        top.tree_area = Rect::new(0, 1, 20, 3);
+        top.tree_visible_height = 3;
+        top.dispatch(
+            Action::MouseScroll {
+                col: 1,
+                row: 2,
+                delta: -1,
+            },
+            &mut terminal,
+        )
+        .unwrap();
+
+        let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(4), None);
+        app.tree_area = Rect::new(0, 1, 20, 3);
+        app.tree_visible_height = 3;
+        app.tree_scroll = 1;
+        app.tree_selected = 3;
+        app.dispatch(
+            Action::MouseScroll {
+                col: 1,
+                row: 2,
+                delta: 1,
+            },
+            &mut terminal,
+        )
+        .unwrap();
+
+        assert_eq!(
+            (empty.tree_scroll, top.tree_scroll, app.tree_scroll),
+            (0, 0, 1)
+        );
+    }
+
+    #[test]
+    fn missing_activity_timestamps_collapse_a_stale_project() {
+        let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
+
+        app.collapse_stale_projects();
+
+        assert!(!app.workspace.projects[0].expanded);
+    }
+
+    #[test]
+    fn positive_auto_collapse_window_collapses_expired_activity_from_both_sources() {
+        let mut app = make_test_app(
+            GlobalConfig {
+                auto_collapse_after_hours: 1,
+                ..GlobalConfig::default()
+            },
+            projects_for_tree(1),
+            None,
+        );
+        app.workspace.projects[0].last_agent_active_unix_ms = Some(0);
+        app.workspace.projects[0].last_terminal_active_unix_ms = Some(0);
+
+        app.collapse_stale_projects();
+
+        assert!(!app.workspace.projects[0].expanded);
+    }
+
+    #[test]
+    fn fresh_agent_activity_keeps_an_expanded_project_open() {
+        let mut app = make_test_app(
+            GlobalConfig {
+                auto_collapse_after_hours: 1,
+                ..GlobalConfig::default()
+            },
+            projects_for_tree(1),
+            None,
+        );
+        let window_ms = app
+            .config
+            .auto_collapse_window_ms()
+            .expect("positive automatic-collapse window");
+        let now_unix_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock must be after the Unix epoch")
+            .as_millis() as u64;
+        app.workspace.projects[0].last_agent_active_unix_ms = Some(now_unix_ms - window_ms / 2);
+
+        app.collapse_stale_projects();
+
+        assert!(app.workspace.projects[0].expanded);
+    }
+
+    #[test]
+    fn fresh_terminal_activity_keeps_an_expanded_project_open() {
+        let mut app = make_test_app(
+            GlobalConfig {
+                auto_collapse_after_hours: 1,
+                ..GlobalConfig::default()
+            },
+            projects_for_tree(1),
+            None,
+        );
+        let window_ms = app
+            .config
+            .auto_collapse_window_ms()
+            .expect("positive automatic-collapse window");
+        let now_unix_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock must be after the Unix epoch")
+            .as_millis() as u64;
+        app.workspace.projects[0].last_terminal_active_unix_ms = Some(now_unix_ms - window_ms / 2);
+
+        app.collapse_stale_projects();
+
+        assert!(app.workspace.projects[0].expanded);
+    }
+
+    #[test]
+    fn future_activity_keeps_an_expanded_project_open() {
+        let mut app = make_test_app(
+            GlobalConfig {
+                auto_collapse_after_hours: 1,
+                ..GlobalConfig::default()
+            },
+            projects_for_tree(1),
+            None,
+        );
+        app.workspace.projects[0].last_agent_active_unix_ms = Some(u64::MAX);
+
+        app.collapse_stale_projects();
+
+        assert!(app.workspace.projects[0].expanded);
+    }
+
+    #[test]
+    fn zero_auto_collapse_window_leaves_an_expanded_inactive_project_open() {
+        let mut app = make_test_app(
+            GlobalConfig {
+                auto_collapse_after_hours: 0,
+                ..GlobalConfig::default()
+            },
+            projects_for_tree(1),
+            None,
+        );
+        app.workspace.projects[0].last_agent_active_unix_ms = Some(0);
+        app.workspace.projects[0].last_terminal_active_unix_ms = Some(0);
+
+        app.collapse_stale_projects();
+
+        assert!(app.workspace.projects[0].expanded);
+    }
+
+    #[test]
+    fn already_collapsed_project_is_not_auto_expanded() {
+        let mut app = make_test_app(
+            GlobalConfig {
+                auto_collapse_after_hours: 1,
+                ..GlobalConfig::default()
+            },
+            projects_for_tree(1),
+            None,
+        );
+        app.workspace.projects[0].expanded = false;
+        app.workspace.projects[0].last_agent_active_unix_ms = Some(u64::MAX);
+
+        app.collapse_stale_projects();
+
+        assert!(!app.workspace.projects[0].expanded);
+    }
+
+    #[test]
+    fn very_large_auto_collapse_window_does_not_overflow_and_keeps_old_activity_open() {
+        let mut app = make_test_app(
+            GlobalConfig {
+                auto_collapse_after_hours: u64::MAX,
+                ..GlobalConfig::default()
+            },
+            projects_for_tree(1),
+            None,
+        );
+        app.workspace.projects[0].last_agent_active_unix_ms = Some(0);
+
+        app.collapse_stale_projects();
+
+        assert!(app.workspace.projects[0].expanded);
+    }
+
+    #[test]
+    fn fresh_projects_keep_their_existing_expanded_state_from_either_activity_timestamp() {
+        let mut agent_fresh = make_project("agent-fresh");
+        agent_fresh.last_agent_active_unix_ms = Some(u64::MAX);
+        agent_fresh.expanded = true;
+        let mut terminal_fresh = make_project("terminal-fresh");
+        terminal_fresh.last_terminal_active_unix_ms = Some(u64::MAX);
+        terminal_fresh.expanded = false;
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![agent_fresh, terminal_fresh],
+            },
+            None,
+        );
+
+        app.collapse_stale_projects();
+
+        assert_eq!(
+            app.workspace
+                .projects
+                .iter()
+                .map(|project| project.expanded)
+                .collect::<Vec<_>>(),
+            vec![true, false]
+        );
+    }
+
+    #[test]
+    fn manually_expanded_stale_projects_are_fresh_until_exit() {
+        let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
+        app.workspace.projects[0].expanded = false;
+        let mut terminal = workspace_terminal();
+        assert!(app.stale_project_indices().contains(&0));
+
+        app.dispatch(Action::Select, &mut terminal).unwrap();
+        app.collapse_stale_projects();
+        app.collapse_stale_projects();
+
+        assert!(app.workspace.projects[0].expanded);
+        assert!(!app.stale_project_indices().contains(&0));
+    }
+
+    #[test]
+    fn manually_expanded_stale_project_override_resets_after_app_reconstruction() {
+        let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
+        app.workspace.projects[0].expanded = false;
+        let mut terminal = workspace_terminal();
+
+        app.dispatch(Action::Select, &mut terminal).unwrap();
+        app.collapse_stale_projects();
+        assert!(app.workspace.projects[0].expanded);
+        assert!(!app.stale_project_indices().contains(&0));
+
+        let mut reconstructed = make_test_app(GlobalConfig::default(), app.workspace.clone(), None);
+        assert!(reconstructed.stale_project_indices().contains(&0));
+        reconstructed.collapse_stale_projects();
+
+        assert!(!reconstructed.workspace.projects[0].expanded);
+    }
+
+    fn app_with_port_session(name: &str) -> App {
+        let mut project = make_project("ports");
+        let mut worktree = make_worktree("/tmp/ports");
+        let mut session = make_sess(false, runtime::AgentState::Idle);
+        session.display_name = name.into();
+        session.panes[0].listening_ports = vec![3000];
+        worktree.sessions.push(session);
+        project.worktrees.push(worktree);
+        make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        )
+    }
+
+    #[test]
+    fn rendered_session_port_ends_at_the_final_workspace_list_cell() {
+        let mut app = app_with_port_session("identity");
+        let backend = ratatui::backend::TestBackend::new(100, 16);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+
+        let port_end = (0..terminal.backend().buffer().area.height)
+            .find_map(|y| {
+                let row = (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<Vec<_>>();
+                row.windows(4)
+                    .position(|cells| cells == ["3", "0", "0", "0"])
+                    .map(|start| (start + 3) as u16)
+            })
+            .expect("session row must render its port");
+        assert_eq!(
+            port_end,
+            crate::ui::workspace_nav::SidebarLayout::bordered(app.tree_area)
+                .list
+                .right()
+                .saturating_sub(1),
+        );
+    }
+
+    #[test]
+    fn narrow_rendered_session_row_keeps_its_port_and_marks_truncated_identity() {
+        let mut app = app_with_port_session("an-identity-too-wide-for-the-row");
+        let backend = ratatui::backend::TestBackend::new(30, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+
+        let port_row = (0..terminal.backend().buffer().area.height)
+            .find(|&y| {
+                let row = (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<Vec<_>>();
+                row.windows(5)
+                    .any(|cells| cells == [":", "3", "0", "0", "0"])
+            })
+            .expect("session row must render its compact port");
+        let row = (0..terminal.backend().buffer().area.width)
+            .map(|x| terminal.backend().buffer()[(x, port_row)].symbol())
+            .collect::<Vec<_>>();
+        let list = crate::ui::workspace_nav::SidebarLayout::bordered(app.tree_area).list;
+        let port_end = list.right().saturating_sub(1) as usize;
+        let port_start = port_end - 4;
+
+        assert_eq!(&row[port_start..=port_end], [":", "3", "0", "0", "0"]);
+        assert!(!row.contains(&"·"));
+        assert!(row[..port_start].contains(&"…"));
     }
 }

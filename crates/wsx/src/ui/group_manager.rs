@@ -21,7 +21,6 @@ pub fn group_rows(
     config: &GlobalConfig,
     active_group: Option<&GroupKey>,
     assign_path: Option<&Path>,
-    recent_project_count: usize,
 ) -> Vec<GroupRow> {
     let keys = if assign_path.is_some() {
         config.groups.iter().cloned().map(GroupKey::Named).collect()
@@ -31,7 +30,6 @@ pub fn group_rows(
     keys.into_iter()
         .map(|key| {
             let project_count = match &key {
-                GroupKey::Recent => recent_project_count,
                 GroupKey::Ungrouped => config
                     .projects
                     .iter()
@@ -64,7 +62,6 @@ pub struct GroupManagerView<'a> {
     pub config: &'a GlobalConfig,
     pub active_group: Option<&'a GroupKey>,
     pub assign_path: Option<&'a Path>,
-    pub recent_project_count: usize,
 }
 
 pub fn render_group_manager(frame: &mut Frame, area: Rect, view: GroupManagerView<'_>) {
@@ -74,7 +71,6 @@ pub fn render_group_manager(frame: &mut Frame, area: Rect, view: GroupManagerVie
         config,
         active_group,
         assign_path,
-        recent_project_count,
     } = view;
     let layout = SidebarLayout::with_header(area);
     let title = if assign_path.is_some() {
@@ -89,7 +85,7 @@ pub fn render_group_manager(frame: &mut Frame, area: Rect, view: GroupManagerVie
         ))),
         layout.header,
     );
-    let rows = group_rows(config, active_group, assign_path, recent_project_count);
+    let rows = group_rows(config, active_group, assign_path);
     let row_count = rows.len();
     let items = rows.into_iter().map(|row| {
         let marker = if row.checked { "●" } else { "○" };
@@ -134,7 +130,7 @@ mod tests {
     use wsx_core::config::global::ProjectEntry;
     fn config() -> GlobalConfig {
         GlobalConfig {
-            groups: vec!["work".into()],
+            groups: vec!["work".into(), "personal".into()],
             projects: vec![ProjectEntry {
                 name: "wsx".into(),
                 path: PathBuf::from("/wsx"),
@@ -144,21 +140,30 @@ mod tests {
             ..Default::default()
         }
     }
+
     #[test]
-    fn switch_has_virtual_rows_and_assign_has_named_only() {
+    fn switch_has_ungrouped_then_named_rows_and_assign_has_named_only() {
         let config = config();
-        let switch = group_rows(&config, Some(&GroupKey::Recent), None, 1);
+        let switch = group_rows(&config, None, None);
         assert_eq!(
             switch.iter().map(|r| &r.key).collect::<Vec<_>>(),
             vec![
-                &GroupKey::Recent,
                 &GroupKey::Ungrouped,
-                &GroupKey::Named("work".into())
+                &GroupKey::Named("work".into()),
+                &GroupKey::Named("personal".into()),
             ]
         );
-        assert_eq!(switch[0].project_count, 1);
-        let assign = group_rows(&config, None, Some(Path::new("/wsx")), 1);
-        assert_eq!(assign.len(), 1);
+        assert_eq!(switch[1].project_count, 1);
+
+        let assign = group_rows(&config, None, Some(Path::new("/wsx")));
+        assert_eq!(
+            assign.iter().map(|r| &r.key).collect::<Vec<_>>(),
+            vec![
+                &GroupKey::Named("work".into()),
+                &GroupKey::Named("personal".into()),
+            ]
+        );
         assert!(assign[0].checked);
+        assert!(!assign[1].checked);
     }
 }

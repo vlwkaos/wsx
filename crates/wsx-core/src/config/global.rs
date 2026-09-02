@@ -10,14 +10,13 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const RECENT_GROUP_WINDOW_MS: u64 = 24 * 60 * 60 * 1_000;
+const MILLIS_PER_HOUR: u64 = 60 * 60 * 1_000;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const CONFIG_V2_FILE: &str = "config-v2.toml";
 const LEGACY_CONFIG_FILE: &str = "config.toml";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum GroupKey {
-    Recent,
     Ungrouped,
     Named(String),
 }
@@ -39,7 +38,6 @@ impl Serialize for GroupKey {
         S: Serializer,
     {
         match self {
-            Self::Recent => serializer.serialize_str("recent"),
             Self::Ungrouped => serializer.serialize_str("ungrouped"),
             Self::Named(name) if is_reserved_group_name(name) => {
                 Err(S::Error::custom(format!("reserved group name: {name}")))
@@ -55,9 +53,7 @@ impl<'de> Deserialize<'de> for GroupKey {
         D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        if value.eq_ignore_ascii_case("recent") {
-            Ok(Self::Recent)
-        } else if value.eq_ignore_ascii_case("ungrouped") {
+        if value.eq_ignore_ascii_case("ungrouped") {
             Ok(Self::Ungrouped)
         } else if value.eq_ignore_ascii_case("default") {
             Err(D::Error::custom("default is a reserved group name"))
@@ -68,36 +64,26 @@ impl<'de> Deserialize<'de> for GroupKey {
 }
 
 pub fn is_reserved_group_name(name: &str) -> bool {
-    ["recent", "ungrouped", "default"]
+    ["ungrouped", "default"]
         .iter()
         .any(|reserved| name.eq_ignore_ascii_case(reserved))
 }
 
-pub fn project_is_recent(
+pub fn project_has_activity_within(
     last_agent_active_unix_ms: Option<u64>,
     last_terminal_active_unix_ms: Option<u64>,
     now_unix_ms: u64,
+    window_ms: u64,
 ) -> bool {
     [last_agent_active_unix_ms, last_terminal_active_unix_ms]
         .into_iter()
         .flatten()
-        .any(|active| now_unix_ms.saturating_sub(active) <= RECENT_GROUP_WINDOW_MS)
+        .any(|active| now_unix_ms.saturating_sub(active) <= window_ms)
 }
 
 /// Matches a project against the one active workspace group. No selection means all projects.
-pub fn project_matches_group(
-    project_groups: &[String],
-    last_agent_active_unix_ms: Option<u64>,
-    last_terminal_active_unix_ms: Option<u64>,
-    active_group: Option<&GroupKey>,
-    now_unix_ms: u64,
-) -> bool {
+pub fn project_matches_group(project_groups: &[String], active_group: Option<&GroupKey>) -> bool {
     active_group.is_none_or(|group| match group {
-        GroupKey::Recent => project_is_recent(
-            last_agent_active_unix_ms,
-            last_terminal_active_unix_ms,
-            now_unix_ms,
-        ),
         GroupKey::Ungrouped => project_groups.is_empty(),
         GroupKey::Named(name) => project_groups.iter().any(|candidate| candidate == name),
     })
@@ -113,6 +99,10 @@ fn default_terminal_escape_chord() -> String {
 
 fn default_resume_agents_on_restore() -> bool {
     true
+}
+
+fn default_auto_collapse_after_hours() -> u64 {
+    24
 }
 
 /// Canonical form used for project-path identity. A trailing `/` is the only
@@ -135,6 +125,8 @@ pub struct GlobalConfig {
     pub terminal_escape_chord: String,
     #[serde(default = "default_resume_agents_on_restore")]
     pub resume_agents_on_restore: bool,
+    #[serde(default = "default_auto_collapse_after_hours")]
+    pub auto_collapse_after_hours: u64,
 }
 
 impl Default for GlobalConfig {
@@ -145,6 +137,7 @@ impl Default for GlobalConfig {
             exclude_worktree_paths: default_exclude_worktree_paths(),
             terminal_escape_chord: default_terminal_escape_chord(),
             resume_agents_on_restore: default_resume_agents_on_restore(),
+            auto_collapse_after_hours: default_auto_collapse_after_hours(),
         }
     }
 }
@@ -190,6 +183,8 @@ struct GlobalConfigWire {
     terminal_escape_chord: String,
     #[serde(default = "default_resume_agents_on_restore")]
     resume_agents_on_restore: bool,
+    #[serde(default = "default_auto_collapse_after_hours")]
+    auto_collapse_after_hours: u64,
 }
 
 #[derive(Deserialize)]
@@ -257,6 +252,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
             exclude_worktree_paths: wire.exclude_worktree_paths,
             terminal_escape_chord: wire.terminal_escape_chord,
             resume_agents_on_restore: wire.resume_agents_on_restore,
+            auto_collapse_after_hours: wire.auto_collapse_after_hours,
         };
         config.migrate_reserved_names();
         Ok(config)
@@ -429,6 +425,13 @@ impl GlobalConfig {
         Ok(path)
     }
 
+    pub fn auto_collapse_window_ms(&self) -> Option<u64> {
+        (self.auto_collapse_after_hours > 0).then(|| {
+            self.auto_collapse_after_hours
+                .saturating_mul(MILLIS_PER_HOUR)
+        })
+    }
+
     pub fn is_worktree_excluded(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy();
         self.exclude_worktree_paths
@@ -437,7 +440,7 @@ impl GlobalConfig {
     }
 
     pub fn ordered_group_keys(&self) -> Vec<GroupKey> {
-        let mut keys = vec![GroupKey::Recent, GroupKey::Ungrouped];
+        let mut keys = vec![GroupKey::Ungrouped];
         keys.extend(self.groups.iter().cloned().map(GroupKey::Named));
         keys
     }
@@ -759,68 +762,87 @@ mod tests {
     }
 
     #[test]
-    fn reserved_collisions_preserve_assignments_and_are_idempotent() {
-        let config: GlobalConfig = toml::from_str(
-            "tabs = [\"recent\", \"recent-2\", \"Default\"]\n[[projects]]\nname = \"p\"\npath = \"/p\"\ntab = \"recent\"\n",
-        )
-        .unwrap();
-        assert_eq!(config.groups, ["recent-3", "recent-2", "Default-2"]);
-        assert_eq!(config.projects[0].groups, ["recent-3"]);
-        let encoded = toml::to_string(&config).unwrap();
-        let again: GlobalConfig = toml::from_str(&encoded).unwrap();
-        assert_eq!(again.groups, config.groups);
-        assert!(!stored_data_needs_migration(&encoded));
+    fn recent_is_a_normal_named_group_but_reserved_names_remain_rejected() {
+        assert_eq!(
+            GroupKey::named("recent").unwrap(),
+            GroupKey::Named("recent".into())
+        );
+        assert_eq!(
+            GroupKey::named("Recent").unwrap(),
+            GroupKey::Named("Recent".into())
+        );
+        for name in ["ungrouped", "UNGROUPED", "default", "DeFaUlT"] {
+            assert!(GroupKey::named(name).is_err(), "{name} must be reserved");
+            assert!(serde_json::to_string(&GroupKey::Named(name.into())).is_err());
+        }
+
+        assert_eq!(
+            serde_json::from_str::<GroupKey>(r#""UNGROUPED""#).unwrap(),
+            GroupKey::Ungrouped
+        );
+        assert_eq!(
+            serde_json::from_str::<GroupKey>(r#""recent""#).unwrap(),
+            GroupKey::Named("recent".into())
+        );
+        assert!(serde_json::from_str::<GroupKey>(r#""default""#).is_err());
     }
 
     #[test]
-    fn group_matching_is_unfiltered_ungrouped_or_named() {
-        let now = RECENT_GROUP_WINDOW_MS * 2;
-        assert!(project_matches_group(&[], None, None, None, now));
-        assert!(project_matches_group(
+    fn legacy_recent_group_stays_named_while_default_is_migrated() {
+        let config: GlobalConfig = toml::from_str(
+            "tabs = [\"recent\", \"Default\"]\n[[projects]]\nname = \"p\"\npath = \"/p\"\ntab = \"recent\"\n",
+        )
+        .unwrap();
+
+        assert!(config.groups.iter().any(|group| group == "recent"));
+        assert!(!config
+            .groups
+            .iter()
+            .any(|group| group.eq_ignore_ascii_case("default")));
+        assert_eq!(config.projects[0].groups, ["recent"]);
+    }
+
+    #[test]
+    fn ordered_group_keys_start_with_ungrouped_and_preserve_configured_order() {
+        let config = GlobalConfig {
+            groups: vec!["work".into(), "recent".into()],
+            ..GlobalConfig::default()
+        };
+
+        assert_eq!(
+            config.ordered_group_keys(),
+            vec![
+                GroupKey::Ungrouped,
+                GroupKey::Named("work".into()),
+                GroupKey::Named("recent".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn group_matching_uses_only_memberships_and_exact_names() {
+        assert!(project_matches_group(&[], None));
+        assert!(project_matches_group(&["work".into()], None));
+        assert!(project_matches_group(&[], Some(&GroupKey::Ungrouped)));
+        assert!(!project_matches_group(
+            &["work".into()],
+            Some(&GroupKey::Ungrouped)
+        ));
+        assert!(!project_matches_group(
             &[],
-            None,
-            None,
-            Some(&GroupKey::Ungrouped),
-            now
+            Some(&GroupKey::Named("recent".into()))
         ));
         assert!(project_matches_group(
-            &["work".into()],
-            None,
-            None,
-            Some(&GroupKey::Named("work".into())),
-            now
+            &["other".into(), "recent".into()],
+            Some(&GroupKey::Named("recent".into()))
+        ));
+        assert!(!project_matches_group(
+            &["Recent".into()],
+            Some(&GroupKey::Named("recent".into()))
         ));
         assert!(!project_matches_group(
             &["other".into()],
-            None,
-            None,
-            Some(&GroupKey::Named("work".into())),
-            now
-        ));
-    }
-
-    #[test]
-    fn recent_accepts_either_source_at_the_boundary_and_during_clock_rollback() {
-        let now = RECENT_GROUP_WINDOW_MS * 2;
-        for (agent, terminal) in [
-            (Some(now - RECENT_GROUP_WINDOW_MS), None),
-            (None, Some(now - RECENT_GROUP_WINDOW_MS)),
-            (Some(now + 1), None),
-        ] {
-            assert!(project_matches_group(
-                &[],
-                agent,
-                terminal,
-                Some(&GroupKey::Recent),
-                now
-            ));
-        }
-        assert!(!project_matches_group(
-            &[],
-            Some(now - RECENT_GROUP_WINDOW_MS - 1),
-            None,
-            Some(&GroupKey::Recent),
-            now
+            Some(&GroupKey::Named("work".into()))
         ));
     }
 }

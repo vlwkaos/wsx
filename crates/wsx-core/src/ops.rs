@@ -13,7 +13,7 @@ use crate::{
         AgentState, Client, ProjectSpec, Request, Response, SessionId, Snapshot, WorktreeSpec,
     },
 };
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -60,28 +60,6 @@ pub fn runtime_snapshot() -> Result<Snapshot> {
         Response::Snapshot(snapshot) => Ok(snapshot),
         Response::Error(error) => bail!("{}: {}", error.code, error.message),
         _ => bail!("wsx daemon returned an unexpected snapshot response"),
-    }
-}
-
-pub fn clear_project_recent(path: &Path) -> Result<()> {
-    let client = Client::local();
-    let snapshot = match client.call(&Request::Snapshot)? {
-        Response::Snapshot(snapshot) => snapshot,
-        Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("wsx daemon returned an unexpected snapshot response"),
-    };
-    let project = snapshot
-        .projects
-        .iter()
-        .find(|project| project.path == path)
-        .with_context(|| format!("runtime project not found: {}", path.display()))?;
-    match client.call(&Request::ProjectRecentClear {
-        project_id: project.id,
-        expected_revision: project.revision,
-    })? {
-        Response::Ack { .. } => Ok(()),
-        Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("wsx daemon returned an unexpected recent-clear response"),
     }
 }
 

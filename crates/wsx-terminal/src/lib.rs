@@ -30,6 +30,7 @@ const MAX_ARG_BYTES: usize = 64 * 1024;
 const MAX_STARTUP_INPUT_BYTES: usize = 64 * 1024;
 const STARTUP_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const BRACKETED_PASTE_MODE: u16 = 2004;
+const MOUSE_SCROLL_LINES: isize = 3;
 
 #[derive(Debug)]
 pub enum TerminalError {
@@ -101,6 +102,13 @@ pub struct TerminalRuntime {
     terminal_id: TerminalId,
     shared: Arc<Shared>,
     process: Option<Process>,
+}
+
+pub struct PresentationSample {
+    pub revision: u64,
+    pub synchronized_output: bool,
+    pub update: Result<Option<TerminalUpdate>, TerminalError>,
+    pub clipboard_writes: Vec<Vec<u8>>,
 }
 
 impl TerminalRuntime {
@@ -232,22 +240,7 @@ impl TerminalRuntime {
         }
         let bytes = {
             let mut emulator = lock(&self.shared.emulator);
-            emulator.sync_input();
-            let mut event = ghostty::KeyEvent::new()?;
-            event.set_action(if key.repeat {
-                ghostty::ffi::GhosttyKeyAction_GHOSTTY_KEY_ACTION_REPEAT
-            } else {
-                ghostty::ffi::GhosttyKeyAction_GHOSTTY_KEY_ACTION_PRESS
-            });
-            event.set_mods(modifiers(key.shift, key.control, key.alt, key.super_key));
-            event.set_key(ghostty_key(key));
-            if !key.text.is_empty() {
-                event.set_utf8(&key.text);
-                if let Some(character) = key.text.chars().next() {
-                    event.set_unshifted_codepoint(character.to_ascii_lowercase() as u32);
-                }
-            }
-            emulator.keys.encode(&event)?
+            encode_key(&mut emulator, key)?
         };
         self.write(&bytes)
     }
@@ -264,35 +257,55 @@ impl TerminalRuntime {
     }
 
     pub fn mouse(&self, mouse: &MouseEvent) -> Result<(), TerminalError> {
-        let bytes = {
+        let (bytes, viewport_changed) = {
             let mut emulator = lock(&self.shared.emulator);
-            emulator.sync_input();
-            let mut event = ghostty::MouseEvent::new()?;
-            event.set_action(match mouse.action {
-                MouseAction::Press => ghostty::MOUSE_ACTION_PRESS,
-                MouseAction::Release => ghostty::MOUSE_ACTION_RELEASE,
-                MouseAction::Motion => ghostty::MOUSE_ACTION_MOTION,
-            });
-            match mouse.button {
-                MouseButton::Left => event.set_button(ghostty::MOUSE_BUTTON_LEFT),
-                MouseButton::Middle => event.set_button(ghostty::MOUSE_BUTTON_MIDDLE),
-                MouseButton::Right => event.set_button(ghostty::MOUSE_BUTTON_RIGHT),
-                MouseButton::WheelUp => event.set_button(ghostty::MOUSE_BUTTON_WHEEL_UP),
-                MouseButton::WheelDown => event.set_button(ghostty::MOUSE_BUTTON_WHEEL_DOWN),
-                MouseButton::WheelLeft => event.set_button(ghostty::MOUSE_BUTTON_WHEEL_LEFT),
-                MouseButton::WheelRight => event.set_button(ghostty::MOUSE_BUTTON_WHEEL_RIGHT),
-                MouseButton::None => event.clear_button(),
+            if let Some(delta) = mouse_scroll_delta(mouse) {
+                if !emulator.terminal.mouse_tracking_enabled()? {
+                    if emulator.terminal.active_screen()? == ghostty::ActiveScreen::Alternate
+                        && emulator
+                            .terminal
+                            .mode_get(ghostty::MODE_MOUSE_ALTERNATE_SCROLL)?
+                    {
+                        let code = if delta < 0 {
+                            KeyCode::Up
+                        } else {
+                            KeyCode::Down
+                        };
+                        let key = KeyEvent {
+                            code,
+                            text: String::new(),
+                            shift: false,
+                            control: false,
+                            alt: false,
+                            super_key: false,
+                            repeat: false,
+                        };
+                        emulator.sync_input();
+                        let mut bytes = Vec::new();
+                        for _ in 0..delta.unsigned_abs() {
+                            bytes.extend(encode_synced_key(&mut emulator, &key)?);
+                        }
+                        (bytes, false)
+                    } else {
+                        let before = emulator.terminal.scrollbar()?.offset;
+                        emulator.terminal.scroll_viewport_delta(delta);
+                        let after = emulator.terminal.scrollbar()?.offset;
+                        (Vec::new(), before != after)
+                    }
+                } else {
+                    (encode_mouse(&mut emulator, mouse)?, false)
+                }
+            } else {
+                (encode_mouse(&mut emulator, mouse)?, false)
             }
-            event.set_mods(modifiers(
-                mouse.shift,
-                mouse.control,
-                mouse.alt,
-                mouse.super_key,
-            ));
-            event.set_position(f32::from(mouse.x), f32::from(mouse.y));
-            emulator.mouse.encode(&event)?
         };
-        self.write(&bytes)
+        if viewport_changed {
+            self.shared.revision.fetch_add(1, Ordering::AcqRel);
+            (self.shared.notify)();
+            Ok(())
+        } else {
+            self.write(&bytes)
+        }
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<(), TerminalError> {
@@ -397,18 +410,56 @@ impl TerminalRuntime {
         })
     }
 
-    pub fn frame_update(
-        &self,
-        base_revision: Option<u64>,
-    ) -> Result<TerminalUpdate, TerminalError> {
+    #[cfg(test)]
+    fn frame_update(&self, base_revision: Option<u64>) -> Result<TerminalUpdate, TerminalError> {
         if let Some(error) = lock(&self.shared.error).clone() {
             return Err(TerminalError::Runtime(error));
         }
         let mut emulator = lock(&self.shared.emulator);
         let revision = self.shared.revision.load(Ordering::Acquire);
+        self.frame_update_locked(&mut emulator, revision, base_revision)
+    }
+
+    pub fn presentation_sample(
+        &self,
+        base_revision: Option<u64>,
+        emit_frame: bool,
+    ) -> PresentationSample {
+        let runtime_error = lock(&self.shared.error).clone();
+        let mut emulator = lock(&self.shared.emulator);
+        let revision = self.shared.revision.load(Ordering::Acquire);
+        let synchronized_output = emulator
+            .terminal
+            .mode_get(ghostty::MODE_SYNCHRONIZED_OUTPUT)
+            .unwrap_or(false);
+        let clipboard_writes = emulator.terminal.take_clipboard_writes();
+        let update = if let Some(error) = runtime_error {
+            Err(TerminalError::Runtime(error))
+        } else if base_revision.is_none()
+            || (emit_frame && !synchronized_output && base_revision != Some(revision))
+        {
+            self.frame_update_locked(&mut emulator, revision, base_revision)
+                .map(Some)
+        } else {
+            Ok(None)
+        };
+        PresentationSample {
+            revision,
+            synchronized_output,
+            update,
+            clipboard_writes,
+        }
+    }
+
+    fn frame_update_locked(
+        &self,
+        emulator: &mut Emulator,
+        revision: u64,
+        base_revision: Option<u64>,
+    ) -> Result<TerminalUpdate, TerminalError> {
         let Emulator {
             terminal, render, ..
-        } = &mut *emulator;
+        } = emulator;
         render.update(terminal)?;
         let cols = render.cols()?;
         let rows = render.rows()?;
@@ -510,11 +561,16 @@ impl TerminalRuntime {
         }
     }
 
+    pub fn take_clipboard_writes(&self) -> Vec<Vec<u8>> {
+        lock(&self.shared.emulator).terminal.take_clipboard_writes()
+    }
+
     pub fn revision(&self) -> u64 {
         self.shared.revision.load(Ordering::Acquire)
     }
 
-    pub fn synchronized_output_active(&self) -> bool {
+    #[cfg(test)]
+    fn synchronized_output_active(&self) -> bool {
         let emulator = lock(&self.shared.emulator);
         emulator
             .terminal
@@ -818,6 +874,68 @@ fn modifiers(shift: bool, control: bool, alt: bool, super_key: bool) -> u16 {
         | (if alt { ghostty::MOD_ALT } else { 0 })
         | (if super_key { ghostty::MOD_SUPER } else { 0 })
 }
+fn encode_key(emulator: &mut Emulator, key: &KeyEvent) -> Result<Vec<u8>, ghostty::Error> {
+    emulator.sync_input();
+    encode_synced_key(emulator, key)
+}
+
+fn encode_synced_key(emulator: &mut Emulator, key: &KeyEvent) -> Result<Vec<u8>, ghostty::Error> {
+    let mut event = ghostty::KeyEvent::new()?;
+    event.set_action(if key.repeat {
+        ghostty::ffi::GhosttyKeyAction_GHOSTTY_KEY_ACTION_REPEAT
+    } else {
+        ghostty::ffi::GhosttyKeyAction_GHOSTTY_KEY_ACTION_PRESS
+    });
+    event.set_mods(modifiers(key.shift, key.control, key.alt, key.super_key));
+    event.set_key(ghostty_key(key));
+    if !key.text.is_empty() {
+        event.set_utf8(&key.text);
+        if let Some(character) = key.text.chars().next() {
+            event.set_unshifted_codepoint(character.to_ascii_lowercase() as u32);
+        }
+    }
+    emulator.keys.encode(&event)
+}
+
+fn encode_mouse(emulator: &mut Emulator, mouse: &MouseEvent) -> Result<Vec<u8>, ghostty::Error> {
+    emulator.sync_input();
+    let mut event = ghostty::MouseEvent::new()?;
+    event.set_action(match mouse.action {
+        MouseAction::Press => ghostty::MOUSE_ACTION_PRESS,
+        MouseAction::Release => ghostty::MOUSE_ACTION_RELEASE,
+        MouseAction::Motion => ghostty::MOUSE_ACTION_MOTION,
+    });
+    match mouse.button {
+        MouseButton::Left => event.set_button(ghostty::MOUSE_BUTTON_LEFT),
+        MouseButton::Middle => event.set_button(ghostty::MOUSE_BUTTON_MIDDLE),
+        MouseButton::Right => event.set_button(ghostty::MOUSE_BUTTON_RIGHT),
+        MouseButton::WheelUp => event.set_button(ghostty::MOUSE_BUTTON_WHEEL_UP),
+        MouseButton::WheelDown => event.set_button(ghostty::MOUSE_BUTTON_WHEEL_DOWN),
+        MouseButton::WheelLeft => event.set_button(ghostty::MOUSE_BUTTON_WHEEL_LEFT),
+        MouseButton::WheelRight => event.set_button(ghostty::MOUSE_BUTTON_WHEEL_RIGHT),
+        MouseButton::None => event.clear_button(),
+    }
+    event.set_mods(modifiers(
+        mouse.shift,
+        mouse.control,
+        mouse.alt,
+        mouse.super_key,
+    ));
+    event.set_position(f32::from(mouse.x), f32::from(mouse.y));
+    emulator.mouse.encode(&event)
+}
+
+fn mouse_scroll_delta(mouse: &MouseEvent) -> Option<isize> {
+    if mouse.action != MouseAction::Press {
+        return None;
+    }
+    match mouse.button {
+        MouseButton::WheelUp => Some(-MOUSE_SCROLL_LINES),
+        MouseButton::WheelDown => Some(MOUSE_SCROLL_LINES),
+        _ => None,
+    }
+}
+
 fn ghostty_key(key: &KeyEvent) -> u32 {
     use ghostty::ffi::*;
     match key.code {
@@ -1003,6 +1121,104 @@ mod tests {
     }
 
     #[test]
+    fn presentation_sample_defers_frames_without_deferring_effects() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        let initial = match runtime.frame_update(None).unwrap() {
+            TerminalUpdate::Full(frame) => frame,
+            TerminalUpdate::Patch { .. } => panic!("expected initial full frame"),
+        };
+        let baseline = initial.revision;
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"A\x1b]52;c;Y29waWVk\x07");
+            emulator.sync_input();
+        }
+        runtime.shared.revision.fetch_add(1, Ordering::AcqRel);
+
+        let deferred = runtime.presentation_sample(Some(baseline), false);
+        assert!(deferred.update.as_ref().unwrap().is_none());
+        assert_eq!(deferred.clipboard_writes, vec![b"copied".to_vec()]);
+
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"B");
+        }
+        runtime.shared.revision.fetch_add(1, Ordering::AcqRel);
+        let emitted = runtime.presentation_sample(Some(baseline), true);
+        let mut latest = Some(initial);
+        emitted
+            .update
+            .as_ref()
+            .unwrap()
+            .clone()
+            .unwrap()
+            .apply_to(&mut latest)
+            .unwrap();
+        assert_eq!(
+            latest.unwrap().cells[0..2]
+                .iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>(),
+            "AB"
+        );
+        assert!(emitted.clipboard_writes.is_empty());
+
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"\x1b]52;c;ZXJyb3I=\x07");
+        }
+        *lock(&runtime.shared.error) = Some("failed".into());
+        let failed = runtime.presentation_sample(Some(emitted.revision), true);
+        assert_eq!(failed.clipboard_writes, vec![b"error".to_vec()]);
+        assert!(failed.update.is_err());
+    }
+
+    #[test]
+    fn presentation_sample_keeps_mode_revision_frame_and_effects_under_one_lock() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator
+                .terminal
+                .write(b"\x1b[?2026hA\x1b]52;c;Zmlyc3Q=\x07\x1b]52;c;c2Vjb25k\x07");
+            emulator.sync_input();
+        }
+        runtime.shared.revision.fetch_add(1, Ordering::AcqRel);
+
+        let initial = runtime.presentation_sample(None, true);
+        let baseline = initial
+            .update
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .revision();
+        assert!(initial.synchronized_output);
+        assert_eq!(
+            initial.clipboard_writes,
+            vec![b"first".to_vec(), b"second".to_vec()]
+        );
+
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"B");
+        }
+        runtime.shared.revision.fetch_add(1, Ordering::AcqRel);
+        let suppressed = runtime.presentation_sample(Some(baseline), true);
+        assert!(suppressed.synchronized_output);
+        assert!(suppressed.update.as_ref().unwrap().is_none());
+
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"\x1b[?2026l");
+        }
+        runtime.shared.revision.fetch_add(1, Ordering::AcqRel);
+        let released = runtime.presentation_sample(Some(baseline), true);
+        assert!(!released.synchronized_output);
+        assert!(released.update.as_ref().unwrap().is_some());
+    }
+
+    #[test]
     fn wide_cells_and_spacer_tails_survive_frame_updates() {
         let runtime = TerminalRuntime::new_for_test(1, 4).unwrap();
         {
@@ -1098,6 +1314,209 @@ mod tests {
             b"\x1b[200~one\ntwo\x1b[201~"
         );
         assert_eq!(ghostty::encode_paste(b"a\0b", false).unwrap(), b"a b");
+    }
+
+    fn wheel_up() -> MouseEvent {
+        MouseEvent {
+            action: MouseAction::Press,
+            button: MouseButton::WheelUp,
+            x: 0,
+            y: 0,
+            shift: false,
+            control: false,
+            alt: false,
+            super_key: false,
+        }
+    }
+
+    fn wheel_down() -> MouseEvent {
+        MouseEvent {
+            button: MouseButton::WheelDown,
+            ..wheel_up()
+        }
+    }
+
+    struct RecordingWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Write for RecordingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            lock(&self.0).extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn recording_writer(runtime: &TerminalRuntime) -> std::sync::Arc<std::sync::Mutex<Vec<u8>>> {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        *lock(&runtime.shared.writer) = Some(Box::new(RecordingWriter(captured.clone())));
+        captured
+    }
+
+    fn frame_rows(frame: &TerminalFrame) -> Vec<String> {
+        frame
+            .cells
+            .chunks(usize::from(frame.cols))
+            .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
+            .collect()
+    }
+
+    fn runtime_with_scrollback() -> TerminalRuntime {
+        let runtime = TerminalRuntime::new_for_test(3, 4).unwrap();
+        let mut emulator = lock(&runtime.shared.emulator);
+        for line in 0..9 {
+            let text = if line == 8 {
+                format!("{line:02}")
+            } else {
+                format!("{line:02}\r\n")
+            };
+            emulator.terminal.write(text.as_bytes());
+        }
+        drop(emulator);
+        runtime
+    }
+
+    #[test]
+    fn primary_wheel_updates_the_frame_and_revision_immediately() {
+        let runtime = runtime_with_scrollback();
+        let captured = recording_writer(&runtime);
+        let revision = runtime.revision();
+
+        runtime.mouse(&wheel_up()).unwrap();
+
+        assert_eq!(
+            (frame_rows(&runtime.frame().unwrap()), runtime.revision()),
+            (
+                vec!["03  ".into(), "04  ".into(), "05  ".into()],
+                revision + 1
+            )
+        );
+        assert!(lock(&captured).is_empty());
+    }
+
+    #[test]
+    fn primary_wheel_at_the_bottom_of_scrollback_is_a_revision_no_op() {
+        let runtime = runtime_with_scrollback();
+        let captured = recording_writer(&runtime);
+        let before = runtime.frame().unwrap();
+        let revision = runtime.revision();
+
+        runtime.mouse(&wheel_down()).unwrap();
+
+        assert_eq!(
+            (frame_rows(&runtime.frame().unwrap()), runtime.revision()),
+            (frame_rows(&before), revision)
+        );
+        assert!(lock(&captured).is_empty());
+    }
+
+    #[test]
+    fn primary_wheel_at_the_top_of_scrollback_is_a_revision_no_op() {
+        let runtime = runtime_with_scrollback();
+        let captured = recording_writer(&runtime);
+        runtime.mouse(&wheel_up()).unwrap();
+        runtime.mouse(&wheel_up()).unwrap();
+        let before = runtime.frame().unwrap();
+        let revision = runtime.revision();
+
+        runtime.mouse(&wheel_up()).unwrap();
+
+        assert_eq!(
+            (frame_rows(&runtime.frame().unwrap()), runtime.revision()),
+            (frame_rows(&before), revision)
+        );
+        assert!(lock(&captured).is_empty());
+    }
+
+    #[test]
+    fn primary_wheel_down_after_wheel_up_moves_exactly_three_rows() {
+        let runtime = runtime_with_scrollback();
+        let captured = recording_writer(&runtime);
+        runtime.mouse(&wheel_up()).unwrap();
+        let revision = runtime.revision();
+
+        runtime.mouse(&wheel_down()).unwrap();
+
+        assert_eq!(
+            (frame_rows(&runtime.frame().unwrap()), runtime.revision()),
+            (
+                vec!["06  ".into(), "07  ".into(), "08  ".into()],
+                revision + 1
+            )
+        );
+        assert!(lock(&captured).is_empty());
+    }
+
+    #[test]
+    fn reported_primary_wheel_does_not_change_the_local_viewport() {
+        let runtime = runtime_with_scrollback();
+        let captured = recording_writer(&runtime);
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"\x1b[?1000h\x1b[?1006h");
+        }
+        let before = runtime.frame().unwrap();
+        let revision = runtime.revision();
+
+        runtime.mouse(&wheel_up()).unwrap();
+
+        assert_eq!(
+            (frame_rows(&runtime.frame().unwrap()), runtime.revision()),
+            (frame_rows(&before), revision)
+        );
+        assert_eq!(&*lock(&captured), b"\x1b[<64;1;1M");
+    }
+
+    #[test]
+    fn alternate_scroll_wheel_does_not_change_the_local_viewport() {
+        let runtime = TerminalRuntime::new_for_test(3, 4).unwrap();
+        let captured = recording_writer(&runtime);
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"ALT\x1b[?1049h\x1b[?1007h");
+        }
+        let before = runtime.frame().unwrap();
+        let revision = runtime.revision();
+
+        runtime.mouse(&wheel_up()).unwrap();
+
+        assert_eq!(
+            (frame_rows(&runtime.frame().unwrap()), runtime.revision()),
+            (frame_rows(&before), revision)
+        );
+        assert_eq!(&*lock(&captured), b"\x1b[A\x1b[A\x1b[A");
+    }
+
+    #[test]
+    fn clipboard_writes_preserve_every_bounded_terminal_effect_in_order() {
+        let runtime = TerminalRuntime::new_for_test(3, 4).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator
+                .terminal
+                .write(b"\x1b]52;c;Zmlyc3Q=\x07\x1b]52;c;c2Vjb25k\x07");
+        }
+
+        assert_eq!(
+            runtime.take_clipboard_writes(),
+            vec![b"first".to_vec(), b"second".to_vec()]
+        );
+        assert!(runtime.take_clipboard_writes().is_empty());
+    }
+
+    #[test]
+    fn clipboard_write_fifo_rejects_overflow_without_overwriting_accepted_effects() {
+        let runtime = TerminalRuntime::new_for_test(3, 4).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(&b"\x1b]52;c;YQ==\x07".repeat(65));
+        }
+
+        let writes = runtime.take_clipboard_writes();
+        assert_eq!(writes.len(), 64);
+        assert!(writes.iter().all(|write| write == b"a"));
     }
 
     #[test]

@@ -2,7 +2,7 @@ use super::domain::*;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -19,10 +19,6 @@ pub enum Request {
     },
     SynchronizeProjects {
         projects: Vec<ProjectSpec>,
-    },
-    ProjectRecentClear {
-        project_id: ProjectId,
-        expected_revision: u64,
     },
     SessionCreate {
         worktree_id: WorktreeId,
@@ -204,6 +200,7 @@ pub enum TerminalClientMessage {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum TerminalServerMessage {
     Update(TerminalUpdate),
+    ClipboardWrite(Vec<u8>),
     Error(ApiError),
     Exited,
 }
@@ -234,6 +231,14 @@ mod tests {
         let bytes = encode_line(&Request::Snapshot).unwrap();
         assert_eq!(bytes.last(), Some(&b'\n'));
         assert!(String::from_utf8(bytes).unwrap().contains("snapshot"));
+    }
+
+    #[test]
+    fn unknown_methods_including_recent_clear_are_rejected() {
+        for method in ["unknown_method", "project_recent_clear"] {
+            let json = format!(r#"{{"method":"{method}","params":{{}}}}"#);
+            assert!(serde_json::from_str::<Request>(&json).is_err(), "{method}");
+        }
     }
 
     #[test]
@@ -276,6 +281,16 @@ mod tests {
             panic!("expected session create request");
         };
         assert_eq!(initial_input, None);
+    }
+
+    #[test]
+    fn clipboard_write_is_a_distinct_ephemeral_stream_message() {
+        let bytes =
+            encode_line(&TerminalServerMessage::ClipboardWrite(b"copied".to_vec())).unwrap();
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            "{\"type\":\"clipboard_write\",\"data\":[99,111,112,105,101,100]}\n"
+        );
     }
 
     #[test]

@@ -19,6 +19,12 @@ pub(crate) enum SurfaceUpdate {
 }
 
 impl TerminalSurfaces {
+    pub(crate) fn reset(&mut self) {
+        self.epoch = None;
+        self.identities.clear();
+        self.frames.clear();
+    }
+
     pub(crate) fn reconcile(&mut self, snapshot: &Snapshot) {
         if self.epoch != Some(snapshot.epoch) {
             self.frames.clear();
