@@ -2,6 +2,7 @@
 // ref: ratatui docs — https://ratatui.rs/concepts/backends/
 
 use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use crossterm::{
     cursor::SetCursorStyle,
     event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
@@ -12,7 +13,7 @@ use crossterm::{
     },
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 use wsx_core::runtime::Cursor;
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
@@ -61,6 +62,17 @@ where
         cursor_style(cursor),
         EndSynchronizedUpdate
     )?;
+    Ok(())
+}
+
+fn osc52_sequence(text: &[u8]) -> String {
+    format!("\x1b]52;c;{}\x07", BASE64_STANDARD.encode(text))
+}
+
+pub fn copy_to_clipboard(text: &[u8]) -> Result<()> {
+    let mut stdout = io::stdout().lock();
+    write!(stdout, "{}", osc52_sequence(text))?;
+    stdout.flush()?;
     Ok(())
 }
 
@@ -120,6 +132,11 @@ fn cursor_style(cursor: Option<Cursor>) -> SetCursorStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_output_is_one_standard_osc52_sequence() {
+        assert_eq!(osc52_sequence(b"copied"), "\x1b]52;c;Y29waWVk\x07");
+    }
 
     #[test]
     fn maps_ghostty_cursor_shapes_and_blinking() {

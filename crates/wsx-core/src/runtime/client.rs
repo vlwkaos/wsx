@@ -1184,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_stream_preserves_update_buffered_with_subscribe_ack() {
+    fn terminal_stream_preserves_clipboard_effect_buffered_with_subscribe_ack() {
         let (path, listener) = test_listener("buffered-subscribe");
         let server_path = path.clone();
         let server = thread::spawn(move || {
@@ -1211,6 +1211,9 @@ mod tests {
                 }
             ));
             bytes = encode_line(&Response::Ack { revision: 1 }).unwrap();
+            bytes.extend(
+                encode_line(&TerminalServerMessage::ClipboardWrite(b"copied".to_vec())).unwrap(),
+            );
             bytes.extend(encode_line(&TerminalServerMessage::Exited).unwrap());
             stream.write_all(&bytes).unwrap();
             thread::sleep(Duration::from_millis(50));
@@ -1228,8 +1231,10 @@ mod tests {
         )
         .unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
+        let mut clipboard = None;
         loop {
             match stream.try_recv() {
+                Ok(TerminalServerMessage::ClipboardWrite(text)) => clipboard = Some(text),
                 Ok(TerminalServerMessage::Exited) => break,
                 Ok(message) => panic!("unexpected terminal message: {message:?}"),
                 Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
@@ -1238,6 +1243,7 @@ mod tests {
                 Err(error) => panic!("terminal update missing after ACK: {error}"),
             }
         }
+        assert_eq!(clipboard.as_deref(), Some(b"copied".as_slice()));
         drop(stream);
         server.join().unwrap();
     }

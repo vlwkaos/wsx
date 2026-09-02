@@ -85,7 +85,6 @@ pub enum GroupStripTarget {
 
 pub fn group_label(group: &GroupKey) -> &str {
     match group {
-        GroupKey::Recent => "◷ recent",
         GroupKey::Ungrouped => "ungrouped",
         GroupKey::Named(name) => name,
     }
@@ -259,7 +258,6 @@ mod tests {
 
     fn groups() -> Vec<GroupKey> {
         vec![
-            GroupKey::Recent,
             GroupKey::Ungrouped,
             GroupKey::Named("personal".into()),
             GroupKey::Named("work".into()),
@@ -289,16 +287,16 @@ mod tests {
     }
 
     #[test]
-    fn wide_projection_shows_every_group_without_overflow() {
-        let strip = fit_group_strip(&groups(), Some(&GroupKey::Recent), 100, 0);
-        assert_eq!(strip.chips.len(), 4);
+    fn wide_projection_shows_ungrouped_and_named_groups() {
+        let strip = fit_group_strip(&groups(), Some(&GroupKey::Ungrouped), 100, 0);
+        assert_eq!(strip.chips.len(), 3);
         assert!(strip.left_cells.is_none());
         assert!(strip.right_cells.is_none());
     }
 
     #[test]
     fn narrow_projection_scrolls_by_chip_with_exact_boundaries() {
-        let strip = fit_group_strip(&groups(), Some(&GroupKey::Recent), 28, 0);
+        let strip = fit_group_strip(&groups(), Some(&GroupKey::Ungrouped), 28, 0);
         let right = strip.right_cells.clone().unwrap();
         assert_eq!(
             strip.target_at(right.start),
@@ -313,7 +311,7 @@ mod tests {
             strip.target_at(first.cells.end),
             Some(GroupStripTarget::Group(first.key.clone()))
         );
-        let shifted = fit_group_strip(&groups(), Some(&GroupKey::Named("work".into())), 28, 3);
+        let shifted = fit_group_strip(&groups(), Some(&GroupKey::Named("work".into())), 28, 2);
         let left = shifted.left_cells.clone().unwrap();
         assert_eq!(
             shifted.target_at(left.start),

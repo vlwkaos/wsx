@@ -31,8 +31,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Paragraph},
 };
-use std::time::{SystemTime, UNIX_EPOCH};
-use wsx_core::{config::global::project_is_recent, model::workspace::Selection};
+use wsx_core::model::workspace::Selection;
 
 fn git_remote_status_color(behind: usize, ahead: usize) -> Color {
     match (behind, ahead) {
@@ -50,6 +49,26 @@ fn compact_port_label(ports: &[u16]) -> Option<String> {
     } else {
         format!(":{port} +{more}")
     })
+}
+
+fn compact_port_label_with_width(ports: &[u16], max_width: usize) -> Option<String> {
+    let mut best = None;
+    for shown in 1..=ports.len() {
+        let mut label = ports[..shown]
+            .iter()
+            .map(|port| format!(":{port}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let remaining = ports.len() - shown;
+        if remaining > 0 {
+            label.push_str(&format!(" +{remaining}"));
+        }
+        if Line::from(label.as_str()).width() > max_width {
+            break;
+        }
+        best = Some(label);
+    }
+    best
 }
 
 /// Center a popup of given size within `area`.
@@ -103,11 +122,7 @@ fn render_workspace_header(frame: &mut Frame, area: Rect, app: &App) {
         );
     }
     for chip in strip.chips {
-        let style = if matches!(chip.key, wsx_core::config::global::GroupKey::Recent) {
-            theme::recent_group_chip(chip.active)
-        } else {
-            theme::group_chip(chip.active)
-        };
+        let style = theme::group_chip(chip.active);
         frame.render_widget(
             Paragraph::new(Span::styled(format!(" {} ", chip.label), style)),
             Rect::new(
@@ -153,7 +168,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let sidebar_layout = SidebarLayout::bordered(tree_area);
     let visible_height = sidebar_layout.list.height as usize;
     app.tree_visible_height = visible_height;
-    app.tree_scroll = compute_scroll(app.tree_selected, visible_height, app.tree_scroll);
+    if app.tree_scroll_manual {
+        (app.tree_scroll, app.tree_selected) = workspace_tree::scroll_viewport(
+            app.tree_scroll,
+            app.tree_selected,
+            visible_height,
+            app.flat().len(),
+            0,
+        );
+    } else {
+        app.tree_scroll = compute_scroll(app.tree_selected, visible_height, app.tree_scroll);
+    }
     app.tree_area = tree_area;
     app.preview_area = preview_area;
     let has_terminal_preview = matches!(
@@ -189,24 +214,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     .map(|p| p.path.as_path()),
                 GroupManagerPurpose::Switch => None,
             };
-            let now_unix_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-                .try_into()
-                .unwrap_or(u64::MAX);
-            let recent_project_count = app
-                .workspace
-                .projects
-                .iter()
-                .filter(|project| {
-                    project_is_recent(
-                        project.last_agent_active_unix_ms,
-                        project.last_terminal_active_unix_ms,
-                        now_unix_ms,
-                    )
-                })
-                .count();
             render_group_manager(
                 frame,
                 tree_area,
@@ -216,16 +223,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     config: &app.config,
                     active_group: app.active_group.as_ref(),
                     assign_path,
-                    recent_project_count,
                 },
             );
         } else {
+            let stale_projects = app.stale_project_indices();
             render_tree(
                 frame,
                 sidebar_layout,
                 TreeView {
                     workspace: &app.workspace,
                     flat: app.flat(),
+                    stale_projects: &stale_projects,
                     selected: app.tree_selected,
                     scroll_offset: app.tree_scroll,
                     is_move_mode,
@@ -428,11 +436,6 @@ fn status_bar_view(app: &App) -> StatusBarView {
     let (mode, badge, hints) = match &app.mode {
         Mode::Workspace => {
             let mut hints = match app.current_selection() {
-                Selection::Project(_)
-                    if app.active_group == Some(wsx_core::config::global::GroupKey::Recent) =>
-                {
-                    vec!["(e)dit", "(w)orktree", "(g)roup", "(d)remove recent"]
-                }
                 Selection::Project(_) if app.config.groups.is_empty() => {
                     vec!["(e)dit", "(w)orktree", "(T)groups", "(d)unregister"]
                 }
@@ -781,7 +784,7 @@ fn split_at_word(s: &str, max_chars: usize) -> (&str, &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{fit_hints, git_remote_status_color, theme};
+    use super::{compact_port_label_with_width, fit_hints, git_remote_status_color, theme};
 
     #[test]
     fn git_remote_status_uses_actionable_semantic_colors() {
@@ -789,6 +792,21 @@ mod tests {
         assert_eq!(git_remote_status_color(0, 2), theme::SUCCESS);
         assert_eq!(git_remote_status_color(2, 0), theme::ERROR);
         assert_eq!(git_remote_status_color(2, 1), theme::WARNING);
+    }
+
+    #[test]
+    fn compact_port_labels_show_actual_ports_that_fit() {
+        let ports = [5173, 8081, 9000];
+
+        assert_eq!(
+            compact_port_label_with_width(&ports, 18).as_deref(),
+            Some(":5173 :8081 :9000")
+        );
+        assert_eq!(
+            compact_port_label_with_width(&ports, 13).as_deref(),
+            Some(":5173 +2")
+        );
+        assert_eq!(compact_port_label_with_width(&ports, 7), None);
     }
 
     #[test]

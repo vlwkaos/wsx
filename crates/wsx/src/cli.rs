@@ -2,7 +2,6 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::session_state;
 use wsx_core::{
@@ -804,42 +803,53 @@ fn load_full_workspace() -> Result<(GlobalConfig, WorkspaceState)> {
 }
 
 fn parse_group_key(value: &str) -> std::result::Result<GroupKey, String> {
-    if value.eq_ignore_ascii_case("recent") {
-        Ok(GroupKey::Recent)
-    } else if value.eq_ignore_ascii_case("ungrouped") {
+    if value.eq_ignore_ascii_case("ungrouped") {
         Ok(GroupKey::Ungrouped)
     } else {
         GroupKey::named(value)
     }
 }
 
-fn now_unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
 #[cfg(test)]
 mod group_command_tests {
-    use super::{Args, Command, GroupCmd};
+    use super::{resolve_projects, Args, Command, GroupCmd};
     use clap::Parser;
-    use wsx_core::config::global::GroupKey;
+    use wsx_core::config::global::{GlobalConfig, GroupKey};
+    use wsx_core::model::workspace::WorkspaceState;
 
     #[test]
-    fn canonical_group_filter_is_singular() {
-        let args = Args::try_parse_from(["wsx", "status", "--group", "work"]).unwrap();
+    fn group_filter_accepts_named_recent_and_rejects_duplicates() {
+        let args = Args::try_parse_from(["wsx", "status", "--group", "recent"]).unwrap();
         assert!(matches!(
             args.command,
             Some(Command::Status { group, .. })
-                if group == Some(GroupKey::Named("work".into()))
+                if group == Some(GroupKey::Named("recent".into()))
         ));
         assert!(
             Args::try_parse_from(["wsx", "status", "--group", "work", "--group", "recent"])
                 .is_err()
         );
+        let ungrouped = Args::try_parse_from(["wsx", "status", "--group", "UNGROUPED"]).unwrap();
+        assert!(matches!(
+            ungrouped.command,
+            Some(Command::Status { group, .. }) if group == Some(GroupKey::Ungrouped)
+        ));
+        assert!(Args::try_parse_from(["wsx", "status", "--group", "Default"]).is_err());
+    }
+
+    #[test]
+    fn named_group_filter_requires_configured_group_including_recent() {
+        let workspace = WorkspaceState { projects: vec![] };
+        let recent = GroupKey::Named("recent".into());
+        let config = GlobalConfig::default();
+        let error = resolve_projects(&config, &workspace, None, Some(&recent)).unwrap_err();
+        assert!(error.to_string().contains("group 'recent' not found"));
+
+        let mut config = GlobalConfig::default();
+        config.groups.push("recent".into());
+        assert!(resolve_projects(&config, &workspace, None, Some(&recent))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1036,19 +1046,10 @@ fn resolve_projects<'a>(
             bail!("group '{}' not found", name);
         }
     }
-    let now = now_unix_ms();
     Ok(workspace
         .projects
         .iter()
-        .filter(|project| {
-            project_matches_group(
-                config.project_groups(&project.path),
-                project.last_agent_active_unix_ms,
-                project.last_terminal_active_unix_ms,
-                group,
-                now,
-            )
-        })
+        .filter(|project| project_matches_group(config.project_groups(&project.path), group))
         .collect())
 }
 

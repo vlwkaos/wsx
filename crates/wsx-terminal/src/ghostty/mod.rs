@@ -12,7 +12,7 @@ pub mod bindings;
 
 use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::c_void;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -466,13 +466,14 @@ impl CellWide {
 type WritePtyCallback = dyn FnMut(&[u8]) + Send;
 
 const MAX_CLIPBOARD_BYTES: usize = 192 * 1024;
+const MAX_PENDING_CLIPBOARD_WRITES: usize = 64;
 
 #[derive(Default)]
 struct TerminalCallbackState {
     write_pty: Option<Box<WritePtyCallback>>,
     bell_count: u16,
     pwd_changes: Vec<Vec<u8>>,
-    clipboard_writes: Vec<Vec<u8>>,
+    clipboard_writes: VecDeque<Vec<u8>>,
     size_report: ffi::GhosttySizeReportSize,
     color_scheme: Option<ColorScheme>,
 }
@@ -609,10 +610,12 @@ unsafe fn capture_clipboard_write(
     if bytes.is_empty() {
         return ffi::GhosttyClipboardWriteResult_GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED;
     }
-    if bytes.len() > MAX_CLIPBOARD_BYTES {
+    if bytes.len() > MAX_CLIPBOARD_BYTES
+        || state.clipboard_writes.len() >= MAX_PENDING_CLIPBOARD_WRITES
+    {
         return ffi::GhosttyClipboardWriteResult_GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA;
     }
-    state.clipboard_writes.push(bytes.to_vec());
+    state.clipboard_writes.push_back(bytes.to_vec());
     ffi::GhosttyClipboardWriteResult_GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS
 }
 
@@ -970,7 +973,7 @@ impl Terminal {
     }
 
     pub fn take_clipboard_writes(&mut self) -> Vec<Vec<u8>> {
-        mem::take(&mut self.callback_state.clipboard_writes)
+        self.callback_state.clipboard_writes.drain(..).collect()
     }
 
     pub fn mode_get(&self, mode: u16) -> Result<bool, Error> {

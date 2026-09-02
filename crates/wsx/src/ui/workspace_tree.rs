@@ -5,10 +5,11 @@ use ratatui::{
     prelude::*,
     widgets::{List, ListItem, ListState},
 };
-use wsx_core::model::workspace::{FlatEntry, WorkspaceState};
+use std::collections::HashSet;
+use wsx_core::model::workspace::{FlatEntry, SessionInfo, WorkspaceState};
 
 use super::{
-    compact_port_label, git_remote_status_color, theme,
+    compact_port_label_with_width, git_remote_status_color, theme,
     workspace_nav::{render_scrollbar, SidebarLayout},
 };
 // ref: ratatui Block title — title() accepts &str or String
@@ -22,9 +23,81 @@ fn routine_tree_label(name: &str, status: &str) -> String {
     format!("  ◇ {name}{status}")
 }
 
+fn truncate_to_width(value: &str, max_width: usize) -> String {
+    if Line::from(value).width() <= max_width {
+        return value.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    let mut value = value.to_string();
+    while !value.is_empty() && Line::from(format!("{value}…")).width() > max_width {
+        value.pop();
+    }
+    if value.is_empty() {
+        "…".into()
+    } else {
+        format!("{value}…")
+    }
+}
+
+fn stale_project_label(icon: &str, name: &str, count: &str, width: usize) -> String {
+    const SUFFIX: &str = "stale";
+    let suffix_width = Line::from(SUFFIX).width();
+    if width <= suffix_width {
+        return truncate_to_width(SUFFIX, width);
+    }
+    let identity_width = width.saturating_sub(suffix_width + 1);
+    let identity = truncate_to_width(&format!("{icon} {name}{count}"), identity_width);
+    let gap = width.saturating_sub(Line::from(identity.as_str()).width() + suffix_width);
+    format!("{identity}{}{SUFFIX}", " ".repeat(gap))
+}
+
+fn session_line(sess: &SessionInfo, width: usize) -> Line<'static> {
+    let state = session_state::derive(sess).app_state();
+    let (icon, icon_color) = session_icon(sess, state);
+    let agent_label = session_state::agent_label(sess.agent.as_deref());
+    let port_label =
+        compact_port_label_with_width(&sess.listening_ports(), width.saturating_sub(12));
+    let port_width = port_label
+        .as_deref()
+        .map_or(0, |label| Line::from(label).width());
+    let prefix_width = 4;
+    let identity_width =
+        width.saturating_sub(prefix_width + port_width + usize::from(port_label.is_some()));
+    let full_identity_width = Line::from(sess.display_name.as_str()).width()
+        + agent_label
+            .as_deref()
+            .map_or(0, |label| Line::from(label).width());
+    let show_agent = full_identity_width <= identity_width;
+    let display_name = if show_agent {
+        sess.display_name.clone()
+    } else {
+        truncate_to_width(&sess.display_name, identity_width)
+    };
+    let mut spans = vec![
+        Span::raw("  "),
+        Span::styled(icon, Style::default().fg(icon_color)),
+        Span::styled(format!(" {display_name}"), Style::default().fg(theme::TEXT)),
+    ];
+    if show_agent {
+        if let Some(agent_label) = agent_label {
+            spans.push(Span::styled(agent_label, theme::agent_label()));
+        }
+    }
+    if let Some(port_label) = port_label {
+        let left_width = Line::from(spans.clone()).width();
+        let gap = width.saturating_sub(left_width + port_width);
+        spans.push(Span::raw(" ".repeat(gap)));
+        spans.push(Span::styled(port_label, Style::default().fg(theme::ACCENT)));
+    }
+    Line::from(spans)
+}
+
 pub struct TreeView<'a> {
     pub workspace: &'a WorkspaceState,
     pub flat: &'a [FlatEntry],
+    pub stale_projects: &'a HashSet<usize>,
     pub selected: usize,
     pub scroll_offset: usize,
     pub is_move_mode: bool,
@@ -34,6 +107,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
     let TreeView {
         workspace,
         flat,
+        stale_projects,
         selected,
         scroll_offset,
         is_move_mode,
@@ -53,6 +127,11 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                     (
                         format!("{} {} (missing)", icon, p.name),
                         Style::default().fg(theme::TEXT_SUBTLE),
+                    )
+                } else if stale_projects.contains(idx) {
+                    (
+                        stale_project_label(icon, &p.name, &count, usize::from(layout.list.width)),
+                        theme::stale_project(),
                     )
                 } else {
                     (
@@ -140,28 +219,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
             } => {
                 let sess = &workspace.projects[*project_idx].worktrees[*worktree_idx].sessions
                     [*session_idx];
-                let state = session_state::derive(sess).app_state();
-                let (icon, icon_color) = session_icon(sess, state);
-                let mut spans = vec![
-                    Span::raw("  "),
-                    Span::styled(icon, Style::default().fg(icon_color)),
-                    Span::styled(
-                        format!(" {}", sess.display_name),
-                        Style::default().fg(theme::TEXT),
-                    ),
-                ];
-                if let Some(agent_label) = session_state::agent_label(sess.agent.as_deref()) {
-                    spans.push(Span::styled(agent_label, theme::agent_label()));
-                }
-                let ports = sess.listening_ports();
-                if let Some(label) = compact_port_label(&ports) {
-                    spans.push(Span::styled(
-                        format!(" · {label}"),
-                        Style::default().fg(theme::ACCENT),
-                    ));
-                }
-                let line = Line::from(spans);
-                ListItem::new(line)
+                ListItem::new(session_line(sess, usize::from(layout.list.width)))
             }
             FlatEntry::Pane {
                 project_idx,
@@ -266,6 +324,25 @@ pub(super) fn agent_state_icon(
     }
 }
 
+/// Scroll a list viewport while retaining the selected item until it leaves the view.
+pub fn scroll_viewport(
+    current_offset: usize,
+    selected: usize,
+    visible_height: usize,
+    content_len: usize,
+    delta: isize,
+) -> (usize, usize) {
+    if content_len == 0 || visible_height == 0 {
+        return (0, 0);
+    }
+    let max_offset = content_len.saturating_sub(visible_height);
+    let offset = current_offset.saturating_add_signed(delta).min(max_offset);
+    let last_visible = offset
+        .saturating_add(visible_height.saturating_sub(1))
+        .min(content_len - 1);
+    (offset, selected.clamp(offset, last_visible))
+}
+
 /// Compute scroll offset to keep selected item visible.
 pub fn compute_scroll(selected: usize, visible_height: usize, current_offset: usize) -> usize {
     let up_pad = (visible_height / 4).max(1); // scroll up when cursor within top 1/4
@@ -281,10 +358,17 @@ pub fn compute_scroll(selected: usize, visible_height: usize, current_offset: us
 
 #[cfg(test)]
 mod tests {
-    use super::{routine_tree_label, sched_header_label, session_icon};
-    use crate::{session_state::AppSessionState, ui::theme};
+    use super::{
+        render_tree, routine_tree_label, sched_header_label, session_icon, session_line, TreeView,
+    };
+    use crate::{
+        session_state::AppSessionState,
+        ui::{theme, workspace_nav::SidebarLayout},
+    };
+    use ratatui::{backend::TestBackend, widgets::Paragraph, Terminal};
+    use std::{collections::HashSet, path::PathBuf};
     use wsx_core::{
-        model::workspace::SessionInfo,
+        model::workspace::{FlatEntry, Project, SessionInfo, WorkspaceState},
         runtime::{AgentState, PaneId, SessionId, TerminalId},
     };
 
@@ -322,6 +406,131 @@ mod tests {
             ),
             ("⊘", theme::TEXT_SUBTLE),
         );
+    }
+
+    #[test]
+    fn stale_and_manual_collapse_rows_have_distinct_readable_projection() {
+        let project = |name: &str| Project {
+            name: name.into(),
+            path: PathBuf::from(format!("/{name}")),
+            default_branch: "main".into(),
+            last_agent_active_unix_ms: None,
+            last_terminal_active_unix_ms: None,
+            worktrees: vec![],
+            routines: vec![],
+            routine_revision: 0,
+            routines_expanded: false,
+            config: None,
+            expanded: false,
+            missing: false,
+        };
+        let mut missing = project("missing");
+        missing.missing = true;
+        let workspace = WorkspaceState {
+            projects: vec![
+                project("stale-one"),
+                project("manual"),
+                project("selected"),
+                missing,
+            ],
+        };
+        let flat = vec![
+            FlatEntry::Project { idx: 0 },
+            FlatEntry::Project { idx: 1 },
+            FlatEntry::Project { idx: 2 },
+            FlatEntry::Project { idx: 3 },
+        ];
+        let stale_projects = HashSet::from([0, 3]);
+        let backend = TestBackend::new(40, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_tree(
+                    frame,
+                    SidebarLayout::new(frame.area()),
+                    TreeView {
+                        workspace: &workspace,
+                        flat: &flat,
+                        stale_projects: &stale_projects,
+                        selected: 2,
+                        scroll_offset: 0,
+                        is_move_mode: false,
+                    },
+                );
+            })
+            .unwrap();
+
+        let row = |y| {
+            (0..40)
+                .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                .collect::<String>()
+        };
+        let stale_row = row(0);
+        assert!(stale_row.contains("stale-one [0]"));
+        assert!(stale_row.ends_with("  stale  "), "{stale_row:?}");
+        assert!(!stale_row.contains('·'));
+        assert_eq!(terminal.backend().buffer()[(1, 0)].fg, theme::TEXT_MUTED);
+        assert!(!row(1).contains("stale"));
+        assert_eq!(terminal.backend().buffer()[(1, 1)].fg, theme::ACCENT);
+        assert!(row(3).contains("missing (missing)"));
+        assert!(!row(3).contains("stale"));
+        assert_eq!(terminal.backend().buffer()[(1, 3)].fg, theme::TEXT_SUBTLE);
+
+        let backend = TestBackend::new(18, 1);
+        let mut narrow = Terminal::new(backend).unwrap();
+        narrow
+            .draw(|frame| {
+                render_tree(
+                    frame,
+                    SidebarLayout::new(frame.area()),
+                    TreeView {
+                        workspace: &workspace,
+                        flat: &flat,
+                        stale_projects: &stale_projects,
+                        selected: 0,
+                        scroll_offset: 0,
+                        is_move_mode: false,
+                    },
+                );
+            })
+            .unwrap();
+        let selected = (0..18)
+            .map(|x| narrow.backend().buffer()[(x, 0)].symbol())
+            .collect::<String>();
+        let list = SidebarLayout::new(narrow.backend().buffer().area).list;
+        let stale_start = list.right().saturating_sub(5);
+        let stale_suffix = (stale_start..list.right())
+            .map(|x| narrow.backend().buffer()[(x, 0)].symbol())
+            .collect::<String>();
+        assert_eq!(stale_suffix, "stale", "{selected:?}");
+        assert!(!selected.contains('·'));
+        let selected_cell = &narrow.backend().buffer()[(1, 0)];
+        assert_eq!(selected_cell.fg, theme::TEXT);
+        assert_eq!(selected_cell.bg, theme::selected_row(false).bg.unwrap());
+    }
+
+    #[test]
+    fn session_row_without_ports_keeps_its_identity_when_rendered() {
+        let mut sess = session(false, AgentState::Idle);
+        sess.display_name = "plain-session".into();
+        let backend = TestBackend::new(30, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new(session_line(&sess, 30)), frame.area());
+            })
+            .unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert_eq!(rendered.trim_end(), "  ○ plain-session (codex)");
     }
 
     #[test]

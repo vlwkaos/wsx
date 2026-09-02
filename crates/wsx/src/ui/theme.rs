@@ -13,8 +13,6 @@ pub const TEXT: Color = Color::Rgb(224, 229, 237);
 pub const TEXT_MUTED: Color = Color::Rgb(143, 152, 166);
 pub const TEXT_SUBTLE: Color = Color::Rgb(99, 108, 123);
 pub const ACCENT: Color = Color::Rgb(102, 153, 255);
-const RECENT_ACCENT: Color = Color::Rgb(122, 184, 171);
-const RECENT_SURFACE: Color = Color::Rgb(22, 38, 38);
 pub const SUCCESS: Color = Color::Rgb(88, 190, 112);
 pub const WORKING: Color = Color::Rgb(226, 190, 118);
 pub const DONE: Color = Color::Rgb(91, 199, 188);
@@ -49,12 +47,8 @@ pub fn group_chip(active: bool) -> Style {
     }
 }
 
-pub fn recent_group_chip(active: bool) -> Style {
-    if active {
-        Style::default().fg(PANEL).bg(RECENT_ACCENT).bold()
-    } else {
-        Style::default().fg(RECENT_ACCENT).bg(RECENT_SURFACE)
-    }
+pub fn stale_project() -> Style {
+    Style::default().fg(TEXT_MUTED)
 }
 
 pub fn group_scroll_control() -> Style {
@@ -129,8 +123,6 @@ mod tests {
             TEXT_MUTED,
             TEXT_SUBTLE,
             ACCENT,
-            RECENT_ACCENT,
-            RECENT_SURFACE,
             SUCCESS,
             WORKING,
             DONE,
@@ -154,9 +146,6 @@ mod tests {
         assert_eq!(Style::default().bg, None);
         assert_eq!(group_chip(true).bg, Some(ACCENT));
         assert_eq!(group_chip(false).bg, Some(PANEL_ACTIVE));
-        assert_eq!(recent_group_chip(true).bg, Some(RECENT_ACCENT));
-        assert_eq!(recent_group_chip(false).bg, Some(RECENT_SURFACE));
-        assert_ne!(recent_group_chip(true), group_chip(true));
         assert_eq!(selected_row(false).bg, Some(ROW_SELECTED));
         assert_eq!(agent_label().fg, Some(TEXT_MUTED));
         assert_eq!(mode_badge(ModeBadge::Navigation).bg, Some(ACCENT));
@@ -167,6 +156,17 @@ mod tests {
         assert_eq!(mode_badge(ModeBadge::Move).bg, Some(WORKING));
         assert_eq!(mode_badge(ModeBadge::Info).bg, Some(TEXT_MUTED));
         assert_eq!(mode_badge(ModeBadge::Routine).bg, Some(SUCCESS));
+    }
+
+    #[test]
+    fn stale_project_style_is_muted_and_keeps_the_row_background_clear() {
+        let stale = stale_project();
+
+        assert_eq!(stale.fg, Some(TEXT_MUTED));
+        assert_eq!(stale.bg, None);
+        assert_ne!(stale, Style::default().fg(TEXT));
+        assert_eq!(selected_row(false).fg, Some(TEXT));
+        assert_ne!(stale.fg, selected_row(false).fg);
     }
 
     #[test]
