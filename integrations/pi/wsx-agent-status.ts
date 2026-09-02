@@ -1,5 +1,5 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=9
+// WSX_INTEGRATION_VERSION=10
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 import path from "node:path";
@@ -76,9 +76,7 @@ export default function wsxAgentStatus(pi: ExtensionAPI): void {
   pi.on("agent_settled", (_event, ctx) => {
     currentSessionRef = sessionRef(ctx);
     agentActive = false;
-    publish();
-  });
-  pi.on("session_shutdown", (event, ctx) => {
-    if (event.reason === "quit") report("done", sessionRef(ctx));
+    blockedCount = 0;
+    report("done");
   });
 }

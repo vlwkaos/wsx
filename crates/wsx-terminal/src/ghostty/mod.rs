@@ -747,6 +747,7 @@ pub fn encode_focus(event: FocusEvent) -> Result<Vec<u8>, Error> {
 
 pub struct Terminal {
     raw: ffi::GhosttyTerminal,
+    selection_gesture: ffi::GhosttySelectionGesture,
     max_scrollback: usize,
     #[cfg(windows)]
     tracked_row: ffi::GhosttyTrackedGridRef,
@@ -768,8 +769,17 @@ impl Terminal {
             ffi::ghostty_terminal_new(ptr::null(), &mut raw, options).into_result()?;
         }
 
+        let mut selection_gesture = ptr::null_mut();
+        let gesture_result =
+            unsafe { ffi::ghostty_selection_gesture_new(ptr::null(), &mut selection_gesture) };
+        if let Err(error) = gesture_result.into_result() {
+            unsafe { ffi::ghostty_terminal_free(raw) };
+            return Err(error);
+        }
+
         let mut terminal = Self {
             raw,
+            selection_gesture,
             max_scrollback,
             #[cfg(windows)]
             tracked_row: ptr::null_mut(),
@@ -834,9 +844,18 @@ impl Terminal {
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
+        let screen_before = self.active_screen().ok();
         // SAFETY: self.raw is a live terminal handle for self's lifetime.
         unsafe {
             ffi::ghostty_terminal_vt_write(self.raw, bytes.as_ptr(), bytes.len());
+        }
+        let screen_after = self.active_screen().ok();
+        if screen_before
+            .zip(screen_after)
+            .is_some_and(|(before, after)| before != after)
+        {
+            // ^ Selection grid references must not cross primary/alternate screen identity.
+            let _ = self.clear_selection();
         }
     }
 
@@ -974,6 +993,281 @@ impl Terminal {
 
     pub fn take_clipboard_writes(&mut self) -> Vec<Vec<u8>> {
         self.callback_state.clipboard_writes.drain(..).collect()
+    }
+
+    pub fn queue_clipboard_write(&mut self, bytes: Vec<u8>) -> bool {
+        if bytes.is_empty()
+            || bytes.len() > MAX_CLIPBOARD_BYTES
+            || self.callback_state.clipboard_writes.len() >= MAX_PENDING_CLIPBOARD_WRITES
+        {
+            return false;
+        }
+        self.callback_state.clipboard_writes.push_back(bytes);
+        true
+    }
+
+    pub fn selection_press(&mut self, x: u16, y: u16, time_ns: u64) -> Result<bool, Error> {
+        let grid_ref = self.grid_ref(ghostty_viewport_point(x, u32::from(y)))?;
+        let position = selection_position(x, y);
+        let repeat_distance = f64::from(SELECTION_CELL_SIZE);
+        let repeat_interval_ns = 500_000_000u64;
+        let behaviors = ffi::GhosttySelectionGestureBehaviors {
+            single_click:
+                ffi::GhosttySelectionGestureBehavior_GHOSTTY_SELECTION_GESTURE_BEHAVIOR_CELL,
+            double_click:
+                ffi::GhosttySelectionGestureBehavior_GHOSTTY_SELECTION_GESTURE_BEHAVIOR_WORD,
+            triple_click:
+                ffi::GhosttySelectionGestureBehavior_GHOSTTY_SELECTION_GESTURE_BEHAVIOR_LINE,
+        };
+        let event = SelectionGestureEvent::new(
+            ffi::GhosttySelectionGestureEventType_GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_PRESS,
+        )?;
+        event.set(
+            ffi::GhosttySelectionGestureEventOption_GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF,
+            &grid_ref,
+        )?;
+        event.set(
+            ffi::GhosttySelectionGestureEventOption_GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION,
+            &position,
+        )?;
+        event.set(
+            ffi::GhosttySelectionGestureEventOption_GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REPEAT_DISTANCE,
+            &repeat_distance,
+        )?;
+        event.set(
+            ffi::GhosttySelectionGestureEventOption_GHOSTTY_SELECTION_GESTURE_EVENT_OPT_TIME_NS,
+            &time_ns,
+        )?;
+        event.set(
+            ffi::GhosttySelectionGestureEventOption_GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REPEAT_INTERVAL_NS,
+            &repeat_interval_ns,
+        )?;
+        event.set(
+            ffi::GhosttySelectionGestureEventOption_GHOSTTY_SELECTION_GESTURE_EVENT_OPT_BEHAVIORS,
+            &behaviors,
+        )?;
+        let selection = self.apply_selection_event(&event)?;
+        self.install_selection(selection.as_ref())
+    }
+
+    pub fn selection_drag(&mut self, x: u16, y: u16) -> Result<bool, Error> {
+        let grid_ref = self.grid_ref(ghostty_viewport_point(x, u32::from(y)))?;
+        let position = selection_position(x, y);
+        let geometry = ffi::GhosttySelectionGestureGeometry {
+            columns: u32::from(self.callback_state.size_report.columns.max(1)),
+            cell_width: SELECTION_CELL_SIZE,
+            padding_left: 0,
+            screen_height: u32::from(self.callback_state.size_report.rows.max(1))
+                * SELECTION_CELL_SIZE,
+        };
+        let event = SelectionGestureEvent::new(
+            ffi::GhosttySelectionGestureEventType_GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_DRAG,
+        )?;
+        event.set(
+            ffi::GhosttySelectionGestureEventOption_GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF,
+            &grid_ref,
+        )?;
+        event.set(
+            ffi::GhosttySelectionGestureEventOption_GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION,
+            &position,
+        )?;
+        event.set(
+            ffi::GhosttySelectionGestureEventOption_GHOSTTY_SELECTION_GESTURE_EVENT_OPT_GEOMETRY,
+            &geometry,
+        )?;
+        let selection = self.apply_selection_event(&event)?;
+        let selection = if self.selection_gesture_behavior()?
+            == ffi::GhosttySelectionGestureBehavior_GHOSTTY_SELECTION_GESTURE_BEHAVIOR_CELL
+        {
+            Some(ffi::GhosttySelection {
+                size: mem::size_of::<ffi::GhosttySelection>(),
+                start: self.selection_gesture_anchor()?,
+                end: grid_ref,
+                rectangle: false,
+            })
+        } else {
+            selection
+        };
+        self.install_selection(selection.as_ref())
+    }
+
+    pub fn selection_release(
+        &mut self,
+        point: Option<(u16, u16)>,
+    ) -> Result<(bool, Option<Vec<u8>>), Error> {
+        let grid_ref = point
+            .map(|(x, y)| self.grid_ref(ghostty_viewport_point(x, u32::from(y))))
+            .transpose()?;
+        let anchor = self.selection_gesture_anchor()?;
+        let behavior = self.selection_gesture_behavior()?;
+        let collapsed_cell = grid_ref.as_ref().is_some_and(|target| {
+            behavior == ffi::GhosttySelectionGestureBehavior_GHOSTTY_SELECTION_GESTURE_BEHAVIOR_CELL
+                && same_grid_ref(&anchor, target)
+        });
+        let mut changed = match (point, grid_ref.as_ref()) {
+            (Some((x, y)), Some(target)) if collapsed_cell || !same_grid_ref(&anchor, target) => {
+                self.selection_drag(x, y)?
+            }
+            _ => false,
+        };
+        let event = SelectionGestureEvent::new(
+            ffi::GhosttySelectionGestureEventType_GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_RELEASE,
+        )?;
+        if let Some(grid_ref) = grid_ref.as_ref() {
+            event.set(
+                ffi::GhosttySelectionGestureEventOption_GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF,
+                grid_ref,
+            )?;
+        }
+        let _ = self.apply_selection_event(&event)?;
+        if collapsed_cell {
+            changed |= self.install_selection(None)?;
+            return Ok((changed, None));
+        }
+        Ok((changed, self.selection_text()?))
+    }
+
+    pub fn clear_selection(&mut self) -> Result<bool, Error> {
+        unsafe { ffi::ghostty_selection_gesture_reset(self.selection_gesture, self.raw) };
+        self.install_selection(None)
+    }
+
+    fn apply_selection_event(
+        &mut self,
+        event: &SelectionGestureEvent,
+    ) -> Result<Option<ffi::GhosttySelection>, Error> {
+        let mut selection = ffi::GhosttySelection {
+            size: mem::size_of::<ffi::GhosttySelection>(),
+            ..Default::default()
+        };
+        let result = unsafe {
+            ffi::ghostty_selection_gesture_event(
+                self.selection_gesture,
+                self.raw,
+                event.raw,
+                &mut selection,
+            )
+        };
+        match result {
+            ffi::GhosttyResult_GHOSTTY_SUCCESS => Ok(Some(selection)),
+            ffi::GhosttyResult_GHOSTTY_NO_VALUE => Ok(None),
+            other => Err(Error(other)),
+        }
+    }
+
+    fn selection_gesture_behavior(&self) -> Result<ffi::GhosttySelectionGestureBehavior, Error> {
+        let mut behavior =
+            ffi::GhosttySelectionGestureBehavior_GHOSTTY_SELECTION_GESTURE_BEHAVIOR_CELL;
+        unsafe {
+            ffi::ghostty_selection_gesture_get(
+                self.selection_gesture,
+                self.raw,
+                ffi::GhosttySelectionGestureData_GHOSTTY_SELECTION_GESTURE_DATA_BEHAVIOR,
+                (&mut behavior as *mut ffi::GhosttySelectionGestureBehavior).cast(),
+            )
+            .into_result()?;
+        }
+        Ok(behavior)
+    }
+
+    fn selection_gesture_anchor(&self) -> Result<ffi::GhosttyGridRef, Error> {
+        let mut anchor = ffi::GhosttyGridRef::default();
+        unsafe {
+            ffi::ghostty_selection_gesture_get(
+                self.selection_gesture,
+                self.raw,
+                ffi::GhosttySelectionGestureData_GHOSTTY_SELECTION_GESTURE_DATA_ANCHOR,
+                (&mut anchor as *mut ffi::GhosttyGridRef).cast(),
+            )
+            .into_result()?;
+        }
+        Ok(anchor)
+    }
+
+    fn current_selection(&self) -> Result<Option<ffi::GhosttySelection>, Error> {
+        let mut selection = ffi::GhosttySelection {
+            size: mem::size_of::<ffi::GhosttySelection>(),
+            ..Default::default()
+        };
+        let result = unsafe {
+            ffi::ghostty_terminal_get(
+                self.raw,
+                ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SELECTION,
+                (&mut selection as *mut ffi::GhosttySelection).cast(),
+            )
+        };
+        match result {
+            ffi::GhosttyResult_GHOSTTY_SUCCESS => Ok(Some(selection)),
+            ffi::GhosttyResult_GHOSTTY_NO_VALUE => Ok(None),
+            other => Err(Error(other)),
+        }
+    }
+
+    fn install_selection(
+        &mut self,
+        selection: Option<&ffi::GhosttySelection>,
+    ) -> Result<bool, Error> {
+        let current = self.current_selection()?;
+        let changed = match (current.as_ref(), selection) {
+            (None, None) => false,
+            (Some(_), None) | (None, Some(_)) => true,
+            (Some(current), Some(selection)) => {
+                let mut equal = false;
+                unsafe {
+                    ffi::ghostty_terminal_selection_equal(self.raw, current, selection, &mut equal)
+                        .into_result()?;
+                }
+                !equal
+            }
+        };
+        if !changed {
+            return Ok(false);
+        }
+        let selection_ptr = selection.map_or(ptr::null(), |selection| selection);
+        unsafe {
+            ffi::ghostty_terminal_set(
+                self.raw,
+                ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_SELECTION,
+                selection_ptr.cast(),
+            )
+            .into_result()?;
+        }
+        Ok(true)
+    }
+
+    fn selection_text(&self) -> Result<Option<Vec<u8>>, Error> {
+        let options = ffi::GhosttyTerminalSelectionFormatOptions {
+            size: mem::size_of::<ffi::GhosttyTerminalSelectionFormatOptions>(),
+            emit: FormatterFormat::Plain.as_raw(),
+            unwrap: true,
+            trim: true,
+            selection: ptr::null(),
+        };
+        let mut out_ptr = ptr::null_mut();
+        let mut out_len = 0usize;
+        let result = unsafe {
+            ffi::ghostty_terminal_selection_format_alloc(
+                self.raw,
+                ptr::null(),
+                options,
+                &mut out_ptr,
+                &mut out_len,
+            )
+        };
+        match result {
+            ffi::GhosttyResult_GHOSTTY_NO_VALUE => return Ok(None),
+            ffi::GhosttyResult_GHOSTTY_SUCCESS => {}
+            other => return Err(Error(other)),
+        }
+        let bytes = if out_len == 0 {
+            Vec::new()
+        } else {
+            unsafe { slice::from_raw_parts(out_ptr.cast_const(), out_len) }.to_vec()
+        };
+        if !out_ptr.is_null() {
+            unsafe { ffi::ghostty_free(ptr::null(), out_ptr, out_len) };
+        }
+        Ok((!bytes.is_empty()).then_some(bytes))
     }
 
     pub fn mode_get(&self, mode: u16) -> Result<bool, Error> {
@@ -1851,13 +2145,62 @@ unsafe impl Send for Terminal {}
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        // SAFETY: freeing a null or live handle is allowed by the C API.
+        // SAFETY: freeing null or live handles is allowed by the C API. The gesture
+        // must release its tracked refs before the terminal that owns them is freed.
         unsafe {
+            ffi::ghostty_selection_gesture_free(self.selection_gesture, self.raw);
             #[cfg(windows)]
             ffi::ghostty_tracked_grid_ref_free(self.tracked_row);
             ffi::ghostty_terminal_free(self.raw);
         }
     }
+}
+
+struct SelectionGestureEvent {
+    raw: ffi::GhosttySelectionGestureEvent,
+}
+
+impl SelectionGestureEvent {
+    fn new(event_type: ffi::GhosttySelectionGestureEventType) -> Result<Self, Error> {
+        let mut raw = ptr::null_mut();
+        unsafe {
+            ffi::ghostty_selection_gesture_event_new(ptr::null(), &mut raw, event_type)
+                .into_result()?;
+        }
+        Ok(Self { raw })
+    }
+
+    fn set<T>(
+        &self,
+        option: ffi::GhosttySelectionGestureEventOption,
+        value: &T,
+    ) -> Result<(), Error> {
+        unsafe {
+            ffi::ghostty_selection_gesture_event_set(self.raw, option, (value as *const T).cast())
+                .into_result()
+        }
+    }
+}
+
+impl Drop for SelectionGestureEvent {
+    fn drop(&mut self) {
+        unsafe { ffi::ghostty_selection_gesture_event_free(self.raw) };
+    }
+}
+
+// ^ Crossterm reports terminal cells, while Ghostty's gesture thresholds use pixels.
+// A fixed virtual cell preserves repeat-click and drag semantics without guessed font metrics.
+const SELECTION_CELL_SIZE: u32 = 10;
+
+fn selection_position(x: u16, y: u16) -> ffi::GhosttySurfacePosition {
+    ffi::GhosttySurfacePosition {
+        x: f64::from(u32::from(x) * SELECTION_CELL_SIZE + SELECTION_CELL_SIZE / 2),
+        y: f64::from(u32::from(y) * SELECTION_CELL_SIZE + SELECTION_CELL_SIZE / 2),
+    }
+}
+
+fn same_grid_ref(left: &ffi::GhosttyGridRef, right: &ffi::GhosttyGridRef) -> bool {
+    left.node == right.node && left.x == right.x && left.y == right.y
 }
 
 fn ghostty_viewport_point(x: u16, y: u32) -> ffi::GhosttyPoint {

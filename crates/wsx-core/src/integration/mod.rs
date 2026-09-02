@@ -189,6 +189,18 @@ mod tests {
         let nested =
             config_edit::json_config(IntegrationTarget::Claude, r#"{"keep":1}"#, &cfg, &p).unwrap();
         assert!(nested.contains("SessionStart") && nested.contains("\"keep\": 1"));
+        for (event, action) in [
+            ("SessionStart", "idle"),
+            ("UserPromptSubmit", "working"),
+            ("PermissionRequest", "blocked"),
+            ("Stop", "done"),
+        ] {
+            assert!(nested.contains(event), "missing Claude event {event}");
+            assert!(
+                nested.contains(&config_edit::command(&p, action)),
+                "missing Claude action {action}"
+            );
+        }
         assert_eq!(
             config_edit::json_config(IntegrationTarget::Claude, &nested, &cfg, &p).unwrap(),
             nested
@@ -231,6 +243,48 @@ mod tests {
                 "{target}: unexpected --conversation-id"
             );
         }
+    }
+
+    #[test]
+    fn lifecycle_capabilities_match_native_authoritative_adapters() {
+        let authoritative = IntegrationTarget::ALL
+            .into_iter()
+            .filter(|target| target.lifecycle() == LifecycleCapability::Authoritative)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            authoritative,
+            [
+                IntegrationTarget::Pi,
+                IntegrationTarget::Omp,
+                IntegrationTarget::Claude,
+                IntegrationTarget::Kimi,
+                IntegrationTarget::Opencode,
+                IntegrationTarget::Kilo,
+                IntegrationTarget::Mastracode,
+            ]
+        );
+    }
+
+    #[test]
+    fn authoritative_assets_and_configs_report_completion() {
+        assert!(assets::primary(IntegrationTarget::Pi).contains("report(\"done\")"));
+        assert!(assets::primary(IntegrationTarget::Omp).contains("report(\"done\", ctx)"));
+        for target in [IntegrationTarget::Opencode, IntegrationTarget::Kilo] {
+            assert!(
+                assets::primary(target).contains("activeSessions.has(id) ? \"done\" : \"idle\"")
+            );
+        }
+        let hook = PathBuf::from("wsx-agent-status.sh");
+        let kimi = config_edit::kimi_toml("", &hook);
+        assert!(kimi.contains("'done'") || kimi.contains(" done"));
+        let mastra = config_edit::json_config(
+            IntegrationTarget::Mastracode,
+            "{}",
+            PathBuf::from("hooks.json").as_path(),
+            &hook,
+        )
+        .unwrap();
+        assert!(mastra.contains("done"));
     }
 
     #[test]

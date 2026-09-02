@@ -18,7 +18,7 @@ use std::{
 };
 use wsx_core::runtime::{
     Cell, CellModifiers, Cursor, KeyCode, KeyEvent, MouseAction, MouseButton, MouseEvent, PaneId,
-    TerminalFrame, TerminalId, TerminalRowPatch, TerminalUpdate,
+    TerminalFrame, TerminalId, TerminalRowPatch, TerminalSelectionRange, TerminalUpdate,
 };
 
 const MAX_SCROLLBACK_ROWS: usize = 10_000;
@@ -73,6 +73,7 @@ struct Emulator {
     render: ghostty::RenderState,
     keys: ghostty::KeyEncoder,
     mouse: ghostty::MouseEncoder,
+    local_selection_active: bool,
 }
 impl Emulator {
     fn sync_input(&mut self) {
@@ -102,6 +103,7 @@ pub struct TerminalRuntime {
     terminal_id: TerminalId,
     shared: Arc<Shared>,
     process: Option<Process>,
+    selection_clock: Instant,
 }
 
 pub struct PresentationSample {
@@ -213,6 +215,7 @@ impl TerminalRuntime {
                 #[cfg(unix)]
                 process_group: process_group_owner,
             }),
+            selection_clock: Instant::now(),
         })
     }
 
@@ -222,6 +225,24 @@ impl TerminalRuntime {
             let group = process.process_group.load(Ordering::Acquire);
             (group > 1).then_some(group)
         })
+    }
+
+    #[cfg(unix)]
+    pub fn has_foreground_job(&self) -> bool {
+        let Some(process) = self.process.as_ref() else {
+            return false;
+        };
+        let root_group = process.process_group.load(Ordering::Acquire);
+        if root_group <= 1 {
+            return false;
+        }
+        let foreground_group = lock(&process.master).process_group_leader();
+        foreground_group.is_some_and(|group| group > 1 && group != root_group)
+    }
+
+    #[cfg(not(unix))]
+    pub fn has_foreground_job(&self) -> bool {
+        false
     }
 
     pub fn write(&self, bytes: &[u8]) -> Result<(), TerminalError> {
@@ -257,9 +278,28 @@ impl TerminalRuntime {
     }
 
     pub fn mouse(&self, mouse: &MouseEvent) -> Result<(), TerminalError> {
-        let (bytes, viewport_changed) = {
+        let (bytes, presentation_changed, effect_ready) = {
             let mut emulator = lock(&self.shared.emulator);
+            if !mouse.in_bounds
+                && !(emulator.local_selection_active
+                    && mouse.action == MouseAction::Release
+                    && mouse.button == MouseButton::Left)
+            {
+                return Ok(());
+            }
+            if mouse.in_bounds
+                && (mouse.x >= emulator.terminal.cols()? || mouse.y >= emulator.terminal.rows()?)
+            {
+                return Err(TerminalError::Runtime(
+                    "mouse coordinates exceed the terminal grid".into(),
+                ));
+            }
             if let Some(delta) = mouse_scroll_delta(mouse) {
+                let gesture_cleared = if emulator.local_selection_active {
+                    clear_local_selection(&mut emulator)?
+                } else {
+                    false
+                };
                 if !emulator.terminal.mouse_tracking_enabled()? {
                     if emulator.terminal.active_screen()? == ghostty::ActiveScreen::Alternate
                         && emulator
@@ -285,27 +325,94 @@ impl TerminalRuntime {
                         for _ in 0..delta.unsigned_abs() {
                             bytes.extend(encode_synced_key(&mut emulator, &key)?);
                         }
-                        (bytes, false)
+                        (bytes, gesture_cleared, false)
                     } else {
                         let before = emulator.terminal.scrollbar()?.offset;
                         emulator.terminal.scroll_viewport_delta(delta);
                         let after = emulator.terminal.scrollbar()?.offset;
-                        (Vec::new(), before != after)
+                        let viewport_changed = before != after;
+                        let selection_cleared = if viewport_changed {
+                            clear_local_selection(&mut emulator)?
+                        } else {
+                            false
+                        };
+                        (
+                            Vec::new(),
+                            gesture_cleared || viewport_changed || selection_cleared,
+                            false,
+                        )
                     }
                 } else {
-                    (encode_mouse(&mut emulator, mouse)?, false)
+                    (encode_mouse(&mut emulator, mouse)?, gesture_cleared, false)
+                }
+            } else if emulator.local_selection_active {
+                match (mouse.action, mouse.button) {
+                    (MouseAction::Motion, MouseButton::Left) if mouse.in_bounds => {
+                        let changed = emulator.terminal.selection_drag(mouse.x, mouse.y)?;
+                        (Vec::new(), changed, false)
+                    }
+                    (MouseAction::Release, MouseButton::Left) => {
+                        let point = mouse.in_bounds.then_some((mouse.x, mouse.y));
+                        let (changed, copied) = emulator.terminal.selection_release(point)?;
+                        emulator.local_selection_active = false;
+                        let effect_ready = if let Some(bytes) = copied {
+                            if !emulator.terminal.queue_clipboard_write(bytes) {
+                                return Err(TerminalError::Runtime(
+                                    "selected text exceeds the clipboard limit or queue is full"
+                                        .into(),
+                                ));
+                            }
+                            true
+                        } else {
+                            false
+                        };
+                        (Vec::new(), changed, effect_ready)
+                    }
+                    _ => (Vec::new(), false, false),
                 }
             } else {
-                (encode_mouse(&mut emulator, mouse)?, false)
+                let tracking = emulator.terminal.mouse_tracking_enabled()?;
+                if mouse.action == MouseAction::Press
+                    && mouse.button == MouseButton::Left
+                    && mouse.in_bounds
+                    && (!tracking || mouse.shift)
+                {
+                    let elapsed = self.selection_clock.elapsed().as_nanos();
+                    let time_ns = u64::try_from(elapsed).unwrap_or(u64::MAX);
+                    let changed = emulator
+                        .terminal
+                        .selection_press(mouse.x, mouse.y, time_ns)?;
+                    emulator.local_selection_active = true;
+                    (Vec::new(), changed, false)
+                } else {
+                    let changed = if tracking && mouse.action == MouseAction::Press {
+                        emulator.terminal.clear_selection()?
+                    } else {
+                        false
+                    };
+                    (encode_mouse(&mut emulator, mouse)?, changed, false)
+                }
             }
         };
-        if viewport_changed {
+        if presentation_changed {
+            self.shared.revision.fetch_add(1, Ordering::AcqRel);
+        }
+        if presentation_changed || effect_ready {
+            (self.shared.notify)();
+        }
+        self.write(&bytes)
+    }
+
+    pub fn clear_selection(&self) -> Result<(), TerminalError> {
+        let changed = {
+            let mut emulator = lock(&self.shared.emulator);
+            clear_local_selection(&mut emulator)?
+        };
+        if changed {
             self.shared.revision.fetch_add(1, Ordering::AcqRel);
             (self.shared.notify)();
-            Ok(())
-        } else {
-            self.write(&bytes)
         }
+        Ok(())
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<(), TerminalError> {
@@ -324,6 +431,7 @@ impl TerminalRuntime {
             .map_err(|e| TerminalError::Pty(e.to_string()))?;
         let mut emulator = lock(&self.shared.emulator);
         emulator.terminal.resize(cols, rows, 1, 1)?;
+        clear_local_selection(&mut emulator)?;
         emulator
             .mouse
             .set_size(u32::from(cols), u32::from(rows), 1, 1);
@@ -407,6 +515,7 @@ impl TerminalRuntime {
                     ghostty::CursorVisualStyle::BlockHollow => 3,
                 },
             },
+            selection: Vec::new(),
         })
     }
 
@@ -471,6 +580,7 @@ impl TerminalRuntime {
         let mut rows_iter = render.populate_row_iterator(&mut rows_handle)?;
         let mut all_cells = Vec::with_capacity(usize::from(rows) * usize::from(cols));
         let mut changed_rows = Vec::new();
+        let mut selection = Vec::new();
         let mut bytes = Vec::new();
         let mut symbol = String::new();
         for row in 0..rows {
@@ -479,6 +589,13 @@ impl TerminalRuntime {
                     all_cells.extend((0..cols).map(|_| blank(colors.foreground)));
                 }
                 continue;
+            }
+            if let Some(range) = rows_iter.selection()? {
+                selection.push(TerminalSelectionRange {
+                    row,
+                    start_col: range.start_x,
+                    end_col: range.end_x,
+                });
             }
             let row_dirty = rows_iter.dirty()?;
             if !full && !row_dirty {
@@ -546,6 +663,7 @@ impl TerminalRuntime {
                 rows,
                 cells: all_cells,
                 cursor,
+                selection,
             }))
         } else {
             Ok(TerminalUpdate::Patch {
@@ -557,6 +675,7 @@ impl TerminalRuntime {
                 rows,
                 changed_rows,
                 cursor,
+                selection,
             })
         }
     }
@@ -604,6 +723,7 @@ impl TerminalRuntime {
         Ok(Self {
             pane_id: PaneId(1),
             terminal_id: TerminalId(2),
+            selection_clock: Instant::now(),
             shared: Arc::new(Shared {
                 emulator: Mutex::new(emulator),
                 writer,
@@ -649,6 +769,7 @@ fn make_emulator(
         render,
         keys,
         mouse,
+        local_selection_active: false,
     })
 }
 
@@ -923,6 +1044,11 @@ fn encode_mouse(emulator: &mut Emulator, mouse: &MouseEvent) -> Result<Vec<u8>, 
     ));
     event.set_position(f32::from(mouse.x), f32::from(mouse.y));
     emulator.mouse.encode(&event)
+}
+
+fn clear_local_selection(emulator: &mut Emulator) -> Result<bool, TerminalError> {
+    emulator.local_selection_active = false;
+    emulator.terminal.clear_selection().map_err(Into::into)
 }
 
 fn mouse_scroll_delta(mouse: &MouseEvent) -> Option<isize> {
@@ -1297,6 +1423,34 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn interactive_shell_reports_a_distinct_foreground_job_group() {
+        let runtime = TerminalRuntime::spawn(
+            PaneId(1),
+            TerminalId(2),
+            &std::env::current_dir().unwrap(),
+            &["/bin/sh".into()],
+            &[],
+            None,
+            4,
+            40,
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        runtime.write(b"sleep 5\r").unwrap();
+        let mut observed = false;
+        for _ in 0..100 {
+            if runtime.has_foreground_job() {
+                observed = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        runtime.terminate();
+        assert!(observed);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn process_group_ownership_is_consumed_once() {
         let group = std::sync::atomic::AtomicI32::new(42);
         assert_eq!(take_process_group(&group), Some(42));
@@ -1323,6 +1477,21 @@ mod tests {
             x: 0,
             y: 0,
             shift: false,
+            control: false,
+            alt: false,
+            super_key: false,
+            in_bounds: true,
+        }
+    }
+
+    fn left_mouse(action: MouseAction, x: u16, y: u16, shift: bool) -> MouseEvent {
+        MouseEvent {
+            action,
+            button: MouseButton::Left,
+            x,
+            y,
+            in_bounds: true,
+            shift,
             control: false,
             alt: false,
             super_key: false,
@@ -1487,6 +1656,472 @@ mod tests {
             (frame_rows(&before), revision)
         );
         assert_eq!(&*lock(&captured), b"\x1b[A\x1b[A\x1b[A");
+    }
+
+    #[test]
+    fn local_drag_selection_is_projected_and_copied_on_release() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"hello");
+        }
+        let captured = recording_writer(&runtime);
+
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 4, 0, false))
+            .unwrap();
+
+        let frame = match runtime.frame_update(None).unwrap() {
+            TerminalUpdate::Full(frame) => frame,
+            TerminalUpdate::Patch { .. } => panic!("expected full frame"),
+        };
+        assert_eq!(
+            frame.selection,
+            vec![TerminalSelectionRange {
+                row: 0,
+                start_col: 0,
+                end_col: 4,
+            }]
+        );
+        assert!(runtime.frame().unwrap().selection.is_empty());
+
+        runtime
+            .mouse(&left_mouse(MouseAction::Release, 4, 0, false))
+            .unwrap();
+        assert_eq!(runtime.take_clipboard_writes(), vec![b"hello".to_vec()]);
+        assert!(lock(&captured).is_empty());
+
+        runtime.clear_selection().unwrap();
+        let frame = match runtime.frame_update(None).unwrap() {
+            TerminalUpdate::Full(frame) => frame,
+            TerminalUpdate::Patch { .. } => panic!("expected full frame"),
+        };
+        assert!(frame.selection.is_empty());
+    }
+
+    #[test]
+    fn release_at_a_new_cell_publishes_the_final_selection_without_a_motion_event() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"hello");
+        }
+        let revision = runtime.revision();
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Release, 4, 0, false))
+            .unwrap();
+
+        assert_eq!(runtime.take_clipboard_writes(), vec![b"hello".to_vec()]);
+        assert!(runtime.revision() > revision);
+        assert_eq!(
+            match runtime.frame_update(None).unwrap() {
+                TerminalUpdate::Full(frame) => frame.selection,
+                TerminalUpdate::Patch { .. } => panic!("expected full frame"),
+            },
+            vec![TerminalSelectionRange {
+                row: 0,
+                start_col: 0,
+                end_col: 4,
+            }]
+        );
+    }
+
+    #[test]
+    fn viewport_movement_ends_the_gesture_and_clears_selection() {
+        let runtime = runtime_with_scrollback();
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 2, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 1, 2, false))
+            .unwrap();
+        assert!(!match runtime.frame_update(None).unwrap() {
+            TerminalUpdate::Full(frame) => frame.selection,
+            TerminalUpdate::Patch { .. } => panic!("expected full frame"),
+        }
+        .is_empty());
+
+        runtime.mouse(&wheel_up()).unwrap();
+
+        assert!(match runtime.frame_update(None).unwrap() {
+            TerminalUpdate::Full(frame) => frame.selection,
+            TerminalUpdate::Patch { .. } => panic!("expected full frame"),
+        }
+        .is_empty());
+        assert!(!lock(&runtime.shared.emulator).local_selection_active);
+        assert!(runtime.take_clipboard_writes().is_empty());
+    }
+
+    #[test]
+    fn alternate_screen_transition_clears_selection() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"hello");
+        }
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 4, 0, false))
+            .unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"\x1b[?1049h");
+        }
+
+        assert!(match runtime.frame_update(None).unwrap() {
+            TerminalUpdate::Full(frame) => frame.selection,
+            TerminalUpdate::Patch { .. } => panic!("expected full frame"),
+        }
+        .is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resize_clears_selection_before_the_new_geometry_is_presented() {
+        let runtime = TerminalRuntime::spawn(
+            PaneId(1),
+            TerminalId(2),
+            &std::env::current_dir().unwrap(),
+            &["/bin/sh".into(), "-c".into(), "sleep 2".into()],
+            &[],
+            None,
+            2,
+            8,
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"hello");
+        }
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 4, 0, false))
+            .unwrap();
+
+        runtime.resize(3, 10).unwrap();
+
+        assert!(match runtime.frame_update(None).unwrap() {
+            TerminalUpdate::Full(frame) => frame.selection,
+            TerminalUpdate::Patch { .. } => panic!("expected full frame"),
+        }
+        .is_empty());
+        assert!(!lock(&runtime.shared.emulator).local_selection_active);
+        runtime.terminate();
+    }
+
+    #[test]
+    fn selection_copy_follows_prior_child_clipboard_effects_in_one_fifo() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"hello\x1b]52;c;Zmlyc3Q=\x07");
+        }
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 4, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Release, 4, 0, false))
+            .unwrap();
+
+        assert_eq!(
+            runtime.take_clipboard_writes(),
+            vec![b"first".to_vec(), b"hello".to_vec()]
+        );
+    }
+
+    #[test]
+    fn selection_only_patches_replace_the_semantic_selection_snapshot() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"hello");
+        }
+        let mut baseline = Some(match runtime.frame_update(None).unwrap() {
+            TerminalUpdate::Full(frame) => frame,
+            TerminalUpdate::Patch { .. } => panic!("expected full frame"),
+        });
+        let base_revision = baseline.as_ref().unwrap().revision;
+
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 4, 0, false))
+            .unwrap();
+        let selected_revision = runtime.revision();
+        runtime
+            .frame_update(Some(base_revision))
+            .unwrap()
+            .apply_to(&mut baseline)
+            .unwrap();
+        assert_eq!(baseline.as_ref().unwrap().selection.len(), 1);
+
+        runtime.clear_selection().unwrap();
+        runtime
+            .frame_update(Some(selected_revision))
+            .unwrap()
+            .apply_to(&mut baseline)
+            .unwrap();
+        assert!(baseline.unwrap().selection.is_empty());
+    }
+
+    #[test]
+    fn child_mouse_reporting_wins_unless_shift_latches_local_selection() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        let captured = recording_writer(&runtime);
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"hello\x1b[?1000h\x1b[?1006h");
+        }
+
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Release, 0, 0, false))
+            .unwrap();
+        assert_eq!(&*lock(&captured), b"\x1b[<0;1;1M\x1b[<0;1;1m");
+        lock(&captured).clear();
+
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, true))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 4, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Release, 4, 0, false))
+            .unwrap();
+
+        assert!(lock(&captured).is_empty());
+        assert_eq!(runtime.take_clipboard_writes(), vec![b"hello".to_vec()]);
+    }
+
+    #[test]
+    fn local_selection_stays_latched_if_mouse_reporting_changes_mid_drag() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        let captured = recording_writer(&runtime);
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"hello");
+        }
+
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"\x1b[?1000h\x1b[?1006h");
+        }
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 4, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Release, 4, 0, false))
+            .unwrap();
+
+        assert!(lock(&captured).is_empty());
+        assert_eq!(runtime.take_clipboard_writes(), vec![b"hello".to_vec()]);
+    }
+
+    #[test]
+    fn reverse_drag_unwraps_soft_wrapped_rows_for_copy() {
+        let runtime = TerminalRuntime::new_for_test(2, 4).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"abcdef");
+        }
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 1, 1, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 1, 0, false))
+            .unwrap();
+        let frame = match runtime.frame_update(None).unwrap() {
+            TerminalUpdate::Full(frame) => frame,
+            TerminalUpdate::Patch { .. } => panic!("expected full frame"),
+        };
+        assert_eq!(
+            frame.selection,
+            vec![
+                TerminalSelectionRange {
+                    row: 0,
+                    start_col: 1,
+                    end_col: 3,
+                },
+                TerminalSelectionRange {
+                    row: 1,
+                    start_col: 0,
+                    end_col: 1,
+                },
+            ]
+        );
+        runtime
+            .mouse(&left_mouse(MouseAction::Release, 1, 0, false))
+            .unwrap();
+        assert_eq!(runtime.take_clipboard_writes(), vec![b"bcdef".to_vec()]);
+    }
+
+    #[test]
+    fn wide_cell_selection_copies_one_grapheme() {
+        let runtime = TerminalRuntime::new_for_test(1, 4).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write("界a".as_bytes());
+        }
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 1, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Release, 1, 0, false))
+            .unwrap();
+        assert_eq!(
+            runtime.take_clipboard_writes(),
+            vec!["界".as_bytes().to_vec()]
+        );
+    }
+
+    #[test]
+    fn single_click_clears_an_old_selection_without_copying() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"hello x");
+        }
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 4, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Release, 4, 0, false))
+            .unwrap();
+        let _ = runtime.take_clipboard_writes();
+
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 6, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Release, 6, 0, false))
+            .unwrap();
+
+        assert!(runtime.take_clipboard_writes().is_empty());
+        let frame = match runtime.frame_update(None).unwrap() {
+            TerminalUpdate::Full(frame) => frame,
+            TerminalUpdate::Patch { .. } => panic!("expected full frame"),
+        };
+        assert!(frame.selection.is_empty());
+    }
+
+    #[test]
+    fn dragging_back_to_the_cell_anchor_collapses_without_copying() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"hello");
+        }
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 4, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 0, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Release, 0, 0, false))
+            .unwrap();
+
+        assert!(runtime.take_clipboard_writes().is_empty());
+        assert!(match runtime.frame_update(None).unwrap() {
+            TerminalUpdate::Full(frame) => frame.selection,
+            TerminalUpdate::Patch { .. } => panic!("expected full frame"),
+        }
+        .is_empty());
+    }
+
+    #[test]
+    fn repeated_clicks_use_ghostty_word_and_line_selection() {
+        let runtime = TerminalRuntime::new_for_test(2, 16).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"hello world");
+        }
+        for expected in [None, Some("hello"), Some("hello world")] {
+            runtime
+                .mouse(&left_mouse(MouseAction::Press, 1, 0, false))
+                .unwrap();
+            runtime
+                .mouse(&left_mouse(MouseAction::Release, 1, 0, false))
+                .unwrap();
+            assert_eq!(
+                runtime
+                    .take_clipboard_writes()
+                    .into_iter()
+                    .next()
+                    .map(|bytes| String::from_utf8(bytes).unwrap()),
+                expected.map(str::to_owned)
+            );
+        }
+    }
+
+    #[test]
+    fn pointer_boundary_rejects_fabricated_in_grid_cells_and_ignores_outside_motion() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        let captured = recording_writer(&runtime);
+
+        assert!(runtime
+            .mouse(&left_mouse(MouseAction::Press, 8, 0, false))
+            .is_err());
+        let mut outside_motion = left_mouse(MouseAction::Motion, u16::MAX, u16::MAX, false);
+        outside_motion.in_bounds = false;
+        runtime.mouse(&outside_motion).unwrap();
+
+        assert!(!lock(&runtime.shared.emulator).local_selection_active);
+        assert!(lock(&captured).is_empty());
+    }
+
+    #[test]
+    fn outside_release_ends_local_selection_without_fabricating_a_cell() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"hello");
+        }
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 3, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&MouseEvent {
+                in_bounds: false,
+                ..left_mouse(MouseAction::Release, 0, 0, false)
+            })
+            .unwrap();
+
+        assert_eq!(runtime.take_clipboard_writes(), vec![b"hell".to_vec()]);
+        assert!(!lock(&runtime.shared.emulator).local_selection_active);
     }
 
     #[test]

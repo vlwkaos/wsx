@@ -32,6 +32,20 @@ impl SidebarLayout {
         layout
     }
 
+    /// One data cell plus a divider, with the same vertical gutters as the expanded tree.
+    pub fn compact_rail(area: Rect) -> Self {
+        Self {
+            header: Rect::default(),
+            list: Rect::new(
+                area.x,
+                area.y.saturating_add(1),
+                area.width.min(1),
+                area.height.saturating_sub(2),
+            ),
+            scrollbar: Rect::default(),
+        }
+    }
+
     /// Sidebar content with a local title and one blank row, used by Group Manager.
     pub fn with_header(area: Rect) -> Self {
         Self::from_area(area, true)
@@ -113,7 +127,7 @@ fn truncate_label(label: &str, max_chip_width: usize) -> String {
 // ^ [[wsx UI Patterns]] Render and mouse hit testing consume this exact cell projection.
 pub fn fit_group_strip(
     groups: &[GroupKey],
-    active_group: Option<&GroupKey>,
+    active_group: &GroupKey,
     available_width: usize,
     requested_start: usize,
 ) -> GroupStrip {
@@ -130,7 +144,7 @@ pub fn fit_group_strip(
         };
     }
 
-    let all_width = title_width
+    let all_width = cursor
         + groups
             .iter()
             .map(|group| chip_width(group_label(group)))
@@ -167,7 +181,7 @@ pub fn fit_group_strip(
         chips.push(GroupChip {
             key: key.clone(),
             label,
-            active: active_group == Some(key),
+            active: active_group == key,
             cells,
         });
     }
@@ -180,7 +194,7 @@ pub fn fit_group_strip(
             chips.push(GroupChip {
                 key: key.clone(),
                 label,
-                active: active_group == Some(key),
+                active: active_group == key,
                 cells: cursor..cursor + width,
             });
             used = width;
@@ -287,16 +301,34 @@ mod tests {
     }
 
     #[test]
+    fn compact_rail_preserves_expanded_tree_row_coordinates() {
+        let layout = SidebarLayout::compact_rail(Rect::new(4, 5, 2, 10));
+
+        assert_eq!(layout.list, Rect::new(4, 6, 1, 8));
+        assert_eq!(layout.scrollbar, Rect::default());
+        assert_eq!(layout.item_at(Position::new(4, 5), 3, 20), None);
+        assert_eq!(layout.item_at(Position::new(4, 6), 3, 20), Some(3));
+        assert_eq!(layout.item_at(Position::new(5, 6), 3, 20), None);
+
+        for height in 0..=2 {
+            let tiny = SidebarLayout::compact_rail(Rect::new(0, 0, 2, height));
+            assert_eq!(tiny.list.height, 0);
+            assert_eq!(tiny.item_at(Position::new(0, 0), 0, 1), None);
+        }
+    }
+
+    #[test]
     fn wide_projection_shows_ungrouped_and_named_groups() {
-        let strip = fit_group_strip(&groups(), Some(&GroupKey::Ungrouped), 100, 0);
+        let strip = fit_group_strip(&groups(), &GroupKey::Ungrouped, 100, 0);
         assert_eq!(strip.chips.len(), 3);
+        assert!(strip.chips[0].active);
         assert!(strip.left_cells.is_none());
         assert!(strip.right_cells.is_none());
     }
 
     #[test]
     fn narrow_projection_scrolls_by_chip_with_exact_boundaries() {
-        let strip = fit_group_strip(&groups(), Some(&GroupKey::Ungrouped), 28, 0);
+        let strip = fit_group_strip(&groups(), &GroupKey::Ungrouped, 28, 0);
         let right = strip.right_cells.clone().unwrap();
         assert_eq!(
             strip.target_at(right.start),
@@ -311,7 +343,7 @@ mod tests {
             strip.target_at(first.cells.end),
             Some(GroupStripTarget::Group(first.key.clone()))
         );
-        let shifted = fit_group_strip(&groups(), Some(&GroupKey::Named("work".into())), 28, 2);
+        let shifted = fit_group_strip(&groups(), &GroupKey::Named("work".into()), 28, 2);
         let left = shifted.left_cells.clone().unwrap();
         assert_eq!(
             shifted.target_at(left.start),
@@ -323,10 +355,12 @@ mod tests {
     #[test]
     fn unicode_labels_use_display_cells_and_tiny_widths_do_not_panic() {
         let unicode = vec![GroupKey::Named("개인-project".into())];
-        let strip = fit_group_strip(&unicode, Some(&unicode[0]), 18, 0);
+        let strip = fit_group_strip(&unicode, &unicode[0], 18, 0);
         assert_eq!(strip.chips.len(), 1);
         assert!(strip.chips[0].cells.end <= 18);
-        assert!(fit_group_strip(&unicode, None, 0, 0).chips.is_empty());
+        assert!(fit_group_strip(&unicode, &GroupKey::Ungrouped, 0, 0)
+            .chips
+            .is_empty());
     }
 
     #[test]

@@ -14,7 +14,8 @@ pub const TEXT_MUTED: Color = Color::Rgb(143, 152, 166);
 pub const TEXT_SUBTLE: Color = Color::Rgb(99, 108, 123);
 pub const ACCENT: Color = Color::Rgb(102, 153, 255);
 pub const SUCCESS: Color = Color::Rgb(88, 190, 112);
-pub const WORKING: Color = Color::Rgb(226, 190, 118);
+pub const WORKING: Color = Color::Rgb(137, 220, 158);
+pub const IDLE: Color = Color::Rgb(226, 190, 118);
 pub const DONE: Color = Color::Rgb(91, 199, 188);
 pub const BLOCKED: Color = Color::Rgb(234, 105, 126);
 pub const UNKNOWN: Color = Color::Rgb(99, 108, 123);
@@ -63,6 +64,10 @@ pub fn selected_row(move_mode: bool) -> Style {
 }
 
 pub fn accent_selection() -> Style {
+    Style::default().fg(BACKGROUND).bg(ACCENT)
+}
+
+pub fn terminal_selection() -> Style {
     Style::default().fg(BACKGROUND).bg(ACCENT)
 }
 
@@ -125,6 +130,7 @@ mod tests {
             ACCENT,
             SUCCESS,
             WORKING,
+            IDLE,
             DONE,
             BLOCKED,
             UNKNOWN,

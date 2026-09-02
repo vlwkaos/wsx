@@ -2,7 +2,7 @@ use super::domain::*;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 10;
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -32,6 +32,12 @@ pub enum Request {
     SessionRename {
         session_id: SessionId,
         label: String,
+        expected_revision: u64,
+    },
+    SessionReorder {
+        session_id: SessionId,
+        target_session_id: SessionId,
+        placement: SessionPlacement,
         expected_revision: u64,
     },
     SessionClose {
@@ -255,6 +261,21 @@ mod tests {
         assert!(!capabilities.agent_session_restore);
         assert!(!capabilities.resume_shell_fallback);
         assert!(!capabilities.listening_ports);
+        assert!(!capabilities.foreground_jobs);
+    }
+
+    #[test]
+    fn legacy_snapshot_defaults_missing_foreground_job_metadata() {
+        let response = serde_json::from_str::<Response>(
+            r#"{"type":"snapshot","data":{"protocol":8,"epoch":1,"revision":1,"projects":[],"worktrees":[],"sessions":[],"panes":[],"capabilities":{}}}"#,
+        )
+        .unwrap();
+
+        let Response::Snapshot(snapshot) = response else {
+            panic!("expected snapshot response");
+        };
+        assert!(snapshot.pane_activity.is_empty());
+        assert!(!snapshot.capabilities.foreground_jobs);
     }
 
     #[test]
@@ -294,6 +315,33 @@ mod tests {
     }
 
     #[test]
+    fn legacy_terminal_wire_defaults_selection_and_pointer_bounds() {
+        let full = serde_json::from_str::<TerminalUpdate>(
+            r#"{"kind":"full","data":{"pane_id":1,"terminal_id":2,"revision":3,"cols":1,"rows":1,"cells":[["x",null,null,0,0]],"cursor":{"x":0,"y":0,"visible":false,"blinking":false,"shape":0}}}"#,
+        )
+        .unwrap();
+        let TerminalUpdate::Full(full) = full else {
+            panic!("expected full terminal update");
+        };
+        assert!(full.selection.is_empty());
+
+        let patch = serde_json::from_str::<TerminalUpdate>(
+            r#"{"kind":"patch","data":{"pane_id":1,"terminal_id":2,"base_revision":3,"revision":4,"cols":1,"rows":1,"changed_rows":[],"cursor":{"x":0,"y":0,"visible":false,"blinking":false,"shape":0}}}"#,
+        )
+        .unwrap();
+        let TerminalUpdate::Patch { selection, .. } = patch else {
+            panic!("expected terminal patch");
+        };
+        assert!(selection.is_empty());
+
+        let mouse = serde_json::from_str::<MouseEvent>(
+            r#"{"action":"release","button":"left","x":0,"y":0,"shift":false,"control":false,"alt":false,"super_key":false}"#,
+        )
+        .unwrap();
+        assert!(mouse.in_bounds);
+    }
+
+    #[test]
     fn full_terminal_baseline_stays_within_compact_size_budget() {
         let cell = Cell {
             symbol: " ".into(),
@@ -315,6 +363,7 @@ mod tests {
                 blinking: false,
                 shape: 0,
             },
+            selection: Vec::new(),
         }));
         let bytes = encode_line(&message).unwrap();
         assert!(

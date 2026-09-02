@@ -41,18 +41,28 @@ impl Client {
 
     /// Gracefully stop the current daemon and wait for its socket cleanup.
     pub fn shutdown(&self) -> io::Result<()> {
-        match self.call(&Request::Shutdown) {
-            Ok(Response::Ack { .. }) => wait_until_stopped(self),
-            Ok(Response::Error(error)) => Err(io::Error::other(format!(
-                "{}: {}",
-                error.code, error.message
-            ))),
-            Ok(_) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "unexpected wsxd shutdown response",
-            )),
-            Err(error) if daemon_is_stopped_error(&error) => Ok(()),
-            Err(error) => Err(error),
+        match probe_existing_daemon(self)? {
+            ExistingDaemon::Missing => Ok(()),
+            ExistingDaemon::Ready => match self.call(&Request::Shutdown) {
+                Ok(Response::Ack { .. }) => wait_until_stopped(self),
+                Ok(Response::Error(error)) => Err(io::Error::other(format!(
+                    "{}: {}",
+                    error.code, error.message
+                ))),
+                Ok(_) => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unexpected wsxd shutdown response",
+                )),
+                Err(error) if daemon_is_stopped_error(&error) => Ok(()),
+                Err(error) => Err(error),
+            },
+            ExistingDaemon::Incompatible {
+                stream,
+                advertised_protocol,
+            } => {
+                shutdown_incompatible_daemon(self, stream, advertised_protocol)?;
+                wait_until_stopped(self)
+            }
         }
     }
 
@@ -386,21 +396,8 @@ fn validate_socket(path: &Path) -> io::Result<()> {
 
 pub fn ensure_available() -> io::Result<()> {
     let client = Client::local();
-    match probe_existing_daemon(&client)? {
-        ExistingDaemon::Ready => return Ok(()),
-        ExistingDaemon::Missing => {}
-        ExistingDaemon::Incompatible {
-            stream,
-            advertised_protocol,
-        } => {
-            // ^ [[wsx Architecture]] Compatible daemons are reused.
-            // An incompatible owner must exit through its cleanup path before
-            // this client starts the matching adjacent daemon.
-            shutdown_incompatible_daemon(&client, stream, advertised_protocol)?;
-            if wait_for_compatible_or_stopped(&client)? == ExistingDaemonAfterShutdown::Ready {
-                return Ok(());
-            }
-        }
+    if !daemon_needs_start(probe_existing_daemon(&client)?)? {
+        return Ok(());
     }
 
     let binary = daemon_binary();
@@ -458,10 +455,33 @@ enum ExistingDaemon {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExistingDaemonAfterShutdown {
-    Ready,
-    Stopped,
+fn daemon_needs_start(existing: ExistingDaemon) -> io::Result<bool> {
+    match existing {
+        ExistingDaemon::Ready => Ok(false),
+        ExistingDaemon::Missing => Ok(true),
+        // ^ [[wsx Architecture]] Binary skew must not terminate daemon-owned live PTYs.
+        ExistingDaemon::Incompatible {
+            advertised_protocol,
+            ..
+        } => Err(incompatible_daemon_error(advertised_protocol)),
+    }
+}
+
+fn incompatible_daemon_error(advertised_protocol: Option<u32>) -> io::Error {
+    let daemon_protocol = advertised_protocol
+        .map(|protocol| protocol.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let reason = if advertised_protocol == Some(PROTOCOL_VERSION) {
+        "missing required capabilities"
+    } else {
+        "protocol mismatch"
+    };
+    io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!(
+            "incompatible wsxd is already running ({reason}; client protocol {PROTOCOL_VERSION}, daemon protocol {daemon_protocol}); refusing automatic shutdown to protect live sessions; use a matching wsx binary or run `wsx daemon stop` explicitly"
+        ),
+    )
 }
 
 fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
@@ -487,7 +507,10 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
             protocol,
             capabilities,
             ..
-        } if protocol == PROTOCOL_VERSION && capabilities.resume_shell_fallback => {
+        } if protocol == PROTOCOL_VERSION
+            && capabilities.resume_shell_fallback
+            && capabilities.foreground_jobs =>
+        {
             match round_trip(&mut stream, &Request::Snapshot)? {
                 Response::Snapshot(_) => Ok(ExistingDaemon::Ready),
                 Response::Error(error) => Err(io::Error::other(format!(
@@ -610,39 +633,6 @@ fn wait_until_stopped(client: &Client) -> io::Result<()> {
     }
 }
 
-fn wait_for_compatible_or_stopped(client: &Client) -> io::Result<ExistingDaemonAfterShutdown> {
-    let deadline = Instant::now() + IO_TIMEOUT;
-    loop {
-        match probe_existing_daemon(client) {
-            Ok(ExistingDaemon::Ready) => return Ok(ExistingDaemonAfterShutdown::Ready),
-            Ok(ExistingDaemon::Missing) => return Ok(ExistingDaemonAfterShutdown::Stopped),
-            Ok(ExistingDaemon::Incompatible { .. }) if Instant::now() < deadline => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound
-                        | io::ErrorKind::ConnectionRefused
-                        | io::ErrorKind::ConnectionReset
-                        | io::ErrorKind::UnexpectedEof
-                ) =>
-            {
-                return Ok(ExistingDaemonAfterShutdown::Stopped)
-            }
-            Err(error) if Instant::now() < deadline => {
-                let _ = error;
-            }
-            Ok(ExistingDaemon::Incompatible { .. }) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "incompatible wsxd did not stop",
-                ))
-            }
-            Err(error) => return Err(error),
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-}
-
 fn daemon_binary() -> PathBuf {
     if let Some(path) = std::env::var_os("WSX_DAEMON_BIN").filter(|value| !value.is_empty()) {
         return PathBuf::from(path);
@@ -744,6 +734,9 @@ impl Drop for EventMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::{
+        Cell, Cursor, PaneId, TerminalFrame, TerminalId, TerminalSelectionRange, TerminalUpdate,
+    };
     use std::{
         os::unix::{fs::PermissionsExt, net::UnixListener},
         sync::atomic::AtomicUsize,
@@ -770,6 +763,7 @@ mod tests {
     fn current_capabilities() -> super::super::domain::Capabilities {
         super::super::domain::Capabilities {
             resume_shell_fallback: true,
+            foreground_jobs: true,
             ..Default::default()
         }
     }
@@ -809,6 +803,7 @@ mod tests {
                     sessions: Vec::new(),
                     panes: Vec::new(),
                     listening_ports: Vec::new(),
+                    pane_activity: Vec::new(),
                     capabilities: current_capabilities(),
                 }),
             );
@@ -816,16 +811,14 @@ mod tests {
             std::fs::remove_file(server_path).unwrap();
         });
 
-        assert!(matches!(
-            probe_existing_daemon(&Client::new(path)).unwrap(),
-            ExistingDaemon::Ready
-        ));
+        assert!(!daemon_needs_start(probe_existing_daemon(&Client::new(path)).unwrap()).unwrap());
+        assert!(daemon_needs_start(ExistingDaemon::Missing).unwrap());
         server.join().unwrap();
     }
 
     #[test]
-    fn same_protocol_daemon_without_required_shell_fallback_is_replaced() {
-        let (path, listener) = test_listener("missing-shell-fallback");
+    fn same_protocol_daemon_without_required_capabilities_is_not_stopped() {
+        let (path, listener) = test_listener("missing-capabilities");
         let server_path = path.clone();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -844,28 +837,60 @@ mod tests {
                 },
             );
             assert_eq!(
-                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
-                Request::Shutdown
+                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::UnexpectedEof
             );
-            send_response(&mut stream, &Response::Ack { revision: 1 });
             drop(listener);
             std::fs::remove_file(server_path).unwrap();
         });
 
-        let client = Client::new(path);
-        let ExistingDaemon::Incompatible {
-            stream,
-            advertised_protocol,
-        } = probe_existing_daemon(&client).unwrap()
-        else {
-            panic!("daemon without required capability should be incompatible");
-        };
-        assert_eq!(advertised_protocol, Some(PROTOCOL_VERSION));
-        shutdown_incompatible_daemon(&client, stream, advertised_protocol).unwrap();
-        assert_eq!(
-            wait_for_compatible_or_stopped(&client).unwrap(),
-            ExistingDaemonAfterShutdown::Stopped
-        );
+        let error =
+            daemon_needs_start(probe_existing_daemon(&Client::new(path)).unwrap()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(error.to_string().contains("missing required capabilities"));
+        assert!(error.to_string().contains("refusing automatic shutdown"));
+        assert!(error.to_string().contains("wsx daemon stop"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn protocol_mismatch_does_not_send_shutdown() {
+        let (path, listener) = test_listener("protocol-skew");
+        let server_path = path.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert_eq!(
+                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+                Request::Hello {
+                    protocol: PROTOCOL_VERSION
+                }
+            );
+            send_response(
+                &mut stream,
+                &Response::Error(super::super::protocol::ApiError::new(
+                    "protocol_mismatch",
+                    format!("client {PROTOCOL_VERSION}, daemon 8"),
+                )),
+            );
+            assert_eq!(
+                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+            drop(listener);
+            std::fs::remove_file(server_path).unwrap();
+        });
+
+        let error =
+            daemon_needs_start(probe_existing_daemon(&Client::new(path)).unwrap()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(error.to_string().contains("protocol mismatch"));
+        assert!(error.to_string().contains("daemon protocol unknown"));
+        assert!(error.to_string().contains("refusing automatic shutdown"));
+        assert!(error.to_string().contains("wsx daemon stop"));
         server.join().unwrap();
     }
 
@@ -989,20 +1014,7 @@ mod tests {
             std::fs::remove_file(server_path).unwrap();
         });
 
-        let client = Client::new(path);
-        let ExistingDaemon::Incompatible {
-            stream,
-            advertised_protocol,
-        } = probe_existing_daemon(&client).unwrap()
-        else {
-            panic!("advertised daemon should be incompatible");
-        };
-        assert_eq!(advertised_protocol, Some(PROTOCOL_VERSION - 1));
-        shutdown_incompatible_daemon(&client, stream, advertised_protocol).unwrap();
-        assert_eq!(
-            wait_for_compatible_or_stopped(&client).unwrap(),
-            ExistingDaemonAfterShutdown::Stopped
-        );
+        Client::new(path).shutdown().unwrap();
         server.join().unwrap();
     }
 
@@ -1063,19 +1075,7 @@ mod tests {
             std::fs::remove_file(server_path).unwrap();
         });
 
-        let client = Client::new(path);
-        let ExistingDaemon::Incompatible {
-            stream,
-            advertised_protocol,
-        } = probe_existing_daemon(&client).unwrap()
-        else {
-            panic!("protocol two daemon should be incompatible");
-        };
-        shutdown_incompatible_daemon(&client, stream, advertised_protocol).unwrap();
-        assert_eq!(
-            wait_for_compatible_or_stopped(&client).unwrap(),
-            ExistingDaemonAfterShutdown::Stopped
-        );
+        Client::new(path).shutdown().unwrap();
         server.join().unwrap();
     }
 
@@ -1139,19 +1139,7 @@ mod tests {
             std::fs::remove_file(server_path).unwrap();
         });
 
-        let client = Client::new(path);
-        let ExistingDaemon::Incompatible {
-            stream,
-            advertised_protocol,
-        } = probe_existing_daemon(&client).unwrap()
-        else {
-            panic!("legacy daemon should be incompatible");
-        };
-        shutdown_incompatible_daemon(&client, stream, advertised_protocol).unwrap();
-        assert_eq!(
-            wait_for_compatible_or_stopped(&client).unwrap(),
-            ExistingDaemonAfterShutdown::Stopped
-        );
+        Client::new(path).shutdown().unwrap();
         server.join().unwrap();
     }
 
@@ -1184,7 +1172,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_stream_preserves_clipboard_effect_buffered_with_subscribe_ack() {
+    fn terminal_stream_preserves_selection_updates_and_clipboard_order_after_subscribe_ack() {
         let (path, listener) = test_listener("buffered-subscribe");
         let server_path = path.clone();
         let server = thread::spawn(move || {
@@ -1212,6 +1200,51 @@ mod tests {
             ));
             bytes = encode_line(&Response::Ack { revision: 1 }).unwrap();
             bytes.extend(
+                encode_line(&TerminalServerMessage::Update(TerminalUpdate::Full(
+                    TerminalFrame {
+                        pane_id: PaneId(1),
+                        terminal_id: TerminalId(2),
+                        revision: 1,
+                        cols: 1,
+                        rows: 1,
+                        cells: vec![Cell::default()],
+                        cursor: Cursor {
+                            x: 0,
+                            y: 0,
+                            visible: false,
+                            blinking: false,
+                            shape: 0,
+                        },
+                        selection: vec![TerminalSelectionRange {
+                            row: 0,
+                            start_col: 0,
+                            end_col: 0,
+                        }],
+                    },
+                )))
+                .unwrap(),
+            );
+            bytes.extend(
+                encode_line(&TerminalServerMessage::Update(TerminalUpdate::Patch {
+                    pane_id: PaneId(1),
+                    terminal_id: TerminalId(2),
+                    base_revision: 1,
+                    revision: 2,
+                    cols: 1,
+                    rows: 1,
+                    changed_rows: Vec::new(),
+                    cursor: Cursor {
+                        x: 0,
+                        y: 0,
+                        visible: false,
+                        blinking: false,
+                        shape: 0,
+                    },
+                    selection: Vec::new(),
+                }))
+                .unwrap(),
+            );
+            bytes.extend(
                 encode_line(&TerminalServerMessage::ClipboardWrite(b"copied".to_vec())).unwrap(),
             );
             bytes.extend(encode_line(&TerminalServerMessage::Exited).unwrap());
@@ -1231,9 +1264,16 @@ mod tests {
         )
         .unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
+        let mut selections = Vec::new();
         let mut clipboard = None;
         loop {
             match stream.try_recv() {
+                Ok(TerminalServerMessage::Update(TerminalUpdate::Full(frame))) => {
+                    selections.push(frame.selection)
+                }
+                Ok(TerminalServerMessage::Update(TerminalUpdate::Patch { selection, .. })) => {
+                    selections.push(selection)
+                }
                 Ok(TerminalServerMessage::ClipboardWrite(text)) => clipboard = Some(text),
                 Ok(TerminalServerMessage::Exited) => break,
                 Ok(message) => panic!("unexpected terminal message: {message:?}"),
@@ -1243,6 +1283,17 @@ mod tests {
                 Err(error) => panic!("terminal update missing after ACK: {error}"),
             }
         }
+        assert_eq!(
+            selections,
+            vec![
+                vec![TerminalSelectionRange {
+                    row: 0,
+                    start_col: 0,
+                    end_col: 0,
+                }],
+                Vec::new(),
+            ]
+        );
         assert_eq!(clipboard.as_deref(), Some(b"copied".as_slice()));
         drop(stream);
         server.join().unwrap();

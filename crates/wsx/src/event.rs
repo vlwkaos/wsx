@@ -303,8 +303,6 @@ fn translate_input_key(key: KeyEvent) -> Action {
         KeyCode::Backspace => Action::InputBackspace,
         KeyCode::Tab => Action::InputTab,
         KeyCode::BackTab => Action::InputBackTab,
-        KeyCode::F(1) => Action::RoutineCodexPreset,
-        KeyCode::F(2) => Action::RoutineClaudePreset,
         KeyCode::Down => Action::NavigateDown,
         KeyCode::Up => Action::NavigateUp,
         KeyCode::Left => Action::NavigateLeft,
@@ -563,6 +561,14 @@ mod tests {
         let uppercase_q = KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT);
         assert_eq!(translate_key(uppercase_q), Action::HardQuit);
         assert_eq!(translate_input_key(uppercase_q), Action::InputChar('Q'));
+        assert_eq!(
+            translate_input_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)),
+            Action::None
+        );
+        assert_eq!(
+            translate_input_key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE)),
+            Action::None
+        );
 
         let mut terminal_escape = EscapeSequence::parse("ctrl+a w").unwrap();
         assert_eq!(

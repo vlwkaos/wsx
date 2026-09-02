@@ -1,8 +1,8 @@
 use crate::terminal_surface::{SurfaceUpdate, TerminalSurfaces};
 use wsx_core::runtime::{
     AgentCapabilities, AgentInfo, AgentState, Cell, Cursor, Pane, PaneId, PaneLayout, Session,
-    SessionId, Snapshot, TerminalFrame, TerminalId, TerminalRowPatch, TerminalUpdate, WorktreeId,
-    PROTOCOL_VERSION,
+    SessionId, Snapshot, TerminalFrame, TerminalId, TerminalRowPatch, TerminalSelectionRange,
+    TerminalUpdate, WorktreeId, PROTOCOL_VERSION,
 };
 
 fn snapshot(epoch: u64, pane: Pane, session_revision: u64) -> Snapshot {
@@ -24,6 +24,7 @@ fn snapshot(epoch: u64, pane: Pane, session_revision: u64) -> Snapshot {
         }],
         panes: vec![pane],
         listening_ports: vec![],
+        pane_activity: vec![],
         capabilities: Default::default(),
     }
 }
@@ -38,6 +39,7 @@ fn empty_snapshot(epoch: u64) -> Snapshot {
         sessions: vec![],
         panes: vec![],
         listening_ports: vec![],
+        pane_activity: vec![],
         capabilities: Default::default(),
     }
 }
@@ -94,7 +96,29 @@ fn frame(pane_id: u64, terminal_id: u64, revision: u64, first: &str) -> Terminal
             },
         ],
         cursor: cursor(),
+        selection: Vec::new(),
     }
+}
+
+#[test]
+fn cached_selection_can_be_cleared_without_discarding_the_terminal_surface() {
+    let mut surfaces = TerminalSurfaces::default();
+    surfaces.reconcile(&snapshot(1, pane(1, 2, 1, None), 1));
+    let mut selected = frame(1, 2, 2, "x");
+    selected.selection = vec![TerminalSelectionRange {
+        row: 0,
+        start_col: 0,
+        end_col: 1,
+    }];
+    assert_eq!(surfaces.install_full(1, selected), SurfaceUpdate::Applied);
+
+    assert!(surfaces.clear_selection(PaneId(1), TerminalId(2)));
+    assert!(surfaces
+        .frame(PaneId(1), TerminalId(2))
+        .unwrap()
+        .selection
+        .is_empty());
+    assert!(!surfaces.clear_selection(PaneId(1), TerminalId(2)));
 }
 
 #[test]
@@ -242,6 +266,7 @@ fn exact_base_patch_updates_the_current_frame() {
             ],
         }],
         cursor: cursor(),
+        selection: Vec::new(),
     };
 
     assert!(matches!(surfaces.apply(1, update), SurfaceUpdate::Applied));
@@ -296,6 +321,7 @@ fn patch_without_a_baseline_requests_resynchronization() {
         rows: 1,
         changed_rows: vec![],
         cursor: cursor(),
+        selection: Vec::new(),
     };
     assert!(matches!(surfaces.apply(1, update), SurfaceUpdate::Resync));
     assert_eq!(surfaces.frame(PaneId(1), TerminalId(2)), None);
@@ -323,6 +349,7 @@ fn patch_with_a_mismatched_baseline_preserves_the_current_frame() {
             }],
         }],
         cursor: cursor(),
+        selection: Vec::new(),
     };
 
     assert!(matches!(surfaces.apply(1, update), SurfaceUpdate::Resync));
@@ -357,6 +384,7 @@ fn malformed_patch_row_requests_resynchronization_without_mutation() {
             ],
         }],
         cursor: cursor(),
+        selection: Vec::new(),
     };
 
     assert!(matches!(surfaces.apply(1, update), SurfaceUpdate::Resync));
@@ -404,6 +432,7 @@ fn malformed_current_identity_update_requests_resynchronization() {
         rows: 1,
         cells: vec![],
         cursor: cursor(),
+        selection: Vec::new(),
     };
     assert!(matches!(
         surfaces.apply(1, TerminalUpdate::Full(invalid)),
@@ -425,6 +454,7 @@ fn install_full_rejects_invalid_current_identity_dimensions() {
         rows: 1,
         cells: vec![],
         cursor: cursor(),
+        selection: Vec::new(),
     };
     assert!(matches!(
         surfaces.install_full(1, invalid),

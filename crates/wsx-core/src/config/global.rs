@@ -105,6 +105,42 @@ fn default_auto_collapse_after_hours() -> u64 {
     24
 }
 
+fn default_notification_timeout_seconds() -> u64 {
+    4
+}
+
+fn default_show_release_status() -> bool {
+    true
+}
+
+// ^ [[Configuration Model]] Terminal presentation choices remain typed and default safely for older files.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalSidebar {
+    #[default]
+    Compact,
+    Expanded,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortVisibility {
+    Hidden,
+    #[default]
+    NonAgentic,
+    All,
+}
+
+impl PortVisibility {
+    pub fn shows_session(self, is_agentic: bool) -> bool {
+        match self {
+            Self::Hidden => false,
+            Self::NonAgentic => !is_agentic,
+            Self::All => true,
+        }
+    }
+}
+
 /// Canonical form used for project-path identity. A trailing `/` is the only
 /// divergence we've seen between a user-typed path and its stored form, and an
 /// un-normalized duplicate silently breaks dedup / delete / cache lookups.
@@ -114,7 +150,7 @@ pub fn normalize_project_path(path: &Path) -> PathBuf {
     PathBuf::from(path.to_string_lossy().trim_end_matches('/').to_string())
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GlobalConfig {
     pub groups: Vec<String>,
     #[serde(default)]
@@ -127,6 +163,14 @@ pub struct GlobalConfig {
     pub resume_agents_on_restore: bool,
     #[serde(default = "default_auto_collapse_after_hours")]
     pub auto_collapse_after_hours: u64,
+    #[serde(default = "default_notification_timeout_seconds")]
+    pub notification_timeout_seconds: u64,
+    #[serde(default = "default_show_release_status")]
+    pub show_release_status: bool,
+    #[serde(default)]
+    pub terminal_sidebar: TerminalSidebar,
+    #[serde(default)]
+    pub port_visibility: PortVisibility,
 }
 
 impl Default for GlobalConfig {
@@ -138,11 +182,15 @@ impl Default for GlobalConfig {
             terminal_escape_chord: default_terminal_escape_chord(),
             resume_agents_on_restore: default_resume_agents_on_restore(),
             auto_collapse_after_hours: default_auto_collapse_after_hours(),
+            notification_timeout_seconds: default_notification_timeout_seconds(),
+            show_release_status: default_show_release_status(),
+            terminal_sidebar: TerminalSidebar::default(),
+            port_visibility: PortVisibility::default(),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProjectEntry {
     pub name: String,
     pub path: PathBuf,
@@ -185,6 +233,14 @@ struct GlobalConfigWire {
     resume_agents_on_restore: bool,
     #[serde(default = "default_auto_collapse_after_hours")]
     auto_collapse_after_hours: u64,
+    #[serde(default = "default_notification_timeout_seconds")]
+    notification_timeout_seconds: u64,
+    #[serde(default = "default_show_release_status")]
+    show_release_status: bool,
+    #[serde(default)]
+    terminal_sidebar: TerminalSidebar,
+    #[serde(default)]
+    port_visibility: PortVisibility,
 }
 
 #[derive(Deserialize)]
@@ -246,6 +302,11 @@ impl<'de> Deserialize<'de> for GlobalConfig {
             });
         }
 
+        if wire.notification_timeout_seconds == 0 {
+            return Err(D::Error::custom(
+                "notification_timeout_seconds must be at least 1",
+            ));
+        }
         let mut config = Self {
             groups,
             projects,
@@ -253,6 +314,10 @@ impl<'de> Deserialize<'de> for GlobalConfig {
             terminal_escape_chord: wire.terminal_escape_chord,
             resume_agents_on_restore: wire.resume_agents_on_restore,
             auto_collapse_after_hours: wire.auto_collapse_after_hours,
+            notification_timeout_seconds: wire.notification_timeout_seconds,
+            show_release_status: wire.show_release_status,
+            terminal_sidebar: wire.terminal_sidebar,
+            port_visibility: wire.port_visibility,
         };
         config.migrate_reserved_names();
         Ok(config)
@@ -736,6 +801,44 @@ mod tests {
         assert!(!encoded.contains("tab"));
         assert!(!encoded.contains("tag"));
         assert!(!encoded.contains("filter"));
+    }
+
+    #[test]
+    fn notification_timeout_defaults_and_rejects_zero() {
+        let defaulted: GlobalConfig = toml::from_str("").unwrap();
+        assert_eq!(defaulted.notification_timeout_seconds, 4);
+
+        let configured: GlobalConfig =
+            toml::from_str("notification_timeout_seconds = 9\n").unwrap();
+        assert_eq!(configured.notification_timeout_seconds, 9);
+
+        let error =
+            toml::from_str::<GlobalConfig>("notification_timeout_seconds = 0\n").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("notification_timeout_seconds must be at least 1"));
+    }
+
+    #[test]
+    fn presentation_settings_default_to_compact_sidebar_release_status_and_non_agentic_ports() {
+        let defaulted: GlobalConfig = toml::from_str("").unwrap();
+        assert!(defaulted.show_release_status);
+        assert_eq!(defaulted.terminal_sidebar, TerminalSidebar::Compact);
+        assert_eq!(defaulted.port_visibility, PortVisibility::NonAgentic);
+        assert!(!defaulted.port_visibility.shows_session(true));
+        assert!(defaulted.port_visibility.shows_session(false));
+
+        let configured: GlobalConfig = toml::from_str(
+            "show_release_status = false\nterminal_sidebar = \"expanded\"\nport_visibility = \"all\"\n",
+        )
+        .unwrap();
+        assert!(!configured.show_release_status);
+        assert_eq!(configured.terminal_sidebar, TerminalSidebar::Expanded);
+        assert_eq!(configured.port_visibility, PortVisibility::All);
+        assert!(configured.port_visibility.shows_session(true));
+
+        assert!(toml::from_str::<GlobalConfig>("port_visibility = \"sometimes\"\n").is_err());
+        assert!(toml::from_str::<GlobalConfig>("terminal_sidebar = \"sometimes\"\n").is_err());
     }
 
     #[test]

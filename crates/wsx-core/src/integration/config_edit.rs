@@ -48,6 +48,31 @@ fn push_unique(
     }
     Ok(())
 }
+fn remove_nested_actions(map: &mut Map<String, Value>, event: &str, path: &Path, actions: &[&str]) {
+    let commands = actions
+        .iter()
+        .map(|action| command(path, action))
+        .collect::<Vec<_>>();
+    let Some(entries) = map.get_mut(event).and_then(Value::as_array_mut) else {
+        return;
+    };
+    entries.retain_mut(|entry| {
+        let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
+            return true;
+        };
+        hooks.retain(|hook| {
+            !hook
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|value| commands.iter().any(|command| command == value))
+        });
+        !hooks.is_empty()
+    });
+    if entries.is_empty() {
+        map.remove(event);
+    }
+}
+
 fn nested(
     map: &mut Map<String, Value>,
     event: &str,
@@ -73,8 +98,30 @@ pub(crate) fn json_config(
 ) -> io::Result<String> {
     let mut root = object(content, config)?;
     match target {
-        IntegrationTarget::Claude
-        | IntegrationTarget::Codex
+        IntegrationTarget::Claude => {
+            let hooks = hooks(&mut root)?;
+            let events = [
+                ("SessionStart", "idle"),
+                ("UserPromptSubmit", "working"),
+                ("PreToolUse", "working"),
+                ("PostToolUse", "working"),
+                ("PostToolUseFailure", "working"),
+                ("PermissionRequest", "blocked"),
+                ("Stop", "done"),
+            ];
+            for (event, _) in events {
+                remove_nested_actions(
+                    hooks,
+                    event,
+                    hook,
+                    &["session", "idle", "working", "blocked", "done"],
+                );
+            }
+            for (event, action) in events {
+                nested(hooks, event, hook, action, Some("*"))?;
+            }
+        }
+        IntegrationTarget::Codex
         | IntegrationTarget::Droid
         | IntegrationTarget::Qodercli
         | IntegrationTarget::Qwen => {
@@ -118,7 +165,7 @@ pub(crate) fn json_config(
         }
         IntegrationTarget::Mastracode => {
             for (event, action) in [
-                ("SessionStart", "unknown"),
+                ("SessionStart", "idle"),
                 ("UserPromptSubmit", "working"),
                 ("AgentStart", "working"),
                 ("PreToolUse", "working"),
@@ -127,8 +174,8 @@ pub(crate) fn json_config(
                 ("SubagentStart", "working"),
                 ("SubagentEnd", "working"),
                 ("Interrupt", "idle"),
-                ("AgentEnd", "idle"),
-                ("Stop", "idle"),
+                ("AgentEnd", "done"),
+                ("Stop", "done"),
             ] {
                 let cmd = command(hook, action);
                 push_unique(
@@ -208,7 +255,7 @@ pub(crate) fn kimi_toml(content: &str, hook: &Path) -> String {
     out.push_str(B);
     out.push('\n');
     for (event, matcher, action) in [
-        ("SessionStart", None, "unknown"),
+        ("SessionStart", None, "idle"),
         ("UserPromptSubmit", None, "working"),
         ("PreToolUse", Some("^(?!AskUserQuestion$).*$"), "working"),
         ("PreToolUse", Some("^AskUserQuestion$"), "blocked"),
@@ -218,7 +265,7 @@ pub(crate) fn kimi_toml(content: &str, hook: &Path) -> String {
         ("PreCompact", None, "working"),
         ("PermissionRequest", None, "blocked"),
         ("PermissionResult", None, "working"),
-        ("Stop", None, "idle"),
+        ("Stop", None, "done"),
         ("Interrupt", None, "idle"),
     ] {
         out.push_str(&format!("[[hooks]]\nevent = \"{event}\"\n"));

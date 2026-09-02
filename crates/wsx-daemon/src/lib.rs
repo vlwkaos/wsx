@@ -155,6 +155,7 @@ struct State {
     runtimes: HashMap<PaneId, Arc<TerminalRuntime>>,
     terminal_operation_locks: HashMap<PaneId, Arc<Mutex<()>>>,
     listening_ports: HashMap<PaneId, Vec<u16>>,
+    foreground_jobs: HashSet<PaneId>,
     leases: HashMap<PaneId, Lease>,
     events: VecDeque<Event>,
     plugins: Vec<PluginManifest>,
@@ -491,6 +492,7 @@ pub fn run() -> io::Result<()> {
             runtimes: HashMap::new(),
             terminal_operation_locks: HashMap::new(),
             listening_ports: HashMap::new(),
+            foreground_jobs: HashSet::new(),
             leases: HashMap::new(),
             events: VecDeque::new(),
             plugins: plugins::discover(),
@@ -948,7 +950,27 @@ fn release_stream_lease(daemon: &Daemon, pane_id: PaneId, client_id: u64, lease_
         .is_some_and(|lease| lease.client_id == client_id && lease.generation == lease_generation)
     {
         state.leases.remove(&pane_id);
+        let runtime = state.runtimes.get(&pane_id).cloned();
+        drop(state);
+        if let Some(runtime) = runtime {
+            let _ = runtime.clear_selection();
+        }
     }
+}
+
+fn release_client_lease(daemon: &Daemon, pane_id: PaneId, client_id: u64) -> Result<u64, ApiError> {
+    let operation_lock = terminal_operation_lock(daemon, pane_id);
+    let _operation = lock(&operation_lock);
+    let mut state = lock(&daemon.state);
+    require_lease(&state, pane_id, client_id)?;
+    state.leases.remove(&pane_id);
+    let revision = state.revision;
+    let runtime = state.runtimes.get(&pane_id).cloned();
+    drop(state);
+    if let Some(runtime) = runtime {
+        runtime.clear_selection().map_err(terminal_api)?;
+    }
+    Ok(revision)
 }
 
 fn with_stream_runtime<T>(
@@ -1028,8 +1050,8 @@ fn acquire_terminal_lease(
 ) -> Result<(u64, u64), ApiError> {
     let operation_lock = terminal_operation_lock(daemon, pane_id);
     let _operation = lock(&operation_lock);
-    let mut state = lock(&daemon.state);
-    require_runtime(&state, pane_id)?;
+    let state = lock(&daemon.state);
+    let runtime = Arc::clone(require_runtime(&state, pane_id)?);
     if state
         .leases
         .get(&pane_id)
@@ -1038,6 +1060,13 @@ fn acquire_terminal_lease(
     {
         return Err(api("terminal_busy", "pane has another writable controller"));
     }
+    drop(state);
+
+    // ^ Selection cleanup can notify through the runtime callback, which reacquires daemon state.
+    runtime.clear_selection().map_err(terminal_api)?;
+
+    let mut state = lock(&daemon.state);
+    require_runtime(&state, pane_id)?;
     let generation = NEXT_LEASE_GENERATION.fetch_add(1, Ordering::Relaxed);
     state.leases.insert(
         pane_id,
@@ -1104,6 +1133,18 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             session.label = bounded_label(label)?;
             Ok(("session.renamed", session_id.0))
         }),
+        Request::SessionReorder {
+            session_id,
+            target_session_id,
+            placement,
+            expected_revision,
+        } => reorder_session(
+            daemon,
+            session_id,
+            target_session_id,
+            placement,
+            expected_revision,
+        ),
         Request::SessionClose {
             session_id,
             expected_revision,
@@ -1155,11 +1196,10 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             let (revision, _) = acquire_terminal_lease(daemon, pane_id, client_id, takeover)?;
             Ok(Response::Ack { revision })
         }
-        Request::TerminalRelease { pane_id, client_id } => mutate_runtime(daemon, |state| {
-            require_lease(state, pane_id, client_id)?;
-            state.leases.remove(&pane_id);
-            Ok(())
-        }),
+        Request::TerminalRelease { pane_id, client_id } => {
+            let revision = release_client_lease(daemon, pane_id, client_id)?;
+            Ok(Response::Ack { revision })
+        }
         Request::TerminalHeartbeat { pane_id, client_id } => {
             mutate_runtime(daemon, |state| refresh_lease(state, pane_id, client_id))
         }
@@ -1258,6 +1298,7 @@ fn capabilities() -> Capabilities {
         agent_session_restore: true,
         resume_shell_fallback: true,
         listening_ports: true,
+        foreground_jobs: true,
         process_restore: false,
     }
 }
@@ -1271,6 +1312,15 @@ fn snapshot(daemon: &Daemon, state: &State) -> Snapshot {
         })
         .collect::<Vec<_>>();
     listening_ports.sort_by_key(|ports| ports.pane_id);
+    let mut pane_activity = state
+        .foreground_jobs
+        .iter()
+        .map(|pane_id| PaneActivity {
+            pane_id: *pane_id,
+            foreground_job: true,
+        })
+        .collect::<Vec<_>>();
+    pane_activity.sort_by_key(|activity| activity.pane_id);
     Snapshot {
         protocol: PROTOCOL_VERSION,
         epoch: daemon.epoch,
@@ -1285,6 +1335,7 @@ fn snapshot(daemon: &Daemon, state: &State) -> Snapshot {
             .map(|pane| pane.pane.clone())
             .collect(),
         listening_ports,
+        pane_activity,
         capabilities: capabilities(),
     }
 }
@@ -1649,6 +1700,82 @@ fn split_pane(
     })
 }
 
+fn reorder_session(
+    daemon: &Arc<Daemon>,
+    session_id: SessionId,
+    target_session_id: SessionId,
+    placement: SessionPlacement,
+    expected_revision: u64,
+) -> Result<Response, ApiError> {
+    let mut state = lock(&daemon.state);
+    let mut persisted = state.persisted.clone();
+    reorder_session_state(
+        &mut persisted,
+        session_id,
+        target_session_id,
+        placement,
+        expected_revision,
+    )?;
+    let revision = state.revision.saturating_add(1);
+    persisted
+        .sessions
+        .iter_mut()
+        .find(|session| session.id == session_id)
+        .expect("reordered session must remain present")
+        .revision = revision;
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    let bumped = bump(daemon, &mut state, "session.reordered", session_id.0);
+    debug_assert_eq!(bumped, revision);
+    Ok(Response::Ack { revision })
+}
+
+fn reorder_session_state(
+    persisted: &mut Persisted,
+    session_id: SessionId,
+    target_session_id: SessionId,
+    placement: SessionPlacement,
+    expected_revision: u64,
+) -> Result<(), ApiError> {
+    if session_id == target_session_id {
+        return Err(api(
+            "invalid_target",
+            "session cannot be reordered relative to itself",
+        ));
+    }
+    let source_index = persisted
+        .sessions
+        .iter()
+        .position(|session| session.id == session_id)
+        .ok_or_else(|| api("not_found", "session not found"))?;
+    let target = persisted
+        .sessions
+        .iter()
+        .find(|session| session.id == target_session_id)
+        .ok_or_else(|| api("not_found", "target session not found"))?;
+    let source = &persisted.sessions[source_index];
+    expect_revision(source.revision, expected_revision)?;
+    if source.worktree_id != target.worktree_id {
+        return Err(api(
+            "invalid_target",
+            "sessions can only be reordered within one worktree",
+        ));
+    }
+
+    let source = persisted.sessions.remove(source_index);
+    let target_index = persisted
+        .sessions
+        .iter()
+        .position(|session| session.id == target_session_id)
+        .expect("validated target must remain after removing a distinct session");
+    let insert_at = match placement {
+        SessionPlacement::Before => target_index,
+        SessionPlacement::After => target_index + 1,
+    };
+    persisted.sessions.insert(insert_at, source);
+    Ok(())
+}
+
 fn close_session(daemon: &Arc<Daemon>, id: SessionId, expected: u64) -> Result<Response, ApiError> {
     let mut state = lock(&daemon.state);
     let session = state
@@ -1667,6 +1794,7 @@ fn close_session(daemon: &Arc<Daemon>, id: SessionId, expected: u64) -> Result<R
         state.leases.remove(pane_id);
         state.terminal_operation_locks.remove(pane_id);
         state.listening_ports.remove(pane_id);
+        state.foreground_jobs.remove(pane_id);
     }
     state.persisted.panes.retain(|pane| pane.session_id != id);
     state.persisted.sessions.retain(|session| session.id != id);
@@ -1710,6 +1838,7 @@ fn close_pane(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Respons
     state.leases.remove(&id);
     state.terminal_operation_locks.remove(&id);
     state.listening_ports.remove(&id);
+    state.foreground_jobs.remove(&id);
     state.persisted.panes.retain(|pane| pane.id != id);
     let revision = bump(daemon, &mut state, "pane.closed", id.0);
     if let Some(session) = state
@@ -2080,7 +2209,7 @@ fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
 fn spawn_port_scanner(daemon: &Arc<Daemon>) -> thread::JoinHandle<()> {
     let daemon = Arc::clone(daemon);
     thread::spawn(move || loop {
-        let process_groups = {
+        let runtimes = {
             let state = lock(&daemon.state);
             if state.stopping {
                 return;
@@ -2089,35 +2218,43 @@ fn spawn_port_scanner(daemon: &Arc<Daemon>) -> thread::JoinHandle<()> {
                 .runtimes
                 .iter()
                 .filter(|(_, runtime)| !runtime.exited())
-                .filter_map(|(pane_id, runtime)| {
-                    runtime.process_group_id().map(|group| (*pane_id, group))
-                })
-                .collect::<HashMap<_, _>>()
+                .map(|(pane_id, runtime)| (*pane_id, Arc::clone(runtime)))
+                .collect::<Vec<_>>()
         };
+        let mut process_groups = HashMap::new();
+        let mut foreground_jobs = HashSet::new();
+        for (pane_id, runtime) in runtimes {
+            if let Some(group) = runtime.process_group_id() {
+                process_groups.insert(pane_id, group);
+            }
+            if runtime.has_foreground_job() {
+                foreground_jobs.insert(pane_id);
+            }
+        }
 
         let detected = if process_groups.is_empty() {
             Some(HashMap::new())
         } else {
-            scan_listening_ports().map(|by_group| {
-                process_groups
-                    .into_iter()
-                    .filter_map(|(pane_id, group)| {
-                        by_group
-                            .get(&group)
-                            .filter(|ports| !ports.is_empty())
-                            .cloned()
-                            .map(|ports| (pane_id, ports))
-                    })
-                    .collect::<HashMap<_, _>>()
+            scan_listening_ports().map(|listeners| {
+                let process_terminals = scan_process_terminals();
+                attribute_listening_ports(&process_groups, &listeners, process_terminals.as_ref())
             })
         };
-        if let Some(next) = detected {
-            let mut state = lock(&daemon.state);
-            if state.listening_ports != next {
-                state.listening_ports = next;
-                bump(&daemon, &mut state, "ports.changed", 0);
-            }
+        let mut state = lock(&daemon.state);
+        let ports_changed = detected
+            .as_ref()
+            .is_some_and(|next| state.listening_ports != *next);
+        let activity_changed = state.foreground_jobs != foreground_jobs;
+        if let Some(next) = detected.filter(|_| ports_changed) {
+            state.listening_ports = next;
         }
+        if activity_changed {
+            state.foreground_jobs = foreground_jobs;
+        }
+        if ports_changed || activity_changed {
+            bump(&daemon, &mut state, "pane_activity.changed", 0);
+        }
+        drop(state);
 
         let started = Instant::now();
         while started.elapsed() < PORT_SCAN_INTERVAL {
@@ -2129,9 +2266,35 @@ fn spawn_port_scanner(daemon: &Arc<Daemon>) -> thread::JoinHandle<()> {
     })
 }
 
-fn scan_listening_ports() -> Option<HashMap<libc::pid_t, Vec<u16>>> {
-    let mut child = Command::new("lsof")
-        .args(["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-Fpgn"])
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ListenerProcess {
+    pid: libc::pid_t,
+    group: libc::pid_t,
+    ports: Vec<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcessTerminal {
+    group: libc::pid_t,
+    tty: String,
+}
+
+fn scan_listening_ports() -> Option<Vec<ListenerProcess>> {
+    let mut command = Command::new("lsof");
+    command.args(["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-Fpgn"]);
+    let bytes = bounded_command_output(command, true)?;
+    parse_lsof_ports(&String::from_utf8_lossy(&bytes))
+}
+
+fn scan_process_terminals() -> Option<HashMap<libc::pid_t, ProcessTerminal>> {
+    let mut command = Command::new("ps");
+    command.args(["-axo", "pid=,pgid=,tty="]);
+    let bytes = bounded_command_output(command, false)?;
+    parse_process_terminals(&String::from_utf8_lossy(&bytes))
+}
+
+fn bounded_command_output(mut command: Command, accept_code_one: bool) -> Option<Vec<u8>> {
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -2160,21 +2323,27 @@ fn scan_listening_ports() -> Option<HashMap<libc::pid_t, Vec<u16>>> {
         }
     };
     let bytes = reader.join().ok()??;
-    if !status.success() && status.code() != Some(1) {
-        return None;
-    }
-    parse_lsof_ports(&String::from_utf8_lossy(&bytes))
+    (status.success() || (accept_code_one && status.code() == Some(1))).then_some(bytes)
 }
 
-fn parse_lsof_ports(output: &str) -> Option<HashMap<libc::pid_t, Vec<u16>>> {
-    let mut current_group = None;
-    let mut ports = HashMap::<libc::pid_t, Vec<u16>>::new();
+fn parse_lsof_ports(output: &str) -> Option<Vec<ListenerProcess>> {
+    let mut current_pid = None;
+    let mut processes = HashMap::<libc::pid_t, (Option<libc::pid_t>, Vec<u16>)>::new();
     for line in output.lines() {
         match line.as_bytes().first().copied() {
-            Some(b'p') => current_group = None,
-            Some(b'g') => current_group = line[1..].parse::<libc::pid_t>().ok(),
+            Some(b'p') => {
+                current_pid = line[1..].parse::<libc::pid_t>().ok();
+                if let Some(pid) = current_pid {
+                    processes.entry(pid).or_default();
+                }
+            }
+            Some(b'g') => {
+                if let Some(pid) = current_pid {
+                    processes.entry(pid).or_default().0 = line[1..].parse().ok();
+                }
+            }
             Some(b'n') => {
-                let Some(group) = current_group else {
+                let Some(pid) = current_pid else {
                     continue;
                 };
                 let endpoint = line[1..].split_whitespace().next().unwrap_or_default();
@@ -2185,16 +2354,97 @@ fn parse_lsof_ports(output: &str) -> Option<HashMap<libc::pid_t, Vec<u16>>> {
                 else {
                     continue;
                 };
-                ports.entry(group).or_default().push(port);
+                processes.entry(pid).or_default().1.push(port);
             }
             _ => {}
         }
     }
-    for values in ports.values_mut() {
-        values.sort_unstable();
-        values.dedup();
+    let mut listeners = processes
+        .into_iter()
+        .filter_map(|(pid, (group, mut ports))| {
+            ports.sort_unstable();
+            ports.dedup();
+            Some(ListenerProcess {
+                pid,
+                group: group?,
+                ports,
+            })
+        })
+        .collect::<Vec<_>>();
+    listeners.sort_by_key(|listener| listener.pid);
+    Some(listeners)
+}
+
+fn parse_process_terminals(output: &str) -> Option<HashMap<libc::pid_t, ProcessTerminal>> {
+    let mut processes = HashMap::new();
+    for line in output.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(pid), Some(group), Some(tty), None) = (
+            fields.next().and_then(|value| value.parse().ok()),
+            fields.next().and_then(|value| value.parse().ok()),
+            fields.next(),
+            fields.next(),
+        ) else {
+            continue;
+        };
+        if !matches!(tty, "?" | "??" | "-") {
+            processes.insert(
+                pid,
+                ProcessTerminal {
+                    group,
+                    tty: tty.to_string(),
+                },
+            );
+        }
     }
-    Some(ports)
+    Some(processes)
+}
+
+fn attribute_listening_ports(
+    process_groups: &HashMap<PaneId, libc::pid_t>,
+    listeners: &[ListenerProcess],
+    process_terminals: Option<&HashMap<libc::pid_t, ProcessTerminal>>,
+) -> HashMap<PaneId, Vec<u16>> {
+    let panes_by_group = process_groups
+        .iter()
+        .map(|(pane_id, group)| (*group, *pane_id))
+        .collect::<HashMap<_, _>>();
+    let mut panes_by_tty = HashMap::<&str, Option<PaneId>>::new();
+    if let Some(processes) = process_terminals {
+        for process in processes.values() {
+            let Some(pane_id) = panes_by_group.get(&process.group).copied() else {
+                continue;
+            };
+            panes_by_tty
+                .entry(&process.tty)
+                .and_modify(|owner| {
+                    if *owner != Some(pane_id) {
+                        *owner = None;
+                    }
+                })
+                .or_insert(Some(pane_id));
+        }
+    }
+
+    let mut ports_by_pane = HashMap::<PaneId, Vec<u16>>::new();
+    for listener in listeners {
+        let pane_id = panes_by_group.get(&listener.group).copied().or_else(|| {
+            let processes = process_terminals?;
+            let tty = &processes.get(&listener.pid)?.tty;
+            panes_by_tty.get(tty.as_str()).copied().flatten()
+        });
+        if let Some(pane_id) = pane_id {
+            ports_by_pane
+                .entry(pane_id)
+                .or_default()
+                .extend(&listener.ports);
+        }
+    }
+    for ports in ports_by_pane.values_mut() {
+        ports.sort_unstable();
+        ports.dedup();
+    }
+    ports_by_pane
 }
 
 fn spawn_plugin_dispatcher(daemon: &Arc<Daemon>) -> io::Result<thread::JoinHandle<()>> {
@@ -2677,6 +2927,7 @@ mod tests {
                 runtimes: HashMap::new(),
                 terminal_operation_locks: HashMap::new(),
                 listening_ports: HashMap::new(),
+                foreground_jobs: HashSet::new(),
                 leases: HashMap::new(),
                 events: VecDeque::new(),
                 plugins: Vec::new(),
@@ -2722,6 +2973,115 @@ mod tests {
         assert!(lock(&daemon.state).leases.contains_key(&pane_id));
         release_stream_lease(&daemon, pane_id, 9, 2);
         assert!(!lock(&daemon.state).leases.contains_key(&pane_id));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn only_the_current_lease_generation_clears_terminal_selection() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let runtime = Arc::new(
+            spawn_runtime(
+                &daemon,
+                pane_id,
+                TerminalId(5),
+                Path::new("/"),
+                &LaunchRecipe {
+                    command: vec!["/bin/cat".into()],
+                    initial_input: None,
+                    rows: 3,
+                    cols: 4,
+                },
+            )
+            .unwrap(),
+        );
+        lock(&daemon.state)
+            .runtimes
+            .insert(pane_id, Arc::clone(&runtime));
+        let (_, generation) = acquire_terminal_lease(&daemon, pane_id, 9, true).unwrap();
+        for mouse in [
+            MouseEvent {
+                action: MouseAction::Press,
+                button: MouseButton::Left,
+                x: 0,
+                y: 0,
+                in_bounds: true,
+                shift: false,
+                control: false,
+                alt: false,
+                super_key: false,
+            },
+            MouseEvent {
+                action: MouseAction::Motion,
+                button: MouseButton::Left,
+                x: 2,
+                y: 0,
+                in_bounds: true,
+                shift: false,
+                control: false,
+                alt: false,
+                super_key: false,
+            },
+        ] {
+            with_stream_runtime(&daemon, pane_id, 9, generation, |runtime| {
+                runtime.mouse(&mouse).map_err(terminal_api)
+            })
+            .unwrap();
+        }
+        let selection = || match runtime
+            .presentation_sample(None, true)
+            .update
+            .unwrap()
+            .unwrap()
+        {
+            TerminalUpdate::Full(frame) => frame.selection,
+            TerminalUpdate::Patch { .. } => panic!("expected full frame"),
+        };
+        assert!(!selection().is_empty());
+
+        let (_, replacement_generation) =
+            acquire_terminal_lease(&daemon, pane_id, 9, true).unwrap();
+        assert!(selection().is_empty());
+        for mouse in [
+            MouseEvent {
+                action: MouseAction::Press,
+                button: MouseButton::Left,
+                x: 0,
+                y: 0,
+                in_bounds: true,
+                shift: false,
+                control: false,
+                alt: false,
+                super_key: false,
+            },
+            MouseEvent {
+                action: MouseAction::Motion,
+                button: MouseButton::Left,
+                x: 2,
+                y: 0,
+                in_bounds: true,
+                shift: false,
+                control: false,
+                alt: false,
+                super_key: false,
+            },
+        ] {
+            with_stream_runtime(&daemon, pane_id, 9, replacement_generation, |runtime| {
+                runtime.mouse(&mouse).map_err(terminal_api)
+            })
+            .unwrap();
+        }
+        assert!(!selection().is_empty());
+
+        release_stream_lease(&daemon, pane_id, 9, generation);
+        assert!(!selection().is_empty());
+        assert!(lock(&daemon.state).leases.contains_key(&pane_id));
+
+        release_stream_lease(&daemon, pane_id, 9, replacement_generation);
+        assert!(selection().is_empty());
+        assert!(!lock(&daemon.state).leases.contains_key(&pane_id));
+
+        runtime.terminate();
         let _ = fs::remove_file(path);
     }
 
@@ -3007,6 +3367,149 @@ mod tests {
         state.next_id = u64::MAX;
         assert_eq!(next_id(&mut state).unwrap_err().code, "id_exhausted");
     }
+    fn reorder_test_persisted() -> Persisted {
+        let mut persisted = agent_test_persisted();
+        for (session_id, pane_id, terminal_id, label) in [(6, 8, 9, "second"), (7, 10, 11, "third")]
+        {
+            persisted.sessions.push(Session {
+                id: SessionId(session_id),
+                worktree_id: WorktreeId(2),
+                label: label.into(),
+                primary_pane: PaneId(pane_id),
+                focused_pane: PaneId(pane_id),
+                panes: vec![PaneId(pane_id)],
+                layout: PaneLayout::Leaf {
+                    pane_id: PaneId(pane_id),
+                },
+                revision: 7,
+            });
+            persisted.panes.push(PersistedPane {
+                pane: Pane {
+                    id: PaneId(pane_id),
+                    terminal_id: TerminalId(terminal_id),
+                    session_id: SessionId(session_id),
+                    label: "terminal".into(),
+                    agent: None,
+                    exited: true,
+                    revision: 7,
+                },
+                recovery_quarantined: false,
+                recovery: None,
+            });
+        }
+        persisted.next_id = 12;
+        persisted
+    }
+
+    #[test]
+    fn session_reorder_is_daemon_owned_and_persists_by_stable_identity() {
+        let (daemon, path) = agent_test_daemon(reorder_test_persisted());
+
+        let response = handle(
+            &daemon,
+            Request::SessionReorder {
+                session_id: SessionId(3),
+                target_session_id: SessionId(6),
+                placement: SessionPlacement::After,
+                expected_revision: 7,
+            },
+        );
+
+        assert!(
+            matches!(response, Response::Ack { revision: 8 }),
+            "unexpected reorder response: {response:?}"
+        );
+        assert_eq!(
+            lock(&daemon.state)
+                .persisted
+                .sessions
+                .iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>(),
+            [SessionId(6), SessionId(3), SessionId(7)]
+        );
+        let reloaded = load_state(&path).unwrap();
+        assert_eq!(
+            reloaded
+                .sessions
+                .iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>(),
+            [SessionId(6), SessionId(3), SessionId(7)]
+        );
+        assert_eq!(reloaded.sessions[1].revision, 8);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn session_reorder_rejects_stale_and_cross_worktree_targets_without_mutation() {
+        let (daemon, path) = agent_test_daemon(reorder_test_persisted());
+        let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
+
+        let stale = handle(
+            &daemon,
+            Request::SessionReorder {
+                session_id: SessionId(3),
+                target_session_id: SessionId(6),
+                placement: SessionPlacement::After,
+                expected_revision: 6,
+            },
+        );
+        assert!(
+            matches!(stale, Response::Error(ApiError { code, .. }) if code == "revision_conflict")
+        );
+
+        {
+            let mut state = lock(&daemon.state);
+            state.persisted.sessions[1].worktree_id = WorktreeId(99);
+        }
+        let cross_worktree = handle(
+            &daemon,
+            Request::SessionReorder {
+                session_id: SessionId(3),
+                target_session_id: SessionId(6),
+                placement: SessionPlacement::After,
+                expected_revision: 7,
+            },
+        );
+        assert!(
+            matches!(cross_worktree, Response::Error(ApiError { code, .. }) if code == "invalid_target")
+        );
+        {
+            let mut state = lock(&daemon.state);
+            state.persisted.sessions[1].worktree_id = WorktreeId(2);
+            assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
+            assert_eq!(state.revision, 7);
+            assert!(state.events.is_empty());
+        }
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn session_reorder_save_failure_preserves_live_order_and_revision() {
+        let (daemon, path) = agent_test_daemon(reorder_test_persisted());
+        fs::create_dir(&path).unwrap();
+        let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
+
+        let response = handle(
+            &daemon,
+            Request::SessionReorder {
+                session_id: SessionId(3),
+                target_session_id: SessionId(6),
+                placement: SessionPlacement::After,
+                expected_revision: 7,
+            },
+        );
+
+        assert!(matches!(response, Response::Error(ApiError { code, .. }) if code == "io"));
+        let state = lock(&daemon.state);
+        assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
+        assert_eq!(state.revision, 7);
+        assert!(state.events.is_empty());
+        drop(state);
+        fs::remove_dir(path).unwrap();
+    }
+
     #[test]
     fn revisions_conflict_explicitly() {
         assert_eq!(expect_revision(2, 1).unwrap_err().code, "revision_conflict");
@@ -3141,22 +3644,81 @@ mod tests {
         }
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let pid = std::process::id() as libc::pid_t;
         let group = unsafe { libc::getpgrp() };
 
-        let ports = scan_listening_ports().unwrap();
+        let listeners = scan_listening_ports().unwrap();
 
-        assert!(ports.get(&group).is_some_and(|ports| ports.contains(&port)));
+        assert!(listeners.iter().any(|process| {
+            process.pid == pid && process.group == group && process.ports.contains(&port)
+        }));
     }
 
     #[test]
     fn lsof_parser_groups_and_deduplicates_tcp_listeners() {
-        let ports = parse_lsof_ports(
+        let listeners = parse_lsof_ports(
             "p100\ng42\nf8\nn127.0.0.1:3000\nf9\nn*:3000\np101\ng43\nf7\nn[::1]:5173\n",
         )
         .unwrap();
 
-        assert_eq!(ports.get(&42), Some(&vec![3000]));
-        assert_eq!(ports.get(&43), Some(&vec![5173]));
+        assert_eq!(
+            listeners,
+            vec![
+                ListenerProcess {
+                    pid: 100,
+                    group: 42,
+                    ports: vec![3000],
+                },
+                ListenerProcess {
+                    pid: 101,
+                    group: 43,
+                    ports: vec![5173],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn listener_attribution_accepts_descendant_groups_on_a_unique_pane_tty() {
+        let pane = PaneId(7);
+        let process_groups = HashMap::from([(pane, 42)]);
+        let listeners = vec![ListenerProcess {
+            pid: 101,
+            group: 99,
+            ports: vec![5173, 8081, 5173],
+        }];
+        let terminals = parse_process_terminals("100 42 ttys007\n101 99 ttys007\n").unwrap();
+
+        let attributed = attribute_listening_ports(&process_groups, &listeners, Some(&terminals));
+
+        assert_eq!(attributed.get(&pane), Some(&vec![5173, 8081]));
+    }
+
+    #[test]
+    fn listener_attribution_rejects_ambiguous_or_missing_ttys_but_keeps_exact_groups() {
+        let first = PaneId(7);
+        let second = PaneId(8);
+        let process_groups = HashMap::from([(first, 42), (second, 43)]);
+        let listeners = vec![
+            ListenerProcess {
+                pid: 101,
+                group: 99,
+                ports: vec![5173],
+            },
+            ListenerProcess {
+                pid: 102,
+                group: 42,
+                ports: vec![9000],
+            },
+        ];
+        let terminals =
+            parse_process_terminals("100 42 ttys007\n103 43 ttys007\n101 99 ttys007\n104 100 ??\n")
+                .unwrap();
+
+        let attributed = attribute_listening_ports(&process_groups, &listeners, Some(&terminals));
+
+        assert_eq!(attributed.get(&first), Some(&vec![9000]));
+        assert!(!attributed.contains_key(&second));
     }
 
     const CODEX_SESSION_ID: &str = "0195d8f4-8c88-7b32-8aee-7d3a6c32c5f8";

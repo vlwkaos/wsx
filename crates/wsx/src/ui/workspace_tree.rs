@@ -1,15 +1,18 @@
 // Left sidebar — 3-level tree (Project -> Worktree -> Session) using ratatui List.
 
-use crate::session_state::{self, AppSessionState};
+use crate::session_state;
 use ratatui::{
     prelude::*,
     widgets::{List, ListItem, ListState},
 };
 use std::collections::HashSet;
-use wsx_core::model::workspace::{FlatEntry, SessionInfo, WorkspaceState};
+use wsx_core::{
+    config::global::PortVisibility,
+    model::workspace::{FlatEntry, SessionInfo, WorkspaceState},
+};
 
 use super::{
-    compact_port_label_with_width, git_remote_status_color, theme,
+    compact_port_label, git_remote_status_color, theme,
     workspace_nav::{render_scrollbar, SidebarLayout},
 };
 // ref: ratatui Block title — title() accepts &str or String
@@ -53,12 +56,18 @@ fn stale_project_label(icon: &str, name: &str, count: &str, width: usize) -> Str
     format!("{identity}{}{SUFFIX}", " ".repeat(gap))
 }
 
-fn session_line(sess: &SessionInfo, width: usize) -> Line<'static> {
-    let state = session_state::derive(sess).app_state();
-    let (icon, icon_color) = session_icon(sess, state);
+fn session_line(
+    sess: &SessionInfo,
+    width: usize,
+    port_visibility: PortVisibility,
+    animation_frame: usize,
+) -> Line<'static> {
+    let (icon, icon_color) = session_icon(sess, animation_frame);
     let agent_label = session_state::agent_label(sess.agent.as_deref());
-    let port_label =
-        compact_port_label_with_width(&sess.listening_ports(), width.saturating_sub(12));
+    let port_label = port_visibility
+        .shows_session(sess.is_agentic())
+        .then(|| compact_port_label(&sess.listening_ports(), width.saturating_sub(12)))
+        .flatten();
     let port_width = port_label
         .as_deref()
         .map_or(0, |label| Line::from(label).width());
@@ -101,6 +110,121 @@ pub struct TreeView<'a> {
     pub selected: usize,
     pub scroll_offset: usize,
     pub is_move_mode: bool,
+    pub port_visibility: PortVisibility,
+    pub animation_frame: usize,
+}
+
+pub struct CompactTreeView<'a> {
+    pub workspace: &'a WorkspaceState,
+    pub flat: &'a [FlatEntry],
+    pub stale_projects: &'a HashSet<usize>,
+    pub selected: usize,
+    pub scroll_offset: usize,
+    pub animation_frame: usize,
+}
+
+fn compact_tree_cell(
+    workspace: &WorkspaceState,
+    entry: &FlatEntry,
+    stale_projects: &HashSet<usize>,
+    animation_frame: usize,
+) -> (&'static str, Style) {
+    match entry {
+        FlatEntry::Project { idx } => {
+            let project = &workspace.projects[*idx];
+            if project.missing {
+                ("!", Style::default().fg(theme::BLOCKED))
+            } else if stale_projects.contains(idx) {
+                ("·", theme::stale_project())
+            } else if project.expanded {
+                ("▼", Style::default().fg(theme::ACCENT).bold())
+            } else {
+                ("▶", Style::default().fg(theme::ACCENT).bold())
+            }
+        }
+        FlatEntry::Worktree {
+            project_idx,
+            worktree_idx,
+        } => {
+            let worktree = &workspace.projects[*project_idx].worktrees[*worktree_idx];
+            let dirty = worktree
+                .git_info
+                .as_ref()
+                .is_some_and(|git| !git.modified_files.is_empty());
+            if dirty {
+                ("*", Style::default().fg(theme::WARNING))
+            } else if !worktree.sessions.is_empty() && worktree.expanded {
+                ("▾", Style::default().fg(theme::TEXT))
+            } else if !worktree.sessions.is_empty() {
+                ("▸", Style::default().fg(theme::TEXT))
+            } else {
+                ("·", Style::default().fg(theme::TEXT_SUBTLE))
+            }
+        }
+        FlatEntry::Session {
+            project_idx,
+            worktree_idx,
+            session_idx,
+        } => {
+            let session =
+                &workspace.projects[*project_idx].worktrees[*worktree_idx].sessions[*session_idx];
+            let (symbol, color) = session_icon(session, animation_frame);
+            (symbol, Style::default().fg(color))
+        }
+        FlatEntry::Pane {
+            project_idx,
+            worktree_idx,
+            session_idx,
+            pane_idx,
+        } => {
+            let session =
+                &workspace.projects[*project_idx].worktrees[*worktree_idx].sessions[*session_idx];
+            let pane = &session.panes[*pane_idx];
+            if pane.exited {
+                ("×", Style::default().fg(theme::BLOCKED))
+            } else if pane.pane_id == session.pane_id {
+                ("●", Style::default().fg(theme::TEXT))
+            } else {
+                ("○", Style::default().fg(theme::TEXT_SUBTLE))
+            }
+        }
+        FlatEntry::RoutinesHeader { .. } => ("◈", Style::default().fg(theme::ACCENT).bold()),
+        FlatEntry::Routine {
+            project_idx,
+            routine_idx,
+        } => {
+            let routine = &workspace.projects[*project_idx].routines[*routine_idx];
+            if routine.capabilities.can_cancel {
+                ("●", Style::default().fg(theme::WORKING))
+            } else {
+                ("◇", Style::default().fg(theme::ACCENT))
+            }
+        }
+    }
+}
+
+pub fn render_compact_tree(frame: &mut Frame, layout: SidebarLayout, view: CompactTreeView<'_>) {
+    let items = view
+        .flat
+        .iter()
+        .map(|entry| {
+            let (symbol, style) = compact_tree_cell(
+                view.workspace,
+                entry,
+                view.stale_projects,
+                view.animation_frame,
+            );
+            ListItem::new(Span::styled(symbol, style))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default().with_offset(view.scroll_offset);
+    if !view.flat.is_empty() {
+        state.select(Some(view.selected.min(view.flat.len().saturating_sub(1))));
+    }
+    let list = List::new(items)
+        .highlight_style(theme::selected_row(false))
+        .highlight_symbol("");
+    frame.render_stateful_widget(list, layout.list, &mut state);
 }
 
 pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>) {
@@ -111,6 +235,8 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
         selected,
         scroll_offset,
         is_move_mode,
+        port_visibility,
+        animation_frame,
     } = view;
     let items: Vec<ListItem> = flat
         .iter()
@@ -219,7 +345,12 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
             } => {
                 let sess = &workspace.projects[*project_idx].worktrees[*worktree_idx].sessions
                     [*session_idx];
-                ListItem::new(session_line(sess, usize::from(layout.list.width)))
+                ListItem::new(session_line(
+                    sess,
+                    usize::from(layout.list.width),
+                    port_visibility,
+                    animation_frame,
+                ))
             }
             FlatEntry::Pane {
                 project_idx,
@@ -299,26 +430,46 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
     );
 }
 
+const AGENT_WORKING_FRAMES: [&str; 4] = ["◎", "◉", "●", "◉"];
+
 fn session_icon(
     sess: &wsx_core::model::workspace::SessionInfo,
-    _state: AppSessionState,
+    animation_frame: usize,
 ) -> (&'static str, Color) {
-    agent_state_icon(sess.agent_status, sess.muted)
+    agent_state_icon(
+        sess.agent_status,
+        sess.muted,
+        sess.outcome_acknowledged,
+        !sess.is_agentic() && sess.has_foreground_job(),
+        animation_frame,
+    )
 }
 
 pub(super) fn agent_state_icon(
     state: wsx_core::runtime::AgentState,
     muted: bool,
+    outcome_acknowledged: bool,
+    foreground_job: bool,
+    animation_frame: usize,
 ) -> (&'static str, Color) {
     use wsx_core::runtime::AgentState;
     if muted {
         return ("⊘", theme::TEXT_SUBTLE);
     }
+    if foreground_job {
+        return ("●", theme::WORKING);
+    }
+    if state == AgentState::Done && outcome_acknowledged {
+        return ("○", theme::IDLE);
+    }
     match state {
-        AgentState::Blocked => ("×", theme::BLOCKED),
+        AgentState::Blocked => ("◐", theme::BLOCKED),
         AgentState::Done => ("✓", theme::SUCCESS),
-        AgentState::Working => ("◐", theme::SUCCESS),
-        AgentState::Idle => ("○", theme::WORKING),
+        AgentState::Working => (
+            AGENT_WORKING_FRAMES[animation_frame % AGENT_WORKING_FRAMES.len()],
+            theme::WORKING,
+        ),
+        AgentState::Idle => ("○", theme::IDLE),
         AgentState::Unknown => ("·", theme::UNKNOWN),
         AgentState::Error => ("!", theme::BLOCKED),
     }
@@ -361,14 +512,12 @@ mod tests {
     use super::{
         render_tree, routine_tree_label, sched_header_label, session_icon, session_line, TreeView,
     };
-    use crate::{
-        session_state::AppSessionState,
-        ui::{theme, workspace_nav::SidebarLayout},
-    };
+    use crate::ui::{theme, workspace_nav::SidebarLayout};
     use ratatui::{backend::TestBackend, widgets::Paragraph, Terminal};
     use std::{collections::HashSet, path::PathBuf};
     use wsx_core::{
-        model::workspace::{FlatEntry, Project, SessionInfo, WorkspaceState},
+        config::global::PortVisibility,
+        model::workspace::{FlatEntry, PaneInfo, Project, SessionInfo, WorkspaceState},
         runtime::{AgentState, PaneId, SessionId, TerminalId},
     };
 
@@ -384,6 +533,7 @@ mod tests {
             layout: wsx_core::runtime::PaneLayout::Leaf { pane_id: PaneId(1) },
             panes: vec![],
             muted,
+            outcome_acknowledged: false,
         }
     }
 
@@ -400,10 +550,7 @@ mod tests {
     #[test]
     fn mute_preserves_one_distinct_suppression_glyph() {
         assert_eq!(
-            session_icon(
-                &session(true, AgentState::Blocked),
-                AppSessionState::NeedsAttention
-            ),
+            session_icon(&session(true, AgentState::Blocked), 0),
             ("⊘", theme::TEXT_SUBTLE),
         );
     }
@@ -456,6 +603,8 @@ mod tests {
                         selected: 2,
                         scroll_offset: 0,
                         is_move_mode: false,
+                        port_visibility: PortVisibility::default(),
+                        animation_frame: 0,
                     },
                 );
             })
@@ -491,6 +640,8 @@ mod tests {
                         selected: 0,
                         scroll_offset: 0,
                         is_move_mode: false,
+                        port_visibility: PortVisibility::default(),
+                        animation_frame: 0,
                     },
                 );
             })
@@ -519,7 +670,10 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                frame.render_widget(Paragraph::new(session_line(&sess, 30)), frame.area());
+                frame.render_widget(
+                    Paragraph::new(session_line(&sess, 30, PortVisibility::All, 0)),
+                    frame.area(),
+                );
             })
             .unwrap();
 
@@ -534,40 +688,81 @@ mod tests {
     }
 
     #[test]
+    fn session_port_policy_uses_any_pane_agent_identity() {
+        let mut sess = session(false, AgentState::Idle);
+        sess.panes = vec![PaneInfo {
+            pane_id: PaneId(1),
+            terminal_id: TerminalId(1),
+            label: "terminal".into(),
+            agent: Some("codex".into()),
+            agent_status: AgentState::Idle,
+            revision: 1,
+            exited: false,
+            listening_ports: vec![5173],
+            foreground_job: false,
+            outcome_acknowledged: false,
+        }];
+        assert!(!session_line(&sess, 40, PortVisibility::NonAgentic, 0)
+            .to_string()
+            .contains(":5173"));
+        assert!(session_line(&sess, 40, PortVisibility::All, 0)
+            .to_string()
+            .contains(":5173"));
+
+        sess.agent = None;
+        sess.panes[0].agent = None;
+        assert!(session_line(&sess, 40, PortVisibility::NonAgentic, 0)
+            .to_string()
+            .contains(":5173"));
+        assert!(!session_line(&sess, 40, PortVisibility::Hidden, 0)
+            .to_string()
+            .contains(":5173"));
+    }
+
+    #[test]
     fn authoritative_statuses_have_distinct_symbols_and_semantic_colors() {
-        for (status, app_state, expected) in [
-            (
-                AgentState::Blocked,
-                AppSessionState::NeedsAttention,
-                ("×", theme::BLOCKED),
-            ),
-            (
-                AgentState::Done,
-                AppSessionState::NeedsAttention,
-                ("✓", theme::SUCCESS),
-            ),
-            (
-                AgentState::Working,
-                AppSessionState::Active,
-                ("◐", theme::SUCCESS),
-            ),
-            (
-                AgentState::Idle,
-                AppSessionState::Idle,
-                ("○", theme::WORKING),
-            ),
-            (
-                AgentState::Unknown,
-                AppSessionState::Idle,
-                ("·", theme::UNKNOWN),
-            ),
-            (
-                AgentState::Error,
-                AppSessionState::NeedsAttention,
-                ("!", theme::BLOCKED),
-            ),
+        for (status, expected) in [
+            (AgentState::Blocked, ("◐", theme::BLOCKED)),
+            (AgentState::Done, ("✓", theme::SUCCESS)),
+            (AgentState::Working, ("◎", theme::WORKING)),
+            (AgentState::Idle, ("○", theme::IDLE)),
+            (AgentState::Unknown, ("·", theme::UNKNOWN)),
+            (AgentState::Error, ("!", theme::BLOCKED)),
         ] {
-            assert_eq!(session_icon(&session(false, status), app_state), expected);
+            assert_eq!(session_icon(&session(false, status), 0), expected);
         }
+    }
+
+    #[test]
+    fn working_agent_animates_while_shell_foreground_job_stays_static() {
+        let agent = session(false, AgentState::Working);
+        assert_eq!(session_icon(&agent, 0).0, "◎");
+        assert_eq!(session_icon(&agent, 1).0, "◉");
+        assert_eq!(session_icon(&agent, 2).0, "●");
+        assert_eq!(session_icon(&agent, 3).0, "◉");
+
+        let mut shell = session(false, AgentState::Unknown);
+        shell.agent = None;
+        shell.panes = vec![PaneInfo {
+            pane_id: PaneId(1),
+            terminal_id: TerminalId(1),
+            label: "terminal".into(),
+            agent: None,
+            agent_status: AgentState::Unknown,
+            revision: 1,
+            exited: false,
+            listening_ports: vec![],
+            foreground_job: true,
+            outcome_acknowledged: false,
+        }];
+        assert_eq!(session_icon(&shell, 0), ("●", theme::WORKING));
+        assert_eq!(session_icon(&shell, 3), ("●", theme::WORKING));
+    }
+
+    #[test]
+    fn acknowledged_done_projects_as_idle() {
+        let mut done = session(false, AgentState::Done);
+        done.outcome_acknowledged = true;
+        assert_eq!(session_icon(&done, 0), ("○", theme::IDLE));
     }
 }

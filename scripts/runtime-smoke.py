@@ -11,7 +11,7 @@ import time
 import weakref
 
 ROOT = Path(__file__).resolve().parents[1]
-PROTOCOL = 8
+PROTOCOL = 10
 WORK = ROOT / ".work" / "runtime-smoke"
 if WORK.exists():
     shutil.rmtree(WORK)
@@ -219,17 +219,62 @@ while time.monotonic() < deadline:
 assert quick_pane is not None and quick_pane["exited"], quick_pane
 quick_session = next(item for item in call("snapshot")["data"]["sessions"] if item["id"] == quick_session_id)
 assert call("session_close", {"session_id": quick_session_id, "expected_revision": quick_session["revision"]})["type"] == "ack"
+activity_session = call("session_create", {
+    "worktree_id": worktree_id,
+    "label": "foreground-job-smoke",
+    "command": [],
+    "initial_input": "sleep 30",
+    "rows": 4,
+    "cols": 20,
+})
+assert activity_session["type"] == "created", activity_session
+activity_session_id = activity_session["data"]["id"]
+activity_snapshot = None
+activity_record = None
+activity_pane_id = None
+deadline = time.monotonic() + 6
+while time.monotonic() < deadline:
+    activity_snapshot = call("snapshot")["data"]
+    activity_record = next(
+        item for item in activity_snapshot["sessions"] if item["id"] == activity_session_id
+    )
+    activity_pane_id = activity_record["focused_pane"]
+    if any(
+        item["pane_id"] == activity_pane_id and item["foreground_job"]
+        for item in activity_snapshot.get("pane_activity", [])
+    ):
+        break
+    time.sleep(0.1)
+assert activity_snapshot is not None and any(
+    item["pane_id"] == activity_pane_id and item["foreground_job"]
+    for item in activity_snapshot.get("pane_activity", [])
+), activity_snapshot
+assert call("session_close", {
+    "session_id": activity_session_id,
+    "expected_revision": activity_record["revision"],
+})["type"] == "ack"
 port_file = WORK / "listener-port"
-listener_code = (
-    "import pathlib,socket,time; "
-    "s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); "
-    f"pathlib.Path({str(port_file)!r}).write_text(str(s.getsockname()[1])); "
-    "time.sleep(30)"
+listener_script = WORK / "descendant-listener.py"
+listener_script.write_text(
+    "import os, pathlib, socket, time\n"
+    "os.setpgrp()\n"
+    "listener = socket.socket()\n"
+    "listener.bind(('127.0.0.1', 0))\n"
+    "listener.listen()\n"
+    f"pathlib.Path({str(port_file)!r}).write_text(str(listener.getsockname()[1]))\n"
+    "time.sleep(30)\n"
 )
 listener_session = call("session_create", {
     "worktree_id": worktree_id,
     "label": "listener-smoke",
-    "command": [sys.executable, "-c", listener_code],
+    "command": [
+        "/bin/sh",
+        "-c",
+        "\"$1\" \"$2\" & wait",
+        "wsx-listener",
+        sys.executable,
+        str(listener_script),
+    ],
     "rows": 2,
     "cols": 8,
 })
@@ -238,25 +283,29 @@ listener_session_id = listener_session["data"]["id"]
 deadline = time.monotonic() + 6
 listener_port = None
 listener_snapshot = None
+listener_record = None
+listener_pane_id = None
+listener_attributed_record = None
 while time.monotonic() < deadline:
     if port_file.exists():
         listener_port = int(port_file.read_text())
         listener_snapshot = call("snapshot")["data"]
-        if any(listener_port in item["tcp"] for item in listener_snapshot.get("listening_ports", [])):
+        listener_record = next(
+            item for item in listener_snapshot["sessions"] if item["id"] == listener_session_id
+        )
+        listener_pane_id = listener_record["focused_pane"]
+        listener_attributed_record = next(
+            (
+                item for item in listener_snapshot.get("listening_ports", [])
+                if item["pane_id"] == listener_pane_id and listener_port in item["tcp"]
+            ),
+            None,
+        )
+        if listener_attributed_record is not None:
             break
     time.sleep(0.1)
 assert listener_port is not None, "listener process did not publish its port"
-assert listener_snapshot is not None and any(
-    listener_port in item["tcp"] for item in listener_snapshot.get("listening_ports", [])
-), listener_snapshot
-listener_record = next(
-    item for item in listener_snapshot["sessions"] if item["id"] == listener_session_id
-)
-listener_pane_id = listener_record["focused_pane"]
-assert any(
-    item["pane_id"] == listener_pane_id and listener_port in item["tcp"]
-    for item in listener_snapshot.get("listening_ports", [])
-), listener_snapshot
+assert listener_attributed_record is not None, listener_snapshot
 assert call("session_close", {
     "session_id": listener_session_id,
     "expected_revision": listener_record["revision"],
@@ -294,6 +343,32 @@ assert isinstance(project["last_terminal_active_unix_ms"], int), project
 assert project["last_agent_active_unix_ms"] is None, project
 session = next(item for item in snapshot["sessions"] if item["id"] == session_id)
 pane_id = session["focused_pane"]
+reorder_peer = call("session_create", {
+    "worktree_id": worktree_id,
+    "label": "reorder-peer",
+    "command": ["/bin/sh", "-lc", "cat"],
+    "rows": 12,
+    "cols": 40,
+})
+assert reorder_peer["type"] == "created", reorder_peer
+reorder_peer_id = reorder_peer["data"]["id"]
+reordered = call("session_reorder", {
+    "session_id": session_id,
+    "target_session_id": reorder_peer_id,
+    "placement": "after",
+    "expected_revision": session["revision"],
+})
+assert reordered["type"] == "ack", reordered
+snapshot = call("snapshot")["data"]
+worktree_session_ids = [
+    item["id"] for item in snapshot["sessions"] if item["worktree_id"] == worktree_id
+]
+assert worktree_session_ids[-2:] == [reorder_peer_id, session_id], worktree_session_ids
+peer = next(item for item in snapshot["sessions"] if item["id"] == reorder_peer_id)
+assert call("session_close", {
+    "session_id": reorder_peer_id,
+    "expected_revision": peer["revision"],
+})["type"] == "ack"
 reported = call("agent_report", {
     "pane_id": pane_id,
     "provider": "codex",

@@ -41,8 +41,6 @@ pub enum Action {
     InputBackspace,
     InputTab,
     InputBackTab,
-    RoutineCodexPreset,
-    RoutineClaudePreset,
     InputEscape,
     LiteralEscape,
     TerminalKey(crossterm::event::KeyEvent),

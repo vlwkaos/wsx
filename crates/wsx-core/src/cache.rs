@@ -1,4 +1,4 @@
-//! Persistent wsx UI state and local mute flags.
+//! Persistent wsx UI state, local mute flags, and acknowledged outcomes.
 //!
 //! The wsx daemon is authoritative for sessions. Legacy backend/session fields
 //! in older TOML files are ignored by serde and are never imported.
@@ -54,8 +54,9 @@ pub struct WorkspaceCache {
     /// Stable wsx terminal IDs muted in this local UI.
     #[serde(default)]
     pub muted_terminals: HashSet<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_group: Option<GroupKey>,
+    /// Provider outcome revisions acknowledged by explicit interaction, keyed by terminal ID.
+    #[serde(default)]
+    pub acknowledged_outcomes: HashMap<String, u64>,
     /// wsx version for which the user dismissed the integration setup prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub integration_prompt_version: Option<String>,
@@ -73,9 +74,10 @@ struct WorkspaceCacheWire {
     cursor_identity: Option<CursorIdentity>,
     #[serde(alias = "muted_sessions")]
     muted_terminals: HashSet<String>,
-    active_group: Option<String>,
-    active_groups: Option<Vec<String>>,
-    active_tab: Option<String>,
+    acknowledged_outcomes: HashMap<String, u64>,
+    active_group: Option<toml::Value>,
+    active_groups: Option<toml::Value>,
+    active_tab: Option<toml::Value>,
     integration_prompt_version: Option<String>,
 }
 
@@ -85,22 +87,11 @@ impl<'de> Deserialize<'de> for WorkspaceCache {
         D: Deserializer<'de>,
     {
         let wire = WorkspaceCacheWire::deserialize(deserializer)?;
-        let migration_needed = wire.active_groups.is_some() || wire.active_tab.is_some();
-        let raw_active = wire
-            .active_group
-            .or_else(|| wire.active_groups.into_iter().flatten().next())
-            .or(wire.active_tab);
-        let active_group = raw_active
-            .map(|value| {
-                if value.eq_ignore_ascii_case("default") {
-                    Ok(GroupKey::Ungrouped)
-                } else {
-                    toml::Value::String(value)
-                        .try_into()
-                        .map_err(serde::de::Error::custom)
-                }
-            })
-            .transpose()?;
+        // ^ Group selection is process-local. Reading any historical selector requests a
+        // canonical rewrite that strips it instead of restoring stale UI state.
+        let migration_needed = wire.active_group.is_some()
+            || wire.active_groups.is_some()
+            || wire.active_tab.is_some();
         Ok(Self {
             written_at_unix_ms: wire.written_at_unix_ms,
             worktree_expanded: wire.worktree_expanded,
@@ -108,7 +99,7 @@ impl<'de> Deserialize<'de> for WorkspaceCache {
             tree_selected: wire.tree_selected,
             cursor_identity: wire.cursor_identity,
             muted_terminals: wire.muted_terminals,
-            active_group,
+            acknowledged_outcomes: wire.acknowledged_outcomes,
             integration_prompt_version: wire.integration_prompt_version,
             migration_needed,
         })
@@ -176,11 +167,50 @@ fn legacy_cache_path() -> PathBuf {
         .join("workspace.toml")
 }
 
+#[derive(Serialize, Deserialize)]
+struct GroupSelection {
+    selected: GroupKey,
+}
+
+fn group_selection_path() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("wsx")
+        .join("group-selection-v1.toml")
+}
+
+pub fn load_group_selection() -> anyhow::Result<Option<GroupKey>> {
+    load_group_selection_from(&group_selection_path())
+}
+
+fn load_group_selection_from(path: &std::path::Path) -> anyhow::Result<Option<GroupKey>> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(toml::from_str::<GroupSelection>(&content)
+        .ok()
+        .map(|selection| selection.selected))
+}
+
+pub fn save_group_selection(selected: &GroupKey) -> anyhow::Result<()> {
+    save_group_selection_to(&group_selection_path(), selected)
+}
+
+fn save_group_selection_to(path: &std::path::Path, selected: &GroupKey) -> anyhow::Result<()> {
+    let text = toml::to_string(&GroupSelection {
+        selected: selected.clone(),
+    })?;
+    atomic_write_private(path, text.as_bytes(), true)?;
+    Ok(())
+}
+
 pub type AppliedCache = (
     usize,
     Option<CursorIdentity>,
-    Option<GroupKey>,
     HashSet<String>,
+    HashMap<String, u64>,
     Option<String>,
 );
 
@@ -206,14 +236,27 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> anyhow::Result<AppliedCach
                 if session.muted {
                     migrated_muted_terminals.insert(session.terminal_id.to_string());
                 }
+                for pane in &mut session.panes {
+                    pane.outcome_acknowledged = pane.agent_status
+                        == crate::runtime::AgentState::Done
+                        && cache
+                            .acknowledged_outcomes
+                            .get(&pane.terminal_id.to_string())
+                            == Some(&pane.revision);
+                }
+                session.outcome_acknowledged = session
+                    .panes
+                    .iter()
+                    .find(|pane| pane.pane_id == session.pane_id)
+                    .is_some_and(|pane| pane.outcome_acknowledged);
             }
         }
     }
     Ok((
         cache.tree_selected,
         cache.cursor_identity,
-        cache.active_group,
         migrated_muted_terminals,
+        cache.acknowledged_outcomes,
         cache.integration_prompt_version,
     ))
 }
@@ -269,7 +312,6 @@ pub fn save_cache(
     workspace: &WorkspaceState,
     tree_selected: usize,
     flat: &[FlatEntry],
-    active_group: Option<&GroupKey>,
     integration_prompt_version: Option<&str>,
     sync: bool,
 ) -> Option<String> {
@@ -277,7 +319,6 @@ pub fn save_cache(
         written_at_unix_ms: Some(now_unix_ms()),
         tree_selected,
         cursor_identity: resolve_cursor_identity(workspace, flat, tree_selected),
-        active_group: active_group.cloned(),
         integration_prompt_version: integration_prompt_version.map(str::to_owned),
         ..Default::default()
     };
@@ -298,6 +339,15 @@ pub fn save_cache(
                     .filter(|s| s.muted)
                     .map(|s| s.terminal_id.to_string()),
             );
+            for session in &worktree.sessions {
+                for pane in &session.panes {
+                    if pane.outcome_acknowledged {
+                        cache
+                            .acknowledged_outcomes
+                            .insert(pane.terminal_id.to_string(), pane.revision);
+                    }
+                }
+            }
         }
     }
     cache
@@ -399,6 +449,18 @@ mod tests {
     }
 
     #[test]
+    fn acknowledged_outcome_revisions_round_trip() {
+        let cache = WorkspaceCache {
+            acknowledged_outcomes: HashMap::from([("42".into(), 7)]),
+            ..Default::default()
+        };
+
+        let decoded: WorkspaceCache = toml::from_str(&toml::to_string(&cache).unwrap()).unwrap();
+
+        assert_eq!(decoded.acknowledged_outcomes.get("42"), Some(&7));
+    }
+
+    #[test]
     fn legacy_tmux_and_session_fields_are_ignored() {
         let cache: WorkspaceCache = toml::from_str(
             r#"tmux_server_pid = 123
@@ -430,27 +492,51 @@ pane_id = "pane-1"
     }
 
     #[test]
-    fn legacy_active_group_shapes_migrate_to_one_canonical_group() {
-        for legacy in [
+    fn historical_active_group_shapes_are_discarded_on_rewrite() {
+        for historical in [
+            "active_group = \"work\"\n",
             "active_tab = \"work\"\n",
             "active_groups = [\"work\", \"other\"]\n",
+            "active_groups = []\n",
         ] {
-            let cache: WorkspaceCache = toml::from_str(legacy).unwrap();
-            assert_eq!(cache.active_group, Some(GroupKey::Named("work".into())));
+            let cache: WorkspaceCache = toml::from_str(historical).unwrap();
             assert!(cache.migration_needed);
             let encoded = toml::to_string(&cache).unwrap();
-            assert!(encoded.contains("active_group = \"work\""));
+            assert!(!encoded.contains("active_group"));
             assert!(!encoded.contains("active_groups"));
             assert!(!encoded.contains("active_tab"));
         }
     }
 
     #[test]
-    fn empty_multi_selection_cache_still_requests_scalar_rewrite() {
-        let cache: WorkspaceCache = toml::from_str("active_groups = []\n").unwrap();
-        assert_eq!(cache.active_group, None);
-        assert!(cache.migration_needed);
-        assert!(!toml::to_string(&cache).unwrap().contains("active_groups"));
+    fn group_selection_is_independent_and_malformed_data_defaults_absent() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::current_dir()
+            .unwrap()
+            .join(".work/group-selection-tests")
+            .join(format!("{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("group-selection-v1.toml");
+
+        assert_eq!(load_group_selection_from(&path).unwrap(), None);
+        save_group_selection_to(&path, &GroupKey::Named("work".into())).unwrap();
+        assert_eq!(
+            load_group_selection_from(&path).unwrap(),
+            Some(GroupKey::Named("work".into()))
+        );
+        std::fs::write(&path, "selected = [\n").unwrap();
+        assert_eq!(load_group_selection_from(&path).unwrap(), None);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn workspace_cache_serialization_never_carries_group_selection() {
+        let encoded = toml::to_string(&WorkspaceCache::default()).unwrap();
+        assert!(!encoded.contains("selected_group"));
+        assert!(!encoded.contains("active_group"));
     }
 
     #[test]
@@ -471,11 +557,10 @@ pane_id = "pane-1"
 
         let cache = WorkspaceCache::load_from_paths(&canonical, &legacy).unwrap();
 
-        assert_eq!(cache.active_group, Some(GroupKey::Named("personal".into())));
         assert_eq!(cache.tree_selected, 3);
         assert_eq!(std::fs::read_to_string(&legacy).unwrap(), legacy_text);
         let canonical_text = std::fs::read_to_string(&canonical).unwrap();
-        assert!(canonical_text.contains("active_group = \"personal\""));
+        assert!(!canonical_text.contains("active_group"));
         assert!(!canonical_text.contains("active_tab"));
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -498,7 +583,7 @@ pane_id = "pane-1"
 
         let cache = WorkspaceCache::load_from_paths(&canonical, &legacy).unwrap();
 
-        assert_eq!(cache.active_group, None);
+        assert_eq!(cache.tree_selected, 0);
         assert_eq!(
             std::fs::read_to_string(&canonical).unwrap(),
             "active_group = [\n"
@@ -536,6 +621,7 @@ pane_id = "pane-1"
                         layout: crate::runtime::PaneLayout::Leaf { pane_id: PaneId(1) },
                         panes: vec![],
                         muted: false,
+                        outcome_acknowledged: false,
                     }],
                     expanded: true,
                     git_info: None,

@@ -5,6 +5,53 @@ use ratatui::{
     widgets::{Clear, Paragraph},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoutinePreset {
+    Codex,
+    Claude,
+    Pi,
+    Custom,
+}
+
+impl RoutinePreset {
+    pub const ALL: [Self; 4] = [Self::Codex, Self::Claude, Self::Pi, Self::Custom];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Codex => "Codex",
+            Self::Claude => "Claude",
+            Self::Pi => "Pi",
+            Self::Custom => "Custom",
+        }
+    }
+
+    pub fn form(self) -> RoutineForm {
+        let command = match self {
+            Self::Codex => vec!["codex", "exec", "--json", "{prompt}"],
+            Self::Claude => vec![
+                "claude",
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "{prompt}",
+            ],
+            Self::Pi => vec!["pi", "-p", "{prompt}"],
+            Self::Custom => Vec::new(),
+        }
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        RoutineForm::from_routine(Routine {
+            name: String::new(),
+            trigger: Trigger::Cron("0 9 * * *".into()),
+            command,
+            prompt: String::new(),
+            enabled: true,
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct RoutineForm {
     pub name: String,
@@ -17,38 +64,6 @@ pub struct RoutineForm {
 }
 
 impl RoutineForm {
-    pub fn codex() -> Self {
-        Self::from_routine(Routine {
-            name: String::new(),
-            trigger: Trigger::Cron("0 9 * * *".into()),
-            command: vec![
-                "codex".into(),
-                "exec".into(),
-                "--json".into(),
-                "{prompt}".into(),
-            ],
-            prompt: String::new(),
-            enabled: true,
-        })
-    }
-
-    pub fn claude() -> Self {
-        Self::from_routine(Routine {
-            name: String::new(),
-            trigger: Trigger::Cron("0 9 * * *".into()),
-            command: vec![
-                "claude".into(),
-                "-p".into(),
-                "--output-format".into(),
-                "stream-json".into(),
-                "--verbose".into(),
-                "{prompt}".into(),
-            ],
-            prompt: String::new(),
-            enabled: true,
-        })
-    }
-
     pub fn from_routine(routine: Routine) -> Self {
         let command_json = serde_json::to_string(&routine.command).unwrap_or_else(|_| "[]".into());
         let cursor = routine.name.len();
@@ -126,16 +141,6 @@ impl RoutineForm {
         };
         self.cursor = self.value_mut().len();
     }
-    pub fn apply_preset(&mut self, claude: bool) {
-        let command = if claude {
-            Self::claude().command_json
-        } else {
-            Self::codex().command_json
-        };
-        self.command_json = command;
-        self.field = 2;
-        self.cursor = self.command_json.len();
-    }
     pub fn routine(&self) -> Result<Routine, String> {
         let command: Vec<String> = serde_json::from_str(&self.command_json)
             .map_err(|e| format!("command must be a JSON argv array: {e}"))?;
@@ -156,6 +161,32 @@ impl RoutineForm {
         .validated()
         .map_err(|e| e.to_string())
     }
+}
+
+pub fn render_preset_picker(frame: &mut Frame, area: Rect, selected: usize) {
+    let width = area.width.saturating_sub(4).min(52);
+    let height = area.height.saturating_sub(2).min(8);
+    let popup = super::popup_center(area, width, height);
+    frame.render_widget(Clear, popup);
+    let lines = RoutinePreset::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, preset)| {
+            let marker = if index == selected { "›" } else { " " };
+            let style = if index == selected {
+                Style::default().fg(theme::ACCENT).bold()
+            } else {
+                Style::default().fg(theme::TEXT)
+            };
+            Line::from(format!("{marker} {}", preset.label())).style(style)
+        })
+        .collect::<Vec<_>>();
+    let block = popup_block(
+        Line::from(" Create routine "),
+        Line::from(" (j/k)select  (Enter)continue  (Esc)cancel "),
+        Style::default().fg(theme::ACCENT),
+    );
+    frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
 pub fn render(frame: &mut Frame, area: Rect, form: &RoutineForm, editing: bool, can_rename: bool) {
@@ -206,8 +237,6 @@ pub fn render(frame: &mut Frame, area: Rect, form: &RoutineForm, editing: bool, 
             " Tab/Shift-Tab field",
             Style::default().fg(theme::TEXT_SUBTLE),
         ),
-        Span::styled("  F1 Codex", Style::default().fg(theme::TEXT_MUTED)),
-        Span::styled("  F2 Claude", Style::default().fg(theme::TEXT_MUTED)),
         Span::styled("  Enter save", Style::default().fg(theme::TEXT)),
         Span::styled("  Esc cancel ", Style::default().fg(theme::TEXT_MUTED)),
     ]);
@@ -288,7 +317,7 @@ mod tests {
 
     #[test]
     fn new_routine_form_builds_an_enabled_routine() {
-        let mut form = RoutineForm::codex();
+        let mut form = RoutinePreset::Codex.form();
         form.name = "daily".into();
 
         assert!(form.routine().unwrap().enabled);
@@ -332,40 +361,84 @@ mod tests {
 
     #[test]
     fn presets_are_editable_direct_argv_initial_values() {
-        let mut form = RoutineForm::codex();
-        form.name = "test".into();
+        let mut codex = RoutinePreset::Codex.form();
+        codex.name = "test".into();
         assert_eq!(
-            form.routine().unwrap().command,
+            codex.routine().unwrap().command,
             vec!["codex", "exec", "--json", "{prompt}"]
         );
-        form.apply_preset(true);
-        let claude = form.routine().unwrap();
-        assert_eq!(claude.command[0], "claude");
-        assert!(claude.command.contains(&"stream-json".to_string()));
-        form.command_json = "[\"printf\",\"%s\",\"{prompt}\"]".into();
-        assert_eq!(form.routine().unwrap().command[0], "printf");
+        let mut claude = RoutinePreset::Claude.form();
+        claude.name = "test".into();
+        assert!(claude
+            .routine()
+            .unwrap()
+            .command
+            .contains(&"stream-json".to_string()));
+        codex.command_json = "[\"printf\",\"%s\",\"{prompt}\"]".into();
+        assert_eq!(codex.routine().unwrap().command[0], "printf");
+    }
+
+    #[test]
+    fn pi_and_custom_presets_keep_command_validation_explicit() {
+        let mut pi = RoutinePreset::Pi.form();
+        pi.name = "review".into();
+        assert_eq!(pi.routine().unwrap().command, vec!["pi", "-p", "{prompt}"]);
+
+        let mut custom = RoutinePreset::Custom.form();
+        custom.name = "custom".into();
+        assert!(custom
+            .routine()
+            .unwrap_err()
+            .contains("command must contain nonempty argv items"));
+        custom.command_json = "[\"printf\",\"%s\",\"{prompt}\"]".into();
+        assert_eq!(custom.routine().unwrap().command[0], "printf");
+    }
+
+    #[test]
+    fn preset_picker_renders_named_choices_and_contextual_hints() {
+        let backend = ratatui::backend::TestBackend::new(60, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_preset_picker(frame, frame.area(), 2))
+            .unwrap();
+        let text =
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .fold(String::new(), |mut text, cell| {
+                    text.push_str(cell.symbol());
+                    text
+                });
+        for expected in ["Codex", "Claude", "› Pi", "Custom", "(j/k)select"] {
+            assert!(text.contains(expected), "missing {expected:?} in {text:?}");
+        }
     }
 
     #[test]
     fn invalid_command_boundary_stays_explicit() {
-        let mut form = RoutineForm::codex();
+        let mut form = RoutinePreset::Codex.form();
         form.command_json = "codex exec".into();
         assert!(form.routine().unwrap_err().contains("JSON argv array"));
     }
 
     #[test]
-    fn narrow_editor_render_is_safe() {
-        let form = RoutineForm::codex();
+    fn narrow_editor_and_picker_render_safely() {
+        let form = RoutinePreset::Codex.form();
         let backend = ratatui::backend::TestBackend::new(30, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| render(frame, frame.area(), &form, false, true))
             .unwrap();
+        terminal
+            .draw(|frame| render_preset_picker(frame, frame.area(), 0))
+            .unwrap();
     }
 
     #[test]
     fn routine_actions_render_on_the_bottom_border() {
-        let form = RoutineForm::codex();
+        let form = RoutinePreset::Codex.form();
         let backend = ratatui::backend::TestBackend::new(88, 13);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
@@ -417,7 +490,7 @@ mod tests {
 
     #[test]
     fn editor_places_terminal_cursor_in_active_scrolled_field() {
-        let mut form = RoutineForm::codex();
+        let mut form = RoutinePreset::Codex.form();
         form.command_json = "[\"head-abcdefghijklmnopqrstuvwxyz-tail\"]".into();
         form.field = 2;
         form.cursor = form.command_json.len();

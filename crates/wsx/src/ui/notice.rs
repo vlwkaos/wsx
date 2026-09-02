@@ -23,7 +23,7 @@ fn notice_view(app: &App) -> Option<NoticeView<'_>> {
             level: notice.level,
             title: &notice.title,
             body: notice.body.as_deref(),
-            sticky: notice.sticky,
+            sticky: false,
         });
     }
     match &app.runtime_health {
@@ -81,7 +81,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .sum::<usize>();
     let height = (wrapped_lines as u16)
         .saturating_add(2)
-        .clamp(2, 4.min(area.height.saturating_sub(1)));
+        .clamp(2, 5.min(area.height.saturating_sub(1)));
     let x = if mobile {
         area.x
     } else {
@@ -138,6 +138,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_error_target_fits_the_compact_notice_height() {
+        let area = Rect::new(0, 0, 80, 16);
+        let content_width = 44;
+        let lines = [
+            "Terminal busy: another writable controller",
+            "Target: kgeditor › feature/#312 › ss › terminal",
+        ];
+        let wrapped = lines
+            .iter()
+            .map(|line| Line::from(*line).width().max(1).div_ceil(content_width))
+            .sum::<usize>();
+
+        assert_eq!(wrapped, 3);
+        assert!(wrapped as u16 + 2 <= 5.min(area.height.saturating_sub(1)));
+    }
 
     #[test]
     fn long_mixed_width_notice_stays_inside_frame() {

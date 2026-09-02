@@ -52,6 +52,10 @@ pub struct PaneInfo {
     pub revision: u64,
     pub exited: bool,
     pub listening_ports: Vec<u16>,
+    pub foreground_job: bool,
+    /// This exact provider outcome revision was acknowledged by explicit UI interaction.
+    #[serde(skip)]
+    pub outcome_acknowledged: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -68,6 +72,9 @@ pub struct SessionInfo {
     pub panes: Vec<PaneInfo>,
     #[serde(skip)]
     pub muted: bool,
+    /// This exact provider outcome revision was acknowledged by explicit UI interaction.
+    #[serde(skip)]
+    pub outcome_acknowledged: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -78,6 +85,14 @@ pub enum FetchFailReason {
 }
 
 impl SessionInfo {
+    pub fn has_foreground_job(&self) -> bool {
+        self.panes.iter().any(|pane| pane.foreground_job)
+    }
+
+    pub fn is_agentic(&self) -> bool {
+        self.agent.is_some() || self.panes.iter().any(|pane| pane.agent.is_some())
+    }
+
     pub fn listening_ports(&self) -> Vec<u16> {
         let mut ports = self
             .panes
