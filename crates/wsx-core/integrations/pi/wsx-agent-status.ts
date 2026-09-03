@@ -53,7 +53,7 @@ function sessionRef(ctx: unknown): SessionRef | undefined {
   return undefined;
 }
 
-// ^ [[Session Model]] integrations/pi/wsx-agent-status.ts -> crates/wsx-core/src/runtime/domain.rs
+// ^ [[Session Model]] crates/wsx-core/integrations/pi/wsx-agent-status.ts -> crates/wsx-core/src/runtime/domain.rs
 // Pi owns lifecycle interpretation; wsx only accepts the normalized report.
 export default function wsxAgentStatus(pi: ExtensionAPI): void {
   const publish = () => report(blockedCount > 0 ? "blocked" : agentActive ? "working" : "idle");

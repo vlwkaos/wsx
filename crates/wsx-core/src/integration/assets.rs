@@ -1,14 +1,13 @@
 use super::{IntegrationTarget, LifecycleCapability};
 
-const SHELL: &str = include_str!("../../../../integrations/common/wsx-agent-status.sh");
-const PLUGIN: &str = include_str!("../../../../integrations/common/wsx-opencode-agent-status.js");
-const PI: &str = include_str!("../../../../integrations/pi/wsx-agent-status.ts");
-const OMP: &str = include_str!("../../../../integrations/omp/wsx-agent-status.ts");
+const SHELL: &str = include_str!("../../integrations/common/wsx-agent-status.sh");
+const PLUGIN: &str = include_str!("../../integrations/common/wsx-opencode-agent-status.js");
+const PI: &str = include_str!("../../integrations/pi/wsx-agent-status.ts");
+const OMP: &str = include_str!("../../integrations/omp/wsx-agent-status.ts");
 pub(crate) const OPENCODE_TUI: &str =
-    include_str!("../../../../integrations/opencode/wsx-tui-session.js");
-const HERMES: &str = include_str!("../../../../integrations/hermes/__init__.py");
-pub(crate) const HERMES_MANIFEST: &str =
-    include_str!("../../../../integrations/hermes/plugin.yaml");
+    include_str!("../../integrations/opencode/wsx-tui-session.js");
+const HERMES: &str = include_str!("../../integrations/hermes/__init__.py");
+pub(crate) const HERMES_MANIFEST: &str = include_str!("../../integrations/hermes/plugin.yaml");
 
 pub(crate) fn primary(target: IntegrationTarget) -> String {
     match target {
