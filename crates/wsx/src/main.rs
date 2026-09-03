@@ -36,7 +36,22 @@ fn main() -> Result<()> {
     match args.command {
         Some(cmd) => {
             // ^ [[wsx Architecture]] CLI mutations require a ready adjacent daemon.
-            wsx_core::runtime::ensure_available().context("wsxd is unavailable")?;
+            let availability =
+                wsx_core::runtime::ensure_available().context("wsxd is unavailable")?;
+            match availability {
+                wsx_core::runtime::Availability::Current => {}
+                wsx_core::runtime::Availability::RecoveredFromBackup => eprintln!(
+                    "wsx: wsxd recovered a corrupt primary state from its last-known-good backup"
+                ),
+                wsx_core::runtime::Availability::LegacyCompatible => {
+                    eprintln!("wsx: a newer wsxd will be used after the current daemon stops")
+                }
+                wsx_core::runtime::Availability::ReplacementDeferred { live_runtimes } => {
+                    eprintln!(
+                        "wsx: wsxd update deferred while {live_runtimes} terminal runtime(s) remain open"
+                    );
+                }
+            }
             cli::run(cmd)
         }
         // The TUI renders its config-backed shell before background runtime discovery completes.

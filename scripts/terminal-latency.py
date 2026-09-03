@@ -18,14 +18,14 @@ import fcntl
 import weakref
 
 ROOT = Path(__file__).resolve().parents[1]
-WORK = ROOT / ".work" / "terminal-latency"
+WORK = Path(os.environ.get("WSX_LATENCY_WORK", ROOT / ".work" / "terminal-latency"))
 DAEMON = Path(os.environ.get("WSX_LATENCY_DAEMON", ROOT / "target" / "debug" / "wsxd"))
 WSX = Path(os.environ.get("WSX_LATENCY_WSX", ROOT / "target" / "debug" / "wsx"))
 PROJECT = WORK / "project"
 HOME = WORK / "home"
 STATE = WORK / "state"
 SOCKET = STATE / "wsx" / "wsx.sock"
-PROTOCOL = 10
+PROTOCOL = 11
 WARMUPS = 4
 SAMPLES = 20
 BUDGET_MS = 16.7

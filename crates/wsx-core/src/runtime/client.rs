@@ -1,11 +1,13 @@
 use super::protocol::{
-    encode_line, Request, Response, TerminalClientMessage, TerminalServerMessage,
+    binary_identity, encode_line, Request, Response, TerminalClientMessage, TerminalServerMessage,
     MAX_RESPONSE_BYTES, PROTOCOL_VERSION,
 };
 use std::{
-    io::{self, BufRead, BufReader, Read, Write},
+    fs::{self, File},
+    io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
     os::unix::{
-        fs::{FileTypeExt, MetadataExt},
+        fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+        io::AsRawFd,
         net::UnixStream,
     },
     path::{Path, PathBuf},
@@ -19,20 +21,33 @@ use std::{
 };
 
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
+const START_WINDOW: Duration = Duration::from_secs(60);
+const MAX_START_ATTEMPTS: usize = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Availability {
+    Current,
+    RecoveredFromBackup,
+    LegacyCompatible,
+    ReplacementDeferred { live_runtimes: usize },
+}
 
 #[derive(Debug, Clone)]
 pub struct Client {
     socket: PathBuf,
+    automatic_start: bool,
 }
 impl Client {
     pub fn local() -> Self {
         Self {
             socket: super::protocol::default_socket_path(),
+            automatic_start: true,
         }
     }
     pub fn new(socket: impl Into<PathBuf>) -> Self {
         Self {
             socket: socket.into(),
+            automatic_start: false,
         }
     }
     pub fn socket(&self) -> &Path {
@@ -43,7 +58,7 @@ impl Client {
     pub fn shutdown(&self) -> io::Result<()> {
         match probe_existing_daemon(self)? {
             ExistingDaemon::Missing => Ok(()),
-            ExistingDaemon::Ready => match self.call(&Request::Shutdown) {
+            ExistingDaemon::Ready { .. } => match self.call(&Request::Shutdown) {
                 Ok(Response::Ack { .. }) => wait_until_stopped(self),
                 Ok(Response::Error(error)) => Err(io::Error::other(format!(
                     "{}: {}",
@@ -56,9 +71,17 @@ impl Client {
                 Err(error) if daemon_is_stopped_error(&error) => Ok(()),
                 Err(error) => Err(error),
             },
+            ExistingDaemon::StaleLogin {
+                stream,
+                advertised_protocol,
+            } => {
+                shutdown_stale_daemon(self, stream, advertised_protocol)?;
+                wait_until_stopped(self)
+            }
             ExistingDaemon::Incompatible {
                 stream,
                 advertised_protocol,
+                ..
             } => {
                 shutdown_incompatible_daemon(self, stream, advertised_protocol)?;
                 wait_until_stopped(self)
@@ -80,10 +103,17 @@ impl Client {
     }
 
     fn connect(&self) -> io::Result<UnixStream> {
+        let stream = self.connect_unchecked_login()?;
+        validate_current_login_peer(&stream)?;
+        Ok(stream)
+    }
+
+    fn connect_unchecked_login(&self) -> io::Result<UnixStream> {
         validate_socket(&self.socket)?;
         let stream = UnixStream::connect(&self.socket)?;
         stream.set_read_timeout(Some(IO_TIMEOUT))?;
         stream.set_write_timeout(Some(IO_TIMEOUT))?;
+        validate_peer_owner(&stream)?;
         Ok(stream)
     }
 }
@@ -394,14 +424,264 @@ fn validate_socket(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub fn ensure_available() -> io::Result<()> {
-    let client = Client::local();
-    if !daemon_needs_start(probe_existing_daemon(&client)?)? {
-        return Ok(());
+// ^ [[MacOS Daemon Authentication and Recovery]]
+// macOS LOCAL_PEERTOKEN returns audit_token_t, defined as eight natural_t values.
+// See the platform SDK's mach/message.h and bsm/libbsm.h contracts.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AuditToken {
+    value: [u32; 8],
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "bsm")]
+extern "C" {
+    fn audit_token_to_euid(token: AuditToken) -> libc::uid_t;
+    fn audit_token_to_asid(token: AuditToken) -> libc::pid_t;
+}
+
+#[cfg(target_os = "macos")]
+fn peer_audit_token(stream: &UnixStream) -> io::Result<AuditToken> {
+    let mut token = AuditToken { value: [0; 8] };
+    let mut length = std::mem::size_of::<AuditToken>() as libc::socklen_t;
+    // ^ The kernel writes at most `length` bytes into this correctly sized C buffer.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERTOKEN,
+            &mut token as *mut AuditToken as *mut libc::c_void,
+            &mut length,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if length as usize != std::mem::size_of::<AuditToken>() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "wsxd peer returned an invalid audit token",
+        ));
+    }
+    Ok(token)
+}
+
+#[cfg(target_os = "macos")]
+fn current_audit_session() -> io::Result<libc::pid_t> {
+    let (_left, right) = UnixStream::pair()?;
+    let token = peer_audit_token(&right)?;
+    // ^ libbsm accepts the complete kernel-issued token by value.
+    Ok(unsafe { audit_token_to_asid(token) })
+}
+
+#[cfg(target_os = "macos")]
+fn validate_peer_owner(stream: &UnixStream) -> io::Result<()> {
+    let token = peer_audit_token(stream)?;
+    // ^ Both calls are side-effect-free identity reads for the connected processes.
+    if unsafe { audit_token_to_euid(token) } != unsafe { libc::geteuid() } {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "wsxd socket peer belongs to another user",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn validate_peer_owner(_stream: &UnixStream) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn peer_is_current_login(stream: &UnixStream) -> io::Result<bool> {
+    // ^ libbsm accepts the complete kernel-issued token by value.
+    let peer = unsafe { audit_token_to_asid(peer_audit_token(stream)?) };
+    Ok(peer == current_audit_session()?)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn peer_is_current_login(_stream: &UnixStream) -> io::Result<bool> {
+    Ok(true)
+}
+
+fn validate_current_login_peer(stream: &UnixStream) -> io::Result<()> {
+    if peer_is_current_login(stream)? {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "wsxd belongs to an earlier macOS login session",
+        ))
+    }
+}
+
+pub fn ensure_available() -> io::Result<Availability> {
+    ensure_available_with(&Client::local(), false)
+}
+
+pub fn recover_daemon() -> io::Result<Availability> {
+    ensure_available_with(&Client::local(), true)
+}
+
+pub fn ensure_background_available() -> io::Result<Availability> {
+    ensure_background_available_with(&Client::local())
+}
+
+fn ensure_background_available_with(client: &Client) -> io::Result<Availability> {
+    if !client.automatic_start {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "automatic recovery is disabled for a custom wsxd client",
+        ));
+    }
+    if !client.socket().exists() && !background_recovery_allowed(client.socket()) {
+        return Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "wsxd was stopped intentionally",
+        ));
+    }
+    ensure_available_with(client, false)
+}
+
+fn ensure_available_with(client: &Client, reset_crash_budget: bool) -> io::Result<Availability> {
+    let binary = daemon_binary();
+    let target_binary_id = binary_identity(&binary).ok();
+    let first = probe_existing_daemon(client)?;
+    if let Some(availability) =
+        ready_without_transition(client, &first, target_binary_id.as_deref())?
+    {
+        return Ok(availability);
     }
 
-    let binary = daemon_binary();
-    let mut child = Command::new(&binary)
+    let mut bootstrap = acquire_bootstrap_lock(client.socket())?;
+    let existing = probe_existing_daemon(client)?;
+    if let Some(availability) =
+        ready_without_transition(client, &existing, target_binary_id.as_deref())?
+    {
+        return Ok(availability);
+    }
+
+    match existing {
+        ExistingDaemon::Missing => {
+            let planned = consume_planned_marker(client.socket(), target_binary_id.as_deref())?;
+            start_daemon(
+                client,
+                &binary,
+                &mut bootstrap,
+                reset_crash_budget || planned,
+            )
+        }
+        ExistingDaemon::StaleLogin {
+            stream,
+            advertised_protocol,
+        } => {
+            shutdown_stale_daemon(client, stream, advertised_protocol)?;
+            wait_until_stopped(client)?;
+            write_lifecycle_marker(client.socket(), "starting")?;
+            start_daemon(client, &binary, &mut bootstrap, true)
+        }
+        ExistingDaemon::Ready {
+            lifecycle_coordination: true,
+        }
+        | ExistingDaemon::Incompatible {
+            lifecycle_coordination: true,
+            ..
+        } => {
+            let target_binary_id = target_binary_id.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("could not identify replacement daemon {}", binary.display()),
+                )
+            })?;
+            match lifecycle_round_trip(
+                client,
+                &Request::PrepareReplacement {
+                    target_binary_id: target_binary_id.clone(),
+                },
+            )? {
+                Response::Replacement {
+                    disposition: super::domain::ReplacementDisposition::Stopping,
+                    ..
+                } => {
+                    wait_until_stopped(client)?;
+                    consume_planned_marker(client.socket(), Some(&target_binary_id))?;
+                    start_daemon(client, &binary, &mut bootstrap, true)
+                }
+                Response::Replacement {
+                    disposition: super::domain::ReplacementDisposition::Deferred,
+                    live_runtimes,
+                } if matches!(existing, ExistingDaemon::Ready { .. }) => {
+                    Ok(Availability::ReplacementDeferred { live_runtimes })
+                }
+                Response::Replacement { live_runtimes, .. } => Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!(
+                        "replacement_deferred: incompatible wsxd is protecting {live_runtimes} live runtime(s)"
+                    ),
+                )),
+                response => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unexpected wsxd replacement response: {response:?}"),
+                )),
+            }
+        }
+        incompatible @ ExistingDaemon::Incompatible { .. } => {
+            daemon_needs_start(incompatible)?;
+            unreachable!("incompatible daemon must return an error");
+        }
+        ExistingDaemon::Ready { .. } => Ok(Availability::LegacyCompatible),
+    }
+}
+
+fn ready_without_transition(
+    client: &Client,
+    existing: &ExistingDaemon,
+    target_binary_id: Option<&str>,
+) -> io::Result<Option<Availability>> {
+    let ExistingDaemon::Ready {
+        lifecycle_coordination,
+    } = existing
+    else {
+        return Ok(None);
+    };
+    if !lifecycle_coordination {
+        return Ok(Some(Availability::LegacyCompatible));
+    }
+    let Response::Lifecycle(status) = lifecycle_round_trip(client, &Request::LifecycleStatus)?
+    else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unexpected wsxd lifecycle response",
+        ));
+    };
+    if target_binary_id.is_none_or(|target| target == status.binary_id) {
+        Ok(Some(
+            if status.phase == super::domain::DaemonPhase::ReplacementPending {
+                Availability::ReplacementDeferred {
+                    live_runtimes: status.live_runtimes,
+                }
+            } else if status.recovered_from_backup {
+                Availability::RecoveredFromBackup
+            } else {
+                Availability::Current
+            },
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
+fn start_daemon(
+    client: &Client,
+    binary: &Path,
+    bootstrap: &mut BootstrapLock,
+    reset_crash_budget: bool,
+) -> io::Result<Availability> {
+    wait_for_singleton_release(client.socket())?;
+    record_start_attempt(&mut bootstrap.file, reset_crash_budget)?;
+    let expected_binary_id = binary_identity(binary).ok();
+    let mut child = Command::new(binary)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -421,7 +701,41 @@ pub fn ensure_available() -> io::Result<()> {
     let deadline = Instant::now() + IO_TIMEOUT;
     loop {
         match client.call(&Request::Snapshot) {
-            Ok(Response::Snapshot(_)) => return Ok(()),
+            Ok(Response::Snapshot(snapshot)) => {
+                let status = if snapshot.capabilities.lifecycle_coordination {
+                    let Response::Lifecycle(status) = client.call(&Request::LifecycleStatus)?
+                    else {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "started wsxd returned an invalid lifecycle response",
+                        ));
+                    };
+                    Some(status)
+                } else {
+                    None
+                };
+                if let Some(expected) = expected_binary_id.as_deref() {
+                    let status = status.as_ref().ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "started wsxd does not expose lifecycle identity",
+                        )
+                    })?;
+                    if status.binary_id != expected {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "started wsxd binary identity does not match the elected replacement",
+                        ));
+                    }
+                }
+                return Ok(
+                    if status.is_some_and(|status| status.recovered_from_backup) {
+                        Availability::RecoveredFromBackup
+                    } else {
+                        Availability::Current
+                    },
+                );
+            }
             Ok(Response::Error(error)) => {
                 return Err(io::Error::other(format!(
                     "{}: {}",
@@ -445,20 +759,273 @@ pub fn ensure_available() -> io::Result<()> {
     }
 }
 
+struct BootstrapLock {
+    file: File,
+}
+
+fn wait_for_singleton_release(socket: &Path) -> io::Result<()> {
+    let path = socket
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "wsxd socket has no parent"))?
+        .join("state.lock");
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unsafe wsxd singleton lock",
+        ));
+    }
+    let deadline = Instant::now() + IO_TIMEOUT;
+    loop {
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result == 0 {
+            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EWOULDBLOCK) || Instant::now() >= deadline {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("wsxd singleton lock did not become available: {error}"),
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn acquire_bootstrap_lock(socket: &Path) -> io::Result<BootstrapLock> {
+    let parent = socket
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "wsxd socket has no parent"))?;
+    match fs::symlink_metadata(parent) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir_all(parent)?;
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        }
+        Err(error) => return Err(error),
+    }
+    let metadata = fs::symlink_metadata(parent)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unsafe wsx state directory",
+        ));
+    }
+    let path = socket.with_extension("bootstrap.lock");
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+        || metadata.len() > 4096
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unsafe wsxd bootstrap lock",
+        ));
+    }
+    let deadline = Instant::now() + IO_TIMEOUT;
+    loop {
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result == 0 {
+            return Ok(BootstrapLock { file });
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EWOULDBLOCK) || Instant::now() >= deadline {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("could not coordinate wsxd startup: {error}"),
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn record_start_attempt(file: &mut File, reset: bool) -> io::Result<()> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    file.seek(SeekFrom::Start(0))?;
+    let mut text = String::new();
+    file.take(4097).read_to_string(&mut text)?;
+    let mut attempts = if reset {
+        Vec::new()
+    } else {
+        text.lines()
+            .filter_map(|line| line.parse::<u64>().ok())
+            .filter(|attempt| *attempt <= now && now - *attempt < START_WINDOW.as_secs())
+            .collect::<Vec<_>>()
+    };
+    if attempts.len() >= MAX_START_ATTEMPTS {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "crash_loop: wsxd exceeded 3 automatic starts in 60 seconds; run `wsx daemon recover` to try explicitly",
+        ));
+    }
+    if !attempts.is_empty() {
+        thread::sleep(Duration::from_millis(100_u64 << attempts.len().min(3)));
+    }
+    attempts.push(now);
+    file.seek(SeekFrom::Start(0))?;
+    file.set_len(0)?;
+    for attempt in attempts {
+        writeln!(file, "{attempt}")?;
+    }
+    file.sync_all()
+}
+
+fn write_lifecycle_marker(socket: &Path, reason: &str) -> io::Result<()> {
+    let path = socket.with_extension("lifecycle");
+    let temporary = path.with_extension(format!("lifecycle.tmp.{}", std::process::id()));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&temporary)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        writeln!(file, "{reason}")?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn consume_planned_marker(socket: &Path, target_binary_id: Option<&str>) -> io::Result<bool> {
+    let Some(reason) = lifecycle_marker_reason(socket) else {
+        return Ok(false);
+    };
+    let planned = match reason.as_str() {
+        "intentional" | "login_ended" => true,
+        reason if reason.starts_with("replacement:") => {
+            let expected = reason.trim_start_matches("replacement:");
+            if target_binary_id != Some(expected) {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "replacement_protected: the pending wsxd replacement belongs to another binary",
+                ));
+            }
+            true
+        }
+        _ => false,
+    };
+    if planned {
+        write_lifecycle_marker(socket, "starting")?;
+    }
+    Ok(planned)
+}
+
+fn lifecycle_marker_reason(socket: &Path) -> Option<String> {
+    let path = socket.with_extension("lifecycle");
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+        || metadata.len() > 1024
+    {
+        return None;
+    }
+    let mut reason = String::new();
+    file.take(1025).read_to_string(&mut reason).ok()?;
+    Some(reason.trim().to_string())
+}
+
+fn background_recovery_allowed(socket: &Path) -> bool {
+    match lifecycle_marker_reason(socket).as_deref() {
+        None => !socket.with_extension("lifecycle").exists(),
+        Some("ready" | "unexpected" | "starting") => true,
+        Some(reason) if reason.starts_with("replacement:") => true,
+        Some(_) => false,
+    }
+}
+
+fn lifecycle_round_trip(client: &Client, request: &Request) -> io::Result<Response> {
+    let mut stream = client.connect_unchecked_login()?;
+    match round_trip(
+        &mut stream,
+        &Request::Hello {
+            protocol: PROTOCOL_VERSION,
+        },
+    )? {
+        Response::Hello { .. } => round_trip(&mut stream, request),
+        Response::Error(error) => Err(io::Error::other(format!(
+            "{}: {}",
+            error.code, error.message
+        ))),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "wsxd lifecycle handshake failed",
+        )),
+    }
+}
+
+fn shutdown_stale_daemon(
+    client: &Client,
+    stream: Option<UnixStream>,
+    advertised_protocol: Option<u32>,
+) -> io::Result<()> {
+    match stream {
+        Some(stream) => shutdown_handshaken_daemon(stream),
+        None => shutdown_incompatible_daemon(client, None, advertised_protocol),
+    }
+}
+
 #[derive(Debug)]
 enum ExistingDaemon {
-    Ready,
+    Ready {
+        lifecycle_coordination: bool,
+    },
     Missing,
+    StaleLogin {
+        stream: Option<UnixStream>,
+        advertised_protocol: Option<u32>,
+    },
     Incompatible {
         stream: Option<UnixStream>,
         advertised_protocol: Option<u32>,
+        lifecycle_coordination: bool,
     },
 }
 
 fn daemon_needs_start(existing: ExistingDaemon) -> io::Result<bool> {
     match existing {
-        ExistingDaemon::Ready => Ok(false),
+        ExistingDaemon::Ready { .. } => Ok(false),
         ExistingDaemon::Missing => Ok(true),
+        ExistingDaemon::StaleLogin { .. } => Ok(true),
         // ^ [[wsx Architecture]] Binary skew must not terminate daemon-owned live PTYs.
         ExistingDaemon::Incompatible {
             advertised_protocol,
@@ -485,7 +1052,7 @@ fn incompatible_daemon_error(advertised_protocol: Option<u32>) -> io::Error {
 }
 
 fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
-    let mut stream = match client.connect() {
+    let mut stream = match client.connect_unchecked_login() {
         Ok(stream) => stream,
         Err(error)
             if matches!(
@@ -497,12 +1064,17 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
         }
         Err(error) => return Err(error),
     };
+    let stale_login = !peer_is_current_login(&stream)?;
     match round_trip(
         &mut stream,
         &Request::Hello {
             protocol: PROTOCOL_VERSION,
         },
     )? {
+        Response::Hello { protocol, .. } if stale_login => Ok(ExistingDaemon::StaleLogin {
+            stream: Some(stream),
+            advertised_protocol: Some(protocol),
+        }),
         Response::Hello {
             protocol,
             capabilities,
@@ -511,8 +1083,11 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
             && capabilities.resume_shell_fallback
             && capabilities.foreground_jobs =>
         {
+            let lifecycle_coordination = capabilities.lifecycle_coordination;
             match round_trip(&mut stream, &Request::Snapshot)? {
-                Response::Snapshot(_) => Ok(ExistingDaemon::Ready),
+                Response::Snapshot(_) => Ok(ExistingDaemon::Ready {
+                    lifecycle_coordination,
+                }),
                 Response::Error(error) => Err(io::Error::other(format!(
                     "{}: {}",
                     error.code, error.message
@@ -523,14 +1098,26 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
                 )),
             }
         }
-        Response::Hello { protocol, .. } => Ok(ExistingDaemon::Incompatible {
+        Response::Hello {
+            protocol,
+            capabilities,
+            ..
+        } => Ok(ExistingDaemon::Incompatible {
             stream: Some(stream),
             advertised_protocol: Some(protocol),
+            lifecycle_coordination: capabilities.lifecycle_coordination,
         }),
+        Response::Error(error) if error.code == "protocol_mismatch" && stale_login => {
+            Ok(ExistingDaemon::StaleLogin {
+                stream: None,
+                advertised_protocol: None,
+            })
+        }
         Response::Error(error) if error.code == "protocol_mismatch" => {
             Ok(ExistingDaemon::Incompatible {
                 stream: None,
                 advertised_protocol: None,
+                lifecycle_coordination: false,
             })
         }
         Response::Error(error) => Err(io::Error::other(format!(
@@ -540,6 +1127,20 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "wsxd protocol handshake failed",
+        )),
+    }
+}
+
+fn shutdown_handshaken_daemon(mut stream: UnixStream) -> io::Result<()> {
+    match round_trip(&mut stream, &Request::Shutdown)? {
+        Response::Ack { .. } => Ok(()),
+        Response::Error(error) => Err(io::Error::other(format!(
+            "{}: {}",
+            error.code, error.message
+        ))),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unexpected wsxd shutdown response",
         )),
     }
 }
@@ -573,7 +1174,7 @@ fn shutdown_incompatible_daemon(
 
 fn connect_unadvertised_legacy_daemon(client: &Client) -> io::Result<UnixStream> {
     for protocol in (1..PROTOCOL_VERSION).rev() {
-        let mut stream = client.connect()?;
+        let mut stream = client.connect_unchecked_login()?;
         match round_trip(&mut stream, &Request::Hello { protocol })? {
             Response::Hello {
                 protocol: accepted, ..
@@ -581,7 +1182,7 @@ fn connect_unadvertised_legacy_daemon(client: &Client) -> io::Result<UnixStream>
                 if protocol == 1 {
                     // ^ Protocol 1 closes after Hello, so Shutdown requires a fresh connection.
                     drop(stream);
-                    return client.connect();
+                    return client.connect_unchecked_login();
                 }
                 return Ok(stream);
             }
@@ -620,13 +1221,18 @@ fn wait_until_stopped(client: &Client) -> io::Result<()> {
     loop {
         match probe_existing_daemon(client) {
             Ok(ExistingDaemon::Missing) => return Ok(()),
-            Ok(ExistingDaemon::Ready | ExistingDaemon::Incompatible { .. })
-                if Instant::now() < deadline => {}
+            Ok(
+                ExistingDaemon::Ready { .. }
+                | ExistingDaemon::StaleLogin { .. }
+                | ExistingDaemon::Incompatible { .. },
+            ) if Instant::now() < deadline => {}
             Err(error) if daemon_is_stopped_error(&error) => return Ok(()),
             Err(_) if Instant::now() < deadline => {}
-            Ok(ExistingDaemon::Ready | ExistingDaemon::Incompatible { .. }) => {
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "wsxd did not stop"))
-            }
+            Ok(
+                ExistingDaemon::Ready { .. }
+                | ExistingDaemon::StaleLogin { .. }
+                | ExistingDaemon::Incompatible { .. },
+            ) => return Err(io::Error::new(io::ErrorKind::TimedOut, "wsxd did not stop")),
             Err(error) => return Err(error),
         }
         thread::sleep(Duration::from_millis(50));
@@ -708,6 +1314,18 @@ impl EventMonitor {
                             connected = false;
                             revision = 0;
                             let _ = sender.send(EventSignal::Disconnected(error.to_string()));
+                            if daemon_is_stopped_error(&error)
+                                && background_recovery_allowed(client.socket())
+                            {
+                                match ensure_background_available_with(&client) {
+                                    Ok(_) => continue,
+                                    Err(recovery_error) => {
+                                        let _ = sender.send(EventSignal::Disconnected(
+                                            recovery_error.to_string(),
+                                        ));
+                                    }
+                                }
+                            }
                             thread::sleep(Duration::from_millis(250));
                         }
                     }
@@ -813,7 +1431,204 @@ mod tests {
 
         assert!(!daemon_needs_start(probe_existing_daemon(&Client::new(path)).unwrap()).unwrap());
         assert!(daemon_needs_start(ExistingDaemon::Missing).unwrap());
+        let (stale, _) = UnixStream::pair().unwrap();
+        assert!(daemon_needs_start(ExistingDaemon::StaleLogin {
+            stream: Some(stale),
+            advertised_protocol: Some(PROTOCOL_VERSION),
+        })
+        .unwrap());
         server.join().unwrap();
+    }
+
+    #[test]
+    fn lifecycle_ready_and_deferred_are_typed_healthy_outcomes() {
+        let (path, listener) = test_listener("lifecycle-outcomes");
+        let server_path = path.clone();
+        let server = thread::spawn(move || {
+            for (phase, live_runtimes) in [
+                (super::super::domain::DaemonPhase::Ready, 0),
+                (super::super::domain::DaemonPhase::ReplacementPending, 2),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                assert!(matches!(
+                    read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+                    Request::Hello { .. }
+                ));
+                send_response(
+                    &mut stream,
+                    &Response::Hello {
+                        protocol: PROTOCOL_VERSION,
+                        epoch: 7,
+                        capabilities: current_capabilities(),
+                    },
+                );
+                assert_eq!(
+                    read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+                    Request::LifecycleStatus
+                );
+                send_response(
+                    &mut stream,
+                    &Response::Lifecycle(super::super::domain::DaemonLifecycle {
+                        protocol: PROTOCOL_VERSION,
+                        epoch: 7,
+                        binary_id: "target".into(),
+                        started_unix_ms: 1,
+                        phase,
+                        live_runtimes,
+                        active_clients: 1,
+                        recovered_from_backup: false,
+                        replacement_target: None,
+                    }),
+                );
+            }
+            drop(listener);
+            std::fs::remove_file(server_path).unwrap();
+        });
+        let client = Client::new(path);
+        let ready = ExistingDaemon::Ready {
+            lifecycle_coordination: true,
+        };
+        assert_eq!(
+            ready_without_transition(&client, &ready, Some("target")).unwrap(),
+            Some(Availability::Current)
+        );
+        assert_eq!(
+            ready_without_transition(&client, &ready, Some("target")).unwrap(),
+            Some(Availability::ReplacementDeferred { live_runtimes: 2 })
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn bootstrap_lock_serializes_startup_owners() {
+        let (path, listener) = test_listener("bootstrap-lock");
+        drop(listener);
+        let _ = std::fs::remove_file(&path);
+        let first = acquire_bootstrap_lock(&path).unwrap();
+        let contender_path = path.clone();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let contender = thread::spawn(move || {
+            let lock = acquire_bootstrap_lock(&contender_path).unwrap();
+            acquired_tx.send(()).unwrap();
+            drop(lock);
+        });
+        assert!(acquired_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+        drop(first);
+        acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        contender.join().unwrap();
+        let _ = std::fs::remove_file(path.with_extension("bootstrap.lock"));
+    }
+
+    #[test]
+    fn successor_waits_for_the_daemon_singleton_lock_not_only_socket_removal() {
+        let (seed, listener) = test_listener("singleton-release");
+        drop(listener);
+        let _ = std::fs::remove_file(&seed);
+        let directory = seed.with_extension("state");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory.join("wsx.sock");
+        let lock_path = directory.join("state.lock");
+        let owner = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(&lock_path)
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        let contender_path = path.clone();
+        let (released_tx, released_rx) = std::sync::mpsc::channel();
+        let contender = thread::spawn(move || {
+            wait_for_singleton_release(&contender_path).unwrap();
+            released_tx.send(()).unwrap();
+        });
+        assert!(released_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+        drop(owner);
+        released_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        contender.join().unwrap();
+        let _ = std::fs::remove_file(lock_path);
+        let _ = std::fs::remove_dir(directory);
+    }
+
+    #[test]
+    fn shared_start_budget_blocks_a_loop_and_explicit_recovery_resets_it() {
+        let (path, listener) = test_listener("start-budget");
+        drop(listener);
+        let _ = std::fs::remove_file(&path);
+        let mut lock = acquire_bootstrap_lock(&path).unwrap();
+        for _ in 0..MAX_START_ATTEMPTS {
+            record_start_attempt(&mut lock.file, false).unwrap();
+        }
+        assert!(record_start_attempt(&mut lock.file, false)
+            .unwrap_err()
+            .to_string()
+            .contains("crash_loop"));
+        record_start_attempt(&mut lock.file, true).unwrap();
+        drop(lock);
+        let _ = std::fs::remove_file(path.with_extension("bootstrap.lock"));
+    }
+
+    #[test]
+    fn custom_client_never_spawns_a_default_daemon() {
+        let (path, listener) = test_listener("custom-no-recovery");
+        drop(listener);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            ensure_background_available_with(&Client::new(path.clone()))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn intentional_stop_marker_disables_background_recovery() {
+        let (path, listener) = test_listener("intentional-marker");
+        drop(listener);
+        std::fs::remove_file(&path).unwrap();
+        let marker = path.with_extension("lifecycle");
+        std::fs::write(&marker, "intentional\n").unwrap();
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!background_recovery_allowed(&path));
+        assert_eq!(
+            ensure_background_available_with(&Client {
+                socket: path.clone(),
+                automatic_start: true,
+            })
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::ConnectionAborted
+        );
+        assert!(consume_planned_marker(&path, Some("target")).unwrap());
+        assert_eq!(lifecycle_marker_reason(&path).as_deref(), Some("starting"));
+        assert!(!consume_planned_marker(&path, Some("target")).unwrap());
+        std::fs::write(&marker, "login_ended\n").unwrap();
+        assert!(!background_recovery_allowed(&path));
+        std::fs::write(&marker, "replacement:other\n").unwrap();
+        assert!(consume_planned_marker(&path, Some("target")).is_err());
+        std::fs::write(&marker, "unexpected\n").unwrap();
+        assert!(background_recovery_allowed(&path));
+        let _ = std::fs::remove_file(marker);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn local_socket_peer_matches_the_current_audit_session() {
+        let (client, server) = UnixStream::pair().unwrap();
+        validate_peer_owner(&server).unwrap();
+        assert!(peer_is_current_login(&server).unwrap());
+        assert!(peer_is_current_login(&client).unwrap());
     }
 
     #[test]

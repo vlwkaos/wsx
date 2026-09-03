@@ -2,6 +2,7 @@
 // ^ [[wsx Architecture]] Snapshots are authoritative; events only invalidate revisions.
 
 mod plugins;
+mod state_store;
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -20,7 +21,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering},
         Arc, Condvar, Mutex, MutexGuard, Weak,
     },
     thread,
@@ -38,6 +39,7 @@ const MAX_VIEW_CELLS: usize = 1_000_000;
 const LEASE_TTL: Duration = Duration::from_secs(3);
 const PRESENTATION_CADENCE: Duration = Duration::from_millis(8);
 static NEXT_LEASE_GENERATION: AtomicU64 = AtomicU64::new(1);
+static STOP_SIGNAL: AtomicI32 = AtomicI32::new(0);
 const PORT_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const PORT_SCAN_TIMEOUT: Duration = Duration::from_millis(750);
 const MAX_PORT_SCAN_BYTES: u64 = 256 * 1024;
@@ -149,10 +151,44 @@ struct StreamLease {
     generation: u64,
 }
 
+struct RuntimeAgentAuthority {
+    pane_id: PaneId,
+    generation: Option<String>,
+}
+
+impl RuntimeAgentAuthority {
+    fn new(pane_id: PaneId, generation: Option<String>) -> Self {
+        Self {
+            pane_id,
+            generation,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StopReason {
+    Unexpected,
+    Replacement,
+    Intentional,
+    LoginEnded,
+}
+
+impl StopReason {
+    fn marker(self) -> &'static str {
+        match self {
+            Self::Unexpected => "unexpected",
+            Self::Replacement => "replacement",
+            Self::Intentional => "intentional",
+            Self::LoginEnded => "login_ended",
+        }
+    }
+}
+
 struct State {
     persisted: Persisted,
     revision: u64,
     runtimes: HashMap<PaneId, Arc<TerminalRuntime>>,
+    runtime_generations: HashMap<PaneId, String>,
     terminal_operation_locks: HashMap<PaneId, Arc<Mutex<()>>>,
     listening_ports: HashMap<PaneId, Vec<u16>>,
     foreground_jobs: HashSet<PaneId>,
@@ -160,6 +196,9 @@ struct State {
     events: VecDeque<Event>,
     plugins: Vec<PluginManifest>,
     plugin_events: VecDeque<(String, String)>,
+    replacement_target: Option<String>,
+    stop_reason: Option<StopReason>,
+    persistence_dirty: bool,
     stopping: bool,
 }
 struct Daemon {
@@ -168,7 +207,12 @@ struct Daemon {
     plugin_changed: Condvar,
     active_clients: Arc<AtomicUsize>,
     epoch: u64,
+    binary_id: String,
+    started_unix_ms: u64,
+    recovered_from_backup: bool,
+    next_runtime_generation: AtomicU64,
     state_path: PathBuf,
+    lifecycle_path: PathBuf,
 }
 
 fn recover_runtimes(daemon: &Arc<Daemon>, resume_agents: bool) -> io::Result<()> {
@@ -205,9 +249,9 @@ fn recover_runtimes(daemon: &Arc<Daemon>, resume_agents: bool) -> io::Result<()>
                 continue;
             }
             let launch = recovery_launch(pane.agent.as_mut(), &saved_recipe, resume_agents);
-            if let Some(agent) = &mut pane.agent {
-                reset_recovered_agent(agent);
-            }
+            // ^ [[Session Model]] Persisted identity authorizes only the resume plan.
+            // The replacement runtime must report its own generation before projection.
+            pane.agent = None;
             let Some(cwd) = session_worktrees
                 .get(&pane.session_id)
                 .and_then(|worktree_id| worktree_paths.get(worktree_id))
@@ -256,12 +300,6 @@ fn recover_runtimes(daemon: &Arc<Daemon>, resume_agents: bool) -> io::Result<()>
     }
     let state = lock(&daemon.state);
     save_state(&daemon.state_path, &state.persisted)
-}
-
-fn reset_recovered_agent(agent: &mut AgentInfo) {
-    agent.state = AgentState::Unknown;
-    agent.capabilities = AgentCapabilities::default();
-    agent.source = "persisted".into();
 }
 
 fn recovery_launch(
@@ -411,9 +449,43 @@ pub fn run_resume_supervisor(mut arguments: impl Iterator<Item = OsString>) -> i
     if !status.success() {
         eprintln!("wsxd resumed agent exited with {status}; opening a shell");
     }
+    transition_resumed_agent_to_shell()?;
     let shell = std::env::var_os("SHELL").unwrap_or_else(|| OsString::from("/bin/sh"));
     let error = Command::new(shell).exec();
     Err(error)
+}
+
+fn transition_resumed_agent_to_shell() -> io::Result<()> {
+    let pane_id = std::env::var("WSX_PANE_ID")
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "resume pane ID is missing"))?
+        .parse::<PaneId>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let runtime_generation = std::env::var(WSX_RUNTIME_GENERATION_ENV).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "resume runtime generation is missing",
+        )
+    })?;
+    let next_runtime_generation =
+        format!("{:016x}:{:016x}", epoch(), u64::from(std::process::id()));
+    match Client::local().call(&Request::AgentClear {
+        pane_id,
+        runtime_generation,
+        next_runtime_generation: next_runtime_generation.clone(),
+    })? {
+        Response::Ack { .. } => {
+            std::env::set_var(WSX_RUNTIME_GENERATION_ENV, next_runtime_generation);
+            Ok(())
+        }
+        Response::Error(error) => Err(io::Error::other(format!(
+            "{}: {}",
+            error.code, error.message
+        ))),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "wsxd returned an unexpected agent clear response",
+        )),
+    }
 }
 
 struct InteractiveSignalGuard {
@@ -478,18 +550,20 @@ fn resume_agents_on_restore() -> bool {
 }
 
 pub fn run() -> io::Result<()> {
+    install_shutdown_signals()?;
     let socket = default_socket_path();
     let state_path = state_path();
     secure_parent(&socket)?;
     secure_parent(&state_path)?;
     let _singleton_lock = acquire_singleton_lock(&state_path.with_extension("lock"))?;
     prepare_socket(&socket)?;
-    let persisted = load_state(&state_path)?;
+    let (persisted, recovered_from_backup) = load_state_with_status(&state_path)?;
     let daemon = Arc::new(Daemon {
         state: Mutex::new(State {
             persisted,
             revision: 1,
             runtimes: HashMap::new(),
+            runtime_generations: HashMap::new(),
             terminal_operation_locks: HashMap::new(),
             listening_ports: HashMap::new(),
             foreground_jobs: HashSet::new(),
@@ -497,13 +571,21 @@ pub fn run() -> io::Result<()> {
             events: VecDeque::new(),
             plugins: plugins::discover(),
             plugin_events: VecDeque::new(),
+            replacement_target: None,
+            stop_reason: None,
+            persistence_dirty: false,
             stopping: false,
         }),
         changed: Condvar::new(),
         plugin_changed: Condvar::new(),
         active_clients: Arc::new(AtomicUsize::new(0)),
         epoch: epoch(),
+        binary_id: binary_identity(&std::env::current_exe()?)?,
+        started_unix_ms: unix_time_millis(),
+        recovered_from_backup,
+        next_runtime_generation: AtomicU64::new(1),
         state_path,
+        lifecycle_path: lifecycle_marker_path(&socket),
     });
     // ^ [[Session Model]] Session identity remains durable while native agent
     // resume or the saved recipe recreates a process; neither restores the old PTY.
@@ -511,6 +593,7 @@ pub fn run() -> io::Result<()> {
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
+    write_lifecycle_marker(&daemon.lifecycle_path, "ready")?;
     let plugin_dispatcher = match spawn_plugin_dispatcher(&daemon) {
         Ok(handle) => handle,
         Err(error) => {
@@ -520,7 +603,8 @@ pub fn run() -> io::Result<()> {
     };
     let port_scanner = spawn_port_scanner(&daemon);
 
-    while !lock(&daemon.state).stopping {
+    while !advance_replacement(&daemon) {
+        retry_dirty_persistence(&daemon);
         match listener.accept() {
             Ok((stream, _)) => {
                 if daemon.active_clients.fetch_add(1, Ordering::AcqRel) >= MAX_CLIENTS {
@@ -553,6 +637,54 @@ pub fn run() -> io::Result<()> {
     Ok(())
 }
 
+extern "C" fn request_signal_shutdown(signal: libc::c_int) {
+    STOP_SIGNAL.store(signal, Ordering::Release);
+}
+
+fn install_shutdown_signals() -> io::Result<()> {
+    for signal in [libc::SIGHUP, libc::SIGTERM] {
+        let previous = unsafe {
+            libc::signal(
+                signal,
+                request_signal_shutdown as *const () as libc::sighandler_t,
+            )
+        };
+        if previous == libc::SIG_ERR {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+fn retry_dirty_persistence(daemon: &Daemon) {
+    let mut state = lock(&daemon.state);
+    if state.persistence_dirty && save_state(&daemon.state_path, &state.persisted).is_ok() {
+        state.persistence_dirty = false;
+    }
+}
+
+fn advance_replacement(daemon: &Daemon) -> bool {
+    let mut state = lock(&daemon.state);
+    let signal = STOP_SIGNAL.swap(0, Ordering::AcqRel);
+    if signal != 0 {
+        state.stopping = true;
+        state.stop_reason = Some(if signal == libc::SIGHUP {
+            StopReason::LoginEnded
+        } else {
+            StopReason::Intentional
+        });
+        daemon.changed.notify_all();
+        daemon.plugin_changed.notify_all();
+    }
+    if !state.stopping && state.replacement_target.is_some() && live_runtime_count(&state) == 0 {
+        state.stopping = true;
+        state.stop_reason = Some(StopReason::Replacement);
+        daemon.changed.notify_all();
+        daemon.plugin_changed.notify_all();
+    }
+    state.stopping
+}
+
 struct ClientGuard(Arc<AtomicUsize>);
 impl Drop for ClientGuard {
     fn drop(&mut self) {
@@ -567,7 +699,18 @@ fn acquire_singleton_lock(path: &Path) -> io::Result<fs::File> {
         .read(true)
         .write(true)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unsafe wsxd singleton lock",
+        ));
+    }
     let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if result == 0 {
         Ok(file)
@@ -581,20 +724,31 @@ fn acquire_singleton_lock(path: &Path) -> io::Result<fs::File> {
 }
 
 fn cleanup(daemon: &Daemon, socket: &Path) {
-    let runtimes = {
+    let (runtimes, reason) = {
         let mut state = lock(&daemon.state);
         state.stopping = true;
         state.leases.clear();
         state.plugin_events.clear();
         let runtimes = std::mem::take(&mut state.runtimes);
+        state.runtime_generations.clear();
         let _ = save_state(&daemon.state_path, &state.persisted);
         daemon.changed.notify_all();
         daemon.plugin_changed.notify_all();
-        runtimes
+        let reason = state.stop_reason.unwrap_or(StopReason::Unexpected);
+        let marker = if reason == StopReason::Replacement {
+            format!(
+                "replacement:{}",
+                state.replacement_target.as_deref().unwrap_or_default()
+            )
+        } else {
+            reason.marker().to_string()
+        };
+        (runtimes, marker)
     };
     for runtime in runtimes.into_values() {
         runtime.terminate();
     }
+    let _ = write_lifecycle_marker(&daemon.lifecycle_path, &reason);
     let _ = fs::remove_file(socket);
 }
 
@@ -643,7 +797,10 @@ fn serve_client(mut stream: UnixStream, daemon: Arc<Daemon>) -> io::Result<()> {
                 format!("invalid request: {error}"),
             )
         })?;
-        let response = if matches!(request, Request::Shutdown) {
+        let response = if matches!(
+            request,
+            Request::Shutdown | Request::LifecycleStatus | Request::PrepareReplacement { .. }
+        ) {
             handle(&daemon, request)
         } else {
             Response::Error(ApiError::new(
@@ -1127,8 +1284,8 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             session_id,
             label,
             expected_revision,
-        } => mutate(daemon, |state| {
-            let session = session_mut(state, session_id)?;
+        } => mutate(daemon, |persisted, _revision| {
+            let session = session_mut(persisted, session_id)?;
             expect_revision(session.revision, expected_revision)?;
             session.label = bounded_label(label)?;
             Ok(("session.renamed", session_id.0))
@@ -1174,9 +1331,8 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
         Request::PaneFocus {
             session_id,
             pane_id,
-        } => mutate(daemon, |state| {
-            let revision = state.revision.saturating_add(1);
-            let session = session_mut(state, session_id)?;
+        } => mutate(daemon, |persisted, revision| {
+            let session = session_mut(persisted, session_id)?;
             if !session.panes.contains(&pane_id) {
                 return Err(api("not_found", "pane is not in session"));
             }
@@ -1258,6 +1414,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
         Request::View { pane_ids } => view(daemon, pane_ids),
         Request::AgentReport {
             pane_id,
+            runtime_generation,
             provider,
             state: agent_state,
             conversation_id,
@@ -1265,22 +1422,35 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             capabilities,
         } => agent_report(
             daemon,
-            pane_id,
+            RuntimeAgentAuthority::new(pane_id, runtime_generation),
             provider,
             agent_state,
             conversation_id,
             session_ref,
             capabilities,
         ),
+        Request::AgentClear {
+            pane_id,
+            runtime_generation,
+            next_runtime_generation,
+        } => agent_clear(daemon, pane_id, runtime_generation, next_runtime_generation),
         Request::PluginList => Ok(Response::Plugins(lock(&daemon.state).plugins.clone())),
         Request::PluginReload => {
             let mut state = lock(&daemon.state);
             state.plugins = plugins::discover();
             Ok(Response::Plugins(state.plugins.clone()))
         }
+        Request::LifecycleStatus => Ok(Response::Lifecycle(lifecycle_status(
+            daemon,
+            &lock(&daemon.state),
+        ))),
+        Request::PrepareReplacement { target_binary_id } => {
+            prepare_replacement(daemon, target_binary_id)
+        }
         Request::Shutdown => {
             let mut state = lock(&daemon.state);
             state.stopping = true;
+            state.stop_reason = Some(StopReason::Intentional);
             daemon.changed.notify_all();
             daemon.plugin_changed.notify_all();
             Ok(Response::Ack {
@@ -1300,8 +1470,72 @@ fn capabilities() -> Capabilities {
         listening_ports: true,
         foreground_jobs: true,
         process_restore: false,
+        lifecycle_coordination: true,
     }
 }
+
+fn live_runtime_count(state: &State) -> usize {
+    state
+        .runtimes
+        .values()
+        .filter(|runtime| !runtime.exited())
+        .count()
+}
+
+fn lifecycle_status(daemon: &Daemon, state: &State) -> DaemonLifecycle {
+    DaemonLifecycle {
+        protocol: PROTOCOL_VERSION,
+        epoch: daemon.epoch,
+        binary_id: daemon.binary_id.clone(),
+        started_unix_ms: daemon.started_unix_ms,
+        phase: if state.stopping {
+            DaemonPhase::Stopping
+        } else if state.replacement_target.is_some() {
+            DaemonPhase::ReplacementPending
+        } else {
+            DaemonPhase::Ready
+        },
+        live_runtimes: live_runtime_count(state),
+        active_clients: daemon.active_clients.load(Ordering::Acquire),
+        recovered_from_backup: daemon.recovered_from_backup,
+        replacement_target: state.replacement_target.clone(),
+    }
+}
+
+fn prepare_replacement(daemon: &Daemon, target_binary_id: String) -> Result<Response, ApiError> {
+    if target_binary_id.is_empty() || target_binary_id.len() > 512 {
+        return Err(api(
+            "invalid_request",
+            "replacement binary identity is invalid",
+        ));
+    }
+    let mut state = lock(&daemon.state);
+    match state.replacement_target.as_deref() {
+        Some(current) if current != target_binary_id.as_str() => {
+            return Err(api(
+                "replacement_conflict",
+                "another wsxd binary is already pending replacement",
+            ))
+        }
+        Some(_) => {}
+        None => state.replacement_target = Some(target_binary_id),
+    }
+    let live_runtimes = live_runtime_count(&state);
+    let disposition = if live_runtimes == 0 {
+        state.stopping = true;
+        state.stop_reason = Some(StopReason::Replacement);
+        daemon.changed.notify_all();
+        daemon.plugin_changed.notify_all();
+        ReplacementDisposition::Stopping
+    } else {
+        ReplacementDisposition::Deferred
+    };
+    Ok(Response::Replacement {
+        disposition,
+        live_runtimes,
+    })
+}
+
 fn snapshot(daemon: &Daemon, state: &State) -> Snapshot {
     let mut listening_ports = state
         .listening_ports
@@ -1408,23 +1642,22 @@ fn synchronize_projects(
     }
 
     let mut state = lock(&daemon.state);
-    let revision = bump(daemon, &mut state, "projects.synchronized", 0);
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
     let mut retained_projects = Vec::new();
     let mut retained_worktrees = Vec::new();
     for (path, name, worktrees) in canonical {
-        let project_id = match state
-            .persisted
+        let project_id = match persisted
             .projects
             .iter()
             .find(|project| project.path == path)
             .map(|project| project.id)
         {
             Some(id) => id,
-            None => ProjectId(next_id(&mut state.persisted)?),
+            None => ProjectId(next_id(&mut persisted)?),
         };
         retained_projects.push(project_id);
-        if let Some(project) = state
-            .persisted
+        if let Some(project) = persisted
             .projects
             .iter_mut()
             .find(|project| project.id == project_id)
@@ -1432,7 +1665,7 @@ fn synchronize_projects(
             project.name = name;
             project.revision = revision;
         } else {
-            state.persisted.projects.push(Project {
+            persisted.projects.push(Project {
                 id: project_id,
                 path,
                 name,
@@ -1442,19 +1675,17 @@ fn synchronize_projects(
             });
         }
         for (path, branch) in worktrees {
-            let worktree_id = match state
-                .persisted
+            let worktree_id = match persisted
                 .worktrees
                 .iter()
                 .find(|worktree| worktree.path == path)
                 .map(|worktree| worktree.id)
             {
                 Some(id) => id,
-                None => WorktreeId(next_id(&mut state.persisted)?),
+                None => WorktreeId(next_id(&mut persisted)?),
             };
             retained_worktrees.push(worktree_id);
-            if let Some(worktree) = state
-                .persisted
+            if let Some(worktree) = persisted
                 .worktrees
                 .iter_mut()
                 .find(|worktree| worktree.id == worktree_id)
@@ -1463,7 +1694,7 @@ fn synchronize_projects(
                 worktree.branch = branch;
                 worktree.revision = revision;
             } else {
-                state.persisted.worktrees.push(Worktree {
+                persisted.worktrees.push(Worktree {
                     id: worktree_id,
                     project_id,
                     path,
@@ -1473,14 +1704,12 @@ fn synchronize_projects(
             }
         }
     }
-    let session_worktrees = state
-        .persisted
+    let session_worktrees = persisted
         .sessions
         .iter()
         .map(|session| session.worktree_id)
         .collect::<HashSet<_>>();
-    for project_id in state
-        .persisted
+    for project_id in persisted
         .worktrees
         .iter()
         .filter(|worktree| session_worktrees.contains(&worktree.id))
@@ -1490,14 +1719,15 @@ fn synchronize_projects(
             retained_projects.push(project_id);
         }
     }
-    state
-        .persisted
+    persisted
         .projects
         .retain(|project| retained_projects.contains(&project.id));
-    state.persisted.worktrees.retain(|worktree| {
+    persisted.worktrees.retain(|worktree| {
         retained_worktrees.contains(&worktree.id) || session_worktrees.contains(&worktree.id)
     });
-    save_state(&daemon.state_path, &state.persisted).map_err(io_api)?;
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    publish(daemon, &mut state, revision, "projects.synchronized", 0);
     Ok(Response::Ack { revision })
 }
 
@@ -1514,28 +1744,29 @@ fn create_session(
     let recipe = launch_recipe(command, initial_input, rows, cols)?;
     let (cwd, session_id, pane_id, terminal_id, revision) = {
         let mut state = lock(&daemon.state);
-        let worktree = state
-            .persisted
+        if state.stopping {
+            return Err(api("daemon_stopping", "wsxd is stopping"));
+        }
+        let mut persisted = state.persisted.clone();
+        let worktree = persisted
             .worktrees
             .iter()
             .find(|worktree| worktree.id == worktree_id)
             .ok_or_else(|| api("not_found", "worktree not found"))?;
         let cwd = worktree.path.clone();
         let project_id = worktree.project_id;
-        let project_index = state
-            .persisted
+        let project_index = persisted
             .projects
             .iter()
             .position(|project| project.id == project_id)
             .ok_or_else(|| api("not_found", "project not found"))?;
-        let session_id = SessionId(next_id(&mut state.persisted)?);
-        let pane_id = PaneId(next_id(&mut state.persisted)?);
-        let terminal_id = TerminalId(next_id(&mut state.persisted)?);
-        let revision = bump(daemon, &mut state, "session.created", session_id.0);
-        state.persisted.projects[project_index].last_terminal_active_unix_ms =
-            Some(unix_time_millis());
-        state.persisted.projects[project_index].revision = revision;
-        state.persisted.panes.push(PersistedPane {
+        let session_id = SessionId(next_id(&mut persisted)?);
+        let pane_id = PaneId(next_id(&mut persisted)?);
+        let terminal_id = TerminalId(next_id(&mut persisted)?);
+        let revision = state.revision.saturating_add(1);
+        persisted.projects[project_index].last_terminal_active_unix_ms = Some(unix_time_millis());
+        persisted.projects[project_index].revision = revision;
+        persisted.panes.push(PersistedPane {
             pane: Pane {
                 id: pane_id,
                 terminal_id,
@@ -1548,7 +1779,7 @@ fn create_session(
             recovery: Some(recipe.clone()),
             recovery_quarantined: false,
         });
-        state.persisted.sessions.push(Session {
+        persisted.sessions.push(Session {
             id: session_id,
             worktree_id,
             label,
@@ -1558,7 +1789,15 @@ fn create_session(
             layout: PaneLayout::Leaf { pane_id },
             revision,
         });
-        save_state(&daemon.state_path, &state.persisted).map_err(io_api)?;
+        save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+        state.persisted = persisted;
+        publish(
+            daemon,
+            &mut state,
+            revision,
+            "session.created",
+            session_id.0,
+        );
         (cwd, session_id, pane_id, terminal_id, revision)
     };
     let runtime = spawn_runtime(daemon, pane_id, terminal_id, &cwd, &recipe)?;
@@ -1578,18 +1817,22 @@ fn create_session(
         ));
     }
     let runtime = Arc::new(runtime);
+    if !runtime.exited() {
+        let mut persisted = state.persisted.clone();
+        if let Some(pane) = persisted.panes.iter_mut().find(|pane| pane.id == pane_id) {
+            pane.exited = false;
+        }
+        if let Err(error) = save_state(&daemon.state_path, &persisted).map_err(io_api) {
+            drop(state);
+            runtime.terminate();
+            return Err(error);
+        }
+        state.persisted = persisted;
+    }
     state.runtimes.insert(pane_id, Arc::clone(&runtime));
     if runtime.exited() {
         record_terminal_exit(daemon, &mut state, pane_id);
-    } else if let Some(pane) = state
-        .persisted
-        .panes
-        .iter_mut()
-        .find(|pane| pane.id == pane_id)
-    {
-        pane.exited = false;
     }
-    save_state(&daemon.state_path, &state.persisted).map_err(io_api)?;
     Ok(Response::Created {
         revision,
         id: session_id.0,
@@ -1613,6 +1856,9 @@ fn split_pane(
     let recipe = launch_recipe(command, initial_input, rows, cols)?;
     let (cwd, pane_id, terminal_id) = {
         let mut state = lock(&daemon.state);
+        if state.stopping {
+            return Err(api("daemon_stopping", "wsxd is stopping"));
+        }
         let session = state
             .persisted
             .sessions
@@ -1632,15 +1878,17 @@ fn split_pane(
             .ok_or_else(|| api("not_found", "worktree not found"))?
             .path
             .clone();
-        let pane_id = PaneId(next_id(&mut state.persisted)?);
-        let terminal_id = TerminalId(next_id(&mut state.persisted)?);
-        save_state(&daemon.state_path, &state.persisted).map_err(io_api)?;
+        let mut persisted = state.persisted.clone();
+        let pane_id = PaneId(next_id(&mut persisted)?);
+        let terminal_id = TerminalId(next_id(&mut persisted)?);
+        save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+        state.persisted = persisted;
         (cwd, pane_id, terminal_id)
     };
-    let runtime = spawn_runtime(daemon, pane_id, terminal_id, &cwd, &recipe)?;
+    let runtime = Arc::new(spawn_runtime(daemon, pane_id, terminal_id, &cwd, &recipe)?);
     let mut state = lock(&daemon.state);
-    let Some(index) = state
-        .persisted
+    let mut persisted = state.persisted.clone();
+    let Some(index) = persisted
         .sessions
         .iter()
         .position(|session| session.id == session_id)
@@ -1652,8 +1900,9 @@ fn split_pane(
             "session closed while terminal was starting",
         ));
     };
-    if state.persisted.sessions[index].revision != expected
-        || !state.persisted.sessions[index].panes.contains(&target)
+    if state.stopping
+        || persisted.sessions[index].revision != expected
+        || !persisted.sessions[index].panes.contains(&target)
     {
         drop(state);
         runtime.terminate();
@@ -1662,7 +1911,7 @@ fn split_pane(
             "session changed while terminal was starting",
         ));
     }
-    if !state.persisted.sessions[index]
+    if !persisted.sessions[index]
         .layout
         .split(target, pane_id, axis)
     {
@@ -1670,30 +1919,35 @@ fn split_pane(
         runtime.terminate();
         return Err(api("invalid_layout", "target pane is absent from layout"));
     }
-    let revision = bump(daemon, &mut state, "pane.created", pane_id.0);
-    let session = &mut state.persisted.sessions[index];
+    let revision = state.revision.saturating_add(1);
+    let session = &mut persisted.sessions[index];
     session.panes.push(pane_id);
     session.focused_pane = pane_id;
     session.revision = revision;
-    state.persisted.panes.push(PersistedPane {
+    persisted.panes.push(PersistedPane {
         pane: Pane {
             id: pane_id,
             terminal_id,
             session_id,
             label,
             agent: None,
-            exited: false,
+            exited: runtime.exited(),
             revision,
         },
         recovery: Some(recipe),
         recovery_quarantined: false,
     });
-    let runtime = Arc::new(runtime);
+    if let Err(error) = save_state(&daemon.state_path, &persisted).map_err(io_api) {
+        drop(state);
+        runtime.terminate();
+        return Err(error);
+    }
+    state.persisted = persisted;
     state.runtimes.insert(pane_id, Arc::clone(&runtime));
+    publish(daemon, &mut state, revision, "pane.created", pane_id.0);
     if runtime.exited() {
         record_terminal_exit(daemon, &mut state, pane_id);
     }
-    save_state(&daemon.state_path, &state.persisted).map_err(io_api)?;
     Ok(Response::Created {
         revision,
         id: pane_id.0,
@@ -1786,20 +2040,24 @@ fn close_session(daemon: &Arc<Daemon>, id: SessionId, expected: u64) -> Result<R
         .cloned()
         .ok_or_else(|| api("not_found", "session not found"))?;
     expect_revision(session.revision, expected)?;
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    persisted.panes.retain(|pane| pane.session_id != id);
+    persisted.sessions.retain(|session| session.id != id);
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
     let mut runtimes = Vec::new();
     for pane_id in &session.panes {
         if let Some(runtime) = state.runtimes.remove(pane_id) {
             runtimes.push(runtime);
         }
+        state.runtime_generations.remove(pane_id);
         state.leases.remove(pane_id);
         state.terminal_operation_locks.remove(pane_id);
         state.listening_ports.remove(pane_id);
         state.foreground_jobs.remove(pane_id);
     }
-    state.persisted.panes.retain(|pane| pane.session_id != id);
-    state.persisted.sessions.retain(|session| session.id != id);
-    let revision = bump(daemon, &mut state, "session.closed", id.0);
-    save_state(&daemon.state_path, &state.persisted).map_err(io_api)?;
+    publish(daemon, &mut state, revision, "session.closed", id.0);
     drop(state);
     for runtime in runtimes {
         runtime.terminate();
@@ -1817,8 +2075,9 @@ fn close_pane(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Respons
         .cloned()
         .ok_or_else(|| api("not_found", "pane not found"))?;
     expect_revision(pane.revision, expected)?;
-    let session = state
-        .persisted
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    let session = persisted
         .sessions
         .iter_mut()
         .find(|session| session.id == pane.session_id)
@@ -1834,22 +2093,17 @@ fn close_pane(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Respons
     if session.primary_pane == id {
         session.primary_pane = session.panes[0];
     }
+    session.revision = revision;
+    persisted.panes.retain(|candidate| candidate.id != id);
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
     let runtime = state.runtimes.remove(&id);
+    state.runtime_generations.remove(&id);
     state.leases.remove(&id);
     state.terminal_operation_locks.remove(&id);
     state.listening_ports.remove(&id);
     state.foreground_jobs.remove(&id);
-    state.persisted.panes.retain(|pane| pane.id != id);
-    let revision = bump(daemon, &mut state, "pane.closed", id.0);
-    if let Some(session) = state
-        .persisted
-        .sessions
-        .iter_mut()
-        .find(|session| session.id == pane.session_id)
-    {
-        session.revision = revision;
-    }
-    save_state(&daemon.state_path, &state.persisted).map_err(io_api)?;
+    publish(daemon, &mut state, revision, "pane.closed", id.0);
     drop(state);
     if let Some(runtime) = runtime {
         runtime.terminate();
@@ -1908,7 +2162,15 @@ fn resize_terminal_with_access(
     {
         recipe.rows = rows;
         recipe.cols = cols;
-        save_state(&daemon.state_path, &state.persisted).map_err(io_api)?;
+        if let Err(error) = save_state(&daemon.state_path, &state.persisted) {
+            state.persistence_dirty = true;
+            return Err(api(
+                "durability_degraded",
+                format!(
+                    "terminal resized but its recovery dimensions are not yet durable: {error}"
+                ),
+            ));
+        }
     }
     Ok(Response::Ack {
         revision: state.revision,
@@ -1989,13 +2251,17 @@ fn touch_terminal_project(daemon: &Arc<Daemon>, pane_id: PaneId) -> Result<(), A
 
 fn agent_report(
     daemon: &Arc<Daemon>,
-    pane_id: PaneId,
+    runtime: RuntimeAgentAuthority,
     provider: String,
     agent_state: AgentState,
     conversation_id: Option<String>,
     session_ref: Option<AgentSessionRef>,
     mut capabilities: AgentCapabilities,
 ) -> Result<Response, ApiError> {
+    let RuntimeAgentAuthority {
+        pane_id,
+        generation: runtime_generation,
+    } = runtime;
     let provider = bounded_provider(provider)?;
     let conversation_id = conversation_id.map(|value| truncate_utf8(value, 512));
     let explicit_session_ref = validated_session_ref(session_ref)?;
@@ -2016,6 +2282,7 @@ fn agent_report(
     });
     capabilities.resume |= session_ref.is_some();
     let mut state = lock(&daemon.state);
+    expect_runtime_generation(&state, pane_id, runtime_generation.as_deref())?;
     let mut persisted = state.persisted.clone();
 
     // ^ [[Session Model]] Agent activity belongs to the project reached through
@@ -2056,6 +2323,61 @@ fn agent_report(
     Ok(Response::Ack { revision })
 }
 
+fn agent_clear(
+    daemon: &Arc<Daemon>,
+    pane_id: PaneId,
+    runtime_generation: String,
+    next_runtime_generation: String,
+) -> Result<Response, ApiError> {
+    let runtime_generation = bounded_runtime_generation(runtime_generation)?;
+    let next_runtime_generation = bounded_runtime_generation(next_runtime_generation)?;
+    if runtime_generation == next_runtime_generation {
+        return Err(api(
+            "invalid_runtime_generation",
+            "replacement runtime generation must be distinct",
+        ));
+    }
+    let mut state = lock(&daemon.state);
+    expect_runtime_generation(&state, pane_id, Some(&runtime_generation))?;
+    let mut persisted = state.persisted.clone();
+    let pane = persisted
+        .panes
+        .iter_mut()
+        .find(|pane| pane.id == pane_id)
+        .ok_or_else(|| api("not_found", "pane not found"))?;
+    let revision = state.revision.saturating_add(1);
+    pane.agent = None;
+    pane.revision = revision;
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    state
+        .runtime_generations
+        .insert(pane_id, next_runtime_generation);
+    let revision = bump(daemon, &mut state, "agent.cleared", pane_id.0);
+    Ok(Response::Ack { revision })
+}
+
+fn expect_runtime_generation(
+    state: &State,
+    pane_id: PaneId,
+    provided: Option<&str>,
+) -> Result<(), ApiError> {
+    let expected = state.runtime_generations.get(&pane_id).ok_or_else(|| {
+        api(
+            "terminal_unavailable",
+            "pane has no live runtime generation",
+        )
+    })?;
+    if provided == Some(expected.as_str()) {
+        Ok(())
+    } else {
+        Err(api(
+            "stale_runtime",
+            "agent mutation does not belong to the live pane runtime",
+        ))
+    }
+}
+
 fn unix_time_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2065,20 +2387,22 @@ fn unix_time_millis() -> u64 {
 
 fn mutate<F>(daemon: &Arc<Daemon>, mutation: F) -> Result<Response, ApiError>
 where
-    F: FnOnce(&mut State) -> Result<(&'static str, u64), ApiError>,
+    F: FnOnce(&mut Persisted, u64) -> Result<(&'static str, u64), ApiError>,
 {
     let mut state = lock(&daemon.state);
-    let (entity, id) = mutation(&mut state)?;
-    let revision = bump(daemon, &mut state, entity, id);
-    if let Some(session) = state
-        .persisted
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    let (entity, id) = mutation(&mut persisted, revision)?;
+    if let Some(session) = persisted
         .sessions
         .iter_mut()
         .find(|session| session.id.0 == id)
     {
         session.revision = revision;
     }
-    save_state(&daemon.state_path, &state.persisted).map_err(io_api)?;
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    publish(daemon, &mut state, revision, entity, id);
     Ok(Response::Ack { revision })
 }
 fn mutate_runtime<F>(daemon: &Daemon, mutation: F) -> Result<Response, ApiError>
@@ -2091,9 +2415,8 @@ where
         revision: state.revision,
     })
 }
-fn bump(daemon: &Daemon, state: &mut State, entity: &str, id: u64) -> u64 {
-    state.revision = state.revision.saturating_add(1);
-    let revision = state.revision;
+fn publish(daemon: &Daemon, state: &mut State, revision: u64, entity: &str, id: u64) {
+    state.revision = revision;
     state.events.push_back(Event::Changed {
         revision,
         entity: entity.into(),
@@ -2111,13 +2434,24 @@ fn bump(daemon: &Daemon, state: &mut State, entity: &str, id: u64) -> u64 {
     ));
     daemon.changed.notify_all();
     daemon.plugin_changed.notify_one();
+}
+
+fn bump(daemon: &Daemon, state: &mut State, entity: &str, id: u64) -> u64 {
+    let revision = state.revision.saturating_add(1);
+    publish(daemon, state, revision, entity, id);
     revision
 }
 
 // ^ [[Session Model]] Agent adapters need stable pane identity from this spawn
 // boundary; crates/wsx-core/src/integration owns installation and bundled assets.
-fn terminal_agent_environment(pane_id: PaneId) -> Vec<(String, String)> {
-    let mut environment = vec![("WSX_PANE_ID".into(), pane_id.to_string())];
+fn terminal_agent_environment(pane_id: PaneId, runtime_generation: &str) -> Vec<(String, String)> {
+    let mut environment = vec![
+        ("WSX_PANE_ID".into(), pane_id.to_string()),
+        (
+            WSX_RUNTIME_GENERATION_ENV.into(),
+            runtime_generation.to_string(),
+        ),
+    ];
     if let Some(binary) = std::env::current_exe()
         .ok()
         .and_then(|daemon| daemon.parent().map(|parent| parent.join("wsx")))
@@ -2162,22 +2496,40 @@ fn spawn_runtime(
             daemon.changed.notify_all();
         }
     });
+    let runtime_generation = next_runtime_generation(daemon);
+    lock(&daemon.state)
+        .runtime_generations
+        .insert(pane_id, runtime_generation.clone());
     let startup = startup_input(recipe);
-    TerminalRuntime::spawn(
+    let runtime = TerminalRuntime::spawn(
         pane_id,
         terminal_id,
         cwd,
         &recipe.command,
-        &terminal_agent_environment(pane_id),
+        &terminal_agent_environment(pane_id, &runtime_generation),
         startup.as_deref(),
         recipe.rows,
         recipe.cols,
         notify,
-    )
-    .map_err(terminal_api)
+    );
+    if runtime.is_err() {
+        let mut state = lock(&daemon.state);
+        if state.runtime_generations.get(&pane_id) == Some(&runtime_generation) {
+            state.runtime_generations.remove(&pane_id);
+        }
+    }
+    runtime.map_err(terminal_api)
+}
+
+fn next_runtime_generation(daemon: &Daemon) -> String {
+    let sequence = daemon
+        .next_runtime_generation
+        .fetch_add(1, Ordering::Relaxed);
+    format!("{:016x}:{sequence:016x}", daemon.epoch)
 }
 
 fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
+    state.runtime_generations.remove(&pane_id);
     let Some(pane) = state
         .persisted
         .panes
@@ -2202,6 +2554,7 @@ fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
         serde_json::json!({"event":"terminal.exited","revision":revision,"id":pane_id.0})
             .to_string(),
     ));
+    state.persistence_dirty = true;
     daemon.changed.notify_all();
     daemon.plugin_changed.notify_one();
 }
@@ -2570,9 +2923,8 @@ fn refresh_lease_with_access(
     }
     Ok(())
 }
-fn session_mut(state: &mut State, id: SessionId) -> Result<&mut Session, ApiError> {
+fn session_mut(state: &mut Persisted, id: SessionId) -> Result<&mut Session, ApiError> {
     state
-        .persisted
         .sessions
         .iter_mut()
         .find(|session| session.id == id)
@@ -2616,6 +2968,22 @@ fn bounded_provider(value: String) -> Result<String, ApiError> {
         Ok(value)
     }
 }
+fn bounded_runtime_generation(value: String) -> Result<String, ApiError> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b':')
+    {
+        Err(api(
+            "invalid_runtime_generation",
+            "runtime generation is malformed",
+        ))
+    } else {
+        Ok(value)
+    }
+}
+
 fn validated_session_ref(
     session_ref: Option<AgentSessionRef>,
 ) -> Result<Option<AgentSessionRef>, ApiError> {
@@ -2697,6 +3065,31 @@ fn state_path() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir);
     root.join("wsx/state.json")
 }
+
+fn lifecycle_marker_path(socket: &Path) -> PathBuf {
+    socket.with_extension("lifecycle")
+}
+
+fn write_lifecycle_marker(path: &Path, reason: &str) -> io::Result<()> {
+    let temporary = path.with_extension(format!("lifecycle.tmp.{}", std::process::id()));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&temporary)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        writeln!(file, "{reason}")?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
 fn secure_parent(path: &Path) -> io::Result<()> {
     let parent = path
         .parent()
@@ -2735,69 +3128,22 @@ fn prepare_socket(path: &Path) -> io::Result<()> {
         Err(error) => Err(error),
     }
 }
-fn load_state(path: &Path) -> io::Result<Persisted> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata)
-            if metadata.file_type().is_symlink()
-                || !metadata.is_file()
-                || metadata.uid() != unsafe { libc::geteuid() }
-                || metadata.mode() & 0o077 != 0 =>
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "unsafe wsx state file",
-            ));
-        }
-        Ok(metadata) if metadata.len() > 8 * 1024 * 1024 => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "state file too large",
-            ))
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Persisted::default()),
-        Err(error) => return Err(error),
-    }
-    let mut state: Persisted = serde_json::from_slice(&fs::read(path)?)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    validate_persisted(&state)?;
+fn load_state_with_status(path: &Path) -> io::Result<(Persisted, bool)> {
+    let loaded = state_store::load(path, validate_persisted)?;
+    let mut state = loaded.state;
     for pane in &mut state.panes {
         pane.exited = true;
     }
-    Ok(state)
+    Ok((state, loaded.recovered_from_backup))
 }
-fn save_state(path: &Path, state: &Persisted) -> io::Result<()> {
-    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-    validate_persisted(state)?;
-    let bytes = serde_json::to_vec_pretty(state).map_err(io::Error::other)?;
-    if bytes.len() > 8 * 1024 * 1024 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "state exceeds limit",
-        ));
-    }
-    let temporary = path.with_extension(format!(
-        "json.tmp.{}.{}",
-        std::process::id(),
-        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    let result = (|| {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
+#[cfg(test)]
+fn load_state(path: &Path) -> io::Result<Persisted> {
+    load_state_with_status(path).map(|(state, _)| state)
+}
+
+fn save_state(path: &Path, state: &Persisted) -> io::Result<()> {
+    state_store::save(path, state, validate_persisted)
 }
 
 fn validate_persisted(state: &Persisted) -> io::Result<()> {
@@ -2925,6 +3271,10 @@ mod tests {
                 persisted,
                 revision: 7,
                 runtimes: HashMap::new(),
+                runtime_generations: HashMap::from([(
+                    PaneId(4),
+                    "0000000000000001:0000000000000001".into(),
+                )]),
                 terminal_operation_locks: HashMap::new(),
                 listening_ports: HashMap::new(),
                 foreground_jobs: HashSet::new(),
@@ -2932,15 +3282,127 @@ mod tests {
                 events: VecDeque::new(),
                 plugins: Vec::new(),
                 plugin_events: VecDeque::new(),
+                replacement_target: None,
+                stop_reason: None,
+                persistence_dirty: false,
                 stopping: false,
             }),
             changed: Condvar::new(),
             plugin_changed: Condvar::new(),
             active_clients: Arc::new(AtomicUsize::new(0)),
             epoch: 1,
+            binary_id: "test-binary".into(),
+            started_unix_ms: 1,
+            recovered_from_backup: false,
+            next_runtime_generation: AtomicU64::new(1),
             state_path: path.clone(),
+            lifecycle_path: path.with_extension("lifecycle"),
         });
         (daemon, path)
+    }
+
+    #[test]
+    fn lifecycle_status_is_available_across_protocol_mismatch() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let serving = thread::spawn(move || serve_client(server, daemon).unwrap());
+        client
+            .write_all(&encode_line(&Request::Hello { protocol: 999 }).unwrap())
+            .unwrap();
+        let mut reader = BufReader::new(client.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Response>(&line).unwrap(),
+            Response::Hello {
+                protocol: PROTOCOL_VERSION,
+                ..
+            }
+        ));
+        client
+            .write_all(&encode_line(&Request::LifecycleStatus).unwrap())
+            .unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert!(matches!(
+            serde_json::from_str::<Response>(&line).unwrap(),
+            Response::Lifecycle(DaemonLifecycle {
+                protocol: PROTOCOL_VERSION,
+                ..
+            })
+        ));
+        serving.join().unwrap();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn replacement_stops_atomically_when_no_runtime_is_live() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let response = prepare_replacement(&daemon, "next-binary".into()).unwrap();
+        assert_eq!(
+            response,
+            Response::Replacement {
+                disposition: ReplacementDisposition::Stopping,
+                live_runtimes: 0,
+            }
+        );
+        let state = lock(&daemon.state);
+        assert!(state.stopping);
+        assert_eq!(state.stop_reason, Some(StopReason::Replacement));
+        drop(state);
+        let socket = path.with_extension("sock");
+        cleanup(&daemon, &socket);
+        assert_eq!(
+            fs::read_to_string(path.with_extension("lifecycle"))
+                .unwrap()
+                .trim(),
+            "replacement:next-binary"
+        );
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("json.backup"));
+        let _ = fs::remove_file(path.with_extension("lifecycle"));
+    }
+
+    #[test]
+    fn replacement_waits_without_terminating_a_live_runtime() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let runtime = Arc::new(
+            spawn_runtime(
+                &daemon,
+                pane_id,
+                TerminalId(5),
+                Path::new("/"),
+                &LaunchRecipe {
+                    command: vec!["/bin/cat".into()],
+                    initial_input: None,
+                    rows: 3,
+                    cols: 4,
+                },
+            )
+            .unwrap(),
+        );
+        lock(&daemon.state)
+            .runtimes
+            .insert(pane_id, Arc::clone(&runtime));
+        assert_eq!(
+            prepare_replacement(&daemon, "next-binary".into()).unwrap(),
+            Response::Replacement {
+                disposition: ReplacementDisposition::Deferred,
+                live_runtimes: 1,
+            }
+        );
+        assert!(!lock(&daemon.state).stopping);
+        assert!(!runtime.exited());
+        let conflict = prepare_replacement(&daemon, "different-binary".into()).unwrap_err();
+        assert_eq!(conflict.code, "replacement_conflict");
+        assert_eq!(
+            lock(&daemon.state).replacement_target.as_deref(),
+            Some("next-binary")
+        );
+        runtime.terminate();
+        assert!(advance_replacement(&daemon));
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -3148,7 +3610,7 @@ mod tests {
 
         let response = agent_report(
             &daemon,
-            PaneId(4),
+            RuntimeAgentAuthority::new(PaneId(4), Some("0000000000000001:0000000000000001".into())),
             "codex".into(),
             AgentState::Idle,
             Some("legacy-id".into()),
@@ -3187,7 +3649,7 @@ mod tests {
 
         let error = agent_report(
             &daemon,
-            PaneId(4),
+            RuntimeAgentAuthority::new(PaneId(4), Some("0000000000000001:0000000000000001".into())),
             "claude".into(),
             AgentState::Working,
             None,
@@ -3212,7 +3674,7 @@ mod tests {
 
         let error = agent_report(
             &daemon,
-            PaneId(4),
+            RuntimeAgentAuthority::new(PaneId(4), Some("0000000000000001:0000000000000001".into())),
             "codex".into(),
             AgentState::Working,
             None,
@@ -3235,16 +3697,218 @@ mod tests {
 
     #[test]
     fn terminal_agent_environment_exposes_stable_pane_identity() {
-        let environment = terminal_agent_environment(PaneId(42));
+        let environment =
+            terminal_agent_environment(PaneId(42), "0000000000000001:0000000000000001");
         assert!(environment
             .iter()
             .any(|(name, value)| name == "WSX_PANE_ID" && value == "42"));
+        assert!(environment.iter().any(|(name, value)| {
+            name == WSX_RUNTIME_GENERATION_ENV && value == "0000000000000001:0000000000000001"
+        }));
+    }
+
+    #[test]
+    fn agent_report_rejects_missing_or_stale_runtime_generation() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
+
+        for generation in [None, Some("0000000000000001:0000000000000002".into())] {
+            let error = agent_report(
+                &daemon,
+                RuntimeAgentAuthority::new(PaneId(4), generation),
+                "codex".into(),
+                AgentState::Working,
+                Some("conversation".into()),
+                None,
+                AgentCapabilities::default(),
+            )
+            .unwrap_err();
+            assert_eq!(error.code, "stale_runtime");
+        }
+
+        let state = lock(&daemon.state);
+        assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
+        assert_eq!(state.revision, 7);
+        assert!(state.events.is_empty());
+        drop(state);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn agent_clear_rotates_runtime_authority_before_shell_fallback() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let old = "0000000000000001:0000000000000001";
+        let next = "0000000000000001:0000000000000002";
+
+        let response = agent_clear(&daemon, PaneId(4), old.into(), next.into()).unwrap();
+        assert!(matches!(response, Response::Ack { revision: 8 }));
+        {
+            let state = lock(&daemon.state);
+            assert!(state.persisted.panes[0].agent.is_none());
+            assert_eq!(
+                state
+                    .runtime_generations
+                    .get(&PaneId(4))
+                    .map(String::as_str),
+                Some(next)
+            );
+        }
+
+        let stale = agent_report(
+            &daemon,
+            RuntimeAgentAuthority::new(PaneId(4), Some(old.into())),
+            "pi".into(),
+            AgentState::Done,
+            None,
+            None,
+            AgentCapabilities::default(),
+        )
+        .unwrap_err();
+        assert_eq!(stale.code, "stale_runtime");
+        assert!(agent_report(
+            &daemon,
+            RuntimeAgentAuthority::new(PaneId(4), Some(next.into())),
+            "pi".into(),
+            AgentState::Idle,
+            None,
+            None,
+            AgentCapabilities::default(),
+        )
+        .is_ok());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn synchronization_save_failure_publishes_no_state_or_event() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        fs::create_dir(&path).unwrap();
+        let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
+        let result = synchronize_projects(
+            &daemon,
+            vec![ProjectSpec {
+                path: PathBuf::from("/"),
+                name: "root".into(),
+                worktrees: vec![WorktreeSpec {
+                    path: PathBuf::from("/"),
+                    branch: "main".into(),
+                }],
+            }],
+        );
+        assert!(result.is_err());
+        let state = lock(&daemon.state);
+        assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
+        assert_eq!(state.revision, 7);
+        assert!(state.events.is_empty());
+        drop(state);
+        fs::remove_dir(path).unwrap();
+    }
+
+    #[test]
+    fn create_save_failure_publishes_no_session_or_event() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        fs::create_dir(&path).unwrap();
+        let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
+        let result = create_session(
+            &daemon,
+            WorktreeId(2),
+            "new".into(),
+            vec!["/bin/cat".into()],
+            None,
+            10,
+            20,
+        );
+        assert!(result.is_err());
+        let state = lock(&daemon.state);
+        assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
+        assert_eq!(state.revision, 7);
+        assert!(state.events.is_empty());
+        drop(state);
+        fs::remove_dir(path).unwrap();
+    }
+
+    #[test]
+    fn durable_mutation_save_failure_publishes_no_state_or_event() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        fs::create_dir(&path).unwrap();
+        let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
+        let result = mutate(&daemon, |persisted, _revision| {
+            session_mut(persisted, SessionId(3))?.label = "changed".into();
+            Ok(("session.renamed", 3))
+        });
+        assert!(result.is_err());
+        let state = lock(&daemon.state);
+        assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
+        assert_eq!(state.revision, 7);
+        assert!(state.events.is_empty());
+        drop(state);
+        fs::remove_dir(path).unwrap();
+    }
+
+    #[test]
+    fn close_save_failure_keeps_session_and_runtime_maps_untouched() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        fs::create_dir(&path).unwrap();
+        let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
+        assert!(close_session(&daemon, SessionId(3), 7).is_err());
+        let state = lock(&daemon.state);
+        assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
+        assert_eq!(state.revision, 7);
+        assert!(state.events.is_empty());
+        drop(state);
+        fs::remove_dir(path).unwrap();
+    }
+
+    #[test]
+    fn runtime_exit_stays_truthful_and_retries_durability() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        fs::create_dir(&path).unwrap();
+        {
+            let mut state = lock(&daemon.state);
+            state.persisted.panes[0].exited = false;
+            record_terminal_exit(&daemon, &mut state, PaneId(4));
+            assert!(state.persisted.panes[0].exited);
+            assert!(state.persistence_dirty);
+        }
+        fs::remove_dir(&path).unwrap();
+        retry_dirty_persistence(&daemon);
+        assert!(!lock(&daemon.state).persistence_dirty);
+        assert!(path.is_file());
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("json.backup"));
+    }
+
+    #[test]
+    fn agent_clear_save_failure_preserves_agent_and_runtime_generation() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        fs::create_dir(&path).unwrap();
+        let before = {
+            let state = lock(&daemon.state);
+            (
+                serde_json::to_value(&state.persisted).unwrap(),
+                state.runtime_generations.clone(),
+            )
+        };
+
+        assert!(agent_clear(
+            &daemon,
+            PaneId(4),
+            "0000000000000001:0000000000000001".into(),
+            "0000000000000001:0000000000000002".into(),
+        )
+        .is_err());
+        let state = lock(&daemon.state);
+        assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before.0);
+        assert_eq!(state.runtime_generations, before.1);
+        assert_eq!(state.revision, 7);
+        assert!(state.events.is_empty());
+        drop(state);
+        fs::remove_dir(path).unwrap();
     }
 
     fn report_agent(daemon: &Arc<Daemon>, state: AgentState) -> Result<Response, ApiError> {
         agent_report(
             daemon,
-            PaneId(4),
+            RuntimeAgentAuthority::new(PaneId(4), Some("0000000000000001:0000000000000001".into())),
             "codex".into(),
             state,
             Some("conversation".into()),
@@ -3843,26 +4507,5 @@ mod tests {
         let malformed_launch = recovery_launch(Some(&mut malformed), &saved_recipe, true);
         assert_clean_shell_recipe(&malformed_launch.recipe, &saved_recipe);
         assert!(malformed_launch.resume_key.is_none());
-    }
-
-    #[test]
-    fn reset_recovered_agent_preserves_identity_and_marks_persisted_unknown() {
-        let mut agent = recovery_test_agent("codex", Some(CODEX_SESSION_ID));
-        let saved_recipe = recovery_test_recipe();
-        recovery_launch(Some(&mut agent), &saved_recipe, true);
-        let id = agent.id;
-        let provider = agent.provider.clone();
-        let conversation_id = agent.conversation_id.clone();
-        let session_ref = agent.session_ref.clone();
-
-        reset_recovered_agent(&mut agent);
-
-        assert_eq!(agent.id, id);
-        assert_eq!(agent.provider, provider);
-        assert_eq!(agent.conversation_id, conversation_id);
-        assert_eq!(agent.session_ref, session_ref);
-        assert_eq!(agent.state, AgentState::Unknown);
-        assert_eq!(agent.capabilities, AgentCapabilities::default());
-        assert_eq!(agent.source, "persisted");
     }
 }

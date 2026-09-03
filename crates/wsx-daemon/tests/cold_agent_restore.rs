@@ -112,6 +112,10 @@ fn cold_recovery_opens_a_shell_after_the_resumed_agent_exits() {
 
     wait_for_invocation(&log, &mut daemon);
     wait_for_file(&shell_marker, &mut daemon, "fallback shell");
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&fs::read(daemon.root.join("state/wsx/state.json")).unwrap())
+            .unwrap();
+    assert!(persisted["panes"][0]["agent"].is_null());
     let status = daemon.stop().expect("gracefully shut down wsxd");
 
     assert!(status.success(), "wsxd exited unsuccessfully: {status}");
@@ -149,6 +153,7 @@ fn cold_recovery_uses_generic_recipe_when_resume_on_restore_is_disabled() {
     let (log, mut daemon) = start_cold_recovery(Some(b"resume_agents_on_restore = false\n"));
 
     wait_for_invocation(&log, &mut daemon);
+    assert!(persisted_agent_is_null(&daemon));
     let status = daemon.stop().expect("gracefully shut down wsxd");
     assert!(status.success(), "wsxd exited unsuccessfully: {status}");
     assert_eq!(read_invocations(&log), vec![Vec::<String>::new()]);
@@ -428,6 +433,14 @@ fn duplicate_pane(
         "recovery": {"command": ["/bin/sh"], "initial_input": "codex", "rows": 41, "cols": 113},
         "recovery_quarantined": false
     })
+}
+
+fn persisted_agent_is_null(daemon: &DaemonGuard) -> bool {
+    serde_json::from_slice::<serde_json::Value>(
+        &fs::read(daemon.root.join("state/wsx/state.json")).unwrap(),
+    )
+    .unwrap()["panes"][0]["agent"]
+        .is_null()
 }
 
 fn child_stderr(daemon: &mut DaemonGuard) -> String {

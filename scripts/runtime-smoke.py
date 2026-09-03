@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import atexit
+import fcntl
 import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -11,8 +13,8 @@ import time
 import weakref
 
 ROOT = Path(__file__).resolve().parents[1]
-PROTOCOL = 10
-WORK = ROOT / ".work" / "runtime-smoke"
+PROTOCOL = 11
+WORK = Path(os.environ.get("WSX_SMOKE_WORK", ROOT / ".work" / "runtime-smoke"))
 if WORK.exists():
     shutil.rmtree(WORK)
 HOME = WORK / "home"
@@ -20,6 +22,23 @@ STATE = WORK / "state"
 PROJECT = WORK / "project"
 for path in (HOME, STATE, PROJECT):
     path.mkdir(parents=True, exist_ok=True)
+# ^ The stream assertions require one output line per input line, including OSC bytes.
+TERMINAL_HELPER = WORK / "terminal-helper.sh"
+TERMINAL_HELPER.write_text(
+    "#!/bin/sh\n"
+    "printf 'wsx-smoke\\n'\n"
+    "while IFS= read -r line; do\n"
+    "  case $line in\n"
+    "    __WSX_REPORT__:*)\n"
+    "      conversation=${line#__WSX_REPORT__:}\n"
+    "      \"$WSX_AGENT_REPORT_BIN\" agent report \"$WSX_PANE_ID\" --provider codex "
+    "--state working --conversation-id \"$conversation\" --prompt --resume --lifecycle\n"
+    "      ;;\n"
+    "    *) printf '%s\\n' \"$line\" ;;\n"
+    "  esac\n"
+    "done\n"
+)
+TERMINAL_HELPER.chmod(0o700)
 CONFIG_DIR = (
     HOME / "Library" / "Application Support" / "wsx"
     if sys.platform == "darwin"
@@ -99,6 +118,24 @@ def call(method, params=None):
         return recv_line(client)
 
 
+def send_shell_command(pane_id, command, client_id):
+    assert call("terminal_acquire", {
+        "pane_id": pane_id,
+        "client_id": client_id,
+        "takeover": False,
+    })["type"] == "ack"
+    response = call("terminal_input", {
+        "pane_id": pane_id,
+        "client_id": client_id,
+        "bytes": list(command.encode() + b"\r"),
+    })
+    assert response["type"] == "ack", response
+    assert call("terminal_release", {
+        "pane_id": pane_id,
+        "client_id": client_id,
+    })["type"] == "ack"
+
+
 def wait_ready(process):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -115,7 +152,29 @@ def wait_ready(process):
     raise RuntimeError("wsxd readiness timeout")
 
 
+def wait_singleton_released():
+    lock = STATE / "wsx" / "state.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(lock.parent, 0o700)
+    descriptor = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+    os.chmod(lock, 0o600)
+    deadline = time.monotonic() + 5
+    try:
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                return
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("wsxd singleton lock did not become available")
+                time.sleep(0.05)
+    finally:
+        os.close(descriptor)
+
+
 def start():
+    wait_singleton_released()
     process = subprocess.Popen([str(DAEMON)], env=env)
     wait_ready(process)
     return process
@@ -182,6 +241,16 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as incompatible:
     incompatible.sendall(json.dumps({"method": "snapshot"}).encode() + b"\n")
     rejected = recv_line(incompatible)
     assert rejected["type"] == "error" and rejected["data"]["code"] == "protocol_mismatch", rejected
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as lifecycle_client:
+    lifecycle_client.settimeout(5)
+    lifecycle_client.connect(str(SOCKET))
+    lifecycle_client.sendall(json.dumps({"method": "hello", "params": {"protocol": 999}}).encode() + b"\n")
+    assert recv_line(lifecycle_client)["type"] == "hello"
+    lifecycle_client.sendall(json.dumps({"method": "lifecycle_status"}).encode() + b"\n")
+    lifecycle = recv_line(lifecycle_client)
+    assert lifecycle["type"] == "lifecycle", lifecycle
+    assert lifecycle["data"]["phase"] == "ready", lifecycle
+    assert lifecycle["data"]["binary_id"], lifecycle
 mismatch = call("hello", {"protocol": 999})
 assert mismatch["type"] == "error" and mismatch["data"]["code"] == "protocol_mismatch", mismatch
 response = call("synchronize_projects", {"projects": [{
@@ -327,7 +396,7 @@ assert cleanup_snapshot is not None and not any(
 created = call("session_create", {
     "worktree_id": worktree_id,
     "label": "smoke-session",
-    "command": ["/bin/sh", "-lc", "printf 'wsx-smoke\\n'; cat"],
+    "command": [str(TERMINAL_HELPER)],
     "rows": 12,
     "cols": 40,
 })
@@ -376,9 +445,22 @@ reported = call("agent_report", {
     "conversation_id": "smoke-conversation",
     "capabilities": {"prompt": True, "resume": True, "lifecycle": True},
 })
-assert reported["type"] == "ack", reported
-reported_snapshot = call("snapshot")["data"]
-reported_pane = next(item for item in reported_snapshot["panes"] if item["id"] == pane_id)
+assert reported["type"] == "error" and reported["data"]["code"] == "stale_runtime", reported
+send_shell_command(
+    pane_id,
+    "__WSX_REPORT__:smoke-conversation",
+    9,
+)
+deadline = time.monotonic() + 3
+reported_pane = None
+reported_snapshot = None
+while time.monotonic() < deadline:
+    reported_snapshot = call("snapshot")["data"]
+    reported_pane = next(item for item in reported_snapshot["panes"] if item["id"] == pane_id)
+    if reported_pane["agent"] is not None:
+        break
+    time.sleep(0.05)
+assert reported_pane is not None and reported_pane["agent"] is not None, reported_snapshot
 assert reported_pane["agent"]["provider"] == "codex"
 assert reported_pane["agent"]["state"] == "working"
 project = next(item for item in reported_snapshot["projects"] if item["id"] == project_id)
@@ -577,13 +659,31 @@ recovery_session = next(item for item in snapshot["sessions"] if item["id"] == r
 recovery_pane_id = recovery_session["focused_pane"]
 recovery_pane = next(item for item in snapshot["panes"] if item["id"] == recovery_pane_id)
 recovery_terminal_id = recovery_pane["terminal_id"]
-assert call("agent_report", {
+missing_generation = call("agent_report", {
     "pane_id": recovery_pane_id,
     "provider": "codex",
     "state": "working",
     "conversation_id": "recoverable-conversation",
     "capabilities": {"prompt": True, "resume": True, "lifecycle": True},
-})["type"] == "ack"
+})
+assert missing_generation["type"] == "error"
+assert missing_generation["data"]["code"] == "stale_runtime"
+send_shell_command(
+    recovery_pane_id,
+    '"$WSX_AGENT_REPORT_BIN" agent report "$WSX_PANE_ID" --provider codex '
+    '--state working --conversation-id recoverable-conversation --prompt --resume --lifecycle',
+    40,
+)
+deadline = time.monotonic() + 3
+while time.monotonic() < deadline:
+    recovery_snapshot = call("snapshot")["data"]
+    recovery_pane = next(
+        item for item in recovery_snapshot["panes"] if item["id"] == recovery_pane_id
+    )
+    if recovery_pane["agent"] is not None:
+        break
+    time.sleep(0.05)
+assert recovery_pane["agent"] is not None, recovery_snapshot
 project_before_restart = call("snapshot")["data"]["projects"][0]
 activity_before_restart = project_before_restart["last_agent_active_unix_ms"]
 terminal_activity_before_restart = project_before_restart["last_terminal_active_unix_ms"]
@@ -602,6 +702,25 @@ terminal_activity_before_restart = snapshot["projects"][0]["last_terminal_active
 failed_session = next(item for item in snapshot["sessions"] if item["label"] == "failed-recovery")
 failed_session_id = failed_session["id"]
 failed_pane_id = failed_session["focused_pane"]
+replacement = call("prepare_replacement", {"target_binary_id": "future-smoke-binary"})
+assert replacement["type"] == "replacement", replacement
+assert replacement["data"]["disposition"] == "deferred", replacement
+assert replacement["data"]["live_runtimes"] >= 1, replacement
+assert call("snapshot")["type"] == "snapshot"
+process.kill()
+process.wait(timeout=5)
+bootstrap_env = env | {"WSX_DAEMON_BIN": str(DAEMON)}
+recovered = subprocess.run(
+    [str(WSX), "status", "--json"],
+    env=bootstrap_env,
+    check=True,
+    capture_output=True,
+    text=True,
+)
+assert recovered.stdout, recovered
+snapshot = call("snapshot")["data"]
+assert next(item for item in snapshot["sessions"] if item["id"] == recovery_session_id)
+
 stopped = subprocess.run(
     [str(WSX), "daemon", "stop"],
     env=env,
@@ -610,7 +729,6 @@ stopped = subprocess.run(
     text=True,
 )
 assert "saved session commands restart on next launch" in stopped.stdout, stopped.stdout
-process.wait(timeout=5)
 wait_socket_stopped()
 
 process = start()
@@ -624,11 +742,7 @@ assert recovered_session["focused_pane"] == recovery_pane_id, recovered_session
 recovered_pane = next(item for item in snapshot["panes"] if item["id"] == recovery_pane_id)
 assert recovered_pane["terminal_id"] == recovery_terminal_id, recovered_pane
 assert recovered_pane["exited"] is False, recovered_pane
-assert recovered_pane["agent"]["provider"] == "codex", recovered_pane
-assert recovered_pane["agent"]["conversation_id"] == "recoverable-conversation", recovered_pane
-assert recovered_pane["agent"]["state"] == "unknown", recovered_pane
-assert recovered_pane["agent"]["capabilities"] == {"prompt": False, "resume": False, "lifecycle": False}, recovered_pane
-assert recovered_pane["agent"]["source"] == "persisted", recovered_pane
+assert recovered_pane["agent"] is None, recovered_pane
 failed_session = next(item for item in snapshot["sessions"] if item["id"] == failed_session_id)
 assert failed_session["focused_pane"] == failed_pane_id, failed_session
 failed_pane = next(item for item in snapshot["panes"] if item["id"] == failed_pane_id)
@@ -647,7 +761,6 @@ while time.monotonic() < deadline:
 assert "recovered-init" in recovered_text, recovered_text
 shutdown_from_incompatible_client(process)
 
-bootstrap_env = env | {"WSX_DAEMON_BIN": str(DAEMON)}
 before = subprocess.run(
     [str(WSX), "runtime", "status", "--json"],
     env=bootstrap_env,
@@ -677,9 +790,49 @@ after = subprocess.run(
 assert json.loads(after.stdout)["running"] is True
 assert call("shutdown")["type"] == "ack"
 wait_socket_stopped()
+
+signal_process = start()
+signal_process.terminate()
+signal_process.wait(timeout=5)
+wait_socket_stopped()
+assert SOCKET.with_suffix(".lifecycle").read_text().strip() == "intentional"
+signal_process = start()
+os.kill(signal_process.pid, signal.SIGHUP)
+signal_process.wait(timeout=5)
+wait_socket_stopped()
+assert SOCKET.with_suffix(".lifecycle").read_text().strip() == "login_ended"
+
+contenders = [
+    subprocess.Popen(
+        [str(WSX), "status", "--json"],
+        env=bootstrap_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    for _ in range(6)
+]
+for contender in contenders:
+    stdout, stderr = contender.communicate(timeout=10)
+    assert contender.returncode == 0, (stdout, stderr)
+assert call("lifecycle_status")["data"]["active_clients"] >= 1
+assert call("shutdown")["type"] == "ack"
+wait_socket_stopped()
+
+state_file = STATE / "wsx" / "state.json"
+backup_file = STATE / "wsx" / "state.json.backup"
+assert state_file.is_file() and backup_file.is_file()
+state_file.write_text("{invalid")
+state_file.chmod(0o600)
+recovered_from_backup = start()
+assert list(state_file.parent.glob("state.json.corrupt.*"))
+assert call("lifecycle_status")["data"]["recovered_from_backup"] is True
+shutdown(recovered_from_backup)
+
 subprocess.run(
     [sys.executable, str(ROOT / "scripts" / "terminal-latency.py")],
     cwd=ROOT,
+    env=env | {"WSX_LATENCY_WORK": str(WORK / "terminal-latency")},
     check=True,
 )
 print("wsxd runtime smoke: PASS")

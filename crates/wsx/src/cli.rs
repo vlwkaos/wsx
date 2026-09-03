@@ -160,6 +160,8 @@ pub enum RuntimeCmd {
 pub enum DaemonCmd {
     /// Gracefully stop wsxd; saved session commands restart on next launch
     Stop,
+    /// Clear the shared crash budget and explicitly recover wsxd
+    Recover,
 }
 
 #[derive(Subcommand)]
@@ -439,6 +441,7 @@ pub fn run(cmd: Command) -> Result<()> {
         },
         Command::Daemon { subcommand } => match subcommand {
             DaemonCmd::Stop => cmd_daemon_stop(),
+            DaemonCmd::Recover => cmd_daemon_recover(),
         },
         Command::Routine { subcommand } => cmd_routine(subcommand),
     }
@@ -1063,6 +1066,17 @@ mod daemon_command_tests {
             })
         ));
     }
+
+    #[test]
+    fn daemon_recover_is_an_explicit_crash_budget_override() {
+        let args = Args::try_parse_from(["wsx", "daemon", "recover"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Daemon {
+                subcommand: DaemonCmd::Recover
+            })
+        ));
+    }
 }
 
 /// Resolve projects by project name or one active group. `-p` takes precedence over `--group`.
@@ -1352,8 +1366,10 @@ fn cmd_agent_report(
             .as_ref()
             .map(|session_ref| session_ref.value.clone())
     });
+    let runtime_generation = std::env::var(runtime::WSX_RUNTIME_GENERATION_ENV).ok();
     match runtime::Client::local().call(&runtime::Request::AgentReport {
         pane_id,
+        runtime_generation,
         provider,
         state,
         conversation_id,
@@ -1412,6 +1428,12 @@ fn cmd_daemon_stop() -> Result<()> {
     Ok(())
 }
 
+fn cmd_daemon_recover() -> Result<()> {
+    runtime::recover_daemon()?;
+    println!("wsxd recovered");
+    Ok(())
+}
+
 fn cmd_runtime_status(json: bool) -> Result<()> {
     let client = runtime::Client::local();
     let snapshot = match client.call(&runtime::Request::Snapshot) {
@@ -1436,6 +1458,14 @@ fn cmd_runtime_status(json: bool) -> Result<()> {
             return Ok(());
         }
     };
+    let lifecycle = if snapshot.capabilities.lifecycle_coordination {
+        match client.call(&runtime::Request::LifecycleStatus) {
+            Ok(runtime::Response::Lifecycle(status)) => Some(status),
+            _ => None,
+        }
+    } else {
+        None
+    };
     if json {
         println!(
             "{}",
@@ -1450,6 +1480,7 @@ fn cmd_runtime_status(json: bool) -> Result<()> {
                 "sessions": snapshot.sessions.len(),
                 "panes": snapshot.panes.len(),
                 "capabilities": snapshot.capabilities,
+                "lifecycle": lifecycle,
             }))?
         );
     } else {
@@ -1458,6 +1489,15 @@ fn cmd_runtime_status(json: bool) -> Result<()> {
             snapshot.protocol, snapshot.epoch, snapshot.revision
         );
         println!("Socket: {}", client.socket().display());
+        if let Some(lifecycle) = lifecycle {
+            println!(
+                "Lifecycle: {:?} ({} live runtimes, {} clients, binary {})",
+                lifecycle.phase,
+                lifecycle.live_runtimes,
+                lifecycle.active_clients,
+                lifecycle.binary_id
+            );
+        }
         println!(
             "Resources: {} projects · {} worktrees · {} sessions · {} panes",
             snapshot.projects.len(),

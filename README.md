@@ -130,6 +130,7 @@ wsx plugin list [--json]
 wsx plugin reload
 wsx runtime status [--json]
 wsx daemon stop
+wsx daemon recover
 wsx routine ...
 ```
 
@@ -144,7 +145,9 @@ wsx routine add weekday-review \
 
 Each `--arg` is one direct argv item; wsx does not invoke a shell. The caller should inspect the resulting routine with `wsx routine show weekday-review` before enabling or running untrusted commands.
 
-`wsx runtime status` and `wsx daemon stop` never start the daemon. `Q` in Workspace asks for confirmation, gracefully stops wsxd and all live PTYs, then exits the TUI. Normal wsx startup reuses a compatible running daemon. If another wsx build finds an incompatible daemon, it refuses to stop that daemon automatically so binary skew cannot terminate live PTYs. Use the matching wsx binary or run `wsx daemon stop` explicitly before switching builds; the next command starts the adjacent or `PATH`-resolved `wsxd`. Cross-version process handoff is not supported. After an explicit restart, the new daemon preserves each wsx session and pane identity, resumes eligible adapter-reported agent conversations, and otherwise recreates the saved launch command. `WSX_DAEMON_BIN` and `WSX_SOCKET` are trusted same-user overrides.
+`wsx runtime status` and `wsx daemon stop` never start the daemon. `wsx daemon recover` explicitly clears the shared crash budget and starts wsxd. `Q` in Workspace asks for confirmation, gracefully stops wsxd and all live PTYs, then exits the TUI. Normal startup uses an owner-only coordinator lock to serialize probe, recovery, replacement, spawn, and readiness across clients while the daemon lock remains the final single-owner fence. A missing daemon restarts automatically at most three times in 60 seconds; an authenticated same-login daemon that hangs or returns unsafe data is preserved and reported instead of killed. Intentional stop and login-end markers prevent background clients from undoing those boundaries.
+
+On macOS, wsx verifies the connected daemon's owner and audit session from the kernel. A daemon left by an earlier login is stopped automatically, then its saved sessions restart under the current login security context. Lifecycle-capable daemons advertise their startup binary identity across protocol versions. When a newer build appears, an old daemon remains usable and defers replacement until no live runtimes remain; it then stops itself and the next elected client starts the adjacent fixed daemon. A compatible pre-lifecycle daemon stays available until its next natural stop. An incompatible pre-lifecycle daemon remains protected and requires the matching wsx binary or explicit `wsx daemon stop`. Cross-version process handoff is not supported, so daemon crash or replacement creates fresh PTYs and terminal buffers from saved recipes while preserving wsx identities. `WSX_DAEMON_BIN` and `WSX_SOCKET` are trusted same-user overrides.
 
 ## Plugins and agents
 
@@ -159,8 +162,8 @@ Agent integrations report normalized `unknown`, `idle`, `working`, `blocked`, `d
 - Events invalidate revisions; clients reconcile from authoritative snapshots.
 - Slow clients do not block PTY parsing. Messages, frames, commands, plugins, and resource counts are bounded.
 - Terminal frames preserve Ghostty wide/spacer occupancy, defer intermediate synchronized-output frames after the first baseline, and use the subscribed viewport for that baseline. Workspace metadata refreshes never own or clear the accepted terminal surface.
-- wsxd persists project, worktree, session, pane, terminal, known-agent identity, and validated native session references. After daemon restart, eligible supported agents resume through direct vendor argv such as `codex resume <id>` or `pi --session <path>`; lifecycle state remains unknown until the adapter reports again.
-- Native resume always creates a fresh process, PTY, and terminal buffer. A wsxd supervisor launches the provider with direct argv and opens a fresh shell when that provider exits. It does not preserve arbitrary shell processes, terminal history, leases, or unsupported agent conversations.
+- wsxd persists project, worktree, session, pane, terminal, known-agent identity, and validated native session references. User-intent mutations save before live state and events are published. Runtime observations remain truthful if persistence is temporarily unavailable and retry in the daemon loop. State replacement syncs both file and directory metadata, retains one validated last-known-good backup, quarantines only malformed primary data, and fails closed for unsafe files. After daemon restart, eligible supported agents resume through direct vendor argv such as `codex resume <id>` or `pi --session <path>`. Persisted identity is used only to plan resume; the replacement runtime remains unlabeled until its adapter reports with the current runtime generation.
+- Native resume always creates a fresh process, PTY, and terminal buffer. A wsxd supervisor launches the provider with direct argv. When that provider exits, the supervisor clears its exact runtime generation before opening a fresh shell, so delayed reports cannot relabel the shell. It does not preserve arbitrary shell processes, terminal history, leases, or unsupported agent conversations.
 - Remote access, live daemon handoff, graphics transport, marketplace installation, and original-process restoration are not yet supported.
 
 ## Development
