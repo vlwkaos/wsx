@@ -1,5 +1,5 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=10
+// WSX_INTEGRATION_VERSION=11
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 import path from "node:path";
@@ -79,4 +79,8 @@ export default function wsxAgentStatus(pi: ExtensionAPI): void {
     blockedCount = 0;
     report("done");
   });
+  const heartbeat = setInterval(() => {
+    if (agentActive && blockedCount === 0) report("working");
+  }, 300_000);
+  heartbeat.unref?.();
 }

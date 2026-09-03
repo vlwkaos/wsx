@@ -288,6 +288,30 @@ mod tests {
     }
 
     #[test]
+    fn working_adapters_renew_wake_authority() {
+        for target in [
+            IntegrationTarget::Pi,
+            IntegrationTarget::Omp,
+            IntegrationTarget::Opencode,
+            IntegrationTarget::Kilo,
+        ] {
+            let asset = assets::primary(target);
+            assert!(
+                asset.contains("300_000"),
+                "{target}: missing wake heartbeat"
+            );
+            assert!(
+                asset.contains("sendInFlight"),
+                "{target}: reports must serialize"
+            );
+            assert!(
+                asset.contains("report(\"working\""),
+                "{target}: heartbeat must renew Working"
+            );
+        }
+    }
+
+    #[test]
     fn pi_and_omp_primary_assets_prefer_session_paths_and_report_lifecycle() {
         for target in [IntegrationTarget::Pi, IntegrationTarget::Omp] {
             let asset = assets::primary(target);

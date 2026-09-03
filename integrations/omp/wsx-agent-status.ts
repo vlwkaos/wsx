@@ -1,11 +1,15 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=10
+// WSX_INTEGRATION_VERSION=11
 import { execFile } from "node:child_process";
 import path from "node:path";
 
 const pane = process.env.WSX_PANE_ID;
+const reportBin = process.env.WSX_AGENT_REPORT_BIN || "wsx";
 let blocked = 0;
 let active = false;
+let currentContext: any;
+let sendInFlight = false;
+let pendingArgs: string[] | undefined;
 
 function report(state: "idle" | "working" | "blocked" | "done", ctx: any): void {
   if (!pane) return;
@@ -28,12 +32,26 @@ function report(state: "idle" | "working" | "blocked" | "done", ctx: any): void 
   ];
   if (sessionPath) args.push("--session-path", sessionPath);
   else if (sessionId) args.push("--session-id", sessionId);
-  execFile(process.env.WSX_AGENT_REPORT_BIN || "wsx", args,
-    { timeout: 1000, windowsHide: true }, () => {});
+  pendingArgs = args;
+  drain();
+}
+
+function drain(): void {
+  if (sendInFlight || !pendingArgs) return;
+  const args = pendingArgs;
+  pendingArgs = undefined;
+  sendInFlight = true;
+  execFile(reportBin, args, { timeout: 1000, windowsHide: true }, () => {
+    sendInFlight = false;
+    drain();
+  });
 }
 
 export default function wsxOmpAgentStatus(pi: any): void {
-  const current = (ctx: any) => report(blocked > 0 ? "blocked" : active ? "working" : "idle", ctx);
+  const current = (ctx: any) => {
+    currentContext = ctx;
+    report(blocked > 0 ? "blocked" : active ? "working" : "idle", ctx);
+  };
   pi.on("session_start", (_event: any, ctx: any) => current(ctx));
   pi.on("session_switch", (_event: any, ctx: any) => {
     blocked = 0;
@@ -69,4 +87,8 @@ export default function wsxOmpAgentStatus(pi: any): void {
       current(ctx);
     }
   });
+  const heartbeat = setInterval(() => {
+    if (active && blocked === 0) report("working", currentContext);
+  }, 300_000);
+  heartbeat.unref?.();
 }

@@ -3,6 +3,7 @@
 
 mod plugins;
 mod state_store;
+mod wake;
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -37,6 +38,8 @@ const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_VIEW_PANES: usize = 32;
 const MAX_VIEW_CELLS: usize = 1_000_000;
 const LEASE_TTL: Duration = Duration::from_secs(3);
+const AGENT_WAKE_LEASE_TTL: Duration = Duration::from_secs(30 * 60);
+const WAKE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const PRESENTATION_CADENCE: Duration = Duration::from_millis(8);
 static NEXT_LEASE_GENERATION: AtomicU64 = AtomicU64::new(1);
 static STOP_SIGNAL: AtomicI32 = AtomicI32::new(0);
@@ -189,6 +192,7 @@ struct State {
     revision: u64,
     runtimes: HashMap<PaneId, Arc<TerminalRuntime>>,
     runtime_generations: HashMap<PaneId, String>,
+    agent_wake_leases: HashMap<PaneId, Instant>,
     terminal_operation_locks: HashMap<PaneId, Arc<Mutex<()>>>,
     listening_ports: HashMap<PaneId, Vec<u16>>,
     foreground_jobs: HashSet<PaneId>,
@@ -564,6 +568,7 @@ pub fn run() -> io::Result<()> {
             revision: 1,
             runtimes: HashMap::new(),
             runtime_generations: HashMap::new(),
+            agent_wake_leases: HashMap::new(),
             terminal_operation_locks: HashMap::new(),
             listening_ports: HashMap::new(),
             foreground_jobs: HashSet::new(),
@@ -602,6 +607,7 @@ pub fn run() -> io::Result<()> {
         }
     };
     let port_scanner = spawn_port_scanner(&daemon);
+    let wake_controller = spawn_wake_controller(&daemon);
 
     while !advance_replacement(&daemon) {
         retry_dirty_persistence(&daemon);
@@ -627,6 +633,7 @@ pub fn run() -> io::Result<()> {
                 cleanup(&daemon, &socket);
                 let _ = plugin_dispatcher.join();
                 let _ = port_scanner.join();
+                let _ = wake_controller.join();
                 return Err(error);
             }
         }
@@ -634,6 +641,7 @@ pub fn run() -> io::Result<()> {
     cleanup(&daemon, &socket);
     let _ = plugin_dispatcher.join();
     let _ = port_scanner.join();
+    let _ = wake_controller.join();
     Ok(())
 }
 
@@ -728,6 +736,7 @@ fn cleanup(daemon: &Daemon, socket: &Path) {
         let mut state = lock(&daemon.state);
         state.stopping = true;
         state.leases.clear();
+        state.agent_wake_leases.clear();
         state.plugin_events.clear();
         let runtimes = std::mem::take(&mut state.runtimes);
         state.runtime_generations.clear();
@@ -2052,6 +2061,7 @@ fn close_session(daemon: &Arc<Daemon>, id: SessionId, expected: u64) -> Result<R
             runtimes.push(runtime);
         }
         state.runtime_generations.remove(pane_id);
+        state.agent_wake_leases.remove(pane_id);
         state.leases.remove(pane_id);
         state.terminal_operation_locks.remove(pane_id);
         state.listening_ports.remove(pane_id);
@@ -2099,6 +2109,7 @@ fn close_pane(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Respons
     state.persisted = persisted;
     let runtime = state.runtimes.remove(&id);
     state.runtime_generations.remove(&id);
+    state.agent_wake_leases.remove(&id);
     state.leases.remove(&id);
     state.terminal_operation_locks.remove(&id);
     state.listening_ports.remove(&id);
@@ -2319,6 +2330,11 @@ fn agent_report(
     }
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
     state.persisted = persisted;
+    if agent_state == AgentState::Working {
+        state.agent_wake_leases.insert(pane_id, Instant::now());
+    } else {
+        state.agent_wake_leases.remove(&pane_id);
+    }
     let revision = bump(daemon, &mut state, "agent.reported", pane_id.0);
     Ok(Response::Ack { revision })
 }
@@ -2350,6 +2366,7 @@ fn agent_clear(
     pane.revision = revision;
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
     state.persisted = persisted;
+    state.agent_wake_leases.remove(&pane_id);
     state
         .runtime_generations
         .insert(pane_id, next_runtime_generation);
@@ -2497,9 +2514,13 @@ fn spawn_runtime(
         }
     });
     let runtime_generation = next_runtime_generation(daemon);
-    lock(&daemon.state)
-        .runtime_generations
-        .insert(pane_id, runtime_generation.clone());
+    {
+        let mut state = lock(&daemon.state);
+        state.agent_wake_leases.remove(&pane_id);
+        state
+            .runtime_generations
+            .insert(pane_id, runtime_generation.clone());
+    }
     let startup = startup_input(recipe);
     let runtime = TerminalRuntime::spawn(
         pane_id,
@@ -2530,6 +2551,7 @@ fn next_runtime_generation(daemon: &Daemon) -> String {
 
 fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
     state.runtime_generations.remove(&pane_id);
+    state.agent_wake_leases.remove(&pane_id);
     let Some(pane) = state
         .persisted
         .panes
@@ -2557,6 +2579,82 @@ fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
     state.persistence_dirty = true;
     daemon.changed.notify_all();
     daemon.plugin_changed.notify_one();
+}
+
+fn has_fresh_working_agent(state: &mut State, now: Instant) -> bool {
+    let live_working = state
+        .persisted
+        .panes
+        .iter()
+        .filter(|pane| {
+            pane.agent
+                .as_ref()
+                .is_some_and(|agent| agent.state == AgentState::Working)
+                && state.runtime_generations.contains_key(&pane.id)
+                && state
+                    .runtimes
+                    .get(&pane.id)
+                    .is_some_and(|runtime| !runtime.exited())
+        })
+        .map(|pane| pane.id)
+        .collect::<HashSet<_>>();
+    state.agent_wake_leases.retain(|pane_id, renewed_at| {
+        live_working.contains(pane_id)
+            && now.saturating_duration_since(*renewed_at) < AGENT_WAKE_LEASE_TTL
+    });
+    !state.agent_wake_leases.is_empty()
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_wake_controller(daemon: &Arc<Daemon>) -> thread::JoinHandle<()> {
+    let daemon = Arc::clone(daemon);
+    thread::spawn(move || {
+        let mut controller = wake::Controller::new();
+        let mut reported_config_error = None;
+        loop {
+            let now = Instant::now();
+            let (stopping, has_working_agent) = {
+                let mut state = lock(&daemon.state);
+                (state.stopping, has_fresh_working_agent(&mut state, now))
+            };
+            if stopping {
+                return;
+            }
+            if !has_working_agent {
+                controller.reconcile(false, now);
+                thread::sleep(WAKE_POLL_INTERVAL);
+                continue;
+            }
+            let enabled = match GlobalConfig::load() {
+                Ok((config, None)) => {
+                    reported_config_error = None;
+                    config.wake_mode
+                }
+                Ok((_, Some(warning))) => {
+                    if reported_config_error.as_deref() != Some(warning.as_str()) {
+                        eprintln!("wsxd wake mode disabled: {warning}");
+                        reported_config_error = Some(warning);
+                    }
+                    false
+                }
+                Err(error) => {
+                    let error = format!("{error:#}");
+                    if reported_config_error.as_deref() != Some(&error) {
+                        eprintln!("wsxd wake mode disabled: {error}");
+                        reported_config_error = Some(error);
+                    }
+                    false
+                }
+            };
+            controller.reconcile(enabled && has_working_agent, now);
+            thread::sleep(WAKE_POLL_INTERVAL);
+        }
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn spawn_wake_controller(_daemon: &Arc<Daemon>) -> thread::JoinHandle<()> {
+    thread::spawn(|| {})
 }
 
 fn spawn_port_scanner(daemon: &Arc<Daemon>) -> thread::JoinHandle<()> {
@@ -3275,6 +3373,7 @@ mod tests {
                     PaneId(4),
                     "0000000000000001:0000000000000001".into(),
                 )]),
+                agent_wake_leases: HashMap::new(),
                 terminal_operation_locks: HashMap::new(),
                 listening_ports: HashMap::new(),
                 foreground_jobs: HashSet::new(),
@@ -3403,6 +3502,73 @@ mod tests {
         runtime.terminate();
         assert!(advance_replacement(&daemon));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn wake_lease_requires_fresh_working_report_and_live_runtime() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let runtime = Arc::new(
+            spawn_runtime(
+                &daemon,
+                pane_id,
+                TerminalId(5),
+                Path::new("/"),
+                &LaunchRecipe {
+                    command: vec!["/bin/cat".into()],
+                    initial_input: None,
+                    rows: 3,
+                    cols: 4,
+                },
+            )
+            .unwrap(),
+        );
+        let generation = {
+            let mut state = lock(&daemon.state);
+            state.runtimes.insert(pane_id, Arc::clone(&runtime));
+            state.runtime_generations[&pane_id].clone()
+        };
+
+        agent_report(
+            &daemon,
+            RuntimeAgentAuthority::new(pane_id, Some(generation.clone())),
+            "pi".into(),
+            AgentState::Working,
+            None,
+            None,
+            AgentCapabilities::default(),
+        )
+        .unwrap();
+        assert!(has_fresh_working_agent(
+            &mut lock(&daemon.state),
+            Instant::now()
+        ));
+
+        lock(&daemon.state)
+            .agent_wake_leases
+            .insert(pane_id, Instant::now() - AGENT_WAKE_LEASE_TTL);
+        assert!(!has_fresh_working_agent(
+            &mut lock(&daemon.state),
+            Instant::now()
+        ));
+
+        agent_report(
+            &daemon,
+            RuntimeAgentAuthority::new(pane_id, Some(generation)),
+            "pi".into(),
+            AgentState::Blocked,
+            None,
+            None,
+            AgentCapabilities::default(),
+        )
+        .unwrap();
+        assert!(!has_fresh_working_agent(
+            &mut lock(&daemon.state),
+            Instant::now()
+        ));
+        runtime.terminate();
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("json.backup"));
     }
 
     #[test]

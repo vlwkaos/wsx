@@ -101,6 +101,10 @@ fn default_resume_agents_on_restore() -> bool {
     true
 }
 
+fn default_wake_mode() -> bool {
+    true
+}
+
 fn default_auto_collapse_after_hours() -> u64 {
     24
 }
@@ -161,6 +165,8 @@ pub struct GlobalConfig {
     pub terminal_escape_chord: String,
     #[serde(default = "default_resume_agents_on_restore")]
     pub resume_agents_on_restore: bool,
+    #[serde(default = "default_wake_mode")]
+    pub wake_mode: bool,
     #[serde(default = "default_auto_collapse_after_hours")]
     pub auto_collapse_after_hours: u64,
     #[serde(default = "default_notification_timeout_seconds")]
@@ -181,6 +187,7 @@ impl Default for GlobalConfig {
             exclude_worktree_paths: default_exclude_worktree_paths(),
             terminal_escape_chord: default_terminal_escape_chord(),
             resume_agents_on_restore: default_resume_agents_on_restore(),
+            wake_mode: default_wake_mode(),
             auto_collapse_after_hours: default_auto_collapse_after_hours(),
             notification_timeout_seconds: default_notification_timeout_seconds(),
             show_release_status: default_show_release_status(),
@@ -231,6 +238,8 @@ struct GlobalConfigWire {
     terminal_escape_chord: String,
     #[serde(default = "default_resume_agents_on_restore")]
     resume_agents_on_restore: bool,
+    #[serde(default = "default_wake_mode")]
+    wake_mode: bool,
     #[serde(default = "default_auto_collapse_after_hours")]
     auto_collapse_after_hours: u64,
     #[serde(default = "default_notification_timeout_seconds")]
@@ -313,6 +322,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
             exclude_worktree_paths: wire.exclude_worktree_paths,
             terminal_escape_chord: wire.terminal_escape_chord,
             resume_agents_on_restore: wire.resume_agents_on_restore,
+            wake_mode: wire.wake_mode,
             auto_collapse_after_hours: wire.auto_collapse_after_hours,
             notification_timeout_seconds: wire.notification_timeout_seconds,
             show_release_status: wire.show_release_status,
@@ -823,16 +833,18 @@ mod tests {
     fn presentation_settings_default_to_compact_sidebar_release_status_and_non_agentic_ports() {
         let defaulted: GlobalConfig = toml::from_str("").unwrap();
         assert!(defaulted.show_release_status);
+        assert!(defaulted.wake_mode);
         assert_eq!(defaulted.terminal_sidebar, TerminalSidebar::Compact);
         assert_eq!(defaulted.port_visibility, PortVisibility::NonAgentic);
         assert!(!defaulted.port_visibility.shows_session(true));
         assert!(defaulted.port_visibility.shows_session(false));
 
         let configured: GlobalConfig = toml::from_str(
-            "show_release_status = false\nterminal_sidebar = \"expanded\"\nport_visibility = \"all\"\n",
+            "show_release_status = false\nwake_mode = false\nterminal_sidebar = \"expanded\"\nport_visibility = \"all\"\n",
         )
         .unwrap();
         assert!(!configured.show_release_status);
+        assert!(!configured.wake_mode);
         assert_eq!(configured.terminal_sidebar, TerminalSidebar::Expanded);
         assert_eq!(configured.port_visibility, PortVisibility::All);
         assert!(configured.port_visibility.shows_session(true));
