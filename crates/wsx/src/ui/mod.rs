@@ -470,6 +470,7 @@ struct StatusReleaseView {
     current: &'static str,
     update: Option<String>,
     visible: bool,
+    wake_mode: bool,
 }
 
 fn status_bar_view(app: &App) -> StatusBarView {
@@ -591,6 +592,7 @@ fn status_bar_view(app: &App) -> StatusBarView {
             current: env!("CARGO_PKG_VERSION"),
             update: app.update_available.clone(),
             visible: app.config.show_release_status,
+            wake_mode: cfg!(target_os = "macos") && app.config.wake_mode,
         },
     }
 }
@@ -612,24 +614,53 @@ fn fit_hints(hints: &[String], available_width: usize) -> String {
 }
 
 fn status_release_line(view: &StatusReleaseView, available_width: usize) -> Line<'static> {
-    if !view.visible {
-        return Line::default();
-    }
-    let current = format!(" v{} ", view.current);
-    if let Some(update) = &view.update {
+    let wake = view.wake_mode.then_some(" ☕︎");
+    let current = view.visible.then(|| format!(" v{} ", view.current));
+    if let (Some(current), Some(update)) = (current.as_ref(), &view.update) {
+        let wake = wake.unwrap_or_default();
+        let displayed_current = if wake.is_empty() {
+            current.as_str()
+        } else {
+            current.trim_start()
+        };
         let update = format!("↑ v{update} ");
-        if Line::from(format!("{current}{update}")).width() <= available_width {
-            return Line::from(vec![
-                Span::styled(current.clone(), Style::default().fg(theme::TEXT_MUTED)),
-                Span::styled(update, Style::default().fg(theme::WARNING).bold()),
-            ]);
+        if Line::from(format!("{wake}{displayed_current}{update}")).width() <= available_width {
+            let mut spans = Vec::new();
+            if !wake.is_empty() {
+                spans.push(Span::styled(wake, Style::default().fg(theme::TEXT_MUTED)));
+            }
+            spans.push(Span::styled(
+                displayed_current.to_string(),
+                Style::default().fg(theme::TEXT_MUTED),
+            ));
+            spans.push(Span::styled(
+                update,
+                Style::default().fg(theme::WARNING).bold(),
+            ));
+            return Line::from(spans);
         }
     }
-    if Line::from(current.as_str()).width() <= available_width {
-        return Line::from(Span::styled(
-            current,
-            Style::default().fg(theme::TEXT_MUTED),
-        ));
+    if let (Some(wake), Some(current)) = (wake, current.as_ref()) {
+        let current = current.trim_start();
+        if Line::from(format!("{wake}{current}")).width() <= available_width {
+            return Line::from(Span::styled(
+                format!("{wake}{current}"),
+                Style::default().fg(theme::TEXT_MUTED),
+            ));
+        }
+    }
+    if let Some(current) = current {
+        if Line::from(current.as_str()).width() <= available_width {
+            return Line::from(Span::styled(
+                current,
+                Style::default().fg(theme::TEXT_MUTED),
+            ));
+        }
+    }
+    if let Some(wake) = wake {
+        if Line::from(wake).width() <= available_width {
+            return Line::from(Span::styled(wake, Style::default().fg(theme::TEXT_MUTED)));
+        }
     }
     Line::default()
 }
@@ -964,6 +995,7 @@ mod tests {
             current: "0.20.0",
             update: None,
             visible: true,
+            wake_mode: false,
         };
 
         let current = status_release_line(&view, 80);
@@ -977,6 +1009,7 @@ mod tests {
             current: "0.20.0",
             update: Some("0.21.0".into()),
             visible: true,
+            wake_mode: false,
         };
 
         let full = status_release_line(&view, 80);
@@ -991,6 +1024,7 @@ mod tests {
             current: "0.20.0",
             update: Some("0.21.0".into()),
             visible: true,
+            wake_mode: false,
         };
 
         assert_eq!(line_text(&status_release_line(&view, 13)), " v0.20.0 ");
@@ -1004,9 +1038,32 @@ mod tests {
             current: "0.20.0",
             update: Some("0.21.0".into()),
             visible: false,
+            wake_mode: false,
         };
 
         assert!(status_release_line(&view, 80).spans.is_empty());
+    }
+
+    #[test]
+    fn wake_mode_indicator_precedes_release_and_remains_without_version() {
+        let mut view = StatusReleaseView {
+            current: "0.20.0",
+            update: None,
+            visible: true,
+            wake_mode: true,
+        };
+        let configured = status_release_line(&view, 80);
+        assert_eq!(line_text(&configured), " ☕︎v0.20.0 ");
+        assert_eq!(configured.spans[0].style.fg, Some(theme::TEXT_MUTED));
+
+        view.update = Some("0.21.0".into());
+        assert_eq!(
+            line_text(&status_release_line(&view, 80)),
+            " ☕︎v0.20.0 ↑ v0.21.0 "
+        );
+
+        view.visible = false;
+        assert_eq!(line_text(&status_release_line(&view, 80)), " ☕︎");
     }
 
     #[test]
