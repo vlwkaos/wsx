@@ -4423,6 +4423,16 @@ impl App {
 
     fn action_dismiss_attention(&mut self) {
         if let Selection::Session(pi, wi, si) = self.current_selection() {
+            // ^ [[Session Model]] Dismiss the exact done revision before allowing
+            // a later press to apply the separate local mute state.
+            let done_pane = self.workspace.session(pi, wi, si).and_then(|session| {
+                (session.agent_status == runtime::AgentState::Done && !session.outcome_acknowledged)
+                    .then_some(session.pane_id)
+            });
+            if let Some(pane_id) = done_pane {
+                self.unmute_on_interaction(pane_id);
+                return;
+            }
             if let Some(sess) = self.workspace.session_mut(pi, wi, si) {
                 if session_state::derive(sess).app_state() == AppSessionState::Active {
                     return;
@@ -7166,6 +7176,30 @@ mod tests {
     }
 
     #[test]
+    fn help_describes_done_acknowledgement_before_mute() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.mode = Mode::Help;
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            rendered.contains("Acknowledge done, otherwise toggle ⊘ mute"),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
     fn help_actions_render_on_the_popup_bottom_border() {
         let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
         app.mode = Mode::Help;
@@ -7502,6 +7536,46 @@ mod tests {
             session_state::derive(session),
             session_state::SessionHeuristic::Done
         );
+    }
+
+    #[test]
+    fn dismiss_done_acknowledges_before_toggling_mute() {
+        let mut project = make_project("dismiss-done");
+        let mut worktree = make_worktree("./dismiss-done");
+        worktree.sessions = vec![make_sess(false, runtime::AgentState::Done)];
+        project.worktrees = vec![worktree];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        app.tree_selected = app
+            .flat()
+            .iter()
+            .position(|entry| matches!(entry, FlatEntry::Session { .. }))
+            .unwrap();
+        assert_eq!(app.attention_candidates(), vec![app.tree_selected]);
+
+        app.action_dismiss_attention();
+
+        let session = &app.workspace.projects[0].worktrees[0].sessions[0];
+        assert!(session.outcome_acknowledged);
+        assert!(!session.muted);
+        assert_eq!(
+            session_state::derive(session),
+            session_state::SessionHeuristic::Idle
+        );
+        assert!(app.attention_candidates().is_empty());
+        assert_eq!(app.acknowledged_outcomes.get("1"), Some(&1));
+
+        app.action_dismiss_attention();
+
+        let session = &app.workspace.projects[0].worktrees[0].sessions[0];
+        assert!(session.outcome_acknowledged);
+        assert!(session.muted);
+        assert!(app.muted_terminal_ids.contains("1"));
     }
 
     fn worktree_entry(path: &str) -> git_worktree::WorktreeEntry {

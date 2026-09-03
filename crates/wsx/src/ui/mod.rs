@@ -772,7 +772,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  C             Send Ctrl+C to session",
         "  r             Rename",
         "  d             Kill session",
-        "  x             Toggle ⊘ mute (local to wsx; interaction clears it)",
+        "  x             Acknowledge done, otherwise toggle ⊘ mute",
         "",
         " Terminal mode",
         "$terminal_escape",
