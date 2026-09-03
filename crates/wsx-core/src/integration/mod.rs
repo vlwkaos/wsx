@@ -3,7 +3,7 @@
 //! Vendor hook schemas are mirrored here, but assets only invoke `wsx agent
 //! report` and trust lifecycle events emitted by each provider.
 
-// ^ [[Session Model]] crates/wsx-core/src/integration/mod.rs -> crates/wsx-core/src/runtime/domain.rs, integrations/pi/wsx-agent-status.ts
+// ^ [[Session Model]] crates/wsx-core/src/integration/mod.rs -> crates/wsx-core/src/runtime/domain.rs, crates/wsx-core/integrations/pi/wsx-agent-status.ts
 mod assets;
 mod availability;
 mod config_edit;
