@@ -3624,6 +3624,10 @@ impl App {
     ) -> Result<()> {
         self.pending_terminal_entry = None;
         self.pending_terminal_resume = None;
+        self.clear_active_terminal_selection();
+        if self.terminal_surfaces.clear_selection(pane_id, terminal_id) {
+            self.needs_redraw = true;
+        }
         self.terminal_stream = None;
         self.unmute_on_interaction(pane_id);
         let (rows, cols) = self.terminal_pane_size(terminal);

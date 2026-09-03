@@ -68,12 +68,20 @@ impl From<ghostty::Error> for TerminalError {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ChildMouseGesture {
+    button: MouseButton,
+    last_x: u16,
+    last_y: u16,
+}
+
 struct Emulator {
     terminal: ghostty::Terminal,
     render: ghostty::RenderState,
     keys: ghostty::KeyEncoder,
     mouse: ghostty::MouseEncoder,
     local_selection_active: bool,
+    child_mouse_gesture: Option<ChildMouseGesture>,
 }
 impl Emulator {
     fn sync_input(&mut self) {
@@ -280,11 +288,13 @@ impl TerminalRuntime {
     pub fn mouse(&self, mouse: &MouseEvent) -> Result<(), TerminalError> {
         let (bytes, presentation_changed, effect_ready) = {
             let mut emulator = lock(&self.shared.emulator);
-            if !mouse.in_bounds
-                && !(emulator.local_selection_active
-                    && mouse.action == MouseAction::Release
-                    && mouse.button == MouseButton::Left)
-            {
+            let terminating_local = emulator.local_selection_active
+                && mouse.action == MouseAction::Release
+                && mouse.button == MouseButton::Left;
+            let terminating_child = emulator.child_mouse_gesture.is_some_and(|gesture| {
+                mouse.action == MouseAction::Release && mouse.button == gesture.button
+            });
+            if !mouse.in_bounds && !terminating_local && !terminating_child {
                 return Ok(());
             }
             if mouse.in_bounds
@@ -294,7 +304,21 @@ impl TerminalRuntime {
                     "mouse coordinates exceed the terminal grid".into(),
                 ));
             }
-            if let Some(delta) = mouse_scroll_delta(mouse) {
+            if let Some(mut gesture) = emulator.child_mouse_gesture {
+                let mut routed = *mouse;
+                if mouse.in_bounds {
+                    gesture.last_x = mouse.x;
+                    gesture.last_y = mouse.y;
+                } else {
+                    routed.x = gesture.last_x;
+                    routed.y = gesture.last_y;
+                    routed.in_bounds = true;
+                }
+                let release =
+                    mouse.action == MouseAction::Release && mouse.button == gesture.button;
+                emulator.child_mouse_gesture = (!release).then_some(gesture);
+                (encode_mouse(&mut emulator, &routed, false)?, false, false)
+            } else if let Some(delta) = mouse_scroll_delta(mouse) {
                 let gesture_cleared = if emulator.local_selection_active {
                     clear_local_selection(&mut emulator)?
                 } else {
@@ -343,7 +367,11 @@ impl TerminalRuntime {
                         )
                     }
                 } else {
-                    (encode_mouse(&mut emulator, mouse)?, gesture_cleared, false)
+                    (
+                        encode_mouse(&mut emulator, mouse, true)?,
+                        gesture_cleared,
+                        false,
+                    )
                 }
             } else if emulator.local_selection_active {
                 match (mouse.action, mouse.button) {
@@ -355,17 +383,8 @@ impl TerminalRuntime {
                         let point = mouse.in_bounds.then_some((mouse.x, mouse.y));
                         let (changed, copied) = emulator.terminal.selection_release(point)?;
                         emulator.local_selection_active = false;
-                        let effect_ready = if let Some(bytes) = copied {
-                            if !emulator.terminal.queue_clipboard_write(bytes) {
-                                return Err(TerminalError::Runtime(
-                                    "selected text exceeds the clipboard limit or queue is full"
-                                        .into(),
-                                ));
-                            }
-                            true
-                        } else {
-                            false
-                        };
+                        let effect_ready = copied
+                            .is_some_and(|bytes| emulator.terminal.queue_clipboard_write(bytes));
                         (Vec::new(), changed, effect_ready)
                     }
                     _ => (Vec::new(), false, false),
@@ -390,7 +409,21 @@ impl TerminalRuntime {
                     } else {
                         false
                     };
-                    (encode_mouse(&mut emulator, mouse)?, changed, false)
+                    let bytes = encode_mouse(&mut emulator, mouse, true)?;
+                    if tracking
+                        && mouse.action == MouseAction::Press
+                        && matches!(
+                            mouse.button,
+                            MouseButton::Left | MouseButton::Middle | MouseButton::Right
+                        )
+                    {
+                        emulator.child_mouse_gesture = Some(ChildMouseGesture {
+                            button: mouse.button,
+                            last_x: mouse.x,
+                            last_y: mouse.y,
+                        });
+                    }
+                    (bytes, changed, false)
                 }
             }
         };
@@ -770,6 +803,7 @@ fn make_emulator(
         keys,
         mouse,
         local_selection_active: false,
+        child_mouse_gesture: None,
     })
 }
 
@@ -1018,8 +1052,14 @@ fn encode_synced_key(emulator: &mut Emulator, key: &KeyEvent) -> Result<Vec<u8>,
     emulator.keys.encode(&event)
 }
 
-fn encode_mouse(emulator: &mut Emulator, mouse: &MouseEvent) -> Result<Vec<u8>, ghostty::Error> {
-    emulator.sync_input();
+fn encode_mouse(
+    emulator: &mut Emulator,
+    mouse: &MouseEvent,
+    sync_modes: bool,
+) -> Result<Vec<u8>, ghostty::Error> {
+    if sync_modes {
+        emulator.sync_input();
+    }
     let mut event = ghostty::MouseEvent::new()?;
     event.set_action(match mouse.action {
         MouseAction::Press => ghostty::MOUSE_ACTION_PRESS,
@@ -1048,6 +1088,7 @@ fn encode_mouse(emulator: &mut Emulator, mouse: &MouseEvent) -> Result<Vec<u8>, 
 
 fn clear_local_selection(emulator: &mut Emulator) -> Result<bool, TerminalError> {
     emulator.local_selection_active = false;
+    emulator.child_mouse_gesture = None;
     emulator.terminal.clear_selection().map_err(Into::into)
 }
 
@@ -1939,6 +1980,36 @@ mod tests {
     }
 
     #[test]
+    fn child_mouse_route_stays_latched_through_mode_change_and_outside_release() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        let captured = recording_writer(&runtime);
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"\x1b[?1002h\x1b[?1006h");
+        }
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"\x1b[?1002l\x1b[?1006l");
+        }
+        runtime
+            .mouse(&left_mouse(MouseAction::Motion, 3, 0, true))
+            .unwrap();
+        runtime
+            .mouse(&MouseEvent {
+                in_bounds: false,
+                ..left_mouse(MouseAction::Release, 0, 0, true)
+            })
+            .unwrap();
+
+        assert_eq!(&*lock(&captured), b"\x1b[<0;1;1M\x1b[<36;4;1M\x1b[<4;4;1m");
+        assert!(lock(&runtime.shared.emulator).child_mouse_gesture.is_none());
+        assert!(runtime.take_clipboard_writes().is_empty());
+    }
+
+    #[test]
     fn reverse_drag_unwraps_soft_wrapped_rows_for_copy() {
         let runtime = TerminalRuntime::new_for_test(2, 4).unwrap();
         {
@@ -2152,6 +2223,27 @@ mod tests {
         let writes = runtime.take_clipboard_writes();
         assert_eq!(writes.len(), 64);
         assert!(writes.iter().all(|write| write == b"a"));
+    }
+
+    #[test]
+    fn full_clipboard_fifo_rejects_selection_copy_without_ending_the_runtime() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"hello");
+            emulator.terminal.write(&b"\x1b]52;c;YQ==\x07".repeat(64));
+        }
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&left_mouse(MouseAction::Release, 4, 0, false))
+            .unwrap();
+
+        let writes = runtime.take_clipboard_writes();
+        assert_eq!(writes.len(), 64);
+        assert!(writes.iter().all(|write| write == b"a"));
+        assert!(!runtime.exited());
     }
 
     #[test]
