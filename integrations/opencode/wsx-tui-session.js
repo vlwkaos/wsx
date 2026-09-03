@@ -1,5 +1,5 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=12
+// WSX_INTEGRATION_VERSION=13
 import { execFile } from "node:child_process";
 
 function report(sessionID) {
