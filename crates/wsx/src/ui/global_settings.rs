@@ -103,7 +103,7 @@ impl SettingField {
             Self::NotificationTimeout => "Seconds before success, warning, and error notices expire.",
             Self::PrefixModifier => "Modifier combination used by the terminal prefix.",
             Self::PrefixKey => "One key combined with the selected modifier, for example Ctrl+A.",
-            Self::WorkspaceKey => "Key pressed after the prefix to focus Workspace. The reserved q suffix quits.",
+            Self::WorkspaceKey => "Key pressed after the prefix to focus Workspace. Reserved b, j, k, n, and q run Terminal commands.",
             Self::TerminalSidebar => "Use a two-column status rail or the full Workspace tree in Terminal mode.",
             Self::ResumeAgents => "Resume saved agent commands when wsxd starts again.",
             Self::WakeMode => "Prevent idle system sleep while an agent is actively working.",
@@ -366,7 +366,7 @@ impl GlobalSettingsForm {
             (SettingField::WorkspaceKey, FieldEditor::Text(editor)) => {
                 normalize_binding_key(&editor.value, true)
                     .ok_or_else(|| {
-                        "workspace key must be one key other than reserved q".to_string()
+                        "workspace key must not be reserved b, j, k, n, or q".to_string()
                     })
                     .map(|key| {
                         let mut binding = current_escape_binding(&self.draft);
@@ -632,7 +632,8 @@ fn normalize_binding_key(value: &str, reserve_quit: bool) -> Option<String> {
         _ if value.chars().count() == 1 && !value.chars().any(char::is_whitespace) => value,
         _ => return None,
     };
-    (!reserve_quit || normalized != "q").then_some(normalized)
+    (!reserve_quit || !matches!(normalized.as_str(), "b" | "j" | "k" | "n" | "q"))
+        .then_some(normalized)
 }
 
 fn current_escape_binding(config: &GlobalConfig) -> EscapeBindingDraft {
@@ -1211,13 +1212,15 @@ mod tests {
     }
 
     #[test]
-    fn structured_terminal_binding_preserves_wire_format_and_reserves_quit() {
+    fn structured_terminal_binding_preserves_wire_format_and_reserves_commands() {
         let parsed = escape_binding("control+shift+a z").unwrap();
         assert_eq!(MODIFIER_LABELS[parsed.modifier], "Ctrl+Shift");
         assert_eq!(parsed.prefix_key, "a");
         assert_eq!(parsed.workspace_key, "z");
         assert!(escape_binding("a z").is_none());
-        assert!(escape_binding("ctrl+a q").is_none());
+        for suffix in ["b", "j", "k", "n", "q"] {
+            assert!(escape_binding(&format!("ctrl+a {suffix}")).is_none());
+        }
 
         let mut form = GlobalSettingsForm::new(GlobalConfig::default());
         form.category = SettingsCategory::Terminal;
