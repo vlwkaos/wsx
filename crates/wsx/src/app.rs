@@ -7357,7 +7357,7 @@ mod tests {
         let malformed_quit_hint = ["(q)", "quit"].concat();
         assert!(!footer.contains(&malformed_quit_hint), "{footer:?}");
         assert!(
-            footer.contains(&format!("(q)uit  v{}", env!("CARGO_PKG_VERSION"))),
+            footer.contains(&format!("(q)uit  ☕︎v{}", env!("CARGO_PKG_VERSION"))),
             "{footer:?}"
         );
     }

@@ -11,6 +11,11 @@ use wsx_core::config::global::{GlobalConfig, PortVisibility, TerminalSidebar};
 
 use super::{popup_block, popup_center, theme};
 
+#[cfg(target_os = "macos")]
+const RUNTIME_FIELDS: &[SettingField] = &[SettingField::ResumeAgents, SettingField::WakeMode];
+#[cfg(not(target_os = "macos"))]
+const RUNTIME_FIELDS: &[SettingField] = &[SettingField::ResumeAgents];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsCategory {
     Workspace,
@@ -51,6 +56,7 @@ enum SettingField {
     WorkspaceKey,
     TerminalSidebar,
     ResumeAgents,
+    WakeMode,
 }
 
 impl SettingField {
@@ -68,7 +74,7 @@ impl SettingField {
                 Self::WorkspaceKey,
                 Self::TerminalSidebar,
             ],
-            SettingsCategory::Runtime => &[Self::ResumeAgents],
+            SettingsCategory::Runtime => RUNTIME_FIELDS,
         }
     }
 
@@ -84,6 +90,7 @@ impl SettingField {
             Self::WorkspaceKey => "Workspace key",
             Self::TerminalSidebar => "Terminal sidebar",
             Self::ResumeAgents => "Resume agents",
+            Self::WakeMode => "Wake mode",
         }
     }
 
@@ -99,6 +106,7 @@ impl SettingField {
             Self::WorkspaceKey => "Key pressed after the prefix to focus Workspace. The reserved q suffix quits.",
             Self::TerminalSidebar => "Use a two-column status rail or the full Workspace tree in Terminal mode.",
             Self::ResumeAgents => "Resume saved agent commands when wsxd starts again.",
+            Self::WakeMode => "Prevent idle system sleep while an agent is actively working.",
         }
     }
 }
@@ -382,6 +390,10 @@ impl GlobalSettingsForm {
                 self.draft.resume_agents_on_restore = editor.selected == 0;
                 Ok(())
             }
+            (SettingField::WakeMode, FieldEditor::Choice(editor)) => {
+                self.draft.wake_mode = editor.selected == 0;
+                Ok(())
+            }
             (SettingField::PortVisibility, FieldEditor::Choice(editor)) => {
                 self.draft.port_visibility = match editor.selected {
                     0 => PortVisibility::Hidden,
@@ -435,6 +447,10 @@ impl GlobalSettingsForm {
                 selected: usize::from(!self.draft.resume_agents_on_restore),
                 labels: vec!["On", "Off"],
             }),
+            SettingField::WakeMode => FieldEditor::Choice(ChoiceEditor {
+                selected: usize::from(!self.draft.wake_mode),
+                labels: vec!["On", "Off"],
+            }),
             SettingField::PortVisibility => FieldEditor::Choice(ChoiceEditor {
                 selected: match self.draft.port_visibility {
                     PortVisibility::Hidden => 0,
@@ -481,6 +497,7 @@ impl GlobalSettingsForm {
                 SettingField::ResumeAgents => {
                     self.draft.resume_agents_on_restore = !self.draft.resume_agents_on_restore
                 }
+                SettingField::WakeMode => self.draft.wake_mode = !self.draft.wake_mode,
                 _ => {}
             },
             _ => {}
@@ -686,6 +703,7 @@ fn setting_value(form: &GlobalSettingsForm, field: SettingField) -> String {
             TerminalSidebar::Expanded => "Expanded".into(),
         },
         SettingField::ResumeAgents => on_off(form.draft.resume_agents_on_restore).into(),
+        SettingField::WakeMode => on_off(form.draft.wake_mode).into(),
     }
 }
 
@@ -872,7 +890,7 @@ fn settings_view(form: &GlobalSettingsForm, width: u16) -> SettingsViewModel {
         ];
         if matches!(
             field,
-            SettingField::ShowRelease | SettingField::ResumeAgents
+            SettingField::ShowRelease | SettingField::ResumeAgents | SettingField::WakeMode
         ) {
             hints.push(HintView::named("Space", "toggle"));
         }
@@ -1248,6 +1266,20 @@ mod tests {
             setting_value(&form, SettingField::TerminalSidebar),
             "Expanded"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn wake_mode_defaults_on_and_can_be_disabled() {
+        let mut form = GlobalSettingsForm::new(GlobalConfig::default());
+        form.category = SettingsCategory::Runtime;
+        form.field = 1;
+        assert_eq!(setting_value(&form, SettingField::WakeMode), "On");
+
+        form.toggle();
+
+        assert!(!form.draft.wake_mode);
+        assert_eq!(setting_value(&form, SettingField::WakeMode), "Off");
     }
 
     #[test]
