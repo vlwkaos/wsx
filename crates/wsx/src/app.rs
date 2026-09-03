@@ -38,7 +38,18 @@ use wsx_core::{
 use git_info::FetchOutcome;
 
 type WorktreeSnapshot = Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>;
-type RuntimeRefresh = Result<(runtime::Snapshot, WorktreeSnapshot)>;
+type RuntimeRefresh = Result<(runtime::Availability, runtime::Snapshot, WorktreeSnapshot)>;
+
+fn collect_runtime_refresh(config: &GlobalConfig, background: bool) -> RuntimeRefresh {
+    let availability = if background {
+        runtime::ensure_background_available()?
+    } else {
+        runtime::ensure_available()?
+    };
+    let discovery = ops::discover_workspace(config)?;
+    let snapshot = ops::synchronize_discovery(&discovery)?;
+    Ok((availability, snapshot, discovery.into_worktrees()))
+}
 
 // ^ [[wsx Architecture]] Runtime snapshots are authoritative; events invalidate them.
 enum RuntimeResult {
@@ -1579,7 +1590,10 @@ impl App {
         };
         let tx = self.runtime_tx.clone();
         std::thread::spawn(move || {
-            let result = ops::runtime_snapshot();
+            let result = (|| {
+                runtime::ensure_background_available()?;
+                ops::runtime_snapshot()
+            })();
             let _ = tx.send(RuntimeResult::ResumeRefresh { generation, result });
         });
         self.needs_redraw = true;
@@ -1851,7 +1865,7 @@ impl App {
             // Staleness is wall-clock based and can change without a runtime event.
             self.collapse_stale_projects();
             self.recompute_visible();
-            self.spawn_runtime_refresh();
+            self.spawn_background_runtime_refresh();
             self.spawn_git_local_for_all();
             self.spawn_routine_refresh();
         }
@@ -2089,13 +2103,23 @@ impl App {
         let tx = self.runtime_tx.clone();
         let config = self.config.clone();
         std::thread::spawn(move || {
-            let result = (|| {
-                runtime::ensure_available()?;
-                let discovery = ops::discover_workspace(&config)?;
-                let snapshot = ops::synchronize_discovery(&discovery)?;
-                Ok((snapshot, discovery.into_worktrees()))
-            })();
-            let _ = tx.send(RuntimeResult::FullRefresh(result));
+            let _ = tx.send(RuntimeResult::FullRefresh(collect_runtime_refresh(
+                &config, false,
+            )));
+        });
+    }
+
+    fn spawn_background_runtime_refresh(&mut self) {
+        if self.runtime_refresh_pending {
+            return;
+        }
+        self.runtime_refresh_pending = true;
+        let tx = self.runtime_tx.clone();
+        let config = self.config.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(RuntimeResult::FullRefresh(collect_runtime_refresh(
+                &config, true,
+            )));
         });
     }
 
@@ -2114,7 +2138,22 @@ impl App {
     fn apply_runtime_refresh(&mut self, result: RuntimeRefresh) {
         self.runtime_refresh_pending = false;
         match result {
-            Ok((snapshot, worktrees)) => self.apply_runtime_snapshot(snapshot, worktrees),
+            Ok((availability, snapshot, worktrees)) => {
+                self.apply_runtime_snapshot(snapshot, worktrees);
+                match availability {
+                    runtime::Availability::Current => {}
+                    runtime::Availability::RecoveredFromBackup => self.set_warning(
+                        "wsxd recovered a corrupt primary state from its last-known-good backup",
+                    ),
+                    runtime::Availability::LegacyCompatible => self.set_warning(
+                        "A newer wsxd will be used after the current daemon stops",
+                    ),
+                    runtime::Availability::ReplacementDeferred { live_runtimes } => self
+                        .set_warning(format!(
+                            "wsxd update deferred while {live_runtimes} terminal runtime(s) remain open"
+                        )),
+                }
+            }
             Err(error) => {
                 self.apply_runtime_event(runtime::EventSignal::Disconnected(error.to_string()))
             }

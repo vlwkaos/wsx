@@ -275,6 +275,37 @@ pub struct Capabilities {
     pub listening_ports: bool,
     pub foreground_jobs: bool,
     pub process_restore: bool,
+    pub lifecycle_coordination: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonPhase {
+    #[default]
+    Ready,
+    ReplacementPending,
+    Stopping,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonLifecycle {
+    pub protocol: u32,
+    pub epoch: u64,
+    pub binary_id: String,
+    pub started_unix_ms: u64,
+    pub phase: DaemonPhase,
+    pub live_runtimes: usize,
+    pub active_clients: usize,
+    pub recovered_from_backup: bool,
+    #[serde(default)]
+    pub replacement_target: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplacementDisposition {
+    Deferred,
+    Stopping,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

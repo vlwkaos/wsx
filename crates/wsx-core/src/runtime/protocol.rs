@@ -1,10 +1,42 @@
 use super::domain::*;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+use std::{
+    io,
+    path::{Path, PathBuf},
+    time::UNIX_EPOCH,
+};
 
-pub const PROTOCOL_VERSION: u32 = 10;
+// ^ [[Terminal Stream Protocol v3]] Wire-version history and compatibility boundaries.
+pub const PROTOCOL_VERSION: u32 = 11;
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+pub const WSX_RUNTIME_GENERATION_ENV: &str = "WSX_RUNTIME_GENERATION";
+
+pub fn binary_identity(path: &Path) -> io::Result<String> {
+    let path = path.canonicalize()?;
+    let metadata = path.metadata()?;
+    let modified = metadata
+        .modified()?
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    #[cfg(unix)]
+    return Ok(format!(
+        "{}:{:x}:{:x}:{:x}:{modified:x}",
+        env!("CARGO_PKG_VERSION"),
+        metadata.dev(),
+        metadata.ino(),
+        metadata.len()
+    ));
+    #[cfg(not(unix))]
+    Ok(format!(
+        "{}:{:x}:{modified:x}",
+        env!("CARGO_PKG_VERSION"),
+        metadata.len()
+    ))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
@@ -115,6 +147,8 @@ pub enum Request {
     },
     AgentReport {
         pane_id: PaneId,
+        #[serde(default)]
+        runtime_generation: Option<String>,
         provider: String,
         state: AgentState,
         #[serde(default)]
@@ -123,8 +157,17 @@ pub enum Request {
         session_ref: Option<AgentSessionRef>,
         capabilities: AgentCapabilities,
     },
+    AgentClear {
+        pane_id: PaneId,
+        runtime_generation: String,
+        next_runtime_generation: String,
+    },
     PluginList,
     PluginReload,
+    LifecycleStatus,
+    PrepareReplacement {
+        target_binary_id: String,
+    },
     Shutdown,
 }
 
@@ -179,6 +222,11 @@ pub enum Response {
         events: Vec<Event>,
     },
     Plugins(Vec<PluginManifest>),
+    Lifecycle(DaemonLifecycle),
+    Replacement {
+        disposition: ReplacementDisposition,
+        live_runtimes: usize,
+    },
     Created {
         revision: u64,
         id: u64,
@@ -262,6 +310,33 @@ mod tests {
         assert!(!capabilities.resume_shell_fallback);
         assert!(!capabilities.listening_ports);
         assert!(!capabilities.foreground_jobs);
+        assert!(!capabilities.lifecycle_coordination);
+    }
+
+    #[test]
+    fn lifecycle_control_is_additive_and_tagged() {
+        let request = Request::PrepareReplacement {
+            target_binary_id: "next-binary".into(),
+        };
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert_eq!(serde_json::from_str::<Request>(&encoded).unwrap(), request);
+
+        let response = Response::Lifecycle(DaemonLifecycle {
+            protocol: PROTOCOL_VERSION,
+            epoch: 7,
+            binary_id: "current-binary".into(),
+            started_unix_ms: 11,
+            phase: DaemonPhase::ReplacementPending,
+            live_runtimes: 2,
+            active_clients: 1,
+            recovered_from_backup: false,
+            replacement_target: Some("next-binary".into()),
+        });
+        let encoded = serde_json::to_string(&response).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Response>(&encoded).unwrap(),
+            response
+        );
     }
 
     #[test]
@@ -285,10 +360,16 @@ mod tests {
         )
         .unwrap();
 
-        let Request::AgentReport { session_ref, .. } = request else {
+        let Request::AgentReport {
+            session_ref,
+            runtime_generation,
+            ..
+        } = request
+        else {
             panic!("expected agent report request");
         };
         assert_eq!(session_ref, None);
+        assert_eq!(runtime_generation, None);
     }
 
     #[test]

@@ -9,7 +9,8 @@ mod domain;
 mod protocol;
 
 pub use client::{
-    ensure_available, new_client_id, Client, EventMonitor, EventSignal, TerminalStream,
+    ensure_available, ensure_background_available, new_client_id, recover_daemon, Availability,
+    Client, EventMonitor, EventSignal, TerminalStream,
 };
 pub use domain::*;
 pub use protocol::*;

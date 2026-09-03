@@ -123,6 +123,7 @@ wsx plugin list [--json]
 wsx plugin reload
 wsx runtime status [--json]
 wsx daemon stop
+wsx daemon recover
 wsx routine ...
 ```
 
@@ -137,7 +138,9 @@ wsx routine add weekday-review \
 
 각 `--arg`는 direct argv item 하나이며 wsx는 shell을 실행하지 않습니다. 신뢰하지 않는 command를 enable 또는 run하기 전에 `wsx routine show weekday-review`로 결과를 확인해야 합니다.
 
-`wsx runtime status`와 `wsx daemon stop`은 daemon을 시작하지 않습니다. Workspace에서 `Q`를 누르면 확인 후 wsxd와 모든 live PTY를 정상 종료하고 TUI를 끝냅니다. 일반 wsx 시작은 호환되는 실행 중 daemon을 재사용합니다. 다른 wsx build가 호환되지 않는 daemon을 발견하면 binary skew로 live PTY가 종료되지 않도록 daemon 자동 종료를 거부합니다. Build를 전환하기 전에 일치하는 wsx binary를 사용하거나 `wsx daemon stop`을 명시적으로 실행하세요. 다음 command는 인접 executable 또는 `PATH`의 `wsxd`를 시작합니다. Cross-version process handoff는 지원하지 않습니다. 명시적 restart 후 새 daemon은 wsx session과 pane identity를 유지하고 adapter가 보고한 eligible agent conversation을 resume하며, 그 외에는 저장된 launch command로 process를 다시 생성합니다. `WSX_DAEMON_BIN`, `WSX_SOCKET`은 신뢰된 동일 사용자 override입니다.
+`wsx runtime status`와 `wsx daemon stop`은 daemon을 시작하지 않습니다. `wsx daemon recover`는 shared crash budget을 명시적으로 초기화하고 wsxd를 시작합니다. Workspace에서 `Q`를 누르면 확인 후 wsxd와 모든 live PTY를 정상 종료하고 TUI를 끝냅니다. 일반 startup은 owner-only coordinator lock으로 여러 client의 probe, recovery, replacement, spawn, readiness를 직렬화하고 daemon lock을 최종 single-owner fence로 유지합니다. 사라진 daemon은 60초 동안 최대 세 번 자동 재시작합니다. 인증된 same-login daemon이 응답하지 않거나 unsafe data를 반환하면 자동 종료하지 않고 문제를 보고합니다. Intentional stop과 login 종료 marker는 background client가 해당 경계를 되돌리지 못하게 합니다.
+
+macOS에서는 kernel에서 연결된 daemon의 owner와 audit session을 확인합니다. 이전 login이 남긴 daemon은 자동으로 정상 종료한 뒤 저장된 session을 현재 login security context에서 다시 시작합니다. Lifecycle-capable daemon은 protocol version이 달라도 startup binary identity를 알립니다. 새 build가 발견되면 기존 daemon과 live PTY를 계속 사용하고 live runtime이 모두 끝날 때까지 replacement를 연기합니다. 이후 daemon이 스스로 종료되며 다음 elected client가 인접한 fixed daemon을 시작합니다. Pre-lifecycle compatible daemon은 다음 자연스러운 stop까지 유지됩니다. Pre-lifecycle incompatible daemon은 보호되며 matching wsx binary 또는 명시적인 `wsx daemon stop`이 필요합니다. Cross-version process handoff는 지원하지 않으므로 crash나 replacement 후에는 저장된 recipe에서 새 PTY와 terminal buffer를 만들되 wsx identity는 유지합니다. `WSX_DAEMON_BIN`, `WSX_SOCKET`은 신뢰된 동일 사용자 override입니다.
 
 ## Plugin과 agent
 
@@ -152,8 +155,8 @@ Agent integration은 `unknown`, `idle`, `working`, `blocked`, `done`, `error` �
 - Event는 revision을 invalidate하며 authoritative snapshot으로 복구합니다.
 - Message, frame, command, plugin, resource count는 bounded입니다.
 - Terminal frame은 Ghostty wide/spacer occupancy를 보존하고 첫 baseline 이후 synchronized-output 중간 frame을 억제하며 subscribe viewport를 baseline에 적용합니다. Workspace metadata refresh는 수락된 terminal surface를 소유하거나 지우지 않습니다.
-- wsxd는 project, worktree, session, pane, terminal, known-agent identity와 검증된 native session reference를 저장합니다. daemon restart 후 eligible agent는 `codex resume <id>`, `pi --session <path>` 같은 direct vendor argv로 conversation을 resume하며 lifecycle state는 adapter가 다시 보고할 때까지 unknown입니다.
-- Native resume은 항상 새 process, PTY, terminal buffer를 생성합니다. wsxd supervisor가 provider를 direct argv로 실행하고 provider가 끝나면 fresh shell을 엽니다. 임의 shell process, terminal history, lease, unsupported agent conversation은 보존하지 않습니다.
+- wsxd는 project, worktree, session, pane, terminal, known-agent identity와 검증된 native session reference를 저장합니다. User-intent mutation은 live state와 event를 publish하기 전에 저장합니다. Runtime observation은 persistence가 일시적으로 실패해도 실제 상태를 표시하고 daemon loop에서 저장을 재시도합니다. State replacement는 file과 parent directory를 sync하고 검증된 last-known-good backup 하나를 유지하며 malformed primary만 quarantine합니다. Unsafe file은 fail closed로 처리합니다. daemon restart 후 eligible agent는 `codex resume <id>`, `pi --session <path>` 같은 direct vendor argv로 conversation을 resume합니다. 저장된 identity는 resume 계획에만 사용하며 replacement runtime은 현재 runtime generation으로 adapter가 다시 보고할 때까지 agent label을 표시하지 않습니다.
+- Native resume은 항상 새 process, PTY, terminal buffer를 생성합니다. wsxd supervisor가 provider를 direct argv로 실행합니다. Provider가 끝나면 supervisor는 정확히 일치하는 runtime generation의 agent state를 clear한 뒤 fresh shell을 열어 delayed report가 shell을 다시 agent로 표시하지 못하게 합니다. 임의 shell process, terminal history, lease, unsupported agent conversation은 보존하지 않습니다.
 - Remote access, live daemon handoff, graphics transport, marketplace, original-process restoration은 아직 지원하지 않습니다.
 
 ## 개발
