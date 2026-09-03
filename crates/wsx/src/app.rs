@@ -236,6 +236,7 @@ fn lifecycle_clock_sample() -> Option<LifecycleClockSample> {
 const TICK_MS: u64 = 100;
 const TERMINAL_TICK_MS: u64 = 8;
 const FAST_INTERVAL_MS: u64 = 500;
+const GIT_SWEEP_INTERVAL_MS: u64 = 15_000;
 const SLOW_INTERVAL_MS: u64 = 30_000;
 const WORKSPACE_SCROLL_LINES: isize = 3;
 
@@ -723,6 +724,7 @@ pub struct App {
     /// Tracks whether the last successful desktop frame contained captured terminal content.
     last_rendered_preview_was_session: bool,
     fast_timer: Timer,
+    git_sweep_timer: Timer,
     slow_timer: Timer,
     cached_flat: Vec<FlatEntry>,
     flat_dirty: bool,
@@ -900,6 +902,7 @@ impl App {
             force_preview_redraw: false,
             last_rendered_preview_was_session: false,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
+            git_sweep_timer: Timer::new(GIT_SWEEP_INTERVAL_MS),
             slow_timer: Timer::new(SLOW_INTERVAL_MS + (std::process::id() % 500) as u64),
             cached_flat,
             flat_dirty: false,
@@ -1866,12 +1869,16 @@ impl App {
             self.collapse_stale_projects();
             self.recompute_visible();
             self.spawn_background_runtime_refresh();
-            self.spawn_git_local_for_all();
             self.spawn_routine_refresh();
+        }
+
+        if self.git_sweep_timer.ready() {
+            self.spawn_git_local_for_all();
         }
 
         if self.fast_timer.ready() {
             self.spawn_runtime_capture();
+            self.spawn_git_local_for_selected();
             self.tick_git_fetch();
             if !self.jobs.is_empty() || self.has_working_agent() {
                 self.spinner_frame = self.spinner_frame.wrapping_add(1);
@@ -1932,14 +1939,12 @@ impl App {
         if self.git_local_pending.contains(&path) {
             return;
         }
-        let is_selected = matches!(
-            self.current_selection(),
-            Selection::Worktree(pi, wi) | Selection::Session(pi, wi, _)
-            if self.workspace.projects.get(pi)
-                .and_then(|p| p.worktrees.get(wi))
-                .map(|wt| wt.path == path)
-                .unwrap_or(false)
-        );
+        let is_selected = self
+            .selected_worktree_indices()
+            .and_then(|(project_idx, worktree_idx)| {
+                self.workspace.worktree(project_idx, worktree_idx)
+            })
+            .is_some_and(|worktree| worktree.path == path);
         let cache_secs = if is_selected {
             1
         } else {
@@ -1978,6 +1983,19 @@ impl App {
             let info = git_info::get_git_info(&path, &default_branch, &subtrees);
             let _ = tx.send((path, info));
         });
+    }
+
+    fn spawn_git_local_for_selected(&mut self) {
+        let Some((project_idx, worktree_idx)) = self.selected_worktree_indices() else {
+            return;
+        };
+        let Some(project) = self.workspace.projects.get(project_idx) else {
+            return;
+        };
+        let Some(worktree) = project.worktrees.get(worktree_idx) else {
+            return;
+        };
+        self.spawn_git_local(worktree.path.clone(), project.default_branch.clone());
     }
 
     /// Kick off async git_info refresh for all worktrees (periodic timer path).
@@ -5490,6 +5508,7 @@ mod tests {
             force_preview_redraw: false,
             last_rendered_preview_was_session: false,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
+            git_sweep_timer: Timer::new(GIT_SWEEP_INTERVAL_MS),
             slow_timer: Timer::new(SLOW_INTERVAL_MS),
             cached_flat,
             flat_dirty: false,
@@ -6601,6 +6620,32 @@ mod tests {
         app.spawn_git_local_with_options(path.clone(), "main".to_string(), true);
         assert!(app.git_local_pending.contains(&path));
         assert!(app.workspace.projects[0].worktrees[0].git_info.is_some());
+    }
+
+    #[test]
+    fn selected_git_status_uses_short_cache_while_background_rows_keep_long_cache() {
+        let path = std::path::PathBuf::from("/tmp/wsx-selected-git-refresh");
+        let mut project = make_project("repo");
+        let mut worktree = make_worktree(path.to_string_lossy().as_ref());
+        worktree.git_info = Some(make_git_info());
+        worktree.git_info_fetched_at = Some(Instant::now() - Duration::from_secs(2));
+        project.worktrees.push(worktree);
+        let workspace = WorkspaceState {
+            projects: vec![project],
+        };
+
+        let mut selected = make_test_app(GlobalConfig::default(), workspace.clone(), None);
+        selected.tree_selected = selected
+            .flat()
+            .iter()
+            .position(|entry| matches!(entry, FlatEntry::Worktree { .. }))
+            .unwrap();
+        selected.spawn_git_local_for_selected();
+        assert!(selected.git_local_pending.contains(&path));
+
+        let mut background = make_test_app(GlobalConfig::default(), workspace, None);
+        background.spawn_git_local(path.clone(), "main".into());
+        assert!(!background.git_local_pending.contains(&path));
     }
 
     // Regression guard for the attention_candidates logic (commit c118ea2).
