@@ -27,7 +27,9 @@ use crate::{
     },
 };
 use wsx_core::{
-    config::global::{project_has_activity_within, project_matches_group, GlobalConfig, GroupKey},
+    config::global::{
+        project_has_activity_within, project_matches_group, GlobalConfig, GroupKey, TerminalSidebar,
+    },
     git::{info as git_info, worktree as git_worktree},
     model::workspace::{
         flatten_tree_filtered, FlatEntry, GitInfo, Project, Selection, WorkspaceState,
@@ -773,6 +775,7 @@ pub struct App {
     pending_terminal_resume: Option<PendingTerminalResume>,
     suspend_detector: SuspendDetector,
     terminal_escape_chord: EscapeSequence,
+    terminal_sidebar_override: Option<TerminalSidebar>,
     update_rx: mpsc::Receiver<String>,
     pub update_available: Option<String>,
     /// Effective responsive mode for the current frame.
@@ -944,6 +947,7 @@ impl App {
             pending_terminal_resume: None,
             suspend_detector: SuspendDetector::new(),
             terminal_escape_chord,
+            terminal_sidebar_override: None,
             update_rx,
             update_available: None,
             is_mobile: mobile,
@@ -1305,7 +1309,9 @@ impl App {
                 | Mode::RoutineEditor { .. } => EventMode::Input,
                 _ => EventMode::Normal,
             };
-            if let Some(action) = poll_event(
+            let terminal_prefix_was_pending =
+                event_mode == EventMode::Terminal && self.terminal_escape_chord.is_pending();
+            let action = poll_event(
                 Duration::from_millis(
                     if event_mode == EventMode::Terminal || self.pending_terminal_entry.is_some() {
                         TERMINAL_TICK_MS
@@ -1315,7 +1321,13 @@ impl App {
                 ),
                 event_mode,
                 &mut self.terminal_escape_chord,
-            )? {
+            )?;
+            if terminal_prefix_was_pending
+                != (event_mode == EventMode::Terminal && self.terminal_escape_chord.is_pending())
+            {
+                self.needs_redraw = true;
+            }
+            if let Some(action) = action {
                 if action == Action::Quit && matches!(self.mode, Mode::Workspace) {
                     break;
                 }
@@ -1468,13 +1480,18 @@ impl App {
         }
     }
 
+    fn pending_terminal_entry_is_current(&self, pending: PendingTerminalEntry) -> bool {
+        let mode_matches = matches!(self.mode, Mode::Workspace)
+            || matches!(self.mode, Mode::Terminal { pane_id } if pane_id == pending.pane_id);
+        mode_matches
+            && self.selected_terminal_identity() == Some((pending.pane_id, pending.terminal_id))
+    }
+
     fn activate_pending_terminal_entry(&mut self, pending: PendingTerminalEntry) {
         if self.pending_terminal_entry != Some(pending) {
             return;
         }
-        if !matches!(self.mode, Mode::Workspace)
-            || self.selected_terminal_identity() != Some((pending.pane_id, pending.terminal_id))
-        {
+        if !self.pending_terminal_entry_is_current(pending) {
             self.pending_terminal_entry = None;
             self.terminal_stream = None;
             return;
@@ -1487,10 +1504,9 @@ impl App {
     }
 
     fn cancel_pending_terminal_entry_if_stale(&mut self) {
-        let stale = self.pending_terminal_entry.is_some_and(|pending| {
-            !matches!(self.mode, Mode::Workspace)
-                || self.selected_terminal_identity() != Some((pending.pane_id, pending.terminal_id))
-        });
+        let stale = self
+            .pending_terminal_entry
+            .is_some_and(|pending| !self.pending_terminal_entry_is_current(pending));
         if stale {
             self.pending_terminal_entry = None;
             self.terminal_stream = None;
@@ -2457,13 +2473,52 @@ impl App {
         format!("({})workspace", self.terminal_escape_chord.label)
     }
 
+    pub fn terminal_prefix_pending(&self) -> bool {
+        self.terminal_escape_chord.is_pending()
+    }
+
+    pub fn terminal_command_hints(&self) -> Vec<String> {
+        let Some(workspace) = self.terminal_escape_chord.suffix_label() else {
+            return vec![self.terminal_workspace_hint().to_ascii_lowercase()];
+        };
+        let prefix = self
+            .terminal_escape_chord
+            .prefix_label()
+            .to_ascii_lowercase();
+        let hint = |key: &str, action: &str| format!("({key}){action}");
+        let mut hints = vec![hint(&prefix, "commands")];
+        if self.terminal_prefix_pending() {
+            hints.push(hint("esc", "cancel"));
+        }
+        hints.extend([
+            hint(&workspace.to_ascii_lowercase(), "workspace"),
+            hint("j/k/↑↓", "session"),
+            crate::ui::ATTENTION_ITERATION_HINT.to_string(),
+        ]);
+        if !self.is_mobile {
+            hints.push(hint("b", "sidebar"));
+        }
+        hints.push(hint("q", "quit"));
+        if self.terminal_prefix_pending() {
+            hints.push(hint(&prefix, "send"));
+        }
+        hints
+    }
+
     pub fn terminal_quit_label(&self) -> Option<String> {
         self.terminal_escape_chord.quit_label()
     }
 
-    pub fn terminal_quit_hint(&self) -> Option<String> {
-        self.terminal_quit_label()
-            .map(|label| format!("({label})quit"))
+    pub fn terminal_sidebar_hint(&self) -> Option<String> {
+        (!self.is_mobile)
+            .then(|| self.terminal_escape_chord.sidebar_label())
+            .flatten()
+            .map(|label| format!("({label})sidebar"))
+    }
+
+    pub(crate) fn effective_terminal_sidebar(&self) -> TerminalSidebar {
+        self.terminal_sidebar_override
+            .unwrap_or(self.config.terminal_sidebar)
     }
 
     pub fn current_selection(&self) -> Selection {
@@ -2797,14 +2852,37 @@ impl App {
         pane_id: runtime::PaneId,
         terminal: &mut Tui,
     ) -> Result<()> {
+        if self.pending_terminal_entry.is_some()
+            && !matches!(
+                &action,
+                Action::InputEscape
+                    | Action::Quit
+                    | Action::Resize
+                    | Action::ToggleTerminalSidebar
+                    | Action::NextAttention
+                    | Action::PrevAttention
+                    | Action::NextSession
+                    | Action::PrevSession
+            )
+        {
+            return Ok(());
+        }
         match action {
             Action::InputEscape => self.leave_terminal_mode(pane_id),
             Action::Quit => self.should_quit = true,
             Action::Resize => {
-                self.resize_terminal_pane(pane_id, terminal);
+                if self.pending_terminal_entry.is_some() {
+                    self.resize_pending_terminal_entry(terminal);
+                } else {
+                    self.resize_terminal_pane(pane_id, terminal);
+                }
                 self.force_terminal_redraw = true;
                 self.needs_redraw = true;
             }
+            Action::NextAttention => self.action_switch_attention(1, terminal)?,
+            Action::PrevAttention => self.action_switch_attention(-1, terminal)?,
+            Action::NextSession => self.action_switch_sibling_session(1, terminal)?,
+            Action::PrevSession => self.action_switch_sibling_session(-1, terminal)?,
             Action::TerminalKey(key) => self.send_terminal_keys([key]),
             Action::TerminalKeys(keys) => self.send_terminal_keys(keys),
             Action::TerminalPaste(text) => {
@@ -2819,8 +2897,8 @@ impl App {
                     return Ok(());
                 }
                 if self.is_workspace_click(mouse) {
-                    let compact_tree = self.config.terminal_sidebar
-                        == wsx_core::config::global::TerminalSidebar::Compact;
+                    let compact_tree =
+                        self.effective_terminal_sidebar() == TerminalSidebar::Compact;
                     self.leave_terminal_mode(pane_id);
                     self.handle_mouse_click(mouse.column, mouse.row, terminal, compact_tree)?;
                     self.needs_redraw = true;
@@ -2833,8 +2911,8 @@ impl App {
                     return Ok(());
                 }
                 if self.is_workspace_click(mouse) {
-                    let compact_tree = self.config.terminal_sidebar
-                        == wsx_core::config::global::TerminalSidebar::Compact;
+                    let compact_tree =
+                        self.effective_terminal_sidebar() == TerminalSidebar::Compact;
                     self.leave_terminal_mode(pane_id);
                     self.handle_mouse_click(mouse.column, mouse.row, terminal, compact_tree)?;
                     self.needs_redraw = true;
@@ -2843,6 +2921,20 @@ impl App {
                     self.send_terminal_mouse(mouse);
                 }
             }
+            Action::ToggleTerminalSidebar if !self.is_mobile => {
+                self.terminal_sidebar_override = Some(match self.effective_terminal_sidebar() {
+                    TerminalSidebar::Compact => TerminalSidebar::Expanded,
+                    TerminalSidebar::Expanded => TerminalSidebar::Compact,
+                });
+                if self.pending_terminal_entry.is_some() {
+                    self.resize_pending_terminal_entry(terminal);
+                } else {
+                    self.resize_terminal_pane(pane_id, terminal);
+                }
+                self.force_terminal_redraw = true;
+                self.needs_redraw = true;
+            }
+            Action::ToggleTerminalSidebar => {}
             _ => {}
         }
         Ok(())
@@ -3703,7 +3795,7 @@ impl App {
     }
 
     fn terminal_cursor(&self) -> Option<runtime::Cursor> {
-        if !matches!(self.mode, Mode::Terminal { .. }) {
+        if !matches!(self.mode, Mode::Terminal { .. }) || self.pending_terminal_entry.is_some() {
             return None;
         }
         let active = self.terminal_stream.as_ref()?;
@@ -3727,7 +3819,7 @@ impl App {
         let area = Rect::new(0, 0, size.width, size.height);
         let mobile = self.force_mobile || size.width < 60;
         let viewport =
-            crate::ui::layout::terminal_viewport(area, mobile, self.config.terminal_sidebar);
+            crate::ui::layout::terminal_viewport(area, mobile, self.effective_terminal_sidebar());
         (viewport.height.max(1), viewport.width.max(1))
     }
 
@@ -4153,6 +4245,7 @@ impl App {
         config.save()?;
         self.terminal_escape_chord = escape;
         self.config = config;
+        self.terminal_sidebar_override = None;
         self.mode = Mode::Workspace;
         self.set_status("Global settings saved");
         Ok(())
@@ -4191,6 +4284,7 @@ impl App {
                 };
                 self.terminal_escape_chord = escape;
                 self.config = config.clone();
+                self.terminal_sidebar_override = None;
                 if let Mode::GlobalSettings { form } = &mut self.mode {
                     form.reset_saved(config);
                 }
@@ -4392,33 +4486,111 @@ impl App {
             .collect()
     }
 
-    fn action_next_attention(&mut self, dir: isize) {
+    fn attention_target(&self, dir: isize) -> Option<usize> {
         let candidates = self.attention_candidates();
-
-        if candidates.is_empty() {
-            self.set_status("No sessions need attention");
-            return;
-        }
-
-        let next = if dir >= 0 {
+        if dir >= 0 {
             candidates
                 .iter()
-                .find(|&&i| i > self.tree_selected)
+                .find(|&&index| index > self.tree_selected)
                 .or_else(|| candidates.first())
                 .copied()
-                .unwrap()
         } else {
             candidates
                 .iter()
                 .rev()
-                .find(|&&i| i < self.tree_selected)
+                .find(|&&index| index < self.tree_selected)
                 .or_else(|| candidates.last())
                 .copied()
-                .unwrap()
-        };
+        }
+    }
 
-        self.tree_selected = next;
+    fn action_next_attention(&mut self, dir: isize) {
+        let Some(target) = self.attention_target(dir) else {
+            self.set_status("No sessions need attention");
+            return;
+        };
+        self.tree_selected = target;
         self.update_scroll();
+    }
+
+    fn action_switch_attention(&mut self, dir: isize, terminal: &mut Tui) -> Result<()> {
+        let Some(target) = self.attention_target(dir) else {
+            self.set_status("No sessions need attention");
+            return Ok(());
+        };
+        self.switch_to_flat_session(target, terminal)
+    }
+
+    fn action_switch_sibling_session(&mut self, dir: isize, terminal: &mut Tui) -> Result<()> {
+        let (project_idx, worktree_idx, session_idx) = match self.current_selection() {
+            Selection::Session(pi, wi, si) | Selection::Pane(pi, wi, si, _) => (pi, wi, si),
+            _ => {
+                self.set_status("No session selected");
+                return Ok(());
+            }
+        };
+        let count = self.workspace.projects[project_idx].worktrees[worktree_idx]
+            .sessions
+            .len();
+        if count <= 1 {
+            self.set_status("No other sessions in this worktree");
+            return Ok(());
+        }
+        let Some(target_session) = cyclic_sibling_index(session_idx, count, dir) else {
+            self.set_status("No other sessions in this worktree");
+            return Ok(());
+        };
+        let target = self.flat().iter().position(|entry| {
+            matches!(
+                entry,
+                FlatEntry::Session {
+                    project_idx: pi,
+                    worktree_idx: wi,
+                    session_idx: si,
+                } if *pi == project_idx && *wi == worktree_idx && *si == target_session
+            )
+        });
+        let Some(target) = target else {
+            self.set_status("Sibling session is not visible");
+            return Ok(());
+        };
+        self.switch_to_flat_session(target, terminal)
+    }
+
+    fn switch_to_flat_session(&mut self, target: usize, terminal: &mut Tui) -> Result<()> {
+        let Some(FlatEntry::Session {
+            project_idx,
+            worktree_idx,
+            session_idx,
+        }) = self.flat().get(target).cloned()
+        else {
+            self.set_status("Session not found");
+            return Ok(());
+        };
+        self.tree_selected = target;
+        self.update_scroll();
+        self.switch_terminal_session(project_idx, worktree_idx, session_idx, terminal)
+    }
+
+    fn switch_terminal_session(
+        &mut self,
+        project_idx: usize,
+        worktree_idx: usize,
+        session_idx: usize,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        // ^ [[Modal Terminal Navigation]] A target stream must pass the normal
+        // dimension-first baseline gate before Terminal input resumes.
+        self.mode = Mode::Workspace;
+        self.attach_session(project_idx, worktree_idx, session_idx, terminal)?;
+        if let Some(pending) = self.pending_terminal_entry {
+            self.mode = Mode::Terminal {
+                pane_id: pending.pane_id,
+            };
+            self.force_terminal_redraw = true;
+            self.needs_redraw = true;
+        }
+        Ok(())
     }
 
     fn action_dismiss_attention(&mut self) {
@@ -5206,6 +5378,17 @@ fn compute_visible_projects(
         .collect()
 }
 
+fn cyclic_sibling_index(current: usize, count: usize, dir: isize) -> Option<usize> {
+    if count <= 1 || current >= count {
+        return None;
+    }
+    Some(if dir >= 0 {
+        (current + 1) % count
+    } else {
+        (current + count - 1) % count
+    })
+}
+
 fn adjacent_visible_project_index(
     workspace: &WorkspaceState,
     visible: &HashSet<usize>,
@@ -5318,6 +5501,16 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+
+    #[test]
+    fn sibling_session_indices_wrap_and_reject_missing_siblings() {
+        assert_eq!(cyclic_sibling_index(0, 3, 1), Some(1));
+        assert_eq!(cyclic_sibling_index(2, 3, 1), Some(0));
+        assert_eq!(cyclic_sibling_index(0, 3, -1), Some(2));
+        assert_eq!(cyclic_sibling_index(1, 3, -1), Some(0));
+        assert_eq!(cyclic_sibling_index(0, 1, 1), None);
+        assert_eq!(cyclic_sibling_index(1, 1, 1), None);
+    }
 
     #[test]
     fn search_matches_empty_query_returns_nothing() {
@@ -5556,6 +5749,7 @@ mod tests {
             pending_terminal_resume: None,
             suspend_detector: SuspendDetector::new(),
             terminal_escape_chord,
+            terminal_sidebar_override: None,
             update_rx,
             update_available: None,
             is_mobile: false,
@@ -5861,6 +6055,272 @@ mod tests {
         let frame = app.terminal_surface(pane_id, terminal_id).unwrap();
         let (rows, cols) = app.terminal_pane_size(&terminal);
         assert_eq!((frame.rows, frame.cols), (rows, cols));
+
+        app.terminal_stream = None;
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn terminal_sidebar_toggle_is_process_local_and_resizes_the_active_stream() {
+        let pane_id = runtime::PaneId(1);
+        let terminal_id = runtime::TerminalId(1);
+        let mut project = make_project("sidebar-toggle");
+        let mut worktree = make_worktree("/tmp/sidebar-toggle");
+        worktree.sessions = vec![make_sess(false, runtime::AgentState::Idle)];
+        project.worktrees = vec![worktree];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        app.tree_selected = app
+            .flat()
+            .iter()
+            .position(|entry| matches!(entry, FlatEntry::Session { .. }))
+            .unwrap();
+
+        let (socket_path, listener) = terminal_stream_listener("sidebar-toggle");
+        app.runtime_client = runtime::Client::new(socket_path.clone());
+        let server_path = socket_path.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            assert_eq!(
+                read_runtime_request(&mut reader),
+                runtime::Request::Hello {
+                    protocol: runtime::PROTOCOL_VERSION,
+                }
+            );
+            write_runtime_message(
+                &mut stream,
+                &runtime::Response::Hello {
+                    protocol: runtime::PROTOCOL_VERSION,
+                    epoch: 7,
+                    capabilities: runtime::Capabilities::default(),
+                },
+            );
+            let (rows, cols) = match read_runtime_request(&mut reader) {
+                runtime::Request::TerminalSubscribe {
+                    pane_id: requested,
+                    rows,
+                    cols,
+                    ..
+                } => {
+                    assert_eq!(requested, pane_id);
+                    (rows, cols)
+                }
+                request => panic!("unexpected request: {request:?}"),
+            };
+            write_runtime_message(&mut stream, &runtime::Response::Ack { revision: 1 });
+            write_runtime_message(
+                &mut stream,
+                &runtime::TerminalServerMessage::Update(runtime::TerminalUpdate::Full(
+                    test_terminal_frame(pane_id, terminal_id, 1, rows, cols),
+                )),
+            );
+            let expanded = read_terminal_client_message(&mut reader);
+            let compact = read_terminal_client_message(&mut reader);
+            drop(listener);
+            let _ = std::fs::remove_file(server_path);
+            ((rows, cols), expanded, compact)
+        });
+        let backend = ratatui::backend::CrosstermBackend::new(std::io::stdout());
+        let mut terminal = ratatui::Terminal::with_options(
+            backend,
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Fixed(Rect::new(0, 0, 80, 12)),
+            },
+        )
+        .unwrap();
+
+        app.enter_terminal(pane_id, terminal_id, "sidebar toggle".into(), &terminal)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !matches!(app.mode, Mode::Terminal { .. }) && Instant::now() < deadline {
+            app.drain_terminal_stream();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(matches!(app.mode, Mode::Terminal { .. }));
+
+        app.dispatch(Action::ToggleTerminalSidebar, &mut terminal)
+            .unwrap();
+        assert_eq!(app.effective_terminal_sidebar(), TerminalSidebar::Expanded);
+        app.dispatch(Action::ToggleTerminalSidebar, &mut terminal)
+            .unwrap();
+        assert_eq!(app.effective_terminal_sidebar(), TerminalSidebar::Compact);
+        assert_eq!(app.config.terminal_sidebar, TerminalSidebar::Compact);
+
+        let (initial, expanded, compact) = server.join().unwrap();
+        app.terminal_stream = None;
+        assert_eq!(
+            expanded,
+            runtime::TerminalClientMessage::Resize {
+                rows: initial.0,
+                cols: initial.1.saturating_sub(30),
+            }
+        );
+        assert_eq!(
+            compact,
+            runtime::TerminalClientMessage::Resize {
+                rows: initial.0,
+                cols: initial.1,
+            }
+        );
+    }
+
+    #[test]
+    fn mobile_terminal_sidebar_toggle_is_unavailable() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.mode = Mode::Terminal {
+            pane_id: runtime::PaneId(1),
+        };
+        app.is_mobile = true;
+        let mut terminal = workspace_terminal();
+
+        app.dispatch(Action::ToggleTerminalSidebar, &mut terminal)
+            .unwrap();
+
+        assert_eq!(app.effective_terminal_sidebar(), TerminalSidebar::Compact);
+        assert!(app.terminal_sidebar_override.is_none());
+        assert!(app.notice.is_none());
+        assert!(app.terminal_sidebar_hint().is_none());
+    }
+
+    #[test]
+    fn terminal_sibling_switch_waits_for_the_target_baseline_before_accepting_input() {
+        let mut project = make_project("terminal-sibling-switch");
+        let mut worktree = make_worktree("/tmp/terminal-sibling-switch");
+        worktree.sessions = vec![
+            make_sess_with_id(1, runtime::AgentState::Idle),
+            make_sess_with_id(2, runtime::AgentState::Blocked),
+        ];
+        project.worktrees = vec![worktree];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        app.tree_selected = app
+            .flat()
+            .iter()
+            .position(|entry| matches!(entry, FlatEntry::Session { session_idx: 0, .. }))
+            .unwrap();
+        app.mode = Mode::Terminal {
+            pane_id: runtime::PaneId(1),
+        };
+
+        let (socket_path, listener) = terminal_stream_listener("terminal-sibling-switch");
+        app.runtime_client = runtime::Client::new(socket_path.clone());
+        let (subscribed_tx, subscribed_rx) = mpsc::channel();
+        let (continue_tx, continue_rx) = mpsc::channel();
+        let (input_tx, input_rx) = mpsc::channel();
+        let server_path = socket_path.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            assert!(matches!(
+                read_runtime_request(&mut reader),
+                runtime::Request::Hello { .. }
+            ));
+            write_runtime_message(
+                &mut stream,
+                &runtime::Response::Hello {
+                    protocol: runtime::PROTOCOL_VERSION,
+                    epoch: 8,
+                    capabilities: runtime::Capabilities::default(),
+                },
+            );
+            let (rows, cols) = match read_runtime_request(&mut reader) {
+                runtime::Request::TerminalSubscribe {
+                    pane_id,
+                    rows,
+                    cols,
+                    ..
+                } => {
+                    assert_eq!(pane_id, runtime::PaneId(2));
+                    (rows, cols)
+                }
+                request => panic!("unexpected request: {request:?}"),
+            };
+            write_runtime_message(&mut stream, &runtime::Response::Ack { revision: 2 });
+            subscribed_tx.send((rows, cols)).unwrap();
+            continue_rx.recv().unwrap();
+            let (resized_rows, resized_cols) = match read_terminal_client_message(&mut reader) {
+                runtime::TerminalClientMessage::Resize {
+                    rows: resized_rows,
+                    cols: resized_cols,
+                } => {
+                    assert_eq!(resized_rows, rows);
+                    assert_eq!(resized_cols, cols.saturating_sub(30));
+                    (resized_rows, resized_cols)
+                }
+                message => panic!("unexpected message: {message:?}"),
+            };
+            reader
+                .get_ref()
+                .set_read_timeout(Some(Duration::from_millis(50)))
+                .unwrap();
+            let mut line = String::new();
+            let no_input = reader.read_line(&mut line).is_err_and(|error| {
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                )
+            });
+            input_tx.send(no_input).unwrap();
+            write_runtime_message(
+                &mut stream,
+                &runtime::TerminalServerMessage::Update(runtime::TerminalUpdate::Full(
+                    test_terminal_frame(
+                        runtime::PaneId(2),
+                        runtime::TerminalId(2),
+                        2,
+                        resized_rows,
+                        resized_cols,
+                    ),
+                )),
+            );
+            std::thread::sleep(Duration::from_millis(20));
+            drop(listener);
+            let _ = std::fs::remove_file(server_path);
+        });
+        let mut terminal = workspace_terminal();
+
+        app.dispatch(Action::NextSession, &mut terminal).unwrap();
+        let _ = subscribed_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            app.current_selection(),
+            Selection::Session(0, 0, 1)
+        ));
+        assert!(matches!(app.mode, Mode::Terminal { pane_id } if pane_id == runtime::PaneId(2)));
+        assert!(app.pending_terminal_entry.is_some());
+        assert!(app.terminal_cursor().is_none());
+
+        app.dispatch(Action::ToggleTerminalSidebar, &mut terminal)
+            .unwrap();
+        app.dispatch(
+            Action::TerminalKey(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('x'),
+                crossterm::event::KeyModifiers::NONE,
+            )),
+            &mut terminal,
+        )
+        .unwrap();
+        continue_tx.send(()).unwrap();
+        assert!(input_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while app.pending_terminal_entry.is_some() && Instant::now() < deadline {
+            app.drain_terminal_stream();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.pending_terminal_entry.is_none());
+        assert!(matches!(app.mode, Mode::Terminal { pane_id } if pane_id == runtime::PaneId(2)));
+        assert!(app.terminal_cursor().is_some());
 
         app.terminal_stream = None;
         server.join().unwrap();
@@ -6693,6 +7153,23 @@ mod tests {
         }
     }
 
+    fn make_sess_with_id(
+        id: u64,
+        status: runtime::AgentState,
+    ) -> wsx_core::model::workspace::SessionInfo {
+        let mut session = make_sess(false, status);
+        session.session_id = runtime::SessionId(id);
+        session.pane_id = runtime::PaneId(id);
+        session.terminal_id = runtime::TerminalId(id);
+        session.display_name = format!("session-{id}");
+        session.layout = runtime::PaneLayout::Leaf {
+            pane_id: runtime::PaneId(id),
+        };
+        session.panes[0].pane_id = runtime::PaneId(id);
+        session.panes[0].terminal_id = runtime::TerminalId(id);
+        session
+    }
+
     fn make_navigation_test_app() -> App {
         let mut project = make_project("navigation");
         let mut worktree = make_worktree("./navigation");
@@ -7084,26 +7561,68 @@ mod tests {
                 .bg
                 .unwrap()
         );
+        assert_eq!(
+            app.terminal_command_hints(),
+            vec![
+                "(alt+g)commands",
+                "(z)workspace",
+                "(j/k/↑↓)session",
+                crate::ui::ATTENTION_ITERATION_HINT,
+                "(b)sidebar",
+                concat!("(q)", "quit"),
+            ]
+        );
+        for hint in ["(alt+g)commands", "(z)workspace", "(j/k/↑↓)session"] {
+            assert!(
+                terminal_footer.contains(hint),
+                "missing {hint}: {terminal_footer:?}"
+            );
+        }
         assert!(
-            terminal_footer.contains("(Alt+G Z)workspace"),
+            !terminal_footer.contains("(esc)cancel"),
             "{terminal_footer:?}"
         );
-        assert!(
-            terminal_footer.contains("(Alt+G Q)quit"),
-            "{terminal_footer:?}"
+        assert_eq!(
+            terminal.backend().buffer()[(11, 15)].fg,
+            crate::ui::theme::TEXT_MUTED
         );
-        assert!(
-            !terminal_footer.contains("(Ctrl+A W)workspace"),
-            "{terminal_footer:?}"
+
+        let _ = app
+            .terminal_escape_chord
+            .terminal_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('g'),
+                crossterm::event::KeyModifiers::ALT,
+            ));
+        assert!(app.terminal_prefix_pending());
+        assert_eq!(
+            app.terminal_command_hints(),
+            vec![
+                "(alt+g)commands",
+                "(esc)cancel",
+                "(z)workspace",
+                "(j/k/↑↓)session",
+                crate::ui::ATTENTION_ITERATION_HINT,
+                "(b)sidebar",
+                concat!("(q)", "quit"),
+                "(alt+g)send",
+            ]
         );
-        assert!(!terminal_footer.contains("(q)uit"), "{terminal_footer:?}");
-        assert!(
-            terminal_footer.find("(Alt+G Z)workspace") < terminal_footer.find("(Alt+G Q)quit"),
-            "{terminal_footer:?}"
-        );
-        assert!(
-            terminal_footer.contains(&format!("(Alt+G Q)quit  v{}", env!("CARGO_PKG_VERSION"))),
-            "{terminal_footer:?}"
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        let prefix_footer = (0..100)
+            .map(|x| terminal.backend().buffer()[(x, 15)].symbol())
+            .collect::<String>();
+        assert!(prefix_footer.contains(" TERMINAL "), "{prefix_footer:?}");
+        for hint in ["(alt+g)commands", "(esc)cancel", "(z)workspace"] {
+            assert!(
+                prefix_footer.contains(hint),
+                "missing {hint}: {prefix_footer:?}"
+            );
+        }
+        assert_eq!(
+            terminal.backend().buffer()[(11, 15)].fg,
+            crate::ui::theme::ACCENT
         );
     }
 
@@ -7261,9 +7780,13 @@ mod tests {
         let footer = (0..160)
             .map(|x| terminal.backend().buffer()[(x, 7)].symbol())
             .collect::<String>();
-        assert!(footer.contains("(i)dle iter."), "{footer:?}");
-        assert!(footer.contains("(a)ctive iter."), "{footer:?}");
-        assert!(footer.contains("(n)eeds"), "{footer:?}");
+        for hint in [
+            crate::ui::IDLE_ITERATION_HINT,
+            crate::ui::ACTIVE_ITERATION_HINT,
+            crate::ui::ATTENTION_ITERATION_HINT,
+        ] {
+            assert!(footer.contains(hint), "missing {hint}: {footer:?}");
+        }
     }
 
     #[test]
@@ -7489,6 +8012,49 @@ mod tests {
         assert!(rendered.contains("workspace"), "{rendered:?}");
         assert!(rendered.contains("mobile-terminal ›"), "{rendered:?}");
         assert!(rendered.contains("hello"), "{rendered:?}");
+        assert!(!rendered.contains(")sidebar"), "{rendered:?}");
+    }
+
+    #[test]
+    fn attention_targets_follow_visible_order_in_both_directions_and_wrap() {
+        let mut project = make_project("attention-order");
+        let mut worktree = make_worktree("/tmp/attention-order");
+        let idle = make_sess_with_id(1, runtime::AgentState::Idle);
+        let blocked = make_sess_with_id(2, runtime::AgentState::Blocked);
+        let done = make_sess_with_id(3, runtime::AgentState::Done);
+        let mut muted = make_sess_with_id(4, runtime::AgentState::Blocked);
+        muted.muted = true;
+        worktree.sessions = vec![idle, blocked, done, muted];
+        project.worktrees = vec![worktree];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        let session_position = |app: &App, session_idx| {
+            app.flat()
+                .iter()
+                .position(|entry| {
+                    matches!(
+                        entry,
+                        FlatEntry::Session {
+                            session_idx: si,
+                            ..
+                        } if *si == session_idx
+                    )
+                })
+                .unwrap()
+        };
+
+        app.tree_selected = session_position(&app, 0);
+        assert_eq!(app.attention_target(1), Some(session_position(&app, 1)));
+        app.tree_selected = session_position(&app, 1);
+        assert_eq!(app.attention_target(1), Some(session_position(&app, 2)));
+        assert_eq!(app.attention_target(-1), Some(session_position(&app, 2)));
+        app.tree_selected = session_position(&app, 2);
+        assert_eq!(app.attention_target(1), Some(session_position(&app, 1)));
     }
 
     #[test]

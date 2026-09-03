@@ -145,15 +145,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_workspace_header(frame, layout.header, app);
 
     let terminal_mode = matches!(app.mode, Mode::Terminal { .. });
+    let terminal_sidebar = app.effective_terminal_sidebar();
     let compact_terminal =
-        !is_mobile && terminal_mode && app.config.terminal_sidebar == TerminalSidebar::Compact;
+        !is_mobile && terminal_mode && terminal_sidebar == TerminalSidebar::Compact;
     let (tree_area, preview_area) = if is_mobile && terminal_mode {
         (Rect::default(), main_area)
     } else if is_mobile {
         (main_area, Rect::default())
     } else {
         let sidebar_width = if terminal_mode {
-            terminal_sidebar_width(app.config.terminal_sidebar)
+            terminal_sidebar_width(terminal_sidebar)
         } else {
             EXPANDED_SIDEBAR_WIDTH
         };
@@ -458,10 +459,20 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
+pub(crate) const IDLE_ITERATION_HINT: &str = "(i/I)idle";
+pub(crate) const ACTIVE_ITERATION_HINT: &str = "(a/A)active";
+pub(crate) const ATTENTION_ITERATION_HINT: &str = "(n/N)attention";
+const SESSION_ITERATION_HINTS: [&str; 3] = [
+    IDLE_ITERATION_HINT,
+    ACTIVE_ITERATION_HINT,
+    ATTENTION_ITERATION_HINT,
+];
+
 struct StatusBarView {
     mode: &'static str,
     badge: theme::ModeBadge,
     hints: Vec<String>,
+    accent_first_hint: bool,
     global_hints: Vec<String>,
     release: StatusReleaseView,
 }
@@ -522,13 +533,13 @@ fn status_bar_view(app: &App) -> StatusBarView {
             .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>();
-            hints.extend(["(i)dle iter.", "(a)ctive iter.", "(n)eeds"].map(str::to_string));
+            hints.extend(SESSION_ITERATION_HINTS.map(str::to_string));
             ("WORKSPACE", theme::ModeBadge::Navigation, hints)
         }
         Mode::Terminal { .. } => (
             "TERMINAL",
             theme::ModeBadge::Terminal,
-            vec![app.terminal_workspace_hint()],
+            app.terminal_command_hints(),
         ),
         Mode::Input { .. } => ("INPUT", theme::ModeBadge::Input, Vec::new()),
         Mode::Confirm { .. } => ("CONFIRM", theme::ModeBadge::Confirm, Vec::new()),
@@ -580,13 +591,15 @@ fn status_bar_view(app: &App) -> StatusBarView {
     // ^ Global quit hints stay right-aligned; single-key labels complete the word after the key.
     let global_hints = match &app.mode {
         Mode::Workspace => vec!["(,)config".into(), "(q)uit".into()],
-        Mode::Terminal { .. } => app.terminal_quit_hint().into_iter().collect(),
+        Mode::Terminal { .. } => Vec::new(),
         _ => Vec::new(),
     };
     StatusBarView {
         mode,
         badge,
         hints,
+        accent_first_hint: matches!(app.mode, Mode::Terminal { .. })
+            && app.terminal_prefix_pending(),
         global_hints,
         release: StatusReleaseView {
             current: env!("CARGO_PKG_VERSION"),
@@ -748,12 +761,31 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
     };
     let left_width = badge_width + Line::from(hint_text.as_str()).width();
     let pad = content_width.saturating_sub(left_width + global_width + activity_width);
-    let mut spans = vec![
-        Span::styled(mode_text, badge_style),
-        Span::styled(hint_text, Style::default().fg(theme::TEXT_MUTED)),
+    let mut spans = vec![Span::styled(mode_text, badge_style)];
+    let first_hint = view
+        .hints
+        .first()
+        .map(|hint| format!(" {hint}"))
+        .unwrap_or_default();
+    if view.accent_first_hint && hint_text.starts_with(&first_hint) {
+        spans.push(Span::styled(
+            first_hint.clone(),
+            Style::default().fg(theme::ACCENT).bold(),
+        ));
+        spans.push(Span::styled(
+            hint_text[first_hint.len()..].to_string(),
+            Style::default().fg(theme::TEXT_MUTED),
+        ));
+    } else {
+        spans.push(Span::styled(
+            hint_text,
+            Style::default().fg(theme::TEXT_MUTED),
+        ));
+    }
+    spans.extend([
         Span::raw(" ".repeat(pad)),
         Span::styled(global_text, Style::default().fg(theme::TEXT_MUTED)),
-    ];
+    ]);
     if let Some((text, style)) = activity {
         spans.push(Span::styled(text, style));
     }
@@ -808,6 +840,9 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         " Terminal mode",
         "$terminal_escape",
         "$terminal_quit",
+        "$terminal_session",
+        "$terminal_attention",
+        "$terminal_sidebar",
         "$terminal_literal",
         "",
         " Groups (optional)",
@@ -819,7 +854,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         " Global",
         "  [ / ]         Jump to prev / next project",
         "  a / A         Jump to next / prev active session (◉)",
-        "  n / N         Jump to next / prev session needing attention (●)",
+        "  n / N         Jump to next / prev attention session (●)",
         "  R             Refresh",
         "  ,             Open global settings",
         "  ?             Help",
@@ -839,6 +874,15 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
                 "$terminal_quit" => app
                     .terminal_quit_label()
                     .map(|label| format!("  {label:<14} Quit TUI")),
+                "$terminal_session" => app
+                    .terminal_quit_label()
+                    .map(|_| "  Prefix+k/j or ↑/↓  Previous / next sibling session".into()),
+                "$terminal_attention" => app
+                    .terminal_quit_label()
+                    .map(|_| "  Prefix+N / n  Previous / next session needing attention".into()),
+                "$terminal_sidebar" => app
+                    .terminal_sidebar_hint()
+                    .map(|_| "  Prefix+B      Toggle Terminal sidebar".into()),
                 "$terminal_literal" => Some(format!(
                     "  {:<14} Send literal prefix",
                     app.terminal_literal_escape_label()
