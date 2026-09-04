@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "pyg/headless-terminal": "enable"
+  },
+  "agents": [
+    "universal",
+    "claude-code",
+    "pi"
+  ]
+}
