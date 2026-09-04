@@ -2463,7 +2463,7 @@ fn bump(daemon: &Daemon, state: &mut State, entity: &str, id: u64) -> u64 {
 // boundary; crates/wsx-core/src/integration owns installation and bundled assets.
 fn terminal_agent_environment(pane_id: PaneId, runtime_generation: &str) -> Vec<(String, String)> {
     let mut environment = vec![
-        ("WSX_PANE_ID".into(), pane_id.to_string()),
+        (WSX_PANE_ID_ENV.into(), pane_id.to_string()),
         (
             WSX_RUNTIME_GENERATION_ENV.into(),
             runtime_generation.to_string(),
@@ -3867,7 +3867,7 @@ mod tests {
             terminal_agent_environment(PaneId(42), "0000000000000001:0000000000000001");
         assert!(environment
             .iter()
-            .any(|(name, value)| name == "WSX_PANE_ID" && value == "42"));
+            .any(|(name, value)| name == WSX_PANE_ID_ENV && value == "42"));
         assert!(environment.iter().any(|(name, value)| {
             name == WSX_RUNTIME_GENERATION_ENV && value == "0000000000000001:0000000000000001"
         }));
