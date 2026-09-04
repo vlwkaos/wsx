@@ -12,6 +12,7 @@ use std::{
 pub const PROTOCOL_VERSION: u32 = 11;
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+pub const WSX_PANE_ID_ENV: &str = "WSX_PANE_ID";
 pub const WSX_RUNTIME_GENERATION_ENV: &str = "WSX_RUNTIME_GENERATION";
 
 pub fn binary_identity(path: &Path) -> io::Result<String> {
