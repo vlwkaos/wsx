@@ -455,7 +455,6 @@ fn translate_key(key: KeyEvent) -> Action {
         (KeyModifiers::NONE, KeyCode::Char('-')) => Action::SplitPaneHorizontal,
         (KeyModifiers::NONE, KeyCode::Char('u')) => Action::AddRoutine,
         (KeyModifiers::NONE, KeyCode::Char('d')) => Action::Delete,
-        (KeyModifiers::NONE, KeyCode::Char('c')) => Action::Clean,
         (KeyModifiers::NONE, KeyCode::Char('e')) => Action::Edit,
         (KeyModifiers::NONE, KeyCode::Char(',')) => Action::EditGlobalConfig,
         (KeyModifiers::NONE, KeyCode::Char('r')) => Action::SetAlias,
@@ -862,6 +861,18 @@ mod tests {
                 TerminalEscapeAction::Forward(vec![key])
             );
         }
+    }
+
+    #[test]
+    fn c_has_no_workspace_command_but_remains_terminal_input() {
+        let c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(translate_key(c), Action::None);
+
+        let mut terminal_escape = EscapeSequence::parse("ctrl+a w").unwrap();
+        assert_eq!(
+            terminal_escape.terminal_key(c),
+            TerminalEscapeAction::Forward(vec![c])
+        );
     }
 
     #[test]

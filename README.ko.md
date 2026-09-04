@@ -6,7 +6,7 @@ wsx는 **Project → Worktree → Session → Pane** 구조를 키보드 중심 
 
 ## 주요 기능
 
-- Git project/worktree 검색, 생성, 삭제, 정리, 상태, alias, project group
+- Git project/worktree 검색, 생성, 확인 후 삭제, 상태, alias, project group
 - 영속 session과 선택적 가로/세로 pane 분할
 - application cursor shape, style, resize, keyboard, mouse를 지원하는 실제 터미널 viewport
 - 탐색용 Workspace mode와 직접 입력용 Terminal mode

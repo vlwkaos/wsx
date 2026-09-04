@@ -6,7 +6,7 @@ wsx presents **Project → Worktree → Session → Pane** in a keyboard-first T
 
 ## Features
 
-- Git project and worktree discovery, creation, deletion, cleanup, status, aliases, and project groups
+- Git project and worktree discovery, creation, confirmed deletion, status, aliases, and project groups
 - Persistent sessions and optional horizontal or vertical pane splits
 - Writable styled terminal viewport with application cursor shape, resize, keyboard, and mouse support
 - Workspace mode for navigation and Terminal mode for direct PTY input

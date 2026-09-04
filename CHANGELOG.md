@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+- Remove the Workspace `c` clean command because merged worktrees could still contain uncommitted or untracked files that its forced removal discarded; use confirmed `d` deletion instead.
 - Reserve `a` and `i` as two-chord Terminal command suffixes; configurations using either as the Workspace-focus suffix must choose another key.
 
 ### Features
@@ -15,6 +16,7 @@
 - Reject nested TUI startup inside wsx-managed terminals with an actionable error while keeping explicit CLI subcommands available.
 - Limit startup integration prompts to detected agent executables and return explicitly aborted Pi turns to idle instead of marking them done.
 - Keep Pi sessions working across automatic continuations by reconciling deferred settlement with Pi's authoritative idle state.
+- Report standard blocking Pi extension dialogs as blocked without requiring extension-specific wsx integration.
 
 ## [0.20.0] - 2026-09-03
 
