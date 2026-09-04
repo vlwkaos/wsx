@@ -483,16 +483,6 @@ pub fn delete_worktree(repo_path: &Path, wt_path: &Path, branch: &str) -> Result
     }
     git_worktree::remove_worktree(repo_path, wt_path, branch)
 }
-pub fn clean_merged_worktrees(repo_path: &Path, default_branch: &str) -> Result<Vec<String>> {
-    let candidates = git_worktree::merged_worktrees(repo_path, default_branch)?;
-    let mut removed = Vec::new();
-    for entry in candidates {
-        delete_worktree(repo_path, &entry.path, &entry.branch)?;
-        removed.push(entry.branch);
-    }
-    Ok(removed)
-}
-
 pub fn create_session(
     project_name: &str,
     _worktree_slug: &str,

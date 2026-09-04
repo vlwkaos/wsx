@@ -14,7 +14,6 @@ pub enum Action {
     SplitPaneHorizontal,
     AddRoutine,
     Delete,
-    Clean,
     Edit,
     EditGlobalConfig,
     SetAlias,

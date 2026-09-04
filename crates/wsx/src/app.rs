@@ -529,13 +529,6 @@ pub enum BgOutcome {
     WorktreeRemoved {
         label: String,
     },
-    CleanAborted {
-        wt_path: std::path::PathBuf,
-        msg: String,
-    },
-    ProjectsCleaned {
-        msg: String,
-    },
     WorktreeCreated {
         label: String,
     },
@@ -1067,16 +1060,6 @@ impl App {
                 // ^ A live refresh clears the tombstone after Git stops reporting the path.
                 self.spawn_runtime_refresh();
                 self.set_status(label);
-            }
-            Ok(BgOutcome::CleanAborted { wt_path, msg }) => {
-                // Merge check failed off-thread; restore the optimistically removed worktree
-                self.pending_deletions.remove(&wt_path);
-                self.spawn_runtime_refresh();
-                self.set_status(msg);
-            }
-            Ok(BgOutcome::ProjectsCleaned { msg }) => {
-                self.spawn_runtime_refresh();
-                self.set_status(msg);
             }
             Ok(BgOutcome::WorktreeCreated { label }) => {
                 self.spawn_runtime_refresh();
@@ -3071,7 +3054,6 @@ impl App {
             }
             Action::AddRoutine => self.action_add_routine()?,
             Action::Delete => self.action_delete()?,
-            Action::Clean => self.action_clean()?,
             Action::Edit => self.action_edit()?,
             Action::EditGlobalConfig => self.action_edit_global_config(terminal),
             Action::SetAlias => self.action_set_alias()?,
@@ -4040,86 +4022,6 @@ impl App {
                 };
             }
             Selection::None => {}
-        }
-        Ok(())
-    }
-
-    fn action_clean(&mut self) -> Result<()> {
-        if self.is_busy() {
-            self.set_status("Operation in progress");
-            return Ok(());
-        }
-        match self.current_selection() {
-            Selection::Worktree(pi, wi) => {
-                let (repo, wt_path, branch, default_branch, is_main) = {
-                    let p = &self.workspace.projects[pi];
-                    let wt = &p.worktrees[wi];
-                    (
-                        p.path.clone(),
-                        wt.path.clone(),
-                        wt.branch.clone(),
-                        p.default_branch.clone(),
-                        wt.is_main,
-                    )
-                };
-                if is_main {
-                    self.set_status("Cannot clean main worktree");
-                    return Ok(());
-                }
-                // Optimistic removal — merge check moved to bg thread to avoid blocking UI
-                let label = format!("Cleaned: {}", branch);
-                let abort_msg = format!("'{}' not merged into {}", branch, default_branch);
-                self.pending_deletions.insert(wt_path.clone());
-                self.workspace.projects[pi].worktrees.remove(wi);
-                self.rebuild_flat();
-                self.clamp_selected();
-                self.spawn_bg(format!("clean {}", branch), move || {
-                    if !git_worktree::is_branch_merged(&repo, &branch, &default_branch) {
-                        return Ok(BgOutcome::CleanAborted {
-                            wt_path,
-                            msg: abort_msg,
-                        });
-                    }
-                    ops::delete_worktree(&repo, &wt_path, &branch)?;
-                    Ok(BgOutcome::WorktreeRemoved { label })
-                });
-            }
-            Selection::Project(pi)
-            | Selection::Session(pi, _, _)
-            | Selection::Pane(pi, _, _, _) => {
-                let project = &self.workspace.projects[pi];
-                let path = project.path.clone();
-                let default_branch = project.default_branch.clone();
-                self.spawn_bg("clean project", move || {
-                    let removed = ops::clean_merged_worktrees(&path, &default_branch)?;
-                    let msg = if removed.is_empty() {
-                        "No merged worktrees to clean".into()
-                    } else {
-                        format!("Cleaned: {}", removed.join(", "))
-                    };
-                    Ok(BgOutcome::ProjectsCleaned { msg })
-                });
-            }
-            Selection::None => {
-                let snapshots: Vec<_> = self
-                    .workspace
-                    .projects
-                    .iter()
-                    .map(|project| (project.path.clone(), project.default_branch.clone()))
-                    .collect();
-                self.spawn_bg("clean all", move || {
-                    let mut total = 0usize;
-                    for (path, branch) in &snapshots {
-                        total += ops::clean_merged_worktrees(path, branch)?.len();
-                    }
-                    Ok(BgOutcome::ProjectsCleaned {
-                        msg: format!("Cleaned {} merged worktrees", total),
-                    })
-                });
-            }
-            Selection::RoutinesHeader(_) | Selection::Routine(_, _) => {
-                self.set_status("Clean applies to projects and worktrees")
-            }
         }
         Ok(())
     }
