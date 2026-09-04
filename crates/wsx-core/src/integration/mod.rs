@@ -267,7 +267,19 @@ mod tests {
 
     #[test]
     fn authoritative_assets_and_configs_report_completion() {
-        assert!(assets::primary(IntegrationTarget::Pi).contains("report(\"done\")"));
+        let pi = assets::primary(IntegrationTarget::Pi);
+        assert!(pi.contains("SETTLEMENT_DELAY_MS = 25"));
+        assert!(pi.contains("BLOCKING_UI_METHODS"));
+        assert!(pi.contains("observeBlockingUi(ctx.ui, updateBlocked)"));
+        assert!(
+            pi.contains("Promise.resolve(Reflect.apply(original, uiValue, args)).finally(release)")
+        );
+        assert!(pi.contains("restoreBlockingUi?.();"));
+        assert!(pi.contains("clearPendingSettlement();"));
+        assert!(pi.contains("ctx.isIdle() === false"));
+        assert!(pi.contains("report(settledRunAborted ? \"idle\" : \"done\", settledSessionRef)"));
+        assert!(pi.contains("stopReason === \"aborted\""));
+        assert!(pi.contains("pi.on(\"session_shutdown\""));
         assert!(assets::primary(IntegrationTarget::Omp).contains("report(\"done\", ctx)"));
         for target in [IntegrationTarget::Opencode, IntegrationTarget::Kilo] {
             assert!(
