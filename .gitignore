@@ -187,3 +187,7 @@ wsx-0.15.6-darwin-universal.tar.gz.asc
 wsx-0.15.6-darwin-universal.tar.gz
 wsx-0.15.6.all.bottle.tar.gz
 wsx-0.15.6-darwin-universal.tar.gz.sha256
+
+# skiller:start
+/.skiller/
+# skiller:end
