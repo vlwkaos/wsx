@@ -104,7 +104,8 @@ impl IntegrationTarget {
 
     pub const fn expected_version(self) -> u32 {
         match self {
-            Self::Pi | Self::Omp => 11,
+            Self::Pi => 14,
+            Self::Omp => 11,
             Self::Claude => 10,
             Self::Codex => 9,
             Self::Copilot | Self::Droid | Self::Qodercli => 4,
