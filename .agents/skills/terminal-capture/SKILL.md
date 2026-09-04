@@ -5,7 +5,6 @@ license: MIT
 metadata:
   author: vlwkaos
   version: "1.0.0"
-user-invocable: false
 ---
 
 # Terminal capture

@@ -1,7 +1,10 @@
 {
   "version": 1,
   "skills": {
-    "pyg/headless-terminal": "enable"
+    "pyg/headless-terminal": "enable",
+    "pyg/release": "enable",
+    "pyg/rust-release": "enable",
+    "pyg/terminal-capture": "enable"
   },
   "agents": [
     "universal",
