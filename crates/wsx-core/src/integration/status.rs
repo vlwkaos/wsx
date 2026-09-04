@@ -56,7 +56,7 @@ fn metadata_in(
         cli_value: target.cli_value(),
         label: target.label(),
         lifecycle: target.lifecycle(),
-        available: available || install_status != InstallStatus::Missing,
+        available,
         install_status,
         installed_version,
         expected_version: target.expected_version(),
@@ -67,14 +67,12 @@ pub fn scan() -> io::Result<Vec<IntegrationMetadata>> {
     IntegrationTarget::ALL.into_iter().map(metadata).collect()
 }
 
+fn needs_install(metadata: &IntegrationMetadata) -> bool {
+    metadata.available && metadata.install_status != InstallStatus::Current
+}
+
 pub fn scan_needing_install() -> io::Result<Vec<IntegrationMetadata>> {
-    Ok(scan()?
-        .into_iter()
-        .filter(|metadata| {
-            metadata.install_status == InstallStatus::Outdated
-                || (metadata.available && metadata.install_status == InstallStatus::Missing)
-        })
-        .collect())
+    Ok(scan()?.into_iter().filter(needs_install).collect())
 }
 
 #[cfg(test)]
@@ -89,9 +87,48 @@ pub(crate) fn metadata_for_test(
 mod tests {
     use super::*;
 
+    fn test_root(name: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/wsx-core-integration-tests")
+            .join(format!(
+                "{name}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ))
+    }
+
     #[test]
     fn parses_markers() {
         assert_eq!(version("// WSX_INTEGRATION_VERSION=10\n"), Some(10));
         assert_eq!(version("# WSX_INTEGRATION_VERSION=5"), Some(5));
+    }
+
+    #[test]
+    fn stale_adapter_without_agent_does_not_need_install() {
+        let root = test_root("stale-opencode");
+        let asset = paths::asset_path_in(&root, IntegrationTarget::Opencode);
+        fs::create_dir_all(asset.parent().unwrap()).unwrap();
+        fs::write(&asset, "// WSX_INTEGRATION_VERSION=1\n").unwrap();
+
+        let metadata = metadata_in(IntegrationTarget::Opencode, &root, false).unwrap();
+
+        assert_eq!(metadata.install_status, InstallStatus::Outdated);
+        assert!(!metadata.available);
+        assert!(!needs_install(&metadata));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn detected_agent_without_adapter_needs_install() {
+        let root = test_root("missing-pi");
+
+        let metadata = metadata_in(IntegrationTarget::Pi, &root, true).unwrap();
+
+        assert_eq!(metadata.install_status, InstallStatus::Missing);
+        assert!(metadata.available);
+        assert!(needs_install(&metadata));
     }
 }
