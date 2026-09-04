@@ -366,7 +366,7 @@ impl GlobalSettingsForm {
             (SettingField::WorkspaceKey, FieldEditor::Text(editor)) => {
                 normalize_binding_key(&editor.value, true)
                     .ok_or_else(|| {
-                        "workspace key must not be reserved b, j, k, n, or q".to_string()
+                        "workspace key must not be reserved a, b, i, j, k, n, or q".to_string()
                     })
                     .map(|key| {
                         let mut binding = current_escape_binding(&self.draft);
@@ -632,7 +632,7 @@ fn normalize_binding_key(value: &str, reserve_quit: bool) -> Option<String> {
         _ if value.chars().count() == 1 && !value.chars().any(char::is_whitespace) => value,
         _ => return None,
     };
-    (!reserve_quit || !matches!(normalized.as_str(), "b" | "j" | "k" | "n" | "q"))
+    (!reserve_quit || !matches!(normalized.as_str(), "a" | "b" | "i" | "j" | "k" | "n" | "q"))
         .then_some(normalized)
 }
 
@@ -1218,7 +1218,7 @@ mod tests {
         assert_eq!(parsed.prefix_key, "a");
         assert_eq!(parsed.workspace_key, "z");
         assert!(escape_binding("a z").is_none());
-        for suffix in ["b", "j", "k", "n", "q"] {
+        for suffix in ["a", "b", "i", "j", "k", "n", "q"] {
             assert!(escape_binding(&format!("ctrl+a {suffix}")).is_none());
         }
 

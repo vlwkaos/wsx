@@ -841,6 +841,8 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "$terminal_escape",
         "$terminal_quit",
         "$terminal_session",
+        "$terminal_idle",
+        "$terminal_active",
         "$terminal_attention",
         "$terminal_sidebar",
         "$terminal_literal",
@@ -853,6 +855,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "",
         " Global",
         "  [ / ]         Jump to prev / next project",
+        "  i / I         Jump to next / prev idle session (○)",
         "  a / A         Jump to next / prev active session (◉)",
         "  n / N         Jump to next / prev attention session (●)",
         "  R             Refresh",
@@ -877,6 +880,12 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
                 "$terminal_session" => app
                     .terminal_quit_label()
                     .map(|_| "  Prefix+k/j or ↑/↓  Previous / next sibling session".into()),
+                "$terminal_idle" => app
+                    .terminal_quit_label()
+                    .map(|_| "  Prefix+I / i  Previous / next idle session".into()),
+                "$terminal_active" => app
+                    .terminal_quit_label()
+                    .map(|_| "  Prefix+A / a  Previous / next active session".into()),
                 "$terminal_attention" => app
                     .terminal_quit_label()
                     .map(|_| "  Prefix+N / n  Previous / next session needing attention".into()),
