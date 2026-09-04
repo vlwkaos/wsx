@@ -97,6 +97,10 @@ pub(crate) enum TerminalEscapeAction {
     Escape,
     Quit,
     ToggleSidebar,
+    NextIdle,
+    PrevIdle,
+    NextActive,
+    PrevActive,
     NextAttention,
     PrevAttention,
     NextSession,
@@ -123,7 +127,10 @@ impl EscapeSequence {
         let suffix = match parts.get(1) {
             Some(part) => {
                 let suffix = KeyChord::parse(part, false)?;
-                if matches!(suffix.code, KeyCode::Char('b' | 'j' | 'k' | 'n' | 'q')) {
+                if matches!(
+                    suffix.code,
+                    KeyCode::Char('a' | 'b' | 'i' | 'j' | 'k' | 'n' | 'q')
+                ) {
                     return None;
                 }
                 Some(suffix)
@@ -157,10 +164,20 @@ impl EscapeSequence {
             self.pending_prefix = false;
             if self.matches_prefixed_escape(key) {
                 TerminalEscapeAction::Cancel
+            } else if self.prefix.matches(key) {
+                TerminalEscapeAction::Forward(vec![self.prefix.key_event()])
             } else if self.matches_prefixed_char(key, 'q') {
                 TerminalEscapeAction::Quit
             } else if self.matches_prefixed_char(key, 'b') {
                 TerminalEscapeAction::ToggleSidebar
+            } else if self.matches_prefixed_char(key, 'i') {
+                TerminalEscapeAction::NextIdle
+            } else if self.matches_prefixed_uppercase(key, 'I') {
+                TerminalEscapeAction::PrevIdle
+            } else if self.matches_prefixed_char(key, 'a') {
+                TerminalEscapeAction::NextActive
+            } else if self.matches_prefixed_uppercase(key, 'A') {
+                TerminalEscapeAction::PrevActive
             } else if self.matches_prefixed_char(key, 'n') {
                 TerminalEscapeAction::NextAttention
             } else if self.matches_prefixed_uppercase(key, 'N') {
@@ -175,8 +192,6 @@ impl EscapeSequence {
                 TerminalEscapeAction::PrevSession
             } else if suffix.matches_after_prefix(key, &self.prefix) {
                 TerminalEscapeAction::Escape
-            } else if self.prefix.matches(key) {
-                TerminalEscapeAction::Forward(vec![self.prefix.key_event()])
             } else {
                 TerminalEscapeAction::Forward(vec![self.prefix.key_event(), key])
             }
@@ -238,10 +253,12 @@ impl EscapeSequence {
     }
 
     fn matches_prefixed_terminal_command(&self, key: KeyEvent) -> bool {
-        ['b', 'n']
+        ['a', 'b', 'i', 'n']
             .into_iter()
             .any(|value| self.matches_prefixed_char(key, value))
-            || self.matches_prefixed_uppercase(key, 'N')
+            || ['A', 'I', 'N']
+                .into_iter()
+                .any(|value| self.matches_prefixed_uppercase(key, value))
     }
 
     fn take_pending_prefix(&mut self) -> Option<KeyEvent> {
@@ -309,6 +326,10 @@ pub fn poll_event(
                 TerminalEscapeAction::Escape => Action::InputEscape,
                 TerminalEscapeAction::Quit => Action::Quit,
                 TerminalEscapeAction::ToggleSidebar => Action::ToggleTerminalSidebar,
+                TerminalEscapeAction::NextIdle => Action::NextIdle,
+                TerminalEscapeAction::PrevIdle => Action::PrevIdle,
+                TerminalEscapeAction::NextActive => Action::NextActive,
+                TerminalEscapeAction::PrevActive => Action::PrevActive,
                 TerminalEscapeAction::NextAttention => Action::NextAttention,
                 TerminalEscapeAction::PrevAttention => Action::PrevAttention,
                 TerminalEscapeAction::NextSession => Action::NextSession,
@@ -493,7 +514,8 @@ mod tests {
     #[test]
     fn escape_sequence_reserves_terminal_command_suffixes() {
         for suffix in [
-            "b", "shift+b", "j", "shift+j", "k", "shift+k", "n", "shift+n", "q", "shift+q",
+            "a", "shift+a", "b", "shift+b", "i", "shift+i", "j", "shift+j", "k", "shift+k", "n",
+            "shift+n", "q", "shift+q",
         ] {
             assert!(
                 EscapeSequence::parse(&format!("ctrl+a {suffix}")).is_none(),
@@ -590,9 +612,44 @@ mod tests {
     }
 
     #[test]
-    fn escape_sequence_routes_attention_and_sibling_navigation() {
+    fn escape_sequence_routes_state_and_sibling_navigation() {
         let prefix = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
         let cases = [
+            (
+                KeyCode::Char('i'),
+                KeyModifiers::NONE,
+                TerminalEscapeAction::NextIdle,
+            ),
+            (
+                KeyCode::Char('i'),
+                KeyModifiers::CONTROL,
+                TerminalEscapeAction::NextIdle,
+            ),
+            (
+                KeyCode::Char('I'),
+                KeyModifiers::SHIFT,
+                TerminalEscapeAction::PrevIdle,
+            ),
+            (
+                KeyCode::Char('I'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                TerminalEscapeAction::PrevIdle,
+            ),
+            (
+                KeyCode::Char('a'),
+                KeyModifiers::NONE,
+                TerminalEscapeAction::NextActive,
+            ),
+            (
+                KeyCode::Char('A'),
+                KeyModifiers::SHIFT,
+                TerminalEscapeAction::PrevActive,
+            ),
+            (
+                KeyCode::Char('A'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                TerminalEscapeAction::PrevActive,
+            ),
             (
                 KeyCode::Char('n'),
                 KeyModifiers::NONE,
@@ -678,13 +735,21 @@ mod tests {
         );
         assert_eq!(translate_key(edit), Action::Edit);
 
-        for command in ['b', 'n'] {
+        for (command, modifiers) in [
+            ('a', KeyModifiers::NONE),
+            ('A', KeyModifiers::SHIFT),
+            ('b', KeyModifiers::NONE),
+            ('i', KeyModifiers::NONE),
+            ('I', KeyModifiers::SHIFT),
+            ('n', KeyModifiers::NONE),
+            ('N', KeyModifiers::SHIFT),
+        ] {
             assert_eq!(
                 sequence.workspace_key(prefix),
                 WorkspaceEscapeAction::Pending
             );
             assert_eq!(
-                sequence.workspace_key(KeyEvent::new(KeyCode::Char(command), KeyModifiers::NONE)),
+                sequence.workspace_key(KeyEvent::new(KeyCode::Char(command), modifiers)),
                 WorkspaceEscapeAction::Pending
             );
         }
@@ -780,6 +845,23 @@ mod tests {
             terminal_escape.terminal_key(uppercase_q),
             TerminalEscapeAction::Forward(vec![uppercase_q])
         );
+    }
+
+    #[test]
+    fn unprefixed_iteration_letters_are_forwarded_to_the_terminal() {
+        let mut terminal_escape = EscapeSequence::parse("ctrl+a w").unwrap();
+        for (value, modifiers) in [
+            ('i', KeyModifiers::NONE),
+            ('I', KeyModifiers::SHIFT),
+            ('a', KeyModifiers::NONE),
+            ('A', KeyModifiers::SHIFT),
+        ] {
+            let key = KeyEvent::new(KeyCode::Char(value), modifiers);
+            assert_eq!(
+                terminal_escape.terminal_key(key),
+                TerminalEscapeAction::Forward(vec![key])
+            );
+        }
     }
 
     #[test]

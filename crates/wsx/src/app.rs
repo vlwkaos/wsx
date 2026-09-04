@@ -2493,6 +2493,8 @@ impl App {
         hints.extend([
             hint(&workspace.to_ascii_lowercase(), "workspace"),
             hint("j/k/↑↓", "session"),
+            crate::ui::IDLE_ITERATION_HINT.to_string(),
+            crate::ui::ACTIVE_ITERATION_HINT.to_string(),
             crate::ui::ATTENTION_ITERATION_HINT.to_string(),
         ]);
         if !self.is_mobile {
@@ -2859,6 +2861,10 @@ impl App {
                     | Action::Quit
                     | Action::Resize
                     | Action::ToggleTerminalSidebar
+                    | Action::NextIdle
+                    | Action::PrevIdle
+                    | Action::NextActive
+                    | Action::PrevActive
                     | Action::NextAttention
                     | Action::PrevAttention
                     | Action::NextSession
@@ -2879,6 +2885,10 @@ impl App {
                 self.force_terminal_redraw = true;
                 self.needs_redraw = true;
             }
+            Action::NextIdle => self.action_switch_idle(1, terminal)?,
+            Action::PrevIdle => self.action_switch_idle(-1, terminal)?,
+            Action::NextActive => self.action_switch_active(1, terminal)?,
+            Action::PrevActive => self.action_switch_active(-1, terminal)?,
             Action::NextAttention => self.action_switch_attention(1, terminal)?,
             Action::PrevAttention => self.action_switch_attention(-1, terminal)?,
             Action::NextSession => self.action_switch_sibling_session(1, terminal)?,
@@ -3079,10 +3089,10 @@ impl App {
             Action::NextAttention => self.action_next_attention(1),
             Action::PrevAttention => self.action_next_attention(-1),
             Action::DismissAttention => self.action_dismiss_attention(),
-            Action::NextActive => self.action_next_active(),
-            Action::PrevActive => self.action_prev_active(),
-            Action::NextIdle => self.action_next_idle(),
-            Action::PrevIdle => self.action_prev_idle(),
+            Action::NextActive => self.action_move_active(1),
+            Action::PrevActive => self.action_move_active(-1),
+            Action::NextIdle => self.action_move_idle(1),
+            Action::PrevIdle => self.action_move_idle(-1),
             Action::SendCtrlC => self.action_send_ctrl_c()?,
             Action::AssignGroup => self.action_assign_group(),
             Action::EnterMove => self.action_enter_move(),
@@ -4377,36 +4387,33 @@ impl App {
             .collect()
     }
 
-    fn action_next_idle(&mut self) {
-        let candidates = self.idle_candidates();
-        if candidates.is_empty() {
-            self.set_status("No idle sessions");
-            return;
+    fn candidate_target(&self, candidates: &[usize], dir: isize) -> Option<usize> {
+        if dir >= 0 {
+            candidates
+                .iter()
+                .find(|&&index| index > self.tree_selected)
+                .or_else(|| candidates.first())
+                .copied()
+        } else {
+            candidates
+                .iter()
+                .rev()
+                .find(|&&index| index < self.tree_selected)
+                .or_else(|| candidates.last())
+                .copied()
         }
-        let next = candidates
-            .iter()
-            .find(|&&i| i > self.tree_selected)
-            .or_else(|| candidates.first())
-            .copied()
-            .unwrap();
-        self.tree_selected = next;
-        self.update_scroll();
     }
 
-    fn action_prev_idle(&mut self) {
-        let candidates = self.idle_candidates();
-        if candidates.is_empty() {
+    fn idle_target(&self, dir: isize) -> Option<usize> {
+        self.candidate_target(&self.idle_candidates(), dir)
+    }
+
+    fn action_move_idle(&mut self, dir: isize) {
+        let Some(target) = self.idle_target(dir) else {
             self.set_status("No idle sessions");
             return;
-        }
-        let prev = candidates
-            .iter()
-            .rev()
-            .find(|&&i| i < self.tree_selected)
-            .or_else(|| candidates.last())
-            .copied()
-            .unwrap();
-        self.tree_selected = prev;
+        };
+        self.tree_selected = target;
         self.update_scroll();
     }
 
@@ -4430,36 +4437,16 @@ impl App {
         Ok(())
     }
 
-    fn action_next_active(&mut self) {
-        let candidates = self.active_candidates();
-        if candidates.is_empty() {
-            self.set_status("No active sessions");
-            return;
-        }
-        let next = candidates
-            .iter()
-            .find(|&&i| i > self.tree_selected)
-            .or_else(|| candidates.first())
-            .copied()
-            .unwrap_or(candidates[0]);
-        self.tree_selected = next;
-        self.update_scroll();
+    fn active_target(&self, dir: isize) -> Option<usize> {
+        self.candidate_target(&self.active_candidates(), dir)
     }
 
-    fn action_prev_active(&mut self) {
-        let candidates = self.active_candidates();
-        if candidates.is_empty() {
+    fn action_move_active(&mut self, dir: isize) {
+        let Some(target) = self.active_target(dir) else {
             self.set_status("No active sessions");
             return;
-        }
-        let prev = candidates
-            .iter()
-            .rev()
-            .find(|&&i| i < self.tree_selected)
-            .or_else(|| candidates.last())
-            .copied()
-            .unwrap_or(candidates[0]);
-        self.tree_selected = prev;
+        };
+        self.tree_selected = target;
         self.update_scroll();
     }
 
@@ -4487,21 +4474,7 @@ impl App {
     }
 
     fn attention_target(&self, dir: isize) -> Option<usize> {
-        let candidates = self.attention_candidates();
-        if dir >= 0 {
-            candidates
-                .iter()
-                .find(|&&index| index > self.tree_selected)
-                .or_else(|| candidates.first())
-                .copied()
-        } else {
-            candidates
-                .iter()
-                .rev()
-                .find(|&&index| index < self.tree_selected)
-                .or_else(|| candidates.last())
-                .copied()
-        }
+        self.candidate_target(&self.attention_candidates(), dir)
     }
 
     fn action_next_attention(&mut self, dir: isize) {
@@ -4511,6 +4484,22 @@ impl App {
         };
         self.tree_selected = target;
         self.update_scroll();
+    }
+
+    fn action_switch_idle(&mut self, dir: isize, terminal: &mut Tui) -> Result<()> {
+        let Some(target) = self.idle_target(dir) else {
+            self.set_status("No idle sessions");
+            return Ok(());
+        };
+        self.switch_to_flat_session(target, terminal)
+    }
+
+    fn action_switch_active(&mut self, dir: isize, terminal: &mut Tui) -> Result<()> {
+        let Some(target) = self.active_target(dir) else {
+            self.set_status("No active sessions");
+            return Ok(());
+        };
+        self.switch_to_flat_session(target, terminal)
     }
 
     fn action_switch_attention(&mut self, dir: isize, terminal: &mut Tui) -> Result<()> {
@@ -6171,6 +6160,29 @@ mod tests {
     }
 
     #[test]
+    fn terminal_state_iteration_without_candidates_stays_in_terminal_and_reports_status() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.mode = Mode::Terminal {
+            pane_id: runtime::PaneId(1),
+        };
+        let mut terminal = workspace_terminal();
+
+        app.dispatch(Action::NextIdle, &mut terminal).unwrap();
+        assert!(matches!(app.mode, Mode::Terminal { .. }));
+        assert_eq!(
+            app.notice.as_ref().map(|notice| notice.title.as_str()),
+            Some("No idle sessions")
+        );
+
+        app.dispatch(Action::PrevActive, &mut terminal).unwrap();
+        assert!(matches!(app.mode, Mode::Terminal { .. }));
+        assert_eq!(
+            app.notice.as_ref().map(|notice| notice.title.as_str()),
+            Some("No active sessions")
+        );
+    }
+
+    #[test]
     fn mobile_terminal_sidebar_toggle_is_unavailable() {
         let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
         app.mode = Mode::Terminal {
@@ -7206,11 +7218,11 @@ mod tests {
             None,
         );
 
-        app.action_next_idle();
+        app.action_move_idle(1);
         assert_eq!(app.current_selection(), Selection::Session(0, 0, 1));
 
         app.tree_selected = 0;
-        app.action_prev_idle();
+        app.action_move_idle(-1);
         assert_eq!(app.current_selection(), Selection::Session(0, 0, 1));
     }
 
@@ -7567,6 +7579,8 @@ mod tests {
                 "(alt+g)commands",
                 "(z)workspace",
                 "(j/k/↑↓)session",
+                crate::ui::IDLE_ITERATION_HINT,
+                crate::ui::ACTIVE_ITERATION_HINT,
                 crate::ui::ATTENTION_ITERATION_HINT,
                 "(b)sidebar",
                 concat!("(q)", "quit"),
@@ -7601,6 +7615,8 @@ mod tests {
                 "(esc)cancel",
                 "(z)workspace",
                 "(j/k/↑↓)session",
+                crate::ui::IDLE_ITERATION_HINT,
+                crate::ui::ACTIVE_ITERATION_HINT,
                 crate::ui::ATTENTION_ITERATION_HINT,
                 "(b)sidebar",
                 concat!("(q)", "quit"),
@@ -7745,6 +7761,28 @@ mod tests {
                 .collect::<String>();
             assert!(!row.contains("Esc close"), "{row:?}");
         }
+    }
+
+    #[test]
+    fn help_advertises_terminal_idle_and_active_iteration() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.mode = Mode::Help;
+        let backend = ratatui::backend::TestBackend::new(100, 50);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Prefix+I / i"), "{rendered:?}");
+        assert!(rendered.contains("Prefix+A / a"), "{rendered:?}");
     }
 
     #[test]
@@ -8016,15 +8054,26 @@ mod tests {
     }
 
     #[test]
-    fn attention_targets_follow_visible_order_in_both_directions_and_wrap() {
-        let mut project = make_project("attention-order");
-        let mut worktree = make_worktree("/tmp/attention-order");
-        let idle = make_sess_with_id(1, runtime::AgentState::Idle);
-        let blocked = make_sess_with_id(2, runtime::AgentState::Blocked);
-        let done = make_sess_with_id(3, runtime::AgentState::Done);
-        let mut muted = make_sess_with_id(4, runtime::AgentState::Blocked);
+    fn state_targets_follow_visible_order_in_both_directions_and_wrap() {
+        let mut project = make_project("state-order");
+        let mut worktree = make_worktree("/tmp/state-order");
+        let idle_first = make_sess_with_id(1, runtime::AgentState::Idle);
+        let active_first = make_sess_with_id(2, runtime::AgentState::Working);
+        let idle_second = make_sess_with_id(3, runtime::AgentState::Idle);
+        let active_second = make_sess_with_id(4, runtime::AgentState::Working);
+        let blocked = make_sess_with_id(5, runtime::AgentState::Blocked);
+        let done = make_sess_with_id(6, runtime::AgentState::Done);
+        let mut muted = make_sess_with_id(7, runtime::AgentState::Blocked);
         muted.muted = true;
-        worktree.sessions = vec![idle, blocked, done, muted];
+        worktree.sessions = vec![
+            idle_first,
+            active_first,
+            idle_second,
+            active_second,
+            blocked,
+            done,
+            muted,
+        ];
         project.worktrees = vec![worktree];
         let mut app = make_test_app(
             GlobalConfig::default(),
@@ -8049,12 +8098,20 @@ mod tests {
         };
 
         app.tree_selected = session_position(&app, 0);
-        assert_eq!(app.attention_target(1), Some(session_position(&app, 1)));
+        assert_eq!(app.active_target(1), Some(session_position(&app, 1)));
+        assert_eq!(app.active_target(-1), Some(session_position(&app, 3)));
+
         app.tree_selected = session_position(&app, 1);
-        assert_eq!(app.attention_target(1), Some(session_position(&app, 2)));
-        assert_eq!(app.attention_target(-1), Some(session_position(&app, 2)));
+        assert_eq!(app.idle_target(1), Some(session_position(&app, 2)));
+        assert_eq!(app.idle_target(-1), Some(session_position(&app, 0)));
+
         app.tree_selected = session_position(&app, 2);
-        assert_eq!(app.attention_target(1), Some(session_position(&app, 1)));
+        assert_eq!(app.attention_target(1), Some(session_position(&app, 4)));
+        app.tree_selected = session_position(&app, 4);
+        assert_eq!(app.attention_target(1), Some(session_position(&app, 5)));
+        assert_eq!(app.attention_target(-1), Some(session_position(&app, 5)));
+        app.tree_selected = session_position(&app, 5);
+        assert_eq!(app.attention_target(1), Some(session_position(&app, 4)));
     }
 
     #[test]

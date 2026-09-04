@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Breaking Changes
+
+- Reserve `a` and `i` as two-chord Terminal command suffixes; configurations using either as the Workspace-focus suffix must choose another key.
+
+### Features
+
+- Add prefixed next/previous idle and active session iteration in Terminal mode while preserving unprefixed PTY input.
+
+### Bug Fixes
+
+- Reject nested TUI startup inside wsx-managed terminals with an actionable error while keeping explicit CLI subcommands available.
+- Limit startup integration prompts to detected agent executables and return explicitly aborted Pi turns to idle instead of marking them done.
+- Keep Pi sessions working across automatic continuations by reconciling deferred settlement with Pi's authoritative idle state.
+
 ## [0.20.0] - 2026-09-03
 
 ### Breaking Changes
