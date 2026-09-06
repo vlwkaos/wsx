@@ -1,24 +1,32 @@
 # Changelog
 
-## [Unreleased]
+## [0.21.0] - 2026-09-06
 
 ### Breaking Changes
 
-- Remove the Workspace `c` clean command because merged worktrees could still contain uncommitted or untracked files that its forced removal discarded; use confirmed `d` deletion instead.
-- Reserve `a` and `i` as two-chord Terminal command suffixes; configurations using either as the Workspace-focus suffix must choose another key.
+- Remove the Workspace `c` clean command because merged worktrees could still contain uncommitted or untracked files that its forced removal discarded; use confirmed `d` deletion instead. ([`268a741`](https://github.com/vlwkaos/wsx/commit/268a741030b09902bb2881b82dbfcd7513011a59))
+- Reserve `a` and `i` as two-chord Terminal command suffixes; configurations using either as the Workspace-focus suffix must choose another key. ([`9fd4d6d`](https://github.com/vlwkaos/wsx/commit/9fd4d6d7a76b34c7c3404f865ddf046e625b63b9))
 
 ### Features
 
-- Add prefixed next/previous idle and active session iteration in Terminal mode while preserving unprefixed PTY input.
+- Add prefixed next/previous idle and active session iteration in Terminal mode while preserving unprefixed PTY input. ([`9fd4d6d`](https://github.com/vlwkaos/wsx/commit/9fd4d6d7a76b34c7c3404f865ddf046e625b63b9))
 
 ### Bug Fixes
 
-- Reject nested TUI startup inside wsx-managed terminals with an actionable error while keeping explicit CLI subcommands available.
-- Limit startup integration prompts to detected agent executables and return explicitly aborted Pi turns to idle instead of marking them done.
-- Keep Pi sessions working across automatic continuations by reconciling deferred settlement with Pi's authoritative idle state.
-- Report standard blocking Pi extension dialogs as blocked without requiring extension-specific wsx integration.
-- Re-prompt for detected agent integrations when their expected adapter versions change, even within the same wsx development version.
-- Let protocol-compatible wsx versions share one daemon without downgrades. Version and build-aware TUI presence now blocks migration only while another TUI build or a fresh authoritative `working` agent remains; newer targets supersede stale queued builds, idle PTYs restore from saved recipes, and legacy replacement conflicts keep the workspace snapshot visible with an actionable notice.
+- Reject nested TUI startup inside wsx-managed terminals with an actionable error while keeping explicit CLI subcommands available. ([`990d33d`](https://github.com/vlwkaos/wsx/commit/990d33d95a1a5d3c3fedc2e94212d80d670689e3))
+- Limit startup integration prompts to detected agent executables and return explicitly aborted Pi turns to idle instead of marking them done. ([`547ff02`](https://github.com/vlwkaos/wsx/commit/547ff023839bc2636441dfe34fea6b5699d3cb21), [`08a8e79`](https://github.com/vlwkaos/wsx/commit/08a8e7915a3b1d12dc14b47cb9514aa3c9c08e7a))
+- Keep Pi sessions working across automatic continuations by reconciling deferred settlement with Pi's authoritative idle state. ([`08a8e79`](https://github.com/vlwkaos/wsx/commit/08a8e7915a3b1d12dc14b47cb9514aa3c9c08e7a))
+- Report standard blocking Pi extension dialogs as blocked without requiring extension-specific wsx integration. ([`08a8e79`](https://github.com/vlwkaos/wsx/commit/08a8e7915a3b1d12dc14b47cb9514aa3c9c08e7a))
+- Re-prompt for detected agent integrations when their expected adapter versions change, even within the same wsx development version. ([`8d4c2f7`](https://github.com/vlwkaos/wsx/commit/8d4c2f79c0e61f37e806c84639f9b74fc5845947))
+- Let protocol-compatible wsx versions share one daemon without downgrades. Version and build-aware TUI presence now blocks migration only while another TUI build or a fresh authoritative `working` agent remains; newer targets supersede stale queued builds, idle PTYs restore from saved recipes, and legacy replacement conflicts keep the workspace snapshot visible with an actionable notice. ([`8d4c2f7`](https://github.com/vlwkaos/wsx/commit/8d4c2f79c0e61f37e806c84639f9b74fc5845947))
+
+### Documentation
+
+- Add a bilingual current-product tour with six privacy-safe screenshots covering Workspace, session iteration, groups, Terminal panes, routines, and settings. ([`f924105`](https://github.com/vlwkaos/wsx/commit/f924105375e2904fd1976681b314eb1bd81fad25))
+
+### Maintenance
+
+- Add project-local headless terminal, capture, GitHub, and manual release workflow guidance. ([`24db03c`](https://github.com/vlwkaos/wsx/commit/24db03cf0786acf32a11ac55c7d9949f2c656160), [`bc42812`](https://github.com/vlwkaos/wsx/commit/bc4281269624e65e70ad1343b4e7edb6e6325d5f))
 
 ## [0.20.0] - 2026-09-03
 
