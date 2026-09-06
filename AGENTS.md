@@ -1,13 +1,15 @@
-release.flow: rust
+release.flow: rust-ci
 
 ## Release
 
-This is a Cargo **workspace** — the shared `~/.claude/skills/rust-release/release.sh` assumes a single-crate layout, so two manual steps are required every release:
+This is a Cargo workspace with separate branch CI and stable `v*` tag publication:
 
-- **Use the manual Rust release flow, not the shared `release.sh`.** The shared script requires a root `[package]` and exits with `Cargo.toml has no root [package] version to update`. Use `scripts/package-companion.sh` only for the universal companion archive; keep versioning, tagging, GitHub publication, crates.io publication, and Homebrew updates in the manual workspace flow.
+- **GitHub Actions owns publication.** `.github/workflows/ci.yml` validates branches and pull requests but ignores tags. `.github/workflows/release.yml` accepts stable `vX.Y.Z` tags only, verifies credentials and the tagged source, then publishes in dependency order. Do not publish the same release locally or rerun completed publication steps manually.
+- **Configure release credentials before tagging.** crates.io Trusted Publishing for `wsx-core` must select repository `vlwkaos/wsx` and workflow `release.yml`. Repository secret `TAP_TOKEN` must be a fine-grained token restricted to `vlwkaos/homebrew-tap` with Contents read/write. The release preflight verifies both without exposing values.
 - **Bump every workspace version and internal pin.** Update root `[workspace.package].version`; update pinned path dependencies in `crates/wsx/Cargo.toml`, `crates/wsx-terminal/Cargo.toml`, and `crates/wsx-daemon/Cargo.toml` to `=X.Y.Z`; regenerate `Cargo.lock`; and run the locked workspace gates before tagging.
-- **Build and update Homebrew manually.** Run `scripts/package-companion.sh` with Rust 1.96.1, both macOS targets, and Zig 0.15 to produce one universal archive containing adjacent `wsx` and `wsxd` executables plus notices. Verify both architectures, the checksum, optional signature, and bottle before creating the GitHub release. Update `Formula/wsx.rb` in `~/ws-ps/homebrew-tap` to install and test both binaries, with the final URL, version, archive SHA, bottle root URL, and bottle SHA; then validate, commit, and push. The tap remote may be ahead, so pull with rebase and retain the new release values on conflict.
-- **Binary releases are archive/Homebrew only.** `wsx-terminal`, `wsx-daemon`, and `wsx` are not published because the pinned Ghostty source is workspace-vendored and the runtime requires adjacent `wsx`/`wsxd` binaries. Publish `wsx-core` only if its package gate passes; never advertise `cargo install wsx` for 0.20.
+- **Require exact-commit branch CI before tagging.** Push the release commit, wait for every required branch-CI matrix job on that exact SHA, then create and push only the annotated `vX.Y.Z` tag after the irreversible-action confirmation. Watch the exact tag run and verify crates.io, GitHub assets, and the Homebrew tap.
+- **Ship adjacent universal binaries.** The release workflow uses `scripts/package-companion.sh` with Rust 1.96.1, both macOS targets, and Zig 0.15.2. It verifies one universal archive containing adjacent `wsx` and `wsxd` plus notices, then uses Homebrew itself on Apple Silicon and Intel runners to build, pour, test, and merge native bottle metadata before the final tap push.
+- **Binary releases are archive/Homebrew only.** `wsx-terminal`, `wsx-daemon`, and `wsx` remain unpublished because the pinned Ghostty source is workspace-vendored and runtime requires adjacent `wsx`/`wsxd`. Publish only `wsx-core`; never advertise `cargo install wsx`.
 - **Herdr provenance.** `vendor/herdr` is the squashed official `v0.8.2` subtree at commit `9eb521456ac0d19d3ab3d9d7cea3cca10baa8a4c`. It is reference-only: keep it excluded from the workspace, runtime, archives, and install instructions.
 
 ## good-to-go
@@ -21,6 +23,8 @@ This is a Cargo **workspace** — the shared `~/.claude/skills/rust-release/rele
 - **macOS `ht` README captures**: keep one capture TUI alive after it starts the isolated wsxd; relaunching the TUI can replace that audit-session daemon and invalidate runtime generations. Give `ht` one guard row while `stty` reports the intended app height, for example `ht --size 160x45` with `stty rows 44 cols 160`, so painting the bottom-right app cell does not scroll the PNG frame.
 - **Test runner**: use `cargo nextest run --workspace --locked` for unit/integration tests and `cargo test --workspace --locked --doc` for doctests, which Nextest does not support.
 - **Runtime-smoke binary freshness**: `scripts/runtime-smoke.py` executes `target/debug/wsx` and `target/debug/wsxd`; rebuild both after source changes before treating a missing wire field as a protocol failure.
+- **Universal architecture verification**: Apple `lipo -verify_arch` takes the input first, for example `lipo <binary> -verify_arch arm64 x86_64`.
+- **Homebrew formula validation**: clone the tap under `$(brew --repository)/Library/Taps/vlwkaos/homebrew-tap` before `brew style`, `audit`, `install`, or `test`; a duplicate scratch formula outside the tap namespace produces misleading generic RuboCop findings.
 - **Staged-tree Cargo isolation**: validate an exported Git index with an export-local `CARGO_TARGET_DIR`; a shared target can retain binaries built from concurrent worktree sources.
 - **Post-audit Cargo freshness**: if diagnostics cite `.work/index-check-*` or newly added tests are absent from `cargo test -- --list`, refresh touched source mtimes and clean only affected packages before retrying; a newer audit mirror can otherwise leave stale shared artifacts.
 - **Filtered Cargo tests**: `cargo test` accepts one positional `TESTNAME` filter; run distinct filters as separate commands.
