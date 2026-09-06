@@ -22,7 +22,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Condvar, Mutex, MutexGuard, Weak,
     },
     thread,
@@ -43,7 +43,7 @@ const AGENT_WAKE_LEASE_TTL: Duration = Duration::from_secs(30 * 60);
 const WAKE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const PRESENTATION_CADENCE: Duration = Duration::from_millis(8);
 static NEXT_LEASE_GENERATION: AtomicU64 = AtomicU64::new(1);
-static STOP_SIGNAL: AtomicI32 = AtomicI32::new(0);
+static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 const PORT_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const PORT_SCAN_TIMEOUT: Duration = Duration::from_millis(750);
 const MAX_PORT_SCAN_BYTES: u64 = 256 * 1024;
@@ -180,7 +180,6 @@ enum StopReason {
     Unexpected,
     Replacement,
     Intentional,
-    LoginEnded,
 }
 
 impl StopReason {
@@ -189,7 +188,6 @@ impl StopReason {
             Self::Unexpected => "unexpected",
             Self::Replacement => "replacement",
             Self::Intentional => "intentional",
-            Self::LoginEnded => "login_ended",
         }
     }
 }
@@ -656,21 +654,24 @@ pub fn run() -> io::Result<()> {
     Ok(())
 }
 
-extern "C" fn request_signal_shutdown(signal: libc::c_int) {
-    STOP_SIGNAL.store(signal, Ordering::Release);
+extern "C" fn request_signal_shutdown(_signal: libc::c_int) {
+    STOP_REQUESTED.store(true, Ordering::Release);
 }
 
 fn install_shutdown_signals() -> io::Result<()> {
-    for signal in [libc::SIGHUP, libc::SIGTERM] {
-        let previous = unsafe {
-            libc::signal(
-                signal,
-                request_signal_shutdown as *const () as libc::sighandler_t,
-            )
-        };
-        if previous == libc::SIG_ERR {
-            return Err(io::Error::last_os_error());
-        }
+    // ^ crates/wsx-core/src/runtime/client.rs detaches automatic starts before exec.
+    // Ignore terminal hangup here as well so direct starts keep host-owned PTYs alive.
+    if unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) } == libc::SIG_ERR {
+        return Err(io::Error::last_os_error());
+    }
+    let previous = unsafe {
+        libc::signal(
+            libc::SIGTERM,
+            request_signal_shutdown as *const () as libc::sighandler_t,
+        )
+    };
+    if previous == libc::SIG_ERR {
+        return Err(io::Error::last_os_error());
     }
     Ok(())
 }
@@ -684,14 +685,9 @@ fn retry_dirty_persistence(daemon: &Daemon) {
 
 fn advance_replacement(daemon: &Daemon) -> bool {
     let mut state = lock(&daemon.state);
-    let signal = STOP_SIGNAL.swap(0, Ordering::AcqRel);
-    if signal != 0 {
+    if STOP_REQUESTED.swap(false, Ordering::AcqRel) {
         state.stopping = true;
-        state.stop_reason = Some(if signal == libc::SIGHUP {
-            StopReason::LoginEnded
-        } else {
-            StopReason::Intentional
-        });
+        state.stop_reason = Some(StopReason::Intentional);
         daemon.changed.notify_all();
         daemon.plugin_changed.notify_all();
     }

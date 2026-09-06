@@ -9,6 +9,7 @@ use std::{
         fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         io::AsRawFd,
         net::UnixStream,
+        process::CommandExt,
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -83,13 +84,6 @@ impl Client {
                 Err(error) if daemon_is_stopped_error(&error) => Ok(()),
                 Err(error) => Err(error),
             },
-            ExistingDaemon::StaleLogin {
-                stream,
-                advertised_protocol,
-            } => {
-                shutdown_stale_daemon(self, stream, advertised_protocol)?;
-                wait_until_stopped(self)
-            }
             ExistingDaemon::Incompatible {
                 stream,
                 advertised_protocol,
@@ -115,12 +109,6 @@ impl Client {
     }
 
     fn connect(&self) -> io::Result<UnixStream> {
-        let stream = self.connect_unchecked_login()?;
-        validate_current_login_peer(&stream)?;
-        Ok(stream)
-    }
-
-    fn connect_unchecked_login(&self) -> io::Result<UnixStream> {
         validate_socket(&self.socket)?;
         let stream = UnixStream::connect(&self.socket)?;
         stream.set_read_timeout(Some(IO_TIMEOUT))?;
@@ -450,7 +438,6 @@ struct AuditToken {
 #[link(name = "bsm")]
 extern "C" {
     fn audit_token_to_euid(token: AuditToken) -> libc::uid_t;
-    fn audit_token_to_asid(token: AuditToken) -> libc::pid_t;
 }
 
 #[cfg(target_os = "macos")]
@@ -480,17 +467,9 @@ fn peer_audit_token(stream: &UnixStream) -> io::Result<AuditToken> {
 }
 
 #[cfg(target_os = "macos")]
-fn current_audit_session() -> io::Result<libc::pid_t> {
-    let (_left, right) = UnixStream::pair()?;
-    let token = peer_audit_token(&right)?;
-    // ^ libbsm accepts the complete kernel-issued token by value.
-    Ok(unsafe { audit_token_to_asid(token) })
-}
-
-#[cfg(target_os = "macos")]
 fn validate_peer_owner(stream: &UnixStream) -> io::Result<()> {
     let token = peer_audit_token(stream)?;
-    // ^ Both calls are side-effect-free identity reads for the connected processes.
+    // ^ The kernel-issued peer UID keeps the daemon boundary host-local to this account.
     if unsafe { audit_token_to_euid(token) } != unsafe { libc::geteuid() } {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -503,29 +482,6 @@ fn validate_peer_owner(stream: &UnixStream) -> io::Result<()> {
 #[cfg(not(target_os = "macos"))]
 fn validate_peer_owner(_stream: &UnixStream) -> io::Result<()> {
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn peer_is_current_login(stream: &UnixStream) -> io::Result<bool> {
-    // ^ libbsm accepts the complete kernel-issued token by value.
-    let peer = unsafe { audit_token_to_asid(peer_audit_token(stream)?) };
-    Ok(peer == current_audit_session()?)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn peer_is_current_login(_stream: &UnixStream) -> io::Result<bool> {
-    Ok(true)
-}
-
-fn validate_current_login_peer(stream: &UnixStream) -> io::Result<()> {
-    if peer_is_current_login(stream)? {
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::ConnectionAborted,
-            "wsxd belongs to an earlier macOS login session",
-        ))
-    }
 }
 
 pub fn ensure_available() -> io::Result<Availability> {
@@ -590,15 +546,6 @@ fn ensure_available_with_binary(
                 &mut bootstrap,
                 reset_crash_budget || planned,
             )
-        }
-        ExistingDaemon::StaleLogin {
-            stream,
-            advertised_protocol,
-        } => {
-            shutdown_stale_daemon(client, stream, advertised_protocol)?;
-            wait_until_stopped(client)?;
-            write_lifecycle_marker(client.socket(), "starting")?;
-            start_daemon(client, binary, &mut bootstrap, true)
         }
         ExistingDaemon::Ready {
             lifecycle_coordination: true,
@@ -780,6 +727,51 @@ fn ready_without_transition(
     }
 }
 
+struct SignalMaskGuard {
+    previous: libc::sigset_t,
+    restored: bool,
+}
+
+impl SignalMaskGuard {
+    fn block(signal: libc::c_int) -> io::Result<Self> {
+        let mut blocked = unsafe { std::mem::zeroed::<libc::sigset_t>() };
+        if unsafe { libc::sigemptyset(&mut blocked) } == -1
+            || unsafe { libc::sigaddset(&mut blocked, signal) } == -1
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let mut previous = unsafe { std::mem::zeroed::<libc::sigset_t>() };
+        let result = unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, &mut previous) };
+        if result != 0 {
+            return Err(io::Error::from_raw_os_error(result));
+        }
+        Ok(Self {
+            previous,
+            restored: false,
+        })
+    }
+
+    fn restore(&mut self) -> io::Result<()> {
+        if self.restored {
+            return Ok(());
+        }
+        let result = unsafe {
+            libc::pthread_sigmask(libc::SIG_SETMASK, &self.previous, std::ptr::null_mut())
+        };
+        if result != 0 {
+            return Err(io::Error::from_raw_os_error(result));
+        }
+        self.restored = true;
+        Ok(())
+    }
+}
+
+impl Drop for SignalMaskGuard {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
+
 fn start_daemon(
     client: &Client,
     binary: &Path,
@@ -789,17 +781,48 @@ fn start_daemon(
     wait_for_singleton_release(client.socket())?;
     record_start_attempt(&mut bootstrap.file, reset_crash_budget)?;
     let expected_binary_id = binary_identity(binary).ok();
-    let mut child = Command::new(binary)
+    let mut signal_mask = SignalMaskGuard::block(libc::SIGHUP)?;
+    let child_signal_mask = signal_mask.previous;
+    let mut command = Command::new(binary);
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!("could not start {}: {error}", binary.display()),
-            )
-        })?;
+        .stderr(Stdio::null());
+    // ^ crates/wsx-daemon/src/lib.rs owns steady-state signal policy. The parent
+    // blocks SIGHUP across spawn; the child detaches and ignores it before unblocking.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::signal(libc::SIGHUP, libc::SIG_IGN) == libc::SIG_ERR {
+                return Err(io::Error::last_os_error());
+            }
+            let result =
+                libc::pthread_sigmask(libc::SIG_SETMASK, &child_signal_mask, std::ptr::null_mut());
+            if result != 0 {
+                return Err(io::Error::from_raw_os_error(result));
+            }
+            Ok(())
+        });
+    }
+    let child = command.spawn();
+    if let Err(error) = signal_mask.restore() {
+        if let Ok(mut child) = child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        return Err(io::Error::new(
+            error.kind(),
+            format!("could not restore the daemon launcher signal mask: {error}"),
+        ));
+    }
+    let mut child = child.map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("could not start {}: {error}", binary.display()),
+        )
+    })?;
     thread::Builder::new()
         .name("wsxd-reaper".into())
         .spawn(move || {
@@ -1082,7 +1105,7 @@ fn background_recovery_allowed(socket: &Path) -> bool {
 }
 
 fn lifecycle_round_trip(client: &Client, request: &Request) -> io::Result<Response> {
-    let mut stream = client.connect_unchecked_login()?;
+    let mut stream = client.connect()?;
     match round_trip(
         &mut stream,
         &Request::Hello {
@@ -1101,17 +1124,6 @@ fn lifecycle_round_trip(client: &Client, request: &Request) -> io::Result<Respon
     }
 }
 
-fn shutdown_stale_daemon(
-    client: &Client,
-    stream: Option<UnixStream>,
-    advertised_protocol: Option<u32>,
-) -> io::Result<()> {
-    match stream {
-        Some(stream) => shutdown_handshaken_daemon(stream),
-        None => shutdown_incompatible_daemon(client, None, advertised_protocol),
-    }
-}
-
 #[derive(Debug)]
 enum ExistingDaemon {
     Ready {
@@ -1119,10 +1131,6 @@ enum ExistingDaemon {
         version_coordination: bool,
     },
     Missing,
-    StaleLogin {
-        stream: Option<UnixStream>,
-        advertised_protocol: Option<u32>,
-    },
     Incompatible {
         stream: Option<UnixStream>,
         advertised_protocol: Option<u32>,
@@ -1135,7 +1143,6 @@ fn daemon_needs_start(existing: ExistingDaemon) -> io::Result<bool> {
     match existing {
         ExistingDaemon::Ready { .. } => Ok(false),
         ExistingDaemon::Missing => Ok(true),
-        ExistingDaemon::StaleLogin { .. } => Ok(true),
         // ^ [[wsx Architecture]] Binary skew must not terminate daemon-owned live PTYs.
         ExistingDaemon::Incompatible {
             advertised_protocol,
@@ -1162,7 +1169,7 @@ fn incompatible_daemon_error(advertised_protocol: Option<u32>) -> io::Error {
 }
 
 fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
-    let mut stream = match client.connect_unchecked_login() {
+    let mut stream = match client.connect() {
         Ok(stream) => stream,
         Err(error)
             if matches!(
@@ -1174,17 +1181,12 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
         }
         Err(error) => return Err(error),
     };
-    let stale_login = !peer_is_current_login(&stream)?;
     match round_trip(
         &mut stream,
         &Request::Hello {
             protocol: PROTOCOL_VERSION,
         },
     )? {
-        Response::Hello { protocol, .. } if stale_login => Ok(ExistingDaemon::StaleLogin {
-            stream: Some(stream),
-            advertised_protocol: Some(protocol),
-        }),
         Response::Hello {
             protocol,
             capabilities,
@@ -1220,12 +1222,6 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
             lifecycle_coordination: capabilities.lifecycle_coordination,
             version_coordination: capabilities.version_coordination,
         }),
-        Response::Error(error) if error.code == "protocol_mismatch" && stale_login => {
-            Ok(ExistingDaemon::StaleLogin {
-                stream: None,
-                advertised_protocol: None,
-            })
-        }
         Response::Error(error) if error.code == "protocol_mismatch" => {
             Ok(ExistingDaemon::Incompatible {
                 stream: None,
@@ -1241,20 +1237,6 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "wsxd protocol handshake failed",
-        )),
-    }
-}
-
-fn shutdown_handshaken_daemon(mut stream: UnixStream) -> io::Result<()> {
-    match round_trip(&mut stream, &Request::Shutdown)? {
-        Response::Ack { .. } => Ok(()),
-        Response::Error(error) => Err(io::Error::other(format!(
-            "{}: {}",
-            error.code, error.message
-        ))),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unexpected wsxd shutdown response",
         )),
     }
 }
@@ -1288,7 +1270,7 @@ fn shutdown_incompatible_daemon(
 
 fn connect_unadvertised_legacy_daemon(client: &Client) -> io::Result<UnixStream> {
     for protocol in (1..PROTOCOL_VERSION).rev() {
-        let mut stream = client.connect_unchecked_login()?;
+        let mut stream = client.connect()?;
         match round_trip(&mut stream, &Request::Hello { protocol })? {
             Response::Hello {
                 protocol: accepted, ..
@@ -1296,7 +1278,7 @@ fn connect_unadvertised_legacy_daemon(client: &Client) -> io::Result<UnixStream>
                 if protocol == 1 {
                     // ^ Protocol 1 closes after Hello, so Shutdown requires a fresh connection.
                     drop(stream);
-                    return client.connect_unchecked_login();
+                    return client.connect();
                 }
                 return Ok(stream);
             }
@@ -1335,18 +1317,13 @@ fn wait_until_stopped(client: &Client) -> io::Result<()> {
     loop {
         match probe_existing_daemon(client) {
             Ok(ExistingDaemon::Missing) => return Ok(()),
-            Ok(
-                ExistingDaemon::Ready { .. }
-                | ExistingDaemon::StaleLogin { .. }
-                | ExistingDaemon::Incompatible { .. },
-            ) if Instant::now() < deadline => {}
+            Ok(ExistingDaemon::Ready { .. } | ExistingDaemon::Incompatible { .. })
+                if Instant::now() < deadline => {}
             Err(error) if daemon_is_stopped_error(&error) => return Ok(()),
             Err(_) if Instant::now() < deadline => {}
-            Ok(
-                ExistingDaemon::Ready { .. }
-                | ExistingDaemon::StaleLogin { .. }
-                | ExistingDaemon::Incompatible { .. },
-            ) => return Err(io::Error::new(io::ErrorKind::TimedOut, "wsxd did not stop")),
+            Ok(ExistingDaemon::Ready { .. } | ExistingDaemon::Incompatible { .. }) => {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "wsxd did not stop"))
+            }
             Err(error) => return Err(error),
         }
         thread::sleep(Duration::from_millis(50));
@@ -1555,12 +1532,6 @@ mod tests {
 
         assert!(!daemon_needs_start(probe_existing_daemon(&Client::new(path)).unwrap()).unwrap());
         assert!(daemon_needs_start(ExistingDaemon::Missing).unwrap());
-        let (stale, _) = UnixStream::pair().unwrap();
-        assert!(daemon_needs_start(ExistingDaemon::StaleLogin {
-            stream: Some(stale),
-            advertised_protocol: Some(PROTOCOL_VERSION),
-        })
-        .unwrap());
         server.join().unwrap();
     }
 
@@ -1928,11 +1899,10 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn local_socket_peer_matches_the_current_audit_session() {
+    fn local_socket_peer_matches_the_current_user() {
         let (client, server) = UnixStream::pair().unwrap();
         validate_peer_owner(&server).unwrap();
-        assert!(peer_is_current_login(&server).unwrap());
-        assert!(peer_is_current_login(&client).unwrap());
+        validate_peer_owner(&client).unwrap();
     }
 
     #[test]

@@ -1837,6 +1837,7 @@ impl App {
                 let project = &mut self.workspace.projects[project_idx];
                 project.routine_revision = revision;
                 project.routines = routines;
+                let expansion_changed = expand && !project.routines_expanded;
                 project.routines_expanded |= expand;
                 self.rebuild_flat();
                 match selection {
@@ -1855,6 +1856,10 @@ impl App {
                     RoutineSelection::Named(name) => self.select_routine(project_idx, Some(&name)),
                 }
                 self.clamp_selected();
+                if expansion_changed {
+                    self.mark_dirty();
+                    self.write_cache_if_dirty();
+                }
                 self.needs_redraw = true;
             }
             (RoutineResultKind::Refresh { generation, .. }, Err(error)) => {
@@ -2623,13 +2628,17 @@ impl App {
         let entry = self.flat().get(self.tree_selected).cloned();
         match entry {
             Some(FlatEntry::Project { idx }) => {
-                self.workspace.projects[idx].expanded = false;
-                self.rebuild_flat();
-                self.clamp_selected();
+                if self.workspace.projects[idx].expanded {
+                    self.workspace.projects[idx].expanded = false;
+                    self.mark_dirty();
+                    self.rebuild_flat();
+                    self.clamp_selected();
+                }
             }
             Some(FlatEntry::Worktree { project_idx: pi, worktree_idx: wi }) => {
                 if self.workspace.projects[pi].worktrees[wi].expanded {
                     self.workspace.projects[pi].worktrees[wi].expanded = false;
+                    self.mark_dirty();
                     self.rebuild_flat();
                     self.clamp_selected();
                 } else {
@@ -2664,6 +2673,7 @@ impl App {
             Some(FlatEntry::RoutinesHeader { project_idx: pi }) => {
                 if self.workspace.projects[pi].routines_expanded {
                     self.workspace.projects[pi].routines_expanded = false;
+                    self.mark_dirty();
                     self.rebuild_flat();
                     self.clamp_selected();
                 } else if let Some(pos) = self.flat().iter().position(|entry| matches!(entry, FlatEntry::Project { idx } if *idx == pi)) {
@@ -2685,6 +2695,7 @@ impl App {
             Some(FlatEntry::Project { idx: pi }) => {
                 if !self.workspace.projects[pi].expanded {
                     self.manually_expand_project(pi);
+                    self.mark_dirty();
                     self.rebuild_flat();
                 } else if !self.workspace.projects[pi].worktrees.is_empty() {
                     self.tree_selected += 1;
@@ -2697,6 +2708,7 @@ impl App {
             }) => {
                 if !self.workspace.projects[pi].worktrees[wi].expanded {
                     self.workspace.projects[pi].worktrees[wi].expanded = true;
+                    self.mark_dirty();
                     self.rebuild_flat();
                 } else if !self.workspace.projects[pi].worktrees[wi]
                     .sessions
@@ -2709,6 +2721,7 @@ impl App {
             Some(FlatEntry::RoutinesHeader { project_idx: pi }) => {
                 if !self.workspace.projects[pi].routines_expanded {
                     self.workspace.projects[pi].routines_expanded = true;
+                    self.mark_dirty();
                     self.rebuild_flat();
                 } else if !self.workspace.projects[pi].routines.is_empty() {
                     self.tree_selected += 1;
@@ -3163,6 +3176,9 @@ impl App {
             }
             _ => {}
         }
+        // ^ Expansion and other explicit local intent must be durable before the
+        // next blocking read because an SSH disconnect can terminate this TUI.
+        self.write_cache_if_dirty();
         Ok(())
     }
 
@@ -3608,18 +3624,21 @@ impl App {
                 } else {
                     self.manually_expand_project(pi);
                 }
+                self.mark_dirty();
                 self.rebuild_flat();
                 self.clamp_selected();
             }
             Selection::Worktree(pi, wi) => {
                 self.workspace.projects[pi].worktrees[wi].expanded =
                     !self.workspace.projects[pi].worktrees[wi].expanded;
+                self.mark_dirty();
                 self.rebuild_flat();
                 self.clamp_selected();
             }
             Selection::RoutinesHeader(pi) => {
                 self.workspace.projects[pi].routines_expanded =
                     !self.workspace.projects[pi].routines_expanded;
+                self.mark_dirty();
                 self.rebuild_flat();
                 self.clamp_selected();
             }
@@ -7231,6 +7250,95 @@ mod tests {
         assert_eq!(app.current_selection(), to);
         assert_eq!(app.force_preview_redraw, clear_preview);
         assert!(!app.force_terminal_redraw);
+    }
+
+    fn expandable_is_expanded(app: &App, selection: &Selection) -> bool {
+        match selection {
+            Selection::Project(project_idx) => app.workspace.projects[*project_idx].expanded,
+            Selection::Worktree(project_idx, worktree_idx) => {
+                app.workspace.projects[*project_idx].worktrees[*worktree_idx].expanded
+            }
+            Selection::RoutinesHeader(project_idx) => {
+                app.workspace.projects[*project_idx].routines_expanded
+            }
+            other => panic!("not an expandable workspace row: {other:?}"),
+        }
+    }
+
+    fn set_expandable(app: &mut App, selection: &Selection, expanded: bool) {
+        match selection {
+            Selection::Project(project_idx) => {
+                app.workspace.projects[*project_idx].expanded = expanded
+            }
+            Selection::Worktree(project_idx, worktree_idx) => {
+                app.workspace.projects[*project_idx].worktrees[*worktree_idx].expanded = expanded;
+            }
+            Selection::RoutinesHeader(project_idx) => {
+                app.workspace.projects[*project_idx].routines_expanded = expanded;
+            }
+            other => panic!("not an expandable workspace row: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn workspace_expansion_inputs_mark_cache_dirty_for_every_expandable_row() {
+        let expandable_rows = [
+            Selection::Project(0),
+            Selection::Worktree(0, 0),
+            Selection::RoutinesHeader(0),
+        ];
+        let mut terminal = workspace_terminal();
+
+        for (input, initially_expanded, expected_expanded) in [
+            ("left", true, false),
+            ("right", false, true),
+            ("select", true, false),
+            ("select", false, true),
+        ] {
+            for selection in &expandable_rows {
+                let mut app = make_navigation_test_app();
+                set_expandable(&mut app, selection, initially_expanded);
+                app.rebuild_flat();
+                select_rendered_navigation_entry(&mut app, selection.clone());
+                app.cache_dirty = false;
+
+                match input {
+                    "left" => app.nav_left(),
+                    "right" => app.nav_right(),
+                    "select" => app.action_select(&mut terminal).unwrap(),
+                    _ => unreachable!(),
+                }
+
+                assert_eq!(
+                    expandable_is_expanded(&app, selection),
+                    expected_expanded,
+                    "{input} did not change {selection:?} as expected"
+                );
+                assert!(
+                    app.cache_dirty,
+                    "{input} changed {selection:?} without marking the cache dirty"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_cursor_navigation_without_expansion_keeps_cache_clean() {
+        let mut child_app = make_navigation_test_app();
+        select_rendered_navigation_entry(&mut child_app, Selection::Project(0));
+        child_app.nav_right();
+        assert_eq!(child_app.current_selection(), Selection::Worktree(0, 0));
+        assert!(child_app.workspace.projects[0].expanded);
+        assert!(!child_app.cache_dirty);
+
+        let mut parent_app = make_navigation_test_app();
+        parent_app.workspace.projects[0].worktrees[0].expanded = false;
+        parent_app.rebuild_flat();
+        select_rendered_navigation_entry(&mut parent_app, Selection::Worktree(0, 0));
+        parent_app.nav_left();
+        assert_eq!(parent_app.current_selection(), Selection::Project(0));
+        assert!(!parent_app.workspace.projects[0].worktrees[0].expanded);
+        assert!(!parent_app.cache_dirty);
     }
 
     #[test]

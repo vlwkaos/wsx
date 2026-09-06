@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import socket
@@ -26,13 +27,17 @@ for path in (HOME, STATE, PROJECT):
 TERMINAL_HELPER = WORK / "terminal-helper.sh"
 TERMINAL_HELPER.write_text(
     "#!/bin/sh\n"
-    "printf 'wsx-smoke\\n'\n"
+    "printf 'wsx-smoke:%s\\n' \"$$\"\n"
     "while IFS= read -r line; do\n"
     "  case $line in\n"
     "    __WSX_REPORT__:*)\n"
     "      conversation=${line#__WSX_REPORT__:}\n"
     "      \"$WSX_AGENT_REPORT_BIN\" agent report \"$WSX_PANE_ID\" --provider codex "
     "--state working --conversation-id \"$conversation\" --prompt --resume --lifecycle\n"
+    "      ;;\n"
+    "    __WSX_PID__:*)\n"
+    "      marker=${line#__WSX_PID__:}\n"
+    "      printf 'wsx-helper:%s:%s\\n' \"$$\" \"$marker\"\n"
     "      ;;\n"
     "    *) printf '%s\\n' \"$line\" ;;\n"
     "  esac\n"
@@ -798,11 +803,92 @@ signal_process.terminate()
 signal_process.wait(timeout=5)
 wait_socket_stopped()
 assert SOCKET.with_suffix(".lifecycle").read_text().strip() == "intentional"
-signal_process = start()
-os.kill(signal_process.pid, signal.SIGHUP)
-signal_process.wait(timeout=5)
-wait_socket_stopped()
-assert SOCKET.with_suffix(".lifecycle").read_text().strip() == "login_ended"
+hup_process = start()
+hup_created = call("session_create", {
+    "worktree_id": worktree_id,
+    "label": "sighup-survives-login",
+    "command": [str(TERMINAL_HELPER)],
+    "rows": 12,
+    "cols": 40,
+})
+assert hup_created["type"] == "created", hup_created
+hup_session_id = hup_created["data"]["id"]
+hup_snapshot = call("snapshot")["data"]
+hup_session = next(item for item in hup_snapshot["sessions"] if item["id"] == hup_session_id)
+hup_pane_id = hup_session["focused_pane"]
+hup_pane = next(item for item in hup_snapshot["panes"] if item["id"] == hup_pane_id)
+hup_terminal_id = hup_pane["terminal_id"]
+hup_lifecycle = call("lifecycle_status")
+assert hup_lifecycle["type"] == "lifecycle", hup_lifecycle
+hup_lifecycle_identity = {
+    "epoch": hup_lifecycle["data"]["epoch"],
+    "binary_id": hup_lifecycle["data"]["binary_id"],
+    "started_unix_ms": hup_lifecycle["data"]["started_unix_ms"],
+}
+
+deadline = time.monotonic() + 3
+hup_child_pid = None
+while time.monotonic() < deadline:
+    frames = call("view", {"pane_ids": [hup_pane_id]})["data"]["frames"]
+    if frames:
+        hup_text = "".join(cell[0] for cell in frames[0]["cells"])
+        match = re.search(r"wsx-smoke:(\d+)", hup_text)
+        if match:
+            hup_child_pid = int(match.group(1))
+            break
+    time.sleep(0.05)
+assert hup_child_pid is not None, "terminal helper did not publish its process identity"
+os.kill(hup_child_pid, 0)
+
+os.kill(hup_process.pid, signal.SIGHUP)
+deadline = time.monotonic() + 5
+hup_reconnected_snapshot = None
+last_reconnect_error = None
+while time.monotonic() < deadline:
+    if hup_process.poll() is not None:
+        raise RuntimeError(f"wsxd exited after SIGHUP: {hup_process.returncode}")
+    try:
+        hup_reconnected_snapshot = call("snapshot")["data"]
+        break
+    except (OSError, RuntimeError) as error:
+        last_reconnect_error = error
+        time.sleep(0.05)
+assert hup_reconnected_snapshot is not None, last_reconnect_error
+assert SOCKET.exists()
+hup_lifecycle_after = call("lifecycle_status")
+assert hup_lifecycle_after["type"] == "lifecycle", hup_lifecycle_after
+assert {
+    "epoch": hup_lifecycle_after["data"]["epoch"],
+    "binary_id": hup_lifecycle_after["data"]["binary_id"],
+    "started_unix_ms": hup_lifecycle_after["data"]["started_unix_ms"],
+} == hup_lifecycle_identity
+hup_pane_after = next(
+    item for item in hup_reconnected_snapshot["panes"] if item["id"] == hup_pane_id
+)
+assert hup_pane_after["terminal_id"] == hup_terminal_id, hup_pane_after
+assert hup_pane_after["exited"] is False, hup_pane_after
+os.kill(hup_child_pid, 0)
+hup_marker = "reconnected"
+send_shell_command(hup_pane_id, f"__WSX_PID__:{hup_marker}", 50)
+deadline = time.monotonic() + 3
+hup_text = ""
+while time.monotonic() < deadline:
+    frames = call("view", {"pane_ids": [hup_pane_id]})["data"]["frames"]
+    if frames:
+        hup_text = "".join(cell[0] for cell in frames[0]["cells"])
+        if f"wsx-helper:{hup_child_pid}:{hup_marker}" in hup_text:
+            break
+    time.sleep(0.05)
+assert f"wsx-smoke:{hup_child_pid}" in hup_text, hup_text
+assert f"wsx-helper:{hup_child_pid}:{hup_marker}" in hup_text, hup_text
+hup_session = next(
+    item for item in call("snapshot")["data"]["sessions"] if item["id"] == hup_session_id
+)
+assert call("session_close", {
+    "session_id": hup_session_id,
+    "expected_revision": hup_session["revision"],
+})["type"] == "ack"
+shutdown(hup_process)
 
 contenders = [
     subprocess.Popen(

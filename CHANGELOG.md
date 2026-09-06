@@ -19,6 +19,8 @@
 - Report standard blocking Pi extension dialogs as blocked without requiring extension-specific wsx integration. ([`08a8e79`](https://github.com/vlwkaos/wsx/commit/08a8e7915a3b1d12dc14b47cb9514aa3c9c08e7a))
 - Re-prompt for detected agent integrations when their expected adapter versions change, even within the same wsx development version. ([`8d4c2f7`](https://github.com/vlwkaos/wsx/commit/8d4c2f79c0e61f37e806c84639f9b74fc5845947))
 - Let protocol-compatible wsx versions share one daemon without downgrades. Version and build-aware TUI presence now blocks migration only while another TUI build or a fresh authoritative `working` agent remains; newer targets supersede stale queued builds, idle PTYs restore from saved recipes, and legacy replacement conflicts keep the workspace snapshot visible with an actionable notice. ([`8d4c2f7`](https://github.com/vlwkaos/wsx/commit/8d4c2f79c0e61f37e806c84639f9b74fc5845947))
+- Keep the host-and-user-owned wsxd, terminal buffers, and agent processes alive across SSH disconnects and later same-user logins instead of cold-resuming conversations in replacement PTYs.
+- Persist project, worktree, and routine expansion changes before the next input wait so abrupt TUI loss restores the complete Workspace tree state.
 
 ### Documentation
 
