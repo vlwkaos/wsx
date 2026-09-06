@@ -12,7 +12,7 @@ use std::{
         process::CommandExt,
     },
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc, Arc,
@@ -772,24 +772,11 @@ impl Drop for SignalMaskGuard {
     }
 }
 
-fn start_daemon(
-    client: &Client,
-    binary: &Path,
-    bootstrap: &mut BootstrapLock,
-    reset_crash_budget: bool,
-) -> io::Result<Availability> {
-    wait_for_singleton_release(client.socket())?;
-    record_start_attempt(&mut bootstrap.file, reset_crash_budget)?;
-    let expected_binary_id = binary_identity(binary).ok();
+fn spawn_detached(command: &mut Command) -> io::Result<Child> {
     let mut signal_mask = SignalMaskGuard::block(libc::SIGHUP)?;
     let child_signal_mask = signal_mask.previous;
-    let mut command = Command::new(binary);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    // ^ crates/wsx-daemon/src/lib.rs owns steady-state signal policy. The parent
-    // blocks SIGHUP across spawn; the child detaches and ignores it before unblocking.
+    // ^ crates/wsx-daemon/src/lib.rs owns steady-state signal policy. Block
+    // SIGHUP across spawn, then detach and ignore it before the child unblocks.
     unsafe {
         command.pre_exec(move || {
             if libc::setsid() == -1 {
@@ -806,6 +793,7 @@ fn start_daemon(
             Ok(())
         });
     }
+
     let child = command.spawn();
     if let Err(error) = signal_mask.restore() {
         if let Ok(mut child) = child {
@@ -817,7 +805,24 @@ fn start_daemon(
             format!("could not restore the daemon launcher signal mask: {error}"),
         ));
     }
-    let mut child = child.map_err(|error| {
+    child
+}
+
+fn start_daemon(
+    client: &Client,
+    binary: &Path,
+    bootstrap: &mut BootstrapLock,
+    reset_crash_budget: bool,
+) -> io::Result<Availability> {
+    wait_for_singleton_release(client.socket())?;
+    record_start_attempt(&mut bootstrap.file, reset_crash_budget)?;
+    let expected_binary_id = binary_identity(binary).ok();
+    let mut command = Command::new(binary);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = spawn_detached(&mut command).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("could not start {}: {error}", binary.display()),
@@ -1895,6 +1900,25 @@ mod tests {
         assert!(background_recovery_allowed(&path));
         let _ = std::fs::remove_file(marker);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn detached_spawn_is_session_leader_and_survives_hangup() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("kill -HUP $$; exec sleep 5");
+
+        let mut child = spawn_detached(&mut command).unwrap();
+        thread::sleep(Duration::from_millis(20));
+        let pid = child.id() as libc::pid_t;
+        let session_id = unsafe { libc::getsid(pid) };
+        let status = child.try_wait().unwrap();
+        if status.is_none() {
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
+
+        assert_eq!(session_id, pid, "detached daemon must own its session");
+        assert!(status.is_none(), "detached daemon exited after SIGHUP");
     }
 
     #[cfg(target_os = "macos")]
