@@ -1,0 +1,358 @@
+name: Release
+
+"on":
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  preflight:
+    name: Verify release credentials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate release tag
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          VERSION=${GITHUB_REF_NAME#v}
+          MANIFEST_VERSION=$(awk -F '"' '/^version =/ { print $2; exit }' Cargo.toml)
+          test "$VERSION" = "$MANIFEST_VERSION"
+
+      - name: Verify Homebrew tap access
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          test -n "$GH_TOKEN"
+          test "$(gh api repos/vlwkaos/homebrew-tap --jq '.permissions.push')" = "true"
+
+      - name: Verify crates.io Trusted Publisher
+        uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
+
+  verify:
+    name: Verify tagged source
+    needs: [preflight]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.96.1
+          components: clippy
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+
+      - name: Install Nextest
+        uses: taiki-e/install-action@cca35edeb1d01366c2843b68fc3ca441446d73d3 # v2.77.1
+        with:
+          tool: nextest@0.9.143
+          fallback: none
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: release-verify
+
+      - name: Check workspace
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Run tests
+        run: cargo nextest run --workspace --locked --profile ci
+
+      - name: Run doctests
+        run: cargo test --workspace --locked --doc
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Build runtime smoke binaries
+        run: cargo build --locked -p wsx -p wsx-daemon
+
+      - name: Run runtime smoke test
+        run: python3 scripts/runtime-smoke.py
+
+      - name: Verify wsx-core package
+        run: cargo publish --dry-run --locked -p wsx-core
+
+  build-macos:
+    name: Build universal macOS archive
+    needs: [verify]
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.96.1
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: release-macos
+          save-if: false
+
+      - name: Build universal companion archive
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          ZIG=$(command -v zig) scripts/package-companion.sh "wsx-${VERSION}-darwin-universal.tar.gz"
+
+      - name: Verify archive
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          ARCHIVE="wsx-${VERSION}-darwin-universal.tar.gz"
+          test "$(target/wsx-${VERSION}-darwin-universal/wsx --version)" = "wsx ${VERSION}"
+          lipo "target/wsx-${VERSION}-darwin-universal/wsx" -verify_arch arm64 x86_64
+          lipo "target/wsx-${VERSION}-darwin-universal/wsxd" -verify_arch arm64 x86_64
+          test "$(tar -tzf "$ARCHIVE" | grep -Ec '^\./(wsx|wsxd|LICENSE-wsx|LICENSE-libghostty-vt|LICENSE-portable-pty.md|THIRD-PARTY-NOTICES.md)$')" -eq 6
+          shasum -a 256 "$ARCHIVE" | tee SHA256SUMS
+          shasum -a 256 "$ARCHIVE" | awk '{ print $1 }' | tee "${ARCHIVE}.sha256"
+
+      - name: Upload source assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          if-no-files-found: error
+          path: |
+            wsx-*-darwin-universal.tar.gz
+            wsx-*-darwin-universal.tar.gz.sha256
+            SHA256SUMS
+
+  release:
+    name: Create GitHub release
+    needs: [build-macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download source assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Verify checksums
+        run: cd release-assets && sha256sum --check SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION=${TAG#v}
+          awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md | tee release-notes.md
+          test -s release-notes.md
+          gh release create "$TAG" --verify-tag --title "wsx ${VERSION}" --notes-file release-notes.md release-assets/*
+
+  publish-core:
+    name: Publish wsx-core to crates.io
+    needs: [release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.96.1
+
+      - name: Authenticate to crates.io
+        id: crates-io-auth
+        uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
+
+      - name: Publish wsx-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
+        run: cargo publish --locked -p wsx-core
+
+  build-bottles:
+    name: Bottle (${{ matrix.name }})
+    needs: [publish-core]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Apple Silicon
+            os: macos-15
+            artifact: arm64-sequoia
+          - name: Intel
+            os: macos-15-intel
+            artifact: sequoia
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download source assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Prepare formula
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          ARCHIVE="wsx-${VERSION}-darwin-universal.tar.gz"
+          ARCHIVE_SHA=$(grep " ${ARCHIVE}$" release-assets/SHA256SUMS | awk '{ print $1 }')
+          test -n "$ARCHIVE_SHA"
+          TAP_DIR="$(brew --repository)/Library/Taps/vlwkaos/homebrew-tap"
+          mkdir -p "$(dirname "$TAP_DIR")"
+          git clone --depth 1 https://github.com/vlwkaos/homebrew-tap.git "$TAP_DIR"
+          python3 scripts/render-homebrew-formula.py --version "$VERSION" --archive-sha "$ARCHIVE_SHA" --output "$TAP_DIR/Formula/wsx.rb"
+          brew style "$TAP_DIR/Formula/wsx.rb"
+          brew audit --strict vlwkaos/homebrew-tap/wsx
+
+      - name: Build and test bottle
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          TAP_DIR="$(brew --repository)/Library/Taps/vlwkaos/homebrew-tap"
+          brew install --build-bottle vlwkaos/homebrew-tap/wsx
+          brew test vlwkaos/homebrew-tap/wsx
+          mkdir -p bottle-output
+          cd bottle-output
+          brew bottle --json --no-rebuild --root-url "https://github.com/vlwkaos/wsx/releases/download/${GITHUB_REF_NAME}" vlwkaos/homebrew-tap/wsx
+          BOTTLES=(wsx--*.bottle.tar.gz)
+          METADATA=(wsx--*.bottle.json)
+          test "${#BOTTLES[@]}" -eq 1
+          test "${#METADATA[@]}" -eq 1
+          tar -tzf "${BOTTLES[0]}" | grep -q '/INSTALL_RECEIPT\.json$'
+          tar -tzf "${BOTTLES[0]}" | grep -q '/\.brew/wsx\.rb$'
+          brew uninstall --force wsx
+          brew install "./${BOTTLES[0]}"
+          brew test vlwkaos/homebrew-tap/wsx
+          test "$(brew --prefix wsx)/bin/wsx" -ef "$(command -v wsx)"
+          test -x "$(brew --prefix wsx)/bin/wsxd"
+          lipo "$(brew --prefix wsx)/bin/wsx" -verify_arch arm64 x86_64
+          lipo "$(brew --prefix wsx)/bin/wsxd" -verify_arch arm64 x86_64
+          test "$(wsx --version)" = "wsx ${VERSION}"
+
+      - name: Upload bottle artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-bottle-${{ matrix.artifact }}
+          if-no-files-found: error
+          path: bottle-output/wsx--*.bottle.*
+
+  homebrew:
+    name: Publish bottles and update tap
+    needs: [build-bottles]
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download source assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Download bottle artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: homebrew-bottle-*
+          merge-multiple: true
+          path: bottle-assets
+
+      - name: Merge and validate bottle metadata
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          ARCHIVE="wsx-${VERSION}-darwin-universal.tar.gz"
+          ARCHIVE_SHA=$(grep " ${ARCHIVE}$" release-assets/SHA256SUMS | awk '{ print $1 }')
+          test -n "$ARCHIVE_SHA"
+          TAP_DIR="$(brew --repository)/Library/Taps/vlwkaos/homebrew-tap"
+          mkdir -p "$(dirname "$TAP_DIR")"
+          gh auth setup-git
+          gh repo clone vlwkaos/homebrew-tap "$TAP_DIR"
+          python3 scripts/render-homebrew-formula.py --version "$VERSION" --archive-sha "$ARCHIVE_SHA" --output "$TAP_DIR/Formula/wsx.rb"
+          cd "$TAP_DIR"
+          brew bottle --merge --write --no-commit "$GITHUB_WORKSPACE"/bottle-assets/*.bottle.json
+          brew style Formula/wsx.rb
+          brew audit --strict vlwkaos/homebrew-tap/wsx
+          grep -q 'arm64_sequoia:' Formula/wsx.rb
+          grep -Eq '(^|[[:space:]])sequoia:' Formula/wsx.rb
+          git add Formula/wsx.rb
+          git diff --cached --check
+          test "$(git diff --cached --name-only)" = "Formula/wsx.rb"
+
+      - name: Upload bottle release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          { cat release-assets/SHA256SUMS; shasum -a 256 bottle-assets/*.bottle.tar.gz; } | sort | tee SHA256SUMS
+          gh release upload "$TAG" bottle-assets/*.bottle.tar.gz bottle-assets/*.bottle.json SHA256SUMS --clobber
+
+      - name: Push Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          TAP_DIR="$(brew --repository)/Library/Taps/vlwkaos/homebrew-tap"
+          cd "$TAP_DIR"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "wsx ${VERSION}"
+          git push origin main
