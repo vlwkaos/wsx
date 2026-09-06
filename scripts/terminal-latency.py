@@ -130,6 +130,9 @@ config.write_text(
 )
 config.chmod(0o600)
 env = os.environ.copy()
+# ^ AGENTS.md: isolated smoke must not inherit outer wsx pane authority.
+for key in ("WSX_PANE_ID", "WSX_RUNTIME_GENERATION"):
+    env.pop(key, None)
 env.update({
     "HOME": str(HOME),
     "XDG_STATE_HOME": str(STATE),
