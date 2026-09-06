@@ -17,6 +17,8 @@
 - Limit startup integration prompts to detected agent executables and return explicitly aborted Pi turns to idle instead of marking them done.
 - Keep Pi sessions working across automatic continuations by reconciling deferred settlement with Pi's authoritative idle state.
 - Report standard blocking Pi extension dialogs as blocked without requiring extension-specific wsx integration.
+- Re-prompt for detected agent integrations when their expected adapter versions change, even within the same wsx development version.
+- Let protocol-compatible wsx versions share one daemon without downgrades. Version and build-aware TUI presence now blocks migration only while another TUI build or a fresh authoritative `working` agent remains; newer targets supersede stale queued builds, idle PTYs restore from saved recipes, and legacy replacement conflicts keep the workspace snapshot visible with an actionable notice.
 
 ## [0.20.0] - 2026-09-03
 

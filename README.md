@@ -4,6 +4,8 @@ Project-first terminal workspace manager for Git worktrees.
 
 wsx presents **Project → Worktree → Session → Pane** in a keyboard-first TUI. Sessions stay visible as task contexts. Multi-pane sessions expose optional pane rows beneath them. The adjacent `wsxd` daemon owns PTYs and pinned `libghostty-vt` state, so terminals continue running while clients disconnect.
 
+![wsx Workspace with a running agent and terminal preview](docs/screenshots/01-workspace-overview.png)
+
 ## Features
 
 - Git project and worktree discovery, creation, confirmed deletion, status, aliases, and project groups
@@ -17,9 +19,41 @@ wsx presents **Project → Worktree → Session → Pane** in a keyboard-first T
 - Project routines through the existing asched boundary
 - macOS and Linux runtime support
 
+## Product tour
+
+### Iterate active and attention sessions
+
+Use `a/A` for active sessions and `n/N` for sessions that need attention.
+
+![Attention iteration selecting a blocked Codex session](docs/screenshots/02-attention-iteration.png)
+
+### Group work and surface stale projects
+
+Persistent groups filter the workspace, while inactive projects remain visible as stale.
+
+![The later group filtered to a stale project](docs/screenshots/03-groups-and-stale.png)
+
+### Work directly in split terminals
+
+Terminal mode keeps the session tree, pane selection, foreground state, and detected ports visible.
+
+![Terminal mode with a split server session](docs/screenshots/04-terminal-and-panes.png)
+
+### Schedule project routines
+
+Choose an agent preset, then configure its direct argv, schedule, and prompt.
+
+![Pi routine editor](docs/screenshots/05-routine-editor.png)
+
+### Configure workspace behavior
+
+Typed settings cover workspace, view, terminal, and runtime behavior.
+
+![Global settings with automatic stale-project collapse](docs/screenshots/06-global-settings.png)
+
 ## Install
 
-Release archives contain adjacent `wsx` and `wsxd` executables. The Homebrew formula must be updated to the 0.20 archive before publication.
+Release archives contain adjacent `wsx` and `wsxd` executables. The Homebrew formula installs both from the same versioned archive.
 
 ### Build from source
 
@@ -42,14 +76,14 @@ Create a host-native release bundle:
 cargo xtask build  # target/wsx-dev/{wsx,wsxd}
 ```
 
-On startup, the TUI detects installed agent CLIs with missing or outdated wsx integrations and offers to install them. Declining suppresses the prompt until the next wsx version. Install one integration directly with:
+On startup, the TUI detects installed agent CLIs with missing or outdated wsx integrations and offers to install them. Declining suppresses the prompt until either the wsx version or an expected adapter version changes. Install one integration directly with:
 
 ```bash
 wsx agent install pi
 wsx agent install claude
 ```
 
-Restart the affected agent after installation. Installers honor each agent's standard configuration-directory override and preserve unrelated configuration. Current integrations also report the provider's native session ID or path. After a cold wsxd restart, wsx starts a fresh process with that provider's resume command and continues the reported conversation. Panes without a reference keep their saved generic launch recipe. Unsupported, malformed, or duplicate references open a clean shell instead of starting a new agent conversation.
+Restart the affected agent after installation. Installers honor each agent's standard configuration-directory override and preserve unrelated configuration. Current integrations also report the provider's native session ID or path. Pi reports standard blocking selection, confirmation, input, editor, and custom dialogs as blocked without extension-specific wiring. After a cold wsxd restart, wsx starts a fresh process with that provider's resume command and continues the reported conversation. Panes without a reference keep their saved generic launch recipe. Unsupported, malformed, or duplicate references open a clean shell instead of starting a new agent conversation.
 
 ## Navigation
 
@@ -146,9 +180,9 @@ wsx routine add weekday-review \
 
 Each `--arg` is one direct argv item; wsx does not invoke a shell. The caller should inspect the resulting routine with `wsx routine show weekday-review` before enabling or running untrusted commands.
 
-`wsx runtime status` and `wsx daemon stop` never start the daemon. `wsx daemon recover` explicitly clears the shared crash budget and starts wsxd. `Q` in Workspace asks for confirmation, gracefully stops wsxd and all live PTYs, then exits the TUI. Normal startup uses an owner-only coordinator lock to serialize probe, recovery, replacement, spawn, and readiness across clients while the daemon lock remains the final single-owner fence. A missing daemon restarts automatically at most three times in 60 seconds; an authenticated same-login daemon that hangs or returns unsafe data is preserved and reported instead of killed. Intentional stop and login-end markers prevent background clients from undoing those boundaries.
+`wsx runtime status` and `wsx daemon stop` never start the daemon. `wsx daemon recover` explicitly clears the shared crash budget and starts wsxd. Plain `wsx` and `wsx --mobile` reject nested TUI startup inside a wsx-managed terminal, while explicit CLI subcommands remain available. `Q` in Workspace asks for confirmation, gracefully stops wsxd and all live PTYs, then exits the TUI. Normal startup uses an owner-only coordinator lock to serialize probe, recovery, replacement, spawn, and readiness across clients while the daemon lock remains the final single-owner fence. A missing daemon restarts automatically at most three times in 60 seconds; an authenticated same-login daemon that hangs or returns unsafe data is preserved and reported instead of killed. Intentional stop and login-end markers prevent background clients from undoing those boundaries.
 
-On macOS, wsx verifies the connected daemon's owner and audit session from the kernel. A daemon left by an earlier login is stopped automatically, then its saved sessions restart under the current login security context. Lifecycle-capable daemons advertise their startup binary identity across protocol versions. When a newer build appears, an old daemon remains usable and defers replacement until no live runtimes remain; it then stops itself and the next elected client starts the adjacent fixed daemon. A compatible pre-lifecycle daemon stays available until its next natural stop. An incompatible pre-lifecycle daemon remains protected and requires the matching wsx binary or explicit `wsx daemon stop`. Cross-version process handoff is not supported, so daemon crash or replacement creates fresh PTYs and terminal buffers from saved recipes while preserving wsx identities. `WSX_DAEMON_BIN` and `WSX_SOCKET` are trusted same-user overrides.
+On macOS, wsx verifies the connected daemon's owner and audit session from the kernel. A daemon left by an earlier login is stopped automatically, then its saved sessions restart under the current login security context. Protocol-compatible wsx versions share one lifecycle-capable daemon. TUI instances renew bounded version and build presence: an older TUI keeps using a newer daemon without requesting a downgrade and tells you which wsx version to open. A newer TUI queues its adjacent daemon and reports why migration is waiting. wsxd replaces itself only after other-version or other-build TUI instances exit and no fresh generation-authorized agent reports `working`; equal-version development builds use build time to prevent stale targets from winning. Idle PTYs do not block migration and restart from saved recipes under the elected daemon. An already-running 0.20 wsxd still enforces its original zero-live-runtime fence because a new client cannot retrofit policy into the old process. Compatible pre-lifecycle daemons remain available until their next natural stop, while incompatible ones require a matching wsx binary or explicit stop. Cross-version process handoff is not supported, so replacement creates fresh PTYs and terminal buffers while preserving wsx identities. Use `wsx daemon stop` only when an immediate restart may close live PTYs. `WSX_DAEMON_BIN` and `WSX_SOCKET` are trusted same-user overrides.
 
 ## Plugins and agents
 
