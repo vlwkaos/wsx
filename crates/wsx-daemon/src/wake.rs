@@ -1,5 +1,7 @@
 // ^ [[wsx Architecture]] Wake assertions are bounded children of wsxd and never infer agent state.
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(target_os = "macos")]
+use std::time::Instant;
 
 const ASSERTION_LIFETIME_SECS: u64 = 10 * 60;
 const RENEW_AFTER: Duration = Duration::from_secs(9 * 60);
@@ -183,21 +185,7 @@ mod platform {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-mod platform {
-    use std::time::Instant;
-
-    pub(crate) struct Controller;
-
-    impl Controller {
-        pub(crate) fn new() -> Self {
-            Self
-        }
-
-        pub(crate) fn reconcile(&mut self, _should_hold: bool, _now: Instant) {}
-    }
-}
-
+#[cfg(target_os = "macos")]
 pub(crate) use platform::Controller;
 
 #[cfg(test)]

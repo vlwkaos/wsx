@@ -56,6 +56,8 @@ enum SettingField {
     WorkspaceKey,
     TerminalSidebar,
     ResumeAgents,
+    // ^ Linux hides this field through RUNTIME_FIELDS while shared form matches stay exhaustive.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     WakeMode,
 }
 
