@@ -5,6 +5,7 @@ use std::time::Instant;
 
 const ASSERTION_LIFETIME_SECS: u64 = 10 * 60;
 const RENEW_AFTER: Duration = Duration::from_secs(9 * 60);
+#[cfg(target_os = "macos")]
 const RETRY_AFTER: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
