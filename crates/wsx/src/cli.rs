@@ -1194,6 +1194,7 @@ fn cmd_status(json: bool, format: Format, group: Option<&GroupKey>) -> Result<()
     let (config, workspace) = load_full_workspace()?;
     let projects = resolve_projects(&config, &workspace, None, group)?;
     if json {
+        // ^ Status JSON is a top-level project array; runtime status uses an object.
         println!("{}", serde_json::to_string_pretty(&projects)?);
         return Ok(());
     }

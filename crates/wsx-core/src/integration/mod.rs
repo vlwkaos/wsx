@@ -19,7 +19,7 @@ pub use install::install;
 pub use model::{
     InstallResult, InstallStatus, IntegrationMetadata, IntegrationTarget, LifecycleCapability,
 };
-pub use status::{metadata, scan, scan_needing_install};
+pub use status::{metadata, prompt_version, scan, scan_needing_install};
 
 #[cfg(test)]
 mod tests {

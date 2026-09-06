@@ -75,6 +75,16 @@ pub fn scan_needing_install() -> io::Result<Vec<IntegrationMetadata>> {
     Ok(scan()?.into_iter().filter(needs_install).collect())
 }
 
+/// ^ Adapter revisions must invalidate a dismissal even before the next release.
+pub fn prompt_version(app_version: &str) -> String {
+    let adapters = IntegrationTarget::ALL
+        .into_iter()
+        .map(|target| format!("{}={}", target.cli_value(), target.expected_version()))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{app_version};{adapters}")
+}
+
 #[cfg(test)]
 pub(crate) fn metadata_for_test(
     target: IntegrationTarget,
@@ -130,5 +140,14 @@ mod tests {
         assert_eq!(metadata.install_status, InstallStatus::Missing);
         assert!(metadata.available);
         assert!(needs_install(&metadata));
+    }
+
+    #[test]
+    fn prompt_version_tracks_app_and_adapter_versions() {
+        let current = prompt_version("0.21.0");
+
+        assert!(current.starts_with("0.21.0;pi=14,omp=11,"));
+        assert_ne!(current, prompt_version("0.20.0"));
+        assert_ne!(current, "0.21.0");
     }
 }

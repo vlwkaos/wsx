@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc, Arc,
     },
     thread,
@@ -23,13 +23,25 @@ use std::{
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const START_WINDOW: Duration = Duration::from_secs(60);
 const MAX_START_ATTEMPTS: usize = 3;
+static ACTIVE_TUI_MONITORS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Availability {
     Current,
     RecoveredFromBackup,
     LegacyCompatible,
-    ReplacementDeferred { live_runtimes: usize },
+    NewerDaemon {
+        daemon_version: String,
+    },
+    DaemonReplaced {
+        previous_version: String,
+    },
+    ReplacementDeferred {
+        daemon_version: String,
+        target_version: String,
+        live_runtimes: usize,
+        blockers: Vec<super::domain::ReplacementBlocker>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -545,8 +557,15 @@ fn ensure_background_available_with(client: &Client) -> io::Result<Availability>
 }
 
 fn ensure_available_with(client: &Client, reset_crash_budget: bool) -> io::Result<Availability> {
-    let binary = daemon_binary();
-    let target_binary_id = binary_identity(&binary).ok();
+    ensure_available_with_binary(client, reset_crash_budget, &daemon_binary())
+}
+
+fn ensure_available_with_binary(
+    client: &Client,
+    reset_crash_budget: bool,
+    binary: &Path,
+) -> io::Result<Availability> {
+    let target_binary_id = binary_identity(binary).ok();
     let first = probe_existing_daemon(client)?;
     if let Some(availability) =
         ready_without_transition(client, &first, target_binary_id.as_deref())?
@@ -567,7 +586,7 @@ fn ensure_available_with(client: &Client, reset_crash_budget: bool) -> io::Resul
             let planned = consume_planned_marker(client.socket(), target_binary_id.as_deref())?;
             start_daemon(
                 client,
-                &binary,
+                binary,
                 &mut bootstrap,
                 reset_crash_budget || planned,
             )
@@ -579,13 +598,15 @@ fn ensure_available_with(client: &Client, reset_crash_budget: bool) -> io::Resul
             shutdown_stale_daemon(client, stream, advertised_protocol)?;
             wait_until_stopped(client)?;
             write_lifecycle_marker(client.socket(), "starting")?;
-            start_daemon(client, &binary, &mut bootstrap, true)
+            start_daemon(client, binary, &mut bootstrap, true)
         }
         ExistingDaemon::Ready {
             lifecycle_coordination: true,
+            version_coordination,
         }
         | ExistingDaemon::Incompatible {
             lifecycle_coordination: true,
+            version_coordination,
             ..
         } => {
             let target_binary_id = target_binary_id.ok_or_else(|| {
@@ -594,6 +615,18 @@ fn ensure_available_with(client: &Client, reset_crash_budget: bool) -> io::Resul
                     format!("could not identify replacement daemon {}", binary.display()),
                 )
             })?;
+            let status = lifecycle_status(client)?;
+            let daemon_version = lifecycle_version(&status);
+            let target_version = super::protocol::WSX_VERSION.to_string();
+            let compatible = matches!(existing, ExistingDaemon::Ready { .. });
+            if compatible && !version_coordination && legacy_daemon_has_other_clients(&status) {
+                return Ok(Availability::ReplacementDeferred {
+                    daemon_version,
+                    target_version,
+                    live_runtimes: status.live_runtimes,
+                    blockers: vec![super::domain::ReplacementBlocker::LegacyDaemon],
+                });
+            }
             match lifecycle_round_trip(
                 client,
                 &Request::PrepareReplacement {
@@ -606,13 +639,34 @@ fn ensure_available_with(client: &Client, reset_crash_budget: bool) -> io::Resul
                 } => {
                     wait_until_stopped(client)?;
                     consume_planned_marker(client.socket(), Some(&target_binary_id))?;
-                    start_daemon(client, &binary, &mut bootstrap, true)
+                    start_daemon(client, binary, &mut bootstrap, true)?;
+                    Ok(Availability::DaemonReplaced {
+                        previous_version: daemon_version,
+                    })
                 }
                 Response::Replacement {
                     disposition: super::domain::ReplacementDisposition::Deferred,
                     live_runtimes,
-                } if matches!(existing, ExistingDaemon::Ready { .. }) => {
-                    Ok(Availability::ReplacementDeferred { live_runtimes })
+                    daemon_version: response_daemon_version,
+                    target_version: response_target_version,
+                    blockers,
+                    use_current_daemon,
+                } if compatible => {
+                    let daemon_version = nonempty_or(response_daemon_version, daemon_version);
+                    if use_current_daemon {
+                        Ok(Availability::NewerDaemon { daemon_version })
+                    } else {
+                        Ok(Availability::ReplacementDeferred {
+                            daemon_version,
+                            target_version: nonempty_or(response_target_version, target_version),
+                            live_runtimes,
+                            blockers: if blockers.is_empty() && !version_coordination {
+                                vec![super::domain::ReplacementBlocker::LegacyDaemon]
+                            } else {
+                                blockers
+                            },
+                        })
+                    }
                 }
                 Response::Replacement { live_runtimes, .. } => Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
@@ -620,6 +674,14 @@ fn ensure_available_with(client: &Client, reset_crash_budget: bool) -> io::Resul
                         "replacement_deferred: incompatible wsxd is protecting {live_runtimes} live runtime(s)"
                     ),
                 )),
+                Response::Error(error) if compatible && error.code == "replacement_conflict" => {
+                    Ok(Availability::ReplacementDeferred {
+                        daemon_version,
+                        target_version,
+                        live_runtimes: status.live_runtimes,
+                        blockers: vec![super::domain::ReplacementBlocker::PendingTarget],
+                    })
+                }
                 response => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("unexpected wsxd replacement response: {response:?}"),
@@ -634,6 +696,45 @@ fn ensure_available_with(client: &Client, reset_crash_budget: bool) -> io::Resul
     }
 }
 
+fn lifecycle_status(client: &Client) -> io::Result<super::domain::DaemonLifecycle> {
+    match lifecycle_round_trip(client, &Request::LifecycleStatus)? {
+        Response::Lifecycle(status) => Ok(status),
+        response => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unexpected wsxd lifecycle response: {response:?}"),
+        )),
+    }
+}
+
+fn legacy_daemon_has_other_clients(status: &super::domain::DaemonLifecycle) -> bool {
+    active_client_count_has_other_tui(
+        status.active_clients,
+        ACTIVE_TUI_MONITORS.load(Ordering::Acquire),
+    )
+}
+
+fn active_client_count_has_other_tui(active_clients: usize, own_tui_monitors: usize) -> bool {
+    active_clients > 1_usize.saturating_add(own_tui_monitors)
+}
+
+fn lifecycle_version(status: &super::domain::DaemonLifecycle) -> String {
+    if status.version.is_empty() {
+        super::protocol::binary_identity_version(&status.binary_id)
+            .unwrap_or("unknown")
+            .to_string()
+    } else {
+        status.version.clone()
+    }
+}
+
+fn nonempty_or(value: String, fallback: String) -> String {
+    if value.is_empty() {
+        fallback
+    } else {
+        value
+    }
+}
+
 fn ready_without_transition(
     client: &Client,
     existing: &ExistingDaemon,
@@ -641,6 +742,7 @@ fn ready_without_transition(
 ) -> io::Result<Option<Availability>> {
     let ExistingDaemon::Ready {
         lifecycle_coordination,
+        ..
     } = existing
     else {
         return Ok(None);
@@ -648,18 +750,24 @@ fn ready_without_transition(
     if !lifecycle_coordination {
         return Ok(Some(Availability::LegacyCompatible));
     }
-    let Response::Lifecycle(status) = lifecycle_round_trip(client, &Request::LifecycleStatus)?
-    else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unexpected wsxd lifecycle response",
-        ));
-    };
+    let status = lifecycle_status(client)?;
+    let daemon_version = lifecycle_version(&status);
+    if super::protocol::compare_wsx_versions(&daemon_version, super::protocol::WSX_VERSION)
+        == Some(std::cmp::Ordering::Greater)
+    {
+        return Ok(Some(Availability::NewerDaemon { daemon_version }));
+    }
     if target_binary_id.is_none_or(|target| target == status.binary_id) {
         Ok(Some(
             if status.phase == super::domain::DaemonPhase::ReplacementPending {
                 Availability::ReplacementDeferred {
+                    daemon_version,
+                    target_version: nonempty_or(
+                        status.replacement_target_version,
+                        super::protocol::WSX_VERSION.to_string(),
+                    ),
                     live_runtimes: status.live_runtimes,
+                    blockers: status.replacement_blockers,
                 }
             } else if status.recovered_from_backup {
                 Availability::RecoveredFromBackup
@@ -1008,6 +1116,7 @@ fn shutdown_stale_daemon(
 enum ExistingDaemon {
     Ready {
         lifecycle_coordination: bool,
+        version_coordination: bool,
     },
     Missing,
     StaleLogin {
@@ -1018,6 +1127,7 @@ enum ExistingDaemon {
         stream: Option<UnixStream>,
         advertised_protocol: Option<u32>,
         lifecycle_coordination: bool,
+        version_coordination: bool,
     },
 }
 
@@ -1084,9 +1194,11 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
             && capabilities.foreground_jobs =>
         {
             let lifecycle_coordination = capabilities.lifecycle_coordination;
+            let version_coordination = capabilities.version_coordination;
             match round_trip(&mut stream, &Request::Snapshot)? {
                 Response::Snapshot(_) => Ok(ExistingDaemon::Ready {
                     lifecycle_coordination,
+                    version_coordination,
                 }),
                 Response::Error(error) => Err(io::Error::other(format!(
                     "{}: {}",
@@ -1106,6 +1218,7 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
             stream: Some(stream),
             advertised_protocol: Some(protocol),
             lifecycle_coordination: capabilities.lifecycle_coordination,
+            version_coordination: capabilities.version_coordination,
         }),
         Response::Error(error) if error.code == "protocol_mismatch" && stale_login => {
             Ok(ExistingDaemon::StaleLogin {
@@ -1118,6 +1231,7 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
                 stream: None,
                 advertised_protocol: None,
                 lifecycle_coordination: false,
+                version_coordination: false,
             })
         }
         Response::Error(error) => Err(io::Error::other(format!(
@@ -1270,6 +1384,11 @@ impl EventMonitor {
         let (sender, receiver) = mpsc::channel();
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stopping);
+        let tui = super::domain::TuiClientPresence {
+            instance_id: new_client_id(),
+            version: super::protocol::WSX_VERSION.to_string(),
+            target_binary_id: binary_identity(&daemon_binary()).unwrap_or_default(),
+        };
         let thread = thread::Builder::new()
             .name("wsx-runtime-events".into())
             .spawn(move || {
@@ -1279,6 +1398,7 @@ impl EventMonitor {
                     match client.call(&Request::Poll {
                         after_revision: revision,
                         timeout_ms: 1_000,
+                        tui: Some(tui.clone()),
                     }) {
                         Ok(Response::Events {
                             revision: next,
@@ -1331,6 +1451,7 @@ impl EventMonitor {
                     }
                 }
             })?;
+        ACTIVE_TUI_MONITORS.fetch_add(1, Ordering::AcqRel);
         Ok((
             Self {
                 stopping,
@@ -1346,6 +1467,7 @@ impl Drop for EventMonitor {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        ACTIVE_TUI_MONITORS.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -1363,6 +1485,7 @@ mod tests {
     fn test_listener(name: &str) -> (PathBuf, UnixListener) {
         let dir = std::env::current_dir().unwrap().join(".work/s");
         std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let path = dir.join(format!(
             "{name}-{}-{}.sock",
             std::process::id(),
@@ -1382,6 +1505,7 @@ mod tests {
         super::super::domain::Capabilities {
             resume_shell_fallback: true,
             foreground_jobs: true,
+            lifecycle_coordination: true,
             ..Default::default()
         }
     }
@@ -1472,12 +1596,16 @@ mod tests {
                         protocol: PROTOCOL_VERSION,
                         epoch: 7,
                         binary_id: "target".into(),
+                        version: "0.21.0".into(),
                         started_unix_ms: 1,
                         phase,
                         live_runtimes,
                         active_clients: 1,
+                        active_tuis: 1,
                         recovered_from_backup: false,
                         replacement_target: None,
+                        replacement_target_version: "0.21.0".into(),
+                        replacement_blockers: vec![],
                     }),
                 );
             }
@@ -1487,6 +1615,7 @@ mod tests {
         let client = Client::new(path);
         let ready = ExistingDaemon::Ready {
             lifecycle_coordination: true,
+            version_coordination: true,
         };
         assert_eq!(
             ready_without_transition(&client, &ready, Some("target")).unwrap(),
@@ -1494,9 +1623,184 @@ mod tests {
         );
         assert_eq!(
             ready_without_transition(&client, &ready, Some("target")).unwrap(),
-            Some(Availability::ReplacementDeferred { live_runtimes: 2 })
+            Some(Availability::ReplacementDeferred {
+                daemon_version: "0.21.0".into(),
+                target_version: "0.21.0".into(),
+                live_runtimes: 2,
+                blockers: vec![],
+            })
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn legacy_client_count_excludes_the_requester_and_own_tui_monitor() {
+        assert!(!active_client_count_has_other_tui(1, 0));
+        assert!(!active_client_count_has_other_tui(2, 1));
+        assert!(active_client_count_has_other_tui(2, 0));
+        assert!(active_client_count_has_other_tui(3, 1));
+    }
+
+    #[test]
+    fn newer_daemon_is_reused_without_a_downgrade_request() {
+        let (path, listener) = test_listener("newer-daemon");
+        let server_path = path.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert!(matches!(
+                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+                Request::Hello { .. }
+            ));
+            send_response(
+                &mut stream,
+                &Response::Hello {
+                    protocol: PROTOCOL_VERSION,
+                    epoch: 7,
+                    capabilities: current_capabilities(),
+                },
+            );
+            assert_eq!(
+                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+                Request::LifecycleStatus
+            );
+            send_response(
+                &mut stream,
+                &Response::Lifecycle(super::super::domain::DaemonLifecycle {
+                    protocol: PROTOCOL_VERSION,
+                    epoch: 7,
+                    binary_id: "0.22.0:1:2:3:20".into(),
+                    version: "0.22.0".into(),
+                    started_unix_ms: 1,
+                    phase: super::super::domain::DaemonPhase::Ready,
+                    live_runtimes: 2,
+                    active_clients: 2,
+                    active_tuis: 1,
+                    recovered_from_backup: false,
+                    replacement_target: None,
+                    replacement_target_version: String::new(),
+                    replacement_blockers: vec![],
+                }),
+            );
+            drop(listener);
+            std::fs::remove_file(server_path).unwrap();
+        });
+        let ready = ExistingDaemon::Ready {
+            lifecycle_coordination: true,
+            version_coordination: true,
+        };
+        assert_eq!(
+            ready_without_transition(&Client::new(path), &ready, Some("0.21.0:1:2:3:10")).unwrap(),
+            Some(Availability::NewerDaemon {
+                daemon_version: "0.22.0".into()
+            })
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn legacy_pending_target_keeps_the_new_client_healthy() {
+        let directory = std::env::current_dir().unwrap().join(".work").join(format!(
+            "client-version-{}-{}",
+            std::process::id(),
+            new_client_id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory.join("wsx.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let server_path = path.clone();
+        let server = thread::spawn(move || {
+            for step in 0..6 {
+                let (mut stream, _) = listener.accept().unwrap();
+                assert!(matches!(
+                    read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+                    Request::Hello { .. }
+                ));
+                send_response(
+                    &mut stream,
+                    &Response::Hello {
+                        protocol: PROTOCOL_VERSION,
+                        epoch: 7,
+                        capabilities: current_capabilities(),
+                    },
+                );
+                let request = read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap();
+                match step {
+                    0 | 2 => {
+                        assert_eq!(request, Request::Snapshot);
+                        send_response(
+                            &mut stream,
+                            &Response::Snapshot(super::super::domain::Snapshot {
+                                protocol: PROTOCOL_VERSION,
+                                epoch: 7,
+                                revision: 1,
+                                projects: vec![],
+                                worktrees: vec![],
+                                sessions: vec![],
+                                panes: vec![],
+                                listening_ports: vec![],
+                                pane_activity: vec![],
+                                capabilities: current_capabilities(),
+                            }),
+                        );
+                    }
+                    1 | 3 | 4 => {
+                        assert_eq!(request, Request::LifecycleStatus);
+                        send_response(
+                            &mut stream,
+                            &Response::Lifecycle(super::super::domain::DaemonLifecycle {
+                                protocol: PROTOCOL_VERSION,
+                                epoch: 7,
+                                binary_id: "0.20.0:1:2:3:10".into(),
+                                version: String::new(),
+                                started_unix_ms: 1,
+                                phase: super::super::domain::DaemonPhase::ReplacementPending,
+                                live_runtimes: 4,
+                                active_clients: 1,
+                                active_tuis: 0,
+                                recovered_from_backup: false,
+                                replacement_target: Some("0.20.0:1:2:3:20".into()),
+                                replacement_target_version: String::new(),
+                                replacement_blockers: vec![],
+                            }),
+                        );
+                    }
+                    5 => {
+                        assert!(matches!(request, Request::PrepareReplacement { .. }));
+                        send_response(
+                            &mut stream,
+                            &Response::Error(super::super::protocol::ApiError::new(
+                                "replacement_conflict",
+                                "another wsxd binary is already pending replacement",
+                            )),
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            drop(listener);
+            std::fs::remove_file(server_path).unwrap();
+        });
+
+        let availability = ensure_available_with_binary(
+            &Client::new(path.clone()),
+            false,
+            &std::env::current_exe().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            availability,
+            Availability::ReplacementDeferred {
+                daemon_version: "0.20.0".into(),
+                target_version: super::super::protocol::WSX_VERSION.into(),
+                live_runtimes: 4,
+                blockers: vec![super::super::domain::ReplacementBlocker::PendingTarget],
+            }
+        );
+        server.join().unwrap();
+        let _ = std::fs::remove_file(path.with_extension("bootstrap.lock"));
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]

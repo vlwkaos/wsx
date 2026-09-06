@@ -276,6 +276,7 @@ pub struct Capabilities {
     pub foreground_jobs: bool,
     pub process_restore: bool,
     pub lifecycle_coordination: bool,
+    pub version_coordination: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -292,13 +293,28 @@ pub struct DaemonLifecycle {
     pub protocol: u32,
     pub epoch: u64,
     pub binary_id: String,
+    #[serde(default)]
+    pub version: String,
     pub started_unix_ms: u64,
     pub phase: DaemonPhase,
     pub live_runtimes: usize,
     pub active_clients: usize,
+    #[serde(default)]
+    pub active_tuis: usize,
     pub recovered_from_backup: bool,
     #[serde(default)]
     pub replacement_target: Option<String>,
+    #[serde(default)]
+    pub replacement_target_version: String,
+    #[serde(default)]
+    pub replacement_blockers: Vec<ReplacementBlocker>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TuiClientPresence {
+    pub instance_id: u64,
+    pub version: String,
+    pub target_binary_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -306,6 +322,15 @@ pub struct DaemonLifecycle {
 pub enum ReplacementDisposition {
     Deferred,
     Stopping,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplacementBlocker {
+    OtherTui,
+    WorkingAgent,
+    LegacyDaemon,
+    PendingTarget,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
