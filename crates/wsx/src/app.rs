@@ -6021,7 +6021,8 @@ mod tests {
         assert!(app.pending_terminal_entry.is_some());
 
         baseline_tx.send(()).unwrap();
-        let baseline_deadline = Instant::now() + Duration::from_secs(1);
+        // ^ This checks eventual delivery, not latency; loaded CI runners can exceed one second.
+        let baseline_deadline = Instant::now() + Duration::from_secs(5);
         while !matches!(app.mode, Mode::Terminal { .. }) && Instant::now() < baseline_deadline {
             app.drain_terminal_stream();
             std::thread::sleep(Duration::from_millis(5));
@@ -8001,8 +8002,13 @@ mod tests {
         assert!(footer.contains("(q)uit"), "{footer:?}");
         let malformed_quit_hint = ["(q)", "quit"].concat();
         assert!(!footer.contains(&malformed_quit_hint), "{footer:?}");
+        let wake = if cfg!(target_os = "macos") {
+            "☕︎"
+        } else {
+            ""
+        };
         assert!(
-            footer.contains(&format!("(q)uit  ☕︎v{}", env!("CARGO_PKG_VERSION"))),
+            footer.contains(&format!("(q)uit  {wake}v{}", env!("CARGO_PKG_VERSION"))),
             "{footer:?}"
         );
     }
