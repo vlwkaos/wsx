@@ -27,6 +27,7 @@
 ### Maintenance
 
 - Add project-local headless terminal, capture, GitHub, and manual release workflow guidance. ([`24db03c`](https://github.com/vlwkaos/wsx/commit/24db03cf0786acf32a11ac55c7d9949f2c656160), [`bc42812`](https://github.com/vlwkaos/wsx/commit/bc4281269624e65e70ad1343b4e7edb6e6325d5f))
+- Keep terminal latency smoke isolated from an outer wsx-managed terminal. ([`b9b4e6a`](https://github.com/vlwkaos/wsx/commit/b9b4e6aae81e2625b2692b742d3cb78dd77c7c74))
 
 ## [0.20.0] - 2026-09-03
 
