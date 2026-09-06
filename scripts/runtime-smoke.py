@@ -702,7 +702,9 @@ terminal_activity_before_restart = snapshot["projects"][0]["last_terminal_active
 failed_session = next(item for item in snapshot["sessions"] if item["label"] == "failed-recovery")
 failed_session_id = failed_session["id"]
 failed_pane_id = failed_session["focused_pane"]
-replacement = call("prepare_replacement", {"target_binary_id": "future-smoke-binary"})
+replacement = call(
+    "prepare_replacement", {"target_binary_id": "0.22.0:1:2:3:ffffffffffffffff"}
+)
 assert replacement["type"] == "replacement", replacement
 assert replacement["data"]["disposition"] == "deferred", replacement
 assert replacement["data"]["live_runtimes"] >= 1, replacement

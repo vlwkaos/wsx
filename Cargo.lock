@@ -1189,7 +1189,7 @@ dependencies = [
 
 [[package]]
 name = "wsx"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "asched-core",
@@ -1209,7 +1209,7 @@ dependencies = [
 
 [[package]]
 name = "wsx-core"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "asched-core",
@@ -1225,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "wsx-daemon"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "libc",
  "serde",
@@ -1236,7 +1236,7 @@ dependencies = [
 
 [[package]]
 name = "wsx-terminal"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "libc",
  "portable-pty",

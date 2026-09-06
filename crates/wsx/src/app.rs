@@ -627,6 +627,10 @@ fn terminal_stream_error_notice(error: &std::io::Error, target: &str) -> String 
     format!("{title}\nTarget: {target}")
 }
 
+fn current_integration_prompt_version() -> String {
+    wsx_core::integration::prompt_version(env!("CARGO_PKG_VERSION"))
+}
+
 fn integration_prompt_label(targets: &[wsx_core::integration::IntegrationTarget]) -> String {
     let visible = targets
         .iter()
@@ -676,6 +680,76 @@ pub struct Notice {
     pub level: NoticeLevel,
     pub title: String,
     pub body: Option<String>,
+}
+
+pub(crate) fn runtime_availability_notice(
+    availability: &runtime::Availability,
+) -> Option<(NoticeLevel, String)> {
+    match availability {
+        runtime::Availability::Current => None,
+        runtime::Availability::RecoveredFromBackup => Some((
+            NoticeLevel::Warning,
+            "wsxd recovered a corrupt primary state from its last-known-good backup".into(),
+        )),
+        runtime::Availability::LegacyCompatible => Some((
+            NoticeLevel::Warning,
+            "A newer wsxd will be used after the current daemon stops".into(),
+        )),
+        runtime::Availability::NewerDaemon { daemon_version }
+            if daemon_version == runtime::WSX_VERSION =>
+        {
+            Some((
+                NoticeLevel::Warning,
+                format!(
+                    "A newer wsx {daemon_version} build owns wsxd; this TUI will keep using it"
+                ),
+            ))
+        }
+        runtime::Availability::NewerDaemon { daemon_version } => Some((
+            NoticeLevel::Warning,
+            format!(
+                "wsxd {daemon_version} is newer than this wsx {}; open wsx {daemon_version}",
+                runtime::WSX_VERSION
+            ),
+        )),
+        runtime::Availability::DaemonReplaced { previous_version } => Some((
+            NoticeLevel::Success,
+            format!(
+                "wsxd upgraded from {previous_version} to {}; idle sessions restored",
+                runtime::WSX_VERSION
+            ),
+        )),
+        runtime::Availability::ReplacementDeferred {
+            daemon_version,
+            target_version,
+            live_runtimes,
+            blockers,
+        } => {
+            let mut reasons = Vec::new();
+            if blockers.contains(&runtime::ReplacementBlocker::OtherTui) {
+                reasons.push("older or different wsx TUI instances exit");
+            }
+            if blockers.contains(&runtime::ReplacementBlocker::WorkingAgent) {
+                reasons.push("working agents become idle");
+            }
+            if blockers.contains(&runtime::ReplacementBlocker::PendingTarget) {
+                reasons.push("the existing queued replacement is resolved");
+            }
+            if blockers.contains(&runtime::ReplacementBlocker::LegacyDaemon) {
+                reasons.push("the older daemon reaches its safe replacement boundary");
+            }
+            if reasons.is_empty() {
+                reasons.push("the daemon reaches its safe replacement boundary");
+            }
+            Some((
+                NoticeLevel::Warning,
+                format!(
+                    "wsxd {daemon_version} will upgrade to {target_version} after {}; {live_runtimes} terminal runtime(s) remain open",
+                    reasons.join(" and ")
+                ),
+            ))
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1089,7 +1163,7 @@ impl App {
             }
             Ok(BgOutcome::IntegrationsInstalled { labels, failures }) => {
                 if failures.is_empty() {
-                    self.integration_prompt_version = Some(env!("CARGO_PKG_VERSION").into());
+                    self.integration_prompt_version = Some(current_integration_prompt_version());
                     self.mark_dirty();
                     self.set_status(format!(
                         "Installed agent integrations: {}. Restart those agents to enable status.",
@@ -1677,7 +1751,9 @@ impl App {
         &mut self,
         result: Result<Vec<wsx_core::integration::IntegrationMetadata>>,
     ) {
-        if self.integration_prompt_version.as_deref() == Some(env!("CARGO_PKG_VERSION")) {
+        if self.integration_prompt_version.as_deref()
+            == Some(current_integration_prompt_version().as_str())
+        {
             return;
         }
         match result {
@@ -2157,18 +2233,8 @@ impl App {
         match result {
             Ok((availability, snapshot, worktrees)) => {
                 self.apply_runtime_snapshot(snapshot, worktrees);
-                match availability {
-                    runtime::Availability::Current => {}
-                    runtime::Availability::RecoveredFromBackup => self.set_warning(
-                        "wsxd recovered a corrupt primary state from its last-known-good backup",
-                    ),
-                    runtime::Availability::LegacyCompatible => self.set_warning(
-                        "A newer wsxd will be used after the current daemon stops",
-                    ),
-                    runtime::Availability::ReplacementDeferred { live_runtimes } => self
-                        .set_warning(format!(
-                            "wsxd update deferred while {live_runtimes} terminal runtime(s) remain open"
-                        )),
+                if let Some((level, message)) = runtime_availability_notice(&availability) {
+                    self.set_notice(level, message);
                 }
             }
             Err(error) => {
@@ -3286,7 +3352,7 @@ impl App {
                         purpose: GroupManagerPurpose::Switch,
                     });
                 if dismissed_integrations {
-                    self.integration_prompt_version = Some(env!("CARGO_PKG_VERSION").into());
+                    self.integration_prompt_version = Some(current_integration_prompt_version());
                     self.mark_dirty();
                 }
             }
@@ -6402,9 +6468,9 @@ mod tests {
     }
 
     #[test]
-    fn current_version_dismissal_suppresses_scan_result() {
+    fn current_prompt_version_suppresses_and_legacy_app_version_does_not() {
         let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
-        app.integration_prompt_version = Some(env!("CARGO_PKG_VERSION").into());
+        app.integration_prompt_version = Some(current_integration_prompt_version());
         let metadata = wsx_core::integration::IntegrationMetadata {
             target: wsx_core::integration::IntegrationTarget::Pi,
             cli_value: "pi",
@@ -6416,10 +6482,18 @@ mod tests {
             expected_version: 8,
         };
 
-        app.apply_integration_scan(Ok(vec![metadata]));
+        app.apply_integration_scan(Ok(vec![metadata.clone()]));
 
         assert!(app.pending_integration_prompt.is_empty());
         assert!(matches!(app.mode, Mode::Workspace));
+
+        app.integration_prompt_version = Some(env!("CARGO_PKG_VERSION").into());
+        app.apply_integration_scan(Ok(vec![metadata]));
+
+        assert_eq!(
+            app.pending_integration_prompt,
+            vec![wsx_core::integration::IntegrationTarget::Pi]
+        );
     }
 
     #[test]
@@ -8143,6 +8217,44 @@ mod tests {
             app.notice.as_ref().map(|notice| notice.title.as_str()),
             Some("Killed session: session")
         );
+    }
+
+    #[test]
+    fn runtime_version_notices_explain_direction_and_blockers() {
+        let newer = runtime_availability_notice(&runtime::Availability::NewerDaemon {
+            daemon_version: "0.22.0".into(),
+        })
+        .unwrap()
+        .1;
+        assert!(newer.contains("open wsx 0.22.0"), "{newer}");
+
+        let deferred = runtime_availability_notice(&runtime::Availability::ReplacementDeferred {
+            daemon_version: "0.20.0".into(),
+            target_version: "0.21.0".into(),
+            live_runtimes: 4,
+            blockers: vec![
+                runtime::ReplacementBlocker::OtherTui,
+                runtime::ReplacementBlocker::WorkingAgent,
+            ],
+        })
+        .unwrap()
+        .1;
+        assert!(deferred.contains("0.20.0"), "{deferred}");
+        assert!(deferred.contains("0.21.0"), "{deferred}");
+        assert!(deferred.contains("older or different wsx TUI instances exit"));
+        assert!(deferred.contains("working agents become idle"));
+        assert!(deferred.contains("4 terminal runtime(s) remain open"));
+        let lowercase = deferred.to_ascii_lowercase();
+        for unsupported_claim in [
+            "exact pty survives",
+            "pty will survive",
+            "exact process survives",
+            "process will survive",
+            "exact terminal buffer survives",
+            "terminal buffer will survive",
+        ] {
+            assert!(!lowercase.contains(unsupported_claim), "{deferred}");
+        }
     }
 
     #[test]

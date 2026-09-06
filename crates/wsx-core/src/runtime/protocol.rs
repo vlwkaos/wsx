@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::{
+    cmp::Ordering,
     io,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
@@ -14,6 +15,132 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 pub const WSX_PANE_ID_ENV: &str = "WSX_PANE_ID";
 pub const WSX_RUNTIME_GENERATION_ENV: &str = "WSX_RUNTIME_GENERATION";
+pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub fn compare_wsx_versions(left: &str, right: &str) -> Option<Ordering> {
+    let left = parse_wsx_version(left)?;
+    let right = parse_wsx_version(right)?;
+    let core = left.core.cmp(&right.core);
+    if core != Ordering::Equal {
+        return Some(core);
+    }
+    match (left.prerelease, right.prerelease) {
+        (None, None) => Some(Ordering::Equal),
+        (None, Some(_)) => Some(Ordering::Greater),
+        (Some(_), None) => Some(Ordering::Less),
+        (Some(left), Some(right)) => compare_prerelease(left, right),
+    }
+}
+
+pub fn binary_identity_version(identity: &str) -> Option<&str> {
+    binary_identity_parts(identity).map(|(version, _)| version)
+}
+
+pub fn compare_binary_identities(left: &str, right: &str) -> Option<Ordering> {
+    let (left_version, left_modified) = binary_identity_parts(left)?;
+    let (right_version, right_modified) = binary_identity_parts(right)?;
+    let version = compare_wsx_versions(left_version, right_version)?;
+    if version != Ordering::Equal {
+        return Some(version);
+    }
+    Some(left_modified.cmp(&right_modified))
+}
+
+fn binary_identity_parts(identity: &str) -> Option<(&str, u128)> {
+    let fields = identity.split(':').collect::<Vec<_>>();
+    let expected_fields = if cfg!(unix) { 5 } else { 3 };
+    if fields.len() != expected_fields || parse_wsx_version(fields[0]).is_none() {
+        return None;
+    }
+    let mut values = fields[1..]
+        .iter()
+        .map(|value| u128::from_str_radix(value, 16));
+    let modified = values.next_back()?.ok()?;
+    values
+        .all(|value| value.is_ok())
+        .then_some((fields[0], modified))
+}
+
+struct ParsedVersion<'a> {
+    core: (u64, u64, u64),
+    prerelease: Option<&'a str>,
+}
+
+fn parse_wsx_version(version: &str) -> Option<ParsedVersion<'_>> {
+    let (precedence, build) = version
+        .split_once('+')
+        .map_or((version, None), |(precedence, build)| {
+            (precedence, Some(build))
+        });
+    if build.is_some_and(|build| !valid_identifiers(build, false)) {
+        return None;
+    }
+    let (core, prerelease) = precedence
+        .split_once('-')
+        .map_or((precedence, None), |(core, prerelease)| {
+            (core, Some(prerelease))
+        });
+    if prerelease.is_some_and(|value| !valid_identifiers(value, true)) {
+        return None;
+    }
+    let mut parts = core.split('.');
+    let core = (
+        parse_core_number(parts.next()?)?,
+        parse_core_number(parts.next()?)?,
+        parse_core_number(parts.next()?)?,
+    );
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(ParsedVersion { core, prerelease })
+}
+
+fn parse_core_number(value: &str) -> Option<u64> {
+    if value.is_empty() || (value.len() > 1 && value.starts_with('0')) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+fn valid_identifiers(value: &str, reject_numeric_leading_zero: bool) -> bool {
+    !value.is_empty()
+        && value.split('.').all(|identifier| {
+            !identifier.is_empty()
+                && identifier
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && !(reject_numeric_leading_zero
+                    && identifier.len() > 1
+                    && identifier.starts_with('0')
+                    && identifier.bytes().all(|byte| byte.is_ascii_digit()))
+        })
+}
+
+fn compare_prerelease(left: &str, right: &str) -> Option<Ordering> {
+    let mut left = left.split('.');
+    let mut right = right.split('.');
+    loop {
+        match (left.next(), right.next()) {
+            (Some(left), Some(right)) => {
+                let ordering = match (
+                    left.bytes().all(|byte| byte.is_ascii_digit()),
+                    right.bytes().all(|byte| byte.is_ascii_digit()),
+                ) {
+                    (true, true) => parse_core_number(left)?.cmp(&parse_core_number(right)?),
+                    (true, false) => Ordering::Less,
+                    (false, true) => Ordering::Greater,
+                    (false, false) => left.cmp(right),
+                };
+                if ordering != Ordering::Equal {
+                    return Some(ordering);
+                }
+            }
+            (Some(_), None) => return Some(Ordering::Greater),
+            (None, Some(_)) => return Some(Ordering::Less),
+            (None, None) => return Some(Ordering::Equal),
+        }
+    }
+}
 
 pub fn binary_identity(path: &Path) -> io::Result<String> {
     let path = path.canonicalize()?;
@@ -49,6 +176,8 @@ pub enum Request {
     Poll {
         after_revision: u64,
         timeout_ms: u64,
+        #[serde(default)]
+        tui: Option<TuiClientPresence>,
     },
     SynchronizeProjects {
         projects: Vec<ProjectSpec>,
@@ -227,6 +356,14 @@ pub enum Response {
     Replacement {
         disposition: ReplacementDisposition,
         live_runtimes: usize,
+        #[serde(default)]
+        daemon_version: String,
+        #[serde(default)]
+        target_version: String,
+        #[serde(default)]
+        blockers: Vec<ReplacementBlocker>,
+        #[serde(default)]
+        use_current_daemon: bool,
     },
     Created {
         revision: u64,
@@ -315,9 +452,109 @@ mod tests {
     }
 
     #[test]
+    fn wsx_versions_and_builds_have_numeric_precedence() {
+        assert_eq!(
+            compare_wsx_versions("0.21.0", "0.20.9"),
+            Some(std::cmp::Ordering::Greater)
+        );
+        assert_eq!(
+            compare_binary_identities("0.21.0:1:2:3:20", "0.21.0:4:5:6:10"),
+            Some(std::cmp::Ordering::Greater)
+        );
+        assert_eq!(
+            compare_wsx_versions("0.21.0-beta.2", "0.21.0-beta.11"),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(
+            compare_wsx_versions("0.21.0-rc.1", "0.21.0"),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(
+            compare_wsx_versions("0.21.0+build.2", "0.21.0+build.1"),
+            Some(std::cmp::Ordering::Equal)
+        );
+        assert_eq!(
+            compare_wsx_versions("0.21.0-alpha.beta", "0.21.0-alpha.rc"),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(
+            compare_wsx_versions("0.21.0-alpha10", "0.21.0-alpha2"),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(compare_wsx_versions("0.21.0-01", "0.21.0"), None);
+        assert_eq!(compare_wsx_versions("", "0.21.0"), None);
+        assert_eq!(compare_wsx_versions("0.21.0", ""), None);
+        for malformed in [
+            "",
+            "malformed",
+            "0.21.0:1:2:3",
+            "0.21.0:1:2:3:10:5",
+            "0.21.0:1:2:3:not-hex",
+        ] {
+            assert_eq!(
+                compare_binary_identities(malformed, "0.21.0:1:2:3:10"),
+                None,
+                "{malformed:?} must not be a binary identity"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_lifecycle_requests_and_responses_default_version_fields() {
+        let poll = serde_json::from_str::<Request>(
+            r#"{"method":"poll","params":{"after_revision":7,"timeout_ms":1000}}"#,
+        )
+        .unwrap();
+        assert!(matches!(poll, Request::Poll { tui: None, .. }));
+
+        let replacement = serde_json::from_str::<Request>(
+            r#"{"method":"prepare_replacement","params":{"target_binary_id":"0.20.0:1:2:3:4"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(replacement, Request::PrepareReplacement { .. }));
+
+        let lifecycle = serde_json::from_str::<Response>(
+            r#"{"type":"lifecycle","data":{"protocol":8,"epoch":7,"binary_id":"0.20.0:1:2:3:4","started_unix_ms":11,"phase":"replacement_pending","live_runtimes":2,"active_clients":1,"recovered_from_backup":false,"replacement_target":"0.21.0:1:2:3:4"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            lifecycle,
+            Response::Lifecycle(DaemonLifecycle {
+                binary_id,
+                version,
+                started_unix_ms: 11,
+                active_tuis: 0,
+                replacement_target,
+                replacement_target_version,
+                replacement_blockers,
+                ..
+            }) if binary_id == "0.20.0:1:2:3:4"
+                && version.is_empty()
+                && replacement_target.as_deref() == Some("0.21.0:1:2:3:4")
+                && replacement_target_version.is_empty()
+                && replacement_blockers.is_empty()
+        ));
+
+        let response = serde_json::from_str::<Response>(
+            r#"{"type":"replacement","data":{"disposition":"deferred","live_runtimes":2}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            response,
+            Response::Replacement {
+                daemon_version,
+                target_version,
+                blockers,
+                use_current_daemon: false,
+                ..
+            } if daemon_version.is_empty() && target_version.is_empty() && blockers.is_empty()
+        ));
+    }
+
+    #[test]
     fn lifecycle_control_is_additive_and_tagged() {
         let request = Request::PrepareReplacement {
-            target_binary_id: "next-binary".into(),
+            target_binary_id: "0.22.0:1:2:3:4".into(),
         };
         let encoded = serde_json::to_string(&request).unwrap();
         assert_eq!(serde_json::from_str::<Request>(&encoded).unwrap(), request);
@@ -325,13 +562,17 @@ mod tests {
         let response = Response::Lifecycle(DaemonLifecycle {
             protocol: PROTOCOL_VERSION,
             epoch: 7,
-            binary_id: "current-binary".into(),
+            binary_id: "0.21.0:1:2:3:4".into(),
+            version: "0.21.0".into(),
             started_unix_ms: 11,
             phase: DaemonPhase::ReplacementPending,
             live_runtimes: 2,
             active_clients: 1,
+            active_tuis: 1,
             recovered_from_backup: false,
-            replacement_target: Some("next-binary".into()),
+            replacement_target: Some("0.22.0:1:2:3:4".into()),
+            replacement_target_version: "0.22.0".into(),
+            replacement_blockers: vec![ReplacementBlocker::WorkingAgent],
         });
         let encoded = serde_json::to_string(&response).unwrap();
         assert_eq!(

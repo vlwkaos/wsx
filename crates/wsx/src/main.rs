@@ -42,19 +42,8 @@ fn main() -> Result<()> {
             // ^ [[wsx Architecture]] CLI mutations require a ready adjacent daemon.
             let availability =
                 wsx_core::runtime::ensure_available().context("wsxd is unavailable")?;
-            match availability {
-                wsx_core::runtime::Availability::Current => {}
-                wsx_core::runtime::Availability::RecoveredFromBackup => eprintln!(
-                    "wsx: wsxd recovered a corrupt primary state from its last-known-good backup"
-                ),
-                wsx_core::runtime::Availability::LegacyCompatible => {
-                    eprintln!("wsx: a newer wsxd will be used after the current daemon stops")
-                }
-                wsx_core::runtime::Availability::ReplacementDeferred { live_runtimes } => {
-                    eprintln!(
-                        "wsx: wsxd update deferred while {live_runtimes} terminal runtime(s) remain open"
-                    );
-                }
+            if let Some((_, message)) = app::runtime_availability_notice(&availability) {
+                eprintln!("wsx: {message}");
             }
             cli::run(cmd)
         }
