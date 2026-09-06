@@ -48,6 +48,8 @@ pub struct WorkspaceCache {
     #[serde(default)]
     pub project_expanded: HashMap<String, bool>,
     #[serde(default)]
+    pub routines_expanded: HashMap<String, bool>,
+    #[serde(default)]
     pub tree_selected: usize,
     #[serde(default)]
     pub cursor_identity: Option<CursorIdentity>,
@@ -70,6 +72,7 @@ struct WorkspaceCacheWire {
     written_at_unix_ms: Option<u64>,
     worktree_expanded: HashMap<String, bool>,
     project_expanded: HashMap<String, bool>,
+    routines_expanded: HashMap<String, bool>,
     tree_selected: usize,
     cursor_identity: Option<CursorIdentity>,
     #[serde(alias = "muted_sessions")]
@@ -96,6 +99,7 @@ impl<'de> Deserialize<'de> for WorkspaceCache {
             written_at_unix_ms: wire.written_at_unix_ms,
             worktree_expanded: wire.worktree_expanded,
             project_expanded: wire.project_expanded,
+            routines_expanded: wire.routines_expanded,
             tree_selected: wire.tree_selected,
             cursor_identity: wire.cursor_identity,
             muted_terminals: wire.muted_terminals,
@@ -223,6 +227,9 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> anyhow::Result<AppliedCach
         if let Some(expanded) = cache.project_expanded.get(&project_key) {
             project.expanded = *expanded;
         }
+        if let Some(expanded) = cache.routines_expanded.get(&project_key) {
+            project.routines_expanded = *expanded;
+        }
         for worktree in &mut project.worktrees {
             let key = worktree.path.to_string_lossy().to_string();
             if let Some(expanded) = cache.worktree_expanded.get(&key) {
@@ -323,10 +330,13 @@ pub fn save_cache(
         ..Default::default()
     };
     for project in &workspace.projects {
-        cache.project_expanded.insert(
-            project.path.to_string_lossy().into_owned(),
-            project.expanded,
-        );
+        let project_path = project.path.to_string_lossy().into_owned();
+        cache
+            .project_expanded
+            .insert(project_path.clone(), project.expanded);
+        cache
+            .routines_expanded
+            .insert(project_path, project.routines_expanded);
         for worktree in &project.worktrees {
             cache.worktree_expanded.insert(
                 worktree.path.to_string_lossy().into_owned(),
@@ -446,6 +456,37 @@ mod tests {
             decoded.integration_prompt_version.as_deref(),
             Some("0.18.0")
         );
+    }
+
+    #[test]
+    fn expansion_maps_round_trip_by_stable_path() {
+        let cache = WorkspaceCache {
+            project_expanded: HashMap::from([("/projects/app".into(), true)]),
+            worktree_expanded: HashMap::from([("/projects/app/feature".into(), false)]),
+            routines_expanded: HashMap::from([("/projects/app".into(), false)]),
+            ..Default::default()
+        };
+
+        let decoded: WorkspaceCache = toml::from_str(&toml::to_string(&cache).unwrap()).unwrap();
+
+        assert_eq!(decoded.project_expanded, cache.project_expanded);
+        assert_eq!(decoded.worktree_expanded, cache.worktree_expanded);
+        assert_eq!(decoded.routines_expanded, cache.routines_expanded);
+    }
+
+    #[test]
+    fn legacy_cache_defaults_missing_routines_expanded_map() {
+        let cache: WorkspaceCache = toml::from_str(
+            r#"[project_expanded]
+"/projects/app" = true
+
+[worktree_expanded]
+"/projects/app/main" = false
+"#,
+        )
+        .unwrap();
+
+        assert!(cache.routines_expanded.is_empty());
     }
 
     #[test]
