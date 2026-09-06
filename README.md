@@ -1,5 +1,7 @@
 # wsx
 
+[![CI](https://github.com/vlwkaos/wsx/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vlwkaos/wsx/actions/workflows/ci.yml)
+
 Project-first terminal workspace manager for Git worktrees.
 
 wsx presents **Project → Worktree → Session → Pane** in a keyboard-first TUI. Sessions stay visible as task contexts. Multi-pane sessions expose optional pane rows beneath them. The adjacent `wsxd` daemon owns PTYs and pinned `libghostty-vt` state, so terminals continue running while clients disconnect.

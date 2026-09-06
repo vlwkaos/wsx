@@ -1,5 +1,7 @@
 # wsx
 
+[![CI](https://github.com/vlwkaos/wsx/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vlwkaos/wsx/actions/workflows/ci.yml)
+
 Git worktree를 위한 프로젝트 중심 터미널 워크스페이스 관리자입니다.
 
 wsx는 **Project → Worktree → Session → Pane** 구조를 키보드 중심 TUI로 표시합니다. Session은 작업 컨텍스트로 항상 보이며, 여러 pane이 있을 때만 하위 pane 행을 표시합니다. 인접한 `wsxd` daemon이 PTY와 고정된 `libghostty-vt` 상태를 소유하므로 client가 종료되어도 터미널은 계속 실행됩니다.
