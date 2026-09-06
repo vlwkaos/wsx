@@ -49,6 +49,8 @@ static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 const PORT_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const PORT_SCAN_TIMEOUT: Duration = Duration::from_millis(750);
 const MAX_PORT_SCAN_BYTES: u64 = 256 * 1024;
+const RESUME_CLEAR_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
+const RESUME_CLEAR_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 pub const RESUME_SUPERVISOR_ARG: &str = "__wsx_resume_supervisor";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -481,11 +483,29 @@ fn transition_resumed_agent_to_shell() -> io::Result<()> {
     })?;
     let next_runtime_generation =
         format!("{:016x}:{:016x}", epoch(), u64::from(std::process::id()));
-    match Client::local().call(&Request::AgentClear {
+    let request = Request::AgentClear {
         pane_id,
         runtime_generation,
         next_runtime_generation: next_runtime_generation.clone(),
-    })? {
+    };
+    let client = Client::local();
+    // ^ [[Session Model]] A recovered agent can exit before startup publishes the wsxd socket.
+    let deadline = Instant::now() + RESUME_CLEAR_RETRY_TIMEOUT;
+    let response = loop {
+        match client.call(&request) {
+            Ok(response) => break response,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                ) && Instant::now() < deadline =>
+            {
+                thread::sleep(RESUME_CLEAR_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    match response {
         Response::Ack { .. } => {
             std::env::set_var(WSX_RUNTIME_GENERATION_ENV, next_runtime_generation);
             Ok(())

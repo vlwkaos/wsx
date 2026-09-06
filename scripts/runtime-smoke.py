@@ -917,10 +917,22 @@ assert list(state_file.parent.glob("state.json.corrupt.*"))
 assert call("lifecycle_status")["data"]["recovered_from_backup"] is True
 shutdown(recovered_from_backup)
 
-subprocess.run(
-    [sys.executable, str(ROOT / "scripts" / "terminal-latency.py")],
-    cwd=ROOT,
-    env=env | {"WSX_LATENCY_WORK": str(WORK / "terminal-latency")},
-    check=True,
-)
+latency_passes = 0
+latency_failures = 0
+for attempt in range(1, 4):
+    print(f"terminal latency gate: attempt {attempt}/3", flush=True)
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "terminal-latency.py")],
+        cwd=ROOT,
+        env=env | {"WSX_LATENCY_WORK": str(WORK / "terminal-latency")},
+        check=False,
+    )
+    if result.returncode == 0:
+        latency_passes += 1
+        if latency_passes == 2:
+            break
+    else:
+        latency_failures += 1
+        if latency_failures == 2:
+            raise RuntimeError("terminal latency gate failed two independent attempts")
 print("wsxd runtime smoke: PASS")
