@@ -4,6 +4,8 @@ Git worktree를 위한 프로젝트 중심 터미널 워크스페이스 관리�
 
 wsx는 **Project → Worktree → Session → Pane** 구조를 키보드 중심 TUI로 표시합니다. Session은 작업 컨텍스트로 항상 보이며, 여러 pane이 있을 때만 하위 pane 행을 표시합니다. 인접한 `wsxd` daemon이 PTY와 고정된 `libghostty-vt` 상태를 소유하므로 client가 종료되어도 터미널은 계속 실행됩니다.
 
+![실행 중인 agent와 terminal preview를 표시하는 wsx Workspace](docs/screenshots/01-workspace-overview.png)
+
 ## 주요 기능
 
 - Git project/worktree 검색, 생성, 확인 후 삭제, 상태, alias, project group
@@ -17,9 +19,41 @@ wsx는 **Project → Worktree → Session → Pane** 구조를 키보드 중심 
 - 기존 asched 경계를 통한 project routine
 - macOS와 Linux 지원
 
+## 제품 둘러보기
+
+### Active 및 attention session 순회
+
+`a/A`로 active session을, `n/N`으로 확인이 필요한 session을 빠르게 순회합니다.
+
+![Blocked Codex session을 선택한 attention 순회](docs/screenshots/02-attention-iteration.png)
+
+### Group 분류와 stale project 관리
+
+영속 group으로 Workspace를 필터링하고 비활성 project는 stale 상태로 계속 표시합니다.
+
+![Stale project만 표시하는 later group](docs/screenshots/03-groups-and-stale.png)
+
+### 분할 terminal에서 직접 작업
+
+Terminal mode에서도 session tree, pane 선택, foreground 상태, 감지된 port를 함께 확인합니다.
+
+![분할된 server session을 표시하는 Terminal mode](docs/screenshots/04-terminal-and-panes.png)
+
+### Project routine 예약
+
+Agent preset을 선택한 뒤 direct argv, schedule, prompt를 설정합니다.
+
+![Pi routine editor](docs/screenshots/05-routine-editor.png)
+
+### Workspace 동작 설정
+
+Typed setting으로 Workspace, view, terminal, runtime 동작을 관리합니다.
+
+![Stale project 자동 접기를 표시하는 global settings](docs/screenshots/06-global-settings.png)
+
 ## 설치
 
-Release archive는 인접한 `wsx`, `wsxd` executable을 포함합니다. Homebrew formula는 배포 전에 0.20 archive로 갱신해야 합니다.
+Release archive는 인접한 `wsx`, `wsxd` executable을 포함합니다. Homebrew formula는 같은 version archive에서 두 executable을 설치합니다.
 
 소스 빌드에는 Rust 1.96.1과 Zig 0.15가 필요합니다. 개발 test suite를 실행하려면 `cargo-nextest` 0.9.143을 설치합니다.
 
@@ -35,14 +69,14 @@ cargo xtask run
 cargo xtask build  # target/wsx-dev/{wsx,wsxd}
 ```
 
-TUI는 시작할 때 설치된 agent CLI 중 wsx integration이 없거나 오래된 항목을 감지하고 설치 여부를 묻습니다. 거절하면 다음 wsx version까지 다시 묻지 않습니다. 개별 integration은 직접 설치할 수도 있습니다.
+TUI는 시작할 때 설치된 agent CLI 중 wsx integration이 없거나 오래된 항목을 감지하고 설치 여부를 묻습니다. 거절하면 wsx version 또는 예상 adapter version이 바뀔 때까지 다시 묻지 않습니다. 개별 integration은 직접 설치할 수도 있습니다.
 
 ```bash
 wsx agent install pi
 wsx agent install claude
 ```
 
-설치 후 해당 agent를 다시 시작합니다. Installer는 각 agent의 표준 config directory override를 따르며 관련 없는 설정을 보존합니다. 최신 integration은 provider의 native session ID 또는 path도 보고합니다. wsxd가 완전히 재시작되면 wsx는 새 process에서 provider별 resume command를 실행해 보고된 conversation을 이어갑니다. Reference가 없으면 저장된 generic launch recipe를 사용합니다. Unsupported, malformed, duplicate reference는 새 agent conversation을 시작하지 않고 clean shell을 엽니다.
+설치 후 해당 agent를 다시 시작합니다. Installer는 각 agent의 표준 config directory override를 따르며 관련 없는 설정을 보존합니다. 최신 integration은 provider의 native session ID 또는 path도 보고합니다. Pi는 extension별 추가 wiring 없이 표준 selection, confirmation, input, editor, custom blocking dialog를 blocked로 보고합니다. wsxd가 완전히 재시작되면 wsx는 새 process에서 provider별 resume command를 실행해 보고된 conversation을 이어갑니다. Reference가 없으면 저장된 generic launch recipe를 사용합니다. Unsupported, malformed, duplicate reference는 새 agent conversation을 시작하지 않고 clean shell을 엽니다.
 
 ## 조작
 
@@ -139,9 +173,9 @@ wsx routine add weekday-review \
 
 각 `--arg`는 direct argv item 하나이며 wsx는 shell을 실행하지 않습니다. 신뢰하지 않는 command를 enable 또는 run하기 전에 `wsx routine show weekday-review`로 결과를 확인해야 합니다.
 
-`wsx runtime status`와 `wsx daemon stop`은 daemon을 시작하지 않습니다. `wsx daemon recover`는 shared crash budget을 명시적으로 초기화하고 wsxd를 시작합니다. Workspace에서 `Q`를 누르면 확인 후 wsxd와 모든 live PTY를 정상 종료하고 TUI를 끝냅니다. 일반 startup은 owner-only coordinator lock으로 여러 client의 probe, recovery, replacement, spawn, readiness를 직렬화하고 daemon lock을 최종 single-owner fence로 유지합니다. 사라진 daemon은 60초 동안 최대 세 번 자동 재시작합니다. 인증된 same-login daemon이 응답하지 않거나 unsafe data를 반환하면 자동 종료하지 않고 문제를 보고합니다. Intentional stop과 login 종료 marker는 background client가 해당 경계를 되돌리지 못하게 합니다.
+`wsx runtime status`와 `wsx daemon stop`은 daemon을 시작하지 않습니다. `wsx daemon recover`는 shared crash budget을 명시적으로 초기화하고 wsxd를 시작합니다. wsx-managed terminal 안에서는 plain `wsx`와 `wsx --mobile`이 nested TUI startup을 거부하지만 명시적인 CLI subcommand는 계속 사용할 수 있습니다. Workspace에서 `Q`를 누르면 확인 후 wsxd와 모든 live PTY를 정상 종료하고 TUI를 끝냅니다. 일반 startup은 owner-only coordinator lock으로 여러 client의 probe, recovery, replacement, spawn, readiness를 직렬화하고 daemon lock을 최종 single-owner fence로 유지합니다. 사라진 daemon은 60초 동안 최대 세 번 자동 재시작합니다. 인증된 same-login daemon이 응답하지 않거나 unsafe data를 반환하면 자동 종료하지 않고 문제를 보고합니다. Intentional stop과 login 종료 marker는 background client가 해당 경계를 되돌리지 못하게 합니다.
 
-macOS에서는 kernel에서 연결된 daemon의 owner와 audit session을 확인합니다. 이전 login이 남긴 daemon은 자동으로 정상 종료한 뒤 저장된 session을 현재 login security context에서 다시 시작합니다. Lifecycle-capable daemon은 protocol version이 달라도 startup binary identity를 알립니다. 새 build가 발견되면 기존 daemon과 live PTY를 계속 사용하고 live runtime이 모두 끝날 때까지 replacement를 연기합니다. 이후 daemon이 스스로 종료되며 다음 elected client가 인접한 fixed daemon을 시작합니다. Pre-lifecycle compatible daemon은 다음 자연스러운 stop까지 유지됩니다. Pre-lifecycle incompatible daemon은 보호되며 matching wsx binary 또는 명시적인 `wsx daemon stop`이 필요합니다. Cross-version process handoff는 지원하지 않으므로 crash나 replacement 후에는 저장된 recipe에서 새 PTY와 terminal buffer를 만들되 wsx identity는 유지합니다. `WSX_DAEMON_BIN`, `WSX_SOCKET`은 신뢰된 동일 사용자 override입니다.
+macOS에서는 kernel에서 연결된 daemon의 owner와 audit session을 확인합니다. 이전 login이 남긴 daemon은 자동으로 정상 종료한 뒤 저장된 session을 현재 login security context에서 다시 시작합니다. Protocol-compatible wsx version은 lifecycle-capable daemon 하나를 공유합니다. 각 TUI instance는 bounded version/build presence를 갱신합니다. 오래된 TUI는 새 daemon을 downgrade하지 않고 계속 사용하면서 열어야 할 wsx version을 알립니다. 새 TUI는 인접한 daemon을 replacement 대상으로 예약하고 migration이 기다리는 이유를 표시합니다. wsxd는 다른 version/build의 TUI가 모두 종료되고 fresh generation-authorized agent가 `working`을 보고하지 않을 때만 자신을 교체합니다. 같은 version의 development build는 build time으로 stale target이 선택되는 것을 막습니다. Idle PTY는 migration을 막지 않으며 elected daemon에서 저장된 recipe로 다시 시작합니다. 이미 실행 중인 0.20 wsxd에는 새 policy를 주입할 수 없으므로 기존 zero-live-runtime fence를 계속 적용합니다. Pre-lifecycle compatible daemon은 다음 자연스러운 stop까지 유지되고 incompatible daemon은 matching wsx binary 또는 명시적인 stop이 필요합니다. Cross-version process handoff는 지원하지 않으므로 replacement는 wsx identity를 유지하면서 새 PTY와 terminal buffer를 만듭니다. Live PTY를 닫을 수 있는 즉시 restart가 필요할 때만 `wsx daemon stop`을 사용합니다. `WSX_DAEMON_BIN`, `WSX_SOCKET`은 신뢰된 동일 사용자 override입니다.
 
 ## Plugin과 agent
 
