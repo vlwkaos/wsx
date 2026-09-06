@@ -3,6 +3,7 @@
 
 mod plugins;
 mod state_store;
+#[cfg(any(target_os = "macos", test))]
 mod wake;
 
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,7 @@ const MAX_VIEW_CELLS: usize = 1_000_000;
 const LEASE_TTL: Duration = Duration::from_secs(3);
 const TUI_PRESENCE_TTL: Duration = Duration::from_secs(3);
 const AGENT_WAKE_LEASE_TTL: Duration = Duration::from_secs(30 * 60);
+#[cfg(target_os = "macos")]
 const WAKE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const PRESENTATION_CADENCE: Duration = Duration::from_millis(8);
 static NEXT_LEASE_GENERATION: AtomicU64 = AtomicU64::new(1);
