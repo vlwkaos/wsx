@@ -7,48 +7,113 @@ use ratatui::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoutinePreset {
-    Codex,
-    Claude,
     Pi,
+    Omp,
+    Claude,
+    Codex,
+    Copilot,
+    Droid,
+    Cursor,
+    Kimi,
+    Opencode,
+    Kilo,
+    Hermes,
+    Qoder,
+    Qwen,
+    Antigravity,
     Custom,
 }
 
 impl RoutinePreset {
-    pub const ALL: [Self; 4] = [Self::Codex, Self::Claude, Self::Pi, Self::Custom];
+    pub const ALL: [Self; 15] = [
+        Self::Pi,
+        Self::Omp,
+        Self::Claude,
+        Self::Codex,
+        Self::Copilot,
+        Self::Droid,
+        Self::Cursor,
+        Self::Kimi,
+        Self::Opencode,
+        Self::Kilo,
+        Self::Hermes,
+        Self::Qoder,
+        Self::Qwen,
+        Self::Antigravity,
+        Self::Custom,
+    ];
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Codex => "Codex",
-            Self::Claude => "Claude",
             Self::Pi => "Pi",
+            Self::Omp => "OMP",
+            Self::Claude => "Claude Code",
+            Self::Codex => "Codex",
+            Self::Copilot => "GitHub Copilot CLI",
+            Self::Droid => "Factory Droid",
+            Self::Cursor => "Cursor Agent",
+            Self::Kimi => "Kimi Code",
+            Self::Opencode => "OpenCode",
+            Self::Kilo => "Kilo Code",
+            Self::Hermes => "Hermes Agent",
+            Self::Qoder => "Qoder CLI",
+            Self::Qwen => "Qwen Code",
+            Self::Antigravity => "Antigravity CLI",
             Self::Custom => "Custom",
+        }
+    }
+
+    pub const fn integration_target(self) -> Option<wsx_core::integration::IntegrationTarget> {
+        use wsx_core::integration::IntegrationTarget;
+        match self {
+            Self::Pi => Some(IntegrationTarget::Pi),
+            Self::Omp => Some(IntegrationTarget::Omp),
+            Self::Claude => Some(IntegrationTarget::Claude),
+            Self::Codex => Some(IntegrationTarget::Codex),
+            Self::Copilot => Some(IntegrationTarget::Copilot),
+            Self::Droid => Some(IntegrationTarget::Droid),
+            Self::Cursor => Some(IntegrationTarget::Cursor),
+            Self::Kimi => Some(IntegrationTarget::Kimi),
+            Self::Opencode => Some(IntegrationTarget::Opencode),
+            Self::Kilo => Some(IntegrationTarget::Kilo),
+            Self::Hermes => Some(IntegrationTarget::Hermes),
+            Self::Qoder => Some(IntegrationTarget::Qodercli),
+            Self::Qwen => Some(IntegrationTarget::Qwen),
+            Self::Antigravity => Some(IntegrationTarget::AntigravityCli),
+            Self::Custom => None,
         }
     }
 
     pub fn form(self) -> RoutineForm {
         let command = match self {
-            Self::Codex => vec!["codex", "exec", "--json", "{prompt}"],
-            Self::Claude => vec![
-                "claude",
-                "-p",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "{prompt}",
-            ],
             Self::Pi => vec!["pi", "-p", "{prompt}"],
+            Self::Omp => vec!["omp", "-p", "{prompt}"],
+            Self::Claude => vec!["claude", "-p", "{prompt}"],
+            Self::Codex => vec!["codex", "exec", "{prompt}"],
+            Self::Copilot => vec!["copilot", "-p", "{prompt}"],
+            Self::Droid => vec!["droid", "exec", "{prompt}"],
+            Self::Cursor => vec!["agent", "-p", "{prompt}"],
+            Self::Kimi => vec!["kimi", "-p", "{prompt}"],
+            Self::Opencode => vec!["opencode", "run", "{prompt}"],
+            Self::Kilo => vec!["kilo", "run", "--auto", "{prompt}"],
+            Self::Hermes => vec!["hermes", "-z", "{prompt}"],
+            Self::Qoder => vec!["qoder", "-p", "{prompt}"],
+            Self::Qwen => vec!["qwen", "-p", "{prompt}"],
+            Self::Antigravity => vec!["agy", "-p", "{prompt}"],
             Self::Custom => Vec::new(),
         }
         .into_iter()
         .map(str::to_string)
         .collect();
-        RoutineForm::from_routine(Routine {
+        let mut form = RoutineForm::from_routine(Routine {
             name: String::new(),
             trigger: Trigger::Cron("0 9 * * *".into()),
             command,
             prompt: String::new(),
             enabled: true,
-        })
+        });
+        form.integration_target = self.integration_target();
+        form
     }
 }
 
@@ -60,6 +125,7 @@ pub struct RoutineForm {
     pub prompt: String,
     pub field: usize,
     pub cursor: usize,
+    pub integration_target: Option<wsx_core::integration::IntegrationTarget>,
     enabled: bool,
 }
 
@@ -77,6 +143,7 @@ impl RoutineForm {
             prompt: routine.prompt,
             field: 0,
             cursor,
+            integration_target: None,
             enabled: routine.enabled,
         }
     }
@@ -165,12 +232,18 @@ impl RoutineForm {
 
 pub fn render_preset_picker(frame: &mut Frame, area: Rect, selected: usize) {
     let width = area.width.saturating_sub(4).min(52);
-    let height = area.height.saturating_sub(2).min(8);
+    let height = area.height.saturating_sub(2).min(19);
     let popup = super::popup_center(area, width, height);
     frame.render_widget(Clear, popup);
+    let visible = usize::from(popup.height.saturating_sub(2)).max(1);
+    let start = selected
+        .saturating_sub(visible.saturating_sub(1))
+        .min(RoutinePreset::ALL.len().saturating_sub(visible));
     let lines = RoutinePreset::ALL
         .iter()
         .enumerate()
+        .skip(start)
+        .take(visible)
         .map(|(index, preset)| {
             let marker = if index == selected { "›" } else { " " };
             let style = if index == selected {
@@ -365,24 +438,42 @@ mod tests {
         codex.name = "test".into();
         assert_eq!(
             codex.routine().unwrap().command,
-            vec!["codex", "exec", "--json", "{prompt}"]
+            vec!["codex", "exec", "{prompt}"]
         );
         let mut claude = RoutinePreset::Claude.form();
         claude.name = "test".into();
-        assert!(claude
-            .routine()
-            .unwrap()
-            .command
-            .contains(&"stream-json".to_string()));
+        assert_eq!(
+            claude.routine().unwrap().command,
+            vec!["claude", "-p", "{prompt}"]
+        );
         codex.command_json = "[\"printf\",\"%s\",\"{prompt}\"]".into();
         assert_eq!(codex.routine().unwrap().command[0], "printf");
     }
 
     #[test]
-    fn pi_and_custom_presets_keep_command_validation_explicit() {
+    fn documented_presets_and_custom_keep_command_validation_explicit() {
         let mut pi = RoutinePreset::Pi.form();
         pi.name = "review".into();
         assert_eq!(pi.routine().unwrap().command, vec!["pi", "-p", "{prompt}"]);
+
+        let commands = [
+            (RoutinePreset::Omp, "omp"),
+            (RoutinePreset::Droid, "droid"),
+            (RoutinePreset::Cursor, "agent"),
+            (RoutinePreset::Kimi, "kimi"),
+            (RoutinePreset::Opencode, "opencode"),
+            (RoutinePreset::Kilo, "kilo"),
+            (RoutinePreset::Hermes, "hermes"),
+            (RoutinePreset::Qoder, "qoder"),
+            (RoutinePreset::Qwen, "qwen"),
+            (RoutinePreset::Antigravity, "agy"),
+        ];
+        for (preset, executable) in commands {
+            let mut form = preset.form();
+            form.name = "test".into();
+            assert_eq!(form.routine().unwrap().command[0], executable);
+            assert_eq!(preset.integration_target().unwrap().label(), preset.label());
+        }
 
         let mut custom = RoutinePreset::Custom.form();
         custom.name = "custom".into();
@@ -396,7 +487,7 @@ mod tests {
 
     #[test]
     fn preset_picker_renders_named_choices_and_contextual_hints() {
-        let backend = ratatui::backend::TestBackend::new(60, 12);
+        let backend = ratatui::backend::TestBackend::new(60, 22);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| render_preset_picker(frame, frame.area(), 2))
@@ -411,7 +502,7 @@ mod tests {
                     text.push_str(cell.symbol());
                     text
                 });
-        for expected in ["Codex", "Claude", "› Pi", "Custom", "(j/k)select"] {
+        for expected in ["Pi", "Claude Code", "Codex", "Custom", "(j/k)select"] {
             assert!(text.contains(expected), "missing {expected:?} in {text:?}");
         }
     }

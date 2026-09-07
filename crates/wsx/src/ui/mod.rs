@@ -5,6 +5,7 @@ pub mod confirm;
 pub mod global_settings;
 pub mod group_manager;
 pub mod input;
+pub mod integration_manager;
 pub mod layout;
 pub mod notice;
 pub mod picker;
@@ -417,6 +418,9 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
             }
         }
         Mode::GlobalSettings { form } => render_global_settings(frame, area, form),
+        Mode::IntegrationManager { manager, .. } => {
+            integration_manager::render(frame, area, manager)
+        }
         Mode::Help => render_help(frame, area, app),
         Mode::RoutinePresetPicker { selected, .. } => {
             routine_editor::render_preset_picker(frame, area, *selected)
@@ -543,7 +547,7 @@ fn status_bar_view(app: &App) -> StatusBarView {
         ),
         Mode::Input { .. } => ("INPUT", theme::ModeBadge::Input, Vec::new()),
         Mode::Confirm { .. } => ("CONFIRM", theme::ModeBadge::Confirm, Vec::new()),
-        Mode::Config { .. } | Mode::GlobalSettings { .. } => {
+        Mode::Config { .. } | Mode::GlobalSettings { .. } | Mode::IntegrationManager { .. } => {
             ("CONFIG", theme::ModeBadge::Config, Vec::new())
         }
         Mode::Move { .. } | Mode::MoveSession { .. } => (

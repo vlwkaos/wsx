@@ -12,9 +12,14 @@ use wsx_core::config::global::{GlobalConfig, PortVisibility, TerminalSidebar};
 use super::{popup_block, popup_center, theme};
 
 #[cfg(target_os = "macos")]
-const RUNTIME_FIELDS: &[SettingField] = &[SettingField::ResumeAgents, SettingField::WakeMode];
+const RUNTIME_FIELDS: &[SettingField] = &[
+    SettingField::ResumeAgents,
+    SettingField::WakeMode,
+    SettingField::AgentIntegrations,
+];
 #[cfg(not(target_os = "macos"))]
-const RUNTIME_FIELDS: &[SettingField] = &[SettingField::ResumeAgents];
+const RUNTIME_FIELDS: &[SettingField] =
+    &[SettingField::ResumeAgents, SettingField::AgentIntegrations];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsCategory {
@@ -59,6 +64,7 @@ enum SettingField {
     // ^ Linux hides this field through RUNTIME_FIELDS while shared form matches stay exhaustive.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     WakeMode,
+    AgentIntegrations,
 }
 
 impl SettingField {
@@ -93,6 +99,7 @@ impl SettingField {
             Self::TerminalSidebar => "Terminal sidebar",
             Self::ResumeAgents => "Resume agents",
             Self::WakeMode => "Wake mode",
+            Self::AgentIntegrations => "Agent integrations",
         }
     }
 
@@ -109,6 +116,7 @@ impl SettingField {
             Self::TerminalSidebar => "Use a two-column status rail or the full Workspace tree in Terminal mode.",
             Self::ResumeAgents => "Resume saved agent commands when wsxd starts again.",
             Self::WakeMode => "Prevent idle system sleep while an agent is actively working.",
+            Self::AgentIntegrations => "Inspect and install lifecycle status integrations for detected agents.",
         }
     }
 }
@@ -209,6 +217,10 @@ impl GlobalSettingsForm {
 
     pub fn is_editing(&self) -> bool {
         self.editor.is_some()
+    }
+
+    pub fn opens_agent_integrations(&self) -> bool {
+        self.editor.is_none() && self.selected_field() == SettingField::AgentIntegrations
     }
 
     pub fn accepts_text(&self) -> bool {
@@ -452,6 +464,10 @@ impl GlobalSettingsForm {
             SettingField::WakeMode => FieldEditor::Choice(ChoiceEditor {
                 selected: usize::from(!self.draft.wake_mode),
                 labels: vec!["On", "Off"],
+            }),
+            SettingField::AgentIntegrations => FieldEditor::Choice(ChoiceEditor {
+                selected: 0,
+                labels: vec!["Open"],
             }),
             SettingField::PortVisibility => FieldEditor::Choice(ChoiceEditor {
                 selected: match self.draft.port_visibility {
@@ -707,6 +723,7 @@ fn setting_value(form: &GlobalSettingsForm, field: SettingField) -> String {
         },
         SettingField::ResumeAgents => on_off(form.draft.resume_agents_on_restore).into(),
         SettingField::WakeMode => on_off(form.draft.wake_mode).into(),
+        SettingField::AgentIntegrations => "Open manager".into(),
     }
 }
 

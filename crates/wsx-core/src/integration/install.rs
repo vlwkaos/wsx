@@ -1,4 +1,7 @@
-use super::{assets, config_edit, opencode_config, paths, InstallResult, IntegrationTarget};
+use super::{
+    assets, availability, config_edit, opencode_config, paths, status, InstallResult,
+    IntegrationTarget,
+};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -136,6 +139,14 @@ fn validate_distinct_omp_directory(omp_asset: &Path, pi_asset: &Path) -> io::Res
 }
 
 pub fn install(target: IntegrationTarget) -> io::Result<InstallResult> {
+    let available = availability::is_available(target);
+    let (compatible, compatibility_note) = status::compatibility(target, available);
+    if !compatible {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            compatibility_note.unwrap_or("unsupported agent CLI version"),
+        ));
+    }
     let root = paths::root(target)?;
     if target == IntegrationTarget::Omp {
         validate_distinct_omp_directory(

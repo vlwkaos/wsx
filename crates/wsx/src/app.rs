@@ -23,6 +23,7 @@ use crate::{
         self,
         global_settings::GlobalSettingsForm,
         input::InputState,
+        integration_manager::IntegrationManager,
         routine_editor::{RoutineForm, RoutinePreset},
     },
 };
@@ -399,6 +400,10 @@ pub enum Mode {
     GlobalSettings {
         form: GlobalSettingsForm,
     },
+    IntegrationManager {
+        manager: IntegrationManager,
+        return_form: Box<GlobalSettingsForm>,
+    },
     Move {
         project_idx: usize,
     },
@@ -537,7 +542,7 @@ pub enum BgOutcome {
         display_name: String,
     },
     IntegrationsInstalled {
-        labels: Vec<&'static str>,
+        installed: Vec<wsx_core::integration::IntegrationTarget>,
         failures: Vec<String>,
     },
 }
@@ -625,23 +630,6 @@ fn terminal_stream_error_notice(error: &std::io::Error, target: &str) -> String 
         })
         .unwrap_or_else(|| format!("Terminal stream failed: {detail}"));
     format!("{title}\nTarget: {target}")
-}
-
-fn current_integration_prompt_version() -> String {
-    wsx_core::integration::prompt_version(env!("CARGO_PKG_VERSION"))
-}
-
-fn integration_prompt_label(targets: &[wsx_core::integration::IntegrationTarget]) -> String {
-    let visible = targets
-        .iter()
-        .take(3)
-        .map(|target| target.label())
-        .collect::<Vec<_>>()
-        .join(", ");
-    match targets.len().saturating_sub(3) {
-        0 => visible,
-        remaining => format!("{visible}, and {remaining} more"),
-    }
 }
 
 fn filter_pending_deletions(
@@ -859,8 +847,9 @@ pub struct App {
     routine_rx: mpsc::Receiver<RoutineRefreshResult>,
     routine_refresh_generation: HashMap<PathBuf, u64>,
     integration_scan_rx: mpsc::Receiver<Result<Vec<wsx_core::integration::IntegrationMetadata>>>,
-    pending_integration_prompt: Vec<wsx_core::integration::IntegrationTarget>,
-    integration_prompt_version: Option<String>,
+    integration_metadata: Vec<wsx_core::integration::IntegrationMetadata>,
+    pending_integration_demand: Option<wsx_core::integration::IntegrationTarget>,
+    dismissed_integration_prompts: HashSet<wsx_core::integration::IntegrationTarget>,
     persist_group_selection: bool,
 }
 
@@ -880,7 +869,7 @@ impl App {
             cursor_identity,
             cached_muted,
             acknowledged_outcomes,
-            integration_prompt_version,
+            dismissed_integration_prompts,
         ) = wsx_core::cache::apply_cache(&mut workspace)?;
         let stored_group = match wsx_core::cache::load_group_selection() {
             Ok(group) => group,
@@ -921,7 +910,7 @@ impl App {
         let (routine_tx, routine_rx) = mpsc::channel();
         let (integration_scan_tx, integration_scan_rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = wsx_core::integration::scan_needing_install().map_err(Into::into);
+            let result = wsx_core::integration::scan().map_err(Into::into);
             let _ = integration_scan_tx.send(result);
         });
         std::thread::spawn(move || {
@@ -1025,8 +1014,9 @@ impl App {
             routine_rx,
             routine_refresh_generation: HashMap::new(),
             integration_scan_rx,
-            pending_integration_prompt: Vec::new(),
-            integration_prompt_version,
+            integration_metadata: Vec::new(),
+            pending_integration_demand: None,
+            dismissed_integration_prompts,
             persist_group_selection: true,
         };
         if let Some(identity) = cursor_identity.as_ref() {
@@ -1161,10 +1151,31 @@ impl App {
                 self.spawn_runtime_refresh();
                 self.set_status(format!("Killed session: {display_name}"));
             }
-            Ok(BgOutcome::IntegrationsInstalled { labels, failures }) => {
+            Ok(BgOutcome::IntegrationsInstalled {
+                installed,
+                failures,
+            }) => {
+                let labels = installed
+                    .iter()
+                    .map(|target| target.label())
+                    .collect::<Vec<_>>();
+                for target in &installed {
+                    self.dismissed_integration_prompts.remove(target);
+                    if let Ok(metadata) = wsx_core::integration::metadata(*target) {
+                        if let Some(current) = self
+                            .integration_metadata
+                            .iter_mut()
+                            .find(|item| item.target == *target)
+                        {
+                            *current = metadata;
+                        } else {
+                            self.integration_metadata.push(metadata);
+                        }
+                    }
+                }
+                self.mark_dirty();
+                self.write_cache_if_dirty();
                 if failures.is_empty() {
-                    self.integration_prompt_version = Some(current_integration_prompt_version());
-                    self.mark_dirty();
                     self.set_status(format!(
                         "Installed agent integrations: {}. Restart those agents to enable status.",
                         labels.join(", ")
@@ -1362,6 +1373,7 @@ impl App {
                 | Mode::Search { .. }
                 | Mode::GroupManager { .. }
                 | Mode::GlobalSettings { .. }
+                | Mode::IntegrationManager { .. }
                 | Mode::RoutinePresetPicker { .. }
                 | Mode::RoutineEditor { .. } => EventMode::Input,
                 _ => EventMode::Normal,
@@ -1626,7 +1638,6 @@ impl App {
         if let Ok(result) = self.integration_scan_rx.try_recv() {
             self.apply_integration_scan(result);
         }
-        self.show_integration_prompt_if_ready();
     }
 
     fn prepare_terminal_resume(&mut self) -> Option<u64> {
@@ -1751,34 +1762,49 @@ impl App {
         &mut self,
         result: Result<Vec<wsx_core::integration::IntegrationMetadata>>,
     ) {
-        if self.integration_prompt_version.as_deref()
-            == Some(current_integration_prompt_version().as_str())
-        {
-            return;
-        }
         match result {
             Ok(metadata) => {
-                self.pending_integration_prompt =
-                    metadata.into_iter().map(|item| item.target).collect();
+                if let Mode::IntegrationManager { manager, .. } = &mut self.mode {
+                    manager.replace_metadata(metadata.clone());
+                }
+                self.integration_metadata = metadata;
+                if let Some(target) = self.pending_integration_demand.take() {
+                    self.prompt_for_integration_if_needed(target);
+                }
+                self.needs_redraw = true;
             }
             Err(error) => self.set_warning(format!("Agent integration scan failed: {error}")),
         }
     }
 
-    fn show_integration_prompt_if_ready(&mut self) {
-        if !matches!(self.mode, Mode::Workspace)
-            || self.is_busy()
-            || self.pending_integration_prompt.is_empty()
+    fn prompt_for_integration_if_needed(
+        &mut self,
+        target: wsx_core::integration::IntegrationTarget,
+    ) {
+        use wsx_core::integration::InstallStatus;
+        if self.integration_metadata.is_empty() {
+            self.pending_integration_demand = Some(target);
+            return;
+        }
+        self.pending_integration_demand = None;
+        if self.dismissed_integration_prompts.contains(&target)
+            || !self.integration_metadata.iter().any(|metadata| {
+                metadata.target == target
+                    && metadata.available
+                    && metadata.compatible
+                    && metadata.install_status != InstallStatus::Current
+            })
         {
             return;
         }
-        let targets = std::mem::take(&mut self.pending_integration_prompt);
-        let labels = integration_prompt_label(&targets);
         self.mode = Mode::Confirm {
             message: format!(
-                "Install status integrations for detected agents: {labels}? This updates their user configuration."
+                "Install the {} status integration? Declining disables this prompt until you install it in Global Settings.",
+                target.label()
             ),
-            pending: PendingAction::InstallIntegrations { targets },
+            pending: PendingAction::InstallIntegrations {
+                targets: vec![target],
+            },
         };
         self.needs_redraw = true;
     }
@@ -1874,7 +1900,7 @@ impl App {
                 RoutineResultKind::Save {
                     original_name: _,
                     can_rename: _,
-                    form: _,
+                    form,
                     saved_name,
                 },
                 Ok(asched_core::routine::ipc::Response::Ok { .. }),
@@ -1885,6 +1911,9 @@ impl App {
                     RoutineSelection::Named(saved_name.clone()),
                 );
                 self.set_status(format!("Saved routine '{saved_name}'"));
+                if let Some(target) = form.integration_target {
+                    self.prompt_for_integration_if_needed(target);
+                }
             }
             (
                 RoutineResultKind::Save {
@@ -2159,7 +2188,7 @@ impl App {
             &self.workspace,
             self.tree_selected,
             self.flat(),
-            self.integration_prompt_version.as_deref(),
+            &self.dismissed_integration_prompts,
             sync,
         ) {
             self.set_error(error);
@@ -2835,6 +2864,9 @@ impl App {
         if matches!(self.mode, Mode::GlobalSettings { .. }) {
             return self.dispatch_global_settings(action, terminal);
         }
+        if matches!(self.mode, Mode::IntegrationManager { .. }) {
+            return self.dispatch_integration_manager(action);
+        }
         if matches!(self.mode, Mode::RoutinePresetPicker { .. }) {
             return self.dispatch_routine_preset_picker(action);
         }
@@ -2900,6 +2932,7 @@ impl App {
             Mode::Search { .. } => self.dispatch_search(action, terminal)?,
             Mode::Config { .. }
             | Mode::GlobalSettings { .. }
+            | Mode::IntegrationManager { .. }
             | Mode::Move { .. }
             | Mode::MoveSession { .. }
             | Mode::GroupManager { .. } => unreachable!(),
@@ -3354,12 +3387,12 @@ impl App {
                     Mode::Confirm {
                         pending: PendingAction::DeleteGroup { group_idx },
                         ..
-                    } => (Some(group_idx + 1), false),
+                    } => (Some(group_idx + 1), None),
                     Mode::Confirm {
-                        pending: PendingAction::InstallIntegrations { .. },
+                        pending: PendingAction::InstallIntegrations { targets },
                         ..
-                    } => (None, true),
-                    _ => (None, false),
+                    } => (None, Some(targets.clone())),
+                    _ => (None, None),
                 };
                 self.mode =
                     group_selection.map_or(Mode::Workspace, |selected| Mode::GroupManager {
@@ -3367,9 +3400,10 @@ impl App {
                         scroll: 0,
                         purpose: GroupManagerPurpose::Switch,
                     });
-                if dismissed_integrations {
-                    self.integration_prompt_version = Some(current_integration_prompt_version());
+                if let Some(targets) = dismissed_integrations {
+                    self.dismissed_integration_prompts.extend(targets);
                     self.mark_dirty();
+                    self.write_cache_if_dirty();
                 }
             }
             _ => {}
@@ -4133,12 +4167,26 @@ impl App {
                 }
             }
             Action::Select => {
-                let result = match &mut self.mode {
-                    Mode::GlobalSettings { form } => form.begin_or_commit(),
-                    _ => Ok(()),
-                };
-                if let Err(error) = result {
-                    self.set_error(error);
+                let opens_integrations = matches!(
+                    &self.mode,
+                    Mode::GlobalSettings { form } if form.opens_agent_integrations()
+                );
+                if opens_integrations {
+                    let mode = std::mem::replace(&mut self.mode, Mode::Workspace);
+                    if let Mode::GlobalSettings { form } = mode {
+                        self.mode = Mode::IntegrationManager {
+                            manager: IntegrationManager::new(self.integration_metadata.clone()),
+                            return_form: Box::new(form),
+                        };
+                    }
+                } else {
+                    let result = match &mut self.mode {
+                        Mode::GlobalSettings { form } => form.begin_or_commit(),
+                        _ => Ok(()),
+                    };
+                    if let Err(error) = result {
+                        self.set_error(error);
+                    }
                 }
             }
             Action::NavigateUp | Action::InputBackTab => {
@@ -4223,6 +4271,70 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    fn dispatch_integration_manager(&mut self, action: Action) -> Result<()> {
+        match action {
+            Action::InputEscape | Action::Quit => {
+                let mode = std::mem::replace(&mut self.mode, Mode::Workspace);
+                if let Mode::IntegrationManager { return_form, .. } = mode {
+                    self.mode = Mode::GlobalSettings { form: *return_form };
+                }
+            }
+            Action::NavigateDown | Action::InputChar('j') => {
+                if let Mode::IntegrationManager { manager, .. } = &mut self.mode {
+                    manager.navigate(false);
+                }
+            }
+            Action::NavigateUp | Action::InputChar('k') => {
+                if let Mode::IntegrationManager { manager, .. } = &mut self.mode {
+                    manager.navigate(true);
+                }
+            }
+            Action::InputChar(' ') => {
+                if let Mode::IntegrationManager { manager, .. } = &mut self.mode {
+                    manager.toggle();
+                }
+            }
+            Action::Select => {
+                let mode = std::mem::replace(&mut self.mode, Mode::Workspace);
+                if let Mode::IntegrationManager {
+                    manager,
+                    return_form,
+                } = mode
+                {
+                    let targets = manager.targets();
+                    self.mode = Mode::GlobalSettings { form: *return_form };
+                    if targets.is_empty() {
+                        self.set_status("Select at least one available integration");
+                    } else {
+                        self.spawn_install_integrations(targets);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn spawn_install_integrations(
+        &mut self,
+        targets: Vec<wsx_core::integration::IntegrationTarget>,
+    ) {
+        self.spawn_bg("install agent integrations", move || {
+            let mut installed = Vec::new();
+            let mut failures = Vec::new();
+            for target in targets {
+                match wsx_core::integration::install(target) {
+                    Ok(_) => installed.push(target),
+                    Err(error) => failures.push(format!("{}: {error}", target.label())),
+                }
+            }
+            Ok(BgOutcome::IntegrationsInstalled {
+                installed,
+                failures,
+            })
+        });
     }
 
     fn save_global_settings(&mut self) -> Result<()> {
@@ -4846,17 +4958,7 @@ impl App {
                     self.should_quit = true;
                 }
                 PendingAction::InstallIntegrations { targets } => {
-                    self.spawn_bg("install agent integrations", move || {
-                        let mut labels = Vec::new();
-                        let mut failures = Vec::new();
-                        for target in targets {
-                            match wsx_core::integration::install(target) {
-                                Ok(_) => labels.push(target.label()),
-                                Err(error) => failures.push(format!("{}: {error}", target.label())),
-                            }
-                        }
-                        Ok(BgOutcome::IntegrationsInstalled { labels, failures })
-                    });
+                    self.spawn_install_integrations(targets);
                 }
                 PendingAction::DeleteRoutine {
                     project_path,
@@ -5736,8 +5838,9 @@ mod tests {
             routine_rx,
             routine_refresh_generation: HashMap::new(),
             integration_scan_rx,
-            pending_integration_prompt: Vec::new(),
-            integration_prompt_version: None,
+            integration_metadata: Vec::new(),
+            pending_integration_demand: None,
+            dismissed_integration_prompts: HashSet::new(),
             persist_group_selection: false,
         }
     }
@@ -5751,6 +5854,25 @@ mod tests {
             path: std::path::PathBuf::from(format!("/tmp/{name}")),
             groups: group.into_iter().map(str::to_string).collect(),
             aliases: Default::default(),
+        }
+    }
+
+    fn integration_metadata(
+        target: wsx_core::integration::IntegrationTarget,
+        available: bool,
+        install_status: wsx_core::integration::InstallStatus,
+    ) -> wsx_core::integration::IntegrationMetadata {
+        wsx_core::integration::IntegrationMetadata {
+            target,
+            cli_value: target.cli_value(),
+            label: target.label(),
+            lifecycle: target.lifecycle(),
+            available,
+            compatible: true,
+            compatibility_note: None,
+            install_status,
+            installed_version: None,
+            expected_version: target.expected_version(),
         }
     }
 
@@ -6453,67 +6575,66 @@ mod tests {
     }
 
     #[test]
-    fn integration_prompt_label_bounds_long_target_lists() {
-        assert_eq!(
-            integration_prompt_label(&[
-                wsx_core::integration::IntegrationTarget::Pi,
-                wsx_core::integration::IntegrationTarget::Claude,
-                wsx_core::integration::IntegrationTarget::Codex,
-                wsx_core::integration::IntegrationTarget::Kimi,
-                wsx_core::integration::IntegrationTarget::Opencode,
-            ]),
-            "Pi, Claude Code, Codex, and 2 more"
-        );
+    fn global_settings_opens_and_returns_from_agent_integration_manager() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        let mut form = GlobalSettingsForm::new(GlobalConfig::default());
+        for _ in 0..3 {
+            form.next_category(false);
+        }
+        while !form.opens_agent_integrations() {
+            form.next_field(false);
+        }
+        app.mode = Mode::GlobalSettings { form };
+        let mut terminal = workspace_terminal();
+
+        app.dispatch_global_settings(Action::Select, &mut terminal)
+            .unwrap();
+        assert!(matches!(app.mode, Mode::IntegrationManager { .. }));
+        app.dispatch_integration_manager(Action::InputEscape)
+            .unwrap();
+        assert!(matches!(app.mode, Mode::GlobalSettings { .. }));
     }
 
     #[test]
-    fn startup_integration_prompt_lists_detected_missing_targets() {
+    fn integration_scan_never_prompts_without_explicit_agent_demand() {
         let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
-        app.pending_integration_prompt = vec![
+        let metadata = integration_metadata(
             wsx_core::integration::IntegrationTarget::Pi,
-            wsx_core::integration::IntegrationTarget::Claude,
-        ];
+            true,
+            wsx_core::integration::InstallStatus::Missing,
+        );
 
-        app.show_integration_prompt_if_ready();
+        app.apply_integration_scan(Ok(vec![metadata]));
 
+        assert!(matches!(app.mode, Mode::Workspace));
+    }
+
+    #[test]
+    fn explicit_agent_demand_prompts_once_and_decline_is_per_agent() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.integration_metadata = vec![integration_metadata(
+            wsx_core::integration::IntegrationTarget::Pi,
+            true,
+            wsx_core::integration::InstallStatus::Missing,
+        )];
+
+        app.prompt_for_integration_if_needed(wsx_core::integration::IntegrationTarget::Pi);
         assert!(matches!(
             &app.mode,
             Mode::Confirm {
-                message,
                 pending: PendingAction::InstallIntegrations { targets },
-            } if message.contains("Pi")
-                && message.contains("Claude Code")
-                && targets.len() == 2
+                ..
+            } if targets == &[wsx_core::integration::IntegrationTarget::Pi]
         ));
-    }
+        let mut terminal = workspace_terminal();
+        app.dispatch_confirm(Action::InputEscape, &mut terminal)
+            .unwrap();
+        assert!(app
+            .dismissed_integration_prompts
+            .contains(&wsx_core::integration::IntegrationTarget::Pi));
 
-    #[test]
-    fn current_prompt_version_suppresses_and_legacy_app_version_does_not() {
-        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
-        app.integration_prompt_version = Some(current_integration_prompt_version());
-        let metadata = wsx_core::integration::IntegrationMetadata {
-            target: wsx_core::integration::IntegrationTarget::Pi,
-            cli_value: "pi",
-            label: "Pi",
-            lifecycle: wsx_core::integration::LifecycleCapability::Authoritative,
-            available: true,
-            install_status: wsx_core::integration::InstallStatus::Missing,
-            installed_version: None,
-            expected_version: 8,
-        };
-
-        app.apply_integration_scan(Ok(vec![metadata.clone()]));
-
-        assert!(app.pending_integration_prompt.is_empty());
+        app.prompt_for_integration_if_needed(wsx_core::integration::IntegrationTarget::Pi);
         assert!(matches!(app.mode, Mode::Workspace));
-
-        app.integration_prompt_version = Some(env!("CARGO_PKG_VERSION").into());
-        app.apply_integration_scan(Ok(vec![metadata]));
-
-        assert_eq!(
-            app.pending_integration_prompt,
-            vec![wsx_core::integration::IntegrationTarget::Pi]
-        );
     }
 
     #[test]
@@ -6698,7 +6819,7 @@ mod tests {
         form.name = "review".into();
         assert_eq!(
             form.routine().unwrap().command,
-            vec!["pi", "-p", "{prompt}"]
+            vec!["claude", "-p", "{prompt}"]
         );
     }
 
@@ -6713,7 +6834,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             app.mode,
-            Mode::RoutinePresetPicker { selected: 3, .. }
+            Mode::RoutinePresetPicker { selected: 14, .. }
         ));
         app.dispatch_routine_preset_picker(Action::InputEscape)
             .unwrap();
