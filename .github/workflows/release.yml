@@ -267,6 +267,7 @@ jobs:
           TAP_DIR="$(brew --repository)/Library/Taps/vlwkaos/homebrew-tap"
           mkdir -p "$(dirname "$TAP_DIR")"
           git clone --depth 1 https://github.com/vlwkaos/homebrew-tap.git "$TAP_DIR"
+          brew trust vlwkaos/tap
           python3 scripts/render-homebrew-formula.py --version "$VERSION" --archive-sha "$ARCHIVE_SHA" --output "$TAP_DIR/Formula/wsx.rb"
 
       - name: Build and test bottle
