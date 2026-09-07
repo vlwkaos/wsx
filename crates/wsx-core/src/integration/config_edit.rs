@@ -121,10 +121,30 @@ pub(crate) fn json_config(
                 nested(hooks, event, hook, action, Some("*"))?;
             }
         }
-        IntegrationTarget::Codex
-        | IntegrationTarget::Droid
-        | IntegrationTarget::Qodercli
-        | IntegrationTarget::Qwen => {
+        IntegrationTarget::Codex => {
+            let hooks = hooks(&mut root)?;
+            let events = [
+                ("SessionStart", "idle"),
+                ("UserPromptSubmit", "working"),
+                ("PreToolUse", "working"),
+                ("PermissionRequest", "blocked"),
+                ("PostToolUse", "working"),
+                ("Stop", "done"),
+                ("Interrupt", "idle"),
+            ];
+            for (event, _) in events {
+                remove_nested_actions(
+                    hooks,
+                    event,
+                    hook,
+                    &["session", "idle", "working", "blocked", "done"],
+                );
+            }
+            for (event, action) in events {
+                nested(hooks, event, hook, action, Some("*"))?;
+            }
+        }
+        IntegrationTarget::Droid | IntegrationTarget::Qodercli | IntegrationTarget::Qwen => {
             nested(
                 hooks(&mut root)?,
                 "SessionStart",

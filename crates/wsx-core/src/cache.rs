@@ -59,9 +59,9 @@ pub struct WorkspaceCache {
     /// Provider outcome revisions acknowledged by explicit interaction, keyed by terminal ID.
     #[serde(default)]
     pub acknowledged_outcomes: HashMap<String, u64>,
-    /// wsx version for which the user dismissed the integration setup prompt.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub integration_prompt_version: Option<String>,
+    /// Agent integrations whose demand-driven setup prompt the user declined.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub dismissed_integration_prompts: HashSet<crate::integration::IntegrationTarget>,
     #[serde(skip)]
     migration_needed: bool,
 }
@@ -82,6 +82,7 @@ struct WorkspaceCacheWire {
     active_groups: Option<toml::Value>,
     active_tab: Option<toml::Value>,
     integration_prompt_version: Option<String>,
+    dismissed_integration_prompts: HashSet<crate::integration::IntegrationTarget>,
 }
 
 impl<'de> Deserialize<'de> for WorkspaceCache {
@@ -104,8 +105,8 @@ impl<'de> Deserialize<'de> for WorkspaceCache {
             cursor_identity: wire.cursor_identity,
             muted_terminals: wire.muted_terminals,
             acknowledged_outcomes: wire.acknowledged_outcomes,
-            integration_prompt_version: wire.integration_prompt_version,
-            migration_needed,
+            dismissed_integration_prompts: wire.dismissed_integration_prompts,
+            migration_needed: migration_needed || wire.integration_prompt_version.is_some(),
         })
     }
 }
@@ -215,7 +216,7 @@ pub type AppliedCache = (
     Option<CursorIdentity>,
     HashSet<String>,
     HashMap<String, u64>,
-    Option<String>,
+    HashSet<crate::integration::IntegrationTarget>,
 );
 
 /// Apply only cached UI and local mute state. Sessions always come from wsxd.
@@ -264,7 +265,7 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> anyhow::Result<AppliedCach
         cache.cursor_identity,
         migrated_muted_terminals,
         cache.acknowledged_outcomes,
-        cache.integration_prompt_version,
+        cache.dismissed_integration_prompts,
     ))
 }
 
@@ -319,14 +320,14 @@ pub fn save_cache(
     workspace: &WorkspaceState,
     tree_selected: usize,
     flat: &[FlatEntry],
-    integration_prompt_version: Option<&str>,
+    dismissed_integration_prompts: &HashSet<crate::integration::IntegrationTarget>,
     sync: bool,
 ) -> Option<String> {
     let mut cache = WorkspaceCache {
         written_at_unix_ms: Some(now_unix_ms()),
         tree_selected,
         cursor_identity: resolve_cursor_identity(workspace, flat, tree_selected),
-        integration_prompt_version: integration_prompt_version.map(str::to_owned),
+        dismissed_integration_prompts: dismissed_integration_prompts.clone(),
         ..Default::default()
     };
     for project in &workspace.projects {
@@ -440,22 +441,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_cache_defaults_missing_integration_prompt_version() {
+    fn legacy_cache_defaults_missing_dismissed_integration_prompts() {
         let cache: WorkspaceCache = toml::from_str("tree_selected = 2\n").unwrap();
-        assert_eq!(cache.integration_prompt_version, None);
+        assert!(cache.dismissed_integration_prompts.is_empty());
     }
 
     #[test]
-    fn integration_prompt_version_round_trips() {
+    fn dismissed_integration_prompts_round_trip_per_agent() {
         let cache = WorkspaceCache {
-            integration_prompt_version: Some("0.18.0".into()),
+            dismissed_integration_prompts: [crate::integration::IntegrationTarget::Pi]
+                .into_iter()
+                .collect(),
             ..Default::default()
         };
         let decoded: WorkspaceCache = toml::from_str(&toml::to_string(&cache).unwrap()).unwrap();
         assert_eq!(
-            decoded.integration_prompt_version.as_deref(),
-            Some("0.18.0")
+            decoded.dismissed_integration_prompts,
+            cache.dismissed_integration_prompts
         );
+    }
+
+    #[test]
+    fn legacy_blanket_dismissal_is_migrated_away() {
+        let cache: WorkspaceCache =
+            toml::from_str("tree_selected = 2\nintegration_prompt_version = \"0.21.0\"\n").unwrap();
+        assert!(cache.dismissed_integration_prompts.is_empty());
+        assert!(cache.migration_needed);
     }
 
     #[test]

@@ -19,7 +19,7 @@ pub use install::install;
 pub use model::{
     InstallResult, InstallStatus, IntegrationMetadata, IntegrationTarget, LifecycleCapability,
 };
-pub use status::{metadata, prompt_version, scan, scan_needing_install};
+pub use status::{metadata, scan};
 
 #[cfg(test)]
 mod tests {
@@ -206,6 +206,31 @@ mod tests {
             nested
         );
         assert!(config_edit::json_config(IntegrationTarget::Claude, "[]", &cfg, &p).is_err());
+        let codex_hooks = config_edit::json_config(
+            IntegrationTarget::Codex,
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"keep-me"},{"type":"command","command":"'target/wsx hook.sh' session"}]}]}}"#,
+            &cfg,
+            &p,
+        )
+        .unwrap();
+        for (event, action) in [
+            ("SessionStart", "idle"),
+            ("UserPromptSubmit", "working"),
+            ("PreToolUse", "working"),
+            ("PermissionRequest", "blocked"),
+            ("PostToolUse", "working"),
+            ("Stop", "done"),
+            ("Interrupt", "idle"),
+        ] {
+            assert!(codex_hooks.contains(event), "missing Codex event {event}");
+            assert!(codex_hooks.contains(&config_edit::command(&p, action)));
+        }
+        assert!(codex_hooks.contains("keep-me"));
+        assert!(!codex_hooks.contains("'target/wsx hook.sh' session"));
+        assert_eq!(
+            config_edit::json_config(IntegrationTarget::Codex, &codex_hooks, &cfg, &p).unwrap(),
+            codex_hooks
+        );
         let direct = config_edit::json_config(IntegrationTarget::Copilot, "{}", &cfg, &p).unwrap();
         assert!(direct.contains("\"bash\""));
         let simple = config_edit::json_config(IntegrationTarget::Cursor, "{}", &cfg, &p).unwrap();
@@ -257,6 +282,7 @@ mod tests {
                 IntegrationTarget::Pi,
                 IntegrationTarget::Omp,
                 IntegrationTarget::Claude,
+                IntegrationTarget::Codex,
                 IntegrationTarget::Kimi,
                 IntegrationTarget::Opencode,
                 IntegrationTarget::Kilo,
@@ -289,6 +315,14 @@ mod tests {
         let hook = PathBuf::from("wsx-agent-status.sh");
         let kimi = config_edit::kimi_toml("", &hook);
         assert!(kimi.contains("'done'") || kimi.contains(" done"));
+        let codex = config_edit::json_config(
+            IntegrationTarget::Codex,
+            "{}",
+            PathBuf::from("hooks.json").as_path(),
+            &hook,
+        )
+        .unwrap();
+        assert!(codex.contains("blocked") && codex.contains("done"));
         let mastra = config_edit::json_config(
             IntegrationTarget::Mastracode,
             "{}",

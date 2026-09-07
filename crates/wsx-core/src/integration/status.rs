@@ -1,6 +1,40 @@
 use super::{availability, paths, InstallStatus, IntegrationMetadata, IntegrationTarget};
 use std::fs;
 use std::io;
+use std::process::Command;
+
+const CODEX_COMPATIBILITY_NOTE: &str = "Requires Codex 0.150 or newer";
+
+fn codex_version(output: &str) -> Option<(u32, u32, u32)> {
+    let value = output.split_whitespace().find(|part| {
+        part.chars().next().is_some_and(|ch| ch.is_ascii_digit()) && part.contains('.')
+    })?;
+    let mut parts = value.split('.');
+    Some((
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next().unwrap_or("0").parse().ok()?,
+    ))
+}
+
+pub(crate) fn compatibility(
+    target: IntegrationTarget,
+    available: bool,
+) -> (bool, Option<&'static str>) {
+    if target != IntegrationTarget::Codex || !available {
+        return (true, None);
+    }
+    let compatible = availability::command_path(target)
+        .and_then(|path| Command::new(path).arg("--version").output().ok())
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|output| codex_version(&output))
+        .is_some_and(|version| version >= (0, 150, 0));
+    (
+        compatible,
+        (!compatible).then_some(CODEX_COMPATIBILITY_NOTE),
+    )
+}
 
 fn version(content: &str) -> Option<u32> {
     content.lines().find_map(|line| {
@@ -17,13 +51,17 @@ fn version(content: &str) -> Option<u32> {
 
 pub fn metadata(target: IntegrationTarget) -> io::Result<IntegrationMetadata> {
     let root = paths::root(target)?;
-    metadata_in(target, &root, availability::is_available(target))
+    let available = availability::is_available(target);
+    let (compatible, compatibility_note) = compatibility(target, available);
+    metadata_in(target, &root, available, compatible, compatibility_note)
 }
 
 fn metadata_in(
     target: IntegrationTarget,
     root: &std::path::Path,
     available: bool,
+    compatible: bool,
+    compatibility_note: Option<&'static str>,
 ) -> io::Result<IntegrationMetadata> {
     let installed_version = fs::read_to_string(paths::asset_path_in(root, target))
         .ok()
@@ -57,6 +95,8 @@ fn metadata_in(
         label: target.label(),
         lifecycle: target.lifecycle(),
         available,
+        compatible,
+        compatibility_note,
         install_status,
         installed_version,
         expected_version: target.expected_version(),
@@ -67,30 +107,12 @@ pub fn scan() -> io::Result<Vec<IntegrationMetadata>> {
     IntegrationTarget::ALL.into_iter().map(metadata).collect()
 }
 
-fn needs_install(metadata: &IntegrationMetadata) -> bool {
-    metadata.available && metadata.install_status != InstallStatus::Current
-}
-
-pub fn scan_needing_install() -> io::Result<Vec<IntegrationMetadata>> {
-    Ok(scan()?.into_iter().filter(needs_install).collect())
-}
-
-/// ^ Adapter revisions must invalidate a dismissal even before the next release.
-pub fn prompt_version(app_version: &str) -> String {
-    let adapters = IntegrationTarget::ALL
-        .into_iter()
-        .map(|target| format!("{}={}", target.cli_value(), target.expected_version()))
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("{app_version};{adapters}")
-}
-
 #[cfg(test)]
 pub(crate) fn metadata_for_test(
     target: IntegrationTarget,
     root: &std::path::Path,
 ) -> io::Result<IntegrationMetadata> {
-    metadata_in(target, root, false)
+    metadata_in(target, root, false, true, None)
 }
 
 #[cfg(test)]
@@ -111,9 +133,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_markers() {
+    fn parses_markers_and_codex_versions() {
         assert_eq!(version("// WSX_INTEGRATION_VERSION=10\n"), Some(10));
         assert_eq!(version("# WSX_INTEGRATION_VERSION=5"), Some(5));
+        assert_eq!(codex_version("codex-cli 0.150.0\n"), Some((0, 150, 0)));
+        assert_eq!(codex_version("codex 1.2\n"), Some((1, 2, 0)));
+        assert_eq!(codex_version("unknown\n"), None);
     }
 
     #[test]
@@ -123,11 +148,10 @@ mod tests {
         fs::create_dir_all(asset.parent().unwrap()).unwrap();
         fs::write(&asset, "// WSX_INTEGRATION_VERSION=1\n").unwrap();
 
-        let metadata = metadata_in(IntegrationTarget::Opencode, &root, false).unwrap();
+        let metadata = metadata_in(IntegrationTarget::Opencode, &root, false, true, None).unwrap();
 
         assert_eq!(metadata.install_status, InstallStatus::Outdated);
         assert!(!metadata.available);
-        assert!(!needs_install(&metadata));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -135,19 +159,10 @@ mod tests {
     fn detected_agent_without_adapter_needs_install() {
         let root = test_root("missing-pi");
 
-        let metadata = metadata_in(IntegrationTarget::Pi, &root, true).unwrap();
+        let metadata = metadata_in(IntegrationTarget::Pi, &root, true, true, None).unwrap();
 
         assert_eq!(metadata.install_status, InstallStatus::Missing);
         assert!(metadata.available);
-        assert!(needs_install(&metadata));
-    }
-
-    #[test]
-    fn prompt_version_tracks_app_and_adapter_versions() {
-        let current = prompt_version("0.21.0");
-
-        assert!(current.starts_with("0.21.0;pi=14,omp=11,"));
-        assert_ne!(current, prompt_version("0.20.0"));
-        assert_ne!(current, "0.21.0");
+        assert!(metadata.compatible);
     }
 }

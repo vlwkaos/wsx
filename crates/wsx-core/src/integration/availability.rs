@@ -14,9 +14,9 @@ fn commands(target: IntegrationTarget) -> &'static [&'static str] {
         IntegrationTarget::Opencode => &["opencode"],
         IntegrationTarget::Kilo => &["kilo", "kilo-code"],
         IntegrationTarget::Hermes => &["hermes"],
-        IntegrationTarget::Qodercli => &["qodercli"],
+        IntegrationTarget::Qodercli => &["qoder", "qodercli"],
         IntegrationTarget::Qwen => &["qwen"],
-        IntegrationTarget::Cursor => &["cursor-agent"],
+        IntegrationTarget::Cursor => &["agent", "cursor-agent"],
         IntegrationTarget::Mastracode => &["mastracode"],
         IntegrationTarget::AntigravityCli => &["agy"],
         IntegrationTarget::Grok => &["grok"],
@@ -34,47 +34,53 @@ fn executable(path: &Path) -> bool {
     path.is_file()
 }
 
-fn available_on_path(target: IntegrationTarget, path: Option<std::ffi::OsString>) -> bool {
+fn command_on_path(
+    target: IntegrationTarget,
+    path: Option<std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
     path.as_deref()
         .into_iter()
         .flat_map(std::env::split_paths)
-        .any(|dir| {
+        .find_map(|dir| {
             commands(target)
                 .iter()
-                .any(|cmd| executable(&dir.join(cmd)))
+                .map(|command| dir.join(command))
+                .find(|path| executable(path))
         })
 }
 
-pub fn is_available(target: IntegrationTarget) -> bool {
-    if available_on_path(target, std::env::var_os("PATH")) {
-        return true;
+pub(crate) fn command_path(target: IntegrationTarget) -> Option<std::path::PathBuf> {
+    if let Some(path) = command_on_path(target, std::env::var_os("PATH")) {
+        return Some(path);
     }
     match target {
-        IntegrationTarget::Codex => paths::root(target).is_ok_and(|root| {
+        IntegrationTarget::Codex => paths::root(target).ok().and_then(|root| {
             glob::glob(&format!(
                 "{}/packages/standalone/releases/*/bin/codex",
                 root.display()
             ))
-            .ok()
-            .into_iter()
-            .flatten()
+            .ok()?
             .filter_map(Result::ok)
-            .any(|path| executable(&path))
+            .find(|path| executable(path))
         }),
-        IntegrationTarget::Hermes if cfg!(windows) => paths::root(target).is_ok_and(|root| {
+        IntegrationTarget::Hermes if cfg!(windows) => paths::root(target).ok().and_then(|root| {
             [
                 root.join("hermes.exe"),
                 root.join("bin/hermes.exe"),
                 root.join("Scripts/hermes.exe"),
             ]
-            .iter()
-            .any(|path| executable(path))
+            .into_iter()
+            .find(|path| executable(path))
         }),
-        _ => false,
+        _ => None,
     }
+}
+
+pub fn is_available(target: IntegrationTarget) -> bool {
+    command_path(target).is_some()
 }
 
 #[cfg(test)]
 pub(crate) fn available_on_path_for_test(target: IntegrationTarget, path: &Path) -> bool {
-    available_on_path(target, Some(path.as_os_str().to_owned()))
+    command_on_path(target, Some(path.as_os_str().to_owned())).is_some()
 }

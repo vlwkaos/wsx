@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- Add documented one-shot agent templates to routine creation while keeping generated argv visible and editable; Custom starts with an empty command.
+- Add a selectable agent-integration manager under Global Settings and offer setup only after explicit agent-template use. Per-agent declines remain suppressed until manual installation.
+- Report authoritative Codex lifecycle state through non-destructive hooks for idle, working, blocked, done, and interrupted turns when Codex 0.150.0 or newer is available.
+
+### Documentation
+
+- Condense the English and Korean READMEs and present the product tour as parallel screenshot tables.
+
 ## [0.21.0] - 2026-09-06
 
 ### Breaking Changes

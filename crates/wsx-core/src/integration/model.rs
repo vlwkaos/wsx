@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum IntegrationTarget {
     Pi,
@@ -94,6 +94,7 @@ impl IntegrationTarget {
             Self::Pi
             | Self::Omp
             | Self::Claude
+            | Self::Codex
             | Self::Kimi
             | Self::Opencode
             | Self::Kilo
@@ -107,7 +108,7 @@ impl IntegrationTarget {
             Self::Pi => 14,
             Self::Omp => 11,
             Self::Claude => 10,
-            Self::Codex => 9,
+            Self::Codex => 10,
             Self::Copilot | Self::Droid | Self::Qodercli => 4,
             Self::Devin | Self::AntigravityCli => 3,
             Self::Mastracode => 4,
@@ -159,6 +160,8 @@ pub struct IntegrationMetadata {
     pub label: &'static str,
     pub lifecycle: LifecycleCapability,
     pub available: bool,
+    pub compatible: bool,
+    pub compatibility_note: Option<&'static str>,
     pub install_status: InstallStatus,
     pub installed_version: Option<u32>,
     pub expected_version: u32,
