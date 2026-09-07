@@ -94,8 +94,9 @@ CI builds the GitHub release/assets and optionally crates/Homebrew on a release 
 4. Commit the manifest, lockfile, and changelog. After confirmation, push the release branch alone. If required CI runs on branch pushes, wait for every exact-commit run and require success before creating or pushing the annotated release tag. Push only the explicit tag ref.
 5. Publish locally to crates.io only if CI does not and the user confirms; follow [crates.io publish](atomic/crates.md).
 6. Watch the exact tag-triggered run with `gh run list`/`gh run watch`. Verify the GitHub Release, every expected asset, checksums/signatures, and tap update—not merely a green job.
+7. For `brew bottle` output, treat its JSON as authoritative: upload each tarball under `filename`, not `local_filename`; emit release-root checksums with asset basenames; and let recovery verify only assets it downloads. Trust a cloned tap before any command that loads its formula. After the tap update, force a remote bottle install and verify the installed version, shipped executables, architecture, and formula test. A successful local bottle build or tap push is not installation proof.
 
-A prerelease may still trigger Homebrew in CI. Confirm that consequence before tagging. If a tap credential or required secret is absent, stop before tag creation.
+A prerelease may still trigger Homebrew in CI. Confirm that consequence before tagging. If a tap credential or required secret is absent, stop before tag creation. Repository-role metadata and a successful clone do not prove a fine-grained PAT grants Contents write; verify the selected repository and effective permission before irreversible publication.
 
 ### `node`
 
