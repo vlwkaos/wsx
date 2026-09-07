@@ -4,7 +4,7 @@
 
 ### Bug Fixes
 
-- Trust the cloned Homebrew tap before every formula command, allow the final tap job after intentionally skipped recovery-only stages, verify recovered source archives independently of prior bottles, and validate these contracts in branch CI.
+- Harden Homebrew recovery by validating its job graph and trust ordering, isolating source checksums from prior bottles, and publishing bottle tarballs under the canonical filenames declared by Homebrew metadata.
 
 ## [0.22.0] - 2026-09-07
 
