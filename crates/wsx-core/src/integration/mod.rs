@@ -186,13 +186,19 @@ mod tests {
     fn representative_config_shapes() {
         let p = PathBuf::from("target/wsx hook.sh");
         let cfg = PathBuf::from("x.json");
-        let nested =
-            config_edit::json_config(IntegrationTarget::Claude, r#"{"keep":1}"#, &cfg, &p).unwrap();
+        let nested = config_edit::json_config(
+            IntegrationTarget::Claude,
+            r#"{"keep":1,"hooks":{"PermissionRequest":[{"hooks":[{"type":"command","command":"keep-permission-hook"},{"type":"command","command":"'target/wsx hook.sh' blocked"}]}]}}"#,
+            &cfg,
+            &p,
+        )
+        .unwrap();
         assert!(nested.contains("SessionStart") && nested.contains("\"keep\": 1"));
+        assert!(nested.contains("keep-permission-hook"));
+        assert!(!nested.contains(&config_edit::command(&p, "blocked")));
         for (event, action) in [
             ("SessionStart", "idle"),
             ("UserPromptSubmit", "working"),
-            ("PermissionRequest", "blocked"),
             ("Stop", "done"),
         ] {
             assert!(nested.contains(event), "missing Claude event {event}");

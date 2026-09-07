@@ -100,22 +100,21 @@ pub(crate) fn json_config(
     match target {
         IntegrationTarget::Claude => {
             let hooks = hooks(&mut root)?;
+            let actions = &["session", "idle", "working", "blocked", "done"];
+            // Claude has no permission-resolved hook before an approved tool runs,
+            // so PermissionRequest cannot authoritatively publish a bounded blocked state.
+            // ^ https://code.claude.com/docs/en/hooks
+            remove_nested_actions(hooks, "PermissionRequest", hook, actions);
             let events = [
                 ("SessionStart", "idle"),
                 ("UserPromptSubmit", "working"),
                 ("PreToolUse", "working"),
                 ("PostToolUse", "working"),
                 ("PostToolUseFailure", "working"),
-                ("PermissionRequest", "blocked"),
                 ("Stop", "done"),
             ];
             for (event, _) in events {
-                remove_nested_actions(
-                    hooks,
-                    event,
-                    hook,
-                    &["session", "idle", "working", "blocked", "done"],
-                );
+                remove_nested_actions(hooks, event, hook, actions);
             }
             for (event, action) in events {
                 nested(hooks, event, hook, action, Some("*"))?;
