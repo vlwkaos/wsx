@@ -301,6 +301,7 @@ jobs:
   homebrew:
     name: Publish bottles and update tap
     needs: [build-bottles]
+    if: ${{ always() && !cancelled() && needs.build-bottles.result == 'success' }}
     runs-on: macos-15
     timeout-minutes: 20
     permissions:

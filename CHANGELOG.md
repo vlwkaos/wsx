@@ -4,7 +4,7 @@
 
 ### Bug Fixes
 
-- Trust the cloned Homebrew tap on fresh bottle runners before loading its formula during release and recovery workflows.
+- Trust the cloned Homebrew tap before bottle builds and allow the final tap job after intentionally skipped recovery-only publication stages.
 
 ## [0.22.0] - 2026-09-07
 
