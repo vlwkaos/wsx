@@ -6340,6 +6340,7 @@ mod tests {
         let (subscribed_tx, subscribed_rx) = mpsc::channel();
         let (continue_tx, continue_rx) = mpsc::channel();
         let (input_tx, input_rx) = mpsc::channel();
+        let (close_tx, close_rx) = mpsc::channel();
         let server_path = socket_path.clone();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -6406,7 +6407,7 @@ mod tests {
                     ),
                 )),
             );
-            std::thread::sleep(Duration::from_millis(20));
+            close_rx.recv_timeout(Duration::from_secs(1)).unwrap();
             drop(listener);
             let _ = std::fs::remove_file(server_path);
         });
@@ -6444,6 +6445,7 @@ mod tests {
         assert!(matches!(app.mode, Mode::Terminal { pane_id } if pane_id == runtime::PaneId(2)));
         assert!(app.terminal_cursor().is_some());
 
+        close_tx.send(()).unwrap();
         app.terminal_stream = None;
         server.join().unwrap();
     }
