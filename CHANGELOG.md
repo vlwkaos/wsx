@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Bug Fixes
+
+- Trust the cloned Homebrew tap on fresh bottle runners before loading its formula during release and recovery workflows.
+
 ## [0.22.0] - 2026-09-07
 
 ### Features
