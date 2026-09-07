@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.22.0] - 2026-09-07
+
 ### Features
 
 - Add documented one-shot agent templates to routine creation while keeping generated argv visible and editable; Custom starts with an empty command.
