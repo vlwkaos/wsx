@@ -26,8 +26,10 @@ HOME = WORK / "home"
 STATE = WORK / "state"
 SOCKET = STATE / "wsx" / "wsx.sock"
 PROTOCOL = 11
-WARMUPS = 4
-SAMPLES = 20
+WARMUPS = 8
+# A 100-sample population keeps empirical p95 from being decided by one
+# scheduling stall on shared CI runners while preserving the 16.7 ms metric.
+SAMPLES = 100
 BUDGET_MS = 16.7
 BUFFERS = weakref.WeakKeyDictionary()
 
