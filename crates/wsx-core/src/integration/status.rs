@@ -17,6 +17,10 @@ fn codex_version(output: &str) -> Option<(u32, u32, u32)> {
     ))
 }
 
+fn codex_version_supported(output: &str) -> bool {
+    codex_version(output).is_some_and(|version| version >= (0, 150, 0))
+}
+
 pub(crate) fn compatibility(
     target: IntegrationTarget,
     available: bool,
@@ -28,8 +32,7 @@ pub(crate) fn compatibility(
         .and_then(|path| Command::new(path).arg("--version").output().ok())
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
-        .and_then(|output| codex_version(&output))
-        .is_some_and(|version| version >= (0, 150, 0));
+        .is_some_and(|output| codex_version_supported(&output));
     (
         compatible,
         (!compatible).then_some(CODEX_COMPATIBILITY_NOTE),
@@ -139,6 +142,8 @@ mod tests {
         assert_eq!(codex_version("codex-cli 0.150.0\n"), Some((0, 150, 0)));
         assert_eq!(codex_version("codex 1.2\n"), Some((1, 2, 0)));
         assert_eq!(codex_version("unknown\n"), None);
+        assert!(!codex_version_supported("codex-cli 0.149.9\n"));
+        assert!(codex_version_supported("codex-cli 0.150.0\n"));
     }
 
     #[test]

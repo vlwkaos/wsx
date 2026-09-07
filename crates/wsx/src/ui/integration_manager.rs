@@ -150,17 +150,20 @@ mod tests {
     }
 
     #[test]
-    fn only_detected_noncurrent_integrations_can_be_selected() {
+    fn only_detected_compatible_noncurrent_integrations_can_be_selected() {
+        let mut incompatible = metadata(IntegrationTarget::Codex, true, InstallStatus::Outdated);
+        incompatible.compatible = false;
+        incompatible.compatibility_note = Some("Requires Codex 0.150 or newer");
         let mut manager = IntegrationManager::new(vec![
             metadata(IntegrationTarget::Pi, false, InstallStatus::Missing),
-            metadata(IntegrationTarget::Codex, true, InstallStatus::Current),
+            metadata(IntegrationTarget::Qwen, true, InstallStatus::Current),
+            incompatible,
             metadata(IntegrationTarget::Claude, true, InstallStatus::Outdated),
         ]);
-        manager.toggle();
-        manager.navigate(false);
-        manager.toggle();
-        manager.navigate(false);
-        manager.toggle();
+        for _ in 0..4 {
+            manager.toggle();
+            manager.navigate(false);
+        }
         assert_eq!(manager.targets(), vec![IntegrationTarget::Claude]);
     }
 }

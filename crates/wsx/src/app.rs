@@ -6610,6 +6610,48 @@ mod tests {
     }
 
     #[test]
+    fn explicit_agent_demand_waits_for_scan_and_rejects_incompatible_cli() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.prompt_for_integration_if_needed(wsx_core::integration::IntegrationTarget::Codex);
+        assert_eq!(
+            app.pending_integration_demand,
+            Some(wsx_core::integration::IntegrationTarget::Codex)
+        );
+        let mut incompatible = integration_metadata(
+            wsx_core::integration::IntegrationTarget::Codex,
+            true,
+            wsx_core::integration::InstallStatus::Outdated,
+        );
+        incompatible.compatible = false;
+        incompatible.compatibility_note = Some("Requires Codex 0.150 or newer");
+
+        app.apply_integration_scan(Ok(vec![incompatible]));
+
+        assert!(matches!(app.mode, Mode::Workspace));
+        assert_eq!(app.pending_integration_demand, None);
+    }
+
+    #[test]
+    fn explicit_agent_demand_prompts_after_delayed_scan() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.prompt_for_integration_if_needed(wsx_core::integration::IntegrationTarget::Pi);
+
+        app.apply_integration_scan(Ok(vec![integration_metadata(
+            wsx_core::integration::IntegrationTarget::Pi,
+            true,
+            wsx_core::integration::InstallStatus::Missing,
+        )]));
+
+        assert!(matches!(
+            &app.mode,
+            Mode::Confirm {
+                pending: PendingAction::InstallIntegrations { targets },
+                ..
+            } if targets == &[wsx_core::integration::IntegrationTarget::Pi]
+        ));
+    }
+
+    #[test]
     fn explicit_agent_demand_prompts_once_and_decline_is_per_agent() {
         let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
         app.integration_metadata = vec![integration_metadata(
