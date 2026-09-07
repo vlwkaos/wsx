@@ -19,10 +19,13 @@ def require_before(text: str, first: str, second: str) -> None:
     assert text.index(first) < text.index(second), f"{first!r} must precede {second!r}"
 
 
+recovery = section("  recovery-assets:", "  build-macos:")
 bottles = section("  build-bottles:", "  homebrew:")
 prepare = section("      - name: Prepare formula", "      - name: Build and test bottle")
 final = section("  homebrew:")
 
+assert '"${ARCHIVE}.sha256"' in recovery
+assert "sha256sum --check SHA256SUMS" not in recovery
 assert "needs: [publish-core, recovery-assets]" in bottles
 assert "needs.recovery-assets.result == 'success'" in bottles
 require_before(prepare, "brew trust vlwkaos/tap", "render-homebrew-formula.py")
