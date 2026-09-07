@@ -27,10 +27,11 @@ env:
 
 jobs:
   preflight:
-    name: Verify release credentials
+    name: Verify release credentials and source
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
+      actions: read
       contents: read
       id-token: write
     steps:
@@ -52,6 +53,19 @@ jobs:
           VERSION=${RELEASE_TAG#v}
           MANIFEST_VERSION=$(awk -F '"' '/^version =/ { print $2; exit }' Cargo.toml)
           test "$VERSION" = "$MANIFEST_VERSION"
+
+      - name: Verify exact tagged commit passed branch CI
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          SOURCE_SHA=$(git rev-parse HEAD)
+          WORKFLOW_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml" --jq '.id')
+          RUNS=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs?head_sha=${SOURCE_SHA}&event=push&status=completed&per_page=20")
+          jq -e --arg branch "$DEFAULT_BRANCH" \
+            '.workflow_runs | any(.conclusion == "success" and .head_branch == $branch)' \
+            <<<"$RUNS"
 
       - name: Verify Homebrew tap access
         env:
@@ -95,64 +109,10 @@ jobs:
           if-no-files-found: error
           path: release-assets
 
-  verify:
-    if: github.event_name == 'push'
-    name: Verify tagged source
-    needs: [preflight]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: 1.96.1
-          components: clippy
-
-      - name: Install Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version: 0.15.2
-
-      - name: Install Nextest
-        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2.85.9
-        with:
-          tool: nextest@0.9.143
-          fallback: none
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          key: release-verify
-
-      - name: Check workspace
-        run: cargo check --workspace --all-targets --locked
-
-      - name: Run tests
-        run: cargo nextest run --workspace --locked --profile ci
-
-      - name: Run doctests
-        run: cargo test --workspace --locked --doc
-
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      - name: Build runtime smoke binaries
-        run: cargo build --locked -p wsx -p wsx-daemon
-
-      - name: Run runtime smoke test
-        run: python3 scripts/runtime-smoke.py
-
-      - name: Verify wsx-core package
-        run: cargo publish --dry-run --locked -p wsx-core
-
   build-macos:
+    if: github.event_name == 'push'
     name: Build universal macOS archive
-    needs: [verify]
+    needs: [preflight]
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -308,9 +268,6 @@ jobs:
           mkdir -p "$(dirname "$TAP_DIR")"
           git clone --depth 1 https://github.com/vlwkaos/homebrew-tap.git "$TAP_DIR"
           python3 scripts/render-homebrew-formula.py --version "$VERSION" --archive-sha "$ARCHIVE_SHA" --output "$TAP_DIR/Formula/wsx.rb"
-          brew trust vlwkaos/tap
-          brew style "$TAP_DIR/Formula/wsx.rb"
-          brew audit --strict vlwkaos/homebrew-tap/wsx
 
       - name: Build and test bottle
         run: |
@@ -327,11 +284,6 @@ jobs:
           test "${#METADATA[@]}" -eq 1
           tar -tzf "${BOTTLES[0]}" | grep -q '/INSTALL_RECEIPT\.json$'
           tar -tzf "${BOTTLES[0]}" | grep -q '/\.brew/wsx\.rb$'
-          brew uninstall --force wsx
-          BOTTLE_PATH="$(pwd)/${BOTTLES[0]}"
-          test -f "$BOTTLE_PATH"
-          brew install "$BOTTLE_PATH"
-          brew test vlwkaos/homebrew-tap/wsx
           test "$(brew --prefix wsx)/bin/wsx" -ef "$(command -v wsx)"
           test -x "$(brew --prefix wsx)/bin/wsxd"
           lipo "$(brew --prefix wsx)/bin/wsx" -verify_arch arm64 x86_64

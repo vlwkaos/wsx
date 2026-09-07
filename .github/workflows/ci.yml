@@ -65,6 +65,10 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      - name: Verify wsx-core package
+        if: matrix.os == 'ubuntu-24.04'
+        run: cargo publish --dry-run --locked -p wsx-core
+
       - name: Build runtime smoke binaries
         run: cargo build --locked -p wsx -p wsx-daemon
 
