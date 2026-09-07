@@ -237,7 +237,7 @@ fn lifecycle_clock_sample() -> Option<LifecycleClockSample> {
 }
 
 const TICK_MS: u64 = 100;
-const TERMINAL_TICK_MS: u64 = 8;
+const TERMINAL_TICK_MS: u64 = 4;
 const FAST_INTERVAL_MS: u64 = 500;
 const GIT_SWEEP_INTERVAL_MS: u64 = 15_000;
 const SLOW_INTERVAL_MS: u64 = 30_000;
