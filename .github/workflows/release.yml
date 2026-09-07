@@ -358,7 +358,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ env.RELEASE_TAG }}
         run: |
-          { cat release-assets/SHA256SUMS; shasum -a 256 bottle-assets/*.bottle.tar.gz; } | sort | tee SHA256SUMS
+          for METADATA in bottle-assets/*.bottle.json; do
+            LOCAL_FILENAME=$(jq -r '.[].bottle.tags[] | .local_filename' "$METADATA")
+            FILENAME=$(jq -r '.[].bottle.tags[] | .filename' "$METADATA")
+            test -f "bottle-assets/$LOCAL_FILENAME"
+            mv "bottle-assets/$LOCAL_FILENAME" "bottle-assets/$FILENAME"
+          done
+          {
+            (cd release-assets && shasum -a 256 wsx-*-darwin-universal.tar.gz)
+            (cd bottle-assets && shasum -a 256 *.bottle.tar.gz)
+          } | sort | tee SHA256SUMS
           gh release upload "$TAG" bottle-assets/*.bottle.tar.gz bottle-assets/*.bottle.json SHA256SUMS --clobber
 
       - name: Push Homebrew formula
