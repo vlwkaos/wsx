@@ -328,7 +328,9 @@ jobs:
           tar -tzf "${BOTTLES[0]}" | grep -q '/INSTALL_RECEIPT\.json$'
           tar -tzf "${BOTTLES[0]}" | grep -q '/\.brew/wsx\.rb$'
           brew uninstall --force wsx
-          brew install "./${BOTTLES[0]}"
+          BOTTLE_PATH="$(pwd)/${BOTTLES[0]}"
+          test -f "$BOTTLE_PATH"
+          brew install "$BOTTLE_PATH"
           brew test vlwkaos/homebrew-tap/wsx
           test "$(brew --prefix wsx)/bin/wsx" -ef "$(command -v wsx)"
           test -x "$(brew --prefix wsx)/bin/wsxd"
