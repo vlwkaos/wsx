@@ -2,9 +2,18 @@
 
 ## Unreleased
 
+## [0.22.1] - 2026-09-07
+
 ### Bug Fixes
 
+- Retry project discovery and daemon synchronization once when session creation races a worktree refresh, while preserving the existing refusal for genuinely absent worktrees.
+- Set Claude turns stopped by rate limits to blocked and other terminal API failures to error, and invalidate stale working state after Claude's adapter-declared Esc interruption without restoring the unpaired permission-request state.
+- Clarify that an exited older TUI's replacement presence expires within three seconds while working agents remain explicit upgrade blockers.
 - Harden Homebrew recovery by validating its job graph and trust ordering, isolating source checksums from prior bottles, and publishing bottle tarballs under the canonical filenames declared by Homebrew metadata.
+
+### Maintenance
+
+- Keep daemon replacement tests independent of the current package version and document exact CLI test-filter discovery.
 
 ## [0.22.0] - 2026-09-07
 

@@ -24,6 +24,7 @@ pub use status::{metadata, scan};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use std::fs;
     use std::path::PathBuf;
 
@@ -188,14 +189,40 @@ mod tests {
         let cfg = PathBuf::from("x.json");
         let nested = config_edit::json_config(
             IntegrationTarget::Claude,
-            r#"{"keep":1,"hooks":{"PermissionRequest":[{"hooks":[{"type":"command","command":"keep-permission-hook"},{"type":"command","command":"'target/wsx hook.sh' blocked"}]}]}}"#,
+            r#"{"keep":1,"hooks":{"PermissionRequest":[{"hooks":[{"type":"command","command":"keep-permission-hook"},{"type":"command","command":"'target/wsx hook.sh' blocked"}]}],"StopFailure":[{"matcher":"custom","hooks":[{"type":"command","command":"keep-stop-failure"}]},{"matcher":"*","hooks":[{"type":"command","command":"'target/wsx hook.sh' working"}]}]}}"#,
             &cfg,
             &p,
         )
         .unwrap();
         assert!(nested.contains("SessionStart") && nested.contains("\"keep\": 1"));
         assert!(nested.contains("keep-permission-hook"));
-        assert!(!nested.contains(&config_edit::command(&p, "blocked")));
+        assert!(nested.contains("keep-stop-failure"));
+        let claude: Value = serde_json::from_str(&nested).unwrap();
+        let stop_failures = claude["hooks"]["StopFailure"].as_array().unwrap();
+        assert_eq!(stop_failures.len(), 3);
+        for (matcher, action) in [
+            ("rate_limit", "blocked"),
+            (
+                "overloaded|authentication_failed|oauth_org_not_allowed|account_on_hold|billing_error|invalid_request|model_not_found|server_error|max_output_tokens|unknown",
+                "error",
+            ),
+        ] {
+            assert!(stop_failures.iter().any(|entry| {
+                entry["matcher"] == matcher
+                    && entry["hooks"].as_array().is_some_and(|hooks| {
+                        hooks.iter().any(|hook| {
+                            hook["command"] == config_edit::command(&p, action)
+                        })
+                    })
+            }));
+        }
+        assert!(!stop_failures.iter().any(|entry| {
+            entry["hooks"].as_array().is_some_and(|hooks| {
+                hooks
+                    .iter()
+                    .any(|hook| hook["command"] == config_edit::command(&p, "working"))
+            })
+        }));
         for (event, action) in [
             ("SessionStart", "idle"),
             ("UserPromptSubmit", "working"),
@@ -278,6 +305,8 @@ mod tests {
 
     #[test]
     fn lifecycle_capabilities_match_native_authoritative_adapters() {
+        assert!(assets::primary(IntegrationTarget::Claude)
+            .contains("[ \"claude\" = \"claude\" ] && set -- \"$@\" --escape-interrupts"));
         let authoritative = IntegrationTarget::ALL
             .into_iter()
             .filter(|target| target.lifecycle() == LifecycleCapability::Authoritative)

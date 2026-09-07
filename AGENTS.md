@@ -39,7 +39,7 @@ This is a Cargo workspace with separate branch CI and stable `v*` tag publicatio
 - **Moving a linked worktree**: pass both paths, e.g. `git worktree move <old-path> <new-path>`.
 - **Read-only merge audit**: sandboxed `git merge-tree --write-tree` can fail while creating temporary Git objects; use `git merge-tree <merge-base> <main> <branch>` when only conflict inspection is needed.
 - **Core test layout**: this repo has no `crates/wsx-core/tests`; search core unit tests under `crates/wsx-core/src`.
-- **Exact Rust unit-test filter**: include the module path, e.g. `cargo test -p wsx-terminal tests::<name> -- --exact` or `cargo test -p wsx-core git::ops::tests::<name> -- --exact`; a bare function name with `--exact` selects zero tests.
+- **Exact Rust unit-test filter**: include the module path, e.g. `cargo test -p wsx-terminal tests::<name> -- --exact` or `cargo test -p wsx-core git::ops::tests::<name> -- --exact`; a bare function name with `--exact` selects zero tests. CLI parser tests use `cli::agent_command_tests::<name>`; confirm unfamiliar paths with `cargo test -p <package> -- --list`.
 - **Daemon shutdown**: use `wsx daemon stop`; it gracefully closes wsxd and live PTYs so saved session commands recreate on the next launch. SIGHUP and SSH disconnect are not shutdown boundaries. There is no `routine daemon` command.
 
 Recurring audit axes (auto-maintained by /good-to-go):
