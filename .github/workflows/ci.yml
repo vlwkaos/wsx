@@ -53,6 +53,10 @@ jobs:
         with:
           key: ${{ matrix.os }}
 
+      - name: Validate release workflow
+        if: matrix.os == 'ubuntu-24.04'
+        run: python3 scripts/validate-release-workflow.py
+
       - name: Check workspace
         run: cargo check --workspace --all-targets --locked
 
