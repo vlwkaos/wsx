@@ -8,6 +8,10 @@
 - Add a selectable agent-integration manager under Global Settings and offer setup only after explicit agent-template use. Per-agent declines remain suppressed until manual installation.
 - Report authoritative Codex lifecycle state through non-destructive hooks for idle, working, blocked, done, and interrupted turns when Codex 0.150.0 or newer is available.
 
+### Bug Fixes
+
+- Reduce foreground Terminal polling from 8 ms to 4 ms while retaining the daemon's 8 ms producer cadence, keeping production-equivalent added p95 latency reliably below the existing 16.7 ms budget.
+
 ### Documentation
 
 - Condense the English and Korean READMEs and present the product tour as parallel screenshot tables.
