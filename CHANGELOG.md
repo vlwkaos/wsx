@@ -4,7 +4,7 @@
 
 ### Bug Fixes
 
-- Trust the cloned Homebrew tap before bottle builds and allow the final tap job after intentionally skipped recovery-only publication stages.
+- Trust the cloned Homebrew tap before every formula command, allow the final tap job after intentionally skipped recovery-only stages, and validate these contracts in branch CI.
 
 ## [0.22.0] - 2026-09-07
 

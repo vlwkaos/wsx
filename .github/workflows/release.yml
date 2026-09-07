@@ -342,8 +342,8 @@ jobs:
           gh repo clone vlwkaos/homebrew-tap "$TAP_DIR"
           python3 scripts/render-homebrew-formula.py --version "$VERSION" --archive-sha "$ARCHIVE_SHA" --output "$TAP_DIR/Formula/wsx.rb"
           cd "$TAP_DIR"
-          brew bottle --merge --write --no-commit "$GITHUB_WORKSPACE"/bottle-assets/*.bottle.json
           brew trust vlwkaos/tap
+          brew bottle --merge --write --no-commit "$GITHUB_WORKSPACE"/bottle-assets/*.bottle.json
           brew style Formula/wsx.rb
           brew audit --strict vlwkaos/homebrew-tap/wsx
           grep -q 'arm64_sequoia:' Formula/wsx.rb
