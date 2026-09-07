@@ -3556,7 +3556,7 @@ mod tests {
             plugin_changed: Condvar::new(),
             active_clients: Arc::new(AtomicUsize::new(0)),
             epoch: 1,
-            binary_id: "0.21.0:1:1:1:10".into(),
+            binary_id: "0.22.0:1:1:1:10".into(),
             started_unix_ms: 1,
             recovered_from_backup: false,
             next_runtime_generation: AtomicU64::new(1),
@@ -3603,15 +3603,15 @@ mod tests {
     #[test]
     fn newer_replacement_stops_atomically_without_blockers() {
         let (daemon, path) = agent_test_daemon(agent_test_persisted());
-        let target = "0.22.0:1:2:3:20";
+        let target = "0.23.0:1:2:3:20";
         let response = prepare_replacement(&daemon, target.into()).unwrap();
         assert_eq!(
             response,
             Response::Replacement {
                 disposition: ReplacementDisposition::Stopping,
                 live_runtimes: 0,
-                daemon_version: "0.21.0".into(),
-                target_version: "0.22.0".into(),
+                daemon_version: "0.22.0".into(),
+                target_version: "0.23.0".into(),
                 blockers: vec![],
                 use_current_daemon: false,
             }
@@ -3676,12 +3676,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            prepare_replacement(&daemon, "0.22.0:1:2:3:20".into()).unwrap(),
+            prepare_replacement(&daemon, "0.23.0:1:2:3:20".into()).unwrap(),
             Response::Replacement {
                 disposition: ReplacementDisposition::Deferred,
                 live_runtimes: 1,
-                daemon_version: "0.21.0".into(),
-                target_version: "0.22.0".into(),
+                daemon_version: "0.22.0".into(),
+                target_version: "0.23.0".into(),
                 blockers: vec![ReplacementBlocker::WorkingAgent],
                 use_current_daemon: false,
             }
@@ -3735,7 +3735,7 @@ mod tests {
             Response::Replacement {
                 disposition: ReplacementDisposition::Deferred,
                 live_runtimes: 0,
-                daemon_version: "0.21.0".into(),
+                daemon_version: "0.22.0".into(),
                 target_version: "0.20.0".into(),
                 blockers: vec![],
                 use_current_daemon: true,

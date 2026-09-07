@@ -1644,8 +1644,8 @@ mod tests {
                 &Response::Lifecycle(super::super::domain::DaemonLifecycle {
                     protocol: PROTOCOL_VERSION,
                     epoch: 7,
-                    binary_id: "0.22.0:1:2:3:20".into(),
-                    version: "0.22.0".into(),
+                    binary_id: "0.23.0:1:2:3:20".into(),
+                    version: "0.23.0".into(),
                     started_unix_ms: 1,
                     phase: super::super::domain::DaemonPhase::Ready,
                     live_runtimes: 2,
@@ -1665,9 +1665,9 @@ mod tests {
             version_coordination: true,
         };
         assert_eq!(
-            ready_without_transition(&Client::new(path), &ready, Some("0.21.0:1:2:3:10")).unwrap(),
+            ready_without_transition(&Client::new(path), &ready, Some("0.22.0:1:2:3:10")).unwrap(),
             Some(Availability::NewerDaemon {
-                daemon_version: "0.22.0".into()
+                daemon_version: "0.23.0".into()
             })
         );
         server.join().unwrap();
