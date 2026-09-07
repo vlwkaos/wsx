@@ -98,9 +98,10 @@ jobs:
           mkdir release-assets
           gh release download "$RELEASE_TAG" --dir release-assets --pattern 'wsx-*-darwin-universal.tar.gz' --pattern 'wsx-*-darwin-universal.tar.gz.sha256' --pattern SHA256SUMS
           cd release-assets
-          sha256sum --check SHA256SUMS
           ARCHIVES=(wsx-*-darwin-universal.tar.gz)
           test "${#ARCHIVES[@]}" -eq 1
+          ARCHIVE=${ARCHIVES[0]}
+          test "$(sha256sum "$ARCHIVE" | awk '{ print $1 }')" = "$(tr -d '[:space:]' < "${ARCHIVE}.sha256")"
 
       - name: Upload recovered source assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
