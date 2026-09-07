@@ -3,16 +3,27 @@ name: Release
 "on":
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Stable release tag whose Homebrew publication should resume
+        required: true
+        type: string
+      confirm:
+        description: Type publish-homebrew to confirm release asset and tap mutation
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
   preflight:
@@ -27,11 +38,18 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Validate release tag
+        env:
+          RECOVERY_CONFIRM: ${{ inputs.confirm }}
         run: |
-          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          VERSION=${GITHUB_REF_NAME#v}
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            test "$RECOVERY_CONFIRM" = "publish-homebrew"
+          fi
+          test "$(git cat-file -t "$RELEASE_TAG")" = "tag"
+          VERSION=${RELEASE_TAG#v}
           MANIFEST_VERSION=$(awk -F '"' '/^version =/ { print $2; exit }' Cargo.toml)
           test "$VERSION" = "$MANIFEST_VERSION"
 
@@ -43,9 +61,42 @@ jobs:
           test "$(gh api repos/vlwkaos/homebrew-tap --jq '.permissions.push')" = "true"
 
       - name: Verify crates.io Trusted Publisher
+        if: github.event_name == 'push'
         uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
 
+  recovery-assets:
+    name: Recover existing release assets
+    if: github.event_name == 'workflow_dispatch'
+    needs: [preflight]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Download and verify existing source assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir release-assets
+          gh release download "$RELEASE_TAG" --dir release-assets --pattern 'wsx-*-darwin-universal.tar.gz' --pattern 'wsx-*-darwin-universal.tar.gz.sha256' --pattern SHA256SUMS
+          cd release-assets
+          sha256sum --check SHA256SUMS
+          ARCHIVES=(wsx-*-darwin-universal.tar.gz)
+          test "${#ARCHIVES[@]}" -eq 1
+
+      - name: Upload recovered source assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          if-no-files-found: error
+          path: release-assets
+
   verify:
+    if: github.event_name == 'push'
     name: Verify tagged source
     needs: [preflight]
     runs-on: ubuntu-24.04
@@ -178,7 +229,7 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           VERSION=${TAG#v}
           awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md | tee release-notes.md
@@ -215,7 +266,11 @@ jobs:
 
   build-bottles:
     name: Bottle (${{ matrix.name }})
-    needs: [publish-core]
+    needs: [publish-core, recovery-assets]
+    if: >-
+      ${{ always() && !cancelled() &&
+          ((github.event_name == 'push' && needs.publish-core.result == 'success') ||
+           (github.event_name == 'workflow_dispatch' && needs.recovery-assets.result == 'success')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -235,6 +290,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Download source assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -244,7 +300,7 @@ jobs:
 
       - name: Prepare formula
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${RELEASE_TAG#v}
           ARCHIVE="wsx-${VERSION}-darwin-universal.tar.gz"
           ARCHIVE_SHA=$(grep " ${ARCHIVE}$" release-assets/SHA256SUMS | awk '{ print $1 }')
           test -n "$ARCHIVE_SHA"
@@ -252,18 +308,19 @@ jobs:
           mkdir -p "$(dirname "$TAP_DIR")"
           git clone --depth 1 https://github.com/vlwkaos/homebrew-tap.git "$TAP_DIR"
           python3 scripts/render-homebrew-formula.py --version "$VERSION" --archive-sha "$ARCHIVE_SHA" --output "$TAP_DIR/Formula/wsx.rb"
+          brew trust vlwkaos/tap
           brew style "$TAP_DIR/Formula/wsx.rb"
           brew audit --strict vlwkaos/homebrew-tap/wsx
 
       - name: Build and test bottle
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${RELEASE_TAG#v}
           TAP_DIR="$(brew --repository)/Library/Taps/vlwkaos/homebrew-tap"
           brew install --build-bottle vlwkaos/homebrew-tap/wsx
           brew test vlwkaos/homebrew-tap/wsx
           mkdir -p bottle-output
           cd bottle-output
-          brew bottle --json --no-rebuild --root-url "https://github.com/vlwkaos/wsx/releases/download/${GITHUB_REF_NAME}" vlwkaos/homebrew-tap/wsx
+          brew bottle --json --no-rebuild --root-url "https://github.com/vlwkaos/wsx/releases/download/${RELEASE_TAG}" vlwkaos/homebrew-tap/wsx
           BOTTLES=(wsx--*.bottle.tar.gz)
           METADATA=(wsx--*.bottle.json)
           test "${#BOTTLES[@]}" -eq 1
@@ -300,6 +357,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Download source assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -318,7 +376,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${RELEASE_TAG#v}
           ARCHIVE="wsx-${VERSION}-darwin-universal.tar.gz"
           ARCHIVE_SHA=$(grep " ${ARCHIVE}$" release-assets/SHA256SUMS | awk '{ print $1 }')
           test -n "$ARCHIVE_SHA"
@@ -329,6 +387,7 @@ jobs:
           python3 scripts/render-homebrew-formula.py --version "$VERSION" --archive-sha "$ARCHIVE_SHA" --output "$TAP_DIR/Formula/wsx.rb"
           cd "$TAP_DIR"
           brew bottle --merge --write --no-commit "$GITHUB_WORKSPACE"/bottle-assets/*.bottle.json
+          brew trust vlwkaos/tap
           brew style Formula/wsx.rb
           brew audit --strict vlwkaos/homebrew-tap/wsx
           grep -q 'arm64_sequoia:' Formula/wsx.rb
@@ -340,7 +399,7 @@ jobs:
       - name: Upload bottle release assets
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           { cat release-assets/SHA256SUMS; shasum -a 256 bottle-assets/*.bottle.tar.gz; } | sort | tee SHA256SUMS
           gh release upload "$TAG" bottle-assets/*.bottle.tar.gz bottle-assets/*.bottle.json SHA256SUMS --clobber
@@ -349,7 +408,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${RELEASE_TAG#v}
           TAP_DIR="$(brew --repository)/Library/Taps/vlwkaos/homebrew-tap"
           cd "$TAP_DIR"
           git config user.name "github-actions[bot]"
