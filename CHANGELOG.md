@@ -10,7 +10,7 @@
 
 ### Bug Fixes
 
-- Reduce foreground Terminal polling from 8 ms to 4 ms while retaining the daemon's 8 ms producer cadence, and measure added p95 over 100 samples so shared-runner outliers do not decide the existing 16.7 ms performance gate.
+- Reduce foreground Terminal polling and daemon presentation cadence from 8 ms to 4 ms, and measure added p95 over 100 samples so shared-runner outliers do not decide the existing 16.7 ms performance gate.
 
 ### Documentation
 
