@@ -12,6 +12,7 @@
 
 ### Bug Fixes
 
+- Keep approved Claude tool execution working instead of leaving it blocked after an interactive permission request; adapter upgrades remove only the stale wsx-owned permission hook.
 - Reduce foreground Terminal polling and daemon presentation cadence from 8 ms to 4 ms, and measure added p95 over 100 samples so shared-runner outliers do not decide the existing 16.7 ms performance gate.
 
 ### Documentation
