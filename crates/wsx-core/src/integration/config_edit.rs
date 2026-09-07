@@ -100,9 +100,10 @@ pub(crate) fn json_config(
     match target {
         IntegrationTarget::Claude => {
             let hooks = hooks(&mut root)?;
-            let actions = &["session", "idle", "working", "blocked", "done"];
+            let actions = &["session", "idle", "working", "blocked", "done", "error"];
             // Claude has no permission-resolved hook before an approved tool runs,
             // so PermissionRequest cannot authoritatively publish a bounded blocked state.
+            // StopFailure matchers receive the documented terminal API error name.
             // ^ https://code.claude.com/docs/en/hooks
             remove_nested_actions(hooks, "PermissionRequest", hook, actions);
             let events = [
@@ -116,9 +117,18 @@ pub(crate) fn json_config(
             for (event, _) in events {
                 remove_nested_actions(hooks, event, hook, actions);
             }
+            remove_nested_actions(hooks, "StopFailure", hook, actions);
             for (event, action) in events {
                 nested(hooks, event, hook, action, Some("*"))?;
             }
+            nested(hooks, "StopFailure", hook, "blocked", Some("rate_limit"))?;
+            nested(
+                hooks,
+                "StopFailure",
+                hook,
+                "error",
+                Some("overloaded|authentication_failed|oauth_org_not_allowed|account_on_hold|billing_error|invalid_request|model_not_found|server_error|max_output_tokens|unknown"),
+            )?;
         }
         IntegrationTarget::Codex => {
             let hooks = hooks(&mut root)?;

@@ -1189,6 +1189,61 @@ fn with_stream_runtime<T>(
     operation(&runtime)
 }
 
+fn escape_interrupt_revision(state: &State, pane_id: PaneId, key: &KeyEvent) -> Option<u64> {
+    if key.code != KeyCode::Escape {
+        return None;
+    }
+    let pane = state
+        .persisted
+        .panes
+        .iter()
+        .find(|pane| pane.id == pane_id)?;
+    pane.agent
+        .as_ref()
+        .is_some_and(|agent| {
+            agent.state == AgentState::Working && agent.capabilities.escape_interrupts
+        })
+        .then_some(pane.revision)
+}
+
+fn invalidate_working_agent_after_escape(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    expected_revision: u64,
+) -> Result<(), ApiError> {
+    let mut state = lock(&daemon.state);
+    let Some(pane_index) = state
+        .persisted
+        .panes
+        .iter()
+        .position(|pane| pane.id == pane_id)
+    else {
+        return Ok(());
+    };
+    let pane = &state.persisted.panes[pane_index];
+    if pane.revision != expected_revision
+        || !pane.agent.as_ref().is_some_and(|agent| {
+            agent.state == AgentState::Working && agent.capabilities.escape_interrupts
+        })
+    {
+        return Ok(());
+    }
+
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    persisted.panes[pane_index]
+        .agent
+        .as_mut()
+        .expect("validated interruptible agent must remain present")
+        .state = AgentState::Unknown;
+    persisted.panes[pane_index].revision = revision;
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    state.agent_wake_leases.remove(&pane_id);
+    bump(daemon, &mut state, "agent.interrupted", pane_id.0);
+    Ok(())
+}
+
 fn handle_terminal_stream_input(
     daemon: &Daemon,
     pane_id: PaneId,
@@ -1206,9 +1261,17 @@ fn handle_terminal_stream_input(
             })
         }
         TerminalClientMessage::Key(key) => {
+            // Claude does not fire Stop after a user interrupt. Its adapter marks Esc as
+            // invalidating the current Working report; a newer concurrent report wins.
+            // ^ https://code.claude.com/docs/en/hooks#stop
+            let interrupt_revision = escape_interrupt_revision(&lock(&daemon.state), pane_id, &key);
             with_stream_runtime(daemon, pane_id, client_id, lease_generation, |runtime| {
                 runtime.key(&key).map_err(terminal_api)
-            })
+            })?;
+            if let Some(revision) = interrupt_revision {
+                invalidate_working_agent_after_escape(daemon, pane_id, revision)?;
+            }
+            Ok(())
         }
         TerminalClientMessage::Paste(text) => {
             if text.len() > MAX_INPUT_BYTES {
@@ -3610,7 +3673,7 @@ mod tests {
             Response::Replacement {
                 disposition: ReplacementDisposition::Stopping,
                 live_runtimes: 0,
-                daemon_version: "0.22.0".into(),
+                daemon_version: WSX_VERSION.into(),
                 target_version: "0.23.0".into(),
                 blockers: vec![],
                 use_current_daemon: false,
@@ -3680,7 +3743,7 @@ mod tests {
             Response::Replacement {
                 disposition: ReplacementDisposition::Deferred,
                 live_runtimes: 1,
-                daemon_version: "0.22.0".into(),
+                daemon_version: WSX_VERSION.into(),
                 target_version: "0.23.0".into(),
                 blockers: vec![ReplacementBlocker::WorkingAgent],
                 use_current_daemon: false,
@@ -3735,7 +3798,7 @@ mod tests {
             Response::Replacement {
                 disposition: ReplacementDisposition::Deferred,
                 live_runtimes: 0,
-                daemon_version: "0.22.0".into(),
+                daemon_version: WSX_VERSION.into(),
                 target_version: "0.20.0".into(),
                 blockers: vec![],
                 use_current_daemon: true,
@@ -4480,6 +4543,137 @@ mod tests {
         assert!(state.events.is_empty());
         drop(state);
         fs::remove_dir(&path).unwrap();
+    }
+
+    fn current_agent_authority(daemon: &Daemon) -> RuntimeAgentAuthority {
+        let generation = lock(&daemon.state)
+            .runtime_generations
+            .get(&PaneId(4))
+            .cloned();
+        RuntimeAgentAuthority::new(PaneId(4), generation)
+    }
+
+    fn terminal_key(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            text: String::new(),
+            shift: false,
+            control: false,
+            alt: false,
+            super_key: false,
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn streamed_escape_invalidates_only_the_matching_working_report() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let runtime = Arc::new(
+            spawn_runtime(
+                &daemon,
+                pane_id,
+                TerminalId(5),
+                Path::new("/"),
+                &LaunchRecipe {
+                    command: vec!["/bin/cat".into()],
+                    initial_input: None,
+                    rows: 3,
+                    cols: 4,
+                },
+            )
+            .unwrap(),
+        );
+        lock(&daemon.state)
+            .runtimes
+            .insert(pane_id, Arc::clone(&runtime));
+        agent_report(
+            &daemon,
+            current_agent_authority(&daemon),
+            "claude".into(),
+            AgentState::Working,
+            None,
+            None,
+            AgentCapabilities {
+                escape_interrupts: true,
+                ..AgentCapabilities::default()
+            },
+        )
+        .unwrap();
+        assert!(escape_interrupt_revision(
+            &lock(&daemon.state),
+            pane_id,
+            &terminal_key(KeyCode::Enter),
+        )
+        .is_none());
+        let (_, generation) = acquire_terminal_lease(&daemon, pane_id, 9, true).unwrap();
+
+        handle_terminal_stream_input(
+            &daemon,
+            pane_id,
+            9,
+            generation,
+            TerminalClientMessage::Key(terminal_key(KeyCode::Escape)),
+        )
+        .unwrap();
+
+        let state = lock(&daemon.state);
+        assert_eq!(
+            state.persisted.panes[0].agent.as_ref().unwrap().state,
+            AgentState::Unknown
+        );
+        assert!(!state.agent_wake_leases.contains_key(&pane_id));
+        assert_eq!(state.persisted.panes[0].revision, 9);
+        drop(state);
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn escape_does_not_overwrite_a_newer_agent_report() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let capabilities = AgentCapabilities {
+            escape_interrupts: true,
+            ..AgentCapabilities::default()
+        };
+        agent_report(
+            &daemon,
+            current_agent_authority(&daemon),
+            "claude".into(),
+            AgentState::Working,
+            None,
+            None,
+            capabilities.clone(),
+        )
+        .unwrap();
+        let interrupted_revision = escape_interrupt_revision(
+            &lock(&daemon.state),
+            PaneId(4),
+            &terminal_key(KeyCode::Escape),
+        )
+        .unwrap();
+        agent_report(
+            &daemon,
+            current_agent_authority(&daemon),
+            "claude".into(),
+            AgentState::Working,
+            None,
+            None,
+            capabilities,
+        )
+        .unwrap();
+
+        invalidate_working_agent_after_escape(&daemon, PaneId(4), interrupted_revision).unwrap();
+
+        let state = lock(&daemon.state);
+        assert_eq!(
+            state.persisted.panes[0].agent.as_ref().unwrap().state,
+            AgentState::Working
+        );
+        assert!(state.agent_wake_leases.contains_key(&PaneId(4)));
+        assert_eq!(state.persisted.panes[0].revision, 9);
+        drop(state);
+        let _ = fs::remove_file(path);
     }
 
     #[test]

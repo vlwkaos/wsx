@@ -715,7 +715,9 @@ pub(crate) fn runtime_availability_notice(
         } => {
             let mut reasons = Vec::new();
             if blockers.contains(&runtime::ReplacementBlocker::OtherTui) {
-                reasons.push("older or different wsx TUI instances exit");
+                reasons.push(
+                    "older or different wsx TUI instances exit and their presence expires within 3 seconds",
+                );
             }
             if blockers.contains(&runtime::ReplacementBlocker::WorkingAgent) {
                 reasons.push("working agents become idle");
@@ -5041,8 +5043,14 @@ impl App {
         } else {
             Some(session_label)
         };
-        let (_pane_id, display_name) =
-            ops::create_session(&proj_name, &wt_slug, &wt_path, explicit_name, command)?;
+        let (_pane_id, display_name) = ops::create_session(
+            &self.config,
+            &proj_name,
+            &wt_slug,
+            &wt_path,
+            explicit_name,
+            command,
+        )?;
         self.set_status(format!("Session '{}' created", display_name));
         // Expand before the authoritative Runtime refresh reveals the new pane.
         if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
@@ -8520,7 +8528,9 @@ mod tests {
         .1;
         assert!(deferred.contains("0.20.0"), "{deferred}");
         assert!(deferred.contains("0.21.0"), "{deferred}");
-        assert!(deferred.contains("older or different wsx TUI instances exit"));
+        assert!(deferred.contains(
+            "older or different wsx TUI instances exit and their presence expires within 3 seconds"
+        ));
         assert!(deferred.contains("working agents become idle"));
         assert!(deferred.contains("4 terminal runtime(s) remain open"));
         let lowercase = deferred.to_ascii_lowercase();

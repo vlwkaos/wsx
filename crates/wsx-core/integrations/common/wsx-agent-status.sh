@@ -20,5 +20,6 @@ except (TypeError, ValueError): pass' 2>/dev/null)"; then
 fi
 set -- agent report "$WSX_PANE_ID" --provider "@PROVIDER@" --state "$state"
 [ "@LIFECYCLE@" = "yes" ] && set -- "$@" --lifecycle
+[ "@PROVIDER@" = "claude" ] && set -- "$@" --escape-interrupts
 [ -n "$conversation" ] && set -- "$@" --session-id "$conversation"
 "${WSX_AGENT_REPORT_BIN:-wsx}" "$@" >/dev/null 2>&1 || true

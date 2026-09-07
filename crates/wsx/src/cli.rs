@@ -133,6 +133,8 @@ pub enum AgentCmd {
         resume: bool,
         #[arg(long)]
         lifecycle: bool,
+        #[arg(long, hide = true)]
+        escape_interrupts: bool,
     },
 }
 
@@ -418,6 +420,7 @@ pub fn run(cmd: Command) -> Result<()> {
                 prompt,
                 resume,
                 lifecycle,
+                escape_interrupts,
             } => cmd_agent_report(
                 &pane,
                 provider,
@@ -429,6 +432,7 @@ pub fn run(cmd: Command) -> Result<()> {
                     prompt,
                     resume,
                     lifecycle,
+                    escape_interrupts,
                 },
             ),
         },
@@ -925,6 +929,32 @@ mod agent_command_tests {
     }
 
     #[test]
+    fn report_accepts_escape_interrupt_capability() {
+        let args = Args::try_parse_from([
+            "wsx",
+            "agent",
+            "report",
+            "7",
+            "--provider",
+            "claude",
+            "--state",
+            "working",
+            "--escape-interrupts",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            args.command,
+            Some(Command::Agent {
+                subcommand: AgentCmd::Report {
+                    escape_interrupts: true,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
     fn report_accepts_session_id_without_other_session_identifiers() {
         let args = Args::try_parse_from([
             "wsx",
@@ -1245,7 +1275,7 @@ fn cmd_status(json: bool, format: Format, group: Option<&GroupKey>) -> Result<()
 }
 
 fn cmd_worktree_create(branch: &str, project_name: Option<&str>) -> Result<()> {
-    let (_, workspace) = load_full_workspace()?;
+    let (config, workspace) = load_full_workspace()?;
     let project = resolve_project(&workspace, project_name)?;
     let proj_config = project.config.clone().unwrap_or_default();
     let (wt_path, warning) =
@@ -1254,7 +1284,7 @@ fn cmd_worktree_create(branch: &str, project_name: Option<&str>) -> Result<()> {
         eprintln!("warning: {}", w);
     }
     let wt_slug = wsx_core::model::workspace::canonical_session_slug(&project.name, &wt_path);
-    let (pane_id, _) = ops::create_session(&project.name, &wt_slug, &wt_path, None, None)
+    let (pane_id, _) = ops::create_session(&config, &project.name, &wt_slug, &wt_path, None, None)
         .context("worktree created, but its initial wsx session failed")?;
     println!("worktree: {}", wt_path.display());
     println!("pane:     {}", pane_id);

@@ -605,6 +605,7 @@ mod tests {
         let Request::AgentReport {
             session_ref,
             runtime_generation,
+            capabilities,
             ..
         } = request
         else {
@@ -612,6 +613,7 @@ mod tests {
         };
         assert_eq!(session_ref, None);
         assert_eq!(runtime_generation, None);
+        assert!(!capabilities.escape_interrupts);
     }
 
     #[test]

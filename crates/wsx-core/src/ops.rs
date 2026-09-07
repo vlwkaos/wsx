@@ -11,7 +11,7 @@ use crate::{
     },
     runtime::{
         AgentState, Client, ProjectSpec, Request, Response, SessionId, SessionPlacement, Snapshot,
-        WorktreeSpec,
+        WorktreeId, WorktreeSpec,
     },
 };
 use anyhow::{anyhow, bail, Result};
@@ -483,7 +483,34 @@ pub fn delete_worktree(repo_path: &Path, wt_path: &Path, branch: &str) -> Result
     }
     git_worktree::remove_worktree(repo_path, wt_path, branch)
 }
+fn snapshot_with_worktree<F>(
+    snapshot: Snapshot,
+    worktree_path: &Path,
+    synchronize_once: F,
+) -> Result<(Snapshot, WorktreeId)>
+where
+    F: FnOnce() -> Result<Snapshot>,
+{
+    if let Some(id) = snapshot
+        .worktrees
+        .iter()
+        .find(|worktree| worktree.path == worktree_path)
+        .map(|worktree| worktree.id)
+    {
+        return Ok((snapshot, id));
+    }
+    let refreshed = synchronize_once()?;
+    let id = refreshed
+        .worktrees
+        .iter()
+        .find(|worktree| worktree.path == worktree_path)
+        .map(|worktree| worktree.id)
+        .ok_or_else(|| anyhow!("worktree is not synchronized with wsx daemon"))?;
+    Ok((refreshed, id))
+}
+
 pub fn create_session(
+    config: &GlobalConfig,
     project_name: &str,
     _worktree_slug: &str,
     worktree_path: &Path,
@@ -491,12 +518,11 @@ pub fn create_session(
     command: Option<String>,
 ) -> Result<(SessionId, String)> {
     let client = Client::local();
-    let snapshot = runtime_snapshot()?;
-    let worktree = snapshot
-        .worktrees
-        .iter()
-        .find(|worktree| worktree.path == worktree_path)
-        .ok_or_else(|| anyhow!("worktree is not synchronized with wsx daemon"))?;
+    let (snapshot, worktree_id) =
+        snapshot_with_worktree(runtime_snapshot()?, worktree_path, || {
+            let discovery = discover_workspace(config)?;
+            synchronize_discovery(&discovery)
+        })?;
     let base = session_label
         .filter(|label| !label.trim().is_empty())
         .or_else(|| {
@@ -508,7 +534,7 @@ pub fn create_session(
     let used = snapshot
         .sessions
         .iter()
-        .filter(|session| session.worktree_id == worktree.id)
+        .filter(|session| session.worktree_id == worktree_id)
         .map(|session| session.label.as_str())
         .collect::<std::collections::HashSet<_>>();
     let mut label = base.clone();
@@ -518,7 +544,7 @@ pub fn create_session(
         suffix += 1;
     }
     let response = client.call(&Request::SessionCreate {
-        worktree_id: worktree.id,
+        worktree_id,
         label: label.clone(),
         command: Vec::new(),
         initial_input: command,
@@ -747,6 +773,85 @@ mod tests {
             discover_workspace_with(&config, |_| Err(anyhow!("worktree discovery failed")));
         assert!(failed.is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn session_worktree_fast_path_skips_synchronization() {
+        let (snapshot, worktree_id) = snapshot_with_worktree(
+            snapshot_with_worktree_path("/repo"),
+            Path::new("/repo"),
+            || panic!("synchronized snapshot must not refresh"),
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.worktrees[0].path, Path::new("/repo"));
+        assert_eq!(worktree_id, WorktreeId(2));
+    }
+
+    #[test]
+    fn missing_session_worktree_retries_synchronization_once() {
+        let calls = std::cell::Cell::new(0usize);
+        let (snapshot, worktree_id) = snapshot_with_worktree(
+            snapshot_with_worktree_path("/other"),
+            Path::new("/repo"),
+            || {
+                calls.set(calls.get() + 1);
+                Ok(snapshot_with_worktree_path("/repo"))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(snapshot.worktrees[0].path, Path::new("/repo"));
+        assert_eq!(worktree_id, WorktreeId(2));
+    }
+
+    #[test]
+    fn missing_session_worktree_still_fails_after_one_synchronization() {
+        let calls = std::cell::Cell::new(0usize);
+        let error = snapshot_with_worktree(
+            snapshot_with_worktree_path("/other"),
+            Path::new("/repo"),
+            || {
+                calls.set(calls.get() + 1);
+                Ok(snapshot_with_worktree_path("/still-other"))
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            error.to_string(),
+            "worktree is not synchronized with wsx daemon"
+        );
+    }
+
+    fn snapshot_with_worktree_path(path: &str) -> Snapshot {
+        Snapshot {
+            protocol: runtime::PROTOCOL_VERSION,
+            epoch: 1,
+            revision: 1,
+            projects: vec![RuntimeProject {
+                id: ProjectId(1),
+                path: "/repo".into(),
+                name: "repo".into(),
+                revision: 1,
+                last_agent_active_unix_ms: None,
+                last_terminal_active_unix_ms: None,
+            }],
+            worktrees: vec![Worktree {
+                id: WorktreeId(2),
+                project_id: ProjectId(1),
+                path: path.into(),
+                branch: "main".into(),
+                revision: 1,
+            }],
+            sessions: Vec::new(),
+            panes: Vec::new(),
+            listening_ports: Vec::new(),
+            pane_activity: Vec::new(),
+            capabilities: Capabilities::default(),
+        }
     }
 
     #[test]

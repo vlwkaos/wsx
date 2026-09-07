@@ -209,6 +209,7 @@ pub struct AgentCapabilities {
     pub prompt: bool,
     pub resume: bool,
     pub lifecycle: bool,
+    pub escape_interrupts: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
