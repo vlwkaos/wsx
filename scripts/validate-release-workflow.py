@@ -2,12 +2,13 @@
 """Validate release recovery ordering without requiring Homebrew."""
 
 from pathlib import Path
+from typing import Optional
 
 
 workflow = Path(".github/workflows/release.yml").read_text()
 
 
-def section(start: str, end: str | None = None) -> str:
+def section(start: str, end: Optional[str] = None) -> str:
     begin = workflow.index(start)
     finish = workflow.index(end, begin) if end else len(workflow)
     return workflow[begin:finish]
