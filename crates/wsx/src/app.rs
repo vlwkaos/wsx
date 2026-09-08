@@ -257,7 +257,10 @@ fn project_is_stale(
     now_unix_ms: u64,
     window_ms: u64,
 ) -> bool {
+    let activity_is_known = project.last_agent_active_unix_ms.is_some()
+        || project.last_terminal_active_unix_ms.is_some();
     !freshened_projects.contains(&project.path)
+        && activity_is_known
         && !project_has_activity_within(
             project.last_agent_active_unix_ms,
             project.last_terminal_active_unix_ms,
@@ -713,6 +716,14 @@ pub(crate) fn runtime_availability_notice(
             live_runtimes,
             blockers,
         } => {
+            if blockers.contains(&runtime::ReplacementBlocker::LegacyDaemon) {
+                return Some((
+                    NoticeLevel::Warning,
+                    format!(
+                        "wsxd {daemon_version} cannot upgrade automatically to {target_version} while the legacy daemon has {live_runtimes} open terminal runtime(s); run `wsx daemon stop`, then reopen wsx; saved sessions restart on the next launch"
+                    ),
+                ));
+            }
             let mut reasons = Vec::new();
             if blockers.contains(&runtime::ReplacementBlocker::OtherTui) {
                 reasons.push(
@@ -724,9 +735,6 @@ pub(crate) fn runtime_availability_notice(
             }
             if blockers.contains(&runtime::ReplacementBlocker::PendingTarget) {
                 reasons.push("the existing queued replacement is resolved");
-            }
-            if blockers.contains(&runtime::ReplacementBlocker::LegacyDaemon) {
-                reasons.push("the older daemon reaches its safe replacement boundary");
             }
             if reasons.is_empty() {
                 reasons.push("the daemon reaches its safe replacement boundary");
@@ -7675,7 +7683,8 @@ mod tests {
 
     #[test]
     fn global_header_spans_both_modes_without_workspace_spacer() {
-        let project = make_project("demo");
+        let mut project = make_project("demo");
+        project.last_terminal_active_unix_ms = Some(0);
         let config = GlobalConfig {
             groups: vec!["work".into(), "personal".into()],
             terminal_escape_chord: "alt+g z".into(),
@@ -7903,6 +7912,7 @@ mod tests {
     #[test]
     fn compact_terminal_sidebar_mirrors_session_status_and_preserves_terminal_geometry() {
         let mut project = make_project("compact");
+        project.last_terminal_active_unix_ms = Some(0);
         let mut worktree = make_worktree("/tmp/compact");
         worktree.sessions = vec![make_sess(false, runtime::AgentState::Blocked)];
         project.worktrees = vec![worktree];
@@ -8516,8 +8526,8 @@ mod tests {
         assert!(newer.contains("open wsx 0.23.0"), "{newer}");
 
         let deferred = runtime_availability_notice(&runtime::Availability::ReplacementDeferred {
-            daemon_version: "0.20.0".into(),
-            target_version: "0.21.0".into(),
+            daemon_version: "0.22.0".into(),
+            target_version: "0.22.1".into(),
             live_runtimes: 4,
             blockers: vec![
                 runtime::ReplacementBlocker::OtherTui,
@@ -8526,23 +8536,40 @@ mod tests {
         })
         .unwrap()
         .1;
-        assert!(deferred.contains("0.20.0"), "{deferred}");
-        assert!(deferred.contains("0.21.0"), "{deferred}");
         assert!(deferred.contains(
             "older or different wsx TUI instances exit and their presence expires within 3 seconds"
         ));
         assert!(deferred.contains("working agents become idle"));
         assert!(deferred.contains("4 terminal runtime(s) remain open"));
-        let lowercase = deferred.to_ascii_lowercase();
-        for unsupported_claim in [
-            "exact pty survives",
-            "pty will survive",
-            "exact process survives",
-            "process will survive",
-            "exact terminal buffer survives",
-            "terminal buffer will survive",
-        ] {
-            assert!(!lowercase.contains(unsupported_claim), "{deferred}");
+
+        let legacy = runtime_availability_notice(&runtime::Availability::ReplacementDeferred {
+            daemon_version: "0.20.0".into(),
+            target_version: "0.22.1".into(),
+            live_runtimes: 5,
+            blockers: vec![runtime::ReplacementBlocker::LegacyDaemon],
+        })
+        .unwrap()
+        .1;
+        assert!(legacy.contains("cannot upgrade automatically"), "{legacy}");
+        assert!(legacy.contains("run `wsx daemon stop`"), "{legacy}");
+        assert!(
+            legacy.contains("saved sessions restart on the next launch"),
+            "{legacy}"
+        );
+        assert!(legacy.contains("5 open terminal runtime(s)"), "{legacy}");
+
+        for message in [&deferred, &legacy] {
+            let lowercase = message.to_ascii_lowercase();
+            for unsupported_claim in [
+                "exact pty survives",
+                "pty will survive",
+                "exact process survives",
+                "process will survive",
+                "exact terminal buffer survives",
+                "terminal buffer will survive",
+            ] {
+                assert!(!lowercase.contains(unsupported_claim), "{message}");
+            }
         }
     }
 
@@ -8964,12 +8991,13 @@ mod tests {
     }
 
     #[test]
-    fn missing_activity_timestamps_collapse_a_stale_project() {
+    fn missing_activity_timestamps_do_not_prove_a_project_is_stale() {
         let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
 
         app.collapse_stale_projects();
 
-        assert!(!app.workspace.projects[0].expanded);
+        assert!(app.workspace.projects[0].expanded);
+        assert!(!app.stale_project_indices().contains(&0));
     }
 
     #[test]
@@ -9142,6 +9170,7 @@ mod tests {
     fn manually_expanded_stale_projects_are_fresh_until_exit() {
         let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
         app.workspace.projects[0].expanded = false;
+        app.workspace.projects[0].last_terminal_active_unix_ms = Some(0);
         let mut terminal = workspace_terminal();
         assert!(app.stale_project_indices().contains(&0));
 
@@ -9157,6 +9186,7 @@ mod tests {
     fn manually_expanded_stale_project_override_resets_after_app_reconstruction() {
         let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
         app.workspace.projects[0].expanded = false;
+        app.workspace.projects[0].last_terminal_active_unix_ms = Some(0);
         let mut terminal = workspace_terminal();
 
         app.dispatch(Action::Select, &mut terminal).unwrap();
