@@ -8,7 +8,7 @@
 - Show deferred daemon replacement only once at TUI startup, then report completed replacement immediately after reconnect or on the next startup with a warning that terminal sessions restarted from saved commands.
 - Clear Claude working state when its session ends, keep rate limits blocked rather than active, and retry one transient release lookup without adding periodic update notifications.
 - Keep session mutation revisions separate from focused-pane lifecycle revisions so newly created agent sessions can be reordered immediately.
-- Keep release workflow validation compatible with the macOS system Python.
+- Keep release validation and Unix socket tests compatible with macOS system constraints.
 
 ## [0.22.2] - 2026-09-07
 

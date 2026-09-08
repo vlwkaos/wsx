@@ -1513,12 +1513,12 @@ mod tests {
         sync::atomic::AtomicUsize,
     };
 
-    fn test_listener(name: &str) -> (PathBuf, UnixListener) {
+    fn test_listener(_name: &str) -> (PathBuf, UnixListener) {
         let dir = std::env::current_dir().unwrap().join(".work/s");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let path = dir.join(format!(
-            "{name}-{}-{}.sock",
+            "wsx-{}-{}.sock",
             std::process::id(),
             new_client_id()
         ));
