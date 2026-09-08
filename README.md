@@ -104,9 +104,16 @@ copy:
   exclude: [target]
 git:
   subtrees: [vendor/asched, vendor/herdr]
+worktree:
+  branchPrefix: feature/
+  defaultSession:
+    enabled: true
+    command: cargo watch
 ```
 
-wsx validates files, rejects unknown fields and unsafe subtree paths, and migrates legacy `.gtrconfig` only when no canonical YAML exists.
+`branchPrefix` preloads the editable TUI branch prompt; CLI branch arguments remain exact. An explicit `defaultSession` controls both TUI and CLI worktree creation. Omit `command` to open a shell. When the block is absent, existing behavior remains: TUI creates only the worktree and CLI also creates a shell session. The command is entered into the new shell automatically, so review project configuration before creating a worktree from an untrusted repository.
+
+wsx validates files, rejects unknown fields, bounded worktree defaults, and unsafe subtree paths, and migrates legacy `.gtrconfig` only when no canonical YAML exists.
 
 ## CLI
 

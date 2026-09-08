@@ -283,7 +283,7 @@ pub enum GroupCmd {
 
 #[derive(Subcommand)]
 pub enum WorktreeCmd {
-    /// Create a worktree and default session
+    /// Create a worktree and its configured default session
     Create {
         branch: String,
         #[arg(short, long)]
@@ -1278,16 +1278,25 @@ fn cmd_worktree_create(branch: &str, project_name: Option<&str>) -> Result<()> {
     let (config, workspace) = load_full_workspace()?;
     let project = resolve_project(&workspace, project_name)?;
     let proj_config = project.config.clone().unwrap_or_default();
-    let (wt_path, warning) =
-        ops::create_worktree(&project.path, &project.default_branch, &proj_config, branch)?;
-    if let Some(w) = warning {
-        eprintln!("warning: {}", w);
+    let created = ops::create_configured_worktree(
+        &config,
+        &project.name,
+        &project.path,
+        &project.default_branch,
+        &proj_config,
+        branch,
+        wsx_core::model::workspace::WorktreeInitialSession::Shell,
+    )?;
+    if let Some(warning) = created.warning {
+        eprintln!("warning: {warning}");
     }
-    let wt_slug = wsx_core::model::workspace::canonical_session_slug(&project.name, &wt_path);
-    let (pane_id, _) = ops::create_session(&config, &project.name, &wt_slug, &wt_path, None, None)
-        .context("worktree created, but its initial wsx session failed")?;
-    println!("worktree: {}", wt_path.display());
-    println!("pane:     {}", pane_id);
+    println!("worktree: {}", created.path.display());
+    if let Some(error) = created.session_error {
+        anyhow::bail!("worktree created, but its initial wsx session failed: {error}");
+    }
+    if let Some((pane_id, _)) = created.session {
+        println!("pane:     {pane_id}");
+    }
     Ok(())
 }
 

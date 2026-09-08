@@ -1,7 +1,7 @@
 // Canonical per-project configuration and legacy .gtrconfig migration.
 // ref: README.md#project-configuration
 
-use crate::model::workspace::ProjectConfig;
+use crate::model::workspace::{DefaultSessionConfig, ProjectConfig};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -12,8 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub const PROJECT_CONFIG_FILE: &str = "wsx.config.yml";
 const LEGACY_CONFIG_FILE: &str = ".gtrconfig";
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
-const PROJECT_CONFIG_TEMPLATE: &str =
-    "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\ngit:\n  subtrees: []\n";
+const MAX_BRANCH_PREFIX_BYTES: usize = 256;
+const MAX_DEFAULT_COMMAND_BYTES: usize = 16 * 1024;
+const PROJECT_CONFIG_TEMPLATE: &str = "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\ngit:\n  subtrees: []\nworktree:\n  branchPrefix:\n  # defaultSession:\n  #   enabled: true\n  #   command:\n";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy)]
@@ -28,6 +29,8 @@ struct ProjectConfigFile {
     hooks: HookConfig,
     copy: CopyConfig,
     git: GitConfig,
+    #[serde(skip_serializing_if = "WorktreeConfig::is_empty")]
+    worktree: WorktreeConfig,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -51,6 +54,29 @@ struct CopyConfig {
 struct GitConfig {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     subtrees: Vec<PathBuf>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct WorktreeConfig {
+    #[serde(rename = "branchPrefix", skip_serializing_if = "Option::is_none")]
+    branch_prefix: Option<String>,
+    #[serde(rename = "defaultSession", skip_serializing_if = "Option::is_none")]
+    default_session: Option<DefaultSessionFile>,
+}
+
+impl WorktreeConfig {
+    fn is_empty(&self) -> bool {
+        self.branch_prefix.is_none() && self.default_session.is_none()
+    }
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct DefaultSessionFile {
+    enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
 }
 
 pub fn load_project_config(repo_path: &Path) -> ProjectConfig {
@@ -127,14 +153,8 @@ fn load_yaml(path: &Path) -> ProjectConfig {
         }
     };
     match yaml_serde::from_str::<ProjectConfigFile>(&text) {
-        Ok(file) => match validate_subtree_paths(file.git.subtrees) {
-            Ok(git_subtrees) => ProjectConfig {
-                post_create: file.hooks.post_create,
-                copy_includes: file.copy.include,
-                copy_excludes: file.copy.exclude,
-                git_subtrees,
-                notice: None,
-            },
+        Ok(file) => match validate_project_file(file) {
+            Ok(config) => config,
             Err(error) => ProjectConfig {
                 notice: Some(format!(
                     "Could not parse {} (using defaults): {error}",
@@ -151,6 +171,59 @@ fn load_yaml(path: &Path) -> ProjectConfig {
             ..ProjectConfig::default()
         },
     }
+}
+
+fn validate_project_file(file: ProjectConfigFile) -> Result<ProjectConfig, String> {
+    let git_subtrees = validate_subtree_paths(file.git.subtrees)?;
+    let branch_prefix = validate_optional_text(
+        file.worktree.branch_prefix,
+        "worktree.branchPrefix",
+        MAX_BRANCH_PREFIX_BYTES,
+    )?
+    .unwrap_or_default();
+    let default_session = file
+        .worktree
+        .default_session
+        .map(|session| {
+            Ok::<DefaultSessionConfig, String>(DefaultSessionConfig {
+                enabled: session.enabled,
+                command: validate_optional_text(
+                    session.command,
+                    "worktree.defaultSession.command",
+                    MAX_DEFAULT_COMMAND_BYTES,
+                )?,
+            })
+        })
+        .transpose()?;
+    Ok(ProjectConfig {
+        post_create: file.hooks.post_create,
+        copy_includes: file.copy.include,
+        copy_excludes: file.copy.exclude,
+        git_subtrees,
+        branch_prefix,
+        default_session,
+        notice: None,
+    })
+}
+
+fn validate_optional_text(
+    value: Option<String>,
+    field: &str,
+    max_bytes: usize,
+) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.len() > max_bytes {
+        return Err(format!("{field} must be at most {max_bytes} bytes"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!("{field} must not contain control characters"));
+    }
+    if value.trim() != value {
+        return Err(format!("{field} must not start or end with whitespace"));
+    }
+    Ok((!value.is_empty()).then_some(value))
 }
 
 fn validate_subtree_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
@@ -198,6 +271,16 @@ fn write_yaml(path: &Path, config: &ProjectConfig) -> Result<(), String> {
         },
         git: GitConfig {
             subtrees: config.git_subtrees.clone(),
+        },
+        worktree: WorktreeConfig {
+            branch_prefix: (!config.branch_prefix.is_empty()).then(|| config.branch_prefix.clone()),
+            default_session: config
+                .default_session
+                .as_ref()
+                .map(|session| DefaultSessionFile {
+                    enabled: session.enabled,
+                    command: session.command.clone(),
+                }),
         },
     };
     let text = yaml_serde::to_string(&document).map_err(|error| error.to_string())?;
@@ -248,7 +331,7 @@ fn load_legacy(config_path: &Path) -> ProjectConfig {
         copy_includes: git_config_get_all(&path, "copy.include"),
         copy_excludes: git_config_get_all(&path, "copy.exclude"),
         git_subtrees: Vec::new(),
-        notice: None,
+        ..ProjectConfig::default()
     }
 }
 
@@ -331,6 +414,96 @@ mod tests {
             ]
         );
         assert!(config.notice.is_none());
+    }
+
+    #[test]
+    fn loads_worktree_creation_defaults() {
+        let dir = TestDir::new("worktree-defaults");
+        fs::write(
+            dir.0.join(PROJECT_CONFIG_FILE),
+            "worktree:\n  branchPrefix: feature/\n  defaultSession:\n    enabled: true\n    command: cargo watch\n",
+        )
+        .unwrap();
+
+        let config = load_project_config(&dir.0);
+
+        assert_eq!(config.branch_prefix, "feature/");
+        assert_eq!(
+            config.default_session,
+            Some(DefaultSessionConfig {
+                enabled: true,
+                command: Some("cargo watch".into()),
+            })
+        );
+        assert!(config.notice.is_none());
+    }
+
+    #[test]
+    fn missing_worktree_config_preserves_unspecified_session_behavior() {
+        let dir = TestDir::new("worktree-missing");
+        fs::write(dir.0.join(PROJECT_CONFIG_FILE), "hooks: {}\n").unwrap();
+
+        let config = load_project_config(&dir.0);
+
+        assert!(config.branch_prefix.is_empty());
+        assert!(config.default_session.is_none());
+        assert!(config.notice.is_none());
+    }
+
+    #[test]
+    fn control_characters_in_default_command_reject_the_entire_project_config() {
+        let dir = TestDir::new("worktree-command-control");
+        fs::write(
+            dir.0.join(PROJECT_CONFIG_FILE),
+            "worktree:\n  defaultSession:\n    enabled: true\n    command: \"touch one\\nsecond\"\n",
+        )
+        .unwrap();
+
+        let config = load_project_config(&dir.0);
+
+        assert!(config.default_session.is_none());
+        assert!(config
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("must not contain control characters")));
+    }
+
+    #[test]
+    fn oversized_branch_prefix_rejects_the_entire_project_config() {
+        let dir = TestDir::new("worktree-prefix-oversized");
+        let prefix = "x".repeat(MAX_BRANCH_PREFIX_BYTES + 1);
+        fs::write(
+            dir.0.join(PROJECT_CONFIG_FILE),
+            format!("worktree:\n  branchPrefix: {prefix}\n"),
+        )
+        .unwrap();
+
+        let config = load_project_config(&dir.0);
+
+        assert!(config.branch_prefix.is_empty());
+        assert!(config
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("must be at most 256 bytes")));
+    }
+
+    #[test]
+    fn invalid_worktree_text_rejects_the_entire_project_config() {
+        let dir = TestDir::new("worktree-invalid");
+        fs::write(
+            dir.0.join(PROJECT_CONFIG_FILE),
+            "worktree:\n  branchPrefix: \" feature/\"\n",
+        )
+        .unwrap();
+
+        let config = load_project_config(&dir.0);
+
+        assert!(config.branch_prefix.is_empty());
+        assert!(config.default_session.is_none());
+        assert!(config
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("must not start or end with whitespace")));
     }
 
     #[test]

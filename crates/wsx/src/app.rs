@@ -539,6 +539,8 @@ pub enum BgOutcome {
     },
     WorktreeCreated {
         label: String,
+        warning: Option<String>,
+        session_error: Option<String>,
     },
     SessionKilled {
         session_id: runtime::SessionId,
@@ -1150,9 +1152,23 @@ impl App {
                 self.spawn_runtime_refresh();
                 self.set_status(label);
             }
-            Ok(BgOutcome::WorktreeCreated { label }) => {
+            Ok(BgOutcome::WorktreeCreated {
+                label,
+                warning,
+                session_error,
+            }) => {
                 self.spawn_runtime_refresh();
-                self.set_status(label);
+                if let Some(error) = session_error {
+                    let detail = match warning {
+                        Some(warning) => format!("{error}\n{warning}"),
+                        None => error,
+                    };
+                    self.set_error(format!("{label}; default session failed\n{detail}"));
+                } else if let Some(warning) = warning {
+                    self.set_warning(format!("{label}\n{warning}"));
+                } else {
+                    self.set_status(label);
+                }
             }
             Ok(BgOutcome::SessionKilled {
                 session_id,
@@ -4024,9 +4040,14 @@ impl App {
                 return Ok(());
             }
         };
+        let prefix = self.workspace.projects[pi]
+            .config
+            .as_ref()
+            .map(|config| config.branch_prefix.clone())
+            .unwrap_or_default();
         self.mode = Mode::Input {
             context: InputContext::AddWorktree { project_idx: pi },
-            state: InputState::new("branch: "),
+            state: InputState::with_value("branch: ", prefix),
         };
         Ok(())
     }
@@ -4960,18 +4981,32 @@ impl App {
                     project_idx: pi,
                     branch,
                 } => {
-                    let (repo_path, default_branch, proj_config) = {
+                    let (config, project_name, repo_path, default_branch, proj_config) = {
                         let p = &self.workspace.projects[pi];
                         (
+                            self.config.clone(),
+                            p.name.clone(),
                             p.path.clone(),
                             p.default_branch.clone(),
                             p.config.clone().unwrap_or_default(),
                         )
                     };
-                    let label = format!("Created worktree: {}", branch);
-                    self.spawn_bg(format!("create {}", branch), move || {
-                        ops::create_worktree(&repo_path, &default_branch, &proj_config, &branch)?;
-                        Ok(BgOutcome::WorktreeCreated { label })
+                    let label = format!("Created worktree: {branch}");
+                    self.spawn_bg(format!("create {branch}"), move || {
+                        let created = ops::create_configured_worktree(
+                            &config,
+                            &project_name,
+                            &repo_path,
+                            &default_branch,
+                            &proj_config,
+                            &branch,
+                            wsx_core::model::workspace::WorktreeInitialSession::Disabled,
+                        )?;
+                        Ok(BgOutcome::WorktreeCreated {
+                            label,
+                            warning: created.warning,
+                            session_error: created.session_error,
+                        })
                     });
                 }
                 PendingAction::DeleteGroup { group_idx } => {
@@ -5730,11 +5765,11 @@ mod tests {
         }
     }
 
-    fn terminal_stream_listener(name: &str) -> (PathBuf, UnixListener) {
+    fn terminal_stream_listener(_name: &str) -> (PathBuf, UnixListener) {
         let directory = std::env::current_dir().unwrap().join(".work/s");
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join(format!(
-            "{name}-{}-{}.sock",
+            "{:x}-{:x}",
             std::process::id(),
             runtime::new_client_id()
         ));
@@ -8566,6 +8601,60 @@ mod tests {
             branch: "branch".to_string(),
             is_main: false,
         }
+    }
+
+    #[test]
+    fn add_worktree_prefills_the_editable_project_branch_prefix() {
+        let mut project = make_project("prefixed");
+        project.config = Some(wsx_core::model::workspace::ProjectConfig {
+            branch_prefix: "feature/".into(),
+            ..Default::default()
+        });
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+
+        app.action_add_worktree().unwrap();
+
+        let Mode::Input { context, state } = &mut app.mode else {
+            panic!("expected worktree branch input");
+        };
+        assert!(matches!(
+            context,
+            InputContext::AddWorktree { project_idx: 0 }
+        ));
+        assert_eq!(state.value(), "feature/");
+        state.insert_char(char::from_digit(4, 10).unwrap());
+        assert_eq!(state.value(), "feature/4");
+    }
+
+    #[test]
+    fn partial_default_session_failure_keeps_worktree_refresh_and_error_visible() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.jobs.push(BgJob {
+            label: "create feature/4".into(),
+        });
+
+        app.apply_bg_result(BgResult {
+            label: "create feature/4".into(),
+            outcome: Ok(BgOutcome::WorktreeCreated {
+                label: "Created worktree: feature/4".into(),
+                warning: Some("Warning: postCreate: exited 1".into()),
+                session_error: Some("daemon unavailable".into()),
+            }),
+        });
+
+        assert!(app.runtime_refresh_pending);
+        let notice = app.notice.as_ref().expect("partial failure notice");
+        assert_eq!(notice.level, NoticeLevel::Error);
+        assert!(notice.title.contains("default session failed"));
+        assert!(notice.body.as_deref().is_some_and(|body| {
+            body.contains("daemon unavailable") && body.contains("postCreate")
+        }));
     }
 
     #[test]

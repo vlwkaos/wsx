@@ -7,7 +7,7 @@ use crate::{
     hooks,
     model::workspace::{
         FetchFailReason, GitInfo, PaneInfo, Project, ProjectConfig, SessionInfo, WorkspaceState,
-        WorktreeInfo,
+        WorktreeInfo, WorktreeInitialSession,
     },
     runtime::{
         AgentState, Client, ProjectSpec, Request, Response, SessionId, SessionPlacement, Snapshot,
@@ -460,6 +460,51 @@ pub fn create_worktree(
         }
     }
     Ok((path, warning))
+}
+
+#[derive(Debug)]
+pub struct CreatedWorktree {
+    pub path: PathBuf,
+    pub warning: Option<String>,
+    pub session: Option<(SessionId, String)>,
+    pub session_error: Option<String>,
+}
+
+pub fn create_configured_worktree(
+    config: &GlobalConfig,
+    project_name: &str,
+    repo_path: &Path,
+    default_branch: &str,
+    project_config: &ProjectConfig,
+    branch: &str,
+    fallback_session: WorktreeInitialSession,
+) -> Result<CreatedWorktree> {
+    let (path, warning) = create_worktree(repo_path, default_branch, project_config, branch)?;
+    let session_result = match project_config.initial_session(fallback_session) {
+        WorktreeInitialSession::Disabled => None,
+        WorktreeInitialSession::Shell => {
+            Some(create_session(config, project_name, "", &path, None, None))
+        }
+        WorktreeInitialSession::Command(command) => Some(create_session(
+            config,
+            project_name,
+            "",
+            &path,
+            None,
+            Some(command),
+        )),
+    };
+    let (session, session_error) = match session_result {
+        Some(Ok(session)) => (Some(session), None),
+        Some(Err(error)) => (None, Some(error.to_string())),
+        None => (None, None),
+    };
+    Ok(CreatedWorktree {
+        path,
+        warning,
+        session,
+        session_error,
+    })
 }
 
 pub fn delete_worktree(repo_path: &Path, wt_path: &Path, branch: &str) -> Result<()> {

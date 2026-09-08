@@ -31,6 +31,19 @@ pub struct Project {
     pub missing: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DefaultSessionConfig {
+    pub enabled: bool,
+    pub command: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorktreeInitialSession {
+    Disabled,
+    Shell,
+    Command(String),
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ProjectConfig {
     pub post_create: Option<String>,
@@ -38,8 +51,25 @@ pub struct ProjectConfig {
     pub copy_excludes: Vec<String>,
     /// Explicit Git subtree roots relative to the project worktree.
     pub git_subtrees: Vec<PathBuf>,
+    pub branch_prefix: String,
+    pub default_session: Option<DefaultSessionConfig>,
     /// Migration or parse feedback for the TUI; never affects worktree behavior.
     pub notice: Option<String>,
+}
+
+impl ProjectConfig {
+    pub fn initial_session(&self, fallback: WorktreeInitialSession) -> WorktreeInitialSession {
+        match &self.default_session {
+            None => fallback,
+            Some(session) if !session.enabled => WorktreeInitialSession::Disabled,
+            Some(session) => session
+                .command
+                .as_ref()
+                .map_or(WorktreeInitialSession::Shell, |command| {
+                    WorktreeInitialSession::Command(command.clone())
+                }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -162,8 +192,50 @@ pub fn canonical_session_slug(project_name: &str, worktree_path: &Path) -> Strin
 
 #[cfg(test)]
 mod tests {
-    use super::canonical_session_slug;
+    use super::{
+        canonical_session_slug, DefaultSessionConfig, ProjectConfig, WorktreeInitialSession,
+    };
     use std::path::Path;
+
+    #[test]
+    fn initial_session_preserves_surface_defaults_until_explicitly_configured() {
+        let mut config = ProjectConfig::default();
+        assert_eq!(
+            config.initial_session(WorktreeInitialSession::Disabled),
+            WorktreeInitialSession::Disabled
+        );
+        assert_eq!(
+            config.initial_session(WorktreeInitialSession::Shell),
+            WorktreeInitialSession::Shell
+        );
+
+        config.default_session = Some(DefaultSessionConfig {
+            enabled: false,
+            command: Some("cargo watch".into()),
+        });
+        assert_eq!(
+            config.initial_session(WorktreeInitialSession::Shell),
+            WorktreeInitialSession::Disabled
+        );
+
+        config.default_session = Some(DefaultSessionConfig {
+            enabled: true,
+            command: None,
+        });
+        assert_eq!(
+            config.initial_session(WorktreeInitialSession::Disabled),
+            WorktreeInitialSession::Shell
+        );
+
+        config.default_session = Some(DefaultSessionConfig {
+            enabled: true,
+            command: Some("cargo watch".into()),
+        });
+        assert_eq!(
+            config.initial_session(WorktreeInitialSession::Disabled),
+            WorktreeInitialSession::Command("cargo watch".into())
+        );
+    }
 
     #[test]
     fn canonical_slug_uses_human_worktree_identity() {

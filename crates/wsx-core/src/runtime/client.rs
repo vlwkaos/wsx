@@ -1517,11 +1517,7 @@ mod tests {
         let dir = std::env::current_dir().unwrap().join(".work/s");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let path = dir.join(format!(
-            "wsx-{}-{}.sock",
-            std::process::id(),
-            new_client_id()
-        ));
+        let path = dir.join(format!("{:x}-{:x}", std::process::id(), new_client_id()));
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -1788,7 +1784,7 @@ mod tests {
     #[test]
     fn legacy_pending_target_keeps_the_new_client_healthy() {
         let directory = std::env::current_dir().unwrap().join(".work").join(format!(
-            "client-version-{}-{}",
+            "{:x}-{:x}",
             std::process::id(),
             new_client_id()
         ));
