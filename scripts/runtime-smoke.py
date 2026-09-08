@@ -565,7 +565,7 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as terminal:
 exit_effect = call("session_create", {
     "worktree_id": worktree_id,
     "label": "exit-effect",
-    "command": ["/bin/sh", "-c", "sleep 0.2; printf '\\033]52;c;ZXhpdA==\\007'"],
+    "command": ["/bin/sh", "-c", "read trigger; printf '\\033]52;c;ZXhpdA==\\007'"],
     "rows": 2,
     "cols": 12,
 })
@@ -590,6 +590,7 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as terminal:
         },
     }).encode() + b"\n")
     assert recv_line(terminal)["type"] == "ack"
+    terminal.sendall(json.dumps({"type": "input", "data": list(b"emit\n")}).encode() + b"\n")
     ordered_effects = []
     while "exited" not in ordered_effects:
         message = recv_line(terminal)

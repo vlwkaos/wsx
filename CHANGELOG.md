@@ -2,10 +2,15 @@
 
 ## [0.22.2] - 2026-09-07
 
+### Features
+
+- Place the full terminal breadcrumb below terminal content by default in Workspace previews and Terminal mode, with a typed setting to restore top placement.
+
 ### Bug Fixes
 
 - Preserve cached project expansion when a legacy daemon cannot provide authoritative activity timestamps, while continuing to auto-collapse projects with known stale activity.
 - Tell users to stop a legacy daemon explicitly when its persistent terminal runtimes prevent automatic replacement, and explain that saved sessions restart on the next launch.
+- Synchronize clipboard-before-exit runtime smoke after terminal subscription instead of relying on a fixed child-process delay.
 
 ## [0.22.1] - 2026-09-07
 

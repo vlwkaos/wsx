@@ -7,7 +7,9 @@ use ratatui::{
     prelude::*,
     widgets::{Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
-use wsx_core::config::global::{GlobalConfig, PortVisibility, TerminalSidebar};
+use wsx_core::config::global::{
+    GlobalConfig, PortVisibility, TerminalSidebar, TerminalTitlePosition,
+};
 
 use super::{popup_block, popup_center, theme};
 
@@ -60,6 +62,7 @@ enum SettingField {
     PrefixKey,
     WorkspaceKey,
     TerminalSidebar,
+    TerminalTitlePosition,
     ResumeAgents,
     // ^ Linux hides this field through RUNTIME_FIELDS while shared form matches stay exhaustive.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -81,6 +84,7 @@ impl SettingField {
                 Self::PrefixKey,
                 Self::WorkspaceKey,
                 Self::TerminalSidebar,
+                Self::TerminalTitlePosition,
             ],
             SettingsCategory::Runtime => RUNTIME_FIELDS,
         }
@@ -97,6 +101,7 @@ impl SettingField {
             Self::PrefixKey => "Prefix key",
             Self::WorkspaceKey => "Workspace key",
             Self::TerminalSidebar => "Terminal sidebar",
+            Self::TerminalTitlePosition => "Terminal title",
             Self::ResumeAgents => "Resume agents",
             Self::WakeMode => "Wake mode",
             Self::AgentIntegrations => "Agent integrations",
@@ -114,6 +119,7 @@ impl SettingField {
             Self::PrefixKey => "One key combined with the selected modifier, for example Ctrl+A.",
             Self::WorkspaceKey => "Key pressed after the prefix to focus Workspace. Reserved b, j, k, n, and q run Terminal commands.",
             Self::TerminalSidebar => "Use a two-column status rail or the full Workspace tree in Terminal mode.",
+            Self::TerminalTitlePosition => "Place the terminal breadcrumb above or below terminal content in Workspace and Terminal modes.",
             Self::ResumeAgents => "Resume saved agent commands when wsxd starts again.",
             Self::WakeMode => "Prevent idle system sleep while an agent is actively working.",
             Self::AgentIntegrations => "Inspect and install lifecycle status integrations for detected agents.",
@@ -400,6 +406,14 @@ impl GlobalSettingsForm {
                 };
                 Ok(())
             }
+            (SettingField::TerminalTitlePosition, FieldEditor::Choice(editor)) => {
+                self.draft.terminal_title_position = if editor.selected == 0 {
+                    TerminalTitlePosition::Bottom
+                } else {
+                    TerminalTitlePosition::Top
+                };
+                Ok(())
+            }
             (SettingField::ResumeAgents, FieldEditor::Choice(editor)) => {
                 self.draft.resume_agents_on_restore = editor.selected == 0;
                 Ok(())
@@ -456,6 +470,12 @@ impl GlobalSettingsForm {
             SettingField::TerminalSidebar => FieldEditor::Choice(ChoiceEditor {
                 selected: usize::from(self.draft.terminal_sidebar == TerminalSidebar::Expanded),
                 labels: vec!["Compact", "Expanded"],
+            }),
+            SettingField::TerminalTitlePosition => FieldEditor::Choice(ChoiceEditor {
+                selected: usize::from(
+                    self.draft.terminal_title_position == TerminalTitlePosition::Top,
+                ),
+                labels: vec!["Bottom", "Top"],
             }),
             SettingField::ResumeAgents => FieldEditor::Choice(ChoiceEditor {
                 selected: usize::from(!self.draft.resume_agents_on_restore),
@@ -720,6 +740,10 @@ fn setting_value(form: &GlobalSettingsForm, field: SettingField) -> String {
         SettingField::TerminalSidebar => match form.draft.terminal_sidebar {
             TerminalSidebar::Compact => "Compact".into(),
             TerminalSidebar::Expanded => "Expanded".into(),
+        },
+        SettingField::TerminalTitlePosition => match form.draft.terminal_title_position {
+            TerminalTitlePosition::Bottom => "Bottom".into(),
+            TerminalTitlePosition::Top => "Top".into(),
         },
         SettingField::ResumeAgents => on_off(form.draft.resume_agents_on_restore).into(),
         SettingField::WakeMode => on_off(form.draft.wake_mode).into(),
@@ -1287,6 +1311,30 @@ mod tests {
         assert_eq!(
             setting_value(&form, SettingField::TerminalSidebar),
             "Expanded"
+        );
+    }
+
+    #[test]
+    fn terminal_title_choice_defaults_bottom_and_commits_top() {
+        let mut form = GlobalSettingsForm::new(GlobalConfig::default());
+        form.category = SettingsCategory::Terminal;
+        form.field = 4;
+        assert_eq!(
+            setting_value(&form, SettingField::TerminalTitlePosition),
+            "Bottom"
+        );
+
+        form.begin_or_commit().unwrap();
+        form.next_field(false);
+        form.begin_or_commit().unwrap();
+
+        assert_eq!(
+            form.draft.terminal_title_position,
+            TerminalTitlePosition::Top
+        );
+        assert_eq!(
+            setting_value(&form, SettingField::TerminalTitlePosition),
+            "Top"
         );
     }
 

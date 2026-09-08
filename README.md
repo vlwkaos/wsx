@@ -90,6 +90,7 @@ auto_collapse_after_hours = 24
 notification_timeout_seconds = 4
 show_release_status = true
 terminal_sidebar = "compact"
+terminal_title_position = "bottom"
 port_visibility = "non_agentic"
 ```
 
