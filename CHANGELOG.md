@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Improvements
+
+- Reuse wsxd across UI-only wsx releases, and defer required daemon replacement while an agent works, a foreground job runs, or a local server listens.
+- Show deferred daemon replacement only once at TUI startup, then report completed replacement immediately after reconnect or on the next startup with a warning that terminal sessions restarted from saved commands.
+- Clear Claude working state when its session ends, keep rate limits blocked rather than active, and retry one transient release lookup without adding periodic update notifications.
+- Keep session mutation revisions separate from focused-pane lifecycle revisions so newly created agent sessions can be reordered immediately.
+
 ## [0.22.2] - 2026-09-07
 
 ### Features

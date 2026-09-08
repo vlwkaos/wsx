@@ -1,11 +1,21 @@
 // One-time bounded startup check against the latest published GitHub release.
 
+use std::time::Duration;
+
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/vlwkaos/wsx/releases/latest";
 const MAX_RESPONSE_BYTES: &str = "65536";
 
 /// Returns the latest version string if it is newer than the running binary.
 pub fn fetch_latest_version() -> Option<String> {
+    retry_once(fetch_latest_version_once, || {
+        std::thread::sleep(Duration::from_millis(250))
+    })
+    .ok()
+    .flatten()
+}
+
+fn fetch_latest_version_once() -> Result<Option<String>, ()> {
     let out = std::process::Command::new("curl")
         .args([
             "--fail",
@@ -25,12 +35,25 @@ pub fn fetch_latest_version() -> Option<String> {
             LATEST_RELEASE_URL,
         ])
         .output()
-        .ok()?;
+        .map_err(|_| ())?;
     if !out.status.success() {
-        return None;
+        return Err(());
     }
-    let latest = parse_latest_version(&out.stdout)?;
-    is_newer(&latest, CURRENT).then_some(latest)
+    let latest = parse_latest_version(&out.stdout).ok_or(())?;
+    Ok(is_newer(&latest, CURRENT).then_some(latest))
+}
+
+fn retry_once<T, E>(
+    mut operation: impl FnMut() -> Result<T, E>,
+    backoff: impl FnOnce(),
+) -> Result<T, E> {
+    match operation() {
+        Ok(value) => Ok(value),
+        Err(_) => {
+            backoff();
+            operation()
+        }
+    }
 }
 
 fn parse_latest_version(body: &[u8]) -> Option<String> {
@@ -60,7 +83,7 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_newer, parse_latest_version};
+    use super::{is_newer, parse_latest_version, retry_once};
 
     #[test]
     fn latest_release_parser_accepts_prefixed_stable_tags() {
@@ -82,6 +105,35 @@ mod tests {
             None
         );
         assert_eq!(parse_latest_version(b"not json"), None);
+    }
+
+    #[test]
+    fn update_lookup_retries_one_failure_but_not_a_definitive_result() {
+        let mut attempts = 0;
+        let mut backed_off = false;
+        let result = retry_once(
+            || {
+                attempts += 1;
+                (attempts == 2)
+                    .then_some(Some("0.22.3".to_string()))
+                    .ok_or(())
+            },
+            || backed_off = true,
+        );
+        assert_eq!(result.unwrap().as_deref(), Some("0.22.3"));
+        assert_eq!(attempts, 2);
+        assert!(backed_off);
+
+        let mut attempts = 0;
+        let current = retry_once(
+            || {
+                attempts += 1;
+                Ok::<_, ()>(None::<String>)
+            },
+            || panic!("a definitive current result must not retry"),
+        );
+        assert_eq!(current.unwrap(), None);
+        assert_eq!(attempts, 1);
     }
 
     #[test]

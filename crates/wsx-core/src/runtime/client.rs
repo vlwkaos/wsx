@@ -37,6 +37,7 @@ pub enum Availability {
     DaemonReplaced {
         previous_version: String,
     },
+    DaemonRestarted,
     ReplacementDeferred {
         daemon_version: String,
         target_version: String,
@@ -539,17 +540,27 @@ fn ensure_available_with_binary(
 
     match existing {
         ExistingDaemon::Missing => {
-            let planned = consume_planned_marker(client.socket(), target_binary_id.as_deref())?;
-            start_daemon(
+            let planned = consume_planned_marker(
+                client.socket(),
+                target_binary_id.as_deref(),
+                super::protocol::DAEMON_REVISION,
+            )?;
+            let availability = start_daemon(
                 client,
                 binary,
                 &mut bootstrap,
-                reset_crash_budget || planned,
-            )
+                reset_crash_budget || planned != PlannedStart::None,
+            )?;
+            Ok(if planned == PlannedStart::Replacement {
+                Availability::DaemonRestarted
+            } else {
+                availability
+            })
         }
         ExistingDaemon::Ready {
             lifecycle_coordination: true,
             version_coordination,
+            ..
         }
         | ExistingDaemon::Incompatible {
             lifecycle_coordination: true,
@@ -578,6 +589,7 @@ fn ensure_available_with_binary(
                 client,
                 &Request::PrepareReplacement {
                     target_binary_id: target_binary_id.clone(),
+                    target_daemon_revision: super::protocol::DAEMON_REVISION,
                 },
             )? {
                 Response::Replacement {
@@ -585,7 +597,11 @@ fn ensure_available_with_binary(
                     ..
                 } => {
                     wait_until_stopped(client)?;
-                    consume_planned_marker(client.socket(), Some(&target_binary_id))?;
+                    consume_planned_marker(
+                        client.socket(),
+                        Some(&target_binary_id),
+                        super::protocol::DAEMON_REVISION,
+                    )?;
                     start_daemon(client, binary, &mut bootstrap, true)?;
                     Ok(Availability::DaemonReplaced {
                         previous_version: daemon_version,
@@ -689,6 +705,7 @@ fn ready_without_transition(
 ) -> io::Result<Option<Availability>> {
     let ExistingDaemon::Ready {
         lifecycle_coordination,
+        daemon_revision_coordination,
         ..
     } = existing
     else {
@@ -703,6 +720,13 @@ fn ready_without_transition(
         == Some(std::cmp::Ordering::Greater)
     {
         return Ok(Some(Availability::NewerDaemon { daemon_version }));
+    }
+    if *daemon_revision_coordination && status.daemon_revision >= super::protocol::DAEMON_REVISION {
+        return Ok(Some(if status.recovered_from_backup {
+            Availability::RecoveredFromBackup
+        } else {
+            Availability::Current
+        }));
     }
     if target_binary_id.is_none_or(|target| target == status.binary_id) {
         Ok(Some(
@@ -1056,25 +1080,41 @@ fn write_lifecycle_marker(socket: &Path, reason: &str) -> io::Result<()> {
     result
 }
 
-fn consume_planned_marker(socket: &Path, target_binary_id: Option<&str>) -> io::Result<bool> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlannedStart {
+    None,
+    Intentional,
+    Replacement,
+}
+
+fn consume_planned_marker(
+    socket: &Path,
+    target_binary_id: Option<&str>,
+    target_daemon_revision: u32,
+) -> io::Result<PlannedStart> {
     let Some(reason) = lifecycle_marker_reason(socket) else {
-        return Ok(false);
+        return Ok(PlannedStart::None);
     };
     let planned = match reason.as_str() {
-        "intentional" | "login_ended" => true,
+        "intentional" | "login_ended" => PlannedStart::Intentional,
         reason if reason.starts_with("replacement:") => {
             let expected = reason.trim_start_matches("replacement:");
-            if target_binary_id != Some(expected) {
+            let compatible = expected
+                .rsplit_once('|')
+                .and_then(|(_, revision)| revision.parse::<u32>().ok())
+                .is_some_and(|revision| revision > 0 && revision == target_daemon_revision)
+                || target_binary_id == Some(expected);
+            if !compatible {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
-                    "replacement_protected: the pending wsxd replacement belongs to another binary",
+                    "replacement_protected: the pending wsxd replacement belongs to another daemon revision",
                 ));
             }
-            true
+            PlannedStart::Replacement
         }
-        _ => false,
+        _ => PlannedStart::None,
     };
-    if planned {
+    if planned != PlannedStart::None {
         write_lifecycle_marker(socket, "starting")?;
     }
     Ok(planned)
@@ -1134,6 +1174,7 @@ enum ExistingDaemon {
     Ready {
         lifecycle_coordination: bool,
         version_coordination: bool,
+        daemon_revision_coordination: bool,
     },
     Missing,
     Incompatible {
@@ -1202,10 +1243,12 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
         {
             let lifecycle_coordination = capabilities.lifecycle_coordination;
             let version_coordination = capabilities.version_coordination;
+            let daemon_revision_coordination = capabilities.daemon_revision_coordination;
             match round_trip(&mut stream, &Request::Snapshot)? {
                 Response::Snapshot(_) => Ok(ExistingDaemon::Ready {
                     lifecycle_coordination,
                     version_coordination,
+                    daemon_revision_coordination,
                 }),
                 Response::Error(error) => Err(io::Error::other(format!(
                     "{}: {}",
@@ -1353,7 +1396,7 @@ fn daemon_binary() -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventSignal {
     Dirty,
-    Connected,
+    Connected(Option<Availability>),
     Disconnected(String),
 }
 
@@ -1370,12 +1413,14 @@ impl EventMonitor {
             instance_id: new_client_id(),
             version: super::protocol::WSX_VERSION.to_string(),
             target_binary_id: binary_identity(&daemon_binary()).unwrap_or_default(),
+            target_daemon_revision: super::protocol::DAEMON_REVISION,
         };
         let thread = thread::Builder::new()
             .name("wsx-runtime-events".into())
             .spawn(move || {
                 let mut revision = 0;
                 let mut connected = false;
+                let mut recovery_availability = None;
                 while !stop.load(Ordering::Acquire) {
                     match client.call(&Request::Poll {
                         after_revision: revision,
@@ -1388,7 +1433,8 @@ impl EventMonitor {
                         }) => {
                             if !connected {
                                 connected = true;
-                                let _ = sender.send(EventSignal::Connected);
+                                let _ = sender
+                                    .send(EventSignal::Connected(recovery_availability.take()));
                             }
                             revision = next;
                             if !events.is_empty() {
@@ -1420,7 +1466,10 @@ impl EventMonitor {
                                 && background_recovery_allowed(client.socket())
                             {
                                 match ensure_background_available_with(&client) {
-                                    Ok(_) => continue,
+                                    Ok(availability) => {
+                                        recovery_availability = Some(availability);
+                                        continue;
+                                    }
                                     Err(recovery_error) => {
                                         let _ = sender.send(EventSignal::Disconnected(
                                             recovery_error.to_string(),
@@ -1541,6 +1590,65 @@ mod tests {
     }
 
     #[test]
+    fn matching_daemon_revision_reuses_a_different_wsx_build() {
+        let (path, listener) = test_listener("matching-daemon-revision");
+        let server_path = path.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert!(matches!(
+                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+                Request::Hello { .. }
+            ));
+            let mut capabilities = current_capabilities();
+            capabilities.daemon_revision_coordination = true;
+            send_response(
+                &mut stream,
+                &Response::Hello {
+                    protocol: PROTOCOL_VERSION,
+                    epoch: 7,
+                    capabilities,
+                },
+            );
+            assert_eq!(
+                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+                Request::LifecycleStatus
+            );
+            send_response(
+                &mut stream,
+                &Response::Lifecycle(super::super::domain::DaemonLifecycle {
+                    protocol: PROTOCOL_VERSION,
+                    epoch: 7,
+                    binary_id: "0.22.1:1:2:3:10".into(),
+                    version: "0.22.1".into(),
+                    daemon_revision: super::super::protocol::DAEMON_REVISION,
+                    started_unix_ms: 1,
+                    phase: super::super::domain::DaemonPhase::Ready,
+                    live_runtimes: 1,
+                    active_clients: 1,
+                    active_tuis: 1,
+                    recovered_from_backup: false,
+                    replacement_target: None,
+                    replacement_target_version: String::new(),
+                    replacement_blockers: vec![],
+                }),
+            );
+            drop(listener);
+            std::fs::remove_file(server_path).unwrap();
+        });
+        let ready = ExistingDaemon::Ready {
+            lifecycle_coordination: true,
+            version_coordination: true,
+            daemon_revision_coordination: true,
+        };
+
+        assert_eq!(
+            ready_without_transition(&Client::new(path), &ready, Some("0.22.2:4:5:6:20")).unwrap(),
+            Some(Availability::Current)
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
     fn lifecycle_ready_and_deferred_are_typed_healthy_outcomes() {
         let (path, listener) = test_listener("lifecycle-outcomes");
         let server_path = path.clone();
@@ -1573,6 +1681,7 @@ mod tests {
                         epoch: 7,
                         binary_id: "target".into(),
                         version: "0.21.0".into(),
+                        daemon_revision: 0,
                         started_unix_ms: 1,
                         phase,
                         live_runtimes,
@@ -1592,6 +1701,7 @@ mod tests {
         let ready = ExistingDaemon::Ready {
             lifecycle_coordination: true,
             version_coordination: true,
+            daemon_revision_coordination: false,
         };
         assert_eq!(
             ready_without_transition(&client, &ready, Some("target")).unwrap(),
@@ -1646,6 +1756,7 @@ mod tests {
                     epoch: 7,
                     binary_id: "0.23.0:1:2:3:20".into(),
                     version: "0.23.0".into(),
+                    daemon_revision: 0,
                     started_unix_ms: 1,
                     phase: super::super::domain::DaemonPhase::Ready,
                     live_runtimes: 2,
@@ -1663,6 +1774,7 @@ mod tests {
         let ready = ExistingDaemon::Ready {
             lifecycle_coordination: true,
             version_coordination: true,
+            daemon_revision_coordination: false,
         };
         assert_eq!(
             ready_without_transition(&Client::new(path), &ready, Some("0.22.0:1:2:3:10")).unwrap(),
@@ -1730,6 +1842,7 @@ mod tests {
                                 epoch: 7,
                                 binary_id: "0.20.0:1:2:3:10".into(),
                                 version: String::new(),
+                                daemon_revision: 0,
                                 started_unix_ms: 1,
                                 phase: super::super::domain::DaemonPhase::ReplacementPending,
                                 live_runtimes: 4,
@@ -1889,13 +2002,24 @@ mod tests {
             .kind(),
             io::ErrorKind::ConnectionAborted
         );
-        assert!(consume_planned_marker(&path, Some("target")).unwrap());
+        assert_eq!(
+            consume_planned_marker(&path, Some("target"), 1).unwrap(),
+            PlannedStart::Intentional
+        );
         assert_eq!(lifecycle_marker_reason(&path).as_deref(), Some("starting"));
-        assert!(!consume_planned_marker(&path, Some("target")).unwrap());
+        assert_eq!(
+            consume_planned_marker(&path, Some("target"), 1).unwrap(),
+            PlannedStart::None
+        );
         std::fs::write(&marker, "login_ended\n").unwrap();
         assert!(!background_recovery_allowed(&path));
         std::fs::write(&marker, "replacement:other\n").unwrap();
-        assert!(consume_planned_marker(&path, Some("target")).is_err());
+        assert!(consume_planned_marker(&path, Some("target"), 1).is_err());
+        std::fs::write(&marker, "replacement:other|1\n").unwrap();
+        assert_eq!(
+            consume_planned_marker(&path, Some("target"), 1).unwrap(),
+            PlannedStart::Replacement
+        );
         std::fs::write(&marker, "unexpected\n").unwrap();
         assert!(background_recovery_allowed(&path));
         let _ = std::fs::remove_file(marker);

@@ -706,9 +706,13 @@ pub(crate) fn runtime_availability_notice(
         runtime::Availability::DaemonReplaced { previous_version } => Some((
             NoticeLevel::Success,
             format!(
-                "wsxd upgraded from {previous_version} to {}; idle sessions restored",
+                "wsxd updated from {previous_version} to {}. Terminal sessions restarted from saved commands",
                 runtime::WSX_VERSION
             ),
+        )),
+        runtime::Availability::DaemonRestarted => Some((
+            NoticeLevel::Success,
+            "wsxd updated. Terminal sessions restarted from saved commands".into(),
         )),
         runtime::Availability::ReplacementDeferred {
             daemon_version,
@@ -732,6 +736,15 @@ pub(crate) fn runtime_availability_notice(
             }
             if blockers.contains(&runtime::ReplacementBlocker::WorkingAgent) {
                 reasons.push("working agents become idle");
+            }
+            if blockers.contains(&runtime::ReplacementBlocker::ListenerScanPending) {
+                reasons.push("the initial local-server scan completes");
+            }
+            if blockers.contains(&runtime::ReplacementBlocker::ForegroundJob) {
+                reasons.push("foreground jobs stop");
+            }
+            if blockers.contains(&runtime::ReplacementBlocker::ListeningPort) {
+                reasons.push("local servers stop listening");
             }
             if blockers.contains(&runtime::ReplacementBlocker::PendingTarget) {
                 reasons.push("the existing queued replacement is resolved");
@@ -816,6 +829,7 @@ pub struct App {
     runtime_tx: mpsc::Sender<RuntimeResult>,
     runtime_rx: mpsc::Receiver<RuntimeResult>,
     runtime_refresh_pending: bool,
+    startup_availability_pending: bool,
     startup_cursor_identity: Option<wsx_core::cache::CursorIdentity>,
     /// An event requested a session refresh while one was in-flight.
     runtime_refresh_stale: bool,
@@ -996,6 +1010,7 @@ impl App {
             runtime_tx,
             runtime_rx,
             runtime_refresh_pending: false,
+            startup_availability_pending: true,
             startup_cursor_identity: cursor_identity.clone(),
             runtime_refresh_stale: false,
             runtime_full_refresh_stale: false,
@@ -1822,9 +1837,12 @@ impl App {
     fn apply_runtime_event(&mut self, signal: runtime::EventSignal) {
         match signal {
             runtime::EventSignal::Dirty => self.spawn_runtime_session_refresh(),
-            runtime::EventSignal::Connected => {
+            runtime::EventSignal::Connected(availability) => {
                 // A new connection may belong to a different daemon epoch.
                 self.spawn_runtime_session_refresh();
+                if let Some(availability) = availability {
+                    self.announce_runtime_availability(&availability);
+                }
                 self.needs_redraw = true;
             }
             runtime::EventSignal::Disconnected(error) => {
@@ -2277,15 +2295,26 @@ impl App {
         match result {
             Ok((availability, snapshot, worktrees)) => {
                 self.apply_runtime_snapshot(snapshot, worktrees);
-                if let Some((level, message)) = runtime_availability_notice(&availability) {
-                    self.set_notice(level, message);
-                }
+                self.announce_startup_availability(&availability);
             }
             Err(error) => {
                 self.apply_runtime_event(runtime::EventSignal::Disconnected(error.to_string()))
             }
         }
         self.spawn_queued_runtime_refresh();
+    }
+
+    fn announce_startup_availability(&mut self, availability: &runtime::Availability) {
+        if !std::mem::take(&mut self.startup_availability_pending) {
+            return;
+        }
+        self.announce_runtime_availability(availability);
+    }
+
+    fn announce_runtime_availability(&mut self, availability: &runtime::Availability) {
+        if let Some((level, message)) = runtime_availability_notice(availability) {
+            self.set_notice(level, message);
+        }
     }
 
     fn apply_runtime_session_refresh(&mut self, result: Result<runtime::Snapshot>) {
@@ -5830,6 +5859,7 @@ mod tests {
             runtime_tx,
             runtime_rx,
             runtime_refresh_pending: false,
+            startup_availability_pending: true,
             startup_cursor_identity: None,
             runtime_refresh_stale: false,
             runtime_full_refresh_stale: false,
@@ -8572,6 +8602,43 @@ mod tests {
     }
 
     #[test]
+    fn deferred_replacement_notice_is_announced_only_once() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        let deferred = runtime::Availability::ReplacementDeferred {
+            daemon_version: "0.22.2".into(),
+            target_version: "0.22.3".into(),
+            live_runtimes: 1,
+            blockers: vec![runtime::ReplacementBlocker::WorkingAgent],
+        };
+
+        app.announce_startup_availability(&deferred);
+        assert!(app
+            .notice
+            .as_ref()
+            .is_some_and(|notice| notice.title.contains("working agents become idle")));
+
+        app.notice = None;
+        app.notice_started = None;
+        app.announce_startup_availability(&deferred);
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
+    fn live_reconnect_announces_completed_replacement() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.startup_availability_pending = false;
+
+        app.apply_runtime_event(runtime::EventSignal::Connected(Some(
+            runtime::Availability::DaemonRestarted,
+        )));
+
+        assert!(app.notice.as_ref().is_some_and(|notice| {
+            notice.level == NoticeLevel::Success
+                && notice.title.contains("Terminal sessions restarted")
+        }));
+    }
+
+    #[test]
     fn runtime_version_notices_explain_direction_and_blockers() {
         let newer = runtime_availability_notice(&runtime::Availability::NewerDaemon {
             daemon_version: "0.23.0".into(),
@@ -8587,6 +8654,8 @@ mod tests {
             blockers: vec![
                 runtime::ReplacementBlocker::OtherTui,
                 runtime::ReplacementBlocker::WorkingAgent,
+                runtime::ReplacementBlocker::ForegroundJob,
+                runtime::ReplacementBlocker::ListeningPort,
             ],
         })
         .unwrap()
@@ -8595,6 +8664,8 @@ mod tests {
             "older or different wsx TUI instances exit and their presence expires within 3 seconds"
         ));
         assert!(deferred.contains("working agents become idle"));
+        assert!(deferred.contains("foreground jobs stop"));
+        assert!(deferred.contains("local servers stop listening"));
         assert!(deferred.contains("4 terminal runtime(s) remain open"));
 
         let legacy = runtime_availability_notice(&runtime::Availability::ReplacementDeferred {
@@ -8794,7 +8865,7 @@ mod tests {
                 ..
             }
         ));
-        app.apply_runtime_event(runtime::EventSignal::Connected);
+        app.apply_runtime_event(runtime::EventSignal::Connected(None));
         assert!(matches!(
             app.runtime_health,
             RuntimeHealth::Reconnecting { .. }

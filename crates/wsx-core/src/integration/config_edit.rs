@@ -108,6 +108,7 @@ pub(crate) fn json_config(
             remove_nested_actions(hooks, "PermissionRequest", hook, actions);
             let events = [
                 ("SessionStart", "idle"),
+                ("SessionEnd", "idle"),
                 ("UserPromptSubmit", "working"),
                 ("PreToolUse", "working"),
                 ("PostToolUse", "working"),

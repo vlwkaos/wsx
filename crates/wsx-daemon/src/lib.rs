@@ -149,6 +149,7 @@ struct Lease {
 #[derive(Clone)]
 struct TuiPresenceLease {
     target_binary_id: String,
+    target_daemon_revision: u32,
     expires_at: Instant,
 }
 
@@ -205,6 +206,7 @@ struct State {
     terminal_operation_locks: HashMap<PaneId, Arc<Mutex<()>>>,
     listening_ports: HashMap<PaneId, Vec<u16>>,
     foreground_jobs: HashSet<PaneId>,
+    listener_scan_complete: bool,
     leases: HashMap<PaneId, Lease>,
     events: VecDeque<Event>,
     plugins: Vec<PluginManifest>,
@@ -212,6 +214,7 @@ struct State {
     tui_clients: HashMap<u64, TuiPresenceLease>,
     legacy_tui_until: Option<Instant>,
     replacement_target: Option<String>,
+    replacement_daemon_revision: Option<u32>,
     stop_reason: Option<StopReason>,
     persistence_dirty: bool,
     stopping: bool,
@@ -601,6 +604,7 @@ pub fn run() -> io::Result<()> {
             terminal_operation_locks: HashMap::new(),
             listening_ports: HashMap::new(),
             foreground_jobs: HashSet::new(),
+            listener_scan_complete: false,
             leases: HashMap::new(),
             events: VecDeque::new(),
             plugins: plugins::discover(),
@@ -608,6 +612,7 @@ pub fn run() -> io::Result<()> {
             tui_clients: HashMap::new(),
             legacy_tui_until: None,
             replacement_target: None,
+            replacement_daemon_revision: None,
             stop_reason: None,
             persistence_dirty: false,
             stopping: false,
@@ -782,10 +787,14 @@ fn cleanup(daemon: &Daemon, socket: &Path) {
         daemon.plugin_changed.notify_all();
         let reason = state.stop_reason.unwrap_or(StopReason::Unexpected);
         let marker = if reason == StopReason::Replacement {
-            format!(
-                "replacement:{}",
-                state.replacement_target.as_deref().unwrap_or_default()
-            )
+            let target = state.replacement_target.as_deref().unwrap_or_default();
+            match state
+                .replacement_daemon_revision
+                .filter(|revision| *revision > 0)
+            {
+                Some(revision) => format!("replacement:{target}|{revision}"),
+                None => format!("replacement:{target}"),
+            }
         } else {
             reason.marker().to_string()
         };
@@ -1554,9 +1563,10 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             let mut state = lock(&daemon.state);
             Ok(Response::Lifecycle(lifecycle_status(daemon, &mut state)))
         }
-        Request::PrepareReplacement { target_binary_id } => {
-            prepare_replacement(daemon, target_binary_id)
-        }
+        Request::PrepareReplacement {
+            target_binary_id,
+            target_daemon_revision,
+        } => prepare_replacement_with_revision(daemon, target_binary_id, target_daemon_revision),
         Request::Shutdown => {
             let mut state = lock(&daemon.state);
             state.stopping = true;
@@ -1582,6 +1592,7 @@ fn capabilities() -> Capabilities {
         process_restore: false,
         lifecycle_coordination: true,
         version_coordination: true,
+        daemon_revision_coordination: true,
     }
 }
 
@@ -1610,6 +1621,7 @@ fn lifecycle_status(daemon: &Daemon, state: &mut State) -> DaemonLifecycle {
         epoch: daemon.epoch,
         binary_id: daemon.binary_id.clone(),
         version: WSX_VERSION.to_string(),
+        daemon_revision: DAEMON_REVISION,
         started_unix_ms: daemon.started_unix_ms,
         phase: if state.stopping {
             DaemonPhase::Stopping
@@ -1632,16 +1644,33 @@ fn replacement_blockers(state: &mut State, target_binary_id: &str) -> Vec<Replac
     let now = Instant::now();
     expire_tui_presence(state, now);
     let mut blockers = Vec::new();
+    let target_daemon_revision = state.replacement_daemon_revision.unwrap_or_default();
     if state.legacy_tui_until.is_some()
-        || state
-            .tui_clients
-            .values()
-            .any(|client| client.target_binary_id != target_binary_id)
+        || state.tui_clients.values().any(|client| {
+            if target_daemon_revision == 0 {
+                client.target_binary_id != target_binary_id
+            } else {
+                client.target_daemon_revision != target_daemon_revision
+            }
+        })
     {
         blockers.push(ReplacementBlocker::OtherTui);
     }
     if has_fresh_working_agent(state, now) {
         blockers.push(ReplacementBlocker::WorkingAgent);
+    }
+    if live_runtime_count(state) > 0 && !state.listener_scan_complete {
+        blockers.push(ReplacementBlocker::ListenerScanPending);
+    }
+    if !state.foreground_jobs.is_empty() {
+        blockers.push(ReplacementBlocker::ForegroundJob);
+    }
+    if state
+        .listening_ports
+        .values()
+        .any(|ports| !ports.is_empty())
+    {
+        blockers.push(ReplacementBlocker::ListeningPort);
     }
     blockers
 }
@@ -1663,7 +1692,16 @@ fn replacement_response(
     }
 }
 
+#[cfg(test)]
 fn prepare_replacement(daemon: &Daemon, target_binary_id: String) -> Result<Response, ApiError> {
+    prepare_replacement_with_revision(daemon, target_binary_id, 0)
+}
+
+fn prepare_replacement_with_revision(
+    daemon: &Daemon,
+    target_binary_id: String,
+    target_daemon_revision: u32,
+) -> Result<Response, ApiError> {
     if target_binary_id.is_empty() || target_binary_id.len() > 512 {
         return Err(api(
             "invalid_request",
@@ -1686,7 +1724,9 @@ fn prepare_replacement(daemon: &Daemon, target_binary_id: String) -> Result<Resp
             )
         })?;
     let mut state = lock(&daemon.state);
-    if candidate_order != std::cmp::Ordering::Greater {
+    if (target_daemon_revision > 0 && target_daemon_revision <= DAEMON_REVISION)
+        || (target_daemon_revision == 0 && candidate_order != std::cmp::Ordering::Greater)
+    {
         return Ok(replacement_response(
             &state,
             ReplacementDisposition::Deferred,
@@ -1697,9 +1737,12 @@ fn prepare_replacement(daemon: &Daemon, target_binary_id: String) -> Result<Resp
     }
 
     if let Some(current) = state.replacement_target.as_deref() {
-        let order = compare_binary_identities(&target_binary_id, current)
-            .ok_or_else(|| api("invalid_request", "pending binary identity is malformed"))?;
-        if order == std::cmp::Ordering::Less {
+        let order = match (state.replacement_daemon_revision, target_daemon_revision) {
+            (Some(current), target) if current > 0 && target > 0 => target.cmp(&current),
+            _ => compare_binary_identities(&target_binary_id, current)
+                .ok_or_else(|| api("invalid_request", "pending binary identity is malformed"))?,
+        };
+        if order != std::cmp::Ordering::Greater {
             return Ok(replacement_response(
                 &state,
                 ReplacementDisposition::Deferred,
@@ -1710,6 +1753,7 @@ fn prepare_replacement(daemon: &Daemon, target_binary_id: String) -> Result<Resp
         }
     }
     state.replacement_target = Some(target_binary_id.clone());
+    state.replacement_daemon_revision = Some(target_daemon_revision);
     let blockers = replacement_blockers(&mut state, &target_binary_id);
     let disposition = if blockers.is_empty() {
         state.stopping = true;
@@ -1827,6 +1871,7 @@ fn record_tui_presence(state: &mut State, tui: Option<TuiClientPresence>) -> Res
         tui.instance_id,
         TuiPresenceLease {
             target_binary_id: tui.target_binary_id,
+            target_daemon_revision: tui.target_daemon_revision,
             expires_at: now + TUI_PRESENCE_TTL,
         },
     );
@@ -2919,17 +2964,7 @@ fn spawn_port_scanner(daemon: &Arc<Daemon>) -> thread::JoinHandle<()> {
             })
         };
         let mut state = lock(&daemon.state);
-        let ports_changed = detected
-            .as_ref()
-            .is_some_and(|next| state.listening_ports != *next);
-        let activity_changed = state.foreground_jobs != foreground_jobs;
-        if let Some(next) = detected.filter(|_| ports_changed) {
-            state.listening_ports = next;
-        }
-        if activity_changed {
-            state.foreground_jobs = foreground_jobs;
-        }
-        if ports_changed || activity_changed {
+        if apply_process_scan(&mut state, detected, foreground_jobs) {
             bump(&daemon, &mut state, "pane_activity.changed", 0);
         }
         drop(state);
@@ -2955,6 +2990,27 @@ struct ListenerProcess {
 struct ProcessTerminal {
     group: libc::pid_t,
     tty: String,
+}
+
+fn apply_process_scan(
+    state: &mut State,
+    detected: Option<HashMap<PaneId, Vec<u16>>>,
+    foreground_jobs: HashSet<PaneId>,
+) -> bool {
+    let ports_changed = detected
+        .as_ref()
+        .is_some_and(|next| state.listening_ports != *next);
+    let activity_changed = state.foreground_jobs != foreground_jobs;
+    if let Some(next) = detected {
+        state.listener_scan_complete = true;
+        if ports_changed {
+            state.listening_ports = next;
+        }
+    }
+    if activity_changed {
+        state.foreground_jobs = foreground_jobs;
+    }
+    ports_changed || activity_changed
 }
 
 fn scan_listening_ports() -> Option<Vec<ListenerProcess>> {
@@ -3604,6 +3660,7 @@ mod tests {
                 terminal_operation_locks: HashMap::new(),
                 listening_ports: HashMap::new(),
                 foreground_jobs: HashSet::new(),
+                listener_scan_complete: false,
                 leases: HashMap::new(),
                 events: VecDeque::new(),
                 plugins: Vec::new(),
@@ -3611,6 +3668,7 @@ mod tests {
                 tui_clients: HashMap::new(),
                 legacy_tui_until: None,
                 replacement_target: None,
+                replacement_daemon_revision: None,
                 stop_reason: None,
                 persistence_dirty: false,
                 stopping: false,
@@ -3697,7 +3755,7 @@ mod tests {
     }
 
     #[test]
-    fn replacement_waits_for_working_agent_but_not_idle_runtime() {
+    fn replacement_waits_for_work_and_servers_but_not_blocked_agent() {
         let pane_id = PaneId(4);
         let recovery_recipe = LaunchRecipe {
             command: vec!["/bin/cat".into()],
@@ -3726,6 +3784,11 @@ mod tests {
         let generation = {
             let mut state = lock(&daemon.state);
             state.runtimes.insert(pane_id, Arc::clone(&runtime));
+            assert_eq!(
+                replacement_blockers(&mut state, "0.23.0:1:2:3:20"),
+                vec![ReplacementBlocker::ListenerScanPending]
+            );
+            state.listener_scan_complete = true;
             state.runtime_generations[&pane_id].clone()
         };
         agent_report(
@@ -3756,12 +3819,32 @@ mod tests {
             &daemon,
             RuntimeAgentAuthority::new(pane_id, Some(generation)),
             "pi".into(),
-            AgentState::Idle,
+            AgentState::Blocked,
             None,
             None,
             AgentCapabilities::default(),
         )
         .unwrap();
+        {
+            let mut state = lock(&daemon.state);
+            state.foreground_jobs.insert(pane_id);
+            state.listening_ports.insert(pane_id, vec![3000]);
+        }
+        assert!(!advance_replacement(&daemon));
+        assert!(!runtime.exited());
+        {
+            let mut state = lock(&daemon.state);
+            assert_eq!(
+                replacement_blockers(&mut state, "0.23.0:1:2:3:20"),
+                vec![
+                    ReplacementBlocker::ForegroundJob,
+                    ReplacementBlocker::ListeningPort,
+                ]
+            );
+            state.foreground_jobs.clear();
+        }
+        assert!(!advance_replacement(&daemon));
+        lock(&daemon.state).listening_ports.clear();
         assert!(advance_replacement(&daemon));
         assert!(!runtime.exited());
 
@@ -3817,6 +3900,7 @@ mod tests {
                 instance_id: 7,
                 version: "0.20.0".into(),
                 target_binary_id: "0.20.0:1:2:3:10".into(),
+                target_daemon_revision: 0,
             }),
         )
         .unwrap();
@@ -3848,6 +3932,7 @@ mod tests {
                 instance_id: 8,
                 version: "0.22.0".into(),
                 target_binary_id: "0.22.0:1:2:3:10".into(),
+                target_daemon_revision: 0,
             }),
         )
         .unwrap();
@@ -3871,6 +3956,54 @@ mod tests {
     }
 
     #[test]
+    fn daemon_revision_controls_replacement_and_tui_build_compatibility() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        assert!(matches!(
+            prepare_replacement_with_revision(&daemon, "0.23.0:1:2:3:20".into(), DAEMON_REVISION,)
+                .unwrap(),
+            Response::Replacement {
+                use_current_daemon: true,
+                ..
+            }
+        ));
+        assert!(lock(&daemon.state).replacement_target.is_none());
+
+        let mut state = lock(&daemon.state);
+        state.replacement_target = Some("0.23.0:1:2:3:20".into());
+        state.replacement_daemon_revision = Some(DAEMON_REVISION + 1);
+        record_tui_presence(
+            &mut state,
+            Some(TuiClientPresence {
+                instance_id: 10,
+                version: "0.23.1".into(),
+                target_binary_id: "0.23.1:4:5:6:30".into(),
+                target_daemon_revision: DAEMON_REVISION + 1,
+            }),
+        )
+        .unwrap();
+        assert!(!replacement_blockers(&mut state, "0.23.0:1:2:3:20")
+            .contains(&ReplacementBlocker::OtherTui));
+        state
+            .tui_clients
+            .get_mut(&10)
+            .unwrap()
+            .target_daemon_revision = DAEMON_REVISION;
+        assert!(replacement_blockers(&mut state, "0.23.0:1:2:3:20")
+            .contains(&ReplacementBlocker::OtherTui));
+        state.stop_reason = Some(StopReason::Replacement);
+        drop(state);
+        cleanup(&daemon, &path.with_extension("sock"));
+        assert_eq!(
+            fs::read_to_string(path.with_extension("lifecycle"))
+                .unwrap()
+                .trim(),
+            format!("replacement:0.23.0:1:2:3:20|{}", DAEMON_REVISION + 1)
+        );
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("lifecycle"));
+    }
+
+    #[test]
     fn malformed_or_empty_tui_presence_is_rejected() {
         let (daemon, path) = agent_test_daemon(agent_test_persisted());
         for (version, target_binary_id) in [
@@ -3887,6 +4020,7 @@ mod tests {
                         instance_id: 9,
                         version: version.into(),
                         target_binary_id: target_binary_id.into(),
+                        target_daemon_revision: 0,
                     }),
                 )
                 .is_err(),
@@ -5040,6 +5174,22 @@ mod tests {
                 .starts_with("state.json.tmp.")
         }));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn failed_listener_scan_preserves_prior_server_fence() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let mut state = lock(&daemon.state);
+        state.listener_scan_complete = true;
+        state.listening_ports.insert(PaneId(4), vec![3000]);
+
+        assert!(!apply_process_scan(&mut state, None, HashSet::new()));
+        assert!(state.listener_scan_complete);
+        assert_eq!(state.listening_ports[&PaneId(4)], vec![3000]);
+        assert!(replacement_blockers(&mut state, "0.23.0:1:2:3:20")
+            .contains(&ReplacementBlocker::ListeningPort));
+        drop(state);
+        let _ = fs::remove_file(path);
     }
 
     #[test]

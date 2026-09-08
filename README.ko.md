@@ -133,7 +133,7 @@ wsx-managed terminal 안에서는 plain `wsx`와 `wsx --mobile`이 nested TUI st
 - Owner-only socket과 peer-UID 검사로 다른 사용자의 접근을 거부합니다.
 - Pane마다 writable lease는 하나입니다. Event는 revision을 invalidate하고 client는 authoritative snapshot으로 복구합니다.
 - Message, frame, command, plugin, listener, resource count는 bounded입니다.
-- Compatible wsx version은 daemon 하나를 공유합니다. 교체는 다른 TUI build와 fresh authoritative `working` report가 사라질 때까지 기다립니다.
+- UI-only wsx release는 compatible daemon을 계속 사용합니다. 필요한 daemon 교체는 다른 daemon revision, fresh authoritative `working` report, foreground job, listening server가 사라질 때까지 기다립니다. 저장된 terminal command가 다시 시작되면 wsx가 한 번 알립니다.
 - Native resume은 검증된 provider reference로 새 process, PTY, terminal buffer를 만듭니다. Unsupported reference는 clean shell을 엽니다.
 - Remote access, live cross-version process handoff, graphics transport, marketplace, original-process 복원은 지원하지 않습니다.
 

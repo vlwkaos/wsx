@@ -278,6 +278,7 @@ pub struct Capabilities {
     pub process_restore: bool,
     pub lifecycle_coordination: bool,
     pub version_coordination: bool,
+    pub daemon_revision_coordination: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -296,6 +297,8 @@ pub struct DaemonLifecycle {
     pub binary_id: String,
     #[serde(default)]
     pub version: String,
+    #[serde(default)]
+    pub daemon_revision: u32,
     pub started_unix_ms: u64,
     pub phase: DaemonPhase,
     pub live_runtimes: usize,
@@ -316,6 +319,8 @@ pub struct TuiClientPresence {
     pub instance_id: u64,
     pub version: String,
     pub target_binary_id: String,
+    #[serde(default)]
+    pub target_daemon_revision: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,6 +335,9 @@ pub enum ReplacementDisposition {
 pub enum ReplacementBlocker {
     OtherTui,
     WorkingAgent,
+    ListenerScanPending,
+    ForegroundJob,
+    ListeningPort,
     LegacyDaemon,
     PendingTarget,
 }

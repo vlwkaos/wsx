@@ -225,6 +225,7 @@ mod tests {
         }));
         for (event, action) in [
             ("SessionStart", "idle"),
+            ("SessionEnd", "idle"),
             ("UserPromptSubmit", "working"),
             ("Stop", "done"),
         ] {
