@@ -367,7 +367,7 @@ fn sessions_for_worktree(
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let revision = session.revision.max(focused.revision);
+            let revision = session.revision;
             let outcome_acknowledged = panes
                 .iter()
                 .find(|pane| pane.pane_id == focused.id)
@@ -675,7 +675,7 @@ mod tests {
                     label: "split".into(),
                     agent: None,
                     exited: false,
-                    revision: 4,
+                    revision: 9,
                 },
             ],
             listening_ports: vec![
@@ -699,6 +699,8 @@ mod tests {
         assert_eq!(sessions[0].session_id, SessionId(3));
         assert_eq!(sessions[0].display_name, "shell");
         assert_eq!(sessions[0].pane_id, PaneId(6));
+        assert_eq!(sessions[0].revision, 4);
+        assert_eq!(sessions[0].panes[1].revision, 9);
         assert_eq!(sessions[0].panes.len(), 2);
         assert_eq!(sessions[0].panes[0].label, "primary");
         assert_eq!(sessions[0].panes[1].label, "split");

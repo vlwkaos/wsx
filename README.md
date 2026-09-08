@@ -133,7 +133,7 @@ Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed termin
 - Owner-only sockets and peer-UID checks reject cross-user access.
 - One writable lease owns each pane. Events invalidate revisions; clients reconcile from authoritative snapshots.
 - Messages, frames, commands, plugins, listeners, and resource counts are bounded.
-- Compatible wsx versions share one daemon. Replacement waits for other TUI builds and fresh authoritative `working` reports to clear.
+- UI-only wsx releases reuse the compatible daemon. Required daemon replacement waits for other daemon revisions, fresh authoritative `working` reports, foreground jobs, and listening servers to clear. wsx reports once when saved terminal commands restart.
 - Native resume creates a new process, PTY, and terminal buffer from a validated provider reference. Unsupported references open a clean shell.
 - Remote access, live cross-version process handoff, graphics transport, marketplace installation, and original-process restoration are not supported.
 

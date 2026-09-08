@@ -16,6 +16,8 @@ pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 pub const WSX_PANE_ID_ENV: &str = "WSX_PANE_ID";
 pub const WSX_RUNTIME_GENERATION_ENV: &str = "WSX_RUNTIME_GENERATION";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
+// ^ Bump only when daemon-owned runtime behavior changes. UI-only releases reuse wsxd.
+pub const DAEMON_REVISION: u32 = 1;
 
 pub fn compare_wsx_versions(left: &str, right: &str) -> Option<Ordering> {
     let left = parse_wsx_version(left)?;
@@ -297,6 +299,8 @@ pub enum Request {
     LifecycleStatus,
     PrepareReplacement {
         target_binary_id: String,
+        #[serde(default)]
+        target_daemon_revision: u32,
     },
     Shutdown,
 }
@@ -449,6 +453,7 @@ mod tests {
         assert!(!capabilities.listening_ports);
         assert!(!capabilities.foreground_jobs);
         assert!(!capabilities.lifecycle_coordination);
+        assert!(!capabilities.daemon_revision_coordination);
     }
 
     #[test]
@@ -522,6 +527,7 @@ mod tests {
             Response::Lifecycle(DaemonLifecycle {
                 binary_id,
                 version,
+                daemon_revision: 0,
                 started_unix_ms: 11,
                 active_tuis: 0,
                 replacement_target,
@@ -555,6 +561,7 @@ mod tests {
     fn lifecycle_control_is_additive_and_tagged() {
         let request = Request::PrepareReplacement {
             target_binary_id: "0.22.0:1:2:3:4".into(),
+            target_daemon_revision: DAEMON_REVISION,
         };
         let encoded = serde_json::to_string(&request).unwrap();
         assert_eq!(serde_json::from_str::<Request>(&encoded).unwrap(), request);
@@ -564,6 +571,7 @@ mod tests {
             epoch: 7,
             binary_id: "0.21.0:1:2:3:4".into(),
             version: "0.21.0".into(),
+            daemon_revision: DAEMON_REVISION,
             started_unix_ms: 11,
             phase: DaemonPhase::ReplacementPending,
             live_runtimes: 2,
