@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## [0.22.2] - 2026-09-07
+
+### Bug Fixes
+
+- Preserve cached project expansion when a legacy daemon cannot provide authoritative activity timestamps, while continuing to auto-collapse projects with known stale activity.
+- Tell users to stop a legacy daemon explicitly when its persistent terminal runtimes prevent automatic replacement, and explain that saved sessions restart on the next launch.
 
 ## [0.22.1] - 2026-09-07
 
