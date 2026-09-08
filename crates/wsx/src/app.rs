@@ -8730,11 +8730,11 @@ mod tests {
     #[test]
     fn runtime_version_notices_explain_direction_and_blockers() {
         let newer = runtime_availability_notice(&runtime::Availability::NewerDaemon {
-            daemon_version: "0.23.0".into(),
+            daemon_version: "99.0.0".into(),
         })
         .unwrap()
         .1;
-        assert!(newer.contains("open wsx 0.23.0"), "{newer}");
+        assert!(newer.contains("open wsx 99.0.0"), "{newer}");
 
         let deferred = runtime_availability_notice(&runtime::Availability::ReplacementDeferred {
             daemon_version: "0.22.0".into(),
