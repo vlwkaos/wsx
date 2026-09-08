@@ -3939,8 +3939,12 @@ impl App {
             .unwrap_or(ratatui::layout::Size::new(80, 24));
         let area = Rect::new(0, 0, size.width, size.height);
         let mobile = self.force_mobile || size.width < 60;
-        let viewport =
-            crate::ui::layout::terminal_viewport(area, mobile, self.effective_terminal_sidebar());
+        let viewport = crate::ui::layout::terminal_viewport(
+            area,
+            mobile,
+            self.effective_terminal_sidebar(),
+            self.config.terminal_title_position,
+        );
         (viewport.height.max(1), viewport.width.max(1))
     }
 
@@ -7939,7 +7943,15 @@ mod tests {
 
         assert_eq!(app.tree_area, Rect::new(0, 1, 2, 8));
         assert_eq!(app.preview_area, Rect::new(2, 1, 78, 8));
-        assert_eq!(app.terminal_area, Rect::new(2, 2, 78, 7));
+        assert_eq!(app.terminal_area, Rect::new(2, 1, 78, 7));
+        let bottom_title = (2..80)
+            .map(|x| terminal.backend().buffer()[(x, 8)].symbol())
+            .collect::<String>();
+        assert!(bottom_title.contains("compact"), "{bottom_title:?}");
+        let footer = (0..80)
+            .map(|x| terminal.backend().buffer()[(x, 9)].symbol())
+            .collect::<String>();
+        assert!(footer.contains("TERMINAL"), "{footer:?}");
         assert_eq!(terminal.backend().buffer()[(0, 2)].symbol(), "·");
         assert_eq!(terminal.backend().buffer()[(0, 3)].symbol(), "▾");
         assert_eq!(terminal.backend().buffer()[(0, 4)].symbol(), "◐");
@@ -7958,6 +7970,32 @@ mod tests {
                 crate::ui::theme::DIVIDER
             );
         }
+
+        app.mode = Mode::Workspace;
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.terminal_area, Rect::new(32, 1, 48, 7));
+        let workspace_bottom_title = (32..80)
+            .map(|x| terminal.backend().buffer()[(x, 8)].symbol())
+            .collect::<String>();
+        assert!(
+            workspace_bottom_title.contains("compact"),
+            "{workspace_bottom_title:?}"
+        );
+
+        app.config.terminal_title_position = wsx_core::config::global::TerminalTitlePosition::Top;
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.terminal_area, Rect::new(32, 2, 48, 7));
+        let workspace_top_title = (32..80)
+            .map(|x| terminal.backend().buffer()[(x, 1)].symbol())
+            .collect::<String>();
+        assert!(
+            workspace_top_title.contains("compact"),
+            "{workspace_top_title:?}"
+        );
     }
 
     #[test]
@@ -8234,7 +8272,7 @@ mod tests {
     }
 
     #[test]
-    fn mobile_terminal_mode_keeps_global_header_and_breadcrumb_above_viewport() {
+    fn mobile_terminal_mode_places_title_without_changing_viewport_size() {
         let mut project = make_project("mobile-terminal");
         let mut worktree = make_worktree("/tmp/mobile-terminal");
         let session = make_sess(false, runtime::AgentState::Idle);
@@ -8312,7 +8350,14 @@ mod tests {
         assert_eq!(app.tree_area, Rect::default());
         assert_eq!(app.group_header_area, Rect::new(0, 0, 56, 1));
         assert_eq!(app.preview_area, Rect::new(0, 1, 56, 14));
-        assert_eq!(app.terminal_area, Rect::new(0, 2, 56, 13));
+        assert_eq!(app.terminal_area, Rect::new(0, 1, 56, 13));
+        let bottom_title = (0..56)
+            .map(|x| terminal.backend().buffer()[(x, 14)].symbol())
+            .collect::<String>();
+        assert!(
+            bottom_title.contains("mobile-terminal ›"),
+            "{bottom_title:?}"
+        );
         let rendered = terminal
             .backend()
             .buffer()
@@ -8324,6 +8369,16 @@ mod tests {
         assert!(rendered.contains("mobile-terminal ›"), "{rendered:?}");
         assert!(rendered.contains("hello"), "{rendered:?}");
         assert!(!rendered.contains(")sidebar"), "{rendered:?}");
+
+        app.config.terminal_title_position = wsx_core::config::global::TerminalTitlePosition::Top;
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.terminal_area, Rect::new(0, 2, 56, 13));
+        let top_title = (0..56)
+            .map(|x| terminal.backend().buffer()[(x, 1)].symbol())
+            .collect::<String>();
+        assert!(top_title.contains("mobile-terminal ›"), "{top_title:?}");
     }
 
     #[test]

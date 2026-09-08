@@ -191,7 +191,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         app.current_selection(),
         Selection::Session(..) | Selection::Pane(..)
     );
-    let terminal_layout = has_terminal_preview.then(|| TerminalLayout::new(preview_area));
+    let terminal_layout = has_terminal_preview
+        .then(|| TerminalLayout::new(preview_area, app.config.terminal_title_position));
     app.terminal_area = terminal_layout.map_or(Rect::default(), |layout| layout.viewport);
     let terminal_breadcrumb_area =
         terminal_layout.map_or(Rect::default(), |layout| layout.breadcrumb);

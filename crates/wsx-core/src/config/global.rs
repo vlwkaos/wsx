@@ -128,6 +128,14 @@ pub enum TerminalSidebar {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum TerminalTitlePosition {
+    Top,
+    #[default]
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PortVisibility {
     Hidden,
     #[default]
@@ -176,6 +184,8 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub terminal_sidebar: TerminalSidebar,
     #[serde(default)]
+    pub terminal_title_position: TerminalTitlePosition,
+    #[serde(default)]
     pub port_visibility: PortVisibility,
 }
 
@@ -192,6 +202,7 @@ impl Default for GlobalConfig {
             notification_timeout_seconds: default_notification_timeout_seconds(),
             show_release_status: default_show_release_status(),
             terminal_sidebar: TerminalSidebar::default(),
+            terminal_title_position: TerminalTitlePosition::default(),
             port_visibility: PortVisibility::default(),
         }
     }
@@ -248,6 +259,8 @@ struct GlobalConfigWire {
     show_release_status: bool,
     #[serde(default)]
     terminal_sidebar: TerminalSidebar,
+    #[serde(default)]
+    terminal_title_position: TerminalTitlePosition,
     #[serde(default)]
     port_visibility: PortVisibility,
 }
@@ -327,6 +340,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
             notification_timeout_seconds: wire.notification_timeout_seconds,
             show_release_status: wire.show_release_status,
             terminal_sidebar: wire.terminal_sidebar,
+            terminal_title_position: wire.terminal_title_position,
             port_visibility: wire.port_visibility,
         };
         config.migrate_reserved_names();
@@ -835,22 +849,31 @@ mod tests {
         assert!(defaulted.show_release_status);
         assert!(defaulted.wake_mode);
         assert_eq!(defaulted.terminal_sidebar, TerminalSidebar::Compact);
+        assert_eq!(
+            defaulted.terminal_title_position,
+            TerminalTitlePosition::Bottom
+        );
         assert_eq!(defaulted.port_visibility, PortVisibility::NonAgentic);
         assert!(!defaulted.port_visibility.shows_session(true));
         assert!(defaulted.port_visibility.shows_session(false));
 
         let configured: GlobalConfig = toml::from_str(
-            "show_release_status = false\nwake_mode = false\nterminal_sidebar = \"expanded\"\nport_visibility = \"all\"\n",
+            "show_release_status = false\nwake_mode = false\nterminal_sidebar = \"expanded\"\nterminal_title_position = \"top\"\nport_visibility = \"all\"\n",
         )
         .unwrap();
         assert!(!configured.show_release_status);
         assert!(!configured.wake_mode);
         assert_eq!(configured.terminal_sidebar, TerminalSidebar::Expanded);
+        assert_eq!(
+            configured.terminal_title_position,
+            TerminalTitlePosition::Top
+        );
         assert_eq!(configured.port_visibility, PortVisibility::All);
         assert!(configured.port_visibility.shows_session(true));
 
         assert!(toml::from_str::<GlobalConfig>("port_visibility = \"sometimes\"\n").is_err());
         assert!(toml::from_str::<GlobalConfig>("terminal_sidebar = \"sometimes\"\n").is_err());
+        assert!(toml::from_str::<GlobalConfig>("terminal_title_position = \"middle\"\n").is_err());
     }
 
     #[test]
