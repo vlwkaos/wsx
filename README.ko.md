@@ -104,9 +104,16 @@ copy:
   exclude: [target]
 git:
   subtrees: [vendor/asched, vendor/herdr]
+worktree:
+  branchPrefix: feature/
+  defaultSession:
+    enabled: true
+    command: cargo watch
 ```
 
-wsx는 file을 검증하고 unknown field와 unsafe subtree path를 거부합니다. Canonical YAML이 없을 때만 legacy `.gtrconfig`를 migration합니다.
+`branchPrefix`는 편집 가능한 TUI branch 입력란을 미리 채우며 CLI branch 인자는 그대로 사용합니다. 명시적인 `defaultSession`은 TUI와 CLI worktree 생성에 모두 적용됩니다. `command`를 생략하면 shell session을 엽니다. 이 block이 없으면 기존 동작을 유지합니다. TUI는 worktree만 만들고 CLI는 shell session도 만듭니다. Command는 새 shell에 자동으로 입력되므로 신뢰하지 않는 repository에서 worktree를 만들기 전에 project config를 확인합니다.
+
+wsx는 file을 검증하고 unknown field, 크기 제한을 벗어난 worktree default, unsafe subtree path를 거부합니다. Canonical YAML이 없을 때만 legacy `.gtrconfig`를 migration합니다.
 
 ## CLI
 
