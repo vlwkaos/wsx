@@ -105,6 +105,18 @@ struct PendingTerminalResume {
     snapshot_ready: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalControlIntent {
+    Explicit,
+    Resume,
+}
+
+impl TerminalControlIntent {
+    fn takeover(self) -> bool {
+        matches!(self, Self::Explicit)
+    }
+}
+
 // ── Git concurrency limiter ───────────────────────────────────────────────────
 
 /// Counting semaphore — limits concurrent git-info subprocesses to CPU count.
@@ -641,6 +653,20 @@ fn terminal_stream_error_notice(error: &std::io::Error, target: &str) -> String 
         })
         .unwrap_or_else(|| format!("Terminal stream failed: {detail}"));
     format!("{title}\nTarget: {target}")
+}
+
+fn terminal_stream_failure_notice(error: &runtime::ApiError) -> (NoticeLevel, String) {
+    if error.code == "lease_transferred" {
+        (
+            NoticeLevel::Warning,
+            "Terminal control moved to another wsx instance".into(),
+        )
+    } else {
+        (
+            NoticeLevel::Error,
+            format!("Terminal stream: {}: {}", error.code, error.message),
+        )
+    }
 }
 
 fn filter_pending_deletions(
@@ -1525,10 +1551,12 @@ impl App {
                     self.terminal_stream = None;
                     self.pending_terminal_entry = None;
                     self.mode = Mode::Workspace;
-                    self.set_error(format!(
-                        "Terminal stream: {}: {}",
-                        error.code, error.message
-                    ));
+                    let (level, message) = terminal_stream_failure_notice(&error);
+                    match level {
+                        NoticeLevel::Warning => self.set_warning(message),
+                        NoticeLevel::Error => self.set_error(message),
+                        NoticeLevel::Info | NoticeLevel::Success => self.set_status(message),
+                    }
                     break;
                 }
                 runtime::TerminalServerMessage::Exited => {
@@ -1806,7 +1834,7 @@ impl App {
             &self.runtime_client,
             pane_id,
             self.terminal_controller_id,
-            true,
+            TerminalControlIntent::Resume.takeover(),
             rows,
             cols,
         ) {
@@ -1824,7 +1852,11 @@ impl App {
             }
             Err(error) => {
                 self.mode = Mode::Workspace;
-                self.set_error(format!("Terminal resume failed: {error}"));
+                if error.to_string().starts_with("terminal_busy:") {
+                    self.set_warning("Terminal control is active in another wsx instance");
+                } else {
+                    self.set_error(format!("Terminal resume failed: {error}"));
+                }
             }
         }
     }
@@ -2816,6 +2848,7 @@ impl App {
         hints.extend([
             hint(&workspace.to_ascii_lowercase(), "workspace"),
             hint("j/k/↑↓", "session"),
+            hint("{/}", "group"),
             crate::ui::IDLE_ITERATION_HINT.to_string(),
             crate::ui::ACTIVE_ITERATION_HINT.to_string(),
             crate::ui::ATTENTION_ITERATION_HINT.to_string(),
@@ -3230,6 +3263,8 @@ impl App {
                     | Action::PrevAttention
                     | Action::NextSession
                     | Action::PrevSession
+                    | Action::GroupNext
+                    | Action::GroupPrev
             )
         {
             return Ok(());
@@ -3254,6 +3289,8 @@ impl App {
             Action::PrevAttention => self.action_switch_attention(-1, terminal)?,
             Action::NextSession => self.action_switch_sibling_session(1, terminal)?,
             Action::PrevSession => self.action_switch_sibling_session(-1, terminal)?,
+            Action::GroupNext => self.action_switch_group(1, terminal)?,
+            Action::GroupPrev => self.action_switch_group(-1, terminal)?,
             Action::TerminalKey(key) => self.send_terminal_keys([key]),
             Action::TerminalKeys(keys) => self.send_terminal_keys(keys),
             Action::TerminalPaste(text) => {
@@ -4122,7 +4159,7 @@ impl App {
             &self.runtime_client,
             pane_id,
             self.terminal_controller_id,
-            false,
+            TerminalControlIntent::Explicit.takeover(),
             rows,
             cols,
         ) {
@@ -4906,6 +4943,51 @@ impl App {
     fn action_switch_attention(&mut self, dir: isize, terminal: &mut Tui) -> Result<()> {
         let Some(target) = self.attention_target(dir) else {
             self.set_status("No sessions need attention");
+            return Ok(());
+        };
+        self.switch_to_flat_session(target, terminal)
+    }
+
+    fn action_switch_group(&mut self, dir: isize, terminal: &mut Tui) -> Result<()> {
+        let groups = self.config.ordered_group_keys();
+        let Some(group) = adjacent_group(&groups, &self.active_group, dir) else {
+            self.set_status("No other groups");
+            return Ok(());
+        };
+        let Some((project_idx, worktree_idx, session_idx)) =
+            preferred_group_session(&self.config, &self.workspace, &group)
+        else {
+            self.set_status(format!(
+                "No attention or idle agent sessions in group '{}'",
+                crate::ui::workspace_nav::group_label(&group)
+            ));
+            return Ok(());
+        };
+
+        self.set_active_group(group);
+        self.manually_expand_project(project_idx);
+        if let Some(worktree) = self
+            .workspace
+            .projects
+            .get_mut(project_idx)
+            .and_then(|project| project.worktrees.get_mut(worktree_idx))
+        {
+            worktree.expanded = true;
+        }
+        self.mark_dirty();
+        self.rebuild_flat();
+        let target = self.flat().iter().position(|entry| {
+            matches!(
+                entry,
+                FlatEntry::Session {
+                    project_idx: pi,
+                    worktree_idx: wi,
+                    session_idx: si,
+                } if *pi == project_idx && *wi == worktree_idx && *si == session_idx
+            )
+        });
+        let Some(target) = target else {
+            self.set_error("Group session could not be selected");
             return Ok(());
         };
         self.switch_to_flat_session(target, terminal)
@@ -5778,6 +5860,59 @@ fn compute_visible_projects(
         .collect()
 }
 
+fn adjacent_group(groups: &[GroupKey], current: &GroupKey, dir: isize) -> Option<GroupKey> {
+    if groups.len() <= 1 {
+        return None;
+    }
+    let current = groups
+        .iter()
+        .position(|group| group == current)
+        .unwrap_or(0);
+    let target = if dir >= 0 {
+        (current + 1) % groups.len()
+    } else {
+        current.checked_sub(1).unwrap_or(groups.len() - 1)
+    };
+    groups.get(target).cloned()
+}
+
+fn first_group_session(
+    config: &GlobalConfig,
+    workspace: &WorkspaceState,
+    group: &GroupKey,
+    matches: impl Fn(&wsx_core::model::workspace::SessionInfo) -> bool,
+) -> Option<(usize, usize, usize)> {
+    for (project_idx, project) in workspace.projects.iter().enumerate() {
+        if !project_matches_group(config.project_groups(&project.path), Some(group)) {
+            continue;
+        }
+        for (worktree_idx, worktree) in project.worktrees.iter().enumerate() {
+            for (session_idx, session) in worktree.sessions.iter().enumerate() {
+                if matches(session) {
+                    return Some((project_idx, worktree_idx, session_idx));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn preferred_group_session(
+    config: &GlobalConfig,
+    workspace: &WorkspaceState,
+    group: &GroupKey,
+) -> Option<(usize, usize, usize)> {
+    first_group_session(config, workspace, group, |session| {
+        session_state::derive(session).app_state() == AppSessionState::NeedsAttention
+    })
+    .or_else(|| {
+        first_group_session(config, workspace, group, |session| {
+            session.agent.is_some()
+                && session_state::derive(session).app_state() == AppSessionState::Idle
+        })
+    })
+}
+
 fn cyclic_sibling_index(current: usize, count: usize, dir: isize) -> Option<usize> {
     if count <= 1 || current >= count {
         return None;
@@ -6325,6 +6460,32 @@ mod tests {
             }
         ));
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn terminal_control_intent_transfers_only_for_explicit_entry() {
+        assert!(TerminalControlIntent::Explicit.takeover());
+        assert!(!TerminalControlIntent::Resume.takeover());
+    }
+
+    #[test]
+    fn adjacent_group_wraps_in_both_directions_and_rejects_a_single_group() {
+        let groups = vec![
+            GroupKey::Ungrouped,
+            GroupKey::Named("work".into()),
+            GroupKey::Named("personal".into()),
+        ];
+
+        assert_eq!(
+            adjacent_group(&groups, &groups[2], 1),
+            Some(groups[0].clone())
+        );
+        assert_eq!(
+            adjacent_group(&groups, &groups[0], -1),
+            Some(groups[2].clone())
+        );
+        assert_eq!(adjacent_group(&groups[..1], &groups[0], 1), None);
+        assert_eq!(adjacent_group(&groups[..1], &groups[0], -1), None);
     }
 
     #[test]
@@ -7764,6 +7925,73 @@ mod tests {
         session
     }
 
+    fn preferred_session_fixture(
+        sessions: Vec<wsx_core::model::workspace::SessionInfo>,
+    ) -> (GlobalConfig, WorkspaceState, GroupKey) {
+        let mut project = make_project("preferred");
+        project.expanded = false;
+        let mut worktree = make_worktree("/tmp/preferred");
+        worktree.expanded = false;
+        worktree.sessions = sessions;
+        project.worktrees = vec![worktree];
+        (
+            GlobalConfig {
+                groups: vec!["target".into()],
+                projects: vec![make_project_entry("preferred", Some("target"))],
+                ..GlobalConfig::default()
+            },
+            WorkspaceState {
+                projects: vec![project],
+            },
+            GroupKey::Named("target".into()),
+        )
+    }
+
+    #[test]
+    fn preferred_group_session_ignores_collapse_and_prioritizes_attention_over_idle() {
+        let (config, workspace, group) = preferred_session_fixture(vec![
+            make_sess_with_id(1, runtime::AgentState::Idle),
+            make_sess_with_id(2, runtime::AgentState::Blocked),
+            make_sess_with_id(3, runtime::AgentState::Done),
+        ]);
+
+        assert_eq!(
+            preferred_group_session(&config, &workspace, &group),
+            Some((0, 0, 1))
+        );
+    }
+
+    #[test]
+    fn preferred_group_session_falls_back_to_first_agentic_idle() {
+        let mut agentless_idle = make_sess_with_id(1, runtime::AgentState::Idle);
+        agentless_idle.agent = None;
+        agentless_idle.panes[0].agent = None;
+        let (config, workspace, group) = preferred_session_fixture(vec![
+            agentless_idle,
+            make_sess_with_id(2, runtime::AgentState::Working),
+            make_sess_with_id(3, runtime::AgentState::Idle),
+            make_sess_with_id(4, runtime::AgentState::Idle),
+        ]);
+
+        assert_eq!(
+            preferred_group_session(&config, &workspace, &group),
+            Some((0, 0, 2))
+        );
+    }
+
+    #[test]
+    fn preferred_group_session_rejects_agentless_idle_and_active_only_groups() {
+        let mut agentless_idle = make_sess_with_id(1, runtime::AgentState::Idle);
+        agentless_idle.agent = None;
+        agentless_idle.panes[0].agent = None;
+        let (config, workspace, group) = preferred_session_fixture(vec![
+            agentless_idle,
+            make_sess_with_id(2, runtime::AgentState::Working),
+        ]);
+
+        assert_eq!(preferred_group_session(&config, &workspace, &group), None);
+    }
+
     fn make_navigation_test_app() -> App {
         let mut project = make_project("navigation");
         let mut worktree = make_worktree("./navigation");
@@ -8251,6 +8479,7 @@ mod tests {
                 "(alt+g)commands",
                 "(z)workspace",
                 "(j/k/↑↓)session",
+                "({/})group",
                 crate::ui::IDLE_ITERATION_HINT,
                 crate::ui::ACTIVE_ITERATION_HINT,
                 crate::ui::ATTENTION_ITERATION_HINT,
@@ -8287,6 +8516,7 @@ mod tests {
                 "(esc)cancel",
                 "(z)workspace",
                 "(j/k/↑↓)session",
+                "({/})group",
                 crate::ui::IDLE_ITERATION_HINT,
                 crate::ui::ACTIVE_ITERATION_HINT,
                 crate::ui::ATTENTION_ITERATION_HINT,
@@ -9150,6 +9380,29 @@ mod tests {
             app.expire_notice(started + Duration::from_secs(2));
             assert!(app.notice.is_none());
         }
+    }
+
+    #[test]
+    fn terminal_stream_transfer_projects_to_an_exact_warning() {
+        let (level, message) = terminal_stream_failure_notice(&runtime::ApiError::new(
+            "lease_transferred",
+            "replacement controller acquired the pane",
+        ));
+
+        assert_eq!(level, NoticeLevel::Warning);
+        assert_eq!(message, "Terminal control moved to another wsx instance");
+    }
+
+    #[test]
+    fn non_transfer_terminal_stream_failure_remains_an_error_with_details() {
+        let error = runtime::ApiError::new("stream_disconnected", "socket closed");
+        let (level, message) = terminal_stream_failure_notice(&error);
+
+        assert_eq!(level, NoticeLevel::Error);
+        assert_eq!(
+            message,
+            "Terminal stream: stream_disconnected: socket closed"
+        );
     }
 
     #[test]

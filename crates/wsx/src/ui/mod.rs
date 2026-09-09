@@ -913,6 +913,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "$terminal_escape",
         "$terminal_quit",
         "$terminal_session",
+        "$terminal_group",
         "$terminal_idle",
         "$terminal_active",
         "$terminal_attention",
@@ -923,7 +924,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  T             Open scrollable Groups sidebar",
         "  { / }         Switch to previous/next group",
         "  g             Assign selected project to a group",
-        "  a/r/d · J/K   Add/rename/delete · reorder in Groups",
+        "  a/r/d, J/K    Add, rename, delete, reorder in Groups",
         "",
         " Global",
         "  [ / ]         Jump to prev / next project",
@@ -952,6 +953,9 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
                 "$terminal_session" => app
                     .terminal_quit_label()
                     .map(|_| "  Prefix+k/j or ↑/↓  Previous / next sibling session".into()),
+                "$terminal_group" => app
+                    .terminal_quit_label()
+                    .map(|_| "  Prefix+{ / }  Previous / next group target".into()),
                 "$terminal_idle" => app
                     .terminal_quit_label()
                     .map(|_| "  Prefix+I / i  Previous / next idle session".into()),

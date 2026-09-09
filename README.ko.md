@@ -75,7 +75,7 @@ Installer는 관련 없는 hook을 보존하고 표준 config-directory override
 | Group | `T` 관리, `{`/`}` 전환, `g` 지정 |
 | Global | `/` 검색, `,` settings, `R` 새로고침, `?` 도움말, `q` TUI 종료, `Q` wsxd 종료 후 나가기 |
 
-Terminal mode는 기본 `Ctrl+A` prefix를 사용합니다. 이어서 `j/k`는 인접 session, `i/I`는 idle, `a/A`는 active, `n/N`은 attention session으로 이동합니다. `B`는 desktop sidebar 전환, `W`는 Workspace, `Q`는 TUI만 종료합니다. `Ctrl+A Ctrl+A`는 literal prefix를 보냅니다.
+Terminal mode는 기본 `Ctrl+A` prefix를 사용합니다. 이어서 `j/k`는 인접 session, `{`/`}`는 이전 또는 다음 group, `i/I`는 idle, `a/A`는 active, `n/N`은 attention session으로 이동합니다. Group 이동은 먼저 확인이 필요한 session을 선택하고, 없으면 첫 idle agent session을 선택합니다. 둘 다 없으면 현재 terminal을 유지합니다. `B`는 desktop sidebar 전환, `W`는 Workspace, `Q`는 TUI만 종료합니다. `Ctrl+A Ctrl+A`는 literal prefix를 보냅니다.
 
 Group은 순서가 있는 project filter입니다. 기본 **ungrouped** anti-group은 membership이 없는 project를 표시합니다. 설정한 시간 동안 trusted agent 작업이나 terminal 진입이 없으면 project는 stale이 됩니다. wsx는 terminal output이나 process tree로 agent 상태를 추론하지 않습니다.
 
@@ -141,7 +141,7 @@ wsx-managed terminal 안에서는 plain `wsx`와 `wsx --mobile`이 nested TUI st
 
 - wsxd는 login session이 아니라 host와 Unix user에 귀속됩니다. 동일 사용자의 SSH 재연결은 live PTY와 buffer를 재사용합니다.
 - Owner-only socket과 peer-UID 검사로 다른 사용자의 접근을 거부합니다.
-- Pane마다 writable lease는 하나입니다. Event는 revision을 invalidate하고 client는 authoritative snapshot으로 복구합니다.
+- Pane마다 writable lease는 하나입니다. 명시적으로 Terminal에 들어가면 가장 최근 wsx instance로 control이 이전되고, 이전 instance는 Workspace로 돌아갑니다. Lease generation은 이전 controller의 input, resize, heartbeat, selection, release를 거부합니다. Event는 revision을 invalidate하고 client는 authoritative snapshot으로 복구합니다.
 - Message, frame, command, plugin manifest와 view output, listener, resource count는 bounded입니다.
 - UI-only wsx release는 compatible daemon을 계속 사용합니다. 필요한 daemon 교체는 다른 daemon revision, fresh authoritative `working` report, foreground job, listening server가 사라질 때까지 기다립니다. 저장된 terminal command가 다시 시작되면 wsx가 한 번 알립니다.
 - Native resume은 검증된 provider reference로 새 process, PTY, terminal buffer를 만듭니다. Unsupported reference는 clean shell을 엽니다.

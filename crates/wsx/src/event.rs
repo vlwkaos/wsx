@@ -105,6 +105,8 @@ pub(crate) enum TerminalEscapeAction {
     PrevAttention,
     NextSession,
     PrevSession,
+    NextGroup,
+    PrevGroup,
     Cancel,
     Forward(Vec<KeyEvent>),
     Pending,
@@ -129,7 +131,7 @@ impl EscapeSequence {
                 let suffix = KeyChord::parse(part, false)?;
                 if matches!(
                     suffix.code,
-                    KeyCode::Char('a' | 'b' | 'i' | 'j' | 'k' | 'n' | 'q')
+                    KeyCode::Char('a' | 'b' | 'i' | 'j' | 'k' | 'n' | 'q' | '{' | '}')
                 ) {
                     return None;
                 }
@@ -190,6 +192,10 @@ impl EscapeSequence {
                 || self.matches_prefixed_code(key, KeyCode::Up)
             {
                 TerminalEscapeAction::PrevSession
+            } else if self.matches_prefixed_shifted_char(key, '}') {
+                TerminalEscapeAction::NextGroup
+            } else if self.matches_prefixed_shifted_char(key, '{') {
+                TerminalEscapeAction::PrevGroup
             } else if suffix.matches_after_prefix(key, &self.prefix) {
                 TerminalEscapeAction::Escape
             } else {
@@ -241,7 +247,7 @@ impl EscapeSequence {
         key.code == code && (key.modifiers.is_empty() || key.modifiers == self.prefix.modifiers)
     }
 
-    fn matches_prefixed_uppercase(&self, key: KeyEvent, value: char) -> bool {
+    fn matches_prefixed_shifted_char(&self, key: KeyEvent, value: char) -> bool {
         key.code == KeyCode::Char(value)
             && [
                 KeyModifiers::NONE,
@@ -252,13 +258,17 @@ impl EscapeSequence {
             .contains(&key.modifiers)
     }
 
+    fn matches_prefixed_uppercase(&self, key: KeyEvent, value: char) -> bool {
+        self.matches_prefixed_shifted_char(key, value)
+    }
+
     fn matches_prefixed_terminal_command(&self, key: KeyEvent) -> bool {
         ['a', 'b', 'i', 'n']
             .into_iter()
             .any(|value| self.matches_prefixed_char(key, value))
-            || ['A', 'I', 'N']
+            || ['A', 'I', 'N', '{', '}']
                 .into_iter()
-                .any(|value| self.matches_prefixed_uppercase(key, value))
+                .any(|value| self.matches_prefixed_shifted_char(key, value))
     }
 
     fn take_pending_prefix(&mut self) -> Option<KeyEvent> {
@@ -334,6 +344,8 @@ pub fn poll_event(
                 TerminalEscapeAction::PrevAttention => Action::PrevAttention,
                 TerminalEscapeAction::NextSession => Action::NextSession,
                 TerminalEscapeAction::PrevSession => Action::PrevSession,
+                TerminalEscapeAction::NextGroup => Action::GroupNext,
+                TerminalEscapeAction::PrevGroup => Action::GroupPrev,
                 TerminalEscapeAction::Cancel => Action::None,
                 TerminalEscapeAction::Forward(keys) if keys.len() == 1 => {
                     Action::TerminalKey(keys[0])
@@ -517,7 +529,7 @@ mod tests {
     fn escape_sequence_reserves_terminal_command_suffixes() {
         for suffix in [
             "a", "shift+a", "b", "shift+b", "i", "shift+i", "j", "shift+j", "k", "shift+k", "n",
-            "shift+n", "q", "shift+q",
+            "shift+n", "q", "shift+q", "{", "shift+{", "}", "shift+}",
         ] {
             assert!(
                 EscapeSequence::parse(&format!("ctrl+a {suffix}")).is_none(),
@@ -701,6 +713,32 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn prefixed_braces_are_consumed_as_distinct_group_navigation_commands() {
+        let prefix = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let mut sequence = EscapeSequence::parse("ctrl+a w").unwrap();
+        let mut actions = Vec::new();
+
+        for (character, modifiers) in [
+            ('}', KeyModifiers::SHIFT),
+            ('}', KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            ('{', KeyModifiers::SHIFT),
+            ('{', KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+        ] {
+            assert_eq!(sequence.terminal_key(prefix), TerminalEscapeAction::Pending);
+            let action = sequence.terminal_key(KeyEvent::new(KeyCode::Char(character), modifiers));
+            assert!(
+                !matches!(action, TerminalEscapeAction::Forward(_)),
+                "prefixed {character} with {modifiers:?} was forwarded"
+            );
+            actions.push(action);
+        }
+
+        assert_eq!(actions[0], actions[1]);
+        assert_eq!(actions[2], actions[3]);
+        assert_ne!(actions[0], actions[2]);
     }
 
     #[test]
