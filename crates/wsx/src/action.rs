@@ -6,6 +6,8 @@ pub enum Action {
     NavigateDown,
     NavigateLeft,
     NavigateRight,
+    PageUp,
+    PageDown,
     Select,
     AddProject,
     AddWorktree,

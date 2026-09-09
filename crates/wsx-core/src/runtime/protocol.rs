@@ -10,14 +10,15 @@ use std::{
 };
 
 // ^ [[Terminal Stream Protocol v3]] Wire-version history and compatibility boundaries.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 13;
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 pub const WSX_PANE_ID_ENV: &str = "WSX_PANE_ID";
 pub const WSX_RUNTIME_GENERATION_ENV: &str = "WSX_RUNTIME_GENERATION";
+pub const WSX_PLUGIN_VIEW_ENV: &str = "WSX_PLUGIN_VIEW_JSON";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ^ Bump only when daemon-owned runtime behavior changes. UI-only releases reuse wsxd.
-pub const DAEMON_REVISION: u32 = 1;
+pub const DAEMON_REVISION: u32 = 3;
 
 pub fn compare_wsx_versions(left: &str, right: &str) -> Option<Ordering> {
     let left = parse_wsx_version(left)?;
@@ -296,6 +297,24 @@ pub enum Request {
     },
     PluginList,
     PluginReload,
+    PluginReviewCancel {
+        request_id: String,
+    },
+    PluginReview {
+        plugin_id: String,
+        worktree_id: WorktreeId,
+        request_id: String,
+        comparison: super::ReviewComparison,
+        limits: super::ReviewLimits,
+        operation: super::ReviewOperation,
+    },
+    PluginRender {
+        plugin_id: String,
+        pane_id: PaneId,
+        columns: u16,
+        rows: u16,
+        generation: u64,
+    },
     LifecycleStatus,
     PrepareReplacement {
         target_binary_id: String,
@@ -356,6 +375,11 @@ pub enum Response {
         events: Vec<Event>,
     },
     Plugins(Vec<PluginManifest>),
+    PluginView(PluginSidecarView),
+    PluginReview {
+        epoch: u64,
+        response: super::ReviewResponse,
+    },
     Lifecycle(DaemonLifecycle),
     Replacement {
         disposition: ReplacementDisposition,
@@ -448,6 +472,7 @@ mod tests {
             panic!("expected hello response");
         };
         assert!(capabilities.pane_splits);
+        assert!(!capabilities.plugin_views);
         assert!(!capabilities.agent_session_restore);
         assert!(!capabilities.resume_shell_fallback);
         assert!(!capabilities.listening_ports);

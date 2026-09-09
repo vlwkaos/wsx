@@ -1,0 +1,13 @@
+{
+  "api_version": 1,
+  "id": "git-review",
+  "name": "Git review",
+  "command": ["./wsx-git-review.py"],
+  "events": [],
+  "enabled": true,
+  "worktree_review": {
+    "api_version": 1,
+    "priority": 0,
+    "comparisons": ["working_against_head"]
+  }
+}

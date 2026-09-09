@@ -737,6 +737,7 @@ mod tests {
                 pane_id: PaneId(6),
                 foreground_job: true,
             }],
+            plugin_sidecars: Vec::new(),
             capabilities: Capabilities::default(),
         };
         let sessions = sessions_for_worktree(&snapshot, Path::new("/repo"), &[]).unwrap();
@@ -897,6 +898,7 @@ mod tests {
             panes: Vec::new(),
             listening_ports: Vec::new(),
             pane_activity: Vec::new(),
+            plugin_sidecars: Vec::new(),
             capabilities: Capabilities::default(),
         }
     }

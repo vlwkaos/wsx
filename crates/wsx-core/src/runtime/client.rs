@@ -1573,6 +1573,7 @@ mod tests {
                     panes: Vec::new(),
                     listening_ports: Vec::new(),
                     pane_activity: Vec::new(),
+                    plugin_sidecars: Vec::new(),
                     capabilities: current_capabilities(),
                 }),
             );
@@ -1825,6 +1826,7 @@ mod tests {
                                 panes: vec![],
                                 listening_ports: vec![],
                                 pane_activity: vec![],
+                                plugin_sidecars: Vec::new(),
                                 capabilities: current_capabilities(),
                             }),
                         );

@@ -74,6 +74,7 @@ pub fn terminal_viewport(
     mobile: bool,
     sidebar: TerminalSidebar,
     title_position: TerminalTitlePosition,
+    sidecar_width: Option<u16>,
 ) -> Rect {
     let content = FrameLayout::new(area).content;
     let panel = if mobile {
@@ -86,6 +87,15 @@ pub fn terminal_viewport(
                 Constraint::Min(0),
             ])
             .split(content)[1]
+    };
+    let panel = match sidecar_width.filter(|width| *width > 0 && panel.width > *width) {
+        Some(width) => Rect::new(
+            panel.x,
+            panel.y,
+            panel.width.saturating_sub(width),
+            panel.height,
+        ),
+        None => panel,
     };
     TerminalLayout::new(panel, title_position).viewport
 }
@@ -131,6 +141,7 @@ mod tests {
                 true,
                 TerminalSidebar::Compact,
                 TerminalTitlePosition::Bottom,
+                None,
             ),
             Rect::new(0, 1, 80, 21)
         );
@@ -140,6 +151,7 @@ mod tests {
                 false,
                 TerminalSidebar::Compact,
                 TerminalTitlePosition::Bottom,
+                None,
             ),
             Rect::new(2, 1, 78, 21)
         );
@@ -149,6 +161,7 @@ mod tests {
                 false,
                 TerminalSidebar::Expanded,
                 TerminalTitlePosition::Bottom,
+                None,
             ),
             Rect::new(32, 1, 48, 21)
         );
@@ -163,12 +176,27 @@ mod tests {
                 false,
                 TerminalSidebar::Compact,
                 TerminalTitlePosition::Bottom,
+                None,
             );
             assert!(viewport.x >= area.x);
             assert!(viewport.right() <= area.right());
             assert!(viewport.y >= area.y);
             assert!(viewport.bottom() <= area.bottom());
         }
+    }
+
+    #[test]
+    fn sidecar_width_is_removed_from_the_authoritative_terminal_viewport() {
+        assert_eq!(
+            terminal_viewport(
+                Rect::new(0, 0, 160, 24),
+                false,
+                TerminalSidebar::Compact,
+                TerminalTitlePosition::Bottom,
+                Some(36),
+            ),
+            Rect::new(2, 1, 122, 21)
+        );
     }
 
     #[test]

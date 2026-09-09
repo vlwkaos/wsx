@@ -115,7 +115,21 @@ pub fn render_worktree_preview(
         .padding(Padding::new(2, 1, 1, 1))
         .title(format!(" {} ", title))
         .title_style(Style::default().bold());
+    let inner = block.inner(area);
 
+    let lines = worktree_preview_lines(worktree, inner, true);
+
+    let para = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(para, area);
+}
+
+pub(super) fn worktree_preview_lines(
+    worktree: &WorktreeInfo,
+    inner: Rect,
+    include_local: bool,
+) -> Vec<Line<'static>> {
     let label_style = Style::default().fg(theme::TEXT_SUBTLE);
 
     let mut lines = vec![
@@ -135,19 +149,35 @@ pub fn render_worktree_preview(
         ]),
     ];
 
-    let ports = worktree.listening_ports();
-    if !ports.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("Ports:   ", label_style),
-            Span::styled(
-                ports
-                    .iter()
-                    .map(|port| format!(":{port}"))
-                    .collect::<Vec<_>>()
-                    .join("  "),
-                Style::default().fg(theme::ACCENT),
-            ),
-        ]));
+    if !worktree.sessions.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("Sessions:", label_style)));
+        for session in &worktree.sessions {
+            let dot =
+                if session_state::derive(session).app_state() == AppSessionState::NeedsAttention {
+                    " ●"
+                } else {
+                    ""
+                };
+            lines.push(Line::from(Span::styled(
+                format!("  {}{}", session.display_name, dot),
+                Style::default().fg(theme::SUCCESS),
+            )));
+        }
+        let ports = worktree.listening_ports();
+        if !ports.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  Ports: ", label_style),
+                Span::styled(
+                    ports
+                        .iter()
+                        .map(|port| format!(":{port}"))
+                        .collect::<Vec<_>>()
+                        .join("  "),
+                    Style::default().fg(theme::ACCENT),
+                ),
+            ]));
+        }
     }
 
     if let Some(info) = &worktree.git_info {
@@ -220,40 +250,18 @@ pub fn render_worktree_preview(
             )));
         }
 
-        // ── Local changes ─────────────────────────────────────────────────────
-        lines.push(Line::from(""));
-        if info.modified_files.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled("Local:   ", label_style),
-                Span::styled("clean", Style::default().fg(theme::SUCCESS)),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled("Local:   ", label_style),
-                Span::styled(
-                    format!(
-                        "{} file{} modified",
-                        info.modified_files.len(),
-                        if info.modified_files.len() == 1 {
-                            ""
-                        } else {
-                            "s"
-                        }
+        // ── Recent commits ────────────────────────────────────────────────────
+        if !info.recent_commits.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("Commits:", label_style)));
+            for commit in &info.recent_commits {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {} ", commit.hash),
+                        Style::default().fg(theme::WARNING),
                     ),
-                    Style::default().fg(theme::WARNING),
-                ),
-            ]));
-            for f in info.modified_files.iter().take(5) {
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", f),
-                    Style::default().fg(theme::WARNING),
-                )));
-            }
-            if info.modified_files.len() > 5 {
-                lines.push(Line::from(Span::styled(
-                    format!("  … {} more", info.modified_files.len() - 5),
-                    Style::default().fg(theme::TEXT_SUBTLE),
-                )));
+                    Span::styled(commit.message.clone(), Style::default().fg(theme::TEXT)),
+                ]));
             }
         }
 
@@ -344,45 +352,84 @@ pub fn render_worktree_preview(
             }
         }
 
-        // ── Recent commits ────────────────────────────────────────────────────
-        if !info.recent_commits.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled("Commits:", label_style)));
-            for c in &info.recent_commits {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  {} ", c.hash),
-                        Style::default().fg(theme::WARNING),
-                    ),
-                    Span::styled(c.message.clone(), Style::default().fg(theme::TEXT)),
-                ]));
-            }
+        if include_local {
+            append_local_changes(
+                &mut lines,
+                &info.modified_files,
+                inner.width,
+                inner.height,
+                label_style,
+            );
         }
     }
 
-    if !worktree.sessions.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Sessions:",
+    lines
+}
+
+fn append_local_changes(
+    lines: &mut Vec<Line<'static>>,
+    modified_files: &[String],
+    width: u16,
+    height: u16,
+    label_style: Style,
+) {
+    lines.push(Line::from(""));
+    if modified_files.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("Local:   ", label_style),
+            Span::styled("clean", Style::default().fg(theme::SUCCESS)),
+        ]));
+        return;
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("Local:   ", label_style),
+        Span::styled(
+            format!(
+                "{} file{} modified",
+                modified_files.len(),
+                if modified_files.len() == 1 { "" } else { "s" }
+            ),
+            Style::default().fg(theme::WARNING),
+        ),
+    ]));
+
+    let width = usize::from(width.max(1));
+    let height = usize::from(height);
+    let line_height = |line: &Line<'static>| line.width().max(1).div_ceil(width);
+    let mut used = lines.iter().map(line_height).sum::<usize>();
+    let mut shown = 0;
+    for file in modified_files {
+        let file_line = Line::from(Span::styled(
+            format!("  {file}"),
+            Style::default().fg(theme::WARNING),
+        ));
+        let remaining = modified_files.len() - shown - 1;
+        let overflow_line = (remaining > 0).then(|| {
+            Line::from(Span::styled(
+                format!("  +{remaining} more"),
+                Style::default().fg(theme::TEXT_SUBTLE),
+            ))
+        });
+        let required = line_height(&file_line) + overflow_line.as_ref().map_or(0, &line_height);
+        if used.saturating_add(required) > height {
+            break;
+        }
+        used = used.saturating_add(line_height(&file_line));
+        lines.push(file_line);
+        shown += 1;
+    }
+
+    let remaining = modified_files.len() - shown;
+    if remaining > 0 {
+        let overflow = Line::from(Span::styled(
+            format!("  +{remaining} more"),
             Style::default().fg(theme::TEXT_SUBTLE),
-        )));
-        for s in &worktree.sessions {
-            let dot = if session_state::derive(s).app_state() == AppSessionState::NeedsAttention {
-                " ●"
-            } else {
-                ""
-            };
-            lines.push(Line::from(Span::styled(
-                format!("  {}{}", s.display_name, dot),
-                Style::default().fg(theme::SUCCESS),
-            )));
+        ));
+        if used.saturating_add(line_height(&overflow)) <= height {
+            lines.push(overflow);
         }
     }
-
-    let para = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
-    frame.render_widget(para, area);
 }
 
 pub fn render_terminal_preview(
@@ -770,7 +817,7 @@ mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
     use wsx_core::{
-        model::workspace::{GitInfo, SubmoduleInfo, SubtreeInfo},
+        model::workspace::{CommitSummary, GitInfo, SubmoduleInfo, SubtreeInfo},
         runtime::{
             AgentState, Cell, CellWidth, Cursor, PaneId, PaneLayout, SessionId, TerminalFrame,
             TerminalId, TerminalSelectionRange,
@@ -819,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn worktree_preview_separates_submodules_and_configured_subtrees() {
+    fn worktree_preview_orders_sections_and_uses_remaining_height_for_local_files() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let worktree = WorktreeInfo {
@@ -854,8 +901,13 @@ mod tests {
             }],
             expanded: true,
             git_info: Some(GitInfo {
-                recent_commits: vec![],
-                modified_files: vec!["ordinary.txt".into()],
+                recent_commits: vec![CommitSummary {
+                    hash: "abc1234".into(),
+                    message: "preview order".into(),
+                }],
+                modified_files: (1..=8)
+                    .map(|index| format!("ordinary-{index}.txt"))
+                    .collect(),
                 submodules: Some(vec![SubmoduleInfo {
                     path: "vendor/module".into(),
                     commit_state: SubmoduleCommitState::InSync,
@@ -890,13 +942,56 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("Ports:"), "{text:?}");
         assert!(text.contains(":5173"), "{text:?}");
-        assert!(text.contains("Local:"), "{text:?}");
-        assert!(text.contains("1 file modified"), "{text:?}");
-        assert!(text.contains("Submodules:"), "{text:?}");
+        assert!(text.contains("8 files modified"), "{text:?}");
+        assert!(text.contains("ordinary-6.txt"), "{text:?}");
+        assert!(!text.contains("ordinary-7.txt"), "{text:?}");
+        assert!(text.contains("+2 more"), "{text:?}");
         assert!(text.contains("vendor/module"), "{text:?}");
         assert!(text.contains("modified content"), "{text:?}");
-        assert!(text.contains("Subtrees:"), "{text:?}");
         assert!(text.contains("vendor/asched"), "{text:?}");
+
+        let positions = [
+            "Branch:",
+            "Path:",
+            "Sessions:",
+            "Ports:",
+            "Remote:",
+            "Commits:",
+            "Submodules:",
+            "Subtrees:",
+            "Local:",
+        ]
+        .map(|label| text.find(label).unwrap());
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn local_files_reserve_visible_overflow_row() {
+        let mut lines = Vec::new();
+        let files = (1..=8)
+            .map(|index| format!("file-{index}.txt"))
+            .collect::<Vec<_>>();
+
+        append_local_changes(
+            &mut lines,
+            &files,
+            40,
+            5,
+            Style::default().fg(theme::TEXT_SUBTLE),
+        );
+
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("file-1.txt"), "{text}");
+        assert!(text.contains("file-2.txt"), "{text}");
+        assert!(!text.contains("file-3.txt"), "{text}");
+        assert!(text.contains("+6 more"), "{text}");
     }
 
     #[test]
