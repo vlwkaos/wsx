@@ -6177,6 +6177,93 @@ mod tests {
         }
     }
 
+    #[test]
+    fn terminal_sidecar_is_width_gated_and_rejects_stale_views() {
+        let pane_id = runtime::PaneId(11);
+        let terminal_id = runtime::TerminalId(12);
+        let session = wsx_core::model::workspace::SessionInfo {
+            session_id: runtime::SessionId(10),
+            pane_id,
+            terminal_id,
+            agent: None,
+            display_name: "session".into(),
+            agent_status: runtime::AgentState::Idle,
+            revision: 1,
+            layout: runtime::PaneLayout::Leaf { pane_id },
+            panes: vec![wsx_core::model::workspace::PaneInfo {
+                pane_id,
+                terminal_id,
+                label: "terminal".into(),
+                agent: None,
+                agent_status: runtime::AgentState::Idle,
+                revision: 1,
+                exited: false,
+                listening_ports: Vec::new(),
+                foreground_job: false,
+                outcome_acknowledged: false,
+            }],
+            muted: false,
+            outcome_acknowledged: false,
+        };
+        let mut project = make_project("project");
+        let mut worktree = make_worktree("/repo");
+        worktree.sessions.push(session);
+        project.worktrees.push(worktree);
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        app.tree_selected = 2;
+        app.mode = Mode::Terminal { pane_id };
+        app.plugin_sidecars = vec![runtime::PluginSidecarDescriptor {
+            plugin_id: "example".into(),
+            title: "Example".into(),
+            spec: runtime::PluginSidecarSpec {
+                surface: runtime::PluginSurface::TerminalRight,
+                priority: 0,
+                minimum_columns: 120,
+                preferred_width: 36,
+                refresh_ms: 2_000,
+            },
+        }];
+        assert!(app.terminal_sidecar_descriptor(119, 117).is_none());
+        assert!(app.terminal_sidecar_descriptor(160, 158).is_some());
+
+        app.plugin_view_generation = 4;
+        app.terminal_surfaces
+            .activate_stream(7, pane_id, terminal_id);
+        app.terminal_surfaces
+            .install_full(7, test_terminal_frame(pane_id, terminal_id, 1, 10, 80));
+        let view = |epoch, generation| runtime::PluginSidecarView {
+            plugin_id: "example".into(),
+            title: "Example".into(),
+            epoch,
+            pane_id,
+            worktree_id: runtime::WorktreeId(2),
+            generation,
+            payload: runtime::PluginViewPayload {
+                empty: Some("clean".into()),
+                rows: Vec::new(),
+                remaining: 0,
+            },
+        };
+        app.apply_plugin_view(4, "example", pane_id, Ok(view(6, 4)));
+        assert!(
+            app.plugin_view.is_none(),
+            "old daemon epoch must be rejected"
+        );
+        app.apply_plugin_view(3, "example", pane_id, Ok(view(7, 3)));
+        assert!(
+            app.plugin_view.is_none(),
+            "old request generation must be rejected"
+        );
+        app.apply_plugin_view(4, "example", pane_id, Ok(view(7, 4)));
+        assert!(app.plugin_view.is_some());
+    }
+
     fn make_project_entry(
         name: &str,
         group: Option<&str>,
