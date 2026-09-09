@@ -224,6 +224,7 @@ struct Daemon {
     changed: Condvar,
     plugin_changed: Condvar,
     active_clients: Arc<AtomicUsize>,
+    review_jobs: plugins::review::Registry,
     epoch: u64,
     binary_id: String,
     started_unix_ms: u64,
@@ -620,6 +621,7 @@ pub fn run() -> io::Result<()> {
         changed: Condvar::new(),
         plugin_changed: Condvar::new(),
         active_clients: Arc::new(AtomicUsize::new(0)),
+        review_jobs: plugins::review::Registry::default(),
         epoch: epoch(),
         binary_id: binary_identity(&std::env::current_exe()?)?,
         started_unix_ms: unix_time_millis(),
@@ -1557,8 +1559,89 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
         Request::PluginReload => {
             let mut state = lock(&daemon.state);
             state.plugins = plugins::discover();
+            bump(daemon, &mut state, "plugins", 0);
             Ok(Response::Plugins(state.plugins.clone()))
         }
+        Request::PluginReviewCancel { request_id } => {
+            daemon.review_jobs.cancel(&request_id);
+            Ok(Response::Ack {
+                revision: lock(&daemon.state).revision,
+            })
+        }
+        Request::PluginReview {
+            plugin_id,
+            worktree_id,
+            request_id,
+            comparison,
+            limits,
+            operation,
+        } => {
+            let (plugin, path) = {
+                let state = lock(&daemon.state);
+                let plugin = state
+                    .plugins
+                    .iter()
+                    .find(|plugin| {
+                        plugin.enabled
+                            && plugin.id == plugin_id
+                            && plugin
+                                .worktree_review
+                                .as_ref()
+                                .is_some_and(|spec| spec.comparisons.contains(&comparison))
+                    })
+                    .cloned()
+                    .ok_or_else(|| api("plugin_unavailable", "review provider unavailable"))?;
+                let path = state
+                    .persisted
+                    .worktrees
+                    .iter()
+                    .find(|w| w.id == worktree_id)
+                    .map(|w| w.path.clone())
+                    .ok_or_else(|| api("worktree_not_found", "worktree unavailable"))?;
+                (plugin, path)
+            };
+            let request = ReviewRequest {
+                api_version: REVIEW_API_VERSION,
+                request_id,
+                worktree_id,
+                worktree_path: path,
+                comparison,
+                limits,
+                operation,
+            };
+            request
+                .validate()
+                .map_err(|message| api("invalid_review_request", message))?;
+            let cancelled = daemon
+                .review_jobs
+                .start(&request.request_id)
+                .map_err(|error| api("review_unavailable", error.to_string()))?;
+            let result = plugins::review::invoke(&plugin, &request, &cancelled);
+            daemon.review_jobs.finish(&request.request_id);
+            result
+                .map(|response| Response::PluginReview {
+                    epoch: daemon.epoch,
+                    response,
+                })
+                .map_err(|error| {
+                    api(
+                        match error.kind() {
+                            io::ErrorKind::TimedOut => "review_timeout",
+                            io::ErrorKind::Interrupted => "review_cancelled",
+                            io::ErrorKind::InvalidData => "review_invalid_output",
+                            _ => "review_unavailable",
+                        },
+                        error.to_string(),
+                    )
+                })
+        }
+        Request::PluginRender {
+            plugin_id,
+            pane_id,
+            columns,
+            rows,
+            generation,
+        } => render_plugin_view(daemon, plugin_id, pane_id, columns, rows, generation),
         Request::LifecycleStatus => {
             let mut state = lock(&daemon.state);
             Ok(Response::Lifecycle(lifecycle_status(daemon, &mut state)))
@@ -1580,10 +1663,71 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
     }
 }
 
+fn render_plugin_view(
+    daemon: &Daemon,
+    plugin_id: String,
+    pane_id: PaneId,
+    columns: u16,
+    rows: u16,
+    generation: u64,
+) -> Result<Response, ApiError> {
+    if !plugins::valid_token(&plugin_id) || columns == 0 || rows == 0 || columns > 500 || rows > 512
+    {
+        return Err(api(
+            "invalid_plugin_view",
+            "plugin view dimensions are invalid",
+        ));
+    }
+    let (plugin, worktree_id, worktree_path) = {
+        let state = lock(&daemon.state);
+        let plugin = state
+            .plugins
+            .iter()
+            .find(|plugin| plugin.enabled && plugin.id == plugin_id && plugin.sidecar.is_some())
+            .cloned()
+            .ok_or_else(|| api("plugin_unavailable", "plugin sidecar is unavailable"))?;
+        let pane = state
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .ok_or_else(|| api("pane_not_found", "pane does not exist"))?;
+        let session = state
+            .persisted
+            .sessions
+            .iter()
+            .find(|session| session.id == pane.session_id)
+            .ok_or_else(|| api("session_not_found", "session does not exist"))?;
+        let worktree = state
+            .persisted
+            .worktrees
+            .iter()
+            .find(|worktree| worktree.id == session.worktree_id)
+            .ok_or_else(|| api("worktree_not_found", "worktree does not exist"))?;
+        (plugin, worktree.id, worktree.path.clone())
+    };
+    plugins::render(
+        &plugin,
+        plugins::RenderContext {
+            pane_id,
+            worktree_id,
+            worktree_path: &worktree_path,
+            epoch: daemon.epoch,
+            columns,
+            rows,
+            generation,
+        },
+    )
+    .map(Response::PluginView)
+    .map_err(|error| api("plugin_view_failed", error.to_string()))
+}
+
 fn capabilities() -> Capabilities {
     Capabilities {
         pane_splits: true,
         plugins: true,
+        plugin_views: true,
+        worktree_review_available: false,
         agent_reports: true,
         agent_session_restore: true,
         resume_shell_fallback: true,
@@ -1792,6 +1936,11 @@ fn snapshot(daemon: &Daemon, state: &State) -> Snapshot {
         })
         .collect::<Vec<_>>();
     pane_activity.sort_by_key(|activity| activity.pane_id);
+    let mut capabilities = capabilities();
+    capabilities.worktree_review_available = state
+        .plugins
+        .iter()
+        .any(|p| p.enabled && p.worktree_review.is_some());
     Snapshot {
         protocol: PROTOCOL_VERSION,
         epoch: daemon.epoch,
@@ -1807,7 +1956,8 @@ fn snapshot(daemon: &Daemon, state: &State) -> Snapshot {
             .collect(),
         listening_ports,
         pane_activity,
-        capabilities: capabilities(),
+        plugin_sidecars: plugins::sidecars(&state.plugins),
+        capabilities,
     }
 }
 
@@ -3676,6 +3826,7 @@ mod tests {
             changed: Condvar::new(),
             plugin_changed: Condvar::new(),
             active_clients: Arc::new(AtomicUsize::new(0)),
+            review_jobs: plugins::review::Registry::default(),
             epoch: 1,
             binary_id: "0.22.0:1:1:1:10".into(),
             started_unix_ms: 1,

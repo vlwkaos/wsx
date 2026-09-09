@@ -9,7 +9,9 @@ pub mod integration_manager;
 pub mod layout;
 pub mod notice;
 pub mod picker;
+pub mod plugin_sidecar;
 pub mod preview;
+pub mod review;
 pub mod routine_editor;
 pub mod theme;
 pub mod workspace_nav;
@@ -187,12 +189,39 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
     app.tree_area = tree_area;
     app.preview_area = preview_area;
+    let sidecar = terminal_mode
+        .then(|| app.terminal_sidecar_descriptor(area.width, preview_area.width))
+        .flatten();
+    let (terminal_preview_area, plugin_area) = match &sidecar {
+        Some(descriptor) => {
+            let width = descriptor
+                .spec
+                .preferred_width
+                .min(preview_area.width.saturating_sub(60));
+            (
+                Rect::new(
+                    preview_area.x,
+                    preview_area.y,
+                    preview_area.width.saturating_sub(width),
+                    preview_area.height,
+                ),
+                Rect::new(
+                    preview_area.right().saturating_sub(width),
+                    preview_area.y,
+                    width,
+                    preview_area.height,
+                ),
+            )
+        }
+        None => (preview_area, Rect::default()),
+    };
+    app.plugin_area = plugin_area;
     let has_terminal_preview = matches!(
         app.current_selection(),
         Selection::Session(..) | Selection::Pane(..)
     );
     let terminal_layout = has_terminal_preview
-        .then(|| TerminalLayout::new(preview_area, app.config.terminal_title_position));
+        .then(|| TerminalLayout::new(terminal_preview_area, app.config.terminal_title_position));
     app.terminal_area = terminal_layout.map_or(Rect::default(), |layout| layout.viewport);
     let terminal_breadcrumb_area =
         terminal_layout.map_or(Rect::default(), |layout| layout.breadcrumb);
@@ -358,7 +387,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         .get(pi)
                         .and_then(|p| p.worktrees.get(wi))
                     {
-                        render_worktree_preview(frame, preview_area, wt, &title);
+                        if let Some(review) = app.review.as_ref().filter(|r| r.path == wt.path) {
+                            self::review::render(
+                                frame,
+                                preview_area,
+                                preview::worktree_preview_lines(wt, preview_area, false),
+                                review,
+                            );
+                        } else {
+                            render_worktree_preview(frame, preview_area, wt, &title);
+                        }
                     } else {
                         render_empty_preview(frame, preview_area);
                     }
@@ -393,6 +431,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             }
             Selection::None => render_empty_preview(frame, preview_area),
         }
+    }
+
+    if let Some(descriptor) = sidecar.as_ref() {
+        plugin_sidecar::render(
+            frame,
+            plugin_area,
+            descriptor,
+            app.plugin_view(&descriptor.plugin_id),
+        );
     }
 
     render_status_bar(frame, layout.footer, app, &status);
@@ -508,7 +555,29 @@ fn status_bar_view(app: &App) -> StatusBarView {
                     "(d)unregister",
                 ],
                 Selection::Worktree(..) => {
-                    vec!["(s)ession", "(u)routine", "(d)elete", "(?)help"]
+                    if let Some(review) = &app.review {
+                        if review.diff_focus {
+                            vec![
+                                "(j/k)scroll",
+                                "([/])hunk",
+                                "(PgUp/PgDn)page",
+                                "(r)efresh",
+                                "(esc)files",
+                            ]
+                        } else {
+                            vec!["(j/k)file", "(enter)diff", "(r)efresh", "(esc)workspace"]
+                        }
+                    } else if app.review_available {
+                        vec![
+                            "(tab)changes",
+                            "(s)ession",
+                            "(u)routine",
+                            "(d)elete",
+                            "(?)help",
+                        ]
+                    } else {
+                        vec!["(s)ession", "(u)routine", "(d)elete", "(?)help"]
+                    }
                 }
                 Selection::Session(..) => {
                     vec!["(C)interrupt", "(u)routine", "(d)close", "(?)help"]

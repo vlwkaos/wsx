@@ -1,10 +1,28 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+
+- Add a versioned executable worktree-review API and an external read-only Git provider.
+- Enter Local file review with Tab without changing tree expansion keys. Inspect unified diffs, navigate hunks, and refresh changed snapshots without replacing the text being read.
+- Preserve the existing preview style and metadata where space permits. Review stays outside the live agent terminal.
+
+### Compatibility
+
+- Protocol 13 adds worktree review requests, cancellation, and provider availability. Existing event-only and passive-sidecar manifests remain valid.
+
 ## [0.23.0] - 2026-09-08
 
 ### Features
 
 - Add project-configured worktree branch prefixes and optional default shell sessions with startup commands.
+- Extend trusted executable plugins with one versioned, bounded Terminal sidecar contribution while keeping layout, styling, PTY geometry, and input ownership inside wsx.
+- Reorder worktree preview details into branch, path, sessions, remote, commits, nested sources, and local changes, with local files using the remaining visible height.
+
+### Compatibility
+
+- Preserve event-only version 1 plugin manifests through additive sidecar defaults, and reject malformed, oversized, timed-out, or stale plugin views without replacing the last valid snapshot.
 
 ### Maintenance
 

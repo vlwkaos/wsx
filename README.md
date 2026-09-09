@@ -15,6 +15,7 @@ wsx presents **Project → Worktree → Session → Pane** in a keyboard-first T
 - Writable Ghostty-based terminal viewport with keyboard, mouse, selection, clipboard, and cursor support
 - Provider-neutral agent states, native conversation resume, and project routines
 - Typed, versioned, bounded same-user local protocol
+- Trusted executable plugins with bounded passive Terminal sidecars
 - macOS and Linux support
 
 ## Product tour
@@ -132,6 +133,8 @@ wsx daemon stop|recover
 
 Each routine `--arg` is one direct argv item. wsx never invokes a shell. Inspect untrusted routines with `wsx routine show <name>` before enabling or running them.
 
+See [Executable plugins](docs/plugins.md) for the versioned event, Terminal-sidecar, and worktree-review contracts. With a review provider installed, Tab on a worktree opens keyboard-driven file and diff review inside its preview. The [reference Git provider setup](docs/worktree-review.md) does not change the agent terminal.
+
 Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed terminal. Explicit subcommands remain available. `wsx runtime status` and `wsx daemon stop` never start the daemon.
 
 ## Runtime and security
@@ -139,7 +142,7 @@ Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed termin
 - wsxd belongs to the host and Unix user, not one login session. Same-user SSH reconnects reuse live PTYs and buffers.
 - Owner-only sockets and peer-UID checks reject cross-user access.
 - One writable lease owns each pane. Events invalidate revisions; clients reconcile from authoritative snapshots.
-- Messages, frames, commands, plugins, listeners, and resource counts are bounded.
+- Messages, frames, commands, plugin manifests, plugin view output, listeners, and resource counts are bounded.
 - UI-only wsx releases reuse the compatible daemon. Required daemon replacement waits for other daemon revisions, fresh authoritative `working` reports, foreground jobs, and listening servers to clear. wsx reports once when saved terminal commands restart.
 - Native resume creates a new process, PTY, and terminal buffer from a validated provider reference. Unsupported references open a clean shell.
 - Remote access, live cross-version process handoff, graphics transport, marketplace installation, and original-process restoration are not supported.

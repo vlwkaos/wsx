@@ -446,6 +446,9 @@ fn translate_key(key: KeyEvent) -> Action {
             Action::NavigateRight
         }
         (KeyModifiers::NONE, KeyCode::Enter) => Action::Select,
+        (KeyModifiers::NONE, KeyCode::Tab) => Action::InputTab,
+        (KeyModifiers::NONE, KeyCode::PageUp) => Action::PageUp,
+        (KeyModifiers::NONE, KeyCode::PageDown) => Action::PageDown,
         (KeyModifiers::NONE, KeyCode::Char('p')) => Action::AddProject,
         (KeyModifiers::NONE, KeyCode::Char('w')) => Action::AddWorktree,
         (KeyModifiers::NONE, KeyCode::Char('s')) => Action::AddSession,

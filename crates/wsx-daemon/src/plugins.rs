@@ -1,4 +1,8 @@
+pub mod review;
+
+use serde::Serialize;
 use std::{
+    collections::HashSet,
     env, fs, io,
     os::unix::fs::MetadataExt,
     path::{Component, Path, PathBuf},
@@ -6,12 +10,17 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use wsx_core::runtime::PluginManifest;
+use wsx_core::runtime::{
+    PaneId, PluginManifest, PluginSidecarDescriptor, PluginSidecarView, PluginViewPayload,
+    WorktreeId, WSX_PLUGIN_VIEW_ENV,
+};
 
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_PLUGINS: usize = 64;
 const TIMEOUT: Duration = Duration::from_secs(3);
-
+const MAX_VIEW_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_VIEW_ROWS: usize = 512;
+const MAX_VIEW_TEXT_BYTES: usize = 4096;
 pub fn discover() -> Vec<PluginManifest> {
     plugin_dir()
         .and_then(|dir| discover_in(&dir).ok())
@@ -75,6 +84,11 @@ fn discover_in(dir: &Path) -> io::Result<Vec<PluginManifest>> {
             plugins.push(manifest);
         }
     }
+    let mut counts = std::collections::HashMap::new();
+    for plugin in &plugins {
+        *counts.entry(plugin.id.clone()).or_insert(0usize) += 1;
+    }
+    plugins.retain(|plugin| counts[&plugin.id] == 1);
     Ok(plugins)
 }
 
@@ -120,8 +134,19 @@ pub fn validate(manifest: &PluginManifest) -> Result<(), &'static str> {
             .command
             .iter()
             .any(|part| part.is_empty() || part.len() > 4096 || part.as_bytes().contains(&0))
+        || manifest.worktree_review.as_ref().is_some_and(|review| {
+            review.api_version != wsx_core::runtime::REVIEW_API_VERSION
+                || review.comparisons.as_slice()
+                    != [wsx_core::runtime::ReviewComparison::WorkingAgainstHead]
+        })
         || manifest.events.len() > 32
         || manifest.events.iter().any(|event| !valid_token(event))
+        || manifest.sidecar.as_ref().is_some_and(|sidecar| {
+            !(80..=500).contains(&sidecar.minimum_columns)
+                || !(20..=120).contains(&sidecar.preferred_width)
+                || sidecar.minimum_columns < sidecar.preferred_width.saturating_add(61)
+                || !(500..=60_000).contains(&sidecar.refresh_ms)
+        })
     {
         return Err("invalid plugin manifest");
     }
@@ -139,7 +164,122 @@ pub fn validate(manifest: &PluginManifest) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn valid_token(value: &str) -> bool {
+pub fn sidecars(plugins: &[PluginManifest]) -> Vec<PluginSidecarDescriptor> {
+    let mut sidecars = plugins
+        .iter()
+        .filter(|plugin| plugin.enabled)
+        .filter_map(|plugin| {
+            plugin.sidecar.clone().map(|spec| PluginSidecarDescriptor {
+                plugin_id: plugin.id.clone(),
+                title: plugin.name.clone(),
+                spec,
+            })
+        })
+        .collect::<Vec<_>>();
+    sidecars.sort_by(|left, right| {
+        right
+            .spec
+            .priority
+            .cmp(&left.spec.priority)
+            .then_with(|| left.plugin_id.cmp(&right.plugin_id))
+    });
+    let mut seen = HashSet::new();
+    sidecars.retain(|sidecar| seen.insert(sidecar.plugin_id.clone()));
+    sidecars
+}
+
+#[derive(Serialize)]
+struct PluginViewContext<'a> {
+    api_version: u32,
+    pane_id: PaneId,
+    worktree_id: WorktreeId,
+    worktree_path: &'a Path,
+    columns: u16,
+    rows: u16,
+    generation: u64,
+}
+
+pub struct RenderContext<'a> {
+    pub pane_id: PaneId,
+    pub worktree_id: WorktreeId,
+    pub worktree_path: &'a Path,
+    pub epoch: u64,
+    pub columns: u16,
+    pub rows: u16,
+    pub generation: u64,
+}
+
+pub fn render(
+    plugin: &PluginManifest,
+    request: RenderContext<'_>,
+) -> io::Result<PluginSidecarView> {
+    let context = serde_json::to_string(&PluginViewContext {
+        api_version: 1,
+        pane_id: request.pane_id,
+        worktree_id: request.worktree_id,
+        worktree_path: request.worktree_path,
+        columns: request.columns,
+        rows: request.rows,
+        generation: request.generation,
+    })
+    .map_err(io::Error::other)?;
+    let mut command = Command::new(&plugin.command[0]);
+    command
+        .args(&plugin.command[1..])
+        .env(WSX_PLUGIN_VIEW_ENV, context)
+        .stdin(Stdio::null());
+    let output =
+        wsx_core::git::output_with_timeout_limit(&mut command, TIMEOUT, MAX_VIEW_OUTPUT_BYTES)?;
+    if !output.status.success() {
+        return Err(io::Error::other("plugin view command failed"));
+    }
+    let payload: PluginViewPayload = serde_json::from_slice(&output.stdout)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    validate_payload(&payload, request.rows)?;
+    Ok(PluginSidecarView {
+        plugin_id: plugin.id.clone(),
+        title: plugin.name.clone(),
+        epoch: request.epoch,
+        pane_id: request.pane_id,
+        worktree_id: request.worktree_id,
+        generation: request.generation,
+        payload,
+    })
+}
+
+fn validate_payload(payload: &PluginViewPayload, rows: u16) -> io::Result<()> {
+    let limit = usize::from(rows).min(MAX_VIEW_ROWS);
+    if payload.rows.len() > limit
+        || payload.remaining > 1000
+        || payload
+            .empty
+            .as_deref()
+            .is_some_and(|text| !valid_text(text))
+        || payload.rows.iter().any(|row| {
+            !valid_text(&row.badge)
+                || row.badge.len() > 16
+                || !valid_text(&row.primary)
+                || row.primary.is_empty()
+                || row
+                    .secondary
+                    .as_deref()
+                    .is_some_and(|text| !valid_text(text))
+                || !valid_text(&row.value)
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "plugin view output is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn valid_text(value: &str) -> bool {
+    value.len() <= MAX_VIEW_TEXT_BYTES && !value.chars().any(char::is_control)
+}
+
+pub(crate) fn valid_token(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
         && value
@@ -183,6 +323,112 @@ pub fn emit(plugins: &[PluginManifest], name: &str, payload: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use wsx_core::runtime::{PluginSidecarSpec, PluginSurface};
+
+    fn sidecar_manifest(id: &str, priority: i32) -> PluginManifest {
+        PluginManifest {
+            api_version: 1,
+            id: id.into(),
+            name: id.into(),
+            command: vec!["/unused".into()],
+            worktree_review: None,
+            events: Vec::new(),
+            enabled: true,
+            sidecar: Some(PluginSidecarSpec {
+                surface: PluginSurface::TerminalRight,
+                priority,
+                minimum_columns: 120,
+                preferred_width: 36,
+                refresh_ms: 2_000,
+            }),
+        }
+    }
+
+    #[test]
+    fn sidecars_are_priority_ordered_with_stable_ids() {
+        let plugins = vec![
+            sidecar_manifest("beta", 1),
+            sidecar_manifest("alpha", 1),
+            sidecar_manifest("lower", 0),
+        ];
+        assert_eq!(
+            sidecars(&plugins)
+                .into_iter()
+                .map(|sidecar| sidecar.plugin_id)
+                .collect::<Vec<_>>(),
+            ["alpha", "beta", "lower"]
+        );
+    }
+
+    #[test]
+    fn executable_sidecar_returns_one_bounded_validated_view() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".work")
+            .join(format!("plugin-view-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let executable = root.join("view.sh");
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '%s' '{\"empty\":\"ready\",\"rows\":[],\"remaining\":0}'\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&executable, permissions).unwrap();
+        let mut plugin = sidecar_manifest("view", 0);
+        plugin.command = vec![executable.to_string_lossy().into_owned()];
+        let view = render(
+            &plugin,
+            RenderContext {
+                pane_id: PaneId(1),
+                worktree_id: WorktreeId(2),
+                worktree_path: &root,
+                epoch: 7,
+                columns: 36,
+                rows: 10,
+                generation: 3,
+            },
+        )
+        .unwrap();
+        assert_eq!(view.epoch, 7);
+        assert_eq!(view.payload.empty.as_deref(), Some("ready"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn plugin_payload_rejects_controls_and_unbounded_rows() {
+        let row = wsx_core::runtime::PluginViewRow {
+            badge: " M".into(),
+            primary: "file.rs".into(),
+            secondary: None,
+            value: "+1".into(),
+            tone: Default::default(),
+        };
+        assert!(validate_payload(
+            &PluginViewPayload {
+                empty: None,
+                rows: vec![row.clone()],
+                remaining: 0,
+            },
+            1,
+        )
+        .is_ok());
+        assert!(validate_payload(
+            &PluginViewPayload {
+                empty: None,
+                rows: vec![wsx_core::runtime::PluginViewRow {
+                    primary: "bad\nrow".into(),
+                    ..row
+                }],
+                remaining: 0,
+            },
+            1,
+        )
+        .is_err());
+    }
+
     #[test]
     fn tokens_are_bounded() {
         assert!(valid_token("session.created"));

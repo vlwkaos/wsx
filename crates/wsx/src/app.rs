@@ -63,6 +63,12 @@ enum RuntimeResult {
         result: Result<runtime::Snapshot>,
     },
     Frame(Result<(u64, runtime::TerminalFrame)>),
+    PluginView {
+        generation: u64,
+        plugin_id: String,
+        pane_id: runtime::PaneId,
+        result: Result<runtime::PluginSidecarView>,
+    },
 }
 
 struct ActiveTerminalStream {
@@ -786,6 +792,9 @@ pub struct App {
     pub tree_area: Rect,
     pub preview_area: Rect,
     pub terminal_area: Rect,
+    pub plugin_area: Rect,
+    pub review: Option<crate::review::ReviewState>,
+    pub review_available: bool,
     pub mode: Mode,
     pub config: GlobalConfig,
     pub active_group: GroupKey,
@@ -838,6 +847,12 @@ pub struct App {
     /// A full Git plus Runtime refresh takes priority over queued event refreshes.
     runtime_full_refresh_stale: bool,
     runtime_capture_pending: bool,
+    plugin_sidecars: Vec<runtime::PluginSidecarDescriptor>,
+    plugin_view: Option<runtime::PluginSidecarView>,
+    plugin_view_generation: u64,
+    plugin_view_pending: bool,
+    plugin_view_last_refresh: Option<Instant>,
+    plugin_view_last_owner: Option<(String, runtime::PaneId)>,
     /// Worktree paths pending bg deletion; filtered from refresh results until bg confirms.
     pending_deletions: HashSet<PathBuf>,
     /// Pane closes awaiting confirmation by a newer Runtime snapshot.
@@ -964,6 +979,7 @@ impl App {
             tree_area: Rect::default(),
             preview_area: Rect::default(),
             terminal_area: Rect::default(),
+            plugin_area: Rect::default(),
             mode: Mode::Workspace,
             config,
             active_group,
@@ -971,6 +987,8 @@ impl App {
             group_header_area: Rect::default(),
             visible_projects,
             freshened_projects: HashSet::new(),
+            review: None,
+            review_available: false,
             notice: initial_notice.clone().map(|title| Notice {
                 level: NoticeLevel::Warning,
                 title,
@@ -1017,6 +1035,12 @@ impl App {
             runtime_refresh_stale: false,
             runtime_full_refresh_stale: false,
             runtime_capture_pending: false,
+            plugin_sidecars: Vec::new(),
+            plugin_view: None,
+            plugin_view_generation: 0,
+            plugin_view_pending: false,
+            plugin_view_last_refresh: None,
+            plugin_view_last_owner: None,
             pending_deletions: HashSet::new(),
             pending_session_kills: HashSet::new(),
             pending_session_orders: HashMap::new(),
@@ -1667,6 +1691,12 @@ impl App {
                     self.apply_resume_refresh(generation, result)
                 }
                 RuntimeResult::Frame(frame) => self.apply_runtime_frame(frame),
+                RuntimeResult::PluginView {
+                    generation,
+                    plugin_id,
+                    pane_id,
+                    result,
+                } => self.apply_plugin_view(generation, &plugin_id, pane_id, result),
             }
         }
         while let Ok(result) = self.routine_rx.try_recv() {
@@ -2015,6 +2045,21 @@ impl App {
     }
 
     fn tick(&mut self) -> Result<()> {
+        if self
+            .review
+            .as_ref()
+            .is_some_and(|review| match self.current_selection() {
+                Selection::Worktree(pi, wi) => {
+                    self.workspace.projects[pi].worktrees[wi].path != review.path
+                }
+                _ => true,
+            })
+        {
+            self.review = None;
+        }
+        if self.review.as_mut().is_some_and(|review| review.poll()) {
+            self.needs_redraw = true;
+        }
         self.expire_notice(Instant::now());
 
         if self.slow_timer.ready() {
@@ -2031,6 +2076,7 @@ impl App {
 
         if self.fast_timer.ready() {
             self.spawn_runtime_capture();
+            self.spawn_plugin_view();
             self.spawn_git_local_for_selected();
             self.tick_git_fetch();
             if !self.jobs.is_empty() || self.has_working_agent() {
@@ -2375,6 +2421,22 @@ impl App {
         mut snapshot: runtime::Snapshot,
         worktrees: Option<Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>>,
     ) {
+        self.review_available = snapshot.capabilities.worktree_review_available;
+        if self.plugin_sidecars != snapshot.plugin_sidecars {
+            self.plugin_sidecars = snapshot.plugin_sidecars.clone();
+            self.plugin_view_generation = self.plugin_view_generation.wrapping_add(1);
+            self.plugin_view_pending = false;
+            self.plugin_view_last_refresh = None;
+            self.plugin_view_last_owner = None;
+            if self.plugin_view.as_ref().is_some_and(|view| {
+                !self
+                    .plugin_sidecars
+                    .iter()
+                    .any(|sidecar| sidecar.plugin_id == view.plugin_id)
+            }) {
+                self.plugin_view = None;
+            }
+        }
         let live_sessions = snapshot
             .sessions
             .iter()
@@ -2520,6 +2582,129 @@ impl App {
                 .and_then(|session| session.panes.get(pane_idx))
                 .map(|pane| (pane.pane_id, pane.terminal_id)),
             _ => None,
+        }
+    }
+
+    pub(crate) fn terminal_sidecar_descriptor(
+        &self,
+        total_width: u16,
+        preview_width: u16,
+    ) -> Option<runtime::PluginSidecarDescriptor> {
+        if self.force_mobile || total_width < 60 {
+            return None;
+        }
+        let descriptor = self
+            .plugin_sidecars
+            .iter()
+            .find(|sidecar| {
+                sidecar.spec.surface == runtime::PluginSurface::TerminalRight
+                    && total_width >= sidecar.spec.minimum_columns
+            })?
+            .clone();
+        let width = descriptor
+            .spec
+            .preferred_width
+            .min(preview_width.saturating_sub(60));
+        if width < 20 {
+            return None;
+        }
+        self.selected_terminal_identity()?;
+        Some(descriptor)
+    }
+
+    pub(crate) fn plugin_view(&self, plugin_id: &str) -> Option<&runtime::PluginSidecarView> {
+        let pane_id = self.selected_terminal_identity()?.0;
+        self.plugin_view
+            .as_ref()
+            .filter(|view| view.plugin_id == plugin_id && view.pane_id == pane_id)
+    }
+
+    fn spawn_plugin_view(&mut self) {
+        if !matches!(self.mode, Mode::Terminal { .. })
+            || self.plugin_view_pending
+            || self.plugin_area.is_empty()
+        {
+            return;
+        }
+        let Some((pane_id, _)) = self.selected_terminal_identity() else {
+            return;
+        };
+        let Some(descriptor) = self.plugin_sidecars.iter().find(|sidecar| {
+            sidecar.spec.surface == runtime::PluginSurface::TerminalRight
+                && sidecar.spec.preferred_width >= self.plugin_area.width
+        }) else {
+            return;
+        };
+        let owner = (descriptor.plugin_id.clone(), pane_id);
+        if self.plugin_view_last_owner.as_ref() == Some(&owner)
+            && self.plugin_view_last_refresh.is_some_and(|last| {
+                last.elapsed() < Duration::from_millis(descriptor.spec.refresh_ms)
+            })
+        {
+            return;
+        }
+        self.plugin_view_generation = self.plugin_view_generation.wrapping_add(1);
+        let generation = self.plugin_view_generation;
+        let plugin_id = descriptor.plugin_id.clone();
+        let columns = self.plugin_area.width;
+        let rows = self.plugin_area.height;
+        let tx = self.runtime_tx.clone();
+        let client = self.runtime_client.clone();
+        self.plugin_view_pending = true;
+        self.plugin_view_last_refresh = Some(Instant::now());
+        self.plugin_view_last_owner = Some(owner);
+        std::thread::spawn(move || {
+            let result = match client.call(&runtime::Request::PluginRender {
+                plugin_id: plugin_id.clone(),
+                pane_id,
+                columns,
+                rows,
+                generation,
+            }) {
+                Ok(runtime::Response::PluginView(view)) => Ok(view),
+                Ok(runtime::Response::Error(error)) => {
+                    Err(anyhow::anyhow!("{}: {}", error.code, error.message))
+                }
+                Ok(_) => Err(anyhow::anyhow!("unexpected daemon plugin view response")),
+                Err(error) => Err(error.into()),
+            };
+            let _ = tx.send(RuntimeResult::PluginView {
+                generation,
+                plugin_id,
+                pane_id,
+                result,
+            });
+        });
+    }
+
+    fn apply_plugin_view(
+        &mut self,
+        generation: u64,
+        plugin_id: &str,
+        pane_id: runtime::PaneId,
+        result: Result<runtime::PluginSidecarView>,
+    ) {
+        if generation != self.plugin_view_generation {
+            return;
+        }
+        self.plugin_view_pending = false;
+        let current = self.selected_terminal_identity().map(|identity| identity.0);
+        let descriptor_exists = self
+            .plugin_sidecars
+            .iter()
+            .any(|sidecar| sidecar.plugin_id == plugin_id);
+        if current != Some(pane_id) || !descriptor_exists {
+            return;
+        }
+        if let Ok(view) = result {
+            if view.generation == generation
+                && view.plugin_id == plugin_id
+                && view.pane_id == pane_id
+                && self.terminal_surfaces.epoch() == Some(view.epoch)
+            {
+                self.plugin_view = Some(view);
+                self.needs_redraw = true;
+            }
         }
     }
 
@@ -2856,6 +3041,32 @@ impl App {
 
     fn dispatch(&mut self, action: Action, terminal: &mut Tui) -> Result<()> {
         self.ensure_flat();
+        if matches!(
+            action,
+            Action::Quit | Action::HardQuit | Action::MouseClick { .. }
+        ) {
+            self.review = None;
+        }
+        if matches!(self.mode, Mode::Workspace) {
+            if let Some(review) = &mut self.review {
+                if !review.handle(&action) {
+                    self.review = None;
+                }
+                self.needs_redraw = true;
+                return Ok(());
+            }
+            if action == Action::InputTab && self.review_available {
+                if let Selection::Worktree(pi, wi) = self.current_selection() {
+                    let path = self.workspace.projects[pi].worktrees[wi].path.clone();
+                    self.review = Some(crate::review::ReviewState::new(
+                        path,
+                        self.runtime_client.clone(),
+                    ));
+                    self.needs_redraw = true;
+                }
+                return Ok(());
+            }
+        }
         // Config mode handled first to avoid borrow conflicts
         if let Mode::Config { project_idx } = &self.mode {
             let pi = *project_idx;
@@ -3984,11 +4195,27 @@ impl App {
             .unwrap_or(ratatui::layout::Size::new(80, 24));
         let area = Rect::new(0, 0, size.width, size.height);
         let mobile = self.force_mobile || size.width < 60;
+        let sidebar = self.effective_terminal_sidebar();
+        let preview_width = if mobile {
+            size.width
+        } else {
+            size.width
+                .saturating_sub(crate::ui::layout::terminal_sidebar_width(sidebar))
+        };
+        let sidecar_width = self
+            .terminal_sidecar_descriptor(size.width, preview_width)
+            .map(|descriptor| {
+                descriptor
+                    .spec
+                    .preferred_width
+                    .min(preview_width.saturating_sub(60))
+            });
         let viewport = crate::ui::layout::terminal_viewport(
             area,
             mobile,
-            self.effective_terminal_sidebar(),
+            sidebar,
             self.config.terminal_title_position,
+            sidecar_width,
         );
         (viewport.height.max(1), viewport.width.max(1))
     }
@@ -4421,7 +4648,17 @@ impl App {
         self.terminal_sidebar_override = None;
         self.mode = Mode::Workspace;
         self.set_status("Global settings saved");
+        self.reload_plugins();
         Ok(())
+    }
+
+    fn reload_plugins(&mut self) {
+        if matches!(
+            self.runtime_client.call(&runtime::Request::PluginReload),
+            Ok(runtime::Response::Plugins(_))
+        ) {
+            self.spawn_runtime_session_refresh();
+        }
     }
 
     fn edit_raw_global_config(&mut self, terminal: &mut Tui) {
@@ -4462,6 +4699,7 @@ impl App {
                     form.reset_saved(config);
                 }
                 self.set_status("Global config reloaded");
+                self.reload_plugins();
             }
         }
     }
@@ -5854,6 +6092,7 @@ mod tests {
             tree_area: Rect::default(),
             preview_area: Rect::default(),
             terminal_area: Rect::default(),
+            plugin_area: Rect::default(),
             mode: Mode::Workspace,
             config,
             active_group,
@@ -5861,6 +6100,8 @@ mod tests {
             group_header_area: Rect::default(),
             visible_projects,
             freshened_projects: HashSet::new(),
+            review: None,
+            review_available: false,
             notice: None,
             notice_started: None,
             jobs: Vec::new(),
@@ -5899,6 +6140,12 @@ mod tests {
             runtime_refresh_stale: false,
             runtime_full_refresh_stale: false,
             runtime_capture_pending: false,
+            plugin_sidecars: Vec::new(),
+            plugin_view: None,
+            plugin_view_generation: 0,
+            plugin_view_pending: false,
+            plugin_view_last_refresh: None,
+            plugin_view_last_owner: None,
             pending_deletions: HashSet::new(),
             pending_session_kills: HashSet::new(),
             pending_session_orders: HashMap::new(),
@@ -6577,6 +6824,7 @@ mod tests {
                 panes,
                 listening_ports: vec![],
                 pane_activity: vec![],
+                plugin_sidecars: Vec::new(),
                 capabilities: runtime::Capabilities::default(),
             }
         }
@@ -8390,6 +8638,7 @@ mod tests {
             }],
             listening_ports: vec![],
             pane_activity: vec![],
+            plugin_sidecars: Vec::new(),
             capabilities: runtime::Capabilities::default(),
         });
         assert_eq!(
@@ -8971,6 +9220,7 @@ mod tests {
                 panes: vec![],
                 listening_ports: vec![],
                 pane_activity: vec![],
+                plugin_sidecars: Vec::new(),
                 capabilities: runtime::Capabilities::default(),
             },
             None,

@@ -15,6 +15,7 @@ wsx는 **Project → Worktree → Session → Pane** 구조를 keyboard 중심 T
 - keyboard, mouse, selection, clipboard, cursor를 지원하는 Ghostty 기반 terminal viewport
 - provider-neutral agent 상태, native conversation resume, project routine
 - typed, versioned, bounded 동일 사용자 local protocol
+- 제한된 passive Terminal sidecar를 제공하는 trusted executable plugin
 - macOS와 Linux 지원
 
 ## 제품 둘러보기
@@ -132,6 +133,8 @@ wsx daemon stop|recover
 
 Routine의 각 `--arg`는 direct argv item 하나입니다. wsx는 shell을 실행하지 않습니다. 신뢰하지 않는 routine은 enable 또는 run하기 전에 `wsx routine show <name>`으로 확인합니다.
 
+Versioned event, Terminal sidecar, worktree review contract는 [Executable plugins](docs/plugins.md)에서 확인할 수 있습니다. Review provider를 설치하면 worktree에서 Tab을 눌러 preview 안에서 파일과 diff를 키보드로 살펴볼 수 있습니다. [Git provider 설정](docs/worktree-review.md)은 agent terminal을 변경하지 않습니다.
+
 wsx-managed terminal 안에서는 plain `wsx`와 `wsx --mobile`이 nested TUI startup을 거부합니다. 명시적인 subcommand는 계속 사용할 수 있습니다. `wsx runtime status`와 `wsx daemon stop`은 daemon을 시작하지 않습니다.
 
 ## Runtime과 보안
@@ -139,7 +142,7 @@ wsx-managed terminal 안에서는 plain `wsx`와 `wsx --mobile`이 nested TUI st
 - wsxd는 login session이 아니라 host와 Unix user에 귀속됩니다. 동일 사용자의 SSH 재연결은 live PTY와 buffer를 재사용합니다.
 - Owner-only socket과 peer-UID 검사로 다른 사용자의 접근을 거부합니다.
 - Pane마다 writable lease는 하나입니다. Event는 revision을 invalidate하고 client는 authoritative snapshot으로 복구합니다.
-- Message, frame, command, plugin, listener, resource count는 bounded입니다.
+- Message, frame, command, plugin manifest와 view output, listener, resource count는 bounded입니다.
 - UI-only wsx release는 compatible daemon을 계속 사용합니다. 필요한 daemon 교체는 다른 daemon revision, fresh authoritative `working` report, foreground job, listening server가 사라질 때까지 기다립니다. 저장된 terminal command가 다시 시작되면 wsx가 한 번 알립니다.
 - Native resume은 검증된 provider reference로 새 process, PTY, terminal buffer를 만듭니다. Unsupported reference는 clean shell을 엽니다.
 - Remote access, live cross-version process handoff, graphics transport, marketplace, original-process 복원은 지원하지 않습니다.

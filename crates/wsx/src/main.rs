@@ -12,6 +12,7 @@ mod terminal_surface;
 mod terminal_surface_tests;
 mod tui;
 mod ui;
+mod review;
 mod update;
 
 use anyhow::{bail, Context, Result};

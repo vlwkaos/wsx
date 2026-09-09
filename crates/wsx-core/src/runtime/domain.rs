@@ -261,6 +261,8 @@ pub struct Snapshot {
     pub listening_ports: Vec<PanePorts>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pane_activity: Vec<PaneActivity>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugin_sidecars: Vec<PluginSidecarDescriptor>,
     #[serde(default)]
     pub capabilities: Capabilities,
 }
@@ -270,6 +272,8 @@ pub struct Snapshot {
 pub struct Capabilities {
     pub pane_splits: bool,
     pub plugins: bool,
+    pub plugin_views: bool,
+    pub worktree_review_available: bool,
     pub agent_reports: bool,
     pub agent_session_restore: bool,
     pub resume_shell_fallback: bool,
@@ -678,6 +682,76 @@ const fn default_true() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginSurface {
+    TerminalRight,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginSidecarSpec {
+    pub surface: PluginSurface,
+    pub priority: i32,
+    pub minimum_columns: u16,
+    pub preferred_width: u16,
+    pub refresh_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginSidecarDescriptor {
+    pub plugin_id: String,
+    pub title: String,
+    pub spec: PluginSidecarSpec,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginTone {
+    #[default]
+    Normal,
+    Muted,
+    Accent,
+    Success,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginViewRow {
+    pub badge: String,
+    pub primary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary: Option<String>,
+    pub value: String,
+    #[serde(default)]
+    pub tone: PluginTone,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginViewPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty: Option<String>,
+    #[serde(default)]
+    pub rows: Vec<PluginViewRow>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub remaining: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginSidecarView {
+    pub plugin_id: String,
+    pub title: String,
+    pub epoch: u64,
+    pub pane_id: PaneId,
+    pub worktree_id: WorktreeId,
+    pub generation: u64,
+    pub payload: PluginViewPayload,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub api_version: u32,
@@ -686,11 +760,35 @@ pub struct PluginManifest {
     pub command: Vec<String>,
     pub events: Vec<String>,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidecar: Option<PluginSidecarSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_review: Option<super::ReviewSpec>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_plugin_manifest_without_sidecar_deserializes() {
+        let manifest: PluginManifest = serde_json::from_str(
+            r#"{"api_version":1,"id":"legacy","name":"Legacy","command":["/plugin"],"events":["session.created"],"enabled":true}"#,
+        )
+        .unwrap();
+        assert!(manifest.sidecar.is_none());
+        assert!(manifest.worktree_review.is_none());
+    }
+
+    #[test]
+    fn legacy_snapshot_without_plugin_sidecars_deserializes() {
+        let snapshot: Snapshot = serde_json::from_str(
+            r#"{"protocol":11,"epoch":1,"revision":2,"projects":[],"worktrees":[],"sessions":[],"panes":[],"capabilities":{}}"#,
+        )
+        .unwrap();
+        assert!(snapshot.plugin_sidecars.is_empty());
+        assert!(!snapshot.capabilities.plugin_views);
+    }
 
     #[test]
     fn old_project_json_without_activity_deserializes() {
