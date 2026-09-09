@@ -723,6 +723,7 @@ mod tests {
                     revision: 9,
                 },
             ],
+            conversations: vec![],
             listening_ports: vec![
                 runtime::PanePorts {
                     pane_id: PaneId(4),
@@ -896,6 +897,7 @@ mod tests {
             }],
             sessions: Vec::new(),
             panes: Vec::new(),
+            conversations: Vec::new(),
             listening_ports: Vec::new(),
             pane_activity: Vec::new(),
             plugin_sidecars: Vec::new(),

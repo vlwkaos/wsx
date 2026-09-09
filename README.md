@@ -133,7 +133,7 @@ wsx daemon stop|recover
 
 Each routine `--arg` is one direct argv item. wsx never invokes a shell. Inspect untrusted routines with `wsx routine show <name>` before enabling or running them.
 
-See [Executable plugins](docs/plugins.md) for the versioned event, Terminal-sidecar, and worktree-review contracts. With a review provider installed, Tab on a worktree opens keyboard-driven file and diff review inside its preview. The [reference Git provider setup](docs/worktree-review.md) does not change the agent terminal.
+See [Executable plugins](docs/plugins.md) for the versioned event, Terminal-sidecar, and worktree-review contracts. See [Structured conversations](docs/conversations.md) for the wsxd-owned Pi RPC lifecycle. With a review provider installed, Tab on a worktree opens keyboard-driven file and diff review inside its preview. The [reference Git provider setup](docs/worktree-review.md) does not change the agent terminal.
 
 Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed terminal. Explicit subcommands remain available. `wsx runtime status` and `wsx daemon stop` never start the daemon.
 

@@ -28,6 +28,7 @@ id_type!(SessionId);
 id_type!(PaneId);
 id_type!(TerminalId);
 id_type!(AgentInstanceId);
+id_type!(ConversationId);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectSpec {
@@ -225,6 +226,136 @@ pub struct AgentInfo {
     pub source: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ConversationCapabilities {
+    pub prompt: bool,
+    pub steer: bool,
+    pub follow_up: bool,
+    pub abort: bool,
+    pub model_selection: bool,
+    pub commands: bool,
+    pub interactions: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Conversation {
+    pub id: ConversationId,
+    pub session_id: SessionId,
+    pub provider: String,
+    pub state: AgentState,
+    #[serde(default)]
+    pub session_ref: Option<AgentSessionRef>,
+    #[serde(default)]
+    pub capabilities: ConversationCapabilities,
+    #[serde(default)]
+    pub event_cursor: u64,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationInputMode {
+    Prompt,
+    Steer,
+    FollowUp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationAttachment {
+    pub name: String,
+    pub media_type: String,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationRole {
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum ConversationInteractionKind {
+    Select { options: Vec<String> },
+    Confirm { message: String },
+    Input { placeholder: String },
+    Editor { prefill: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationInteraction {
+    pub id: String,
+    pub title: String,
+    pub request: ConversationInteractionKind,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum ConversationInteractionResponse {
+    Selected(String),
+    Confirmed(bool),
+    Text(String),
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationCommand {
+    pub name: String,
+    pub description: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationEvent {
+    pub cursor: u64,
+    pub conversation_id: ConversationId,
+    pub occurred_unix_ms: u64,
+    #[serde(flatten)]
+    pub event: ConversationEventKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum ConversationEventKind {
+    StateChanged {
+        state: AgentState,
+    },
+    MessageStarted {
+        message_id: String,
+        role: ConversationRole,
+    },
+    MessageDelta {
+        message_id: String,
+        content_index: u32,
+        text: String,
+        thinking: bool,
+    },
+    MessageFinished {
+        message_id: String,
+    },
+    ToolStarted {
+        tool_call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    ToolUpdated {
+        tool_call_id: String,
+        content: String,
+    },
+    ToolFinished {
+        tool_call_id: String,
+        content: String,
+        is_error: bool,
+    },
+    InteractionRequested(ConversationInteraction),
+    ResyncRequired,
+    Settled,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pane {
     pub id: PaneId,
@@ -258,6 +389,8 @@ pub struct Snapshot {
     pub sessions: Vec<Session>,
     pub panes: Vec<Pane>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conversations: Vec<Conversation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub listening_ports: Vec<PanePorts>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pane_activity: Vec<PaneActivity>,
@@ -283,6 +416,7 @@ pub struct Capabilities {
     pub lifecycle_coordination: bool,
     pub version_coordination: bool,
     pub daemon_revision_coordination: bool,
+    pub conversations: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -796,6 +930,34 @@ mod tests {
             serde_json::from_str(r#"{"id":1,"path":"/repo","name":"repo","revision":2}"#).unwrap();
         assert_eq!(project.last_agent_active_unix_ms, None);
         assert_eq!(project.last_terminal_active_unix_ms, None);
+    }
+
+    #[test]
+    fn conversation_defaults_additive_capabilities_and_cursor() {
+        let conversation: Conversation = serde_json::from_str(
+            r#"{"id":1,"session_id":2,"provider":"pi","state":"idle","revision":3}"#,
+        )
+        .unwrap();
+
+        assert_eq!(conversation.id, ConversationId(1));
+        assert_eq!(conversation.session_id, SessionId(2));
+        assert_eq!(conversation.session_ref, None);
+        assert_eq!(
+            conversation.capabilities,
+            ConversationCapabilities::default()
+        );
+        assert_eq!(conversation.event_cursor, 0);
+    }
+
+    #[test]
+    fn conversation_input_modes_have_stable_wire_names() {
+        for (mode, expected) in [
+            (ConversationInputMode::Prompt, "\"prompt\""),
+            (ConversationInputMode::Steer, "\"steer\""),
+            (ConversationInputMode::FollowUp, "\"follow_up\""),
+        ] {
+            assert_eq!(serde_json::to_string(&mode).unwrap(), expected);
+        }
     }
 
     #[test]
