@@ -25,7 +25,7 @@ PROJECT = WORK / "project"
 HOME = WORK / "home"
 STATE = WORK / "state"
 SOCKET = STATE / "wsx" / "wsx.sock"
-PROTOCOL = 11
+PROTOCOL = 14
 WARMUPS = 8
 # A 100-sample population keeps empirical p95 from being decided by one
 # scheduling stall on shared CI runners while preserving the 16.7 ms metric.
