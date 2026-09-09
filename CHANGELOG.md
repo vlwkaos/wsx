@@ -7,10 +7,12 @@
 - Add a versioned executable worktree-review API and an external read-only Git provider.
 - Enter Local file review with Tab without changing tree expansion keys. Inspect unified diffs, navigate hunks, and refresh changed snapshots without replacing the text being read.
 - Preserve the existing preview style and metadata where space permits. Review stays outside the live agent terminal.
+- Add a bounded wsxd-owned structured conversation API for Pi RPC, including typed events, interactions, command discovery, persistence, and native session restoration.
 
 ### Compatibility
 
 - Protocol 13 adds worktree review requests, cancellation, and provider availability. Existing event-only and passive-sidecar manifests remain valid.
+- Protocol 14 adds structured conversation requests, events, capabilities, and restart restoration. Attachments and model selection remain explicitly unsupported.
 
 ## [0.23.0] - 2026-09-08
 

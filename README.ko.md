@@ -133,7 +133,7 @@ wsx daemon stop|recover
 
 Routine의 각 `--arg`는 direct argv item 하나입니다. wsx는 shell을 실행하지 않습니다. 신뢰하지 않는 routine은 enable 또는 run하기 전에 `wsx routine show <name>`으로 확인합니다.
 
-Versioned event, Terminal sidecar, worktree review contract는 [Executable plugins](docs/plugins.md)에서 확인할 수 있습니다. Review provider를 설치하면 worktree에서 Tab을 눌러 preview 안에서 파일과 diff를 키보드로 살펴볼 수 있습니다. [Git provider 설정](docs/worktree-review.md)은 agent terminal을 변경하지 않습니다.
+Versioned event, Terminal sidecar, worktree review contract는 [Executable plugins](docs/plugins.md)에서 확인할 수 있습니다. wsxd가 소유하는 Pi RPC lifecycle은 [Structured conversations](docs/conversations.md)에서 확인할 수 있습니다. Review provider를 설치하면 worktree에서 Tab을 눌러 preview 안에서 파일과 diff를 키보드로 살펴볼 수 있습니다. [Git provider 설정](docs/worktree-review.md)은 agent terminal을 변경하지 않습니다.
 
 wsx-managed terminal 안에서는 plain `wsx`와 `wsx --mobile`이 nested TUI startup을 거부합니다. 명시적인 subcommand는 계속 사용할 수 있습니다. `wsx runtime status`와 `wsx daemon stop`은 daemon을 시작하지 않습니다.
 
