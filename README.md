@@ -75,7 +75,7 @@ Installers preserve unrelated hooks and honor standard config-directory override
 | Groups | `T` manage, `{`/`}` switch, `g` assign |
 | Global | `/` search, `,` settings, `R` refresh, `?` help, `q` quit TUI, `Q` stop wsxd and quit |
 
-Terminal mode uses the configured prefix, `Ctrl+A` by default. Follow it with `j/k` for adjacent sessions, `i/I` for idle, `a/A` for active, `n/N` for attention, `B` to toggle the desktop sidebar, `W` for Workspace, or `Q` to quit only the TUI. `Ctrl+A Ctrl+A` sends a literal prefix.
+Terminal mode uses the configured prefix, `Ctrl+A` by default. Follow it with `j/k` for adjacent sessions, `{`/`}` for the previous or next group, `i/I` for idle, `a/A` for active, `n/N` for attention, `B` to toggle the desktop sidebar, `W` for Workspace, or `Q` to quit only the TUI. Group navigation selects the first session needing attention, then the first idle agent session; if neither exists, the current terminal stays active. `Ctrl+A Ctrl+A` sends a literal prefix.
 
 Groups are ordered project filters. The default **ungrouped** anti-group matches projects with no memberships. A project becomes stale when neither trusted agent work nor terminal entry occurs within the configured window. wsx never infers agent state from terminal output or process trees.
 
@@ -141,7 +141,7 @@ Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed termin
 
 - wsxd belongs to the host and Unix user, not one login session. Same-user SSH reconnects reuse live PTYs and buffers.
 - Owner-only sockets and peer-UID checks reject cross-user access.
-- One writable lease owns each pane. Events invalidate revisions; clients reconcile from authoritative snapshots.
+- One writable lease owns each pane. Explicit Terminal entry transfers control to the latest wsx instance; the displaced instance returns to Workspace, and lease generations reject stale input, resize, heartbeat, selection, and release operations. Events invalidate revisions; clients reconcile from authoritative snapshots.
 - Messages, frames, commands, plugin manifests, plugin view output, listeners, and resource counts are bounded.
 - UI-only wsx releases reuse the compatible daemon. Required daemon replacement waits for other daemon revisions, fresh authoritative `working` reports, foreground jobs, and listening servers to clear. wsx reports once when saved terminal commands restart.
 - Native resume creates a new process, PTY, and terminal buffer from a validated provider reference. Unsupported references open a clean shell.

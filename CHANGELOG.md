@@ -8,6 +8,8 @@
 - Enter Local file review with Tab without changing tree expansion keys. Inspect unified diffs, navigate hunks, and refresh changed snapshots without replacing the text being read.
 - Preserve the existing preview style and metadata where space permits. Review stays outside the live agent terminal.
 - Add a bounded wsxd-owned structured conversation API for Pi RPC, including typed events, interactions, command discovery, persistence, and native session restoration.
+- Add prefixed Terminal group navigation that selects the first session needing attention, then an idle agent fallback, without leaving the current terminal when no target qualifies.
+- Transfer writable terminal control to the latest explicit wsx instance while generation-fencing the displaced stream and returning it to Workspace with a concise notice.
 
 ### Compatibility
 

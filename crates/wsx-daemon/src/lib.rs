@@ -169,7 +169,7 @@ enum LeaseAccess {
     Stream { client_id: u64, generation: u64 },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct StreamLease {
     pane_id: PaneId,
     client_id: u64,
@@ -222,6 +222,7 @@ struct State {
     foreground_jobs: HashSet<PaneId>,
     listener_scan_complete: bool,
     leases: HashMap<PaneId, Lease>,
+    transferred_streams: VecDeque<StreamLease>,
     events: VecDeque<Event>,
     plugins: Vec<PluginManifest>,
     plugin_events: VecDeque<(String, String)>,
@@ -625,6 +626,7 @@ pub fn run() -> io::Result<()> {
             foreground_jobs: HashSet::new(),
             listener_scan_complete: false,
             leases: HashMap::new(),
+            transferred_streams: VecDeque::new(),
             events: VecDeque::new(),
             plugins: plugins::discover(),
             plugin_events: VecDeque::new(),
@@ -799,6 +801,7 @@ fn cleanup(daemon: &Daemon, socket: &Path) {
         let mut state = lock(&daemon.state);
         state.stopping = true;
         state.leases.clear();
+        state.transferred_streams.clear();
         state.agent_wake_leases.clear();
         state.plugin_events.clear();
         let runtimes = std::mem::take(&mut state.runtimes);
@@ -1084,27 +1087,22 @@ fn stream_terminal_updates(
         let operation = lock(&operation_lock);
         let runtime = {
             let state = lock(&daemon.state);
-            if state.stopping
-                || !state.leases.get(&lease.pane_id).is_some_and(|current| {
-                    current.client_id == lease.client_id
-                        && current.generation == lease.generation
-                        && current.expires_at > Instant::now()
-                })
-            {
-                None
-            } else {
-                state.runtimes.get(&lease.pane_id).cloned()
+            match terminal_stream_lease_error(&state, lease, Instant::now()) {
+                Some(error) => Err(error),
+                None => state.runtimes.get(&lease.pane_id).cloned().ok_or_else(|| {
+                    ApiError::new(
+                        "lease_lost",
+                        "terminal stream no longer owns the pane lease",
+                    )
+                }),
             }
         };
-        let Some(runtime) = runtime else {
-            write_stream_message(
-                stream,
-                &TerminalServerMessage::Error(ApiError::new(
-                    "lease_lost",
-                    "terminal stream no longer owns the pane lease",
-                )),
-            )?;
-            break;
+        let runtime = match runtime {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                write_stream_message(stream, &TerminalServerMessage::Error(error))?;
+                break;
+            }
         };
         let exited = runtime.exited();
         if resync.swap(false, Ordering::AcqRel) {
@@ -1166,6 +1164,44 @@ fn stream_terminal_updates(
     Ok(())
 }
 
+fn record_transferred_stream(state: &mut State, stream: StreamLease) {
+    while state.transferred_streams.len() >= MAX_CLIENTS {
+        state.transferred_streams.pop_front();
+    }
+    state.transferred_streams.push_back(stream);
+}
+
+fn terminal_stream_lease_error(
+    state: &State,
+    stream: StreamLease,
+    now: Instant,
+) -> Option<ApiError> {
+    if state.stopping {
+        return Some(ApiError::new(
+            "lease_lost",
+            "terminal stream no longer owns the pane lease",
+        ));
+    }
+    if state.leases.get(&stream.pane_id).is_some_and(|current| {
+        current.client_id == stream.client_id
+            && current.generation == stream.generation
+            && current.expires_at > now
+    }) {
+        return None;
+    }
+    if state.transferred_streams.contains(&stream) {
+        Some(ApiError::new(
+            "lease_transferred",
+            "terminal control moved to another wsx instance",
+        ))
+    } else {
+        Some(ApiError::new(
+            "lease_lost",
+            "terminal stream no longer owns the pane lease",
+        ))
+    }
+}
+
 fn write_stream_message(
     stream: &mut UnixStream,
     message: &TerminalServerMessage,
@@ -1184,6 +1220,14 @@ fn release_stream_lease(daemon: &Daemon, pane_id: PaneId, client_id: u64, lease_
     let operation_lock = terminal_operation_lock(daemon, pane_id);
     let _operation = lock(&operation_lock);
     let mut state = lock(&daemon.state);
+    let stream = StreamLease {
+        pane_id,
+        client_id,
+        generation: lease_generation,
+    };
+    state
+        .transferred_streams
+        .retain(|candidate| *candidate != stream);
     if state
         .leases
         .get(&pane_id)
@@ -1370,13 +1414,24 @@ fn acquire_terminal_lease(
 
     let mut state = lock(&daemon.state);
     require_runtime(&state, pane_id)?;
+    let now = Instant::now();
+    let displaced = state.leases.get(&pane_id).and_then(|lease| {
+        (lease.expires_at > now && lease.client_id != client_id).then_some(StreamLease {
+            pane_id,
+            client_id: lease.client_id,
+            generation: lease.generation,
+        })
+    });
+    if let Some(displaced) = displaced {
+        record_transferred_stream(&mut state, displaced);
+    }
     let generation = NEXT_LEASE_GENERATION.fetch_add(1, Ordering::Relaxed);
     state.leases.insert(
         pane_id,
         Lease {
             client_id,
             generation,
-            expires_at: Instant::now() + LEASE_TTL,
+            expires_at: now + LEASE_TTL,
         },
     );
     Ok((state.revision, generation))
@@ -2553,6 +2608,9 @@ fn close_session(daemon: &Arc<Daemon>, id: SessionId, expected: u64) -> Result<R
         state.runtime_generations.remove(pane_id);
         state.agent_wake_leases.remove(pane_id);
         state.leases.remove(pane_id);
+        state
+            .transferred_streams
+            .retain(|stream| stream.pane_id != *pane_id);
         state.terminal_operation_locks.remove(pane_id);
         state.listening_ports.remove(pane_id);
         state.foreground_jobs.remove(pane_id);
@@ -2613,6 +2671,9 @@ fn close_pane(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Respons
     state.runtime_generations.remove(&id);
     state.agent_wake_leases.remove(&id);
     state.leases.remove(&id);
+    state
+        .transferred_streams
+        .retain(|stream| stream.pane_id != id);
     state.terminal_operation_locks.remove(&id);
     state.listening_ports.remove(&id);
     state.foreground_jobs.remove(&id);
@@ -4887,6 +4948,7 @@ mod tests {
                 foreground_jobs: HashSet::new(),
                 listener_scan_complete: false,
                 leases: HashMap::new(),
+                transferred_streams: VecDeque::new(),
                 events: VecDeque::new(),
                 plugins: Vec::new(),
                 plugin_events: VecDeque::new(),
@@ -5406,6 +5468,389 @@ mod tests {
         release_stream_lease(&daemon, pane_id, 9, 2);
         assert!(!lock(&daemon.state).leases.contains_key(&pane_id));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn stream_lease_classifies_live_replacement_as_transfer() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let now = Instant::now();
+        let displaced = StreamLease {
+            pane_id: PaneId(4),
+            client_id: 9,
+            generation: 1,
+        };
+        {
+            let mut state = lock(&daemon.state);
+            state.leases.insert(
+                PaneId(4),
+                Lease {
+                    client_id: 10,
+                    generation: 2,
+                    expires_at: now + LEASE_TTL,
+                },
+            );
+            record_transferred_stream(&mut state, displaced);
+        }
+
+        let state = lock(&daemon.state);
+        assert_eq!(
+            terminal_stream_lease_error(&state, displaced, now)
+                .unwrap()
+                .code,
+            "lease_transferred"
+        );
+        drop(state);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn stream_lease_classifies_expiry_missing_and_stopping_as_lost() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let now = Instant::now();
+        let stream = StreamLease {
+            pane_id: PaneId(4),
+            client_id: 9,
+            generation: 1,
+        };
+
+        {
+            let mut state = lock(&daemon.state);
+            state.leases.insert(
+                PaneId(4),
+                Lease {
+                    client_id: 9,
+                    generation: 1,
+                    expires_at: now,
+                },
+            );
+            assert_eq!(
+                terminal_stream_lease_error(&state, stream, now)
+                    .unwrap()
+                    .code,
+                "lease_lost"
+            );
+
+            state.leases.remove(&PaneId(4));
+            assert_eq!(
+                terminal_stream_lease_error(&state, stream, now)
+                    .unwrap()
+                    .code,
+                "lease_lost"
+            );
+
+            state.leases.insert(
+                PaneId(4),
+                Lease {
+                    client_id: 9,
+                    generation: 1,
+                    expires_at: now + LEASE_TTL,
+                },
+            );
+            state.stopping = true;
+            assert_eq!(
+                terminal_stream_lease_error(&state, stream, now)
+                    .unwrap()
+                    .code,
+                "lease_lost"
+            );
+        }
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn expired_lease_reacquisition_remains_lease_lost() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let runtime = Arc::new(
+            spawn_runtime(
+                &daemon,
+                pane_id,
+                TerminalId(5),
+                Path::new("/"),
+                &LaunchRecipe {
+                    command: vec!["/bin/cat".into()],
+                    initial_input: None,
+                    rows: 3,
+                    cols: 4,
+                },
+            )
+            .unwrap(),
+        );
+        lock(&daemon.state)
+            .runtimes
+            .insert(pane_id, Arc::clone(&runtime));
+        let (_, expired_generation) = acquire_terminal_lease(&daemon, pane_id, 9, true).unwrap();
+        lock(&daemon.state)
+            .leases
+            .get_mut(&pane_id)
+            .unwrap()
+            .expires_at = Instant::now();
+        let (_, replacement_generation) =
+            acquire_terminal_lease(&daemon, pane_id, 10, true).unwrap();
+
+        let state = lock(&daemon.state);
+        assert_eq!(
+            terminal_stream_lease_error(
+                &state,
+                StreamLease {
+                    pane_id,
+                    client_id: 9,
+                    generation: expired_generation,
+                },
+                Instant::now(),
+            )
+            .unwrap()
+            .code,
+            "lease_lost"
+        );
+        drop(state);
+
+        release_stream_lease(&daemon, pane_id, 10, replacement_generation);
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn repeated_takeovers_bound_provenance_when_displaced_clients_do_not_release() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let runtime = Arc::new(
+            spawn_runtime(
+                &daemon,
+                pane_id,
+                TerminalId(5),
+                Path::new("/"),
+                &LaunchRecipe {
+                    command: vec!["/bin/cat".into()],
+                    initial_input: None,
+                    rows: 3,
+                    cols: 4,
+                },
+            )
+            .unwrap(),
+        );
+        lock(&daemon.state)
+            .runtimes
+            .insert(pane_id, Arc::clone(&runtime));
+
+        let (_, first_generation) = acquire_terminal_lease(&daemon, pane_id, 1, true).unwrap();
+        let oldest = StreamLease {
+            pane_id,
+            client_id: 1,
+            generation: first_generation,
+        };
+        let mut latest_displaced = oldest;
+        let mut current_generation = first_generation;
+        let mut current_client = 1;
+        for client_id in 2..=(MAX_CLIENTS as u64 + 2) {
+            latest_displaced = StreamLease {
+                pane_id,
+                client_id: current_client,
+                generation: current_generation,
+            };
+            (_, current_generation) =
+                acquire_terminal_lease(&daemon, pane_id, client_id, true).unwrap();
+            current_client = client_id;
+        }
+
+        let state = lock(&daemon.state);
+        assert_eq!(state.transferred_streams.len(), MAX_CLIENTS);
+        assert!(!state.transferred_streams.contains(&oldest));
+        assert!(state.transferred_streams.contains(&latest_displaced));
+        assert_eq!(
+            terminal_stream_lease_error(&state, oldest, Instant::now())
+                .unwrap()
+                .code,
+            "lease_lost"
+        );
+        assert_eq!(
+            terminal_stream_lease_error(&state, latest_displaced, Instant::now())
+                .unwrap()
+                .code,
+            "lease_transferred"
+        );
+        drop(state);
+
+        release_stream_lease(&daemon, pane_id, current_client, current_generation);
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn displaced_terminal_stream_receives_transfer_notice() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let runtime = Arc::new(
+            spawn_runtime(
+                &daemon,
+                pane_id,
+                TerminalId(5),
+                Path::new("/"),
+                &LaunchRecipe {
+                    command: vec!["/bin/cat".into()],
+                    initial_input: None,
+                    rows: 3,
+                    cols: 4,
+                },
+            )
+            .unwrap(),
+        );
+        lock(&daemon.state)
+            .runtimes
+            .insert(pane_id, Arc::clone(&runtime));
+        let (_, displaced_generation) = acquire_terminal_lease(&daemon, pane_id, 9, true).unwrap();
+        let (mut server_stream, client_stream) = UnixStream::pair().unwrap();
+        client_stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let active = Arc::new(AtomicBool::new(true));
+        let resync = Arc::new(AtomicBool::new(true));
+        let input_error = Arc::new(Mutex::new(None));
+        let stream_daemon = Arc::clone(&daemon);
+        let stream_active = Arc::clone(&active);
+        let stream_resync = Arc::clone(&resync);
+        let stream_input_error = Arc::clone(&input_error);
+        let stream_thread = thread::spawn(move || {
+            stream_terminal_updates(
+                &mut server_stream,
+                &stream_daemon,
+                StreamLease {
+                    pane_id,
+                    client_id: 9,
+                    generation: displaced_generation,
+                },
+                &stream_active,
+                &stream_resync,
+                &stream_input_error,
+            )
+        });
+
+        let (_, replacement_generation) =
+            acquire_terminal_lease(&daemon, pane_id, 10, true).unwrap();
+        daemon.changed.notify_all();
+        let mut reader = BufReader::new(client_stream);
+        let error = (0..3)
+            .find_map(|_| {
+                let line = read_bounded_line(&mut reader).unwrap().unwrap();
+                match serde_json::from_str::<TerminalServerMessage>(&line).unwrap() {
+                    TerminalServerMessage::Error(error) => Some(error),
+                    _ => None,
+                }
+            })
+            .expect("displaced stream transfer error");
+        assert_eq!(error.code, "lease_transferred");
+        assert_eq!(
+            error.message,
+            "terminal control moved to another wsx instance"
+        );
+
+        active.store(false, Ordering::Release);
+        daemon.changed.notify_all();
+        stream_thread.join().unwrap().unwrap();
+        release_stream_lease(&daemon, pane_id, 10, replacement_generation);
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn explicit_other_client_takeover_rotates_authority_and_fences_every_old_operation() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let runtime = Arc::new(
+            spawn_runtime(
+                &daemon,
+                pane_id,
+                TerminalId(5),
+                Path::new("/"),
+                &LaunchRecipe {
+                    command: vec!["/bin/cat".into()],
+                    initial_input: None,
+                    rows: 3,
+                    cols: 4,
+                },
+            )
+            .unwrap(),
+        );
+        lock(&daemon.state)
+            .runtimes
+            .insert(pane_id, Arc::clone(&runtime));
+
+        let (_, displaced_generation) = acquire_terminal_lease(&daemon, pane_id, 9, true).unwrap();
+        let (_, replacement_generation) =
+            acquire_terminal_lease(&daemon, pane_id, 10, true).unwrap();
+        assert_ne!(displaced_generation, replacement_generation);
+        {
+            let state = lock(&daemon.state);
+            let lease = state.leases.get(&pane_id).unwrap();
+            assert_eq!(lease.client_id, 10);
+            assert_eq!(lease.generation, replacement_generation);
+        }
+
+        for message in [
+            TerminalClientMessage::Input(b"stale input".to_vec()),
+            TerminalClientMessage::Resize { rows: 8, cols: 9 },
+            TerminalClientMessage::Heartbeat,
+        ] {
+            assert_eq!(
+                handle_terminal_stream_input(&daemon, pane_id, 9, displaced_generation, message,)
+                    .unwrap_err()
+                    .code,
+                "lease_required"
+            );
+        }
+
+        for mouse in [
+            MouseEvent {
+                action: MouseAction::Press,
+                button: MouseButton::Left,
+                x: 0,
+                y: 0,
+                in_bounds: true,
+                shift: false,
+                control: false,
+                alt: false,
+                super_key: false,
+            },
+            MouseEvent {
+                action: MouseAction::Motion,
+                button: MouseButton::Left,
+                x: 2,
+                y: 0,
+                in_bounds: true,
+                shift: false,
+                control: false,
+                alt: false,
+                super_key: false,
+            },
+        ] {
+            with_stream_runtime(&daemon, pane_id, 10, replacement_generation, |runtime| {
+                runtime.mouse(&mouse).map_err(terminal_api)
+            })
+            .unwrap();
+        }
+        let selection = || match runtime
+            .presentation_sample(None, true)
+            .update
+            .unwrap()
+            .unwrap()
+        {
+            TerminalUpdate::Full(frame) => frame.selection,
+            TerminalUpdate::Patch { .. } => panic!("expected full frame"),
+        };
+        assert!(!selection().is_empty());
+
+        release_stream_lease(&daemon, pane_id, 9, displaced_generation);
+        assert!(!selection().is_empty());
+        let state = lock(&daemon.state);
+        let lease = state.leases.get(&pane_id).unwrap();
+        assert_eq!(lease.client_id, 10);
+        assert_eq!(lease.generation, replacement_generation);
+        drop(state);
+
+        release_stream_lease(&daemon, pane_id, 10, replacement_generation);
+        runtime.terminate();
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("json.backup"));
     }
 
     #[test]
