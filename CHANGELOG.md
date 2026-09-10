@@ -22,6 +22,7 @@
 ### Maintenance
 
 - Exclude repository-local `.work` test scratch at every package depth so CI package verification remains clean after the test suite.
+- Wake pausable PTY readers through a control descriptor instead of periodic polling, avoiding platform-specific rewrite latency during live-handoff-capable operation.
 
 ## [0.24.0] - 2026-09-09
 

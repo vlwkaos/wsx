@@ -5,8 +5,6 @@ mod ghostty;
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
-#[cfg(unix)]
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::{
     error::Error,
     fmt,
@@ -18,6 +16,11 @@ use std::{
     },
     thread,
     time::{Duration, Instant},
+};
+#[cfg(unix)]
+use std::{
+    os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd},
+    os::unix::net::UnixStream,
 };
 use wsx_core::runtime::{
     Cell, CellModifiers, Cursor, KeyCode, KeyEvent, MouseAction, MouseButton, MouseEvent, PaneId,
@@ -34,8 +37,6 @@ const MAX_STARTUP_INPUT_BYTES: usize = 64 * 1024;
 const STARTUP_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const BRACKETED_PASTE_MODE: u16 = 2004;
 const MOUSE_SCROLL_LINES: isize = 3;
-#[cfg(unix)]
-const HANDOFF_READER_POLL: Duration = Duration::from_millis(20);
 #[cfg(unix)]
 const HANDOFF_PAUSE_TIMEOUT: Duration = Duration::from_secs(2);
 pub const MAX_HANDOFF_ANSI_BYTES: usize = 512 * 1024;
@@ -130,6 +131,7 @@ struct ReaderState {
 struct ReaderControl {
     state: Mutex<ReaderState>,
     changed: Condvar,
+    wake: Mutex<Option<UnixStream>>,
 }
 
 struct Shared {
@@ -249,6 +251,8 @@ impl TerminalRuntime {
                 return Err(TerminalError::Io(error));
             }
         }
+        #[cfg(unix)]
+        let (reader, reader_wake) = reader_control()?;
         let shared = Arc::new(Shared {
             emulator: Mutex::new(emulator),
             writer,
@@ -258,10 +262,10 @@ impl TerminalRuntime {
             terminating: AtomicBool::new(false),
             notify,
             #[cfg(unix)]
-            reader: Arc::new(ReaderControl::default()),
+            reader,
         });
         #[cfg(unix)]
-        let reader_result = spawn_reader_fd(reader_fd, Arc::clone(&shared));
+        let reader_result = spawn_reader_fd(reader_fd, reader_wake, Arc::clone(&shared));
         #[cfg(not(unix))]
         let reader_result = spawn_reader(reader, Arc::clone(&shared));
         if let Err(error) = reader_result {
@@ -443,7 +447,7 @@ impl TerminalRuntime {
         let cursor = format!("\x1b[{};{}H", state.cursor_y + 1, state.cursor_x + 1);
         emulator.terminal.write(cursor.as_bytes());
         emulator.sync_input();
-        let reader = Arc::new(ReaderControl::default());
+        let (reader, reader_wake) = reader_control()?;
         {
             let mut reader_state = lock(&reader.state);
             reader_state.pause_requested = true;
@@ -458,7 +462,7 @@ impl TerminalRuntime {
             notify,
             reader,
         });
-        spawn_reader_fd(reader_fd, Arc::clone(&shared))?;
+        spawn_reader_fd(reader_fd, reader_wake, Arc::clone(&shared))?;
         set_reader_paused(&shared.reader, true, HANDOFF_PAUSE_TIMEOUT)
             .map_err(TerminalError::Io)?;
         Ok(Self {
@@ -1108,10 +1112,24 @@ fn duplicate_fd(fd: RawFd) -> io::Result<OwnedFd> {
 }
 
 #[cfg(unix)]
+fn reader_control() -> io::Result<(Arc<ReaderControl>, UnixStream)> {
+    let (wake_reader, wake_writer) = UnixStream::pair()?;
+    let control = Arc::new(ReaderControl {
+        state: Mutex::new(ReaderState::default()),
+        changed: Condvar::new(),
+        wake: Mutex::new(Some(wake_writer)),
+    });
+    Ok((control, wake_reader))
+}
+
+#[cfg(unix)]
 fn set_reader_paused(control: &ReaderControl, paused: bool, timeout: Duration) -> io::Result<()> {
     let deadline = Instant::now() + timeout;
     let mut state = lock(&control.state);
     state.pause_requested = paused;
+    if let Some(wake) = lock(&control.wake).as_mut() {
+        wake.write_all(&[1])?;
+    }
     control.changed.notify_all();
     while state.paused != paused {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1141,11 +1159,16 @@ fn set_reader_paused(control: &ReaderControl, paused: bool, timeout: Duration) -
 }
 
 #[cfg(unix)]
-fn spawn_reader_fd(reader: OwnedFd, shared: Arc<Shared>) -> Result<(), TerminalError> {
+fn spawn_reader_fd(
+    reader: OwnedFd,
+    wake: UnixStream,
+    shared: Arc<Shared>,
+) -> Result<(), TerminalError> {
     thread::Builder::new()
         .name("wsx-pty-reader".into())
         .spawn(move || {
             let fd = reader.as_raw_fd();
+            let wake_fd = wake.as_raw_fd();
             let mut buffer = [0_u8; 16 * 1024];
             loop {
                 {
@@ -1165,18 +1188,19 @@ fn spawn_reader_fd(reader: OwnedFd, shared: Arc<Shared>) -> Result<(), TerminalE
                     }
                 }
 
-                let mut pollfd = libc::pollfd {
-                    fd,
-                    events: libc::POLLIN | libc::POLLHUP,
-                    revents: 0,
-                };
-                let ready = unsafe {
-                    libc::poll(
-                        &mut pollfd,
-                        1,
-                        HANDOFF_READER_POLL.as_millis() as libc::c_int,
-                    )
-                };
+                let mut pollfds = [
+                    libc::pollfd {
+                        fd,
+                        events: libc::POLLIN | libc::POLLHUP,
+                        revents: 0,
+                    },
+                    libc::pollfd {
+                        fd: wake_fd,
+                        events: libc::POLLIN | libc::POLLHUP,
+                        revents: 0,
+                    },
+                ];
+                let ready = unsafe { libc::poll(pollfds.as_mut_ptr(), pollfds.len() as _, -1) };
                 if ready < 0 {
                     let error = io::Error::last_os_error();
                     if error.kind() == io::ErrorKind::Interrupted {
@@ -1185,7 +1209,9 @@ fn spawn_reader_fd(reader: OwnedFd, shared: Arc<Shared>) -> Result<(), TerminalE
                     set_error(&shared.error, format!("PTY poll failed: {error}"));
                     break;
                 }
-                if ready == 0 {
+                if pollfds[1].revents != 0 {
+                    let mut byte = 0_u8;
+                    let _ = unsafe { libc::read(wake_fd, (&mut byte as *mut u8).cast(), 1) };
                     continue;
                 }
                 let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
