@@ -3,6 +3,7 @@ use super::protocol::{
     MAX_RESPONSE_BYTES, PROTOCOL_VERSION,
 };
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
     os::unix::{
@@ -15,16 +16,37 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-        mpsc, Arc,
+        mpsc, Arc, Mutex, OnceLock,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
+const HANDOFF_WAIT: Duration = Duration::from_secs(35);
 const START_WINDOW: Duration = Duration::from_secs(60);
 const MAX_START_ATTEMPTS: usize = 3;
 static ACTIVE_TUI_MONITORS: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_PROTOCOLS: OnceLock<Mutex<HashMap<PathBuf, u32>>> = OnceLock::new();
+const LEGACY_BASELINE_PROTOCOL: u32 = 11;
+
+fn active_protocol(socket: &Path) -> u32 {
+    ACTIVE_PROTOCOLS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(socket)
+        .copied()
+        .unwrap_or(PROTOCOL_VERSION)
+}
+
+fn set_active_protocol(socket: &Path, protocol: u32) {
+    ACTIVE_PROTOCOLS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(socket.to_path_buf(), protocol);
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Availability {
@@ -97,14 +119,16 @@ impl Client {
     }
 
     pub fn call(&self, request: &Request) -> io::Result<Response> {
+        self.call_at_protocol(request, active_protocol(&self.socket))
+    }
+
+    fn call_at_protocol(&self, request: &Request, protocol: u32) -> io::Result<Response> {
         let mut stream = self.connect()?;
         if !matches!(request, Request::Hello { .. }) {
-            validate_hello(round_trip(
-                &mut stream,
-                &Request::Hello {
-                    protocol: PROTOCOL_VERSION,
-                },
-            )?)?;
+            validate_hello(
+                round_trip(&mut stream, &Request::Hello { protocol })?,
+                protocol,
+            )?;
         }
         round_trip(&mut stream, request)
     }
@@ -123,13 +147,13 @@ struct Handshake {
     epoch: u64,
 }
 
-fn validate_hello(response: Response) -> io::Result<Handshake> {
+fn validate_hello(response: Response, expected_protocol: u32) -> io::Result<Handshake> {
     match response {
         Response::Hello {
             protocol, epoch, ..
-        } if protocol == PROTOCOL_VERSION => Ok(Handshake { epoch }),
+        } if protocol == expected_protocol => Ok(Handshake { epoch }),
         Response::Hello { protocol, .. } => Err(io::Error::other(format!(
-            "protocol_mismatch: client {PROTOCOL_VERSION}, daemon {protocol}"
+            "protocol_mismatch: client {expected_protocol}, daemon {protocol}"
         ))),
         Response::Error(error) => Err(io::Error::other(format!(
             "{}: {}",
@@ -215,13 +239,11 @@ impl TerminalStream {
     ) -> io::Result<Self> {
         let mut stream = client.connect()?;
         let mut reader = BufReader::with_capacity(64 * 1024, stream.try_clone()?);
-        let handshake = validate_hello(round_trip_buffered(
-            &mut stream,
-            &mut reader,
-            &Request::Hello {
-                protocol: PROTOCOL_VERSION,
-            },
-        )?)?;
+        let protocol = active_protocol(client.socket());
+        let handshake = validate_hello(
+            round_trip_buffered(&mut stream, &mut reader, &Request::Hello { protocol })?,
+            protocol,
+        )?;
         match round_trip_buffered(
             &mut stream,
             &mut reader,
@@ -527,6 +549,7 @@ fn ensure_available_with_binary(
     if let Some(availability) =
         ready_without_transition(client, &first, target_binary_id.as_deref())?
     {
+        set_active_protocol(client.socket(), PROTOCOL_VERSION);
         return Ok(availability);
     }
 
@@ -535,11 +558,13 @@ fn ensure_available_with_binary(
     if let Some(availability) =
         ready_without_transition(client, &existing, target_binary_id.as_deref())?
     {
+        set_active_protocol(client.socket(), PROTOCOL_VERSION);
         return Ok(availability);
     }
 
     match existing {
         ExistingDaemon::Missing => {
+            set_active_protocol(client.socket(), PROTOCOL_VERSION);
             let planned = consume_planned_marker(
                 client.socket(),
                 target_binary_id.as_deref(),
@@ -577,6 +602,22 @@ fn ensure_available_with_binary(
             let daemon_version = lifecycle_version(&status);
             let target_version = super::protocol::WSX_VERSION.to_string();
             let compatible = matches!(existing, ExistingDaemon::Ready { .. });
+            let compatibility_protocol = match &existing {
+                ExistingDaemon::Incompatible {
+                    advertised_protocol: Some(protocol),
+                    ..
+                } if (LEGACY_BASELINE_PROTOCOL..PROTOCOL_VERSION).contains(protocol) => {
+                    Some(*protocol)
+                }
+                _ => None,
+            };
+            let live_handoff = matches!(
+                &existing,
+                ExistingDaemon::Ready {
+                    live_handoff: true,
+                    ..
+                }
+            );
             if compatible && !version_coordination && legacy_daemon_has_other_clients(&status) {
                 return Ok(Availability::ReplacementDeferred {
                     daemon_version,
@@ -585,27 +626,44 @@ fn ensure_available_with_binary(
                     blockers: vec![super::domain::ReplacementBlocker::LegacyDaemon],
                 });
             }
-            match lifecycle_round_trip(
-                client,
-                &Request::PrepareReplacement {
+            let replacement_request = if live_handoff {
+                Request::PrepareHandoff {
+                    target_binary_id: target_binary_id.clone(),
+                    target_version: target_version.clone(),
+                    target_protocol: PROTOCOL_VERSION,
+                    target_daemon_revision: super::protocol::DAEMON_REVISION,
+                    executable: binary.to_path_buf(),
+                }
+            } else {
+                Request::PrepareReplacement {
                     target_binary_id: target_binary_id.clone(),
                     target_daemon_revision: super::protocol::DAEMON_REVISION,
-                },
-            )? {
+                }
+            };
+            match lifecycle_round_trip(client, &replacement_request)? {
                 Response::Replacement {
                     disposition: super::domain::ReplacementDisposition::Stopping,
                     ..
                 } => {
-                    wait_until_stopped(client)?;
-                    consume_planned_marker(
-                        client.socket(),
-                        Some(&target_binary_id),
-                        super::protocol::DAEMON_REVISION,
-                    )?;
-                    start_daemon(client, binary, &mut bootstrap, true)?;
-                    Ok(Availability::DaemonReplaced {
-                        previous_version: daemon_version,
-                    })
+                    set_active_protocol(client.socket(), PROTOCOL_VERSION);
+                    if live_handoff {
+                        wait_until_handoff_ready(client, super::protocol::DAEMON_REVISION)?;
+                    } else {
+                        wait_until_stopped(client)?;
+                        consume_planned_marker(
+                            client.socket(),
+                            Some(&target_binary_id),
+                            super::protocol::DAEMON_REVISION,
+                        )?;
+                        start_daemon(client, binary, &mut bootstrap, true)?;
+                    }
+                    if live_handoff {
+                        Ok(Availability::Current)
+                    } else {
+                        Ok(Availability::DaemonReplaced {
+                            previous_version: daemon_version,
+                        })
+                    }
                 }
                 Response::Replacement {
                     disposition: super::domain::ReplacementDisposition::Deferred,
@@ -631,6 +689,21 @@ fn ensure_available_with_binary(
                         })
                     }
                 }
+                Response::Replacement {
+                    live_runtimes,
+                    daemon_version: response_daemon_version,
+                    target_version: response_target_version,
+                    blockers,
+                    ..
+                } if compatibility_protocol.is_some() => {
+                    set_active_protocol(client.socket(), compatibility_protocol.unwrap());
+                    Ok(Availability::ReplacementDeferred {
+                        daemon_version: nonempty_or(response_daemon_version, daemon_version),
+                        target_version: nonempty_or(response_target_version, target_version),
+                        live_runtimes,
+                        blockers,
+                    })
+                }
                 Response::Replacement { live_runtimes, .. } => Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     format!(
@@ -655,7 +728,10 @@ fn ensure_available_with_binary(
             daemon_needs_start(incompatible)?;
             unreachable!("incompatible daemon must return an error");
         }
-        ExistingDaemon::Ready { .. } => Ok(Availability::LegacyCompatible),
+        ExistingDaemon::Ready { .. } => {
+            set_active_protocol(client.socket(), PROTOCOL_VERSION);
+            Ok(Availability::LegacyCompatible)
+        }
     }
 }
 
@@ -1175,6 +1251,7 @@ enum ExistingDaemon {
         lifecycle_coordination: bool,
         version_coordination: bool,
         daemon_revision_coordination: bool,
+        live_handoff: bool,
     },
     Missing,
     Incompatible {
@@ -1244,11 +1321,13 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
             let lifecycle_coordination = capabilities.lifecycle_coordination;
             let version_coordination = capabilities.version_coordination;
             let daemon_revision_coordination = capabilities.daemon_revision_coordination;
+            let live_handoff = capabilities.live_handoff;
             match round_trip(&mut stream, &Request::Snapshot)? {
                 Response::Snapshot(_) => Ok(ExistingDaemon::Ready {
                     lifecycle_coordination,
                     version_coordination,
                     daemon_revision_coordination,
+                    live_handoff,
                 }),
                 Response::Error(error) => Err(io::Error::other(format!(
                     "{}: {}",
@@ -1373,6 +1452,34 @@ fn wait_until_stopped(client: &Client) -> io::Result<()> {
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "wsxd did not stop"))
             }
             Err(error) => return Err(error),
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_until_handoff_ready(client: &Client, target_revision: u32) -> io::Result<()> {
+    let deadline = Instant::now() + HANDOFF_WAIT;
+    loop {
+        match probe_existing_daemon(client) {
+            Ok(ExistingDaemon::Ready { .. }) => {
+                if let Ok(status) = lifecycle_status(client) {
+                    if status.daemon_revision >= target_revision
+                        && status.phase == super::domain::DaemonPhase::Ready
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+            Ok(ExistingDaemon::Missing | ExistingDaemon::Incompatible { .. }) => {}
+            Err(error) if daemon_is_stopped_error(&error) => {}
+            Err(error) if Instant::now() >= deadline => return Err(error),
+            Err(_) => {}
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "wsxd live handoff did not become ready",
+            ));
         }
         thread::sleep(Duration::from_millis(50));
     }
@@ -1571,7 +1678,6 @@ mod tests {
                     worktrees: Vec::new(),
                     sessions: Vec::new(),
                     panes: Vec::new(),
-                    conversations: Vec::new(),
                     listening_ports: Vec::new(),
                     pane_activity: Vec::new(),
                     plugin_sidecars: Vec::new(),
@@ -1637,6 +1743,7 @@ mod tests {
             lifecycle_coordination: true,
             version_coordination: true,
             daemon_revision_coordination: true,
+            live_handoff: false,
         };
 
         assert_eq!(
@@ -1700,6 +1807,7 @@ mod tests {
             lifecycle_coordination: true,
             version_coordination: true,
             daemon_revision_coordination: false,
+            live_handoff: false,
         };
         assert_eq!(
             ready_without_transition(&client, &ready, Some("target")).unwrap(),
@@ -1773,6 +1881,7 @@ mod tests {
             lifecycle_coordination: true,
             version_coordination: true,
             daemon_revision_coordination: false,
+            live_handoff: false,
         };
         assert_eq!(
             ready_without_transition(&Client::new(path), &ready, Some("0.22.0:1:2:3:10")).unwrap(),
@@ -1825,7 +1934,6 @@ mod tests {
                                 worktrees: vec![],
                                 sessions: vec![],
                                 panes: vec![],
-                                conversations: vec![],
                                 listening_ports: vec![],
                                 pane_activity: vec![],
                                 plugin_sidecars: Vec::new(),
@@ -1968,6 +2076,113 @@ mod tests {
         record_start_attempt(&mut lock.file, true).unwrap();
         drop(lock);
         let _ = std::fs::remove_file(path.with_extension("bootstrap.lock"));
+    }
+
+    #[test]
+    fn supported_legacy_daemon_remains_usable_while_replacement_is_deferred() {
+        for legacy_protocol in [LEGACY_BASELINE_PROTOCOL, 14] {
+            let (path, listener) = test_listener("legacy-protocol-bridge");
+            let server_path = path.clone();
+            let server = thread::spawn(move || {
+                for step in 0..5 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let hello = read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap();
+                    let expected_protocol = if step == 4 {
+                        legacy_protocol
+                    } else {
+                        PROTOCOL_VERSION
+                    };
+                    assert_eq!(
+                        hello,
+                        Request::Hello {
+                            protocol: expected_protocol
+                        }
+                    );
+                    let hello = format!(
+                        "{{\"type\":\"hello\",\"data\":{{\"protocol\":{legacy_protocol},\"epoch\":7,\"capabilities\":{{\"resume_shell_fallback\":true,\"foreground_jobs\":true,\"lifecycle_coordination\":true,\"version_coordination\":true,\"daemon_revision_coordination\":true}}}}}}\n"
+                    );
+                    stream.write_all(hello.as_bytes()).unwrap();
+                    if matches!(step, 0 | 1) {
+                        continue;
+                    }
+                    let request =
+                        read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap();
+                    match step {
+                        2 => {
+                            assert_eq!(request, Request::LifecycleStatus);
+                            send_response(
+                                &mut stream,
+                                &Response::Lifecycle(super::super::domain::DaemonLifecycle {
+                                    protocol: legacy_protocol,
+                                    epoch: 7,
+                                    binary_id: "0.23.0:1:2:3:1".into(),
+                                    version: "0.23.0".into(),
+                                    daemon_revision: 4,
+                                    started_unix_ms: 1,
+                                    phase: super::super::domain::DaemonPhase::Ready,
+                                    live_runtimes: 1,
+                                    active_clients: 1,
+                                    active_tuis: 0,
+                                    recovered_from_backup: false,
+                                    replacement_target: None,
+                                    replacement_target_version: String::new(),
+                                    replacement_blockers: vec![],
+                                }),
+                            );
+                        }
+                        3 => {
+                            assert!(matches!(request, Request::PrepareReplacement { .. }));
+                            send_response(
+                                &mut stream,
+                                &Response::Replacement {
+                                    disposition:
+                                        super::super::domain::ReplacementDisposition::Deferred,
+                                    live_runtimes: 1,
+                                    daemon_version: "0.23.0".into(),
+                                    target_version: super::super::protocol::WSX_VERSION.into(),
+                                    blockers: vec![
+                                        super::super::domain::ReplacementBlocker::WorkingAgent,
+                                    ],
+                                    use_current_daemon: false,
+                                },
+                            );
+                        }
+                        4 => {
+                            assert_eq!(request, Request::Snapshot);
+                            let snapshot = format!(
+                                "{{\"type\":\"snapshot\",\"data\":{{\"protocol\":{legacy_protocol},\"epoch\":7,\"revision\":9,\"projects\":[{{\"id\":1,\"path\":\"/\",\"name\":\"legacy\",\"revision\":2,\"last_agent_active_unix_ms\":1}}],\"worktrees\":[{{\"id\":2,\"project_id\":1,\"path\":\"/\",\"branch\":\"main\",\"revision\":3}}],\"sessions\":[],\"panes\":[],\"conversations\":[{{\"id\":1}}],\"capabilities\":{{}}}}}}\n"
+                            );
+                            stream.write_all(snapshot.as_bytes()).unwrap();
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                drop(listener);
+                std::fs::remove_file(server_path).unwrap();
+            });
+
+            let client = Client::new(path);
+            let availability =
+                ensure_available_with_binary(&client, false, &std::env::current_exe().unwrap())
+                    .unwrap();
+            assert!(matches!(
+                availability,
+                Availability::ReplacementDeferred {
+                    blockers,
+                    ..
+                } if blockers == [super::super::domain::ReplacementBlocker::WorkingAgent]
+            ));
+            let Response::Snapshot(snapshot) = client.call(&Request::Snapshot).unwrap() else {
+                panic!("expected bridged snapshot");
+            };
+            assert_eq!(snapshot.protocol, legacy_protocol);
+            assert_eq!(snapshot.revision, 9);
+            assert_eq!(snapshot.projects[0].name, "legacy");
+            assert_eq!(snapshot.projects[0].last_agent_active_unix_ms, Some(1));
+            assert_eq!(snapshot.worktrees[0].branch, "main");
+            set_active_protocol(client.socket(), PROTOCOL_VERSION);
+            server.join().unwrap();
+        }
     }
 
     #[test]

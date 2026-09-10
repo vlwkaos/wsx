@@ -5,6 +5,9 @@ fn main() -> std::process::ExitCode {
         Some(argument) if argument == wsx_daemon::RESUME_SUPERVISOR_ARG => {
             wsx_daemon::run_resume_supervisor(arguments)
         }
+        Some(argument) if argument == wsx_daemon::HANDOFF_IMPORT_ARG => {
+            wsx_daemon::run_handoff_import(arguments)
+        }
         Some(_) => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "unexpected wsxd argument",

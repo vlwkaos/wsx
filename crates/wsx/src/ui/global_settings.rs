@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use wsx_core::config::global::{
-    GlobalConfig, PortVisibility, TerminalSidebar, TerminalTitlePosition,
+    AttentionPriority, GlobalConfig, PortVisibility, TerminalSidebar, TerminalTitlePosition,
 };
 
 use super::{popup_block, popup_center, theme};
@@ -54,6 +54,7 @@ impl SettingsCategory {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingField {
     AutoCollapse,
+    AttentionPriority,
     ExcludedPaths,
     ShowRelease,
     PortVisibility,
@@ -73,7 +74,11 @@ enum SettingField {
 impl SettingField {
     fn for_category(category: SettingsCategory) -> &'static [Self] {
         match category {
-            SettingsCategory::Workspace => &[Self::AutoCollapse, Self::ExcludedPaths],
+            SettingsCategory::Workspace => &[
+                Self::AutoCollapse,
+                Self::AttentionPriority,
+                Self::ExcludedPaths,
+            ],
             SettingsCategory::View => &[
                 Self::ShowRelease,
                 Self::PortVisibility,
@@ -93,6 +98,7 @@ impl SettingField {
     fn label(self) -> &'static str {
         match self {
             Self::AutoCollapse => "Automatic collapse",
+            Self::AttentionPriority => "Attention navigation",
             Self::ExcludedPaths => "Excluded worktree paths",
             Self::ShowRelease => "Release status",
             Self::PortVisibility => "Session ports",
@@ -111,6 +117,7 @@ impl SettingField {
     fn description(self) -> &'static str {
         match self {
             Self::AutoCollapse => "Hours before inactive projects collapse. Use 0 to disable.",
+            Self::AttentionPriority => "Choose Blocked sessions first or follow Workspace order when using N and Shift+N.",
             Self::ExcludedPaths => "Path fragments ignored during worktree discovery.",
             Self::ShowRelease => "Show the running version and available update in the footer.",
             Self::PortVisibility => "Control ports in session rows and terminal breadcrumbs. Branch detail always shows ports.",
@@ -398,6 +405,14 @@ impl GlobalSettingsForm {
                 self.draft.show_release_status = editor.selected == 0;
                 Ok(())
             }
+            (SettingField::AttentionPriority, FieldEditor::Choice(editor)) => {
+                self.draft.attention_priority = if editor.selected == 0 {
+                    AttentionPriority::BlockedFirst
+                } else {
+                    AttentionPriority::WorkspaceOrder
+                };
+                Ok(())
+            }
             (SettingField::TerminalSidebar, FieldEditor::Choice(editor)) => {
                 self.draft.terminal_sidebar = if editor.selected == 0 {
                     TerminalSidebar::Compact
@@ -466,6 +481,12 @@ impl GlobalSettingsForm {
             SettingField::ShowRelease => FieldEditor::Choice(ChoiceEditor {
                 selected: usize::from(!self.draft.show_release_status),
                 labels: vec!["On", "Off"],
+            }),
+            SettingField::AttentionPriority => FieldEditor::Choice(ChoiceEditor {
+                selected: usize::from(
+                    self.draft.attention_priority == AttentionPriority::WorkspaceOrder,
+                ),
+                labels: vec!["Blocked first", "Workspace order"],
             }),
             SettingField::TerminalSidebar => FieldEditor::Choice(ChoiceEditor {
                 selected: usize::from(self.draft.terminal_sidebar == TerminalSidebar::Expanded),
@@ -724,6 +745,10 @@ fn setting_value(form: &GlobalSettingsForm, field: SettingField) -> String {
             format!("{} entries", form.draft.exclude_worktree_paths.len())
         }
         SettingField::ShowRelease => on_off(form.draft.show_release_status).into(),
+        SettingField::AttentionPriority => match form.draft.attention_priority {
+            AttentionPriority::BlockedFirst => "Blocked first".into(),
+            AttentionPriority::WorkspaceOrder => "Workspace order".into(),
+        },
         SettingField::PortVisibility => match form.draft.port_visibility {
             PortVisibility::Hidden => "Hidden".into(),
             PortVisibility::NonAgentic => "Non-agentic only".into(),
@@ -1377,6 +1402,10 @@ mod tests {
             .lines()
             .position(|line| line.contains("Automatic collapse"))
             .unwrap();
+        let attention_row = text
+            .lines()
+            .position(|line| line.contains("Attention navigation"))
+            .unwrap();
         let paths_row = text
             .lines()
             .position(|line| line.contains("Excluded worktree paths"))
@@ -1387,8 +1416,13 @@ mod tests {
             "sections must form a horizontal tab row"
         );
         assert_eq!(
-            paths_row,
+            attention_row,
             collapse_row + 1,
+            "j/k fields must form vertical rows"
+        );
+        assert_eq!(
+            paths_row,
+            attention_row + 1,
             "j/k fields must form vertical rows"
         );
         let border = text.lines().find(|line| line.contains('┌')).unwrap();
@@ -1410,6 +1444,7 @@ mod tests {
         assert!(text.contains("(s)ave"));
         let mut list_form = GlobalSettingsForm::new(GlobalConfig::default());
         list_form.next_field(false);
+        list_form.next_field(false);
         list_form.begin_or_commit().unwrap();
         let list_text = rendered(110, 24, &list_form);
         assert!(list_text.contains("(a)dd"));
@@ -1425,6 +1460,41 @@ mod tests {
         assert!(narrow.contains("Workspace"));
         assert!(narrow.contains("›"));
         let _ = rendered(12, 4, &form);
+    }
+
+    #[test]
+    fn attention_priority_choice_cancels_and_commits() {
+        let mut form = GlobalSettingsForm::new(GlobalConfig::default());
+        form.field = 1;
+        assert_eq!(
+            setting_value(&form, SettingField::AttentionPriority),
+            "Blocked first"
+        );
+        let workspace = rendered(80, 20, &form);
+        assert!(workspace.contains("Attention navigation"), "{workspace}");
+
+        form.begin_or_commit().unwrap();
+        let choices = rendered(80, 20, &form);
+        assert!(choices.contains("Blocked first"), "{choices}");
+        assert!(choices.contains("Workspace order"), "{choices}");
+        form.next_field(false);
+        assert!(form.cancel_editor());
+        assert_eq!(
+            form.draft.attention_priority,
+            AttentionPriority::BlockedFirst
+        );
+
+        form.begin_or_commit().unwrap();
+        form.next_field(false);
+        form.begin_or_commit().unwrap();
+        assert_eq!(
+            form.draft.attention_priority,
+            AttentionPriority::WorkspaceOrder
+        );
+        assert_eq!(
+            setting_value(&form, SettingField::AttentionPriority),
+            "Workspace order"
+        );
     }
 
     #[test]
@@ -1448,6 +1518,7 @@ mod tests {
             ..GlobalConfig::default()
         };
         let mut form = GlobalSettingsForm::new(config);
+        form.next_field(false);
         form.next_field(false);
         form.begin_or_commit().unwrap();
         form.toggle();

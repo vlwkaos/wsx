@@ -1,14 +1,14 @@
 //! Persistent wsx authority for project/session structure, PTYs, frames, leases, and plugins.
 // ^ [[wsx Architecture]] Snapshots are authoritative; events only invalidate revisions.
 
-mod conversation;
+#[cfg(unix)]
+mod handoff;
 mod plugins;
 mod state_store;
 #[cfg(any(target_os = "macos", test))]
 mod wake;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ffi::OsString,
@@ -18,7 +18,7 @@ use std::{
     ops::{Deref, DerefMut},
     os::unix::{
         fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
-        io::AsRawFd,
+        io::{AsRawFd, FromRawFd, IntoRawFd},
         net::{UnixListener, UnixStream},
         process::CommandExt,
     },
@@ -35,11 +35,6 @@ use wsx_core::{config::global::GlobalConfig, integration::resume, runtime::*};
 use wsx_terminal::{validate_launch, TerminalRuntime};
 
 const EVENT_LIMIT: usize = 1024;
-const CONVERSATION_EVENT_LIMIT: usize = 256;
-const CONVERSATION_INTERACTION_LIMIT: usize = 128;
-const CONVERSATION_COMMAND_LIMIT: usize = 256;
-const CONVERSATION_EVENT_TEXT_BYTES: usize = 16 * 1024;
-const CONVERSATION_ARGUMENT_BYTES: usize = 64 * 1024;
 const PLUGIN_EVENT_LIMIT: usize = 256;
 const MAX_CLIENTS: usize = 64;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -59,6 +54,7 @@ const MAX_PORT_SCAN_BYTES: u64 = 256 * 1024;
 const RESUME_CLEAR_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 const RESUME_CLEAR_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 pub const RESUME_SUPERVISOR_ARG: &str = "__wsx_resume_supervisor";
+pub const HANDOFF_IMPORT_ARG: &str = "__wsx_handoff_import";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LaunchRecipe {
@@ -133,8 +129,6 @@ struct Persisted {
     worktrees: Vec<Worktree>,
     sessions: Vec<Session>,
     panes: Vec<PersistedPane>,
-    #[serde(default)]
-    conversations: Vec<Conversation>,
 }
 impl Default for Persisted {
     fn default() -> Self {
@@ -144,7 +138,6 @@ impl Default for Persisted {
             worktrees: Vec::new(),
             sessions: Vec::new(),
             panes: Vec::new(),
-            conversations: Vec::new(),
         }
     }
 }
@@ -194,6 +187,7 @@ impl RuntimeAgentAuthority {
 enum StopReason {
     Unexpected,
     Replacement,
+    Handoff,
     Intentional,
 }
 
@@ -201,7 +195,7 @@ impl StopReason {
     fn marker(self) -> &'static str {
         match self {
             Self::Unexpected => "unexpected",
-            Self::Replacement => "replacement",
+            Self::Replacement | Self::Handoff => "replacement",
             Self::Intentional => "intentional",
         }
     }
@@ -211,10 +205,6 @@ struct State {
     persisted: Persisted,
     revision: u64,
     runtimes: HashMap<PaneId, Arc<TerminalRuntime>>,
-    conversation_runtimes: HashMap<ConversationId, conversation::ConversationProcess>,
-    conversation_events: HashMap<ConversationId, VecDeque<ConversationEvent>>,
-    conversation_interactions: HashMap<(ConversationId, String), ConversationInteractionKind>,
-    conversation_commands: HashMap<ConversationId, Vec<ConversationCommand>>,
     runtime_generations: HashMap<PaneId, String>,
     agent_wake_leases: HashMap<PaneId, Instant>,
     terminal_operation_locks: HashMap<PaneId, Arc<Mutex<()>>>,
@@ -230,12 +220,17 @@ struct State {
     legacy_tui_until: Option<Instant>,
     replacement_target: Option<String>,
     replacement_daemon_revision: Option<u32>,
+    replacement_protocol: Option<u32>,
+    replacement_executable: Option<PathBuf>,
+    handoff_in_progress: bool,
+    handoff_started: Option<Instant>,
     stop_reason: Option<StopReason>,
     persistence_dirty: bool,
     stopping: bool,
 }
 struct Daemon {
     state: Mutex<State>,
+    mutation_lock: Mutex<()>,
     changed: Condvar,
     plugin_changed: Condvar,
     active_clients: Arc<AtomicUsize>,
@@ -602,42 +597,90 @@ fn resume_agents_on_restore() -> bool {
 }
 
 pub fn run() -> io::Result<()> {
+    run_daemon(None)
+}
+
+pub fn run_handoff_import(mut arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
+    let socket = arguments
+        .next()
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "handoff socket is missing"))?;
+    let token = arguments
+        .next()
+        .and_then(|value| value.into_string().ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "handoff token is missing"))?;
+    if arguments.next().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unexpected handoff import argument",
+        ));
+    }
+    run_daemon(Some(handoff::receive(&socket, &token)?))
+}
+
+fn new_state(persisted: Persisted) -> State {
+    State {
+        persisted,
+        revision: 1,
+        runtimes: HashMap::new(),
+        runtime_generations: HashMap::new(),
+        agent_wake_leases: HashMap::new(),
+        terminal_operation_locks: HashMap::new(),
+        listening_ports: HashMap::new(),
+        foreground_jobs: HashSet::new(),
+        listener_scan_complete: false,
+        leases: HashMap::new(),
+        transferred_streams: VecDeque::new(),
+        events: VecDeque::new(),
+        plugins: plugins::discover(),
+        plugin_events: VecDeque::new(),
+        tui_clients: HashMap::new(),
+        legacy_tui_until: None,
+        replacement_target: None,
+        replacement_daemon_revision: None,
+        replacement_protocol: None,
+        replacement_executable: None,
+        handoff_in_progress: false,
+        handoff_started: None,
+        stop_reason: None,
+        persistence_dirty: false,
+        stopping: false,
+    }
+}
+
+fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     install_shutdown_signals()?;
     let socket = default_socket_path();
     let state_path = state_path();
     secure_parent(&socket)?;
     secure_parent(&state_path)?;
-    let _singleton_lock = acquire_singleton_lock(&state_path.with_extension("lock"))?;
-    prepare_socket(&socket)?;
-    let (persisted, recovered_from_backup) = load_state_with_status(&state_path)?;
+
+    let (singleton_lock, persisted, recovered_from_backup, import) = match import {
+        Some(handoff::Received {
+            manifest,
+            singleton_lock,
+            pane_fds,
+            stream,
+        }) => {
+            validate_persisted(&manifest.persisted)?;
+            (
+                fs::File::from(singleton_lock),
+                manifest.persisted,
+                false,
+                Some((manifest.panes, pane_fds, stream)),
+            )
+        }
+        None => {
+            let singleton_lock = acquire_singleton_lock(&state_path.with_extension("lock"))?;
+            prepare_socket(&socket)?;
+            let (persisted, recovered) = load_state_with_status(&state_path)?;
+            (singleton_lock, persisted, recovered, None)
+        }
+    };
+
     let daemon = Arc::new(Daemon {
-        state: Mutex::new(State {
-            persisted,
-            revision: 1,
-            runtimes: HashMap::new(),
-            conversation_runtimes: HashMap::new(),
-            conversation_events: HashMap::new(),
-            conversation_interactions: HashMap::new(),
-            conversation_commands: HashMap::new(),
-            runtime_generations: HashMap::new(),
-            agent_wake_leases: HashMap::new(),
-            terminal_operation_locks: HashMap::new(),
-            listening_ports: HashMap::new(),
-            foreground_jobs: HashSet::new(),
-            listener_scan_complete: false,
-            leases: HashMap::new(),
-            transferred_streams: VecDeque::new(),
-            events: VecDeque::new(),
-            plugins: plugins::discover(),
-            plugin_events: VecDeque::new(),
-            tui_clients: HashMap::new(),
-            legacy_tui_until: None,
-            replacement_target: None,
-            replacement_daemon_revision: None,
-            stop_reason: None,
-            persistence_dirty: false,
-            stopping: false,
-        }),
+        state: Mutex::new(new_state(persisted)),
+        mutation_lock: Mutex::new(()),
         changed: Condvar::new(),
         plugin_changed: Condvar::new(),
         active_clients: Arc::new(AtomicUsize::new(0)),
@@ -650,14 +693,51 @@ pub fn run() -> io::Result<()> {
         state_path,
         lifecycle_path: lifecycle_marker_path(&socket),
     });
-    // ^ [[Session Model]] Session identity remains durable while native agent
-    // resume or the saved recipe recreates a process; neither restores the old PTY.
-    recover_runtimes(&daemon, resume_agents_on_restore())?;
-    recover_conversations(&daemon);
+
+    let mut import_stream = None;
+    if let Some((panes, pane_fds, mut stream)) = import {
+        if panes.len() != pane_fds.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "handoff pane and descriptor counts differ",
+            ));
+        }
+        for (pane, fd) in panes.into_iter().zip(pane_fds) {
+            let pane_id = pane.state.pane_id;
+            let runtime = unsafe {
+                TerminalRuntime::from_handoff_fd(
+                    fd.into_raw_fd(),
+                    pane.state,
+                    runtime_notify(&daemon, pane_id),
+                )
+            }
+            .map_err(|error| io::Error::other(error.to_string()))?;
+            runtime.protect_handoff_import();
+            let mut state = lock(&daemon.state);
+            if !state.persisted.panes.iter().any(|pane| pane.id == pane_id) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "handoff pane is absent from persisted state",
+                ));
+            }
+            if let Some(generation) = pane.runtime_generation {
+                state.runtime_generations.insert(pane_id, generation);
+            }
+            state.runtimes.insert(pane_id, Arc::new(runtime));
+        }
+        handoff::report_restored(&mut stream)?;
+        handoff::wait_publish(&mut stream)?;
+        prepare_socket(&socket)?;
+        import_stream = Some(stream);
+    } else {
+        // ^ [[Session Model]] Cold recovery recreates processes only when no live handoff exists.
+        recover_runtimes(&daemon, resume_agents_on_restore())?;
+    }
+
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
-    write_lifecycle_marker(&daemon.lifecycle_path, "ready")?;
+    let mut listener = Some(listener);
     let plugin_dispatcher = match spawn_plugin_dispatcher(&daemon) {
         Ok(handle) => handle,
         Err(error) => {
@@ -665,12 +745,41 @@ pub fn run() -> io::Result<()> {
             return Err(error);
         }
     };
+
+    if let Some(mut stream) = import_stream {
+        write_lifecycle_marker(&daemon.lifecycle_path, "ready")?;
+        handoff::report_ready(&mut stream)?;
+        handoff::wait_commit(&mut stream)?;
+        let runtimes = lock(&daemon.state)
+            .runtimes
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for runtime in runtimes {
+            runtime.assume_handoff_ownership();
+            runtime.activate_handoff();
+        }
+        let _ = handoff::report_owned(&mut stream);
+    } else {
+        write_lifecycle_marker(&daemon.lifecycle_path, "ready")?;
+    }
+
     let port_scanner = spawn_port_scanner(&daemon);
     let wake_controller = spawn_wake_controller(&daemon);
 
     while !advance_replacement(&daemon) {
         retry_dirty_persistence(&daemon);
-        match listener.accept() {
+        if let Some(target) = take_ready_handoff(&daemon) {
+            match perform_live_handoff(&daemon, &socket, &singleton_lock, &mut listener, target) {
+                Ok(()) => break,
+                Err(error) => eprintln!("wsxd handoff: {error}"),
+            }
+        }
+        let Some(active_listener) = listener.as_ref() else {
+            thread::sleep(Duration::from_millis(20));
+            continue;
+        };
+        match active_listener.accept() {
             Ok((stream, _)) => {
                 if daemon.active_clients.fetch_add(1, Ordering::AcqRel) >= MAX_CLIENTS {
                     daemon.active_clients.fetch_sub(1, Ordering::AcqRel);
@@ -701,6 +810,213 @@ pub fn run() -> io::Result<()> {
     let _ = plugin_dispatcher.join();
     let _ = port_scanner.join();
     let _ = wake_controller.join();
+    Ok(())
+}
+
+#[derive(Clone)]
+struct HandoffTarget {
+    binary_id: String,
+    version: String,
+    protocol: u32,
+    daemon_revision: u32,
+    executable: PathBuf,
+}
+
+fn take_ready_handoff(daemon: &Daemon) -> Option<HandoffTarget> {
+    let _mutation = lock(&daemon.mutation_lock);
+    let mut state = lock(&daemon.state);
+    if state.stopping || state.handoff_in_progress {
+        return None;
+    }
+    let binary_id = state.replacement_target.clone()?;
+    let executable = state.replacement_executable.clone()?;
+    if !handoff_blockers(&mut state, &binary_id).is_empty() {
+        return None;
+    }
+    let target = HandoffTarget {
+        version: binary_identity_version(&binary_id)?.to_string(),
+        binary_id,
+        protocol: state.replacement_protocol?,
+        daemon_revision: state.replacement_daemon_revision?,
+        executable,
+    };
+    state.handoff_in_progress = true;
+    state.handoff_started = Some(Instant::now());
+    daemon.changed.notify_all();
+    Some(target)
+}
+
+fn perform_live_handoff(
+    daemon: &Arc<Daemon>,
+    socket: &Path,
+    singleton_lock: &fs::File,
+    listener: &mut Option<UnixListener>,
+    target: HandoffTarget,
+) -> io::Result<()> {
+    if let Err(error) = validate_handoff_executable(&target.executable, &target.binary_id) {
+        rollback_handoff(daemon, socket, listener, &[])?;
+        return Err(error);
+    }
+    let runtimes = {
+        let state = lock(&daemon.state);
+        let mut runtimes = state
+            .runtimes
+            .iter()
+            .map(|(pane_id, runtime)| (*pane_id, Arc::clone(runtime)))
+            .collect::<Vec<_>>();
+        runtimes.sort_by_key(|(pane_id, _)| *pane_id);
+        runtimes
+    };
+    let operation_locks = runtimes
+        .iter()
+        .map(|(pane_id, _)| terminal_operation_lock(daemon, *pane_id))
+        .collect::<Vec<_>>();
+    let _operations = operation_locks
+        .iter()
+        .map(|operation_lock| lock(operation_lock))
+        .collect::<Vec<_>>();
+
+    let mut paused = Vec::new();
+    for (_, runtime) in &runtimes {
+        if let Err(error) = runtime.pause_handoff_reader() {
+            rollback_handoff(daemon, socket, listener, &paused)?;
+            return Err(io::Error::other(error.to_string()));
+        }
+        paused.push(Arc::clone(runtime));
+    }
+
+    let mut duplicate_fds = Vec::<std::os::fd::OwnedFd>::new();
+    let mut source_ownership = Vec::<(Arc<TerminalRuntime>, libc::pid_t)>::new();
+    let result = (|| {
+        let (persisted, generations) = {
+            let state = lock(&daemon.state);
+            save_state(&daemon.state_path, &state.persisted)?;
+            (state.persisted.clone(), state.runtime_generations.clone())
+        };
+        let mut pane_handoffs = Vec::with_capacity(runtimes.len());
+        for (pane_id, runtime) in &runtimes {
+            let state = runtime
+                .handoff_state()
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            let fd = runtime
+                .duplicate_handoff_fd()
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            duplicate_fds.push(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) });
+            pane_handoffs.push(handoff::PaneHandoff {
+                state,
+                runtime_generation: generations.get(pane_id).cloned(),
+            });
+        }
+        let manifest = handoff::manifest(
+            persisted,
+            pane_handoffs,
+            target.version.clone(),
+            target.protocol,
+            target.daemon_revision,
+        );
+        let handoff_path = handoff::socket_path(socket, daemon.epoch)?;
+        let handoff_listener = handoff::bind(&handoff_path)?;
+        let token = format!(
+            "{:016x}{:016x}",
+            daemon.epoch,
+            unix_time_millis() ^ u64::from(std::process::id())
+        );
+        let mut child = handoff::spawn_import(&target.executable, &handoff_path, &token)?;
+        let pane_fds = duplicate_fds
+            .iter()
+            .map(AsRawFd::as_raw_fd)
+            .collect::<Vec<_>>();
+        let mut stream = match handoff::accept_and_send(
+            handoff_listener,
+            &handoff_path,
+            &token,
+            &manifest,
+            singleton_lock.as_raw_fd(),
+            &pane_fds,
+        ) {
+            Ok(stream) => stream,
+            Err(error) => {
+                handoff::cleanup_child(&mut child);
+                return Err(error);
+            }
+        };
+
+        drop(listener.take());
+        let _ = fs::remove_file(socket);
+        handoff::request_publish(&mut stream)?;
+        if let Err(error) = handoff::wait_ready(&mut stream) {
+            handoff::cleanup_child(&mut child);
+            return Err(error);
+        }
+        for (_, runtime) in &runtimes {
+            match runtime.prepare_source_handoff() {
+                Ok(process_group) => source_ownership.push((Arc::clone(runtime), process_group)),
+                Err(error) => {
+                    handoff::cleanup_child(&mut child);
+                    return Err(io::Error::other(error.to_string()));
+                }
+            }
+        }
+        if let Err(error) = handoff::commit(&mut stream) {
+            handoff::cleanup_child(&mut child);
+            return Err(error);
+        }
+        {
+            let mut state = lock(&daemon.state);
+            state.stopping = true;
+            state.stop_reason = Some(StopReason::Handoff);
+            daemon.changed.notify_all();
+            daemon.plugin_changed.notify_all();
+        }
+        handoff::wait_owned(&mut stream);
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            for (runtime, process_group) in source_ownership {
+                runtime.rollback_source_handoff(process_group);
+            }
+            if let Err(rollback_error) = rollback_handoff(daemon, socket, listener, &paused) {
+                return Err(io::Error::other(format!(
+                    "{error}; rollback failed: {rollback_error}"
+                )));
+            }
+            Err(error)
+        }
+    }
+}
+
+fn rollback_handoff(
+    daemon: &Daemon,
+    socket: &Path,
+    listener: &mut Option<UnixListener>,
+    paused: &[Arc<TerminalRuntime>],
+) -> io::Result<()> {
+    if listener.is_none() {
+        prepare_socket(socket)?;
+        let restored = UnixListener::bind(socket)?;
+        fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
+        restored.set_nonblocking(true)?;
+        *listener = Some(restored);
+    }
+    for runtime in paused {
+        runtime.resume_handoff_reader();
+    }
+    let mut state = lock(&daemon.state);
+    if let Some(started) = state.handoff_started.take() {
+        let paused_for = started.elapsed();
+        for lease in state.leases.values_mut() {
+            lease.expires_at += paused_for;
+        }
+    }
+    state.handoff_in_progress = false;
+    state.replacement_target = None;
+    state.replacement_daemon_revision = None;
+    state.replacement_protocol = None;
+    state.replacement_executable = None;
+    daemon.changed.notify_all();
     Ok(())
 }
 
@@ -741,7 +1057,7 @@ fn advance_replacement(daemon: &Daemon) -> bool {
         daemon.changed.notify_all();
         daemon.plugin_changed.notify_all();
     }
-    let replacement_ready = if state.stopping {
+    let replacement_ready = if state.stopping || state.replacement_executable.is_some() {
         false
     } else {
         state
@@ -797,7 +1113,7 @@ fn acquire_singleton_lock(path: &Path) -> io::Result<fs::File> {
 }
 
 fn cleanup(daemon: &Daemon, socket: &Path) {
-    let (runtimes, conversation_runtimes, reason) = {
+    let (runtimes, reason, preserve_runtimes) = {
         let mut state = lock(&daemon.state);
         state.stopping = true;
         state.leases.clear();
@@ -805,16 +1121,15 @@ fn cleanup(daemon: &Daemon, socket: &Path) {
         state.agent_wake_leases.clear();
         state.plugin_events.clear();
         let runtimes = std::mem::take(&mut state.runtimes);
-        let conversation_runtimes = std::mem::take(&mut state.conversation_runtimes);
-        state.conversation_events.clear();
-        state.conversation_interactions.clear();
-        state.conversation_commands.clear();
         state.runtime_generations.clear();
-        let _ = save_state(&daemon.state_path, &state.persisted);
+        let reason = state.stop_reason.unwrap_or(StopReason::Unexpected);
+        let preserve_runtimes = reason == StopReason::Handoff;
+        if !preserve_runtimes {
+            let _ = save_state(&daemon.state_path, &state.persisted);
+        }
         daemon.changed.notify_all();
         daemon.plugin_changed.notify_all();
-        let reason = state.stop_reason.unwrap_or(StopReason::Unexpected);
-        let marker = if reason == StopReason::Replacement {
+        let marker = if matches!(reason, StopReason::Replacement | StopReason::Handoff) {
             let target = state.replacement_target.as_deref().unwrap_or_default();
             match state
                 .replacement_daemon_revision
@@ -826,16 +1141,17 @@ fn cleanup(daemon: &Daemon, socket: &Path) {
         } else {
             reason.marker().to_string()
         };
-        (runtimes, conversation_runtimes, marker)
+        (runtimes, marker, preserve_runtimes)
     };
-    for runtime in runtimes.into_values() {
-        runtime.terminate();
+    if !preserve_runtimes {
+        for runtime in runtimes.into_values() {
+            runtime.terminate();
+        }
     }
-    for mut runtime in conversation_runtimes.into_values() {
-        runtime.terminate();
+    if !preserve_runtimes {
+        let _ = write_lifecycle_marker(&daemon.lifecycle_path, &reason);
+        let _ = fs::remove_file(socket);
     }
-    let _ = write_lifecycle_marker(&daemon.lifecycle_path, &reason);
-    let _ = fs::remove_file(socket);
 }
 
 fn serve_client(mut stream: UnixStream, daemon: Arc<Daemon>) -> io::Result<()> {
@@ -885,7 +1201,10 @@ fn serve_client(mut stream: UnixStream, daemon: Arc<Daemon>) -> io::Result<()> {
         })?;
         let response = if matches!(
             request,
-            Request::Shutdown | Request::LifecycleStatus | Request::PrepareReplacement { .. }
+            Request::Shutdown
+                | Request::LifecycleStatus
+                | Request::PrepareReplacement { .. }
+                | Request::PrepareHandoff { .. }
         ) {
             handle(&daemon, request)
         } else {
@@ -1176,7 +1495,7 @@ fn terminal_stream_lease_error(
     stream: StreamLease,
     now: Instant,
 ) -> Option<ApiError> {
-    if state.stopping {
+    if state.stopping || state.handoff_in_progress {
         return Some(ApiError::new(
             "lease_lost",
             "terminal stream no longer owns the pane lease",
@@ -1234,7 +1553,9 @@ fn release_stream_lease(daemon: &Daemon, pane_id: PaneId, client_id: u64, lease_
         .is_some_and(|lease| lease.client_id == client_id && lease.generation == lease_generation)
     {
         state.leases.remove(&pane_id);
-        let runtime = state.runtimes.get(&pane_id).cloned();
+        let runtime = (!state.stopping && !state.handoff_in_progress)
+            .then(|| state.runtimes.get(&pane_id).cloned())
+            .flatten();
         drop(state);
         if let Some(runtime) = runtime {
             let _ = runtime.clear_selection();
@@ -1398,6 +1719,12 @@ fn acquire_terminal_lease(
     let operation_lock = terminal_operation_lock(daemon, pane_id);
     let _operation = lock(&operation_lock);
     let state = lock(&daemon.state);
+    if state.stopping || state.handoff_in_progress {
+        return Err(api(
+            "daemon_replacing",
+            "wsxd is replacing its runtime owner",
+        ));
+    }
     let runtime = Arc::clone(require_runtime(&state, pane_id)?);
     if state
         .leases
@@ -1445,6 +1772,21 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Response {
 }
 
 fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiError> {
+    let _mutation = (!matches!(
+        &request,
+        Request::Hello { .. }
+            | Request::Snapshot
+            | Request::Poll { .. }
+            | Request::View { .. }
+            | Request::PluginList
+            | Request::LifecycleStatus
+    ))
+    .then(|| lock(&daemon.mutation_lock));
+    if !matches!(&request, Request::Hello { .. } | Request::LifecycleStatus)
+        && lock(&daemon.state).handoff_in_progress
+    {
+        return Err(api("daemon_replacing", "wsxd live handoff is in progress"));
+    }
     match request {
         Request::Hello { protocol } => {
             if protocol != PROTOCOL_VERSION {
@@ -1636,37 +1978,6 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             runtime_generation,
             next_runtime_generation,
         } => agent_clear(daemon, pane_id, runtime_generation, next_runtime_generation),
-        Request::ConversationCreate {
-            session_id,
-            provider,
-            expected_revision,
-        } => create_conversation(daemon, session_id, provider, expected_revision),
-        Request::ConversationSend {
-            conversation_id,
-            mode,
-            text,
-            attachments,
-        } => send_conversation(daemon, conversation_id, mode, text, attachments),
-        Request::ConversationAbort { conversation_id } => {
-            abort_conversation(daemon, conversation_id)
-        }
-        Request::ConversationEvents {
-            conversation_id,
-            after_cursor,
-            limit,
-        } => conversation_events(daemon, conversation_id, after_cursor, limit),
-        Request::ConversationRespond {
-            conversation_id,
-            interaction_id,
-            response,
-        } => respond_to_conversation(daemon, conversation_id, interaction_id, response),
-        Request::ConversationSetModel { .. } => Err(api(
-            "unsupported",
-            "conversation model selection is not available",
-        )),
-        Request::ConversationCommands { conversation_id } => {
-            conversation_commands(daemon, conversation_id)
-        }
         Request::PluginList => Ok(Response::Plugins(lock(&daemon.state).plugins.clone())),
         Request::PluginReload => {
             let mut state = lock(&daemon.state);
@@ -1762,6 +2073,20 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             target_binary_id,
             target_daemon_revision,
         } => prepare_replacement_with_revision(daemon, target_binary_id, target_daemon_revision),
+        Request::PrepareHandoff {
+            target_binary_id,
+            target_version,
+            target_protocol,
+            target_daemon_revision,
+            executable,
+        } => prepare_handoff(
+            daemon,
+            target_binary_id,
+            target_version,
+            target_protocol,
+            target_daemon_revision,
+            executable,
+        ),
         Request::Shutdown => {
             let mut state = lock(&daemon.state);
             state.stopping = true;
@@ -1849,7 +2174,7 @@ fn capabilities() -> Capabilities {
         lifecycle_coordination: true,
         version_coordination: true,
         daemon_revision_coordination: true,
-        conversations: true,
+        live_handoff: true,
     }
 }
 
@@ -1866,7 +2191,13 @@ fn lifecycle_status(daemon: &Daemon, state: &mut State) -> DaemonLifecycle {
     let target = state.replacement_target.clone();
     let blockers = target
         .as_deref()
-        .map(|target| replacement_blockers(state, target))
+        .map(|target| {
+            if state.replacement_executable.is_some() {
+                handoff_blockers(state, target)
+            } else {
+                replacement_blockers(state, target)
+            }
+        })
         .unwrap_or_default();
     let target_version = target
         .as_deref()
@@ -2030,6 +2361,97 @@ fn prepare_replacement_with_revision(
     ))
 }
 
+fn prepare_handoff(
+    daemon: &Daemon,
+    target_binary_id: String,
+    target_version: String,
+    target_protocol: u32,
+    target_daemon_revision: u32,
+    executable: PathBuf,
+) -> Result<Response, ApiError> {
+    if target_protocol == 0 || target_daemon_revision < DAEMON_REVISION {
+        return Err(api("invalid_request", "handoff target is not newer"));
+    }
+    if binary_identity_version(&target_binary_id) != Some(target_version.as_str()) {
+        return Err(api(
+            "invalid_request",
+            "handoff target version does not match its identity",
+        ));
+    }
+    if compare_binary_identities(&target_binary_id, &daemon.binary_id)
+        != Some(std::cmp::Ordering::Greater)
+    {
+        return Err(api("invalid_request", "handoff target is not newer"));
+    }
+    let executable = validate_handoff_executable(&executable, &target_binary_id)
+        .map_err(|error| api("invalid_handoff_target", error.to_string()))?;
+    let mut state = lock(&daemon.state);
+    if state.handoff_in_progress {
+        return Err(api(
+            "handoff_in_progress",
+            "wsxd handoff is already in progress",
+        ));
+    }
+    if let Some(current_revision) = state.replacement_daemon_revision {
+        if current_revision > target_daemon_revision {
+            return Ok(replacement_response(
+                &state,
+                ReplacementDisposition::Deferred,
+                target_version,
+                vec![ReplacementBlocker::PendingTarget],
+                false,
+            ));
+        }
+    }
+    state.replacement_target = Some(target_binary_id.clone());
+    state.replacement_daemon_revision = Some(target_daemon_revision);
+    state.replacement_protocol = Some(target_protocol);
+    state.replacement_executable = Some(executable);
+    let blockers = handoff_blockers(&mut state, &target_binary_id);
+    daemon.changed.notify_all();
+    Ok(replacement_response(
+        &state,
+        if blockers.is_empty() {
+            ReplacementDisposition::Stopping
+        } else {
+            ReplacementDisposition::Deferred
+        },
+        target_version,
+        blockers,
+        false,
+    ))
+}
+
+fn validate_handoff_executable(path: &Path, expected_identity: &str) -> io::Result<PathBuf> {
+    let canonical = path.canonicalize()?;
+    let metadata = canonical.metadata()?;
+    let owner = metadata.uid();
+    if !metadata.is_file()
+        || (owner != unsafe { libc::geteuid() } && owner != 0)
+        || metadata.mode() & 0o022 != 0
+        || binary_identity(&canonical)? != expected_identity
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unsafe wsxd handoff executable",
+        ));
+    }
+    Ok(canonical)
+}
+
+fn handoff_blockers(state: &mut State, _target_binary_id: &str) -> Vec<ReplacementBlocker> {
+    expire_tui_presence(state, Instant::now());
+    let another_tui = state.legacy_tui_until.is_some() || !state.tui_clients.is_empty();
+    let mut blockers = Vec::new();
+    if another_tui {
+        blockers.push(ReplacementBlocker::OtherTui);
+    }
+    if state.runtimes.len() > handoff::MAX_HANDOFF_PANES {
+        blockers.push(ReplacementBlocker::HandoffUnavailable);
+    }
+    blockers
+}
+
 fn snapshot(daemon: &Daemon, state: &State) -> Snapshot {
     let mut listening_ports = state
         .listening_ports
@@ -2067,7 +2489,6 @@ fn snapshot(daemon: &Daemon, state: &State) -> Snapshot {
             .iter()
             .map(|pane| pane.pane.clone())
             .collect(),
-        conversations: state.persisted.conversations.clone(),
         listening_ports,
         pane_activity,
         plugin_sidecars: plugins::sidecars(&state.plugins),
@@ -2586,17 +3007,8 @@ fn close_session(daemon: &Arc<Daemon>, id: SessionId, expected: u64) -> Result<R
         .ok_or_else(|| api("not_found", "session not found"))?;
     expect_revision(session.revision, expected)?;
     let revision = state.revision.saturating_add(1);
-    let conversation_id = state
-        .persisted
-        .conversations
-        .iter()
-        .find(|conversation| conversation.session_id == id)
-        .map(|conversation| conversation.id);
     let mut persisted = state.persisted.clone();
     persisted.panes.retain(|pane| pane.session_id != id);
-    persisted
-        .conversations
-        .retain(|conversation| conversation.session_id != id);
     persisted.sessions.retain(|session| session.id != id);
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
     state.persisted = persisted;
@@ -2615,21 +3027,9 @@ fn close_session(daemon: &Arc<Daemon>, id: SessionId, expected: u64) -> Result<R
         state.listening_ports.remove(pane_id);
         state.foreground_jobs.remove(pane_id);
     }
-    let conversation_runtime = conversation_id
-        .and_then(|conversation_id| state.conversation_runtimes.remove(&conversation_id));
-    if let Some(conversation_id) = conversation_id {
-        state.conversation_events.remove(&conversation_id);
-        state
-            .conversation_interactions
-            .retain(|(id, _), _| *id != conversation_id);
-        state.conversation_commands.remove(&conversation_id);
-    }
     publish(daemon, &mut state, revision, "session.closed", id.0);
     drop(state);
     for runtime in runtimes {
-        runtime.terminate();
-    }
-    if let Some(mut runtime) = conversation_runtime {
         runtime.terminate();
     }
     Ok(Response::Ack { revision })
@@ -2821,979 +3221,6 @@ fn touch_terminal_project(daemon: &Arc<Daemon>, pane_id: PaneId) -> Result<(), A
     state.persisted = persisted;
     bump(daemon, &mut state, "project.terminal_entered", pane_id.0);
     Ok(())
-}
-
-fn recover_conversations(daemon: &Arc<Daemon>) {
-    recover_conversations_with(daemon, spawn_conversation_process);
-}
-
-fn recover_conversations_with(
-    daemon: &Arc<Daemon>,
-    mut spawn: impl FnMut(
-        &Arc<Daemon>,
-        ConversationId,
-        &wsx_core::integration::conversation::ConversationLaunchPlan,
-        &Path,
-    ) -> io::Result<conversation::ConversationProcess>,
-) {
-    let attempts = {
-        let state = lock(&daemon.state);
-        state
-            .persisted
-            .conversations
-            .iter()
-            .map(|conversation| {
-                let plan = wsx_core::integration::conversation::plan(
-                    &conversation.provider,
-                    conversation.session_ref.as_ref(),
-                );
-                let cwd = state
-                    .persisted
-                    .sessions
-                    .iter()
-                    .find(|session| session.id == conversation.session_id)
-                    .and_then(|session| {
-                        state
-                            .persisted
-                            .worktrees
-                            .iter()
-                            .find(|worktree| worktree.id == session.worktree_id)
-                    })
-                    .map(|worktree| worktree.path.clone());
-                (conversation.id, plan.zip(cwd))
-            })
-            .collect::<Vec<_>>()
-    };
-    for (conversation_id, attempt) in attempts {
-        let Some((plan, cwd)) = attempt else {
-            let mut state = lock(&daemon.state);
-            push_runtime_error(
-                daemon,
-                &mut state,
-                conversation_id,
-                "conversation cannot be restored".into(),
-            );
-            continue;
-        };
-        match spawn(daemon, conversation_id, &plan, &cwd) {
-            Ok(mut runtime) => {
-                let mut state = lock(&daemon.state);
-                if state.stopping
-                    || !state
-                        .persisted
-                        .conversations
-                        .iter()
-                        .any(|conversation| conversation.id == conversation_id)
-                {
-                    drop(state);
-                    runtime.terminate();
-                    continue;
-                }
-                state.conversation_runtimes.insert(conversation_id, runtime);
-                if let Some(error) = bootstrap_conversation(&state, conversation_id) {
-                    push_runtime_error(daemon, &mut state, conversation_id, error.to_string());
-                }
-            }
-            Err(error) => {
-                let mut state = lock(&daemon.state);
-                push_runtime_error(daemon, &mut state, conversation_id, error.to_string());
-            }
-        }
-    }
-}
-
-fn spawn_conversation_process(
-    daemon: &Arc<Daemon>,
-    conversation_id: ConversationId,
-    plan: &wsx_core::integration::conversation::ConversationLaunchPlan,
-    cwd: &Path,
-) -> io::Result<conversation::ConversationProcess> {
-    let weak = Arc::downgrade(daemon);
-    let callback = Arc::new(move |record| {
-        if let Some(daemon) = weak.upgrade() {
-            handle_conversation_record(&daemon, conversation_id, record);
-        }
-    });
-    conversation::ConversationProcess::spawn(plan, cwd, callback)
-}
-
-fn bootstrap_conversation(state: &State, conversation_id: ConversationId) -> Option<io::Error> {
-    state
-        .conversation_runtimes
-        .get(&conversation_id)
-        .and_then(|runtime| {
-            [
-                serde_json::json!({"type":"get_state","id":"wsx-bootstrap-state"}),
-                serde_json::json!({"type":"get_commands","id":"wsx-bootstrap-commands"}),
-            ]
-            .iter()
-            .find_map(|command| runtime.send(command).err())
-        })
-}
-
-fn create_conversation(
-    daemon: &Arc<Daemon>,
-    session_id: SessionId,
-    provider: String,
-    expected_revision: u64,
-) -> Result<Response, ApiError> {
-    let provider = bounded_provider(provider)?;
-    let plan = wsx_core::integration::conversation::plan(&provider, None)
-        .ok_or_else(|| api("unsupported_provider", "provider has no structured adapter"))?;
-    let (conversation_id, cwd) = {
-        let mut state = lock(&daemon.state);
-        if state.stopping {
-            return Err(api("daemon_stopping", "wsxd is stopping"));
-        }
-        let session = state
-            .persisted
-            .sessions
-            .iter()
-            .find(|session| session.id == session_id)
-            .ok_or_else(|| api("not_found", "session not found"))?;
-        expect_revision(session.revision, expected_revision)?;
-        if state
-            .persisted
-            .conversations
-            .iter()
-            .any(|conversation| conversation.session_id == session_id)
-        {
-            return Err(api("already_exists", "session already has a conversation"));
-        }
-        let cwd = state
-            .persisted
-            .worktrees
-            .iter()
-            .find(|worktree| worktree.id == session.worktree_id)
-            .ok_or_else(|| api("not_found", "worktree not found"))?
-            .path
-            .clone();
-        let mut persisted = state.persisted.clone();
-        let conversation_id = ConversationId(next_id(&mut persisted)?);
-        save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-        state.persisted = persisted;
-        (conversation_id, cwd)
-    };
-
-    let mut runtime = spawn_conversation_process(daemon, conversation_id, &plan, &cwd)
-        .map_err(|error| api("conversation_start_failed", error.to_string()))?;
-
-    let mut state = lock(&daemon.state);
-    let valid = !state.stopping
-        && state
-            .persisted
-            .sessions
-            .iter()
-            .any(|session| session.id == session_id && session.revision == expected_revision)
-        && !state
-            .persisted
-            .conversations
-            .iter()
-            .any(|conversation| conversation.session_id == session_id);
-    if !valid {
-        drop(state);
-        runtime.terminate();
-        return Err(api(
-            "revision_conflict",
-            "session changed while conversation was starting",
-        ));
-    }
-    let revision = state.revision.saturating_add(1);
-    let conversation = Conversation {
-        id: conversation_id,
-        session_id,
-        provider,
-        state: AgentState::Idle,
-        session_ref: None,
-        capabilities: plan.capabilities,
-        event_cursor: 0,
-        revision,
-    };
-    let mut persisted = state.persisted.clone();
-    persisted.conversations.push(conversation);
-    if let Err(error) = save_state(&daemon.state_path, &persisted).map_err(io_api) {
-        drop(state);
-        runtime.terminate();
-        return Err(error);
-    }
-    state.persisted = persisted;
-    state.conversation_runtimes.insert(conversation_id, runtime);
-    state
-        .conversation_events
-        .insert(conversation_id, VecDeque::new());
-    publish(
-        daemon,
-        &mut state,
-        revision,
-        "conversation.created",
-        conversation_id.0,
-    );
-    let bootstrap_error = bootstrap_conversation(&state, conversation_id);
-    if let Some(error) = bootstrap_error {
-        push_runtime_error(daemon, &mut state, conversation_id, error.to_string());
-    }
-    Ok(Response::Created {
-        revision,
-        id: conversation_id.0,
-    })
-}
-
-fn send_conversation(
-    daemon: &Arc<Daemon>,
-    conversation_id: ConversationId,
-    mode: ConversationInputMode,
-    text: String,
-    attachments: Vec<ConversationAttachment>,
-) -> Result<Response, ApiError> {
-    if text.is_empty()
-        || text.len() > MAX_INPUT_BYTES
-        || text.chars().any(|character| character == '\0')
-    {
-        return Err(api("invalid_input", "conversation text is invalid"));
-    }
-    if !attachments.is_empty() {
-        return Err(api(
-            "unsupported_attachment",
-            "conversation attachments are not available yet",
-        ));
-    }
-    let state = lock(&daemon.state);
-    let conversation = state
-        .persisted
-        .conversations
-        .iter()
-        .find(|conversation| conversation.id == conversation_id)
-        .ok_or_else(|| api("not_found", "conversation not found"))?;
-    let allowed = match mode {
-        ConversationInputMode::Prompt => conversation.capabilities.prompt,
-        ConversationInputMode::Steer => conversation.capabilities.steer,
-        ConversationInputMode::FollowUp => conversation.capabilities.follow_up,
-    };
-    if !allowed {
-        return Err(api("unsupported", "conversation input mode is unavailable"));
-    }
-    let runtime = state
-        .conversation_runtimes
-        .get(&conversation_id)
-        .ok_or_else(|| {
-            api(
-                "conversation_unavailable",
-                "conversation runtime is unavailable",
-            )
-        })?;
-    let command = match mode {
-        ConversationInputMode::Prompt => "prompt",
-        ConversationInputMode::Steer => "steer",
-        ConversationInputMode::FollowUp => "follow_up",
-    };
-    runtime
-        .send(&serde_json::json!({"type": command, "message": text}))
-        .map_err(|error| api("conversation_write_failed", error.to_string()))?;
-    Ok(Response::Ack {
-        revision: state.revision,
-    })
-}
-
-fn abort_conversation(
-    daemon: &Arc<Daemon>,
-    conversation_id: ConversationId,
-) -> Result<Response, ApiError> {
-    let state = lock(&daemon.state);
-    let conversation = state
-        .persisted
-        .conversations
-        .iter()
-        .find(|conversation| conversation.id == conversation_id)
-        .ok_or_else(|| api("not_found", "conversation not found"))?;
-    if !conversation.capabilities.abort {
-        return Err(api("unsupported", "conversation abort is unavailable"));
-    }
-    state
-        .conversation_runtimes
-        .get(&conversation_id)
-        .ok_or_else(|| {
-            api(
-                "conversation_unavailable",
-                "conversation runtime is unavailable",
-            )
-        })?
-        .send(&serde_json::json!({"type": "abort"}))
-        .map_err(|error| api("conversation_write_failed", error.to_string()))?;
-    Ok(Response::Ack {
-        revision: state.revision,
-    })
-}
-
-fn conversation_events(
-    daemon: &Daemon,
-    conversation_id: ConversationId,
-    after_cursor: u64,
-    limit: u16,
-) -> Result<Response, ApiError> {
-    if limit == 0 || limit > 256 {
-        return Err(api(
-            "invalid_limit",
-            "conversation event limit must be 1 through 256",
-        ));
-    }
-    let state = lock(&daemon.state);
-    let conversation = state
-        .persisted
-        .conversations
-        .iter()
-        .find(|conversation| conversation.id == conversation_id)
-        .ok_or_else(|| api("not_found", "conversation not found"))?;
-    if after_cursor > conversation.event_cursor {
-        return Err(api("invalid_cursor", "conversation event cursor is ahead"));
-    }
-    let events = state
-        .conversation_events
-        .get(&conversation_id)
-        .map(VecDeque::as_slices)
-        .map(|(first, second)| first.iter().chain(second.iter()))
-        .into_iter()
-        .flatten()
-        .filter(|event| event.cursor > after_cursor)
-        .take(usize::from(limit))
-        .cloned()
-        .collect::<Vec<_>>();
-    let earliest = state
-        .conversation_events
-        .get(&conversation_id)
-        .and_then(VecDeque::front)
-        .map(|event| event.cursor)
-        .unwrap_or(conversation.event_cursor);
-    let events = if after_cursor.saturating_add(1) < earliest {
-        vec![ConversationEvent {
-            cursor: conversation.event_cursor,
-            conversation_id,
-            occurred_unix_ms: unix_time_millis(),
-            event: ConversationEventKind::ResyncRequired,
-        }]
-    } else {
-        events
-    };
-    let next_cursor = events
-        .last()
-        .map(|event| event.cursor)
-        .unwrap_or(after_cursor);
-    Ok(Response::ConversationEvents {
-        conversation_id,
-        next_cursor,
-        events,
-    })
-}
-
-fn respond_to_conversation(
-    daemon: &Daemon,
-    conversation_id: ConversationId,
-    interaction_id: String,
-    response: ConversationInteractionResponse,
-) -> Result<Response, ApiError> {
-    let interaction_id = bounded_rpc_text(&interaction_id, "interaction id", 4096)?;
-    if interaction_id.is_empty() {
-        return Err(api("invalid_rpc", "interaction id is empty"));
-    }
-    let mut state = lock(&daemon.state);
-    let request = state
-        .conversation_interactions
-        .get(&(conversation_id, interaction_id.clone()))
-        .ok_or_else(|| api("not_found", "conversation interaction not found"))?;
-    let valid = matches!(
-        (request, &response),
-        (
-            ConversationInteractionKind::Select { .. },
-            ConversationInteractionResponse::Selected(_)
-        ) | (
-            ConversationInteractionKind::Confirm { .. },
-            ConversationInteractionResponse::Confirmed(_)
-        ) | (
-            ConversationInteractionKind::Input { .. },
-            ConversationInteractionResponse::Text(_)
-        ) | (
-            ConversationInteractionKind::Editor { .. },
-            ConversationInteractionResponse::Text(_)
-        ) | (_, ConversationInteractionResponse::Cancelled)
-    );
-    if !valid {
-        return Err(api(
-            "invalid_interaction_response",
-            "response does not match the interaction type",
-        ));
-    }
-    let command = match response {
-        ConversationInteractionResponse::Selected(value)
-        | ConversationInteractionResponse::Text(value) => {
-            serde_json::json!({"type":"extension_ui_response","id":interaction_id,"value":bounded_rpc_text(&value, "interaction response", MAX_INPUT_BYTES)?})
-        }
-        ConversationInteractionResponse::Confirmed(confirmed) => {
-            serde_json::json!({"type":"extension_ui_response","id":interaction_id,"confirmed":confirmed})
-        }
-        ConversationInteractionResponse::Cancelled => {
-            serde_json::json!({"type":"extension_ui_response","id":interaction_id,"cancelled":true})
-        }
-    };
-    state
-        .conversation_runtimes
-        .get(&conversation_id)
-        .ok_or_else(|| {
-            api(
-                "conversation_unavailable",
-                "conversation runtime is unavailable",
-            )
-        })?
-        .send(&command)
-        .map_err(|error| api("conversation_write_failed", error.to_string()))?;
-    state
-        .conversation_interactions
-        .remove(&(conversation_id, interaction_id));
-    push_conversation_event(
-        daemon,
-        &mut state,
-        conversation_id,
-        Some(AgentState::Working),
-        ConversationEventKind::StateChanged {
-            state: AgentState::Working,
-        },
-    );
-    Ok(Response::Ack {
-        revision: state.revision,
-    })
-}
-
-fn conversation_commands(
-    daemon: &Daemon,
-    conversation_id: ConversationId,
-) -> Result<Response, ApiError> {
-    let state = lock(&daemon.state);
-    if !state
-        .persisted
-        .conversations
-        .iter()
-        .any(|conversation| conversation.id == conversation_id)
-    {
-        return Err(api("not_found", "conversation not found"));
-    }
-    let commands = state
-        .conversation_commands
-        .get(&conversation_id)
-        .cloned()
-        .ok_or_else(|| {
-            api(
-                "commands_pending",
-                "conversation commands are still loading",
-            )
-        })?;
-    Ok(Response::ConversationCommands(commands))
-}
-
-fn handle_conversation_record(
-    daemon: &Daemon,
-    conversation_id: ConversationId,
-    record: conversation::RpcRecord,
-) {
-    let mut state = lock(&daemon.state);
-    if state.stopping
-        || !state
-            .persisted
-            .conversations
-            .iter()
-            .any(|conversation| conversation.id == conversation_id)
-    {
-        return;
-    }
-    match record {
-        conversation::RpcRecord::Event { event_type, body } => {
-            handle_pi_event(daemon, &mut state, conversation_id, &event_type, &body)
-        }
-        conversation::RpcRecord::ExtensionUi { id, method, body } => {
-            let interaction = parse_pi_interaction(id, &method, &body);
-            match interaction {
-                Ok(Some(interaction)) => {
-                    if state
-                        .conversation_interactions
-                        .keys()
-                        .filter(|(id, _)| *id == conversation_id)
-                        .count()
-                        >= CONVERSATION_INTERACTION_LIMIT
-                    {
-                        push_runtime_error(
-                            daemon,
-                            &mut state,
-                            conversation_id,
-                            "conversation interaction limit reached".into(),
-                        );
-                        return;
-                    }
-                    state.conversation_interactions.insert(
-                        (conversation_id, interaction.id.clone()),
-                        interaction.request.clone(),
-                    );
-                    push_conversation_event(
-                        daemon,
-                        &mut state,
-                        conversation_id,
-                        Some(AgentState::Blocked),
-                        ConversationEventKind::InteractionRequested(interaction),
-                    );
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    push_runtime_error(daemon, &mut state, conversation_id, error.message)
-                }
-            }
-        }
-        conversation::RpcRecord::Response {
-            command,
-            success: true,
-            data,
-            ..
-        } if command == "get_commands" => {
-            let Some(commands) = data
-                .as_ref()
-                .and_then(|data| data.get("commands"))
-                .and_then(Value::as_array)
-                .and_then(|commands| parse_pi_commands(commands))
-            else {
-                push_runtime_error(
-                    daemon,
-                    &mut state,
-                    conversation_id,
-                    "Pi get_commands response is invalid".into(),
-                );
-                return;
-            };
-            state
-                .conversation_commands
-                .insert(conversation_id, commands);
-            bump(
-                daemon,
-                &mut state,
-                "conversation.commands",
-                conversation_id.0,
-            );
-        }
-        conversation::RpcRecord::Response {
-            command,
-            success: true,
-            data,
-            ..
-        } if command == "get_state" => {
-            let Some(data) = data else { return };
-            let session_ref = data
-                .get("sessionFile")
-                .and_then(Value::as_str)
-                .and_then(|value| AgentSessionRef::path(value.to_string()))
-                .or_else(|| {
-                    data.get("sessionId")
-                        .and_then(Value::as_str)
-                        .and_then(|value| AgentSessionRef::id(value.to_string()))
-                });
-            let agent_state = if data
-                .get("isStreaming")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                AgentState::Working
-            } else {
-                AgentState::Idle
-            };
-            if let Some(conversation) = state
-                .persisted
-                .conversations
-                .iter_mut()
-                .find(|conversation| conversation.id == conversation_id)
-            {
-                conversation.session_ref = session_ref;
-                conversation.state = agent_state;
-                match save_state(&daemon.state_path, &state.persisted) {
-                    Ok(()) => push_conversation_event(
-                        daemon,
-                        &mut state,
-                        conversation_id,
-                        Some(agent_state),
-                        ConversationEventKind::StateChanged { state: agent_state },
-                    ),
-                    Err(error) => {
-                        push_runtime_error(daemon, &mut state, conversation_id, error.to_string())
-                    }
-                }
-            }
-        }
-        conversation::RpcRecord::Diagnostic(message) => push_conversation_event(
-            daemon,
-            &mut state,
-            conversation_id,
-            None,
-            ConversationEventKind::ToolUpdated {
-                tool_call_id: "runtime-stderr".into(),
-                content: truncate_utf8(message, 4096),
-            },
-        ),
-        conversation::RpcRecord::RuntimeError(message) => {
-            push_runtime_error(daemon, &mut state, conversation_id, message)
-        }
-        conversation::RpcRecord::Exited => push_conversation_event(
-            daemon,
-            &mut state,
-            conversation_id,
-            Some(AgentState::Error),
-            ConversationEventKind::StateChanged {
-                state: AgentState::Error,
-            },
-        ),
-        conversation::RpcRecord::Response {
-            success: false,
-            error,
-            ..
-        } => push_runtime_error(
-            daemon,
-            &mut state,
-            conversation_id,
-            error.unwrap_or_else(|| "Pi RPC request failed".into()),
-        ),
-        _ => {}
-    }
-}
-
-fn handle_pi_event(
-    daemon: &Daemon,
-    state: &mut State,
-    conversation_id: ConversationId,
-    event_type: &str,
-    body: &Value,
-) {
-    let translated = (|| match event_type {
-        "agent_start" => Some((
-            Some(AgentState::Working),
-            ConversationEventKind::StateChanged {
-                state: AgentState::Working,
-            },
-        )),
-        "agent_settled" => Some((Some(AgentState::Done), ConversationEventKind::Settled)),
-        "message_start" => message_role(body).map(|role| {
-            let message_id = message_id(body).unwrap_or_else(|| {
-                format!(
-                    "message-{}-{}",
-                    conversation_id.0,
-                    current_conversation_cursor(state, conversation_id).saturating_add(1)
-                )
-            });
-            (
-                None,
-                ConversationEventKind::MessageStarted { message_id, role },
-            )
-        }),
-        "message_update" => {
-            let update = body.get("assistantMessageEvent")?;
-            let update_type = update.get("type").and_then(Value::as_str)?;
-            let thinking = update_type == "thinking_delta";
-            if update_type != "text_delta" && !thinking {
-                return None;
-            }
-            let text = update.get("delta").and_then(Value::as_str)?;
-            let content_index = u32::try_from(update.get("contentIndex")?.as_u64()?).ok()?;
-            active_message_id(state, conversation_id).map(|message_id| {
-                (
-                    None,
-                    ConversationEventKind::MessageDelta {
-                        message_id,
-                        content_index,
-                        text: truncate_utf8(text.to_string(), CONVERSATION_EVENT_TEXT_BYTES),
-                        thinking,
-                    },
-                )
-            })
-        }
-        "message_end" => active_message_id(state, conversation_id)
-            .map(|message_id| (None, ConversationEventKind::MessageFinished { message_id })),
-        "tool_execution_start" => {
-            let tool_call_id = rpc_body_string(body, "toolCallId")?;
-            let name = rpc_body_string(body, "toolName")?;
-            let arguments = bounded_event_value(body.get("args").unwrap_or(&Value::Null));
-            Some((
-                None,
-                ConversationEventKind::ToolStarted {
-                    tool_call_id,
-                    name,
-                    arguments,
-                },
-            ))
-        }
-        "tool_execution_update" => Some((
-            None,
-            ConversationEventKind::ToolUpdated {
-                tool_call_id: rpc_body_string(body, "toolCallId")?,
-                content: pi_result_text(body.get("partialResult")?),
-            },
-        )),
-        "tool_execution_end" => Some((
-            None,
-            ConversationEventKind::ToolFinished {
-                tool_call_id: rpc_body_string(body, "toolCallId")?,
-                content: pi_result_text(body.get("result")?),
-                is_error: body
-                    .get("isError")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-            },
-        )),
-        "extension_error" => Some((
-            None,
-            ConversationEventKind::ToolFinished {
-                tool_call_id: "extension".into(),
-                content: truncate_utf8(
-                    body.get("error")
-                        .and_then(Value::as_str)
-                        .unwrap_or("Pi extension failed")
-                        .to_string(),
-                    4096,
-                ),
-                is_error: true,
-            },
-        )),
-        _ => None,
-    })();
-    if let Some((agent_state, event)) = translated {
-        push_conversation_event(daemon, state, conversation_id, agent_state, event);
-    }
-}
-
-fn push_runtime_error(
-    daemon: &Daemon,
-    state: &mut State,
-    conversation_id: ConversationId,
-    message: String,
-) {
-    push_conversation_event(
-        daemon,
-        state,
-        conversation_id,
-        Some(AgentState::Error),
-        ConversationEventKind::ToolFinished {
-            tool_call_id: "runtime".into(),
-            content: truncate_utf8(message, 4096),
-            is_error: true,
-        },
-    );
-}
-
-fn push_conversation_event(
-    daemon: &Daemon,
-    state: &mut State,
-    conversation_id: ConversationId,
-    agent_state: Option<AgentState>,
-    event: ConversationEventKind,
-) {
-    let revision = state.revision.saturating_add(1);
-    let Some(conversation) = state
-        .persisted
-        .conversations
-        .iter_mut()
-        .find(|conversation| conversation.id == conversation_id)
-    else {
-        return;
-    };
-    if let Some(agent_state) = agent_state {
-        conversation.state = agent_state;
-    }
-    conversation.event_cursor = conversation.event_cursor.saturating_add(1);
-    let cursor = conversation.event_cursor;
-    conversation.revision = revision;
-    let events = state
-        .conversation_events
-        .entry(conversation_id)
-        .or_default();
-    events.push_back(ConversationEvent {
-        cursor,
-        conversation_id,
-        occurred_unix_ms: unix_time_millis(),
-        event,
-    });
-    while events.len() > CONVERSATION_EVENT_LIMIT {
-        events.pop_front();
-    }
-    publish(
-        daemon,
-        state,
-        revision,
-        "conversation.changed",
-        conversation_id.0,
-    );
-}
-
-fn parse_pi_interaction(
-    id: String,
-    method: &str,
-    body: &Value,
-) -> Result<Option<ConversationInteraction>, ApiError> {
-    if !matches!(method, "select" | "confirm" | "input" | "editor") {
-        return Ok(None);
-    }
-    let id = bounded_rpc_text(&id, "interaction id", 4096)?;
-    let title = bounded_rpc_text(
-        body.get("title")
-            .and_then(Value::as_str)
-            .unwrap_or("Input required"),
-        "interaction title",
-        4096,
-    )?;
-    let request = match method {
-        "select" => {
-            let options = body
-                .get("options")
-                .and_then(Value::as_array)
-                .ok_or_else(|| api("invalid_rpc", "select options are missing"))?;
-            if options.is_empty() || options.len() > 128 {
-                return Err(api("invalid_rpc", "select options are invalid"));
-            }
-            ConversationInteractionKind::Select {
-                options: options
-                    .iter()
-                    .map(|value| {
-                        value
-                            .as_str()
-                            .ok_or_else(|| api("invalid_rpc", "select option must be text"))
-                            .and_then(|value| bounded_rpc_text(value, "select option", 4096))
-                    })
-                    .collect::<Result<_, _>>()?,
-            }
-        }
-        "confirm" => ConversationInteractionKind::Confirm {
-            message: bounded_rpc_text(
-                body.get("message").and_then(Value::as_str).unwrap_or(""),
-                "confirmation message",
-                4096,
-            )?,
-        },
-        "input" => ConversationInteractionKind::Input {
-            placeholder: bounded_rpc_text(
-                body.get("placeholder")
-                    .and_then(Value::as_str)
-                    .unwrap_or(""),
-                "input placeholder",
-                4096,
-            )?,
-        },
-        "editor" => ConversationInteractionKind::Editor {
-            prefill: bounded_rpc_text(
-                body.get("prefill").and_then(Value::as_str).unwrap_or(""),
-                "editor prefill",
-                MAX_INPUT_BYTES,
-            )?,
-        },
-        _ => unreachable!(),
-    };
-    let timeout_ms = body.get("timeout").and_then(Value::as_u64);
-    if timeout_ms.is_some_and(|timeout| timeout > 24 * 60 * 60 * 1000) {
-        return Err(api("invalid_rpc", "interaction timeout exceeds limit"));
-    }
-    Ok(Some(ConversationInteraction {
-        id,
-        title,
-        request,
-        timeout_ms,
-    }))
-}
-
-fn parse_pi_commands(values: &[Value]) -> Option<Vec<ConversationCommand>> {
-    if values.len() > CONVERSATION_COMMAND_LIMIT {
-        return None;
-    }
-    values
-        .iter()
-        .map(|value| {
-            let name = value.get("name")?.as_str()?;
-            let source = value.get("source")?.as_str()?;
-            if name.is_empty() || source.is_empty() {
-                return None;
-            }
-            Some(ConversationCommand {
-                name: bounded_rpc_text(name, "command name", 512).ok()?,
-                description: bounded_rpc_text(
-                    value
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .unwrap_or(""),
-                    "command description",
-                    4096,
-                )
-                .ok()?,
-                source: bounded_rpc_text(source, "command source", 128).ok()?,
-            })
-        })
-        .collect()
-}
-
-fn bounded_rpc_text(value: &str, field: &str, limit: usize) -> Result<String, ApiError> {
-    if value.len() > limit || value.chars().any(|character| character == '\0') {
-        return Err(api("invalid_rpc", format!("{field} is invalid")));
-    }
-    Ok(value.to_string())
-}
-
-fn rpc_body_string(body: &Value, field: &str) -> Option<String> {
-    let value = body.get(field)?.as_str()?;
-    (!value.is_empty() && value.len() <= 4096 && !value.chars().any(char::is_control))
-        .then(|| value.to_string())
-}
-
-fn message_role(body: &Value) -> Option<ConversationRole> {
-    match body.get("message")?.get("role")?.as_str()? {
-        "user" => Some(ConversationRole::User),
-        "assistant" => Some(ConversationRole::Assistant),
-        _ => None,
-    }
-}
-
-fn message_id(body: &Value) -> Option<String> {
-    rpc_body_string(body.get("message")?, "id")
-}
-
-fn current_conversation_cursor(state: &State, conversation_id: ConversationId) -> u64 {
-    state
-        .persisted
-        .conversations
-        .iter()
-        .find(|conversation| conversation.id == conversation_id)
-        .map(|conversation| conversation.event_cursor)
-        .unwrap_or(0)
-}
-
-fn active_message_id(state: &State, conversation_id: ConversationId) -> Option<String> {
-    state
-        .conversation_events
-        .get(&conversation_id)?
-        .iter()
-        .rev()
-        .find_map(|event| match &event.event {
-            ConversationEventKind::MessageStarted { message_id, .. } => {
-                Some(Some(message_id.clone()))
-            }
-            ConversationEventKind::MessageFinished { .. } => Some(None),
-            _ => None,
-        })
-        .flatten()
-}
-
-fn pi_result_text(result: &Value) -> String {
-    let Some(content) = result.get("content").and_then(Value::as_array) else {
-        return String::new();
-    };
-    let text = content
-        .iter()
-        .filter_map(|item| item.get("text").and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join("\n");
-    truncate_utf8(text, CONVERSATION_EVENT_TEXT_BYTES)
-}
-
-fn bounded_event_value(value: &Value) -> Value {
-    if serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= CONVERSATION_ARGUMENT_BYTES) {
-        value.clone()
-    } else {
-        serde_json::json!({"truncated": true})
-    }
 }
 
 fn agent_report(
@@ -4018,15 +3445,9 @@ fn terminal_agent_environment(pane_id: PaneId, runtime_generation: &str) -> Vec<
     environment
 }
 
-fn spawn_runtime(
-    daemon: &Arc<Daemon>,
-    pane_id: PaneId,
-    terminal_id: TerminalId,
-    cwd: &Path,
-    recipe: &LaunchRecipe,
-) -> Result<TerminalRuntime, ApiError> {
+fn runtime_notify(daemon: &Arc<Daemon>, pane_id: PaneId) -> Arc<dyn Fn() + Send + Sync> {
     let weak: Weak<Daemon> = Arc::downgrade(daemon);
-    let notify = Arc::new(move || {
+    Arc::new(move || {
         let Some(daemon) = weak.upgrade() else { return };
         let mut state = lock(&daemon.state);
         let exited = state
@@ -4048,7 +3469,17 @@ fn spawn_runtime(
             }
             daemon.changed.notify_all();
         }
-    });
+    })
+}
+
+fn spawn_runtime(
+    daemon: &Arc<Daemon>,
+    pane_id: PaneId,
+    terminal_id: TerminalId,
+    cwd: &Path,
+    recipe: &LaunchRecipe,
+) -> Result<TerminalRuntime, ApiError> {
+    let notify = runtime_notify(daemon, pane_id);
     let runtime_generation = next_runtime_generation(daemon);
     {
         let mut state = lock(&daemon.state);
@@ -4512,6 +3943,12 @@ fn leased_runtime_with_access(
     access: LeaseAccess,
 ) -> Result<(Arc<TerminalRuntime>, u64), ApiError> {
     let mut state = lock(&daemon.state);
+    if state.stopping || state.handoff_in_progress {
+        return Err(api(
+            "daemon_replacing",
+            "wsxd is replacing its runtime owner",
+        ));
+    }
     refresh_lease_with_access(&mut state, pane_id, access)?;
     Ok((
         Arc::clone(require_runtime(&state, pane_id)?),
@@ -4779,10 +4216,6 @@ fn load_state_with_status(path: &Path) -> io::Result<(Persisted, bool)> {
     for pane in &mut state.panes {
         pane.exited = true;
     }
-    for conversation in &mut state.conversations {
-        conversation.state = AgentState::Unknown;
-        conversation.event_cursor = 0;
-    }
     Ok((state, loaded.recovered_from_backup))
 }
 
@@ -4849,20 +4282,6 @@ fn validate_persisted(state: &Persisted) -> io::Result<()> {
                 .sessions
                 .iter()
                 .any(|session| session.id == pane.session_id && session.panes.contains(&pane.id))
-        {
-            return Err(invalid());
-        }
-    }
-    let mut conversation_sessions = HashSet::new();
-    for conversation in &state.conversations {
-        if !insert(conversation.id.0)
-            || conversation.provider.is_empty()
-            || conversation.provider.len() > 64
-            || !conversation_sessions.insert(conversation.session_id)
-            || !state
-                .sessions
-                .iter()
-                .any(|session| session.id == conversation.session_id)
         {
             return Err(invalid());
         }
@@ -4934,10 +4353,6 @@ mod tests {
                 persisted,
                 revision: 7,
                 runtimes: HashMap::new(),
-                conversation_runtimes: HashMap::new(),
-                conversation_events: HashMap::new(),
-                conversation_interactions: HashMap::new(),
-                conversation_commands: HashMap::new(),
                 runtime_generations: HashMap::from([(
                     PaneId(4),
                     "0000000000000001:0000000000000001".into(),
@@ -4956,10 +4371,15 @@ mod tests {
                 legacy_tui_until: None,
                 replacement_target: None,
                 replacement_daemon_revision: None,
+                replacement_protocol: None,
+                replacement_executable: None,
+                handoff_in_progress: false,
+                handoff_started: None,
                 stop_reason: None,
                 persistence_dirty: false,
                 stopping: false,
             }),
+            mutation_lock: Mutex::new(()),
             changed: Condvar::new(),
             plugin_changed: Condvar::new(),
             active_clients: Arc::new(AtomicUsize::new(0)),
@@ -5176,6 +4596,87 @@ mod tests {
             }
         );
         assert!(lock(&daemon.state).replacement_target.is_none());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn live_handoff_waits_for_tuis_but_not_terminal_work() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let mut state = lock(&daemon.state);
+        state.foreground_jobs.insert(PaneId(4));
+        state.listening_ports.insert(PaneId(4), vec![3000]);
+        state.tui_clients.insert(
+            7,
+            TuiPresenceLease {
+                target_binary_id: "target".into(),
+                target_daemon_revision: DAEMON_REVISION + 1,
+                expires_at: Instant::now() + TUI_PRESENCE_TTL,
+            },
+        );
+        assert_eq!(
+            handoff_blockers(&mut state, "target"),
+            vec![ReplacementBlocker::OtherTui]
+        );
+        state.tui_clients.clear();
+        assert!(handoff_blockers(&mut state, "target").is_empty());
+        drop(state);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn mutation_waiting_at_handoff_barrier_is_rejected_without_state_change() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let barrier = lock(&daemon.mutation_lock);
+        let worker_daemon = Arc::clone(&daemon);
+        let worker = thread::spawn(move || {
+            handle(
+                &worker_daemon,
+                Request::SessionRename {
+                    session_id: SessionId(3),
+                    label: "raced".into(),
+                    expected_revision: 7,
+                },
+            )
+        });
+        lock(&daemon.state).handoff_in_progress = true;
+        drop(barrier);
+
+        assert!(matches!(
+            worker.join().unwrap(),
+            Response::Error(ApiError { code, .. }) if code == "daemon_replacing"
+        ));
+        assert_eq!(lock(&daemon.state).persisted.sessions[0].label, "session");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rollback_preserves_remaining_terminal_lease_time() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let socket = path.with_extension("sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let before = Instant::now() + Duration::from_secs(1);
+        {
+            let mut state = lock(&daemon.state);
+            state.handoff_in_progress = true;
+            state.handoff_started = Some(Instant::now() - Duration::from_secs(2));
+            state.leases.insert(
+                PaneId(4),
+                Lease {
+                    client_id: 8,
+                    generation: 9,
+                    expires_at: before,
+                },
+            );
+        }
+        let mut listener = Some(listener);
+        rollback_handoff(&daemon, &socket, &mut listener, &[]).unwrap();
+        let state = lock(&daemon.state);
+        assert!(!state.handoff_in_progress);
+        assert!(state.leases[&PaneId(4)].expires_at >= before + Duration::from_secs(2));
+        drop(state);
+        drop(listener);
+        let _ = fs::remove_file(socket);
         let _ = fs::remove_file(path);
     }
 
@@ -6274,22 +5775,6 @@ mod tests {
     }
 
     #[test]
-    fn closing_session_removes_its_conversation_atomically() {
-        let (daemon, path) = agent_test_daemon(conversation_test_persisted());
-
-        assert!(matches!(
-            close_session(&daemon, SessionId(3), 7).unwrap(),
-            Response::Ack { revision: 8 }
-        ));
-        let state = lock(&daemon.state);
-        assert!(state.persisted.sessions.is_empty());
-        assert!(state.persisted.conversations.is_empty());
-        drop(state);
-        let _ = fs::remove_file(&path);
-        let _ = fs::remove_file(path.with_extension("json.backup"));
-    }
-
-    #[test]
     fn runtime_exit_stays_truthful_and_retries_durability() {
         let (daemon, path) = agent_test_daemon(agent_test_persisted());
         fs::create_dir(&path).unwrap();
@@ -6751,335 +6236,6 @@ mod tests {
         validate_persisted(&Persisted::default()).unwrap();
     }
 
-    fn conversation_test_persisted() -> Persisted {
-        let mut state = agent_test_persisted();
-        state.next_id = 7;
-        state.conversations.push(Conversation {
-            id: ConversationId(6),
-            session_id: SessionId(3),
-            provider: "pi".into(),
-            state: AgentState::Idle,
-            session_ref: None,
-            capabilities: ConversationCapabilities {
-                prompt: true,
-                abort: true,
-                ..ConversationCapabilities::default()
-            },
-            event_cursor: 0,
-            revision: 7,
-        });
-        state
-    }
-
-    #[test]
-    fn persisted_conversation_restarts_with_its_session_worktree() {
-        let mut persisted = conversation_test_persisted();
-        persisted.worktrees[0].path = "/".into();
-        let (daemon, path) = agent_test_daemon(persisted);
-        recover_conversations_with(&daemon, |daemon, conversation_id, _, cwd| {
-            let plan = wsx_core::integration::conversation::ConversationLaunchPlan {
-                argv: vec!["/bin/sh".into(), "-c".into(), "cat >/dev/null".into()],
-                capabilities: ConversationCapabilities::default(),
-            };
-            spawn_conversation_process(daemon, conversation_id, &plan, cwd)
-        });
-        let mut runtime = lock(&daemon.state)
-            .conversation_runtimes
-            .remove(&ConversationId(6))
-            .expect("persisted conversation should restart");
-        runtime.terminate();
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn conversation_requires_one_existing_session_and_unique_identity() {
-        let mut state = conversation_test_persisted();
-        validate_persisted(&state).unwrap();
-
-        let mut duplicate = state.clone();
-        duplicate.next_id = 8;
-        duplicate.conversations.push(Conversation {
-            id: ConversationId(7),
-            ..duplicate.conversations[0].clone()
-        });
-        assert!(validate_persisted(&duplicate).is_err());
-
-        state.conversations[0].session_id = SessionId(99);
-        assert!(validate_persisted(&state).is_err());
-    }
-
-    #[test]
-    fn conversation_lifecycle_is_authoritative_and_replay_is_bounded() {
-        let (daemon, path) = agent_test_daemon(conversation_test_persisted());
-        handle_conversation_record(
-            &daemon,
-            ConversationId(6),
-            conversation::RpcRecord::Event {
-                event_type: "agent_start".into(),
-                body: serde_json::json!({"type":"agent_start"}),
-            },
-        );
-        {
-            let state = lock(&daemon.state);
-            assert_eq!(state.persisted.conversations[0].state, AgentState::Working);
-            assert_eq!(state.persisted.conversations[0].event_cursor, 1);
-        }
-        let Response::ConversationEvents {
-            next_cursor,
-            events,
-            ..
-        } = conversation_events(&daemon, ConversationId(6), 0, 10).unwrap()
-        else {
-            panic!("expected conversation events");
-        };
-        assert_eq!(next_cursor, 1);
-        assert!(matches!(
-            events.as_slice(),
-            [ConversationEvent {
-                event: ConversationEventKind::StateChanged {
-                    state: AgentState::Working
-                },
-                ..
-            }]
-        ));
-        assert_eq!(
-            conversation_events(&daemon, ConversationId(6), 2, 10)
-                .unwrap_err()
-                .code,
-            "invalid_cursor"
-        );
-        assert_eq!(
-            conversation_events(&daemon, ConversationId(6), 0, 0)
-                .unwrap_err()
-                .code,
-            "invalid_limit"
-        );
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn pi_events_translate_messages_and_accumulated_tool_output() {
-        let (daemon, path) = agent_test_daemon(conversation_test_persisted());
-        let records = [
-            serde_json::json!({"type":"message_start","message":{"role":"assistant"}}),
-            serde_json::json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}),
-            serde_json::json!({"type":"message_end","message":{"role":"assistant"}}),
-            serde_json::json!({"type":"tool_execution_start","toolCallId":"call-1","toolName":"bash","args":{"command":"pwd"}}),
-            serde_json::json!({"type":"tool_execution_update","toolCallId":"call-1","partialResult":{"content":[{"type":"text","text":"/work"}]}}),
-            serde_json::json!({"type":"tool_execution_end","toolCallId":"call-1","result":{"content":[{"type":"text","text":"/work\n"}]},"isError":false}),
-        ];
-        for body in records {
-            let event_type = body.get("type").unwrap().as_str().unwrap().to_string();
-            handle_conversation_record(
-                &daemon,
-                ConversationId(6),
-                conversation::RpcRecord::Event { event_type, body },
-            );
-        }
-        let state = lock(&daemon.state);
-        let events = state.conversation_events.get(&ConversationId(6)).unwrap();
-        assert_eq!(events.len(), 6);
-        let message_id = match &events[0].event {
-            ConversationEventKind::MessageStarted { message_id, role } => {
-                assert_eq!(*role, ConversationRole::Assistant);
-                message_id.clone()
-            }
-            event => panic!("unexpected event: {event:?}"),
-        };
-        assert!(matches!(
-            &events[1].event,
-            ConversationEventKind::MessageDelta {
-                message_id: id,
-                text,
-                thinking: false,
-                ..
-            } if id == &message_id && text == "Hello"
-        ));
-        assert!(matches!(
-            &events[2].event,
-            ConversationEventKind::MessageFinished { message_id: id } if id == &message_id
-        ));
-        assert!(matches!(
-            &events[4].event,
-            ConversationEventKind::ToolUpdated { tool_call_id, content }
-                if tool_call_id == "call-1" && content == "/work"
-        ));
-        assert!(matches!(
-            &events[5].event,
-            ConversationEventKind::ToolFinished { tool_call_id, content, is_error: false }
-                if tool_call_id == "call-1" && content == "/work\n"
-        ));
-        drop(state);
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn pi_dialogs_block_and_unknown_ui_requests_do_not_invent_events() {
-        let (daemon, path) = agent_test_daemon(conversation_test_persisted());
-        handle_conversation_record(
-            &daemon,
-            ConversationId(6),
-            conversation::RpcRecord::ExtensionUi {
-                id: "dialog-1".into(),
-                method: "select".into(),
-                body: serde_json::json!({
-                    "type":"extension_ui_request",
-                    "id":"dialog-1",
-                    "method":"select",
-                    "title":"Choose",
-                    "options":["A","B"],
-                    "timeout":5000
-                }),
-            },
-        );
-        handle_conversation_record(
-            &daemon,
-            ConversationId(6),
-            conversation::RpcRecord::ExtensionUi {
-                id: "notice-1".into(),
-                method: "notify".into(),
-                body: serde_json::json!({"type":"extension_ui_request","id":"notice-1","method":"notify","message":"hi"}),
-            },
-        );
-        let state = lock(&daemon.state);
-        assert_eq!(state.persisted.conversations[0].state, AgentState::Blocked);
-        assert_eq!(state.conversation_events[&ConversationId(6)].len(), 1);
-        assert!(matches!(
-            &state.conversation_events[&ConversationId(6)][0].event,
-            ConversationEventKind::InteractionRequested(ConversationInteraction {
-                id,
-                request: ConversationInteractionKind::Select { options },
-                timeout_ms: Some(5000),
-                ..
-            }) if id == "dialog-1" && options == &["A", "B"]
-        ));
-        assert!(state
-            .conversation_interactions
-            .contains_key(&(ConversationId(6), "dialog-1".into())));
-        drop(state);
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn oversized_tool_arguments_are_replaced_with_explicit_truncation() {
-        let value = serde_json::json!({"payload": "x".repeat(CONVERSATION_ARGUMENT_BYTES)});
-        assert_eq!(
-            bounded_event_value(&value),
-            serde_json::json!({"truncated": true})
-        );
-        let value = serde_json::json!({"small": true});
-        assert_eq!(bounded_event_value(&value), value);
-    }
-
-    #[test]
-    fn command_discovery_is_pending_then_returns_validated_pi_commands() {
-        let (daemon, path) = agent_test_daemon(conversation_test_persisted());
-        assert_eq!(
-            conversation_commands(&daemon, ConversationId(6))
-                .unwrap_err()
-                .code,
-            "commands_pending"
-        );
-        handle_conversation_record(
-            &daemon,
-            ConversationId(6),
-            conversation::RpcRecord::Response {
-                id: Some("commands-1".into()),
-                command: "get_commands".into(),
-                success: true,
-                data: Some(serde_json::json!({
-                    "commands":[
-                        {"name":"skill:develop","description":"Build safely","source":"skill","path":"/private/path"},
-                        {"name":"session-name","source":"extension"}
-                    ]
-                })),
-                error: None,
-            },
-        );
-        let Response::ConversationCommands(commands) =
-            conversation_commands(&daemon, ConversationId(6)).unwrap()
-        else {
-            panic!("expected commands");
-        };
-        assert_eq!(
-            commands,
-            vec![
-                ConversationCommand {
-                    name: "skill:develop".into(),
-                    description: "Build safely".into(),
-                    source: "skill".into(),
-                },
-                ConversationCommand {
-                    name: "session-name".into(),
-                    description: String::new(),
-                    source: "extension".into(),
-                }
-            ]
-        );
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn get_state_persists_session_path_and_publishes_runtime_state() {
-        let (daemon, path) = agent_test_daemon(conversation_test_persisted());
-        handle_conversation_record(
-            &daemon,
-            ConversationId(6),
-            conversation::RpcRecord::Response {
-                id: Some("state-1".into()),
-                command: "get_state".into(),
-                success: true,
-                data: Some(serde_json::json!({
-                    "sessionFile":"/work/session.jsonl",
-                    "sessionId":"fallback-id",
-                    "isStreaming":true
-                })),
-                error: None,
-            },
-        );
-        {
-            let state = lock(&daemon.state);
-            let conversation = &state.persisted.conversations[0];
-            assert_eq!(conversation.state, AgentState::Working);
-            assert_eq!(
-                conversation.session_ref,
-                AgentSessionRef::path("/work/session.jsonl")
-            );
-            assert_eq!(conversation.event_cursor, 1);
-        }
-        let persisted = load_state(&path).unwrap();
-        assert_eq!(
-            persisted.conversations[0].session_ref,
-            AgentSessionRef::path("/work/session.jsonl")
-        );
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn conversation_callbacks_stop_mutating_during_shutdown() {
-        let (daemon, path) = agent_test_daemon(conversation_test_persisted());
-        lock(&daemon.state).stopping = true;
-        handle_conversation_record(&daemon, ConversationId(6), conversation::RpcRecord::Exited);
-        let state = lock(&daemon.state);
-        assert_eq!(state.persisted.conversations[0].state, AgentState::Idle);
-        assert!(state.conversation_events.is_empty());
-        drop(state);
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn unsupported_provider_never_reserves_or_starts_a_conversation() {
-        let (daemon, path) = agent_test_daemon(agent_test_persisted());
-        let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
-        let error = create_conversation(&daemon, SessionId(3), "claude".into(), 7).unwrap_err();
-        assert_eq!(error.code, "unsupported_provider");
-        assert_eq!(
-            serde_json::to_value(&lock(&daemon.state).persisted).unwrap(),
-            before
-        );
-        let _ = fs::remove_file(path);
-    }
-
     #[test]
     fn legacy_project_without_activity_timestamp_loads() {
         let (_, path) = agent_test_daemon(Persisted::default());
@@ -7100,7 +6256,6 @@ mod tests {
 
         assert_eq!(state.projects[0].last_agent_active_unix_ms, None);
         assert_eq!(state.panes.len(), 1);
-        assert!(state.conversations.is_empty());
         assert!(state.panes[0].recovery.is_none());
         assert!(!state.panes[0].recovery_quarantined);
         fs::remove_file(path).unwrap();

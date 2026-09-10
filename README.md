@@ -75,7 +75,7 @@ Installers preserve unrelated hooks and honor standard config-directory override
 | Groups | `T` manage, `{`/`}` switch, `g` assign |
 | Global | `/` search, `,` settings, `R` refresh, `?` help, `q` quit TUI, `Q` stop wsxd and quit |
 
-Terminal mode uses the configured prefix, `Ctrl+A` by default. Follow it with `j/k` for adjacent sessions, `{`/`}` for the previous or next group, `i/I` for idle, `a/A` for active, `n/N` for attention, `B` to toggle the desktop sidebar, `W` for Workspace, or `Q` to quit only the TUI. Group navigation selects the first session needing attention, then the first idle agent session; if neither exists, the current terminal stays active. `Ctrl+A Ctrl+A` sends a literal prefix.
+Terminal mode uses the configured prefix, `Ctrl+A` by default. Follow it with `j/k` for adjacent sessions, `{`/`}` for the previous or next group, `i/I` for idle, `a/A` for active, `n/N` for attention, `B` to toggle the desktop sidebar, `W` for Workspace, or `Q` to quit only the TUI. Attention navigation defaults to Blocked sessions before other attention states and can restore Workspace order in Global Settings. Group navigation keeps Workspace order, selecting the first session needing attention and then the first idle agent session; if neither exists, the current terminal stays active. `Ctrl+A Ctrl+A` sends a literal prefix.
 
 Groups are ordered project filters. The default **ungrouped** anti-group matches projects with no memberships. A project becomes stale when neither trusted agent work nor terminal entry occurs within the configured window. wsx never infers agent state from terminal output or process trees.
 
@@ -93,6 +93,7 @@ show_release_status = true
 terminal_sidebar = "compact"
 terminal_title_position = "bottom"
 port_visibility = "non_agentic"
+attention_priority = "blocked_first"
 ```
 
 The project-root file is `wsx.config.yml`:
@@ -133,9 +134,11 @@ wsx daemon stop|recover
 
 Each routine `--arg` is one direct argv item. wsx never invokes a shell. Inspect untrusted routines with `wsx routine show <name>` before enabling or running them.
 
-See [Executable plugins](docs/plugins.md) for the versioned event, Terminal-sidecar, and worktree-review contracts. See [Structured conversations](docs/conversations.md) for the wsxd-owned Pi RPC lifecycle. With a review provider installed, Tab on a worktree opens keyboard-driven file and diff review inside its preview. The [reference Git provider setup](docs/worktree-review.md) does not change the agent terminal.
+See [Executable plugins](docs/plugins.md) for the versioned event, Terminal-sidecar, and worktree-review contracts. With a review provider installed, Tab on a worktree opens keyboard-driven file and diff review inside its preview. The [reference Git provider setup](docs/worktree-review.md) does not change the agent terminal.
 
 Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed terminal. Explicit subcommands remain available. `wsx runtime status` and `wsx daemon stop` never start the daemon.
+
+Handoff-capable wsxd updates wait until wsx TUI clients detach, then transfer live terminal ownership to the new daemon without restarting shells, agents, foreground jobs, or listening servers.
 
 ## Runtime and security
 
@@ -143,9 +146,9 @@ Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed termin
 - Owner-only sockets and peer-UID checks reject cross-user access.
 - One writable lease owns each pane. Explicit Terminal entry transfers control to the latest wsx instance; the displaced instance returns to Workspace, and lease generations reject stale input, resize, heartbeat, selection, and release operations. Events invalidate revisions; clients reconcile from authoritative snapshots.
 - Messages, frames, commands, plugin manifests, plugin view output, listeners, and resource counts are bounded.
-- UI-only wsx releases reuse the compatible daemon. Required daemon replacement waits for other daemon revisions, fresh authoritative `working` reports, foreground jobs, and listening servers to clear. wsx reports once when saved terminal commands restart.
+- UI-only wsx releases reuse the compatible daemon. Protocol 15 daemon updates wait for TUI clients to detach, then hand off live terminals. Protocol 11–14 daemons remain usable until their safe one-time cold replacement, and opening wsx keeps the existing workspace visible throughout normal deferral and reconnection.
 - Native resume creates a new process, PTY, and terminal buffer from a validated provider reference. Unsupported references open a clean shell.
-- Remote access, live cross-version process handoff, graphics transport, marketplace installation, and original-process restoration are not supported.
+- Remote access, transient graphics preservation across handoff, marketplace installation, and original-process restoration after an unplanned daemon crash are not supported.
 
 ## Development
 

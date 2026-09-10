@@ -1240,6 +1240,7 @@ version = "0.24.0"
 dependencies = [
  "libc",
  "portable-pty",
+ "serde",
  "wsx-core",
 ]
 

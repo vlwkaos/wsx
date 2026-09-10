@@ -4,14 +4,17 @@
 mod ghostty;
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::{
     error::Error,
     fmt,
-    io::{self, Read, Write},
+    io::{self, Write},
     path::Path,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard,
+        Arc, Condvar, Mutex, MutexGuard,
     },
     thread,
     time::{Duration, Instant},
@@ -31,6 +34,24 @@ const MAX_STARTUP_INPUT_BYTES: usize = 64 * 1024;
 const STARTUP_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const BRACKETED_PASTE_MODE: u16 = 2004;
 const MOUSE_SCROLL_LINES: isize = 3;
+#[cfg(unix)]
+const HANDOFF_READER_POLL: Duration = Duration::from_millis(20);
+#[cfg(unix)]
+const HANDOFF_PAUSE_TIMEOUT: Duration = Duration::from_secs(2);
+pub const MAX_HANDOFF_ANSI_BYTES: usize = 512 * 1024;
+#[cfg(unix)]
+const HANDOFF_MODES: &[u16] = &[
+    ghostty::MODE_APPLICATION_CURSOR_KEYS,
+    ghostty::MODE_FOCUS_EVENT,
+    ghostty::MODE_MOUSE_UTF8,
+    ghostty::MODE_MOUSE_SGR,
+    ghostty::MODE_MOUSE_ALTERNATE_SCROLL,
+    ghostty::MODE_MOUSE_SGR_PIXELS,
+    ghostty::MODE_BRACKETED_PASTE,
+    ghostty::MODE_SYNCHRONIZED_OUTPUT,
+    ghostty::MODE_GRAPHEME_CLUSTER,
+    ghostty::MODE_COLOR_SCHEME_REPORT,
+];
 
 #[derive(Debug)]
 pub enum TerminalError {
@@ -92,10 +113,25 @@ impl Emulator {
 
 struct Process {
     master: Mutex<Box<dyn MasterPty + Send>>,
-    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    killer: Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>,
     #[cfg(unix)]
     process_group: Arc<std::sync::atomic::AtomicI32>,
 }
+
+#[cfg(unix)]
+#[derive(Default)]
+struct ReaderState {
+    pause_requested: bool,
+    paused: bool,
+}
+
+#[cfg(unix)]
+#[derive(Default)]
+struct ReaderControl {
+    state: Mutex<ReaderState>,
+    changed: Condvar,
+}
+
 struct Shared {
     emulator: Mutex<Emulator>,
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
@@ -104,6 +140,28 @@ struct Shared {
     exited: AtomicBool,
     terminating: AtomicBool,
     notify: Arc<dyn Fn() + Send + Sync>,
+    #[cfg(unix)]
+    reader: Arc<ReaderControl>,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalHandoffState {
+    pub pane_id: PaneId,
+    pub terminal_id: TerminalId,
+    pub process_group: libc::pid_t,
+    pub rows: u16,
+    pub cols: u16,
+    pub revision: u64,
+    pub history_ansi: String,
+    pub history_truncated: bool,
+    pub cursor_x: u16,
+    pub cursor_y: u16,
+    pub modes: Vec<(u16, bool)>,
+    pub kitty_keyboard_flags: u8,
+    #[serde(default)]
+    pub keyboard_state_ansi: String,
+    pub alternate_screen: bool,
 }
 
 pub struct TerminalRuntime {
@@ -112,6 +170,7 @@ pub struct TerminalRuntime {
     shared: Arc<Shared>,
     process: Option<Process>,
     selection_clock: Instant,
+    preserve_process_on_drop: AtomicBool,
 }
 
 pub struct PresentationSample {
@@ -143,6 +202,13 @@ impl TerminalRuntime {
                 pixel_height: 0,
             })
             .map_err(|error| TerminalError::Pty(error.to_string()))?;
+        #[cfg(unix)]
+        let reader_fd = duplicate_fd(
+            pair.master
+                .as_raw_fd()
+                .ok_or_else(|| TerminalError::Runtime("PTY has no file descriptor".into()))?,
+        )?;
+        #[cfg(not(unix))]
         let reader = pair
             .master
             .try_clone_reader()
@@ -191,8 +257,14 @@ impl TerminalRuntime {
             exited: AtomicBool::new(false),
             terminating: AtomicBool::new(false),
             notify,
+            #[cfg(unix)]
+            reader: Arc::new(ReaderControl::default()),
         });
-        if let Err(error) = spawn_reader(reader, Arc::clone(&shared)) {
+        #[cfg(unix)]
+        let reader_result = spawn_reader_fd(reader_fd, Arc::clone(&shared));
+        #[cfg(not(unix))]
+        let reader_result = spawn_reader(reader, Arc::clone(&shared));
+        if let Err(error) = reader_result {
             abort_spawn(
                 &mut killer,
                 #[cfg(unix)]
@@ -219,11 +291,12 @@ impl TerminalRuntime {
             shared,
             process: Some(Process {
                 master: Mutex::new(pair.master),
-                killer: Mutex::new(killer),
+                killer: Mutex::new(Some(killer)),
                 #[cfg(unix)]
                 process_group: process_group_owner,
             }),
             selection_clock: Instant::now(),
+            preserve_process_on_drop: AtomicBool::new(false),
         })
     }
 
@@ -251,6 +324,208 @@ impl TerminalRuntime {
     #[cfg(not(unix))]
     pub fn has_foreground_job(&self) -> bool {
         false
+    }
+
+    #[cfg(unix)]
+    pub fn pause_handoff_reader(&self) -> Result<(), TerminalError> {
+        set_reader_paused(&self.shared.reader, true, HANDOFF_PAUSE_TIMEOUT)
+            .map_err(TerminalError::Io)
+    }
+
+    #[cfg(unix)]
+    pub fn resume_handoff_reader(&self) {
+        let _ = set_reader_paused(&self.shared.reader, false, HANDOFF_PAUSE_TIMEOUT);
+    }
+
+    #[cfg(unix)]
+    pub fn duplicate_handoff_fd(&self) -> Result<RawFd, TerminalError> {
+        let process = self
+            .process
+            .as_ref()
+            .ok_or_else(|| TerminalError::Runtime("terminal has no PTY".into()))?;
+        let master = lock(&process.master);
+        duplicate_fd(
+            master
+                .as_raw_fd()
+                .ok_or_else(|| TerminalError::Runtime("PTY has no file descriptor".into()))?,
+        )
+        .map(|fd| fd.into_raw_fd())
+        .map_err(TerminalError::Io)
+    }
+
+    #[cfg(unix)]
+    pub fn handoff_state(&self) -> Result<TerminalHandoffState, TerminalError> {
+        let process_group = self.process_group_id().ok_or_else(|| {
+            TerminalError::Runtime("terminal process group is unavailable".into())
+        })?;
+        let revision = self.shared.revision.load(Ordering::Acquire);
+        let mut emulator = lock(&self.shared.emulator);
+        let Emulator {
+            terminal, render, ..
+        } = &mut *emulator;
+        render.update(terminal)?;
+        let cols = terminal.cols()?;
+        let rows = terminal.rows()?;
+        let total_rows = terminal.total_rows()?.max(1);
+        let (history_ansi, history_truncated) =
+            bounded_handoff_ansi(terminal, cols, total_rows, MAX_HANDOFF_ANSI_BYTES)?;
+        let (cursor_x, cursor_y) = render
+            .cursor_viewport()?
+            .map_or((0, 0), |cursor| (cursor.x, cursor.y));
+        let modes = HANDOFF_MODES
+            .iter()
+            .map(|mode| terminal.mode_get(*mode).map(|value| (*mode, value)))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(TerminalHandoffState {
+            pane_id: self.pane_id,
+            terminal_id: self.terminal_id,
+            process_group,
+            rows,
+            cols,
+            revision,
+            history_ansi,
+            history_truncated,
+            cursor_x,
+            cursor_y,
+            modes,
+            kitty_keyboard_flags: terminal.kitty_keyboard_flags()?,
+            keyboard_state_ansi: terminal.keyboard_state_ansi()?,
+            alternate_screen: terminal.active_screen()? == ghostty::ActiveScreen::Alternate,
+        })
+    }
+
+    /// Reconstructs a quiesced runtime around an owned PTY master descriptor.
+    ///
+    /// # Safety
+    ///
+    /// `fd` must be a valid, uniquely owned PTY master descriptor for the
+    /// process group recorded in `state`. This function assumes ownership.
+    #[cfg(unix)]
+    pub unsafe fn from_handoff_fd(
+        fd: RawFd,
+        state: TerminalHandoffState,
+        notify: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Self, TerminalError> {
+        validate_dimensions(state.rows, state.cols)?;
+        if fd < 0 || state.process_group <= 1 {
+            return Err(TerminalError::Runtime(
+                "invalid terminal handoff state".into(),
+            ));
+        }
+        let master = portable_pty::unix::master_from_raw_fd(fd)
+            .map_err(|error| TerminalError::Pty(error.to_string()))?;
+        let reader_fd = duplicate_fd(
+            master
+                .as_raw_fd()
+                .ok_or_else(|| TerminalError::Runtime("PTY has no file descriptor".into()))?,
+        )?;
+        let writer = master
+            .take_writer()
+            .map_err(|error| TerminalError::Pty(error.to_string()))?;
+        let writer = Arc::new(Mutex::new(Some(writer)));
+        let error = Arc::new(Mutex::new(None));
+        let mut emulator = make_emulator(
+            state.cols,
+            state.rows,
+            Arc::clone(&writer),
+            Arc::clone(&error),
+        )?;
+        if state.alternate_screen {
+            emulator.terminal.write(b"\x1b[?1049h");
+        }
+        emulator.terminal.write(state.history_ansi.as_bytes());
+        emulator
+            .terminal
+            .write(state.keyboard_state_ansi.as_bytes());
+        for (mode, value) in &state.modes {
+            emulator.terminal.mode_set(*mode, *value)?;
+        }
+        let cursor = format!("\x1b[{};{}H", state.cursor_y + 1, state.cursor_x + 1);
+        emulator.terminal.write(cursor.as_bytes());
+        emulator.sync_input();
+        let reader = Arc::new(ReaderControl::default());
+        {
+            let mut reader_state = lock(&reader.state);
+            reader_state.pause_requested = true;
+        }
+        let shared = Arc::new(Shared {
+            emulator: Mutex::new(emulator),
+            writer,
+            error,
+            revision: AtomicU64::new(state.revision.max(1)),
+            exited: AtomicBool::new(false),
+            terminating: AtomicBool::new(false),
+            notify,
+            reader,
+        });
+        spawn_reader_fd(reader_fd, Arc::clone(&shared))?;
+        set_reader_paused(&shared.reader, true, HANDOFF_PAUSE_TIMEOUT)
+            .map_err(TerminalError::Io)?;
+        Ok(Self {
+            pane_id: state.pane_id,
+            terminal_id: state.terminal_id,
+            shared,
+            process: Some(Process {
+                master: Mutex::new(master),
+                killer: Mutex::new(None),
+                process_group: Arc::new(std::sync::atomic::AtomicI32::new(state.process_group)),
+            }),
+            selection_clock: Instant::now(),
+            preserve_process_on_drop: AtomicBool::new(false),
+        })
+    }
+
+    #[cfg(unix)]
+    pub fn activate_handoff(&self) {
+        self.resume_handoff_reader();
+        if let Some(process_group) = self.process_group_id() {
+            unsafe {
+                libc::kill(-process_group, libc::SIGWINCH);
+            }
+        }
+        self.shared.revision.fetch_add(1, Ordering::AcqRel);
+        (self.shared.notify)();
+    }
+
+    #[cfg(unix)]
+    pub fn protect_handoff_import(&self) {
+        self.preserve_process_on_drop.store(true, Ordering::Release);
+    }
+
+    #[cfg(unix)]
+    pub fn prepare_source_handoff(&self) -> Result<libc::pid_t, TerminalError> {
+        let process = self
+            .process
+            .as_ref()
+            .ok_or_else(|| TerminalError::Runtime("terminal has no PTY".into()))?;
+        let process_group = process.process_group.swap(0, Ordering::AcqRel);
+        if process_group <= 1 {
+            return Err(TerminalError::Runtime(
+                "terminal process ownership is unavailable".into(),
+            ));
+        }
+        self.protect_handoff_import();
+        Ok(process_group)
+    }
+
+    #[cfg(unix)]
+    pub fn rollback_source_handoff(&self, process_group: libc::pid_t) {
+        if let Some(process) = &self.process {
+            let _ = process.process_group.compare_exchange(
+                0,
+                process_group,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+        self.preserve_process_on_drop
+            .store(false, Ordering::Release);
+    }
+
+    #[cfg(unix)]
+    pub fn assume_handoff_ownership(&self) {
+        self.preserve_process_on_drop
+            .store(false, Ordering::Release);
     }
 
     pub fn write(&self, bytes: &[u8]) -> Result<(), TerminalError> {
@@ -742,7 +1017,9 @@ impl TerminalRuntime {
         if let Some(process) = &self.process {
             #[cfg(unix)]
             terminate_group(take_process_group(&process.process_group));
-            let _ = lock(&process.killer).kill();
+            if let Some(killer) = lock(&process.killer).as_mut() {
+                let _ = killer.kill();
+            }
         }
         mark_exited(&self.shared);
     }
@@ -765,13 +1042,26 @@ impl TerminalRuntime {
                 exited: AtomicBool::new(false),
                 terminating: AtomicBool::new(false),
                 notify: Arc::new(|| {}),
+                #[cfg(unix)]
+                reader: Arc::new(ReaderControl::default()),
             }),
             process: None,
+            preserve_process_on_drop: AtomicBool::new(false),
         })
     }
 }
 impl Drop for TerminalRuntime {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        if self.preserve_process_on_drop.load(Ordering::Acquire) {
+            if let Some(writer) = lock(&self.shared.writer).take() {
+                std::mem::forget(writer);
+            }
+            if let Some(process) = self.process.take() {
+                std::mem::forget(process);
+            }
+            return;
+        }
         self.terminate();
     }
 }
@@ -807,8 +1097,162 @@ fn make_emulator(
     })
 }
 
+#[cfg(unix)]
+fn duplicate_fd(fd: RawFd) -> io::Result<OwnedFd> {
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+    if duplicate < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(unsafe { OwnedFd::from_raw_fd(duplicate) })
+    }
+}
+
+#[cfg(unix)]
+fn set_reader_paused(control: &ReaderControl, paused: bool, timeout: Duration) -> io::Result<()> {
+    let deadline = Instant::now() + timeout;
+    let mut state = lock(&control.state);
+    state.pause_requested = paused;
+    control.changed.notify_all();
+    while state.paused != paused {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                if paused {
+                    "timed out pausing PTY reader"
+                } else {
+                    "timed out resuming PTY reader"
+                },
+            ));
+        }
+        let (next, result) = control
+            .changed
+            .wait_timeout(state, remaining)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state = next;
+        if result.timed_out() && state.paused != paused {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "PTY reader state transition timed out",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn spawn_reader_fd(reader: OwnedFd, shared: Arc<Shared>) -> Result<(), TerminalError> {
+    thread::Builder::new()
+        .name("wsx-pty-reader".into())
+        .spawn(move || {
+            let fd = reader.as_raw_fd();
+            let mut buffer = [0_u8; 16 * 1024];
+            loop {
+                {
+                    let mut state = lock(&shared.reader.state);
+                    if state.pause_requested {
+                        state.paused = true;
+                        shared.reader.changed.notify_all();
+                        while state.pause_requested {
+                            state = shared
+                                .reader
+                                .changed
+                                .wait(state)
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        }
+                        state.paused = false;
+                        shared.reader.changed.notify_all();
+                    }
+                }
+
+                let mut pollfd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN | libc::POLLHUP,
+                    revents: 0,
+                };
+                let ready = unsafe {
+                    libc::poll(
+                        &mut pollfd,
+                        1,
+                        HANDOFF_READER_POLL.as_millis() as libc::c_int,
+                    )
+                };
+                if ready < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    set_error(&shared.error, format!("PTY poll failed: {error}"));
+                    break;
+                }
+                if ready == 0 {
+                    continue;
+                }
+                let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+                if count > 0 {
+                    let mut emulator = lock(&shared.emulator);
+                    emulator.terminal.write(&buffer[..count as usize]);
+                    emulator.sync_input();
+                    shared.revision.fetch_add(1, Ordering::AcqRel);
+                    drop(emulator);
+                    (shared.notify)();
+                    continue;
+                }
+                if count == 0 {
+                    break;
+                }
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                if error.raw_os_error() == Some(libc::EIO) {
+                    break;
+                }
+                set_error(&shared.error, format!("PTY reader failed: {error}"));
+                break;
+            }
+            mark_exited(&shared);
+        })
+        .map(|_| ())
+        .map_err(TerminalError::Io)
+}
+
+#[cfg(unix)]
+fn bounded_handoff_ansi(
+    terminal: &ghostty::Terminal,
+    cols: u16,
+    total_rows: usize,
+    max_bytes: usize,
+) -> Result<(String, bool), ghostty::Error> {
+    let end_row = u32::try_from(total_rows.saturating_sub(1)).unwrap_or(u32::MAX);
+    let end_col = cols.saturating_sub(1);
+    let mut ansi = terminal.read_ansi_screen((0, 0), (end_col, end_row), false, false)?;
+    if ansi.len() <= max_bytes {
+        return Ok((ansi, false));
+    }
+    let mut low = 0usize;
+    let mut high = total_rows;
+    while low < high {
+        let middle = low + (high - low) / 2;
+        let middle_row = u32::try_from(middle).unwrap_or(u32::MAX);
+        let candidate =
+            terminal.read_ansi_screen((0, middle_row), (end_col, end_row), false, false)?;
+        if candidate.len() > max_bytes {
+            low = middle.saturating_add(1);
+        } else {
+            high = middle;
+            ansi = candidate;
+        }
+    }
+    if ansi.len() > max_bytes {
+        ansi.clear();
+    }
+    Ok((ansi, true))
+}
+
+#[cfg(not(unix))]
 fn spawn_reader(
-    mut reader: Box<dyn Read + Send>,
+    mut reader: Box<dyn io::Read + Send>,
     shared: Arc<Shared>,
 ) -> Result<(), TerminalError> {
     thread::Builder::new()
@@ -2250,5 +2694,90 @@ mod tests {
     fn runtime_is_send_and_sync() {
         fn assert_traits<T: Send + Sync>() {}
         assert_traits::<TerminalRuntime>();
+    }
+
+    #[cfg(unix)]
+    fn frame_text(runtime: &TerminalRuntime) -> String {
+        runtime
+            .frame()
+            .unwrap()
+            .cells
+            .into_iter()
+            .map(|cell| cell.symbol)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    fn wait_for_text(runtime: &TerminalRuntime, expected: &str) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if frame_text(runtime).contains(expected) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "terminal did not render {expected:?}: {:?}",
+            frame_text(runtime)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handoff_history_never_exceeds_its_byte_limit() {
+        let runtime = TerminalRuntime::new_for_test(1, 1_000).unwrap();
+        let mut emulator = lock(&runtime.shared.emulator);
+        emulator
+            .terminal
+            .write(&vec![b'x'; MAX_HANDOFF_ANSI_BYTES + 64 * 1024]);
+        let total_rows = emulator.terminal.total_rows().unwrap();
+        let (ansi, truncated) =
+            bounded_handoff_ansi(&emulator.terminal, 1_000, total_rows, 16).unwrap();
+        assert!(truncated);
+        assert!(ansi.len() <= 16);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_handoff_preserves_process_and_pty_io() {
+        let command = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "printf 'ready\\n'; while IFS= read -r line; do printf 'echo:%s\\n' \"$line\"; done"
+                .to_string(),
+        ];
+        let source = TerminalRuntime::spawn(
+            PaneId(41),
+            TerminalId(42),
+            Path::new("/"),
+            &command,
+            &[],
+            None,
+            12,
+            40,
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        wait_for_text(&source, "ready");
+        let process_group = source.process_group_id().unwrap();
+
+        source.pause_handoff_reader().unwrap();
+        let state = source.handoff_state().unwrap();
+        let fd = source.duplicate_handoff_fd().unwrap();
+        let imported =
+            unsafe { TerminalRuntime::from_handoff_fd(fd, state, Arc::new(|| {})).unwrap() };
+        let source_group = source.prepare_source_handoff().unwrap();
+        assert_eq!(source.process_group_id(), None);
+        source.rollback_source_handoff(source_group);
+        assert_eq!(source.process_group_id(), Some(source_group));
+        source.prepare_source_handoff().unwrap();
+        imported.assume_handoff_ownership();
+        imported.activate_handoff();
+        imported.write(b"after-handoff\n").unwrap();
+
+        wait_for_text(&imported, "echo:after-handoff");
+        assert_eq!(imported.process_group_id(), Some(process_group));
+        assert_eq!(unsafe { libc::kill(-process_group, 0) }, 0);
+        imported.terminate();
     }
 }
