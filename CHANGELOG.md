@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-09-10
+
 ### Breaking Changes
 
 - Retire the unused wsxd-owned structured Pi RPC conversation API while preserving terminal-hosted Pi lifecycle reporting and native session identity.
