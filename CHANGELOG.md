@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-09-09
+
 ### Features
 
 - Add a versioned executable worktree-review API and an external read-only Git provider.
@@ -13,8 +15,12 @@
 
 ### Compatibility
 
-- Protocol 13 adds worktree review requests, cancellation, and provider availability. Existing event-only and passive-sidecar manifests remain valid.
+- Protocol 13 adds worktree review requests, cancellation, and provider availability. Existing event-only and passive-sidecar manifests remain valid, and stale sidecar responses cannot replace a newer view.
 - Protocol 14 adds structured conversation requests, events, capabilities, and restart restoration. Attachments and model selection remain explicitly unsupported.
+
+### Maintenance
+
+- Keep runtime smoke and terminal latency clients synchronized with protocol 14.
 
 ## [0.23.0] - 2026-09-08
 
