@@ -1,4 +1,5 @@
 /target/
+.work/
 *.tar.gz
 *.sha256
 *.pem

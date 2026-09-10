@@ -19,6 +19,10 @@
 
 - Protocol 15 adds bounded live-handoff registration and capability negotiation. The old daemon retains ownership until the successor imports PTY descriptors, binds the canonical socket, and reports ready; pre-commit failure resumes the old daemon.
 
+### Maintenance
+
+- Exclude repository-local `.work` test scratch at every package depth so CI package verification remains clean after the test suite.
+
 ## [0.24.0] - 2026-09-09
 
 ### Features
