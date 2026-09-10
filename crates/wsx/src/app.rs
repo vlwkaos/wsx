@@ -29,7 +29,8 @@ use crate::{
 };
 use wsx_core::{
     config::global::{
-        project_has_activity_within, project_matches_group, GlobalConfig, GroupKey, TerminalSidebar,
+        project_has_activity_within, project_matches_group, AttentionPriority, GlobalConfig,
+        GroupKey, TerminalSidebar,
     },
     git::{info as git_info, worktree as git_worktree},
     model::workspace::{
@@ -41,17 +42,47 @@ use wsx_core::{
 use git_info::FetchOutcome;
 
 type WorktreeSnapshot = Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>;
-type RuntimeRefresh = Result<(runtime::Availability, runtime::Snapshot, WorktreeSnapshot)>;
+
+enum RuntimeRefreshOutcome {
+    Authoritative {
+        availability: runtime::Availability,
+        snapshot: Box<runtime::Snapshot>,
+        worktrees: WorktreeSnapshot,
+    },
+    DiscoveryOnly {
+        worktrees: WorktreeSnapshot,
+        error: anyhow::Error,
+    },
+}
+
+type RuntimeRefresh = Result<RuntimeRefreshOutcome>;
 
 fn collect_runtime_refresh(config: &GlobalConfig, background: bool) -> RuntimeRefresh {
-    let availability = if background {
-        runtime::ensure_background_available()?
-    } else {
-        runtime::ensure_available()?
-    };
     let discovery = ops::discover_workspace(config)?;
-    let snapshot = ops::synchronize_discovery(&discovery)?;
-    Ok((availability, snapshot, discovery.into_worktrees()))
+    let worktrees = discovery.clone().into_worktrees();
+    let availability = if background {
+        runtime::ensure_background_available()
+    } else {
+        runtime::ensure_available()
+    };
+    let availability = match availability {
+        Ok(availability) => availability,
+        Err(error) => {
+            return Ok(RuntimeRefreshOutcome::DiscoveryOnly {
+                worktrees,
+                error: error.into(),
+            })
+        }
+    };
+    let snapshot = match ops::synchronize_discovery(&discovery) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return Ok(RuntimeRefreshOutcome::DiscoveryOnly { worktrees, error }),
+    };
+    Ok(RuntimeRefreshOutcome::Authoritative {
+        availability,
+        snapshot: Box::new(snapshot),
+        worktrees,
+    })
 }
 
 // ^ [[wsx Architecture]] Runtime snapshots are authoritative; events invalidate them.
@@ -716,19 +747,11 @@ pub(crate) fn runtime_availability_notice(
             NoticeLevel::Warning,
             "wsxd recovered a corrupt primary state from its last-known-good backup".into(),
         )),
-        runtime::Availability::LegacyCompatible => Some((
-            NoticeLevel::Warning,
-            "A newer wsxd will be used after the current daemon stops".into(),
-        )),
+        runtime::Availability::LegacyCompatible => None,
         runtime::Availability::NewerDaemon { daemon_version }
             if daemon_version == runtime::WSX_VERSION =>
         {
-            Some((
-                NoticeLevel::Warning,
-                format!(
-                    "A newer wsx {daemon_version} build owns wsxd; this TUI will keep using it"
-                ),
-            ))
+            None
         }
         runtime::Availability::NewerDaemon { daemon_version } => Some((
             NoticeLevel::Warning,
@@ -737,63 +760,9 @@ pub(crate) fn runtime_availability_notice(
                 runtime::WSX_VERSION
             ),
         )),
-        runtime::Availability::DaemonReplaced { previous_version } => Some((
-            NoticeLevel::Success,
-            format!(
-                "wsxd updated from {previous_version} to {}. Terminal sessions restarted from saved commands",
-                runtime::WSX_VERSION
-            ),
-        )),
-        runtime::Availability::DaemonRestarted => Some((
-            NoticeLevel::Success,
-            "wsxd updated. Terminal sessions restarted from saved commands".into(),
-        )),
-        runtime::Availability::ReplacementDeferred {
-            daemon_version,
-            target_version,
-            live_runtimes,
-            blockers,
-        } => {
-            if blockers.contains(&runtime::ReplacementBlocker::LegacyDaemon) {
-                return Some((
-                    NoticeLevel::Warning,
-                    format!(
-                        "wsxd {daemon_version} cannot upgrade automatically to {target_version} while the legacy daemon has {live_runtimes} open terminal runtime(s); run `wsx daemon stop`, then reopen wsx; saved sessions restart on the next launch"
-                    ),
-                ));
-            }
-            let mut reasons = Vec::new();
-            if blockers.contains(&runtime::ReplacementBlocker::OtherTui) {
-                reasons.push(
-                    "older or different wsx TUI instances exit and their presence expires within 3 seconds",
-                );
-            }
-            if blockers.contains(&runtime::ReplacementBlocker::WorkingAgent) {
-                reasons.push("working agents become idle");
-            }
-            if blockers.contains(&runtime::ReplacementBlocker::ListenerScanPending) {
-                reasons.push("the initial local-server scan completes");
-            }
-            if blockers.contains(&runtime::ReplacementBlocker::ForegroundJob) {
-                reasons.push("foreground jobs stop");
-            }
-            if blockers.contains(&runtime::ReplacementBlocker::ListeningPort) {
-                reasons.push("local servers stop listening");
-            }
-            if blockers.contains(&runtime::ReplacementBlocker::PendingTarget) {
-                reasons.push("the existing queued replacement is resolved");
-            }
-            if reasons.is_empty() {
-                reasons.push("the daemon reaches its safe replacement boundary");
-            }
-            Some((
-                NoticeLevel::Warning,
-                format!(
-                    "wsxd {daemon_version} will upgrade to {target_version} after {}; {live_runtimes} terminal runtime(s) remain open",
-                    reasons.join(" and ")
-                ),
-            ))
-        }
+        runtime::Availability::DaemonReplaced { .. }
+        | runtime::Availability::DaemonRestarted
+        | runtime::Availability::ReplacementDeferred { .. } => None,
     }
 }
 
@@ -2387,9 +2356,26 @@ impl App {
     fn apply_runtime_refresh(&mut self, result: RuntimeRefresh) {
         self.runtime_refresh_pending = false;
         match result {
-            Ok((availability, snapshot, worktrees)) => {
-                self.apply_runtime_snapshot(snapshot, worktrees);
+            Ok(RuntimeRefreshOutcome::Authoritative {
+                availability,
+                snapshot,
+                worktrees,
+            }) => {
+                self.apply_runtime_snapshot(*snapshot, worktrees);
                 self.announce_startup_availability(&availability);
+            }
+            Ok(RuntimeRefreshOutcome::DiscoveryOnly { worktrees, error }) => {
+                let worktrees = self.filter_pending_deletions(worktrees);
+                if let Err(refresh_error) = ops::refresh_workspace_discovery_only(
+                    &mut self.workspace,
+                    &self.config,
+                    worktrees,
+                ) {
+                    self.set_error(format!("Workspace discovery rejected: {refresh_error}"));
+                } else {
+                    self.collapse_stale_projects();
+                    self.apply_runtime_event(runtime::EventSignal::Disconnected(error.to_string()));
+                }
             }
             Err(error) => {
                 self.apply_runtime_event(runtime::EventSignal::Disconnected(error.to_string()))
@@ -2548,13 +2534,9 @@ impl App {
         self.rebuild_flat();
         self.clamp_selected();
         self.cancel_pending_terminal_entry_if_stale();
-        let recovered = matches!(self.runtime_health, RuntimeHealth::Reconnecting { .. });
         self.runtime_health = RuntimeHealth::Healthy {
             last_success: Instant::now(),
         };
-        if recovered {
-            self.set_status("Runtime reconnected; workspace refreshed");
-        }
         self.mark_dirty();
         self.write_cache_if_dirty();
         self.needs_redraw = true;
@@ -4777,52 +4759,41 @@ impl App {
         Ok(())
     }
 
-    fn active_candidates(&self) -> Vec<usize> {
+    fn session_candidates(
+        &self,
+        matches: impl Fn(&wsx_core::model::workspace::SessionInfo) -> bool,
+    ) -> Vec<usize> {
         self.flat()
             .iter()
             .enumerate()
-            .filter_map(|(i, entry)| {
+            .filter_map(|(index, entry)| {
                 let FlatEntry::Session {
-                    project_idx: pi,
-                    worktree_idx: wi,
-                    session_idx: si,
+                    project_idx,
+                    worktree_idx,
+                    session_idx,
                 } = entry
                 else {
                     return None;
                 };
-                let sess = self.workspace.session(*pi, *wi, *si)?;
-                if session_state::derive(sess).app_state() == AppSessionState::Active {
-                    Some(i)
-                } else {
-                    None
-                }
+                self.workspace
+                    .session(*project_idx, *worktree_idx, *session_idx)
+                    .filter(|session| matches(session))
+                    .map(|_| index)
             })
             .collect()
     }
 
+    fn active_candidates(&self) -> Vec<usize> {
+        self.session_candidates(|session| {
+            session_state::derive(session).app_state() == AppSessionState::Active
+        })
+    }
+
     fn idle_candidates(&self) -> Vec<usize> {
-        self.flat()
-            .iter()
-            .enumerate()
-            .filter_map(|(i, entry)| {
-                let FlatEntry::Session {
-                    project_idx: pi,
-                    worktree_idx: wi,
-                    session_idx: si,
-                } = entry
-                else {
-                    return None;
-                };
-                let sess = self.workspace.session(*pi, *wi, *si)?;
-                if sess.agent.is_some()
-                    && session_state::derive(sess).app_state() == AppSessionState::Idle
-                {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .collect()
+        self.session_candidates(|session| {
+            session.agent.is_some()
+                && session_state::derive(session).app_state() == AppSessionState::Idle
+        })
     }
 
     fn candidate_target(&self, candidates: &[usize], dir: isize) -> Option<usize> {
@@ -4889,29 +4860,24 @@ impl App {
     }
 
     fn attention_candidates(&self) -> Vec<usize> {
-        self.flat()
-            .iter()
-            .enumerate()
-            .filter_map(|(i, entry)| {
-                let FlatEntry::Session {
-                    project_idx: pi,
-                    worktree_idx: wi,
-                    session_idx: si,
-                } = entry
-                else {
-                    return None;
-                };
-                let sess = self.workspace.session(*pi, *wi, *si)?;
-                if session_state::derive(sess).app_state() == AppSessionState::NeedsAttention {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .collect()
+        self.session_candidates(|session| {
+            session_state::derive(session).app_state() == AppSessionState::NeedsAttention
+        })
+    }
+
+    fn blocked_attention_candidates(&self) -> Vec<usize> {
+        self.session_candidates(|session| {
+            session_state::derive(session) == session_state::SessionHeuristic::Blocked
+        })
     }
 
     fn attention_target(&self, dir: isize) -> Option<usize> {
+        if self.config.attention_priority == AttentionPriority::BlockedFirst {
+            let blocked = self.blocked_attention_candidates();
+            if !blocked.is_empty() {
+                return self.candidate_target(&blocked, dir);
+            }
+        }
         self.candidate_target(&self.attention_candidates(), dir)
     }
 
@@ -7070,7 +7036,6 @@ mod tests {
                 worktrees: vec![],
                 sessions: vec![],
                 panes,
-                conversations: vec![],
                 listening_ports: vec![],
                 pane_activity: vec![],
                 plugin_sidecars: Vec::new(),
@@ -7925,6 +7890,21 @@ mod tests {
         session
     }
 
+    fn session_position(app: &App, session_idx: usize) -> usize {
+        app.flat()
+            .iter()
+            .position(|entry| {
+                matches!(
+                    entry,
+                    FlatEntry::Session {
+                        session_idx: candidate,
+                        ..
+                    } if *candidate == session_idx
+                )
+            })
+            .unwrap()
+    }
+
     fn preferred_session_fixture(
         sessions: Vec<wsx_core::model::workspace::SessionInfo>,
     ) -> (GlobalConfig, WorkspaceState, GroupKey) {
@@ -7948,11 +7928,11 @@ mod tests {
     }
 
     #[test]
-    fn preferred_group_session_ignores_collapse_and_prioritizes_attention_over_idle() {
+    fn preferred_group_session_keeps_workspace_order_for_attention_before_idle() {
         let (config, workspace, group) = preferred_session_fixture(vec![
             make_sess_with_id(1, runtime::AgentState::Idle),
-            make_sess_with_id(2, runtime::AgentState::Blocked),
-            make_sess_with_id(3, runtime::AgentState::Done),
+            make_sess_with_id(2, runtime::AgentState::Done),
+            make_sess_with_id(3, runtime::AgentState::Blocked),
         ]);
 
         assert_eq!(
@@ -8954,7 +8934,6 @@ mod tests {
                 exited: false,
                 revision: 1,
             }],
-            conversations: vec![],
             listening_ports: vec![],
             pane_activity: vec![],
             plugin_sidecars: Vec::new(),
@@ -9037,26 +9016,15 @@ mod tests {
         ];
         project.worktrees = vec![worktree];
         let mut app = make_test_app(
-            GlobalConfig::default(),
+            GlobalConfig {
+                attention_priority: AttentionPriority::WorkspaceOrder,
+                ..GlobalConfig::default()
+            },
             WorkspaceState {
                 projects: vec![project],
             },
             None,
         );
-        let session_position = |app: &App, session_idx| {
-            app.flat()
-                .iter()
-                .position(|entry| {
-                    matches!(
-                        entry,
-                        FlatEntry::Session {
-                            session_idx: si,
-                            ..
-                        } if *si == session_idx
-                    )
-                })
-                .unwrap()
-        };
 
         app.tree_selected = session_position(&app, 0);
         assert_eq!(app.active_target(1), Some(session_position(&app, 1)));
@@ -9073,6 +9041,44 @@ mod tests {
         assert_eq!(app.attention_target(-1), Some(session_position(&app, 5)));
         app.tree_selected = session_position(&app, 5);
         assert_eq!(app.attention_target(1), Some(session_position(&app, 4)));
+    }
+
+    #[test]
+    fn blocked_first_attention_priority_applies_in_both_directions_until_blockers_clear() {
+        let mut project = make_project("blocked-first");
+        let mut worktree = make_worktree("/tmp/blocked-first");
+        worktree.sessions = vec![
+            make_sess_with_id(1, runtime::AgentState::Done),
+            make_sess_with_id(2, runtime::AgentState::Blocked),
+            make_sess_with_id(3, runtime::AgentState::Done),
+            make_sess_with_id(4, runtime::AgentState::Blocked),
+            make_sess_with_id(5, runtime::AgentState::Error),
+        ];
+        project.worktrees = vec![worktree];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+
+        app.tree_selected = session_position(&app, 0);
+        assert_eq!(app.attention_target(1), Some(session_position(&app, 1)));
+        assert_eq!(app.attention_target(-1), Some(session_position(&app, 3)));
+        app.tree_selected = session_position(&app, 1);
+        assert_eq!(app.attention_target(1), Some(session_position(&app, 3)));
+        app.tree_selected = session_position(&app, 3);
+        assert_eq!(app.attention_target(-1), Some(session_position(&app, 1)));
+
+        for session in &mut app.workspace.projects[0].worktrees[0].sessions {
+            if session.agent_status == runtime::AgentState::Blocked {
+                session.muted = true;
+            }
+        }
+        app.tree_selected = session_position(&app, 0);
+        assert_eq!(app.attention_target(1), Some(session_position(&app, 2)));
+        assert_eq!(app.attention_target(-1), Some(session_position(&app, 4)));
     }
 
     #[test]
@@ -9259,101 +9265,53 @@ mod tests {
     }
 
     #[test]
-    fn deferred_replacement_notice_is_announced_only_once() {
-        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
-        let deferred = runtime::Availability::ReplacementDeferred {
-            daemon_version: "0.22.2".into(),
-            target_version: "0.22.3".into(),
-            live_runtimes: 1,
-            blockers: vec![runtime::ReplacementBlocker::WorkingAgent],
-        };
-
-        app.announce_startup_availability(&deferred);
-        assert!(app
-            .notice
-            .as_ref()
-            .is_some_and(|notice| notice.title.contains("working agents become idle")));
-
-        app.notice = None;
-        app.notice_started = None;
-        app.announce_startup_availability(&deferred);
-        assert!(app.notice.is_none());
-    }
-
-    #[test]
-    fn live_reconnect_announces_completed_replacement() {
-        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
-        app.startup_availability_pending = false;
-
-        app.apply_runtime_event(runtime::EventSignal::Connected(Some(
+    fn routine_update_states_are_silent_but_incompatible_newer_daemon_is_actionable() {
+        let routine = [
+            runtime::Availability::LegacyCompatible,
+            runtime::Availability::NewerDaemon {
+                daemon_version: runtime::WSX_VERSION.into(),
+            },
+            runtime::Availability::DaemonReplaced {
+                previous_version: "0.24.0".into(),
+            },
             runtime::Availability::DaemonRestarted,
-        )));
+            runtime::Availability::ReplacementDeferred {
+                daemon_version: "0.24.0".into(),
+                target_version: "0.25.0".into(),
+                live_runtimes: 4,
+                blockers: vec![
+                    runtime::ReplacementBlocker::OtherTui,
+                    runtime::ReplacementBlocker::WorkingAgent,
+                    runtime::ReplacementBlocker::ForegroundJob,
+                    runtime::ReplacementBlocker::ListeningPort,
+                ],
+            },
+            runtime::Availability::ReplacementDeferred {
+                daemon_version: "0.24.0".into(),
+                target_version: "0.25.0".into(),
+                live_runtimes: 65,
+                blockers: vec![runtime::ReplacementBlocker::HandoffUnavailable],
+            },
+            runtime::Availability::ReplacementDeferred {
+                daemon_version: "0.24.0".into(),
+                target_version: "0.25.0".into(),
+                live_runtimes: 5,
+                blockers: vec![runtime::ReplacementBlocker::LegacyDaemon],
+            },
+        ];
+        for availability in routine {
+            assert!(
+                runtime_availability_notice(&availability).is_none(),
+                "routine update state should not interrupt the workspace: {availability:?}"
+            );
+        }
 
-        assert!(app.notice.as_ref().is_some_and(|notice| {
-            notice.level == NoticeLevel::Success
-                && notice.title.contains("Terminal sessions restarted")
-        }));
-    }
-
-    #[test]
-    fn runtime_version_notices_explain_direction_and_blockers() {
         let newer = runtime_availability_notice(&runtime::Availability::NewerDaemon {
             daemon_version: "99.0.0".into(),
         })
         .unwrap()
         .1;
         assert!(newer.contains("open wsx 99.0.0"), "{newer}");
-
-        let deferred = runtime_availability_notice(&runtime::Availability::ReplacementDeferred {
-            daemon_version: "0.22.0".into(),
-            target_version: "0.22.1".into(),
-            live_runtimes: 4,
-            blockers: vec![
-                runtime::ReplacementBlocker::OtherTui,
-                runtime::ReplacementBlocker::WorkingAgent,
-                runtime::ReplacementBlocker::ForegroundJob,
-                runtime::ReplacementBlocker::ListeningPort,
-            ],
-        })
-        .unwrap()
-        .1;
-        assert!(deferred.contains(
-            "older or different wsx TUI instances exit and their presence expires within 3 seconds"
-        ));
-        assert!(deferred.contains("working agents become idle"));
-        assert!(deferred.contains("foreground jobs stop"));
-        assert!(deferred.contains("local servers stop listening"));
-        assert!(deferred.contains("4 terminal runtime(s) remain open"));
-
-        let legacy = runtime_availability_notice(&runtime::Availability::ReplacementDeferred {
-            daemon_version: "0.20.0".into(),
-            target_version: "0.22.1".into(),
-            live_runtimes: 5,
-            blockers: vec![runtime::ReplacementBlocker::LegacyDaemon],
-        })
-        .unwrap()
-        .1;
-        assert!(legacy.contains("cannot upgrade automatically"), "{legacy}");
-        assert!(legacy.contains("run `wsx daemon stop`"), "{legacy}");
-        assert!(
-            legacy.contains("saved sessions restart on the next launch"),
-            "{legacy}"
-        );
-        assert!(legacy.contains("5 open terminal runtime(s)"), "{legacy}");
-
-        for message in [&deferred, &legacy] {
-            let lowercase = message.to_ascii_lowercase();
-            for unsupported_claim in [
-                "exact pty survives",
-                "pty will survive",
-                "exact process survives",
-                "process will survive",
-                "exact terminal buffer survives",
-                "terminal buffer will survive",
-            ] {
-                assert!(!lowercase.contains(unsupported_claim), "{message}");
-            }
-        }
     }
 
     #[test]
@@ -9560,7 +9518,6 @@ mod tests {
                 worktrees: vec![],
                 sessions: vec![],
                 panes: vec![],
-                conversations: vec![],
                 listening_ports: vec![],
                 pane_activity: vec![],
                 plugin_sidecars: Vec::new(),
@@ -9569,6 +9526,7 @@ mod tests {
             None,
         );
         assert!(matches!(app.runtime_health, RuntimeHealth::Healthy { .. }));
+        assert!(app.notice.is_none());
     }
 
     #[test]

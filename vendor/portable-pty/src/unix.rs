@@ -67,6 +67,24 @@ fn openpty(size: PtySize) -> anyhow::Result<(UnixMasterPty, UnixSlavePty)> {
     Ok((master, slave))
 }
 
+/// Takes ownership of an existing Unix PTY master descriptor.
+///
+/// # Safety
+///
+/// `fd` must be a valid, uniquely owned PTY master descriptor. The returned
+/// object closes it on drop.
+pub unsafe fn master_from_raw_fd(fd: RawFd) -> anyhow::Result<Box<dyn MasterPty + Send>> {
+    if fd < 0 || libc::isatty(fd) != 1 {
+        bail!("handoff descriptor is not a PTY master");
+    }
+    cloexec(fd)?;
+    Ok(Box::new(UnixMasterPty {
+        fd: PtyFd(FileDescriptor::from_raw_fd(fd)),
+        took_writer: RefCell::new(false),
+        tty_name: tty_name(fd),
+    }))
+}
+
 impl PtySystem for UnixPtySystem {
     fn openpty(&self, size: PtySize) -> anyhow::Result<PtyPair> {
         let (master, slave) = openpty(size)?;

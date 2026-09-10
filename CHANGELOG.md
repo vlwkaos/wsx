@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Retire the unused wsxd-owned structured Pi RPC conversation API while preserving terminal-hosted Pi lifecycle reporting and native session identity.
+
+### Improvements
+
+- Replace restart-based wsxd upgrades with transactional Unix live handoff. Running shells, terminal agents, foreground jobs, and listening servers keep their PTYs and process IDs while the successor reconstructs functional terminal state.
+- Keep protocol-11 through protocol-14 daemons usable during the one-time transition to handoff-capable wsxd, preserving workspace sessions, activity timestamps, and stale-project folding until safe replacement.
+- Keep routine daemon reuse, deferred replacement, handoff, and cold restoration silent in the TUI. Opening wsx continues to show the existing workspace while only incompatible newer-daemon action remains visible.
+- Prioritize Blocked sessions when `N` or `Shift+N` navigates attention by default, with a typed Global Settings choice to restore Workspace order. Group navigation remains unchanged.
+
+### Compatibility
+
+- Protocol 15 adds bounded live-handoff registration and capability negotiation. The old daemon retains ownership until the successor imports PTY descriptors, binds the canonical socket, and reports ready; pre-commit failure resumes the old daemon.
+
 ## [0.24.0] - 2026-09-09
 
 ### Features

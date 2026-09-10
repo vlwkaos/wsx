@@ -7,7 +7,6 @@
 mod assets;
 mod availability;
 mod config_edit;
-pub mod conversation;
 mod install;
 mod model;
 mod opencode_config;

@@ -153,6 +153,14 @@ impl PortVisibility {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionPriority {
+    #[default]
+    BlockedFirst,
+    WorkspaceOrder,
+}
+
 /// Canonical form used for project-path identity. A trailing `/` is the only
 /// divergence we've seen between a user-typed path and its stored form, and an
 /// un-normalized duplicate silently breaks dedup / delete / cache lookups.
@@ -187,6 +195,8 @@ pub struct GlobalConfig {
     pub terminal_title_position: TerminalTitlePosition,
     #[serde(default)]
     pub port_visibility: PortVisibility,
+    #[serde(default)]
+    pub attention_priority: AttentionPriority,
 }
 
 impl Default for GlobalConfig {
@@ -204,6 +214,7 @@ impl Default for GlobalConfig {
             terminal_sidebar: TerminalSidebar::default(),
             terminal_title_position: TerminalTitlePosition::default(),
             port_visibility: PortVisibility::default(),
+            attention_priority: AttentionPriority::default(),
         }
     }
 }
@@ -263,6 +274,8 @@ struct GlobalConfigWire {
     terminal_title_position: TerminalTitlePosition,
     #[serde(default)]
     port_visibility: PortVisibility,
+    #[serde(default)]
+    attention_priority: AttentionPriority,
 }
 
 #[derive(Deserialize)]
@@ -342,6 +355,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
             terminal_sidebar: wire.terminal_sidebar,
             terminal_title_position: wire.terminal_title_position,
             port_visibility: wire.port_visibility,
+            attention_priority: wire.attention_priority,
         };
         config.migrate_reserved_names();
         Ok(config)
@@ -844,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn presentation_settings_default_to_compact_sidebar_release_status_and_non_agentic_ports() {
+    fn presentation_settings_default_and_round_trip_typed_choices() {
         let defaulted: GlobalConfig = toml::from_str("").unwrap();
         assert!(defaulted.show_release_status);
         assert!(defaulted.wake_mode);
@@ -854,11 +868,15 @@ mod tests {
             TerminalTitlePosition::Bottom
         );
         assert_eq!(defaulted.port_visibility, PortVisibility::NonAgentic);
+        assert_eq!(
+            defaulted.attention_priority,
+            AttentionPriority::BlockedFirst
+        );
         assert!(!defaulted.port_visibility.shows_session(true));
         assert!(defaulted.port_visibility.shows_session(false));
 
         let configured: GlobalConfig = toml::from_str(
-            "show_release_status = false\nwake_mode = false\nterminal_sidebar = \"expanded\"\nterminal_title_position = \"top\"\nport_visibility = \"all\"\n",
+            "show_release_status = false\nwake_mode = false\nterminal_sidebar = \"expanded\"\nterminal_title_position = \"top\"\nport_visibility = \"all\"\nattention_priority = \"workspace_order\"\n",
         )
         .unwrap();
         assert!(!configured.show_release_status);
@@ -869,9 +887,14 @@ mod tests {
             TerminalTitlePosition::Top
         );
         assert_eq!(configured.port_visibility, PortVisibility::All);
+        assert_eq!(
+            configured.attention_priority,
+            AttentionPriority::WorkspaceOrder
+        );
         assert!(configured.port_visibility.shows_session(true));
 
         assert!(toml::from_str::<GlobalConfig>("port_visibility = \"sometimes\"\n").is_err());
+        assert!(toml::from_str::<GlobalConfig>("attention_priority = \"done_first\"\n").is_err());
         assert!(toml::from_str::<GlobalConfig>("terminal_sidebar = \"sometimes\"\n").is_err());
         assert!(toml::from_str::<GlobalConfig>("terminal_title_position = \"middle\"\n").is_err());
     }

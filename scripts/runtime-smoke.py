@@ -14,7 +14,7 @@ import time
 import weakref
 
 ROOT = Path(__file__).resolve().parents[1]
-PROTOCOL = 14
+PROTOCOL = 15
 WORK = Path(os.environ.get("WSX_SMOKE_WORK", ROOT / ".work" / "runtime-smoke"))
 if WORK.exists():
     shutil.rmtree(WORK)

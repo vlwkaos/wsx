@@ -10,7 +10,7 @@ use std::{
 };
 
 // ^ [[Terminal Stream Protocol v3]] Wire-version history and compatibility boundaries.
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 pub const WSX_PANE_ID_ENV: &str = "WSX_PANE_ID";
@@ -18,7 +18,7 @@ pub const WSX_RUNTIME_GENERATION_ENV: &str = "WSX_RUNTIME_GENERATION";
 pub const WSX_PLUGIN_VIEW_ENV: &str = "WSX_PLUGIN_VIEW_JSON";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ^ Bump only when daemon-owned runtime behavior changes. UI-only releases reuse wsxd.
-pub const DAEMON_REVISION: u32 = 4;
+pub const DAEMON_REVISION: u32 = 5;
 
 pub fn compare_wsx_versions(left: &str, right: &str) -> Option<Ordering> {
     let left = parse_wsx_version(left)?;
@@ -295,40 +295,6 @@ pub enum Request {
         runtime_generation: String,
         next_runtime_generation: String,
     },
-    ConversationCreate {
-        session_id: SessionId,
-        provider: String,
-        expected_revision: u64,
-    },
-    ConversationSend {
-        conversation_id: ConversationId,
-        mode: ConversationInputMode,
-        text: String,
-        #[serde(default)]
-        attachments: Vec<ConversationAttachment>,
-    },
-    ConversationAbort {
-        conversation_id: ConversationId,
-    },
-    ConversationEvents {
-        conversation_id: ConversationId,
-        after_cursor: u64,
-        limit: u16,
-    },
-    ConversationRespond {
-        conversation_id: ConversationId,
-        interaction_id: String,
-        response: ConversationInteractionResponse,
-    },
-    ConversationSetModel {
-        conversation_id: ConversationId,
-        provider: String,
-        model: String,
-        thinking_level: String,
-    },
-    ConversationCommands {
-        conversation_id: ConversationId,
-    },
     PluginList,
     PluginReload,
     PluginReviewCancel {
@@ -354,6 +320,13 @@ pub enum Request {
         target_binary_id: String,
         #[serde(default)]
         target_daemon_revision: u32,
+    },
+    PrepareHandoff {
+        target_binary_id: String,
+        target_version: String,
+        target_protocol: u32,
+        target_daemon_revision: u32,
+        executable: PathBuf,
     },
     Shutdown,
 }
@@ -408,12 +381,6 @@ pub enum Response {
         revision: u64,
         events: Vec<Event>,
     },
-    ConversationEvents {
-        conversation_id: ConversationId,
-        next_cursor: u64,
-        events: Vec<ConversationEvent>,
-    },
-    ConversationCommands(Vec<ConversationCommand>),
     Plugins(Vec<PluginManifest>),
     PluginView(PluginSidecarView),
     PluginReview {
@@ -519,7 +486,6 @@ mod tests {
         assert!(!capabilities.foreground_jobs);
         assert!(!capabilities.lifecycle_coordination);
         assert!(!capabilities.daemon_revision_coordination);
-        assert!(!capabilities.conversations);
     }
 
     #[test]
@@ -632,6 +598,16 @@ mod tests {
         let encoded = serde_json::to_string(&request).unwrap();
         assert_eq!(serde_json::from_str::<Request>(&encoded).unwrap(), request);
 
+        let handoff = Request::PrepareHandoff {
+            target_binary_id: "0.25.0:1:2:3:4".into(),
+            target_version: "0.25.0".into(),
+            target_protocol: PROTOCOL_VERSION,
+            target_daemon_revision: DAEMON_REVISION,
+            executable: "/usr/local/bin/wsxd".into(),
+        };
+        let encoded = serde_json::to_string(&handoff).unwrap();
+        assert_eq!(serde_json::from_str::<Request>(&encoded).unwrap(), handoff);
+
         let response = Response::Lifecycle(DaemonLifecycle {
             protocol: PROTOCOL_VERSION,
             epoch: 7,
@@ -666,8 +642,8 @@ mod tests {
             panic!("expected snapshot response");
         };
         assert!(snapshot.pane_activity.is_empty());
-        assert!(snapshot.conversations.is_empty());
         assert!(!snapshot.capabilities.foreground_jobs);
+        assert!(!snapshot.capabilities.live_handoff);
     }
 
     #[test]
@@ -702,38 +678,6 @@ mod tests {
             panic!("expected session create request");
         };
         assert_eq!(initial_input, None);
-    }
-
-    #[test]
-    fn conversation_send_defaults_missing_attachments() {
-        let request = serde_json::from_str::<Request>(
-            r#"{"method":"conversation_send","params":{"conversation_id":1,"mode":"prompt","text":"hello"}}"#,
-        )
-        .unwrap();
-
-        let Request::ConversationSend { attachments, .. } = request else {
-            panic!("expected conversation send request");
-        };
-        assert!(attachments.is_empty());
-    }
-
-    #[test]
-    fn conversation_events_are_typed_and_cursored() {
-        let response = Response::ConversationEvents {
-            conversation_id: ConversationId(1),
-            next_cursor: 4,
-            events: vec![ConversationEvent {
-                cursor: 4,
-                conversation_id: ConversationId(1),
-                occurred_unix_ms: 9,
-                event: ConversationEventKind::Settled,
-            }],
-        };
-        let encoded = serde_json::to_string(&response).unwrap();
-        assert_eq!(
-            serde_json::from_str::<Response>(&encoded).unwrap(),
-            response
-        );
     }
 
     #[test]

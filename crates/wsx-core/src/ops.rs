@@ -170,15 +170,34 @@ pub fn load_full_workspace(config: &GlobalConfig) -> Result<WorkspaceState> {
     Ok(workspace)
 }
 
+pub fn refresh_workspace_discovery_only(
+    workspace: &mut WorkspaceState,
+    config: &GlobalConfig,
+    worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
+) -> Result<()> {
+    refresh_workspace_with_discovery(workspace, config, None, worktrees)
+}
+
 pub fn refresh_workspace_with_worktrees(
     workspace: &mut WorkspaceState,
     config: &GlobalConfig,
     snapshot: &Snapshot,
     worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
 ) -> Result<()> {
+    refresh_workspace_with_discovery(workspace, config, Some(snapshot), worktrees)
+}
+
+fn refresh_workspace_with_discovery(
+    workspace: &mut WorkspaceState,
+    config: &GlobalConfig,
+    snapshot: Option<&Snapshot>,
+    worktrees: Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>,
+) -> Result<()> {
     let mut worktrees_map: HashMap<PathBuf, Vec<git_worktree::WorktreeEntry>> =
         worktrees.into_iter().collect();
-    update_project_activity(workspace, snapshot);
+    if let Some(snapshot) = snapshot {
+        update_project_activity(workspace, snapshot);
+    }
     for project in &mut workspace.projects {
         if let Some(default_branch) = worktrees_map
             .get(&project.path)
@@ -224,12 +243,15 @@ pub fn refresh_workspace_with_worktrees(
                     path: entry.path.clone(),
                     is_main: entry.is_main,
                     alias: aliases.and_then(|map| map.get(&entry.branch)).cloned(),
-                    sessions: sessions_for_worktree(
-                        snapshot,
-                        &entry.path,
-                        old.map(|state| state.sessions.as_slice())
-                            .unwrap_or_default(),
-                    )?,
+                    sessions: match snapshot {
+                        Some(snapshot) => sessions_for_worktree(
+                            snapshot,
+                            &entry.path,
+                            old.map(|state| state.sessions.as_slice())
+                                .unwrap_or_default(),
+                        )?,
+                        None => old.map(|state| state.sessions.clone()).unwrap_or_default(),
+                    },
                     expanded: old.map(|state| state.expanded).unwrap_or(true),
                     git_info: old.and_then(|state| state.git_info.clone()),
                     fetch_failed: old.map(|state| state.fetch_failed).unwrap_or(false),
@@ -723,7 +745,6 @@ mod tests {
                     revision: 9,
                 },
             ],
-            conversations: vec![],
             listening_ports: vec![
                 runtime::PanePorts {
                     pane_id: PaneId(4),
@@ -773,6 +794,96 @@ mod tests {
         refresh_sessions_from_snapshot(&mut workspace, &snapshot).unwrap();
         assert_eq!(workspace.projects[0].last_agent_active_unix_ms, Some(42));
         assert_eq!(workspace.projects[0].last_terminal_active_unix_ms, Some(43));
+    }
+
+    #[test]
+    fn discovery_only_refresh_keeps_worktrees_and_known_activity_without_daemon_state() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".work")
+            .join(format!("degraded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let config = GlobalConfig {
+            projects: vec![crate::config::global::ProjectEntry {
+                name: "degraded".into(),
+                path: root.clone(),
+                groups: Vec::new(),
+                aliases: HashMap::new(),
+            }],
+            ..GlobalConfig::default()
+        };
+        let mut workspace = workspace_from_config(&config);
+        workspace.projects[0].last_agent_active_unix_ms = Some(11);
+        workspace.projects[0].last_terminal_active_unix_ms = Some(12);
+        workspace.projects[0].worktrees.push(WorktreeInfo {
+            name: "main".into(),
+            branch: "main".into(),
+            path: root.clone(),
+            is_main: true,
+            alias: None,
+            sessions: vec![SessionInfo {
+                session_id: SessionId(31),
+                pane_id: PaneId(32),
+                terminal_id: TerminalId(33),
+                agent: None,
+                display_name: "preserved shell".into(),
+                agent_status: AgentState::Unknown,
+                revision: 7,
+                layout: PaneLayout::Leaf {
+                    pane_id: PaneId(32),
+                },
+                panes: vec![PaneInfo {
+                    pane_id: PaneId(32),
+                    terminal_id: TerminalId(33),
+                    label: "terminal".into(),
+                    agent: None,
+                    agent_status: AgentState::Unknown,
+                    revision: 8,
+                    exited: false,
+                    listening_ports: vec![4173],
+                    foreground_job: true,
+                    outcome_acknowledged: false,
+                }],
+                muted: true,
+                outcome_acknowledged: false,
+            }],
+            expanded: false,
+            git_info: None,
+            fetch_failed: false,
+            fetch_fail_count: 0,
+            fetch_fail_reason: None,
+            last_fetched: None,
+            git_info_fetched_at: None,
+        });
+
+        refresh_workspace_discovery_only(
+            &mut workspace,
+            &config,
+            vec![(
+                root.clone(),
+                vec![git_worktree::WorktreeEntry {
+                    name: "main".into(),
+                    path: root.clone(),
+                    branch: "main".into(),
+                    is_main: true,
+                }],
+            )],
+        )
+        .unwrap();
+
+        assert_eq!(workspace.projects[0].worktrees.len(), 1);
+        assert_eq!(workspace.projects[0].last_agent_active_unix_ms, Some(11));
+        assert_eq!(workspace.projects[0].last_terminal_active_unix_ms, Some(12));
+        let preserved = &workspace.projects[0].worktrees[0];
+        assert!(!preserved.expanded);
+        assert_eq!(preserved.sessions.len(), 1);
+        assert_eq!(preserved.sessions[0].session_id, SessionId(31));
+        assert_eq!(preserved.sessions[0].pane_id, PaneId(32));
+        assert_eq!(preserved.sessions[0].terminal_id, TerminalId(33));
+        assert_eq!(preserved.sessions[0].display_name, "preserved shell");
+        assert_eq!(preserved.sessions[0].panes[0].listening_ports, vec![4173]);
+        assert!(preserved.sessions[0].panes[0].foreground_job);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -897,7 +1008,6 @@ mod tests {
             }],
             sessions: Vec::new(),
             panes: Vec::new(),
-            conversations: Vec::new(),
             listening_ports: Vec::new(),
             pane_activity: Vec::new(),
             plugin_sidecars: Vec::new(),
