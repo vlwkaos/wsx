@@ -122,7 +122,7 @@ wsx는 file을 검증하고 unknown field, 크기 제한을 벗어난 worktree d
 ```text
 wsx status [--json]
 wsx worktree list|create|delete
-wsx session list|send-keys|send-text|prompt|peek|rename
+wsx session create|delete|list|send-keys|send-text|prompt|peek|rename
 wsx group ls|create|rename|add|remove
 wsx routine ...
 wsx agent install <target>
@@ -132,7 +132,18 @@ wsx runtime status [--json]
 wsx daemon stop|recover
 ```
 
-Routine의 각 `--arg`는 direct argv item 하나입니다. wsx는 shell을 실행하지 않습니다. 신뢰하지 않는 routine은 enable 또는 run하기 전에 `wsx routine show <name>`으로 확인합니다.
+현재 worktree, 하나뿐인 worktree 또는 명시적으로 지정한 대상에 session을 바로 만들 수 있습니다.
+
+```text
+wsx session create [--name <label>] [--command <shell-input>] [--json]
+                   [-p <project>] [-w <branch|alias|path>]
+wsx session delete <session|pane|label> [--json]
+                   [-p <project>] [-w <branch|alias|path>]
+```
+
+Session input, prompt, peek, rename 명령에도 `-p`와 `-w` scope를 선택적으로 지정할 수 있습니다. 정확한 session ID와 pane ID는 project scope 없이 바로 사용할 수 있습니다. Project와 worktree 안에서 유일한 label을 지정하면 사전에 목록을 조회하지 않아도 되며, 대상이 모호하면 실행하지 않고 오류를 반환합니다. `--command`는 새 shell이 시작된 뒤 입력할 text이며 direct argv 실행이 아닙니다.
+
+Routine의 각 `--arg`는 direct argv item 하나입니다. wsx는 routine argv를 실행할 때 shell을 사용하지 않습니다. 신뢰하지 않는 routine은 enable 또는 run하기 전에 `wsx routine show <name>`으로 확인합니다.
 
 Versioned event, Terminal sidecar, worktree review contract는 [Executable plugins](docs/plugins.md)에서 확인할 수 있습니다. Review provider를 설치하면 worktree에서 Tab을 눌러 preview 안에서 파일과 diff를 키보드로 살펴볼 수 있습니다. [Git provider 설정](docs/worktree-review.md)은 agent terminal을 변경하지 않습니다.
 

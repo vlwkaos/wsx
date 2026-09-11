@@ -50,7 +50,12 @@ CONFIG_DIR = (
     else WORK / "config" / "wsx"
 )
 CONFIG_DIR.mkdir(parents=True, mode=0o700)
-(CONFIG_DIR / "config-v2.toml").write_text("resume_agents_on_restore = false\n")
+(CONFIG_DIR / "config-v2.toml").write_text(
+    "resume_agents_on_restore = false\n"
+    "[[projects]]\n"
+    "name = \"smoke\"\n"
+    f"path = {json.dumps(str(PROJECT))}\n"
+)
 PLUGIN_DIR = WORK / "config" / "wsx" / "plugins"
 PLUGIN_DIR.mkdir(parents=True, mode=0o700)
 PLUGIN_MARKER = WORK / "plugin-events.jsonl"
@@ -272,6 +277,47 @@ assert duplicate["type"] == "error", duplicate
 snapshot = call("snapshot")["data"]
 project_id = snapshot["projects"][0]["id"]
 worktree_id = snapshot["worktrees"][0]["id"]
+cli_created = subprocess.run(
+    [
+        str(WSX),
+        "session",
+        "create",
+        "--name",
+        "cli-smoke",
+        "--command",
+        "printf cli-created",
+        "--json",
+    ],
+    cwd=PROJECT,
+    env=env,
+    check=True,
+    capture_output=True,
+    text=True,
+)
+cli_session = json.loads(cli_created.stdout)
+assert cli_session["label"] == "cli-smoke", cli_session
+assert cli_session["project"] == "smoke", cli_session
+assert cli_session["branch"] == "main", cli_session
+assert cli_session["worktree"] == str(PROJECT), cli_session
+cli_session_id = cli_session["session_id"]
+cli_snapshot = call("snapshot")["data"]
+assert any(item["id"] == cli_session_id for item in cli_snapshot["sessions"]), cli_snapshot
+cli_deleted = subprocess.run(
+    [str(WSX), "session", "delete", str(cli_session_id), "--json"],
+    cwd=PROJECT,
+    env=env,
+    check=True,
+    capture_output=True,
+    text=True,
+)
+assert json.loads(cli_deleted.stdout) == {
+    "deleted": True,
+    "label": "cli-smoke",
+    "session_id": cli_session_id,
+}, cli_deleted.stdout
+assert not any(
+    item["id"] == cli_session_id for item in call("snapshot")["data"]["sessions"]
+)
 quick = call("session_create", {
     "worktree_id": worktree_id,
     "label": "quick-exit",

@@ -122,7 +122,7 @@ wsx validates files, rejects unknown fields, bounded worktree defaults, and unsa
 ```text
 wsx status [--json]
 wsx worktree list|create|delete
-wsx session list|send-keys|send-text|prompt|peek|rename
+wsx session create|delete|list|send-keys|send-text|prompt|peek|rename
 wsx group ls|create|rename|add|remove
 wsx routine ...
 wsx agent install <target>
@@ -132,7 +132,18 @@ wsx runtime status [--json]
 wsx daemon stop|recover
 ```
 
-Each routine `--arg` is one direct argv item. wsx never invokes a shell. Inspect untrusted routines with `wsx routine show <name>` before enabling or running them.
+Create a session directly in the current worktree, the only known worktree, or an explicit target:
+
+```text
+wsx session create [--name <label>] [--command <shell-input>] [--json]
+                   [-p <project>] [-w <branch|alias|path>]
+wsx session delete <session|pane|label> [--json]
+                   [-p <project>] [-w <branch|alias|path>]
+```
+
+Session input, prompt, peek, and rename commands accept the same optional `-p` and `-w` scope. Exact session or pane IDs remain globally addressable. Scoped unique labels avoid a preliminary list; ambiguous targets fail with an actionable error. `--command` is text entered into the new shell after startup, not a direct argv execution.
+
+Each routine `--arg` is one direct argv item. wsx never invokes a shell for routine argv. Inspect untrusted routines with `wsx routine show <name>` before enabling or running them.
 
 See [Executable plugins](docs/plugins.md) for the versioned event, Terminal-sidecar, and worktree-review contracts. With a review provider installed, Tab on a worktree opens keyboard-driven file and diff review inside its preview. The [reference Git provider setup](docs/worktree-review.md) does not change the agent terminal.
 
