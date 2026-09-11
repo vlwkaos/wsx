@@ -308,14 +308,46 @@ pub enum WorktreeCmd {
     },
 }
 
+#[derive(Default, clap::Args)]
+pub struct SessionScope {
+    /// Select or restrict a session target to one project
+    #[arg(short, long)]
+    project: Option<String>,
+    /// Select or restrict a session target to one worktree branch, alias, or path
+    #[arg(short = 'w', long)]
+    worktree: Option<String>,
+}
+
 #[derive(Subcommand)]
 pub enum SessionCmd {
+    /// Create a session in a known or inferred worktree
+    Create {
+        #[arg(long)]
+        name: Option<String>,
+        /// Text entered into the new shell after it starts
+        #[arg(long)]
+        command: Option<String>,
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        scope: SessionScope,
+    },
+    /// Delete a session and all of its panes
+    Delete {
+        session: String,
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        scope: SessionScope,
+    },
     /// Deprecated alias for send-text
     SendKeys {
         session: String,
         keys: String,
         #[arg(long)]
         no_enter: bool,
+        #[command(flatten)]
+        scope: SessionScope,
     },
     /// Send literal text to a terminal pane
     SendText {
@@ -323,9 +355,16 @@ pub enum SessionCmd {
         text: String,
         #[arg(long)]
         no_enter: bool,
+        #[command(flatten)]
+        scope: SessionScope,
     },
     /// Submit a prompt to a session's primary pane
-    Prompt { session: String, prompt: String },
+    Prompt {
+        session: String,
+        prompt: String,
+        #[command(flatten)]
+        scope: SessionScope,
+    },
     /// Read a bounded window from the pane's visible semantic frame
     Peek {
         session: String,
@@ -338,9 +377,16 @@ pub enum SessionCmd {
         /// Strip ANSI/decorations and compact for agent consumption
         #[arg(short = 'a', long)]
         agent: bool,
+        #[command(flatten)]
+        scope: SessionScope,
     },
     /// Rename a session
-    Rename { old: String, new_name: String },
+    Rename {
+        old: String,
+        new_name: String,
+        #[command(flatten)]
+        scope: SessionScope,
+    },
     /// List sessions
     List {
         #[arg(short, long)]
@@ -376,24 +422,46 @@ pub fn run(cmd: Command) -> Result<()> {
             } => cmd_worktree_list(project.as_deref(), json, format, group.as_ref()),
         },
         Command::Session { subcommand } => match subcommand {
+            SessionCmd::Create {
+                name,
+                command,
+                json,
+                scope,
+            } => cmd_session_create(scope, name, command, json),
+            SessionCmd::Delete {
+                session,
+                json,
+                scope,
+            } => cmd_session_delete(&session, &scope, json),
             SessionCmd::SendKeys {
                 session: s,
                 keys,
                 no_enter,
-            } => cmd_session_send_text(&s, &keys, no_enter),
+                scope,
+            } => cmd_session_send_text(&s, &keys, no_enter, &scope),
             SessionCmd::SendText {
                 session,
                 text,
                 no_enter,
-            } => cmd_session_send_text(&session, &text, no_enter),
-            SessionCmd::Prompt { session, prompt } => cmd_session_prompt(&session, &prompt),
+                scope,
+            } => cmd_session_send_text(&session, &text, no_enter, &scope),
+            SessionCmd::Prompt {
+                session,
+                prompt,
+                scope,
+            } => cmd_session_prompt(&session, &prompt, &scope),
             SessionCmd::Peek {
                 session: s,
                 lines,
                 trim,
                 agent,
-            } => cmd_session_peek(&s, lines, trim, agent),
-            SessionCmd::Rename { old, new_name } => cmd_session_rename(&old, &new_name),
+                scope,
+            } => cmd_session_peek(&s, lines, trim, agent, &scope),
+            SessionCmd::Rename {
+                old,
+                new_name,
+                scope,
+            } => cmd_session_rename(&old, &new_name, &scope),
             SessionCmd::List {
                 project,
                 json,
@@ -909,6 +977,93 @@ mod group_command_tests {
 }
 
 #[cfg(test)]
+mod session_command_tests {
+    use super::{created_session_line, Args, Command, SessionCmd};
+    use clap::Parser;
+    use wsx_core::runtime::SessionId;
+
+    #[test]
+    fn create_accepts_direct_scope_command_and_json_output() {
+        let args = Args::try_parse_from([
+            "wsx",
+            "session",
+            "create",
+            "--project",
+            "api",
+            "--worktree",
+            "fix/timeout",
+            "--name",
+            "review",
+            "--command",
+            "pi -p 'Review timeout handling'",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Session {
+                subcommand: SessionCmd::Create {
+                    name: Some(name),
+                    command: Some(command),
+                    json: true,
+                    scope,
+                }
+            }) if name == "review"
+                && command == "pi -p 'Review timeout handling'"
+                && scope.project.as_deref() == Some("api")
+                && scope.worktree.as_deref() == Some("fix/timeout")
+        ));
+    }
+
+    #[test]
+    fn created_identity_is_labeled_as_a_session() {
+        assert_eq!(created_session_line(SessionId(42)), "session:  42");
+    }
+
+    #[test]
+    fn delete_and_prompt_accept_the_same_target_scope() {
+        for argv in [
+            vec![
+                "wsx",
+                "session",
+                "delete",
+                "worker",
+                "-p",
+                "api",
+                "-w",
+                "fix/timeout",
+                "--json",
+            ],
+            vec![
+                "wsx",
+                "session",
+                "prompt",
+                "worker",
+                "Run tests",
+                "-p",
+                "api",
+                "-w",
+                "fix/timeout",
+            ],
+        ] {
+            let args = Args::try_parse_from(argv).unwrap();
+            match args.command.unwrap() {
+                Command::Session {
+                    subcommand: SessionCmd::Delete { scope, .. },
+                }
+                | Command::Session {
+                    subcommand: SessionCmd::Prompt { scope, .. },
+                } => {
+                    assert_eq!(scope.project.as_deref(), Some("api"));
+                    assert_eq!(scope.worktree.as_deref(), Some("fix/timeout"));
+                }
+                _ => panic!("expected scoped session command"),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod agent_command_tests {
     use super::{AgentCmd, Args, Command};
     use clap::Parser;
@@ -1155,6 +1310,79 @@ fn resolve_project<'a>(workspace: &'a WorkspaceState, name: Option<&str>) -> Res
     }
 }
 
+fn cwd_worktree<'a>(
+    projects: impl Iterator<Item = &'a Project>,
+    cwd: Option<&Path>,
+) -> Option<(&'a Project, &'a wsx_core::model::workspace::WorktreeInfo)> {
+    let cwd = cwd?;
+    projects
+        .flat_map(|project| {
+            project
+                .worktrees
+                .iter()
+                .map(move |worktree| (project, worktree))
+        })
+        .filter(|(_, worktree)| cwd == worktree.path || cwd.starts_with(&worktree.path))
+        .max_by_key(|(_, worktree)| worktree.path.components().count())
+}
+
+fn resolve_creation_worktree<'a>(
+    workspace: &'a WorkspaceState,
+    scope: &SessionScope,
+    cwd: Option<&Path>,
+) -> Result<(&'a Project, &'a wsx_core::model::workspace::WorktreeInfo)> {
+    let project = if let Some(name) = scope.project.as_deref() {
+        resolve_project(workspace, Some(name))?
+    } else if let Some((project, _)) = cwd_worktree(workspace.projects.iter(), cwd) {
+        project
+    } else {
+        resolve_project(workspace, None)?
+    };
+
+    if let Some(selector) = scope.worktree.as_deref() {
+        let matches = project
+            .worktrees
+            .iter()
+            .filter(|worktree| {
+                worktree.branch == selector
+                    || worktree.alias.as_deref() == Some(selector)
+                    || worktree.path == Path::new(selector)
+            })
+            .collect::<Vec<_>>();
+        return match matches.as_slice() {
+            [worktree] => Ok((project, *worktree)),
+            [] => bail!(
+                "worktree '{}' not found in project '{}'",
+                selector,
+                project.name
+            ),
+            _ => bail!(
+                "worktree '{}' is ambiguous in project '{}'",
+                selector,
+                project.name
+            ),
+        };
+    }
+
+    if let Some((_, worktree)) = cwd_worktree(std::iter::once(project), cwd) {
+        return Ok((project, worktree));
+    }
+    match project.worktrees.as_slice() {
+        [worktree] => Ok((project, worktree)),
+        [] => bail!("project '{}' has no worktrees", project.name),
+        _ => bail!(
+            "multiple worktrees in project '{}' — use -w to specify: {}",
+            project.name,
+            project
+                .worktrees
+                .iter()
+                .map(|worktree| worktree.display_name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 fn activity_label(s: &wsx_core::model::workspace::SessionInfo) -> &'static str {
     session_state::status_label(s)
 }
@@ -1294,10 +1522,14 @@ fn cmd_worktree_create(branch: &str, project_name: Option<&str>) -> Result<()> {
     if let Some(error) = created.session_error {
         anyhow::bail!("worktree created, but its initial wsx session failed: {error}");
     }
-    if let Some((pane_id, _)) = created.session {
-        println!("pane:     {pane_id}");
+    if let Some((session_id, _)) = created.session {
+        println!("{}", created_session_line(session_id));
     }
     Ok(())
+}
+
+fn created_session_line(session_id: runtime::SessionId) -> String {
+    format!("session:  {session_id}")
 }
 
 fn cmd_worktree_delete(branch: &str, project_name: Option<&str>) -> Result<()> {
@@ -1387,7 +1619,7 @@ fn cmd_agent_report(
     session_path: Option<String>,
     capabilities: runtime::AgentCapabilities,
 ) -> Result<()> {
-    let pane_id = resolve_pane(selector)?;
+    let pane_id = resolve_pane(selector, &SessionScope::default())?;
     let session_ref = if let Some(value) = session_path {
         Some(
             runtime::AgentSessionRef::path(value)
@@ -1549,32 +1781,448 @@ fn cmd_runtime_status(json: bool) -> Result<()> {
     Ok(())
 }
 
-fn resolve_pane(selector: &str) -> Result<runtime::PaneId> {
-    let snapshot = ops::runtime_snapshot()?;
-    if let Ok(pane_id) = selector.parse::<runtime::PaneId>() {
-        if snapshot.panes.iter().any(|pane| pane.id == pane_id) {
-            return Ok(pane_id);
-        }
-    }
+#[derive(Clone, Copy)]
+struct RuntimeSessionScope {
+    project_id: Option<runtime::ProjectId>,
+    worktree_id: Option<runtime::WorktreeId>,
+}
+
+#[derive(Debug)]
+struct ResolvedSession {
+    session_id: runtime::SessionId,
+    pane_id: runtime::PaneId,
+    label: String,
+}
+
+fn runtime_session_scope(
+    snapshot: &runtime::Snapshot,
+    requested: &SessionScope,
+    config: Option<&GlobalConfig>,
+) -> Result<RuntimeSessionScope> {
+    let project_id = requested
+        .project
+        .as_deref()
+        .map(|name| {
+            snapshot
+                .projects
+                .iter()
+                .find(|project| project.name == name)
+                .map(|project| project.id)
+                .ok_or_else(|| anyhow::anyhow!("project '{}' not found", name))
+        })
+        .transpose()?;
+    let worktree_id = requested
+        .worktree
+        .as_deref()
+        .map(|selector| {
+            let matches = snapshot
+                .worktrees
+                .iter()
+                .filter(|worktree| project_id.is_none_or(|id| worktree.project_id == id))
+                .filter(|worktree| {
+                    let alias = config.and_then(|config| {
+                        let project = snapshot
+                            .projects
+                            .iter()
+                            .find(|project| project.id == worktree.project_id)?;
+                        config
+                            .projects
+                            .iter()
+                            .find(|entry| entry.path == project.path)?
+                            .aliases
+                            .get(&worktree.branch)
+                    });
+                    worktree.branch == selector
+                        || worktree.path == Path::new(selector)
+                        || alias.is_some_and(|alias| alias == selector)
+                })
+                .collect::<Vec<_>>();
+            match matches.as_slice() {
+                [worktree] => Ok(worktree.id),
+                [] => bail!("worktree '{}' not found in requested scope", selector),
+                _ => bail!("worktree '{}' is ambiguous; add --project", selector),
+            }
+        })
+        .transpose()?;
+    Ok(RuntimeSessionScope {
+        project_id,
+        worktree_id,
+    })
+}
+
+fn session_matches_scope(
+    snapshot: &runtime::Snapshot,
+    session: &runtime::Session,
+    scope: RuntimeSessionScope,
+) -> bool {
+    let Some(worktree) = snapshot
+        .worktrees
+        .iter()
+        .find(|worktree| worktree.id == session.worktree_id)
+    else {
+        return false;
+    };
+    scope
+        .project_id
+        .is_none_or(|project_id| worktree.project_id == project_id)
+        && scope
+            .worktree_id
+            .is_none_or(|worktree_id| worktree.id == worktree_id)
+}
+
+fn resolve_session_in_snapshot(
+    snapshot: &runtime::Snapshot,
+    selector: &str,
+    scope: RuntimeSessionScope,
+) -> Result<ResolvedSession> {
     if let Ok(session_id) = selector.parse::<runtime::SessionId>() {
         if let Some(session) = snapshot
             .sessions
             .iter()
             .find(|session| session.id == session_id)
         {
-            return Ok(session.focused_pane);
+            if !session_matches_scope(snapshot, session, scope) {
+                bail!("session {} is outside the requested scope", session_id);
+            }
+            return Ok(ResolvedSession {
+                session_id,
+                pane_id: session.focused_pane,
+                label: session.label.clone(),
+            });
+        }
+    }
+    if let Ok(pane_id) = selector.parse::<runtime::PaneId>() {
+        if let Some(pane) = snapshot.panes.iter().find(|pane| pane.id == pane_id) {
+            let session = snapshot
+                .sessions
+                .iter()
+                .find(|session| session.id == pane.session_id)
+                .context("pane session is unavailable")?;
+            if !session_matches_scope(snapshot, session, scope) {
+                bail!("pane {} is outside the requested scope", pane_id);
+            }
+            return Ok(ResolvedSession {
+                session_id: session.id,
+                pane_id,
+                label: session.label.clone(),
+            });
         }
     }
     let matches = snapshot
         .sessions
         .iter()
         .filter(|session| session.label == selector)
-        .map(|session| session.focused_pane)
+        .filter(|session| session_matches_scope(snapshot, session, scope))
         .collect::<Vec<_>>();
     match matches.as_slice() {
-        [pane_id] => Ok(*pane_id),
-        [] => bail!("session or pane not found: {selector}"),
-        _ => bail!("session label is ambiguous: {selector}; use a numeric session or pane ID"),
+        [session] => Ok(ResolvedSession {
+            session_id: session.id,
+            pane_id: session.focused_pane,
+            label: session.label.clone(),
+        }),
+        [] => bail!("session or pane not found in requested scope: {selector}"),
+        _ => bail!(
+            "session label is ambiguous: {selector}; add --project/--worktree or use a numeric ID"
+        ),
+    }
+}
+
+fn resolve_session(selector: &str, requested: &SessionScope) -> Result<ResolvedSession> {
+    let snapshot = ops::runtime_snapshot()?;
+    let config = requested
+        .worktree
+        .as_ref()
+        .map(|_| load_config())
+        .transpose()?;
+    let scope = runtime_session_scope(&snapshot, requested, config.as_ref())?;
+    resolve_session_in_snapshot(&snapshot, selector, scope)
+}
+
+fn resolve_pane(selector: &str, scope: &SessionScope) -> Result<runtime::PaneId> {
+    Ok(resolve_session(selector, scope)?.pane_id)
+}
+
+#[cfg(test)]
+mod session_resolution_tests {
+    use super::{
+        resolve_creation_worktree, resolve_session_in_snapshot, runtime_session_scope,
+        RuntimeSessionScope, SessionScope,
+    };
+    use std::path::{Path, PathBuf};
+    use wsx_core::{
+        config::global::{GlobalConfig, ProjectEntry},
+        model::workspace::{Project, WorkspaceState, WorktreeInfo},
+        runtime::{
+            Capabilities, Pane, PaneId, PaneLayout, Project as RuntimeProject, ProjectId, Session,
+            SessionId, Snapshot, TerminalId, Worktree, WorktreeId,
+        },
+    };
+
+    fn worktree(branch: &str, path: &str, alias: Option<&str>) -> WorktreeInfo {
+        WorktreeInfo {
+            name: branch.into(),
+            branch: branch.into(),
+            path: PathBuf::from(path),
+            is_main: branch == "main",
+            alias: alias.map(str::to_owned),
+            sessions: Vec::new(),
+            expanded: false,
+            git_info: None,
+            fetch_failed: false,
+            fetch_fail_count: 0,
+            fetch_fail_reason: None,
+            last_fetched: None,
+            git_info_fetched_at: None,
+        }
+    }
+
+    fn project(name: &str, path: &str, worktrees: Vec<WorktreeInfo>) -> Project {
+        Project {
+            name: name.into(),
+            path: PathBuf::from(path),
+            default_branch: "main".into(),
+            last_agent_active_unix_ms: None,
+            last_terminal_active_unix_ms: None,
+            worktrees,
+            routines: Vec::new(),
+            routine_revision: 0,
+            routines_expanded: false,
+            config: None,
+            expanded: false,
+            missing: false,
+        }
+    }
+
+    #[test]
+    fn creation_prefers_explicit_scope_then_cwd_then_only_worktree() {
+        let workspace = WorkspaceState {
+            projects: vec![
+                project(
+                    "api",
+                    "/repos/api",
+                    vec![worktree("main", "/repos/api", None)],
+                ),
+                project(
+                    "web",
+                    "/repos/web",
+                    vec![
+                        worktree("main", "/repos/web", None),
+                        worktree("feature", "/repos/web-feature", Some("review")),
+                    ],
+                ),
+            ],
+        };
+        let explicit = SessionScope {
+            project: Some("web".into()),
+            worktree: Some("review".into()),
+        };
+        let (resolved_project, resolved_worktree) =
+            resolve_creation_worktree(&workspace, &explicit, Some(Path::new("/repos/api")))
+                .unwrap();
+        assert_eq!(resolved_project.name, "web");
+        assert_eq!(resolved_worktree.branch, "feature");
+
+        let inferred = SessionScope::default();
+        let (resolved_project, resolved_worktree) = resolve_creation_worktree(
+            &workspace,
+            &inferred,
+            Some(Path::new("/repos/web-feature/src")),
+        )
+        .unwrap();
+        assert_eq!(resolved_project.name, "web");
+        assert_eq!(resolved_worktree.branch, "feature");
+
+        let only_project = WorkspaceState {
+            projects: vec![project(
+                "api",
+                "/repos/api",
+                vec![worktree("main", "/repos/api", None)],
+            )],
+        };
+        let (_, resolved_worktree) =
+            resolve_creation_worktree(&only_project, &inferred, None).unwrap();
+        assert_eq!(resolved_worktree.branch, "main");
+    }
+
+    #[test]
+    fn creation_rejects_ambiguous_project_and_worktree_targets() {
+        let ambiguous_projects = WorkspaceState {
+            projects: vec![
+                project(
+                    "api",
+                    "/repos/api",
+                    vec![worktree("main", "/repos/api", None)],
+                ),
+                project(
+                    "web",
+                    "/repos/web",
+                    vec![worktree("main", "/repos/web", None)],
+                ),
+            ],
+        };
+        assert!(
+            resolve_creation_worktree(&ambiguous_projects, &SessionScope::default(), None)
+                .unwrap_err()
+                .to_string()
+                .contains("multiple projects")
+        );
+
+        let ambiguous_worktrees = WorkspaceState {
+            projects: vec![project(
+                "api",
+                "/repos/api",
+                vec![
+                    worktree("main", "/repos/api", None),
+                    worktree("feature", "/repos/api-feature", None),
+                ],
+            )],
+        };
+        assert!(
+            resolve_creation_worktree(&ambiguous_worktrees, &SessionScope::default(), None)
+                .unwrap_err()
+                .to_string()
+                .contains("multiple worktrees")
+        );
+    }
+
+    fn snapshot() -> Snapshot {
+        Snapshot {
+            protocol: 15,
+            epoch: 1,
+            revision: 1,
+            projects: vec![
+                RuntimeProject {
+                    id: ProjectId(1),
+                    path: "/repos/api".into(),
+                    name: "api".into(),
+                    revision: 1,
+                    last_agent_active_unix_ms: None,
+                    last_terminal_active_unix_ms: None,
+                },
+                RuntimeProject {
+                    id: ProjectId(10),
+                    path: "/repos/web".into(),
+                    name: "web".into(),
+                    revision: 1,
+                    last_agent_active_unix_ms: None,
+                    last_terminal_active_unix_ms: None,
+                },
+            ],
+            worktrees: vec![
+                Worktree {
+                    id: WorktreeId(2),
+                    project_id: ProjectId(1),
+                    path: "/repos/api-feature".into(),
+                    branch: "feature".into(),
+                    revision: 1,
+                },
+                Worktree {
+                    id: WorktreeId(11),
+                    project_id: ProjectId(10),
+                    path: "/repos/web-feature".into(),
+                    branch: "feature".into(),
+                    revision: 1,
+                },
+            ],
+            sessions: vec![
+                Session {
+                    id: SessionId(3),
+                    worktree_id: WorktreeId(2),
+                    label: "worker".into(),
+                    primary_pane: PaneId(4),
+                    focused_pane: PaneId(4),
+                    panes: vec![PaneId(4)],
+                    layout: PaneLayout::Leaf { pane_id: PaneId(4) },
+                    revision: 1,
+                },
+                Session {
+                    id: SessionId(12),
+                    worktree_id: WorktreeId(11),
+                    label: "worker".into(),
+                    primary_pane: PaneId(13),
+                    focused_pane: PaneId(13),
+                    panes: vec![PaneId(13)],
+                    layout: PaneLayout::Leaf {
+                        pane_id: PaneId(13),
+                    },
+                    revision: 1,
+                },
+            ],
+            panes: vec![
+                Pane {
+                    id: PaneId(4),
+                    terminal_id: TerminalId(5),
+                    session_id: SessionId(3),
+                    label: "terminal".into(),
+                    agent: None,
+                    exited: false,
+                    revision: 1,
+                },
+                Pane {
+                    id: PaneId(13),
+                    terminal_id: TerminalId(14),
+                    session_id: SessionId(12),
+                    label: "terminal".into(),
+                    agent: None,
+                    exited: false,
+                    revision: 1,
+                },
+            ],
+            listening_ports: Vec::new(),
+            pane_activity: Vec::new(),
+            plugin_sidecars: Vec::new(),
+            capabilities: Capabilities::default(),
+        }
+    }
+
+    #[test]
+    fn scoped_labels_resolve_once_and_exact_ids_reject_scope_mismatch() {
+        let snapshot = snapshot();
+        let mut config = GlobalConfig::default();
+        config.projects.push(ProjectEntry {
+            name: "api".into(),
+            path: "/repos/api".into(),
+            groups: Vec::new(),
+            aliases: [("feature".into(), "review".into())].into(),
+        });
+        let requested = SessionScope {
+            project: Some("api".into()),
+            worktree: Some("review".into()),
+        };
+        let scope = runtime_session_scope(&snapshot, &requested, Some(&config)).unwrap();
+        let resolved = resolve_session_in_snapshot(&snapshot, "worker", scope).unwrap();
+        assert_eq!(resolved.session_id, SessionId(3));
+        assert_eq!(resolved.pane_id, PaneId(4));
+
+        let unscoped = RuntimeSessionScope {
+            project_id: None,
+            worktree_id: None,
+        };
+        assert!(resolve_session_in_snapshot(&snapshot, "worker", unscoped)
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+        assert!(resolve_session_in_snapshot(&snapshot, "12", scope)
+            .unwrap_err()
+            .to_string()
+            .contains("outside the requested scope"));
+    }
+
+    #[test]
+    fn exact_pane_id_preserves_the_selected_pane() {
+        let snapshot = snapshot();
+        let resolved = resolve_session_in_snapshot(
+            &snapshot,
+            "13",
+            RuntimeSessionScope {
+                project_id: None,
+                worktree_id: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(resolved.session_id, SessionId(12));
+        assert_eq!(resolved.pane_id, PaneId(13));
+        assert_eq!(resolved.label, "worker");
     }
 }
 
@@ -1607,8 +2255,70 @@ fn send_pane_bytes(pane_id: runtime::PaneId, bytes: Vec<u8>) -> Result<()> {
     result
 }
 
-fn cmd_session_send_text(selector: &str, text: &str, no_enter: bool) -> Result<()> {
-    let pane_id = resolve_pane(selector)?;
+fn cmd_session_create(
+    scope: SessionScope,
+    name: Option<String>,
+    command: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let (config, workspace) = load_full_workspace()?;
+    let cwd = std::env::current_dir().ok();
+    let (project, worktree) = resolve_creation_worktree(&workspace, &scope, cwd.as_deref())?;
+    let (session_id, label) = ops::create_session(
+        &config,
+        &project.name,
+        &worktree.session_slug(&project.name),
+        &worktree.path,
+        name,
+        command,
+    )?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "session_id": session_id,
+                "label": label,
+                "project": project.name,
+                "worktree": worktree.path,
+                "branch": worktree.branch,
+            }))?
+        );
+    } else {
+        println!("{}", created_session_line(session_id));
+        println!("label:    {label}");
+        println!("worktree: {}", worktree.path.display());
+    }
+    Ok(())
+}
+
+fn cmd_session_delete(selector: &str, scope: &SessionScope, json: bool) -> Result<()> {
+    let session = resolve_session(selector, scope)?;
+    ops::kill_session(session.session_id)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "deleted": true,
+                "session_id": session.session_id,
+                "label": session.label,
+            }))?
+        );
+    } else {
+        println!(
+            "deleted session: {} ({})",
+            session.session_id, session.label
+        );
+    }
+    Ok(())
+}
+
+fn cmd_session_send_text(
+    selector: &str,
+    text: &str,
+    no_enter: bool,
+    scope: &SessionScope,
+) -> Result<()> {
+    let pane_id = resolve_pane(selector, scope)?;
     let mut bytes = text.as_bytes().to_vec();
     if !no_enter {
         bytes.push(b'\r');
@@ -1616,13 +2326,19 @@ fn cmd_session_send_text(selector: &str, text: &str, no_enter: bool) -> Result<(
     send_pane_bytes(pane_id, bytes)
 }
 
-fn cmd_session_prompt(selector: &str, prompt: &str) -> Result<()> {
-    cmd_session_send_text(selector, prompt, false)
+fn cmd_session_prompt(selector: &str, prompt: &str, scope: &SessionScope) -> Result<()> {
+    cmd_session_send_text(selector, prompt, false, scope)
 }
 
 // ^ [[Session Peek]] Reads are bounded projections of authoritative semantic frames.
-fn cmd_session_peek(selector: &str, lines: Option<u32>, trim: bool, agent: bool) -> Result<()> {
-    let pane_id = resolve_pane(selector)?;
+fn cmd_session_peek(
+    selector: &str,
+    lines: Option<u32>,
+    trim: bool,
+    agent: bool,
+    scope: &SessionScope,
+) -> Result<()> {
+    let pane_id = resolve_pane(selector, scope)?;
     let client = runtime::Client::local();
     let frame = match client.call(&runtime::Request::View {
         pane_ids: vec![pane_id],
@@ -1656,13 +2372,12 @@ fn cmd_session_peek(selector: &str, lines: Option<u32>, trim: bool, agent: bool)
     Ok(())
 }
 
-fn cmd_session_rename(session_id: &str, new_label: &str) -> Result<()> {
-    let session_id = session_id.parse::<wsx_core::runtime::SessionId>()?;
-    ops::rename_session(session_id, new_label)?;
-    println!("renamed session {} to '{}'", session_id, new_label);
+fn cmd_session_rename(selector: &str, new_label: &str, scope: &SessionScope) -> Result<()> {
+    let session = resolve_session(selector, scope)?;
+    ops::rename_session(session.session_id, new_label)?;
+    println!("renamed session {} to '{}'", session.session_id, new_label);
     Ok(())
 }
-
 fn cmd_group_ls() -> Result<()> {
     let config = load_config()?;
     for group in &config.groups {

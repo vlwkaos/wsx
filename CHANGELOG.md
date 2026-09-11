@@ -2,7 +2,13 @@
 
 ## [Unreleased]
 
+### Features
+
+- Add standalone session creation and deletion to the CLI, with cwd and sole-target inference, explicit project/worktree scoping, reusable session IDs, and JSON output for low-turn agent control.
+
 ### Bug Fixes
+
+- Report the session created with a worktree as `session:` instead of incorrectly labeling its ID as a pane.
 
 - Clear stale Claude working state when Workspace sends Ctrl+C, matching Terminal Escape interruption while preserving newer lifecycle reports.
 - Prevent embedded full-screen applications from scrolling the outer wsx display when dense frames reach the physical bottom-right terminal cell.
