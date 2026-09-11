@@ -231,11 +231,17 @@ fn install_in(target: IntegrationTarget, root: &Path) -> io::Result<InstallResul
     }
     if target == IntegrationTarget::Grok {
         let config = root.join("hooks/wsx.json");
-        let command = config_edit::command(&asset, "session");
+        let start = config_edit::command(&asset, "session");
+        let end = config_edit::command(&asset, "detached");
         let body = serde_json::to_string_pretty(&serde_json::json!({
-            "hooks": {"SessionStart": [{"hooks": [{
-                "type": "command", "command": command, "timeout": 10
-            }]}]}
+            "hooks": {
+                "SessionStart": [{"hooks": [{
+                    "type": "command", "command": start, "timeout": 10
+                }]}],
+                "SessionEnd": [{"hooks": [{
+                    "type": "command", "command": end, "timeout": 10
+                }]}]
+            }
         }))
         .map_err(io::Error::other)?
             + "\n";

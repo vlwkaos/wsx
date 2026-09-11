@@ -191,6 +191,7 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
                 runtime_generation: Some(runtime_generation.clone()),
                 provider: "pi".into(),
                 state: AgentState::Working,
+                attached: true,
                 conversation_id: None,
                 session_ref: None,
                 capabilities: AgentCapabilities {
@@ -300,6 +301,7 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
                 runtime_generation: Some(runtime_generation),
                 provider: "pi".into(),
                 state: AgentState::Done,
+                attached: true,
                 conversation_id: None,
                 session_ref: None,
                 capabilities: AgentCapabilities {

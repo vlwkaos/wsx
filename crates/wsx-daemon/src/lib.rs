@@ -1984,17 +1984,21 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             runtime_generation,
             provider,
             state: agent_state,
+            attached,
             conversation_id,
             session_ref,
             capabilities,
-        } => agent_report(
+        } => agent_report_with_attachment(
             daemon,
             RuntimeAgentAuthority::new(pane_id, runtime_generation),
-            provider,
-            agent_state,
-            conversation_id,
-            session_ref,
-            capabilities,
+            AgentReportInput {
+                provider,
+                state: agent_state,
+                attached,
+                conversation_id,
+                session_ref,
+                capabilities,
+            },
         ),
         Request::AgentClear {
             pane_id,
@@ -3246,15 +3250,52 @@ fn touch_terminal_project(daemon: &Arc<Daemon>, pane_id: PaneId) -> Result<(), A
     Ok(())
 }
 
+struct AgentReportInput {
+    provider: String,
+    state: AgentState,
+    attached: bool,
+    conversation_id: Option<String>,
+    session_ref: Option<AgentSessionRef>,
+    capabilities: AgentCapabilities,
+}
+
+#[cfg(test)]
 fn agent_report(
     daemon: &Arc<Daemon>,
     runtime: RuntimeAgentAuthority,
     provider: String,
-    agent_state: AgentState,
+    state: AgentState,
     conversation_id: Option<String>,
     session_ref: Option<AgentSessionRef>,
-    mut capabilities: AgentCapabilities,
+    capabilities: AgentCapabilities,
 ) -> Result<Response, ApiError> {
+    agent_report_with_attachment(
+        daemon,
+        runtime,
+        AgentReportInput {
+            provider,
+            state,
+            attached: true,
+            conversation_id,
+            session_ref,
+            capabilities,
+        },
+    )
+}
+
+fn agent_report_with_attachment(
+    daemon: &Arc<Daemon>,
+    runtime: RuntimeAgentAuthority,
+    report: AgentReportInput,
+) -> Result<Response, ApiError> {
+    let AgentReportInput {
+        provider,
+        state: agent_state,
+        attached,
+        conversation_id,
+        session_ref,
+        mut capabilities,
+    } = report;
     let RuntimeAgentAuthority {
         pane_id,
         generation: runtime_generation,
@@ -3271,13 +3312,13 @@ fn agent_report(
             "provider does not support this agent session reference",
         ));
     }
-    let session_ref = explicit_session_ref.or_else(|| {
+    let mut session_ref = explicit_session_ref.or_else(|| {
         conversation_id
             .as_ref()
             .and_then(|value| AgentSessionRef::id(value.clone()))
             .filter(|session_ref| resume::plan(&provider, session_ref).is_some())
     });
-    capabilities.resume |= session_ref.is_some();
+    let mut conversation_id = conversation_id;
     let mut state = lock(&daemon.state);
     expect_runtime_generation(&state, pane_id, runtime_generation.as_deref())?;
     let mut persisted = state.persisted.clone();
@@ -3291,32 +3332,46 @@ fn agent_report(
         .ok_or_else(|| api("not_found", "pane not found"))?;
     let project_index = project_index_for_pane(&persisted, pane_id)?;
 
-    let agent_id = match persisted.panes[pane_index]
-        .agent
-        .as_ref()
-        .map(|agent| agent.id)
-    {
+    let previous_agent = persisted.panes[pane_index].agent.clone();
+    let agent_id = match previous_agent.as_ref().map(|agent| agent.id) {
         Some(id) => id,
         None => AgentInstanceId(next_id(&mut persisted)?),
+    };
+    if !attached {
+        if let Some(previous) = previous_agent
+            .as_ref()
+            .filter(|agent| agent.provider == provider)
+        {
+            conversation_id = conversation_id.or_else(|| previous.conversation_id.clone());
+            session_ref = session_ref.or_else(|| previous.session_ref.clone());
+            capabilities = previous.capabilities.clone();
+        }
+    }
+    capabilities.resume |= session_ref.is_some();
+    let reported_state = if attached {
+        agent_state
+    } else {
+        AgentState::Unknown
     };
     let revision = state.revision.saturating_add(1);
     persisted.panes[pane_index].agent = Some(AgentInfo {
         id: agent_id,
         provider,
-        state: agent_state,
+        state: reported_state,
+        attached,
         conversation_id,
         session_ref,
         capabilities,
         source: "adapter".into(),
     });
     persisted.panes[pane_index].revision = revision;
-    if agent_state == AgentState::Working {
+    if attached && agent_state == AgentState::Working {
         persisted.projects[project_index].last_agent_active_unix_ms = Some(unix_time_millis());
         persisted.projects[project_index].revision = revision;
     }
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
     state.persisted = persisted;
-    if agent_state == AgentState::Working {
+    if attached && agent_state == AgentState::Working {
         state.agent_wake_leases.insert(pane_id, Instant::now());
     } else {
         state.agent_wake_leases.remove(&pane_id);
@@ -5579,6 +5634,67 @@ mod tests {
         assert_eq!(agent.session_ref.as_ref().unwrap().value, "legacy-id");
         assert!(agent.capabilities.resume);
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn detached_report_preserves_resume_metadata_and_releases_live_authority() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let authority = current_agent_authority(&daemon);
+        agent_report(
+            &daemon,
+            authority,
+            "codex".into(),
+            AgentState::Working,
+            Some(CODEX_SESSION_ID.into()),
+            None,
+            AgentCapabilities::default(),
+        )
+        .unwrap();
+        assert!(lock(&daemon.state)
+            .agent_wake_leases
+            .contains_key(&PaneId(4)));
+
+        agent_report_with_attachment(
+            &daemon,
+            current_agent_authority(&daemon),
+            AgentReportInput {
+                provider: "codex".into(),
+                state: AgentState::Done,
+                attached: false,
+                conversation_id: None,
+                session_ref: None,
+                capabilities: AgentCapabilities::default(),
+            },
+        )
+        .unwrap();
+
+        let state = lock(&daemon.state);
+        let agent = state.persisted.panes[0].agent.as_ref().unwrap();
+        assert!(!agent.attached);
+        assert_eq!(agent.state, AgentState::Unknown);
+        assert_eq!(agent.conversation_id.as_deref(), Some(CODEX_SESSION_ID));
+        assert_eq!(
+            agent
+                .session_ref
+                .as_ref()
+                .map(|session_ref| session_ref.value.as_str()),
+            Some(CODEX_SESSION_ID)
+        );
+        assert!(agent.capabilities.resume);
+        assert!(!state.agent_wake_leases.contains_key(&PaneId(4)));
+        let mut resumable = agent.clone();
+        drop(state);
+
+        let launch = recovery_launch(Some(&mut resumable), &recovery_test_recipe(), true);
+        assert_eq!(
+            launch.recipe.command,
+            vec![
+                "codex".to_string(),
+                "resume".to_string(),
+                CODEX_SESSION_ID.to_string(),
+            ]
+        );
+        let _ = fs::remove_file(path);
     }
 
     #[test]

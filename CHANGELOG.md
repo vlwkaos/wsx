@@ -10,6 +10,7 @@
 
 - Report the session created with a worktree as `session:` instead of incorrectly labeling its ID as a pane.
 - Collapse projects without an available session instead of treating missing activity timestamps as permanently fresh.
+- Hide agent identity after a teardown-capable integration exits back to the shell while retaining native conversation metadata for recovery.
 
 - Clear stale Claude working state when Workspace sends Ctrl+C, matching Terminal Escape interruption while preserving newer lifecycle reports.
 - Prevent embedded full-screen applications from scrolling the outer wsx display when dense frames reach the physical bottom-right terminal cell.

@@ -347,6 +347,7 @@ fn sessions_for_worktree(
                 .iter()
                 .find(|pane| pane.id == session.focused_pane)
                 .ok_or_else(|| anyhow!("session {} has no focused pane", session.id))?;
+            let focused_agent = focused.agent.as_ref().filter(|agent| agent.attached);
             let old = previous.get(&session.id).copied();
             let panes = session
                 .panes
@@ -359,14 +360,13 @@ fn sessions_for_worktree(
                         .ok_or_else(|| {
                             anyhow!("session {} references missing pane {}", session.id, pane_id)
                         })?;
+                    let attached_agent = pane.agent.as_ref().filter(|agent| agent.attached);
                     Ok(PaneInfo {
                         pane_id: pane.id,
                         terminal_id: pane.terminal_id,
                         label: pane.label.clone(),
-                        agent: pane.agent.as_ref().map(|agent| agent.provider.clone()),
-                        agent_status: pane
-                            .agent
-                            .as_ref()
+                        agent: attached_agent.map(|agent| agent.provider.clone()),
+                        agent_status: attached_agent
                             .map_or(AgentState::Unknown, |agent| agent.state),
                         revision: pane.revision,
                         exited: pane.exited,
@@ -398,12 +398,9 @@ fn sessions_for_worktree(
                 session_id: session.id,
                 pane_id: focused.id,
                 terminal_id: focused.terminal_id,
-                agent: focused.agent.as_ref().map(|agent| agent.provider.clone()),
+                agent: focused_agent.map(|agent| agent.provider.clone()),
                 display_name: session.label.clone(),
-                agent_status: focused
-                    .agent
-                    .as_ref()
-                    .map_or(AgentState::Unknown, |agent| agent.state),
+                agent_status: focused_agent.map_or(AgentState::Unknown, |agent| agent.state),
                 revision,
                 layout: session.layout.clone(),
                 panes,
@@ -685,8 +682,9 @@ pub fn set_alias(config: &mut GlobalConfig, project_path: &PathBuf, branch: &str
 mod tests {
     use super::*;
     use crate::runtime::{
-        self, Capabilities, Pane, PaneId, PaneLayout, Project as RuntimeProject, ProjectId,
-        Session, TerminalId, Worktree, WorktreeId,
+        self, AgentCapabilities, AgentInfo, AgentInstanceId, Capabilities, Pane, PaneId,
+        PaneLayout, Project as RuntimeProject, ProjectId, Session, TerminalId, Worktree,
+        WorktreeId,
     };
 
     #[test]
@@ -731,7 +729,16 @@ mod tests {
                     terminal_id: TerminalId(5),
                     session_id: SessionId(3),
                     label: "primary".into(),
-                    agent: None,
+                    agent: Some(AgentInfo {
+                        id: AgentInstanceId(8),
+                        provider: "pi".into(),
+                        state: AgentState::Working,
+                        attached: true,
+                        conversation_id: None,
+                        session_ref: None,
+                        capabilities: AgentCapabilities::default(),
+                        source: "test".into(),
+                    }),
                     exited: false,
                     revision: 4,
                 },
@@ -740,7 +747,16 @@ mod tests {
                     terminal_id: TerminalId(7),
                     session_id: SessionId(3),
                     label: "split".into(),
-                    agent: None,
+                    agent: Some(AgentInfo {
+                        id: AgentInstanceId(10),
+                        provider: "pi".into(),
+                        state: AgentState::Done,
+                        attached: false,
+                        conversation_id: Some("resumable".into()),
+                        session_ref: None,
+                        capabilities: AgentCapabilities::default(),
+                        source: "test".into(),
+                    }),
                     exited: false,
                     revision: 9,
                 },
@@ -771,7 +787,13 @@ mod tests {
         assert_eq!(sessions[0].panes[1].revision, 9);
         assert_eq!(sessions[0].panes.len(), 2);
         assert_eq!(sessions[0].panes[0].label, "primary");
+        assert_eq!(sessions[0].panes[0].agent.as_deref(), Some("pi"));
+        assert_eq!(sessions[0].panes[0].agent_status, AgentState::Working);
         assert_eq!(sessions[0].panes[1].label, "split");
+        assert_eq!(sessions[0].agent, None);
+        assert_eq!(sessions[0].agent_status, AgentState::Unknown);
+        assert_eq!(sessions[0].panes[1].agent, None);
+        assert_eq!(sessions[0].panes[1].agent_status, AgentState::Unknown);
         assert_eq!(sessions[0].listening_ports(), vec![3000, 5173]);
         assert!(sessions[0].has_foreground_job());
 

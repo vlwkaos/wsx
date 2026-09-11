@@ -133,6 +133,9 @@ pub enum AgentCmd {
         resume: bool,
         #[arg(long)]
         lifecycle: bool,
+        /// Retain resume metadata but mark the agent process as no longer attached
+        #[arg(long)]
+        detached: bool,
         #[arg(long, hide = true)]
         escape_interrupts: bool,
     },
@@ -488,19 +491,23 @@ pub fn run(cmd: Command) -> Result<()> {
                 prompt,
                 resume,
                 lifecycle,
+                detached,
                 escape_interrupts,
             } => cmd_agent_report(
                 &pane,
-                provider,
-                state.into(),
-                conversation_id,
-                session_id,
-                session_path,
-                runtime::AgentCapabilities {
-                    prompt,
-                    resume,
-                    lifecycle,
-                    escape_interrupts,
+                AgentReportOptions {
+                    provider,
+                    state: state.into(),
+                    attached: !detached,
+                    conversation_id,
+                    session_id,
+                    session_path,
+                    capabilities: runtime::AgentCapabilities {
+                        prompt,
+                        resume,
+                        lifecycle,
+                        escape_interrupts,
+                    },
                 },
             ),
         },
@@ -1110,6 +1117,32 @@ mod agent_command_tests {
     }
 
     #[test]
+    fn report_accepts_explicit_detach_and_defaults_to_attached() {
+        for (extra, expected) in [(&[][..], false), (&["--detached"][..], true)] {
+            let argv = [
+                "wsx",
+                "agent",
+                "report",
+                "7",
+                "--provider",
+                "pi",
+                "--state",
+                "idle",
+            ]
+            .into_iter()
+            .chain(extra.iter().copied())
+            .collect::<Vec<_>>();
+            let args = Args::try_parse_from(argv).unwrap();
+            assert!(matches!(
+                args.command,
+                Some(Command::Agent {
+                    subcommand: AgentCmd::Report { detached, .. }
+                }) if detached == expected
+            ));
+        }
+    }
+
+    #[test]
     fn report_accepts_session_id_without_other_session_identifiers() {
         let args = Args::try_parse_from([
             "wsx",
@@ -1610,15 +1643,26 @@ fn cmd_agent_install(integration: wsx_core::integration::IntegrationTarget) -> R
     Ok(())
 }
 
-fn cmd_agent_report(
-    selector: &str,
+struct AgentReportOptions {
     provider: String,
     state: runtime::AgentState,
+    attached: bool,
     conversation_id: Option<String>,
     session_id: Option<String>,
     session_path: Option<String>,
     capabilities: runtime::AgentCapabilities,
-) -> Result<()> {
+}
+
+fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
+    let AgentReportOptions {
+        provider,
+        state,
+        attached,
+        conversation_id,
+        session_id,
+        session_path,
+        capabilities,
+    } = report;
     let pane_id = resolve_pane(selector, &SessionScope::default())?;
     let session_ref = if let Some(value) = session_path {
         Some(
@@ -1644,6 +1688,7 @@ fn cmd_agent_report(
         runtime_generation,
         provider,
         state,
+        attached,
         conversation_id,
         session_ref,
         capabilities,

@@ -35,6 +35,11 @@ TERMINAL_HELPER.write_text(
     "      \"$WSX_AGENT_REPORT_BIN\" agent report \"$WSX_PANE_ID\" --provider codex "
     "--state working --conversation-id \"$conversation\" --prompt --resume --lifecycle\n"
     "      ;;\n"
+    "    __WSX_DETACH__:*)\n"
+    "      conversation=${line#__WSX_DETACH__:}\n"
+    "      \"$WSX_AGENT_REPORT_BIN\" agent report \"$WSX_PANE_ID\" --provider codex "
+    "--state unknown --conversation-id \"$conversation\" --detached\n"
+    "      ;;\n"
     "    __WSX_PID__:*)\n"
     "      marker=${line#__WSX_PID__:}\n"
     "      printf 'wsx-helper:%s:%s\\n' \"$$\" \"$marker\"\n"
@@ -514,6 +519,27 @@ while time.monotonic() < deadline:
 assert reported_pane is not None and reported_pane["agent"] is not None, reported_snapshot
 assert reported_pane["agent"]["provider"] == "codex"
 assert reported_pane["agent"]["state"] == "working"
+assert reported_pane["agent"]["attached"] is True
+send_shell_command(pane_id, "__WSX_DETACH__:smoke-conversation", 9)
+deadline = time.monotonic() + 3
+while time.monotonic() < deadline:
+    reported_snapshot = call("snapshot")["data"]
+    reported_pane = next(item for item in reported_snapshot["panes"] if item["id"] == pane_id)
+    if reported_pane["agent"] is not None and reported_pane["agent"]["attached"] is False:
+        break
+    time.sleep(0.05)
+assert reported_pane["agent"]["attached"] is False, reported_snapshot
+assert reported_pane["agent"]["state"] == "unknown", reported_pane
+assert reported_pane["agent"]["session_ref"]["value"] == "smoke-conversation", reported_pane
+send_shell_command(pane_id, "__WSX_REPORT__:smoke-conversation", 9)
+deadline = time.monotonic() + 3
+while time.monotonic() < deadline:
+    reported_snapshot = call("snapshot")["data"]
+    reported_pane = next(item for item in reported_snapshot["panes"] if item["id"] == pane_id)
+    if reported_pane["agent"] is not None and reported_pane["agent"]["attached"] is True:
+        break
+    time.sleep(0.05)
+assert reported_pane["agent"]["attached"] is True, reported_snapshot
 project = next(item for item in reported_snapshot["projects"] if item["id"] == project_id)
 assert isinstance(project["last_agent_active_unix_ms"], int), project
 assert isinstance(project["last_terminal_active_unix_ms"], int), project

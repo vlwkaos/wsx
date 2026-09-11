@@ -100,7 +100,9 @@ pub(crate) fn json_config(
     match target {
         IntegrationTarget::Claude => {
             let hooks = hooks(&mut root)?;
-            let actions = &["session", "idle", "working", "blocked", "done", "error"];
+            let actions = &[
+                "session", "detached", "idle", "working", "blocked", "done", "error",
+            ];
             // Claude has no permission-resolved hook before an approved tool runs,
             // so PermissionRequest cannot authoritatively publish a bounded blocked state.
             // StopFailure matchers receive the documented terminal API error name.
@@ -108,7 +110,7 @@ pub(crate) fn json_config(
             remove_nested_actions(hooks, "PermissionRequest", hook, actions);
             let events = [
                 ("SessionStart", "idle"),
-                ("SessionEnd", "idle"),
+                ("SessionEnd", "detached"),
                 ("UserPromptSubmit", "working"),
                 ("PreToolUse", "working"),
                 ("PostToolUse", "working"),
@@ -141,13 +143,14 @@ pub(crate) fn json_config(
                 ("PostToolUse", "working"),
                 ("Stop", "done"),
                 ("Interrupt", "idle"),
+                ("SessionEnd", "detached"),
             ];
             for (event, _) in events {
                 remove_nested_actions(
                     hooks,
                     event,
                     hook,
-                    &["session", "idle", "working", "blocked", "done"],
+                    &["session", "detached", "idle", "working", "blocked", "done"],
                 );
             }
             for (event, action) in events {
@@ -155,43 +158,39 @@ pub(crate) fn json_config(
             }
         }
         IntegrationTarget::Droid | IntegrationTarget::Qodercli | IntegrationTarget::Qwen => {
-            nested(
-                hooks(&mut root)?,
-                "SessionStart",
-                hook,
-                "session",
-                Some("*"),
-            )?;
+            for (event, action) in [("SessionStart", "session"), ("SessionEnd", "detached")] {
+                nested(hooks(&mut root)?, event, hook, action, Some("*"))?;
+            }
         }
         IntegrationTarget::Devin => {
-            for event in [
-                "SessionStart",
-                "UserPromptSubmit",
-                "PreToolUse",
-                "PostToolUse",
-                "PermissionRequest",
-                "Stop",
+            for (event, action) in [
+                ("SessionStart", "session"),
+                ("UserPromptSubmit", "session"),
+                ("PreToolUse", "session"),
+                ("PostToolUse", "session"),
+                ("PermissionRequest", "session"),
+                ("Stop", "session"),
+                ("SessionEnd", "detached"),
             ] {
-                nested(hooks(&mut root)?, event, hook, "session", None)?;
+                nested(hooks(&mut root)?, event, hook, action, None)?;
             }
         }
         IntegrationTarget::Copilot => {
-            let cmd = command(hook, "session");
             let field = if cfg!(windows) { "powershell" } else { "bash" };
-            let mut e = Map::new();
-            e.insert("type".into(), json!("command"));
-            e.insert(field.into(), json!(cmd));
-            e.insert("timeoutSec".into(), json!(10));
-            push_unique(hooks(&mut root)?, "SessionStart", Value::Object(e), &cmd)?;
+            for (event, action) in [("SessionStart", "session"), ("SessionEnd", "detached")] {
+                let cmd = command(hook, action);
+                let mut entry = Map::new();
+                entry.insert("type".into(), json!("command"));
+                entry.insert(field.into(), json!(cmd.clone()));
+                entry.insert("timeoutSec".into(), json!(10));
+                push_unique(hooks(&mut root)?, event, Value::Object(entry), &cmd)?;
+            }
         }
         IntegrationTarget::Cursor => {
-            let cmd = command(hook, "session");
-            push_unique(
-                hooks(&mut root)?,
-                "sessionStart",
-                json!({"command":cmd}),
-                &cmd,
-            )?;
+            for (event, action) in [("sessionStart", "session"), ("sessionEnd", "detached")] {
+                let cmd = command(hook, action);
+                push_unique(hooks(&mut root)?, event, json!({"command":cmd}), &cmd)?;
+            }
         }
         IntegrationTarget::Mastracode => {
             for (event, action) in [
@@ -206,6 +205,7 @@ pub(crate) fn json_config(
                 ("Interrupt", "idle"),
                 ("AgentEnd", "done"),
                 ("Stop", "done"),
+                ("SessionEnd", "detached"),
             ] {
                 let cmd = command(hook, action);
                 push_unique(
@@ -297,6 +297,7 @@ pub(crate) fn kimi_toml(content: &str, hook: &Path) -> String {
         ("PermissionResult", None, "working"),
         ("Stop", None, "done"),
         ("Interrupt", None, "idle"),
+        ("SessionEnd", None, "detached"),
     ] {
         out.push_str(&format!("[[hooks]]\nevent = \"{event}\"\n"));
         if let Some(matcher) = matcher {
