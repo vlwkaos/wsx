@@ -5,6 +5,7 @@
 ### Bug Fixes
 
 - Clear stale Claude working state when Workspace sends Ctrl+C, matching Terminal Escape interruption while preserving newer lifecycle reports.
+- Prevent embedded full-screen applications from scrolling the outer wsx display when dense frames reach the physical bottom-right terminal cell.
 
 ## [0.25.0] - 2026-09-10
 

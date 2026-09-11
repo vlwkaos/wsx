@@ -442,7 +442,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         );
     }
 
-    render_status_bar(frame, layout.footer, app, &status);
+    let mut footer = layout.footer;
+    // ^ Printing the physical bottom-right cell can scroll an autowrapping alternate screen.
+    // Keep the guard in outer chrome so the embedded terminal retains its complete rectangle.
+    footer.width = footer.width.saturating_sub(1);
+    render_status_bar(frame, footer, app, &status);
     notice::render(frame, area, app);
     render_overlay(frame, main_area, app);
 }

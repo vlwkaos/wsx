@@ -8378,6 +8378,14 @@ mod tests {
         assert!(!footer.contains("Enter:"), "{footer:?}");
         assert!(footer.contains(" WORKSPACE "), "{footer:?}");
         assert!(!footer.contains("[WORKSPACE]"), "{footer:?}");
+        assert!(
+            footer.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))),
+            "{footer:?}"
+        );
+        let wrap_guard = &terminal.backend().buffer()[(99, 15)];
+        assert_eq!(wrap_guard.symbol(), " ");
+        assert_eq!(wrap_guard.fg, ratatui::style::Color::Reset);
+        assert_eq!(wrap_guard.bg, ratatui::style::Color::Reset);
         assert_eq!(
             terminal.backend().buffer()[(0, 15)].bg,
             crate::ui::theme::ACCENT
