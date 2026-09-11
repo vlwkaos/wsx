@@ -1,6 +1,7 @@
 {
   "version": 1,
   "skills": {
+    "pyg/agentic-dev-guide": "enable",
     "pyg/headless-terminal": "enable",
     "pyg/release": "enable",
     "pyg/rust-release": "enable",
