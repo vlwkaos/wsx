@@ -18,7 +18,11 @@ pub const WSX_RUNTIME_GENERATION_ENV: &str = "WSX_RUNTIME_GENERATION";
 pub const WSX_PLUGIN_VIEW_ENV: &str = "WSX_PLUGIN_VIEW_JSON";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ^ Bump only when daemon-owned runtime behavior changes. UI-only releases reuse wsxd.
-pub const DAEMON_REVISION: u32 = 6;
+pub const DAEMON_REVISION: u32 = 7;
+
+fn default_attached() -> bool {
+    true
+}
 
 pub fn compare_wsx_versions(left: &str, right: &str) -> Option<Ordering> {
     let left = parse_wsx_version(left)?;
@@ -284,6 +288,8 @@ pub enum Request {
         runtime_generation: Option<String>,
         provider: String,
         state: AgentState,
+        #[serde(default = "default_attached")]
+        attached: bool,
         #[serde(default)]
         conversation_id: Option<String>,
         #[serde(default)]
@@ -654,6 +660,7 @@ mod tests {
         .unwrap();
 
         let Request::AgentReport {
+            attached,
             session_ref,
             runtime_generation,
             capabilities,
@@ -662,6 +669,7 @@ mod tests {
         else {
             panic!("expected agent report request");
         };
+        assert!(attached);
         assert_eq!(session_ref, None);
         assert_eq!(runtime_generation, None);
         assert!(!capabilities.escape_interrupts);

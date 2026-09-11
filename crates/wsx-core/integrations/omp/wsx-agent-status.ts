@@ -1,5 +1,5 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=11
+// WSX_INTEGRATION_VERSION=12
 import { execFile } from "node:child_process";
 import path from "node:path";
 
@@ -10,8 +10,13 @@ let active = false;
 let currentContext: any;
 let sendInFlight = false;
 let pendingArgs: string[] | undefined;
+let drainWaiters: Array<() => void> = [];
 
-function report(state: "idle" | "working" | "blocked" | "done", ctx: any): void {
+function report(
+  state: "idle" | "working" | "blocked" | "done",
+  ctx: any,
+  attached = true,
+): void {
   if (!pane) return;
   let sessionPath: string | undefined;
   let sessionId: string | undefined;
@@ -30,14 +35,28 @@ function report(state: "idle" | "working" | "blocked" | "done", ctx: any): void 
   const args = [
     "agent", "report", pane, "--provider", "omp", "--state", state, "--lifecycle",
   ];
+  if (!attached) args.push("--detached");
   if (sessionPath) args.push("--session-path", sessionPath);
   else if (sessionId) args.push("--session-id", sessionId);
   pendingArgs = args;
   drain();
 }
 
+function settleDrainWaiters(): void {
+  if (sendInFlight || pendingArgs) return;
+  for (const resolve of drainWaiters.splice(0)) resolve();
+}
+
+function flushReports(): Promise<void> {
+  if (!sendInFlight && !pendingArgs) return Promise.resolve();
+  return new Promise((resolve) => drainWaiters.push(resolve));
+}
+
 function drain(): void {
-  if (sendInFlight || !pendingArgs) return;
+  if (sendInFlight || !pendingArgs) {
+    settleDrainWaiters();
+    return;
+  }
   const args = pendingArgs;
   pendingArgs = undefined;
   sendInFlight = true;
@@ -57,6 +76,12 @@ export default function wsxOmpAgentStatus(pi: any): void {
     blocked = 0;
     active = false;
     current(ctx);
+  });
+  pi.on("session_shutdown", async (_event: any, ctx: any) => {
+    blocked = 0;
+    active = false;
+    report("idle", ctx, false);
+    await flushReports();
   });
   pi.on("agent_start", (_event: any, ctx: any) => {
     active = true;

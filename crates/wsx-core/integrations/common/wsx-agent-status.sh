@@ -4,7 +4,7 @@
 set -eu
 action="${1:-unknown}"
 [ -n "${WSX_PANE_ID:-}" ] || exit 0
-case "$action" in idle|working|blocked|done|error|unknown) state="$action";; session) state=unknown;; *) exit 0;; esac
+case "$action" in idle|working|blocked|done|error|unknown) state="$action";; session|detached) state=unknown;; *) exit 0;; esac
 input="$(cat 2>/dev/null || true)"
 conversation=""
 if command -v python3 >/dev/null 2>&1; then
@@ -20,6 +20,7 @@ except (TypeError, ValueError): pass' 2>/dev/null)"; then
 fi
 set -- agent report "$WSX_PANE_ID" --provider "@PROVIDER@" --state "$state"
 [ "@LIFECYCLE@" = "yes" ] && set -- "$@" --lifecycle
+[ "$action" = "detached" ] && set -- "$@" --detached
 [ "@PROVIDER@" = "claude" ] && set -- "$@" --escape-interrupts
 [ -n "$conversation" ] && set -- "$@" --session-id "$conversation"
 "${WSX_AGENT_REPORT_BIN:-wsx}" "$@" >/dev/null 2>&1 || true

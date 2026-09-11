@@ -212,11 +212,17 @@ pub struct AgentCapabilities {
     pub escape_interrupts: bool,
 }
 
+fn default_attached() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentInfo {
     pub id: AgentInstanceId,
     pub provider: String,
     pub state: AgentState,
+    #[serde(default = "default_attached")]
+    pub attached: bool,
     #[serde(default)]
     pub conversation_id: Option<String>,
     #[serde(default)]
@@ -798,6 +804,15 @@ mod tests {
             serde_json::from_str(r#"{"id":1,"path":"/repo","name":"repo","revision":2}"#).unwrap();
         assert_eq!(project.last_agent_active_unix_ms, None);
         assert_eq!(project.last_terminal_active_unix_ms, None);
+    }
+
+    #[test]
+    fn legacy_agent_info_defaults_to_attached() {
+        let agent: AgentInfo = serde_json::from_str(
+            r#"{"id":1,"provider":"pi","state":"idle","capabilities":{},"source":"adapter"}"#,
+        )
+        .unwrap();
+        assert!(agent.attached);
     }
 
     #[test]

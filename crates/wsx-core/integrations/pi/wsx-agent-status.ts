@@ -1,5 +1,5 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=14
+// WSX_INTEGRATION_VERSION=15
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 import path from "node:path";
@@ -17,7 +17,8 @@ type ReportState = "idle" | "working" | "blocked" | "done";
 type SessionRef = { id?: string; path?: string };
 
 let sendInFlight = false;
-let pending: { state: ReportState; sessionRef?: SessionRef } | undefined;
+let pending: { state: ReportState; sessionRef?: SessionRef; attached: boolean } | undefined;
+let drainWaiters: Array<() => void> = [];
 let agentActive = false;
 let blockedCount = 0;
 let lastRunAborted = false;
@@ -25,18 +26,36 @@ let currentSessionRef: SessionRef | undefined;
 let pendingSettlement: ReturnType<typeof setTimeout> | undefined;
 let heartbeat: ReturnType<typeof setInterval> | undefined;
 
-function report(state: ReportState, sessionRef = currentSessionRef): void {
+function report(
+  state: ReportState,
+  sessionRef = currentSessionRef,
+  attached = true,
+): void {
   if (!enabled) return;
-  pending = { state, sessionRef };
+  pending = { state, sessionRef, attached };
   drain();
 }
 
+function settleDrainWaiters(): void {
+  if (sendInFlight || pending) return;
+  for (const resolve of drainWaiters.splice(0)) resolve();
+}
+
+function flushReports(): Promise<void> {
+  if (!sendInFlight && !pending) return Promise.resolve();
+  return new Promise((resolve) => drainWaiters.push(resolve));
+}
+
 function drain(): void {
-  if (sendInFlight || !pending || !paneId) return;
+  if (sendInFlight || !pending || !paneId) {
+    settleDrainWaiters();
+    return;
+  }
   const next = pending;
   pending = undefined;
   sendInFlight = true;
   const args = ["agent", "report", paneId, "--provider", "pi", "--state", next.state, "--lifecycle"];
+  if (!next.attached) args.push("--detached");
   if (next.sessionRef?.path) args.push("--session-path", next.sessionRef.path);
   else if (next.sessionRef?.id) args.push("--session-id", next.sessionRef.id);
   execFile(reportBin, args, { timeout: REPORT_TIMEOUT_MS, windowsHide: true }, () => {
@@ -181,11 +200,13 @@ export default function wsxAgentStatus(pi: ExtensionAPI): void {
     }, SETTLEMENT_DELAY_MS);
     pendingSettlement.unref?.();
   });
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", async () => {
     restoreBlockingUi?.();
     restoreBlockingUi = undefined;
     blockedCount = 0;
     clearPendingSettlement();
     stopHeartbeat();
+    report("idle", currentSessionRef, false);
+    await flushReports();
   });
 }

@@ -61,7 +61,7 @@ wsx agent install pi
 wsx agent install claude
 ```
 
-Installer는 관련 없는 hook을 보존하고 표준 config-directory override를 따릅니다. 설치 후 해당 agent를 다시 시작합니다. Codex authoritative lifecycle 보고에는 Codex 0.150.0 이상이 필요합니다. Pi는 표준 blocking dialog를 별도 wiring 없이 blocked로 보고합니다.
+Installer는 관련 없는 hook을 보존하고 표준 config-directory override를 따릅니다. 설치 후 해당 agent를 다시 시작합니다. Codex authoritative lifecycle 보고에는 Codex 0.150.0 이상이 필요합니다. Pi는 표준 blocking dialog를 별도 wiring 없이 blocked로 보고합니다. Pi, OMP, Claude, Codex, Copilot, Devin, Droid, Kimi, Hermes, Qoder, Qwen, Cursor, MastraCode, Grok이 종료되어 shell로 돌아오면 wsx는 live agent label을 숨기고 제한된 native resume metadata는 유지합니다. OpenCode, Kilo, Antigravity는 현재 신뢰할 수 있는 CLI exit hook을 제공하지 않으므로 종료 후에도 identity가 남아 보일 수 있습니다.
 
 ## 조작
 

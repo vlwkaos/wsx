@@ -126,6 +126,8 @@ mod tests {
                 "{target}"
             );
         }
+        let grok_hooks = fs::read_to_string(parent.join("grok/hooks/wsx.json")).unwrap();
+        assert!(grok_hooks.contains("SessionEnd") && grok_hooks.contains("detached"));
         fs::remove_dir_all(parent).unwrap();
     }
 
@@ -225,7 +227,7 @@ mod tests {
         }));
         for (event, action) in [
             ("SessionStart", "idle"),
-            ("SessionEnd", "idle"),
+            ("SessionEnd", "detached"),
             ("UserPromptSubmit", "working"),
             ("Stop", "done"),
         ] {
@@ -342,7 +344,13 @@ mod tests {
         assert!(pi.contains("report(settledRunAborted ? \"idle\" : \"done\", settledSessionRef)"));
         assert!(pi.contains("stopReason === \"aborted\""));
         assert!(pi.contains("pi.on(\"session_shutdown\""));
-        assert!(assets::primary(IntegrationTarget::Omp).contains("report(\"done\", ctx)"));
+        assert!(pi.contains("await flushReports();"));
+        assert!(pi.contains("--detached"));
+        let omp = assets::primary(IntegrationTarget::Omp);
+        assert!(omp.contains("report(\"done\", ctx)"));
+        assert!(omp.contains("pi.on(\"session_shutdown\""));
+        assert!(omp.contains("await flushReports();"));
+        assert!(omp.contains("--detached"));
         for target in [IntegrationTarget::Opencode, IntegrationTarget::Kilo] {
             assert!(
                 assets::primary(target).contains("activeSessions.has(id) ? \"done\" : \"idle\"")
@@ -367,6 +375,33 @@ mod tests {
         )
         .unwrap();
         assert!(mastra.contains("done"));
+    }
+
+    #[test]
+    fn teardown_capable_adapters_report_detached() {
+        let hook = PathBuf::from("wsx-agent-status.sh");
+        for target in [
+            IntegrationTarget::Claude,
+            IntegrationTarget::Codex,
+            IntegrationTarget::Copilot,
+            IntegrationTarget::Devin,
+            IntegrationTarget::Droid,
+            IntegrationTarget::Qodercli,
+            IntegrationTarget::Qwen,
+            IntegrationTarget::Cursor,
+            IntegrationTarget::Mastracode,
+        ] {
+            let config = config_edit::json_config(
+                target,
+                "{}",
+                PathBuf::from("hooks.json").as_path(),
+                &hook,
+            )
+            .unwrap();
+            assert!(config.contains("detached"), "{target}: missing detach hook");
+        }
+        assert!(config_edit::kimi_toml("", &hook).contains("detached"));
+        assert!(assets::primary(IntegrationTarget::Hermes).contains("on_session_finalize"));
     }
 
     #[test]

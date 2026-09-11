@@ -63,6 +63,7 @@ fn agent(id: u64, state: AgentState) -> AgentInfo {
         id: wsx_core::runtime::AgentInstanceId(id),
         provider: "test-agent".into(),
         state,
+        attached: true,
         conversation_id: None,
         session_ref: None,
         capabilities: AgentCapabilities::default(),
