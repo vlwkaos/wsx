@@ -306,10 +306,21 @@ fn project_is_stale(
     now_unix_ms: u64,
     window_ms: u64,
 ) -> bool {
+    if freshened_projects.contains(&project.path) {
+        return false;
+    }
+    let has_available_session = project.worktrees.iter().any(|worktree| {
+        worktree
+            .sessions
+            .iter()
+            .any(|session| session.panes.iter().any(|pane| !pane.exited))
+    });
+    if !has_available_session {
+        return true;
+    }
     let activity_is_known = project.last_agent_active_unix_ms.is_some()
         || project.last_terminal_active_unix_ms.is_some();
-    !freshened_projects.contains(&project.path)
-        && activity_is_known
+    activity_is_known
         && !project_has_activity_within(
             project.last_agent_active_unix_ms,
             project.last_terminal_active_unix_ms,
@@ -9764,9 +9775,54 @@ mod tests {
         );
     }
 
+    fn project_with_available_session(name: &str) -> Project {
+        let mut project = make_project(name);
+        let mut worktree = make_worktree(&format!("/tmp/{name}"));
+        worktree.sessions = vec![make_sess(false, runtime::AgentState::Unknown)];
+        project.worktrees = vec![worktree];
+        project
+    }
+
     #[test]
-    fn missing_activity_timestamps_do_not_prove_a_project_is_stale() {
-        let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
+    fn projects_without_an_available_session_are_stale() {
+        let empty = make_project("empty");
+        let mut exited = make_project("exited");
+        let mut worktree = make_worktree("/tmp/exited");
+        let mut session = make_sess(false, runtime::AgentState::Unknown);
+        session.panes[0].exited = true;
+        worktree.sessions = vec![session];
+        exited.worktrees = vec![worktree];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![empty, exited],
+            },
+            None,
+        );
+
+        app.collapse_stale_projects();
+
+        assert!(app
+            .workspace
+            .projects
+            .iter()
+            .all(|project| !project.expanded));
+        assert_eq!(app.stale_project_indices(), HashSet::from([0, 1]));
+    }
+
+    #[test]
+    fn missing_activity_timestamps_do_not_stale_a_project_with_an_available_session() {
+        let mut project = make_project("available");
+        let mut worktree = make_worktree("/tmp/available");
+        worktree.sessions = vec![make_sess(false, runtime::AgentState::Unknown)];
+        project.worktrees = vec![worktree];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
 
         app.collapse_stale_projects();
 
@@ -9799,7 +9855,9 @@ mod tests {
                 auto_collapse_after_hours: 1,
                 ..GlobalConfig::default()
             },
-            projects_for_tree(1),
+            WorkspaceState {
+                projects: vec![project_with_available_session("agent-fresh")],
+            },
             None,
         );
         let window_ms = app
@@ -9824,7 +9882,9 @@ mod tests {
                 auto_collapse_after_hours: 1,
                 ..GlobalConfig::default()
             },
-            projects_for_tree(1),
+            WorkspaceState {
+                projects: vec![project_with_available_session("terminal-fresh")],
+            },
             None,
         );
         let window_ms = app
@@ -9849,7 +9909,9 @@ mod tests {
                 auto_collapse_after_hours: 1,
                 ..GlobalConfig::default()
             },
-            projects_for_tree(1),
+            WorkspaceState {
+                projects: vec![project_with_available_session("future")],
+            },
             None,
         );
         app.workspace.projects[0].last_agent_active_unix_ms = Some(u64::MAX);
@@ -9902,7 +9964,9 @@ mod tests {
                 auto_collapse_after_hours: u64::MAX,
                 ..GlobalConfig::default()
             },
-            projects_for_tree(1),
+            WorkspaceState {
+                projects: vec![project_with_available_session("large-window")],
+            },
             None,
         );
         app.workspace.projects[0].last_agent_active_unix_ms = Some(0);
@@ -9914,10 +9978,10 @@ mod tests {
 
     #[test]
     fn fresh_projects_keep_their_existing_expanded_state_from_either_activity_timestamp() {
-        let mut agent_fresh = make_project("agent-fresh");
+        let mut agent_fresh = project_with_available_session("agent-fresh");
         agent_fresh.last_agent_active_unix_ms = Some(u64::MAX);
         agent_fresh.expanded = true;
-        let mut terminal_fresh = make_project("terminal-fresh");
+        let mut terminal_fresh = project_with_available_session("terminal-fresh");
         terminal_fresh.last_terminal_active_unix_ms = Some(u64::MAX);
         terminal_fresh.expanded = false;
         let mut app = make_test_app(
