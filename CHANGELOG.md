@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Bug Fixes
+
+- Clear stale Claude working state when Workspace sends Ctrl+C, matching Terminal Escape interruption while preserving newer lifecycle reports.
+
 ## [0.25.0] - 2026-09-10
 
 ### Breaking Changes

@@ -1591,8 +1591,8 @@ fn with_stream_runtime<T>(
     operation(&runtime)
 }
 
-fn escape_interrupt_revision(state: &State, pane_id: PaneId, key: &KeyEvent) -> Option<u64> {
-    if key.code != KeyCode::Escape {
+fn agent_interrupt_revision(state: &State, pane_id: PaneId, interrupted: bool) -> Option<u64> {
+    if !interrupted {
         return None;
     }
     let pane = state
@@ -1608,7 +1608,12 @@ fn escape_interrupt_revision(state: &State, pane_id: PaneId, key: &KeyEvent) -> 
         .then_some(pane.revision)
 }
 
-fn invalidate_working_agent_after_escape(
+fn key_interrupts_agent(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Escape
+        || (key.code == KeyCode::Text && key.control && key.text.eq_ignore_ascii_case("c"))
+}
+
+fn invalidate_working_agent_after_interrupt(
     daemon: &Daemon,
     pane_id: PaneId,
     expected_revision: u64,
@@ -1658,20 +1663,28 @@ fn handle_terminal_stream_input(
             if bytes.len() > MAX_INPUT_BYTES {
                 return Err(api("invalid_input", "input exceeds limit"));
             }
+            let interrupt_revision =
+                agent_interrupt_revision(&lock(&daemon.state), pane_id, bytes == [3]);
             with_stream_runtime(daemon, pane_id, client_id, lease_generation, |runtime| {
                 runtime.write(&bytes).map_err(terminal_api)
-            })
+            })?;
+            if let Some(revision) = interrupt_revision {
+                invalidate_working_agent_after_interrupt(daemon, pane_id, revision)?;
+            }
+            Ok(())
         }
         TerminalClientMessage::Key(key) => {
-            // Claude does not fire Stop after a user interrupt. Its adapter marks Esc as
-            // invalidating the current Working report; a newer concurrent report wins.
+            // Claude does not fire Stop after a user interrupt. Its adapter marks
+            // Escape and Ctrl+C as invalidating the current Working report; a newer
+            // concurrent report wins.
             // ^ https://code.claude.com/docs/en/hooks#stop
-            let interrupt_revision = escape_interrupt_revision(&lock(&daemon.state), pane_id, &key);
+            let interrupt_revision =
+                agent_interrupt_revision(&lock(&daemon.state), pane_id, key_interrupts_agent(&key));
             with_stream_runtime(daemon, pane_id, client_id, lease_generation, |runtime| {
                 runtime.key(&key).map_err(terminal_api)
             })?;
             if let Some(revision) = interrupt_revision {
-                invalidate_working_agent_after_escape(daemon, pane_id, revision)?;
+                invalidate_working_agent_after_interrupt(daemon, pane_id, revision)?;
             }
             Ok(())
         }
@@ -1915,8 +1928,13 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             if bytes.len() > MAX_INPUT_BYTES {
                 return Err(api("invalid_input", "input exceeds limit"));
             }
+            let interrupt_revision =
+                agent_interrupt_revision(&lock(&daemon.state), pane_id, bytes == [3]);
             let (runtime, revision) = leased_runtime(daemon, pane_id, client_id)?;
             runtime.write(&bytes).map_err(terminal_api)?;
+            if let Some(interrupted_revision) = interrupt_revision {
+                invalidate_working_agent_after_interrupt(daemon, pane_id, interrupted_revision)?;
+            }
             Ok(Response::Ack { revision })
         }
         Request::TerminalKey {
@@ -1924,8 +1942,13 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             client_id,
             key,
         } => {
+            let interrupt_revision =
+                agent_interrupt_revision(&lock(&daemon.state), pane_id, key_interrupts_agent(&key));
             let (runtime, revision) = leased_runtime(daemon, pane_id, client_id)?;
             runtime.key(&key).map_err(terminal_api)?;
+            if let Some(interrupted_revision) = interrupt_revision {
+                invalidate_working_agent_after_interrupt(daemon, pane_id, interrupted_revision)?;
+            }
             Ok(Response::Ack { revision })
         }
         Request::TerminalPaste {
@@ -5906,10 +5929,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(escape_interrupt_revision(
+        assert!(agent_interrupt_revision(
             &lock(&daemon.state),
             pane_id,
-            &terminal_key(KeyCode::Enter),
+            key_interrupts_agent(&terminal_key(KeyCode::Enter)),
         )
         .is_none());
         let (_, generation) = acquire_terminal_lease(&daemon, pane_id, 9, true).unwrap();
@@ -5936,6 +5959,91 @@ mod tests {
     }
 
     #[test]
+    fn one_shot_ctrl_c_invalidates_working_but_other_input_does_not() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let runtime = Arc::new(
+            spawn_runtime(
+                &daemon,
+                pane_id,
+                TerminalId(5),
+                Path::new("/"),
+                &LaunchRecipe {
+                    command: vec!["/bin/cat".into()],
+                    initial_input: None,
+                    rows: 3,
+                    cols: 4,
+                },
+            )
+            .unwrap(),
+        );
+        lock(&daemon.state)
+            .runtimes
+            .insert(pane_id, Arc::clone(&runtime));
+        agent_report(
+            &daemon,
+            current_agent_authority(&daemon),
+            "claude".into(),
+            AgentState::Working,
+            None,
+            None,
+            AgentCapabilities {
+                escape_interrupts: true,
+                ..AgentCapabilities::default()
+            },
+        )
+        .unwrap();
+        acquire_terminal_lease(&daemon, pane_id, 9, false).unwrap();
+
+        handle_inner(
+            &daemon,
+            Request::TerminalInput {
+                pane_id,
+                client_id: 9,
+                bytes: b"x".to_vec(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            lock(&daemon.state).persisted.panes[0]
+                .agent
+                .as_ref()
+                .unwrap()
+                .state,
+            AgentState::Working
+        );
+
+        handle_inner(
+            &daemon,
+            Request::TerminalInput {
+                pane_id,
+                client_id: 9,
+                bytes: vec![3],
+            },
+        )
+        .unwrap();
+
+        let state = lock(&daemon.state);
+        assert_eq!(
+            state.persisted.panes[0].agent.as_ref().unwrap().state,
+            AgentState::Unknown
+        );
+        assert!(!state.agent_wake_leases.contains_key(&pane_id));
+        drop(state);
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ctrl_c_key_is_an_agent_interrupt() {
+        let mut key = terminal_key(KeyCode::Text);
+        key.text = "c".into();
+        key.control = true;
+
+        assert!(key_interrupts_agent(&key));
+    }
+
+    #[test]
     fn escape_does_not_overwrite_a_newer_agent_report() {
         let (daemon, path) = agent_test_daemon(agent_test_persisted());
         let capabilities = AgentCapabilities {
@@ -5952,10 +6060,10 @@ mod tests {
             capabilities.clone(),
         )
         .unwrap();
-        let interrupted_revision = escape_interrupt_revision(
+        let interrupted_revision = agent_interrupt_revision(
             &lock(&daemon.state),
             PaneId(4),
-            &terminal_key(KeyCode::Escape),
+            key_interrupts_agent(&terminal_key(KeyCode::Escape)),
         )
         .unwrap();
         agent_report(
@@ -5969,7 +6077,7 @@ mod tests {
         )
         .unwrap();
 
-        invalidate_working_agent_after_escape(&daemon, PaneId(4), interrupted_revision).unwrap();
+        invalidate_working_agent_after_interrupt(&daemon, PaneId(4), interrupted_revision).unwrap();
 
         let state = lock(&daemon.state);
         assert_eq!(

@@ -18,7 +18,7 @@ pub const WSX_RUNTIME_GENERATION_ENV: &str = "WSX_RUNTIME_GENERATION";
 pub const WSX_PLUGIN_VIEW_ENV: &str = "WSX_PLUGIN_VIEW_JSON";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ^ Bump only when daemon-owned runtime behavior changes. UI-only releases reuse wsxd.
-pub const DAEMON_REVISION: u32 = 5;
+pub const DAEMON_REVISION: u32 = 6;
 
 pub fn compare_wsx_versions(left: &str, right: &str) -> Option<Ordering> {
     let left = parse_wsx_version(left)?;
