@@ -54,7 +54,7 @@ Before any publish or remote push:
 1. Identify the repository root, release branch, remote, tag convention, package manager/lockfile, and relevant workflows.
 2. Require a clean working tree before edits. Preserve unrelated user changes; never reset, clean, or stash them without consent.
 3. Fetch remote and tags. Ensure the local release branch is not behind or diverged. Run project tests/builds required by its documented release process. Inspect pinned CI setup actions and requested tool versions; a local tool's availability does not prove that the pinned CI installer supports it.
-4. From the directory containing this `SKILL.md`, run `./scripts/security-audit.sh <project-root>` and follow [the security policy](atomic/security-audit.md). Never resolve this script from the project repository. Any finding blocks release until resolved or explicitly accepted by the user.
+4. From the directory containing this `SKILL.md`, run `./scripts/security-audit.sh <project-root>` and follow [the security policy](atomic/security-audit.md). Never resolve this script from the project repository. Resolve real findings before release. For demonstrably non-secret matches, record the evidence and continue without a user confirmation loop; ask only when classification or risk remains ambiguous.
 5. Determine credentials by testing the relevant CLI (`gh auth status`, `cargo login`/publish dry run where supported, `npm whoami` or `pnpm whoami`). Never request a token in chat.
 6. Present a release plan, including commits, tag, registries, workflows, environments, and prerelease effects. Confirm before publishing or pushing.
 
