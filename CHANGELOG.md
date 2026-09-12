@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-09-11
+
 ### Features
 
 - Add standalone session creation and deletion to the CLI, with cwd and sole-target inference, explicit project/worktree scoping, reusable session IDs, and JSON output for low-turn agent control.
@@ -14,6 +16,10 @@
 
 - Clear stale Claude working state when Workspace sends Ctrl+C, matching Terminal Escape interruption while preserving newer lifecycle reports.
 - Prevent embedded full-screen applications from scrolling the outer wsx display when dense frames reach the physical bottom-right terminal cell.
+
+### Maintenance
+
+- Add evaluated agent-development guidance for low-turn wsx session control, refresh bundled release and reader-briefing workflows, let release audits continue on proven non-secret scanner matches, and link runtime ownership boundaries to canonical knowledge.
 
 ## [0.25.0] - 2026-09-10
 
