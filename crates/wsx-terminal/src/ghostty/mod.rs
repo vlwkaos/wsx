@@ -79,6 +79,20 @@ pub struct RowSelection {
     pub end_x: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionBoundary {
+    Inside,
+    Above,
+    Below,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionAutoscroll {
+    None,
+    Up,
+    Down,
+}
+
 impl RowSelection {
     pub fn range(self) -> RangeInclusive<u16> {
         self.start_x..=self.end_x
@@ -1050,16 +1064,15 @@ impl Terminal {
         self.install_selection(selection.as_ref())
     }
 
-    pub fn selection_drag(&mut self, x: u16, y: u16) -> Result<bool, Error> {
+    pub fn selection_drag(
+        &mut self,
+        x: u16,
+        y: u16,
+        boundary: SelectionBoundary,
+    ) -> Result<bool, Error> {
         let grid_ref = self.grid_ref(ghostty_viewport_point(x, u32::from(y)))?;
-        let position = selection_position(x, y);
-        let geometry = ffi::GhosttySelectionGestureGeometry {
-            columns: u32::from(self.callback_state.size_report.columns.max(1)),
-            cell_width: SELECTION_CELL_SIZE,
-            padding_left: 0,
-            screen_height: u32::from(self.callback_state.size_report.rows.max(1))
-                * SELECTION_CELL_SIZE,
-        };
+        let position = self.selection_position_at_boundary(x, y, boundary);
+        let geometry = self.selection_geometry();
         let event = SelectionGestureEvent::new(
             ffi::GhosttySelectionGestureEventType_GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_DRAG,
         )?;
@@ -1076,19 +1089,110 @@ impl Terminal {
             &geometry,
         )?;
         let selection = self.apply_selection_event(&event)?;
-        let selection = if self.selection_gesture_behavior()?
+        let selection = self.cell_selection_or(selection, grid_ref)?;
+        self.install_selection(selection.as_ref())
+    }
+
+    pub fn selection_autoscroll_tick(&mut self, x: u16, y: u16) -> Result<bool, Error> {
+        let before = self.scrollbar()?.offset;
+        let boundary = match self.selection_autoscroll()? {
+            SelectionAutoscroll::Up => SelectionBoundary::Above,
+            SelectionAutoscroll::Down => SelectionBoundary::Below,
+            SelectionAutoscroll::None => return Ok(false),
+        };
+        let viewport = ffi::GhosttyPointCoordinate { x, y: u32::from(y) };
+        let position = self.selection_position_at_boundary(x, y, boundary);
+        let geometry = self.selection_geometry();
+        let event = SelectionGestureEvent::new(
+            ffi::GhosttySelectionGestureEventType_GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_AUTOSCROLL_TICK,
+        )?;
+        event.set(
+            ffi::GhosttySelectionGestureEventOption_GHOSTTY_SELECTION_GESTURE_EVENT_OPT_VIEWPORT,
+            &viewport,
+        )?;
+        event.set(
+            ffi::GhosttySelectionGestureEventOption_GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION,
+            &position,
+        )?;
+        event.set(
+            ffi::GhosttySelectionGestureEventOption_GHOSTTY_SELECTION_GESTURE_EVENT_OPT_GEOMETRY,
+            &geometry,
+        )?;
+        let selection = self.apply_selection_event(&event)?;
+        if selection.is_none() && self.selection_autoscroll()? == SelectionAutoscroll::None {
+            return Ok(before != self.scrollbar()?.offset);
+        }
+        let grid_ref = self.grid_ref(ghostty_viewport_point(x, u32::from(y)))?;
+        let selection = self.cell_selection_or(selection, grid_ref)?;
+        let selection_changed = self.install_selection(selection.as_ref())?;
+        Ok(before != self.scrollbar()?.offset || selection_changed)
+    }
+
+    pub fn selection_autoscroll(&self) -> Result<SelectionAutoscroll, Error> {
+        let mut direction =
+            ffi::GhosttySelectionGestureAutoscroll_GHOSTTY_SELECTION_GESTURE_AUTOSCROLL_NONE;
+        unsafe {
+            ffi::ghostty_selection_gesture_get(
+                self.selection_gesture,
+                self.raw,
+                ffi::GhosttySelectionGestureData_GHOSTTY_SELECTION_GESTURE_DATA_AUTOSCROLL,
+                (&mut direction as *mut ffi::GhosttySelectionGestureAutoscroll).cast(),
+            )
+            .into_result()?;
+        }
+        Ok(match direction {
+            ffi::GhosttySelectionGestureAutoscroll_GHOSTTY_SELECTION_GESTURE_AUTOSCROLL_UP => {
+                SelectionAutoscroll::Up
+            }
+            ffi::GhosttySelectionGestureAutoscroll_GHOSTTY_SELECTION_GESTURE_AUTOSCROLL_DOWN => {
+                SelectionAutoscroll::Down
+            }
+            _ => SelectionAutoscroll::None,
+        })
+    }
+
+    fn selection_geometry(&self) -> ffi::GhosttySelectionGestureGeometry {
+        ffi::GhosttySelectionGestureGeometry {
+            columns: u32::from(self.callback_state.size_report.columns.max(1)),
+            cell_width: SELECTION_CELL_SIZE,
+            padding_left: 0,
+            screen_height: u32::from(self.callback_state.size_report.rows.max(1))
+                * SELECTION_CELL_SIZE,
+        }
+    }
+
+    fn selection_position_at_boundary(
+        &self,
+        x: u16,
+        y: u16,
+        boundary: SelectionBoundary,
+    ) -> ffi::GhosttySurfacePosition {
+        let mut position = selection_position(x, y);
+        position.y = match boundary {
+            SelectionBoundary::Inside => position.y,
+            SelectionBoundary::Above => 0.0,
+            SelectionBoundary::Below => f64::from(self.selection_geometry().screen_height),
+        };
+        position
+    }
+
+    fn cell_selection_or(
+        &self,
+        selection: Option<ffi::GhosttySelection>,
+        endpoint: ffi::GhosttyGridRef,
+    ) -> Result<Option<ffi::GhosttySelection>, Error> {
+        if self.selection_gesture_behavior()?
             == ffi::GhosttySelectionGestureBehavior_GHOSTTY_SELECTION_GESTURE_BEHAVIOR_CELL
         {
-            Some(ffi::GhosttySelection {
+            Ok(Some(ffi::GhosttySelection {
                 size: mem::size_of::<ffi::GhosttySelection>(),
                 start: self.selection_gesture_anchor()?,
-                end: grid_ref,
+                end: endpoint,
                 rectangle: false,
-            })
+            }))
         } else {
-            selection
-        };
-        self.install_selection(selection.as_ref())
+            Ok(selection)
+        }
     }
 
     pub fn selection_release(
@@ -1106,7 +1210,7 @@ impl Terminal {
         });
         let mut changed = match (point, grid_ref.as_ref()) {
             (Some((x, y)), Some(target)) if collapsed_cell || !same_grid_ref(&anchor, target) => {
-                self.selection_drag(x, y)?
+                self.selection_drag(x, y, SelectionBoundary::Inside)?
             }
             _ => false,
         };

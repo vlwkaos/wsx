@@ -37,6 +37,8 @@ const MAX_STARTUP_INPUT_BYTES: usize = 64 * 1024;
 const STARTUP_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const BRACKETED_PASTE_MODE: u16 = 2004;
 const MOUSE_SCROLL_LINES: isize = 3;
+// ^ vendor/libghostty-vt/include/ghostty/vt/selection.h requires embedder-driven ticks.
+const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(15);
 #[cfg(unix)]
 const HANDOFF_PAUSE_TIMEOUT: Duration = Duration::from_secs(2);
 pub const MAX_HANDOFF_ANSI_BYTES: usize = 512 * 1024;
@@ -97,12 +99,20 @@ struct ChildMouseGesture {
     last_y: u16,
 }
 
+#[derive(Clone, Copy)]
+struct SelectionAutoscrollState {
+    x: u16,
+    y: u16,
+}
+
 struct Emulator {
     terminal: ghostty::Terminal,
     render: ghostty::RenderState,
     keys: ghostty::KeyEncoder,
     mouse: ghostty::MouseEncoder,
     local_selection_active: bool,
+    selection_autoscroll: Option<SelectionAutoscrollState>,
+    selection_autoscroll_worker_running: bool,
     child_mouse_gesture: Option<ChildMouseGesture>,
 }
 impl Emulator {
@@ -567,13 +577,13 @@ impl TerminalRuntime {
     pub fn mouse(&self, mouse: &MouseEvent) -> Result<(), TerminalError> {
         let (bytes, presentation_changed, effect_ready) = {
             let mut emulator = lock(&self.shared.emulator);
-            let terminating_local = emulator.local_selection_active
-                && mouse.action == MouseAction::Release
-                && mouse.button == MouseButton::Left;
+            let continuing_local = emulator.local_selection_active
+                && mouse.button == MouseButton::Left
+                && matches!(mouse.action, MouseAction::Motion | MouseAction::Release);
             let terminating_child = emulator.child_mouse_gesture.is_some_and(|gesture| {
                 mouse.action == MouseAction::Release && mouse.button == gesture.button
             });
-            if !mouse.in_bounds && !terminating_local && !terminating_child {
+            if !mouse.in_bounds && !continuing_local && !terminating_child {
                 return Ok(());
             }
             if mouse.in_bounds
@@ -654,11 +664,29 @@ impl TerminalRuntime {
                 }
             } else if emulator.local_selection_active {
                 match (mouse.action, mouse.button) {
-                    (MouseAction::Motion, MouseButton::Left) if mouse.in_bounds => {
-                        let changed = emulator.terminal.selection_drag(mouse.x, mouse.y)?;
+                    (MouseAction::Motion, MouseButton::Left) => {
+                        let boundary = if mouse.in_bounds {
+                            ghostty::SelectionBoundary::Inside
+                        } else if mouse.y == 0 {
+                            ghostty::SelectionBoundary::Above
+                        } else {
+                            ghostty::SelectionBoundary::Below
+                        };
+                        let changed = emulator
+                            .terminal
+                            .selection_drag(mouse.x, mouse.y, boundary)?;
+                        if update_selection_autoscroll(&mut emulator, mouse.x, mouse.y)? {
+                            if let Err(error) = spawn_selection_autoscroll(Arc::clone(&self.shared))
+                            {
+                                stop_selection_autoscroll(&mut emulator);
+                                emulator.selection_autoscroll_worker_running = false;
+                                return Err(error);
+                            }
+                        }
                         (Vec::new(), changed, false)
                     }
                     (MouseAction::Release, MouseButton::Left) => {
+                        stop_selection_autoscroll(&mut emulator);
                         let point = mouse.in_bounds.then_some((mouse.x, mouse.y));
                         let (changed, copied) = emulator.terminal.selection_release(point)?;
                         emulator.local_selection_active = false;
@@ -680,6 +708,7 @@ impl TerminalRuntime {
                     let changed = emulator
                         .terminal
                         .selection_press(mouse.x, mouse.y, time_ns)?;
+                    stop_selection_autoscroll(&mut emulator);
                     emulator.local_selection_active = true;
                     (Vec::new(), changed, false)
                 } else {
@@ -1097,6 +1126,8 @@ fn make_emulator(
         keys,
         mouse,
         local_selection_active: false,
+        selection_autoscroll: None,
+        selection_autoscroll_worker_running: false,
         child_mouse_gesture: None,
     })
 }
@@ -1445,7 +1476,11 @@ fn set_error(slot: &Mutex<Option<String>>, message: String) {
     }
 }
 fn mark_exited(shared: &Shared) {
-    if !shared.exited.swap(true, Ordering::AcqRel) {
+    let selection_changed = {
+        let mut emulator = lock(&shared.emulator);
+        clear_local_selection(&mut emulator).unwrap_or(false)
+    };
+    if !shared.exited.swap(true, Ordering::AcqRel) || selection_changed {
         shared.revision.fetch_add(1, Ordering::AcqRel);
         (shared.notify)();
     }
@@ -1558,8 +1593,83 @@ fn encode_mouse(
 
 fn clear_local_selection(emulator: &mut Emulator) -> Result<bool, TerminalError> {
     emulator.local_selection_active = false;
+    stop_selection_autoscroll(emulator);
     emulator.child_mouse_gesture = None;
     emulator.terminal.clear_selection().map_err(Into::into)
+}
+
+fn stop_selection_autoscroll(emulator: &mut Emulator) {
+    emulator.selection_autoscroll = None;
+}
+
+fn update_selection_autoscroll(
+    emulator: &mut Emulator,
+    x: u16,
+    y: u16,
+) -> Result<bool, TerminalError> {
+    if emulator.terminal.selection_autoscroll()? == ghostty::SelectionAutoscroll::None {
+        stop_selection_autoscroll(emulator);
+        return Ok(false);
+    }
+    emulator.selection_autoscroll = Some(SelectionAutoscrollState { x, y });
+    if emulator.selection_autoscroll_worker_running {
+        return Ok(false);
+    }
+    emulator.selection_autoscroll_worker_running = true;
+    Ok(true)
+}
+
+fn spawn_selection_autoscroll(shared: Arc<Shared>) -> Result<(), TerminalError> {
+    thread::Builder::new()
+        .name("wsx-selection-autoscroll".into())
+        .spawn(move || loop {
+            thread::sleep(SELECTION_AUTOSCROLL_INTERVAL);
+            let mut emulator = lock(&shared.emulator);
+            let Some(state) = emulator.selection_autoscroll else {
+                emulator.selection_autoscroll_worker_running = false;
+                break;
+            };
+            let tick = (|| -> Result<(bool, bool), ghostty::Error> {
+                let changed = emulator
+                    .terminal
+                    .selection_autoscroll_tick(state.x, state.y)?;
+                let active = changed
+                    && emulator.local_selection_active
+                    && emulator.terminal.selection_autoscroll()?
+                        != ghostty::SelectionAutoscroll::None;
+                if !active {
+                    stop_selection_autoscroll(&mut emulator);
+                    emulator.selection_autoscroll_worker_running = false;
+                }
+                Ok((changed, active))
+            })();
+            if tick.is_err() {
+                stop_selection_autoscroll(&mut emulator);
+                emulator.selection_autoscroll_worker_running = false;
+            }
+            drop(emulator);
+            match tick {
+                Ok((changed, active)) => {
+                    if changed {
+                        shared.revision.fetch_add(1, Ordering::AcqRel);
+                        (shared.notify)();
+                    }
+                    if !active {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    set_error(
+                        &shared.error,
+                        format!("selection autoscroll failed: {error}"),
+                    );
+                    (shared.notify)();
+                    break;
+                }
+            }
+        })
+        .map(|_| ())
+        .map_err(TerminalError::Io)
 }
 
 fn mouse_scroll_delta(mouse: &MouseEvent) -> Option<isize> {
@@ -2056,6 +2166,150 @@ mod tests {
         }
         drop(emulator);
         runtime
+    }
+
+    #[test]
+    fn ghostty_autoscroll_tick_moves_viewport_and_selection_together_in_both_directions() {
+        let runtime = runtime_with_scrollback();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.selection_press(1, 2, 1).unwrap();
+            emulator
+                .terminal
+                .selection_drag(0, 0, ghostty::SelectionBoundary::Above)
+                .unwrap();
+            assert_eq!(
+                emulator.terminal.selection_autoscroll().unwrap(),
+                ghostty::SelectionAutoscroll::Up
+            );
+            assert!(emulator.terminal.selection_autoscroll_tick(0, 0).unwrap());
+        }
+        assert_eq!(
+            frame_rows(&runtime.frame().unwrap()),
+            vec!["05  ".to_string(), "06  ".to_string(), "07  ".to_string()]
+        );
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            let (_, copied) = emulator.terminal.selection_release(Some((0, 0))).unwrap();
+            assert_eq!(copied, Some(b"05\n06\n07\n08".to_vec()));
+            emulator.terminal.clear_selection().unwrap();
+            emulator.terminal.selection_press(0, 0, 2).unwrap();
+            emulator
+                .terminal
+                .selection_drag(1, 2, ghostty::SelectionBoundary::Below)
+                .unwrap();
+            assert_eq!(
+                emulator.terminal.selection_autoscroll().unwrap(),
+                ghostty::SelectionAutoscroll::Down
+            );
+            assert!(emulator.terminal.selection_autoscroll_tick(1, 2).unwrap());
+        }
+        assert_eq!(
+            frame_rows(&runtime.frame().unwrap()),
+            vec!["06  ".to_string(), "07  ".to_string(), "08  ".to_string()]
+        );
+        let mut emulator = lock(&runtime.shared.emulator);
+        let (_, copied) = emulator.terminal.selection_release(Some((1, 2))).unwrap();
+        assert_eq!(copied, Some(b"05\n06\n07\n08".to_vec()));
+    }
+
+    #[test]
+    fn outside_local_drag_starts_and_release_stops_runtime_autoscroll() {
+        let runtime = runtime_with_scrollback();
+        let before = frame_rows(&runtime.frame().unwrap());
+        let revision = runtime.revision();
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 1, 2, false))
+            .unwrap();
+        runtime
+            .mouse(&MouseEvent {
+                in_bounds: false,
+                ..left_mouse(MouseAction::Motion, 0, 0, false)
+            })
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while frame_rows(&runtime.frame().unwrap()) == before && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_ne!(frame_rows(&runtime.frame().unwrap()), before);
+        assert!(runtime.revision() > revision);
+
+        runtime
+            .mouse(&MouseEvent {
+                in_bounds: false,
+                ..left_mouse(MouseAction::Release, 0, 0, false)
+            })
+            .unwrap();
+        assert!(!lock(&runtime.shared.emulator).local_selection_active);
+        assert!(lock(&runtime.shared.emulator)
+            .selection_autoscroll
+            .is_none());
+        assert!(!runtime.take_clipboard_writes().is_empty());
+    }
+
+    #[test]
+    fn runtime_exit_cancels_selection_autoscroll() {
+        let runtime = runtime_with_scrollback();
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 1, 2, false))
+            .unwrap();
+        runtime
+            .mouse(&MouseEvent {
+                in_bounds: false,
+                ..left_mouse(MouseAction::Motion, 0, 0, false)
+            })
+            .unwrap();
+        assert!(lock(&runtime.shared.emulator)
+            .selection_autoscroll
+            .is_some());
+
+        runtime.terminate();
+
+        assert!(runtime.exited());
+        let emulator = lock(&runtime.shared.emulator);
+        assert!(!emulator.local_selection_active);
+        assert!(emulator.selection_autoscroll.is_none());
+    }
+
+    #[test]
+    fn alternate_screen_outside_drag_does_not_shift_content_or_keep_a_timer_alive() {
+        let runtime = TerminalRuntime::new_for_test(3, 8).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"primary\x1b[?1049h\x1b[HALT");
+        }
+        let before = frame_rows(&runtime.frame().unwrap());
+        runtime
+            .mouse(&left_mouse(MouseAction::Press, 0, 0, false))
+            .unwrap();
+        runtime
+            .mouse(&MouseEvent {
+                in_bounds: false,
+                ..left_mouse(MouseAction::Motion, 0, 0, false)
+            })
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while lock(&runtime.shared.emulator)
+            .selection_autoscroll
+            .is_some()
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(frame_rows(&runtime.frame().unwrap()), before);
+        assert!(lock(&runtime.shared.emulator)
+            .selection_autoscroll
+            .is_none());
+
+        runtime
+            .mouse(&MouseEvent {
+                in_bounds: false,
+                ..left_mouse(MouseAction::Release, 0, 0, false)
+            })
+            .unwrap();
+        assert!(!lock(&runtime.shared.emulator).local_selection_active);
     }
 
     #[test]
