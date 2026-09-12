@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [0.25.1] - 2026-09-11
+## [0.25.1] - 2026-09-12
 
 ### Features
 
@@ -16,6 +16,7 @@
 
 - Clear stale Claude working state when Workspace sends Ctrl+C, matching Terminal Escape interruption while preserving newer lifecycle reports.
 - Prevent embedded full-screen applications from scrolling the outer wsx display when dense frames reach the physical bottom-right terminal cell.
+- Keep drag selection aligned with terminal history by forwarding captured vertical boundary motion and driving Ghostty viewport autoscroll with synchronized selection ticks.
 
 ### Maintenance
 

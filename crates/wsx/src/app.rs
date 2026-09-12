@@ -386,7 +386,9 @@ fn runtime_mouse_event(
         return None;
     }
     let in_bounds = viewport.contains(Position::new(mouse.column, mouse.row));
-    if !in_bounds && !matches!(mouse.kind, MouseEventKind::Up(_)) {
+    let vertical_drag_outside = matches!(mouse.kind, MouseEventKind::Drag(_))
+        && (mouse.row < viewport.y || mouse.row >= viewport.bottom());
+    if !in_bounds && !matches!(mouse.kind, MouseEventKind::Up(_)) && !vertical_drag_outside {
         return None;
     }
     let (action, button) = match mouse.kind {
@@ -9562,7 +9564,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_mouse_release_outside_the_panel_is_forwarded_without_a_cell_reference() {
+    fn terminal_mouse_release_and_vertical_drag_outside_the_panel_are_forwarded() {
         let release = crossterm::event::MouseEvent {
             kind: crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
             column: 2,
@@ -9577,7 +9579,25 @@ mod tests {
             kind: crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
             ..release
         };
-        assert!(runtime_mouse_event(drag, Rect::new(36, 1, 60, 20)).is_none());
+        let projected = runtime_mouse_event(drag, Rect::new(36, 1, 60, 20)).unwrap();
+        assert_eq!((projected.x, projected.y), (0, 19));
+        assert!(!projected.in_bounds);
+
+        let above_drag = crossterm::event::MouseEvent {
+            column: 42,
+            row: 0,
+            ..drag
+        };
+        let projected = runtime_mouse_event(above_drag, Rect::new(36, 1, 60, 20)).unwrap();
+        assert_eq!((projected.x, projected.y), (6, 0));
+        assert!(!projected.in_bounds);
+
+        let horizontal_drag = crossterm::event::MouseEvent {
+            column: 2,
+            row: 7,
+            ..drag
+        };
+        assert!(runtime_mouse_event(horizontal_drag, Rect::new(36, 1, 60, 20)).is_none());
     }
 
     #[test]
