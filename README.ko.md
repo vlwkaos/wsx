@@ -77,7 +77,7 @@ Installer는 관련 없는 hook을 보존하고 표준 config-directory override
 
 Terminal mode는 기본 `Ctrl+A` prefix를 사용합니다. 이어서 `j/k`는 인접 session, `{`/`}`는 이전 또는 다음 group, `i/I`는 idle, `a/A`는 active, `n/N`은 attention session으로 이동합니다. Attention 이동은 기본적으로 다른 attention 상태보다 Blocked session을 먼저 선택하며 Global Settings에서 Workspace 순서로 되돌릴 수 있습니다. Group 이동은 Workspace 순서를 유지하며 먼저 확인이 필요한 session을 선택하고, 없으면 첫 idle agent session을 선택합니다. 둘 다 없으면 현재 terminal을 유지합니다. `B`는 desktop sidebar 전환, `W`는 Workspace, `Q`는 TUI만 종료합니다. `Ctrl+A Ctrl+A`는 literal prefix를 보냅니다.
 
-Group은 순서가 있는 project filter입니다. 기본 **ungrouped** anti-group은 membership이 없는 project를 표시합니다. 설정한 시간 동안 trusted agent 작업이나 terminal 진입이 없으면 project는 stale이 됩니다. wsx는 terminal output이나 process tree로 agent 상태를 추론하지 않습니다.
+Group은 순서가 있는 project filter입니다. 기본 **ungrouped** anti-group은 membership이 없는 project를 표시합니다. 설정한 시간 동안 trusted agent 작업, terminal 활동, session 진입, expand 또는 collapse 변경이 없으면 project는 stale이 됩니다. 그전까지는 마지막 expanded 또는 collapsed 상태를 유지합니다. wsx는 terminal output이나 process tree로 agent 상태를 추론하지 않습니다.
 
 ## 설정
 
