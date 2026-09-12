@@ -321,6 +321,8 @@ pub struct SessionScope {
     worktree: Option<String>,
 }
 
+// ^ [[Direct Session Control]] Parsing and resolution live here; wsx-core ops and
+// wsxd retain mutation, revision, and PTY authority.
 #[derive(Subcommand)]
 pub enum SessionCmd {
     /// Create a session in a known or inferred worktree

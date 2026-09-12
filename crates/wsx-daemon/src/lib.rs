@@ -3250,6 +3250,8 @@ fn touch_terminal_project(daemon: &Arc<Daemon>, pane_id: PaneId) -> Result<(), A
     Ok(())
 }
 
+// ^ [[Agent Lifecycle Authority]] Adapters normalize provider events in wsx-core;
+// this boundary owns generation checks, persistence, wake authority, and resume identity.
 struct AgentReportInput {
     provider: String,
     state: AgentState,
