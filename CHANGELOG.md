@@ -20,6 +20,7 @@
 
 ### Maintenance
 
+- Make cold-recovery integration assertions wait for daemon readiness before reading the persisted startup state.
 - Add evaluated agent-development guidance for low-turn wsx session control, refresh bundled release and reader-briefing workflows, let release audits continue on proven non-secret scanner matches, and link runtime ownership boundaries to canonical knowledge.
 
 ## [0.25.0] - 2026-09-10
