@@ -2,9 +2,16 @@
 
 ## [Unreleased]
 
+## [0.26.1] - 2026-09-13
+
 ### Bug Fixes
 
 - Preserve each project's expanded or collapsed state across restarts until the configured inactivity period expires, and reset that period when the user interacts with the project.
+
+### Maintenance
+
+- Document the managed-terminal marker required when running isolated outer-TUI smoke probes from a wsx session.
+- Set workspace package versions and exact internal dependency pins to `0.26.1`.
 
 ## [0.26.0] - 2026-09-12
 
