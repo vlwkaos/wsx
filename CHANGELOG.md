@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Bug Fixes
+
+- Preserve each project's expanded or collapsed state across restarts until the configured inactivity period expires, and reset that period when the user interacts with the project.
+
 ## [0.26.0] - 2026-09-12
 
 ### Features

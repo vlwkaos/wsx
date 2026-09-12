@@ -302,27 +302,21 @@ fn unix_time_millis() -> u64 {
 
 fn project_is_stale(
     project: &Project,
-    freshened_projects: &HashSet<PathBuf>,
+    project_touched_unix_ms: &HashMap<PathBuf, u64>,
     now_unix_ms: u64,
     window_ms: u64,
 ) -> bool {
-    if freshened_projects.contains(&project.path) {
-        return false;
-    }
-    let has_available_session = project.worktrees.iter().any(|worktree| {
-        worktree
-            .sessions
-            .iter()
-            .any(|session| session.panes.iter().any(|pane| !pane.exited))
-    });
-    if !has_available_session {
-        return true;
-    }
-    let activity_is_known = project.last_agent_active_unix_ms.is_some()
-        || project.last_terminal_active_unix_ms.is_some();
+    let last_user_touch_unix_ms = project_touched_unix_ms.get(&project.path).copied();
+    let last_agent_or_user_unix_ms = project
+        .last_agent_active_unix_ms
+        .into_iter()
+        .chain(last_user_touch_unix_ms)
+        .max();
+    let activity_is_known =
+        last_agent_or_user_unix_ms.is_some() || project.last_terminal_active_unix_ms.is_some();
     activity_is_known
         && !project_has_activity_within(
-            project.last_agent_active_unix_ms,
+            last_agent_or_user_unix_ms,
             project.last_terminal_active_unix_ms,
             now_unix_ms,
             window_ms,
@@ -809,7 +803,7 @@ pub struct App {
     pub group_header_scroll: usize,
     pub group_header_area: Rect,
     visible_projects: HashSet<usize>,
-    freshened_projects: HashSet<PathBuf>,
+    project_touched_unix_ms: HashMap<PathBuf, u64>,
     pub notice: Option<Notice>,
     notice_started: Option<Instant>,
     pub jobs: Vec<BgJob>,
@@ -916,6 +910,7 @@ impl App {
         let (
             raw_selected,
             cursor_identity,
+            project_touched_unix_ms,
             cached_muted,
             acknowledged_outcomes,
             dismissed_integration_prompts,
@@ -994,7 +989,7 @@ impl App {
             group_header_scroll,
             group_header_area: Rect::default(),
             visible_projects,
-            freshened_projects: HashSet::new(),
+            project_touched_unix_ms,
             review: None,
             review_available: false,
             notice: initial_notice.clone().map(|title| Notice {
@@ -1287,20 +1282,30 @@ impl App {
         self.clamp_selected();
     }
 
-    // ^ [[wsx UI Patterns]] Staleness can only collapse an expanded project.
-    // Explicit expansion clears stale presentation for this process; activity never opens a row.
+    // ^ [[wsx UI Patterns]] Expansion is durable user state. Staleness only
+    // collapses it after the configured period since the latest user or runtime activity.
     fn collapse_stale_projects(&mut self) {
         let Some(window_ms) = self.config.auto_collapse_window_ms() else {
             return;
         };
         let now_unix_ms = unix_time_millis();
+        let mut changed = false;
         for project in &mut self.workspace.projects {
             if !project.expanded {
                 continue;
             }
-            if project_is_stale(project, &self.freshened_projects, now_unix_ms, window_ms) {
+            if project_is_stale(
+                project,
+                &self.project_touched_unix_ms,
+                now_unix_ms,
+                window_ms,
+            ) {
                 project.expanded = false;
+                changed = true;
             }
+        }
+        if changed {
+            self.mark_dirty();
         }
     }
 
@@ -1314,8 +1319,13 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(index, project)| {
-                project_is_stale(project, &self.freshened_projects, now_unix_ms, window_ms)
-                    .then_some(index)
+                project_is_stale(
+                    project,
+                    &self.project_touched_unix_ms,
+                    now_unix_ms,
+                    window_ms,
+                )
+                .then_some(index)
             })
             .collect()
     }
@@ -2080,6 +2090,7 @@ impl App {
             // Staleness is wall-clock based and can change without a runtime event.
             self.collapse_stale_projects();
             self.recompute_visible();
+            self.write_cache_if_dirty();
             self.spawn_background_runtime_refresh();
             self.spawn_routine_refresh();
         }
@@ -2292,6 +2303,7 @@ impl App {
             &self.workspace,
             self.tree_selected,
             self.flat(),
+            &self.project_touched_unix_ms,
             &self.dismissed_integration_prompts,
             sync,
         ) {
@@ -2899,10 +2911,24 @@ impl App {
 
     // ── Navigation ────────────────────────────────────────────────────────────
 
+    fn touch_project(&mut self, project_idx: usize) {
+        let Some(path) = self
+            .workspace
+            .projects
+            .get(project_idx)
+            .map(|project| project.path.clone())
+        else {
+            return;
+        };
+        self.project_touched_unix_ms
+            .insert(path, unix_time_millis());
+        self.mark_dirty();
+    }
+
     fn manually_expand_project(&mut self, project_idx: usize) {
         if let Some(project) = self.workspace.projects.get_mut(project_idx) {
             project.expanded = true;
-            self.freshened_projects.insert(project.path.clone());
+            self.touch_project(project_idx);
         }
     }
 
@@ -2927,7 +2953,7 @@ impl App {
             Some(FlatEntry::Project { idx }) => {
                 if self.workspace.projects[idx].expanded {
                     self.workspace.projects[idx].expanded = false;
-                    self.mark_dirty();
+                    self.touch_project(idx);
                     self.rebuild_flat();
                     self.clamp_selected();
                 }
@@ -2935,7 +2961,7 @@ impl App {
             Some(FlatEntry::Worktree { project_idx: pi, worktree_idx: wi }) => {
                 if self.workspace.projects[pi].worktrees[wi].expanded {
                     self.workspace.projects[pi].worktrees[wi].expanded = false;
-                    self.mark_dirty();
+                    self.touch_project(pi);
                     self.rebuild_flat();
                     self.clamp_selected();
                 } else {
@@ -2970,7 +2996,7 @@ impl App {
             Some(FlatEntry::RoutinesHeader { project_idx: pi }) => {
                 if self.workspace.projects[pi].routines_expanded {
                     self.workspace.projects[pi].routines_expanded = false;
-                    self.mark_dirty();
+                    self.touch_project(pi);
                     self.rebuild_flat();
                     self.clamp_selected();
                 } else if let Some(pos) = self.flat().iter().position(|entry| matches!(entry, FlatEntry::Project { idx } if *idx == pi)) {
@@ -3005,7 +3031,7 @@ impl App {
             }) => {
                 if !self.workspace.projects[pi].worktrees[wi].expanded {
                     self.workspace.projects[pi].worktrees[wi].expanded = true;
-                    self.mark_dirty();
+                    self.touch_project(pi);
                     self.rebuild_flat();
                 } else if !self.workspace.projects[pi].worktrees[wi]
                     .sessions
@@ -3018,7 +3044,7 @@ impl App {
             Some(FlatEntry::RoutinesHeader { project_idx: pi }) => {
                 if !self.workspace.projects[pi].routines_expanded {
                     self.workspace.projects[pi].routines_expanded = true;
-                    self.mark_dirty();
+                    self.touch_project(pi);
                     self.rebuild_flat();
                 } else if !self.workspace.projects[pi].routines.is_empty() {
                     self.tree_selected += 1;
@@ -3207,6 +3233,7 @@ impl App {
 
         if let Mode::Terminal { pane_id } = self.mode {
             self.dispatch_terminal(action, pane_id, terminal)?;
+            self.write_cache_if_dirty();
             return Ok(());
         }
 
@@ -3953,24 +3980,24 @@ impl App {
             Selection::Project(pi) => {
                 if self.workspace.projects[pi].expanded {
                     self.workspace.projects[pi].expanded = false;
+                    self.touch_project(pi);
                 } else {
                     self.manually_expand_project(pi);
                 }
-                self.mark_dirty();
                 self.rebuild_flat();
                 self.clamp_selected();
             }
             Selection::Worktree(pi, wi) => {
                 self.workspace.projects[pi].worktrees[wi].expanded =
                     !self.workspace.projects[pi].worktrees[wi].expanded;
-                self.mark_dirty();
+                self.touch_project(pi);
                 self.rebuild_flat();
                 self.clamp_selected();
             }
             Selection::RoutinesHeader(pi) => {
                 self.workspace.projects[pi].routines_expanded =
                     !self.workspace.projects[pi].routines_expanded;
-                self.mark_dirty();
+                self.touch_project(pi);
                 self.rebuild_flat();
                 self.clamp_selected();
             }
@@ -4061,6 +4088,7 @@ impl App {
         let target = self
             .terminal_target_label(pi, wi, si, pane_id)
             .unwrap_or_else(|| format!("pane {}", pane_id.0));
+        self.touch_project(pi);
         self.enter_terminal(pane_id, terminal_id, target, terminal)
     }
 
@@ -4111,6 +4139,7 @@ impl App {
         let target = self
             .terminal_target_label(pi, wi, si, pane_id)
             .unwrap_or_else(|| format!("pane {}", pane_id.0));
+        self.touch_project(pi);
         self.enter_terminal(pane_id, terminal_id, target, terminal)
     }
 
@@ -6213,7 +6242,7 @@ mod tests {
             group_header_scroll,
             group_header_area: Rect::default(),
             visible_projects,
-            freshened_projects: HashSet::new(),
+            project_touched_unix_ms: HashMap::new(),
             review: None,
             review_available: false,
             notice: None,
@@ -6604,6 +6633,7 @@ mod tests {
             },
             None,
         );
+        let project_path = app.workspace.projects[0].path.clone();
         app.tree_selected = app
             .flat()
             .iter()
@@ -6685,9 +6715,9 @@ mod tests {
             let _ = std::fs::remove_file(server_path);
         });
 
-        let terminal = workspace_terminal();
-        app.enter_terminal(pane_id, terminal_id, "baseline entry".into(), &terminal)
-            .unwrap();
+        let mut terminal = workspace_terminal();
+        app.attach_session(0, 0, 0, &mut terminal).unwrap();
+        assert!(app.project_touched_unix_ms[&project_path] > 0);
         assert!(matches!(app.mode, Mode::Workspace));
         assert!(app.pending_terminal_entry.is_some());
         assert_eq!(app.terminal_cursor(), None);
@@ -8125,6 +8155,11 @@ mod tests {
                 assert!(
                     app.cache_dirty,
                     "{input} changed {selection:?} without marking the cache dirty"
+                );
+                assert!(
+                    app.project_touched_unix_ms
+                        .contains_key(&app.workspace.projects[0].path),
+                    "{input} changed {selection:?} without refreshing project staleness"
                 );
             }
         }
@@ -9804,7 +9839,7 @@ mod tests {
     }
 
     #[test]
-    fn projects_without_an_available_session_are_stale() {
+    fn missing_activity_does_not_make_projects_immediately_stale() {
         let empty = make_project("empty");
         let mut exited = make_project("exited");
         let mut worktree = make_worktree("/tmp/exited");
@@ -9826,8 +9861,21 @@ mod tests {
             .workspace
             .projects
             .iter()
-            .all(|project| !project.expanded));
-        assert_eq!(app.stale_project_indices(), HashSet::from([0, 1]));
+            .all(|project| project.expanded));
+        assert!(app.stale_project_indices().is_empty());
+    }
+
+    #[test]
+    fn expired_user_touch_collapses_a_project_without_sessions() {
+        let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
+        let path = app.workspace.projects[0].path.clone();
+        app.project_touched_unix_ms.insert(path, 0);
+
+        app.collapse_stale_projects();
+
+        assert!(!app.workspace.projects[0].expanded);
+        assert_eq!(app.stale_project_indices(), HashSet::from([0]));
+        assert!(app.cache_dirty);
     }
 
     #[test]
@@ -10025,7 +10073,7 @@ mod tests {
     }
 
     #[test]
-    fn manually_expanded_stale_projects_are_fresh_until_exit() {
+    fn manually_toggled_project_refreshes_staleness() {
         let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
         app.workspace.projects[0].expanded = false;
         app.workspace.projects[0].last_terminal_active_unix_ms = Some(0);
@@ -10041,22 +10089,39 @@ mod tests {
     }
 
     #[test]
-    fn manually_expanded_stale_project_override_resets_after_app_reconstruction() {
+    fn manual_collapse_refreshes_staleness_and_survives_reconstruction() {
+        let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
+        app.workspace.projects[0].last_terminal_active_unix_ms = Some(0);
+        let path = app.workspace.projects[0].path.clone();
+        app.project_touched_unix_ms.insert(path.clone(), 0);
+        let mut terminal = workspace_terminal();
+
+        app.dispatch(Action::Select, &mut terminal).unwrap();
+        let persisted_touches = app.project_touched_unix_ms.clone();
+        let mut reconstructed = make_test_app(GlobalConfig::default(), app.workspace.clone(), None);
+        reconstructed.project_touched_unix_ms = persisted_touches;
+        reconstructed.collapse_stale_projects();
+
+        assert!(!reconstructed.workspace.projects[0].expanded);
+        assert!(!reconstructed.stale_project_indices().contains(&0));
+        assert!(reconstructed.project_touched_unix_ms[&path] > 0);
+    }
+
+    #[test]
+    fn recent_project_touch_and_expansion_survive_app_reconstruction() {
         let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
         app.workspace.projects[0].expanded = false;
         app.workspace.projects[0].last_terminal_active_unix_ms = Some(0);
         let mut terminal = workspace_terminal();
 
         app.dispatch(Action::Select, &mut terminal).unwrap();
-        app.collapse_stale_projects();
-        assert!(app.workspace.projects[0].expanded);
-        assert!(!app.stale_project_indices().contains(&0));
-
+        let persisted_touches = app.project_touched_unix_ms.clone();
         let mut reconstructed = make_test_app(GlobalConfig::default(), app.workspace.clone(), None);
-        assert!(reconstructed.stale_project_indices().contains(&0));
+        reconstructed.project_touched_unix_ms = persisted_touches;
         reconstructed.collapse_stale_projects();
 
-        assert!(!reconstructed.workspace.projects[0].expanded);
+        assert!(reconstructed.workspace.projects[0].expanded);
+        assert!(!reconstructed.stale_project_indices().contains(&0));
     }
 
     #[test]

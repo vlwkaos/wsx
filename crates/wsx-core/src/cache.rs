@@ -47,6 +47,9 @@ pub struct WorkspaceCache {
     pub worktree_expanded: HashMap<String, bool>,
     #[serde(default)]
     pub project_expanded: HashMap<String, bool>,
+    /// Latest explicit project interaction, keyed by stable project path.
+    #[serde(default)]
+    pub project_touched_unix_ms: HashMap<String, u64>,
     #[serde(default)]
     pub routines_expanded: HashMap<String, bool>,
     #[serde(default)]
@@ -72,6 +75,7 @@ struct WorkspaceCacheWire {
     written_at_unix_ms: Option<u64>,
     worktree_expanded: HashMap<String, bool>,
     project_expanded: HashMap<String, bool>,
+    project_touched_unix_ms: HashMap<String, u64>,
     routines_expanded: HashMap<String, bool>,
     tree_selected: usize,
     cursor_identity: Option<CursorIdentity>,
@@ -100,6 +104,7 @@ impl<'de> Deserialize<'de> for WorkspaceCache {
             written_at_unix_ms: wire.written_at_unix_ms,
             worktree_expanded: wire.worktree_expanded,
             project_expanded: wire.project_expanded,
+            project_touched_unix_ms: wire.project_touched_unix_ms,
             routines_expanded: wire.routines_expanded,
             tree_selected: wire.tree_selected,
             cursor_identity: wire.cursor_identity,
@@ -158,6 +163,19 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
+fn cached_project_touch_unix_ms(
+    cache: &WorkspaceCache,
+    project_key: &str,
+    loaded_at_unix_ms: u64,
+) -> u64 {
+    cache
+        .project_touched_unix_ms
+        .get(project_key)
+        .copied()
+        .or(cache.written_at_unix_ms)
+        .unwrap_or(loaded_at_unix_ms)
+}
+
 fn cache_path() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -214,6 +232,7 @@ fn save_group_selection_to(path: &std::path::Path, selected: &GroupKey) -> anyho
 pub type AppliedCache = (
     usize,
     Option<CursorIdentity>,
+    HashMap<PathBuf, u64>,
     HashSet<String>,
     HashMap<String, u64>,
     HashSet<crate::integration::IntegrationTarget>,
@@ -223,8 +242,14 @@ pub type AppliedCache = (
 pub fn apply_cache(workspace: &mut WorkspaceState) -> anyhow::Result<AppliedCache> {
     let cache = WorkspaceCache::load()?;
     let mut migrated_muted_terminals = HashSet::new();
+    let mut project_touched_unix_ms = HashMap::new();
+    let loaded_at_unix_ms = now_unix_ms();
     for project in &mut workspace.projects {
         let project_key = project.path.to_string_lossy().to_string();
+        project_touched_unix_ms.insert(
+            project.path.clone(),
+            cached_project_touch_unix_ms(&cache, &project_key, loaded_at_unix_ms),
+        );
         if let Some(expanded) = cache.project_expanded.get(&project_key) {
             project.expanded = *expanded;
         }
@@ -263,6 +288,7 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> anyhow::Result<AppliedCach
     Ok((
         cache.tree_selected,
         cache.cursor_identity,
+        project_touched_unix_ms,
         migrated_muted_terminals,
         cache.acknowledged_outcomes,
         cache.dismissed_integration_prompts,
@@ -320,6 +346,7 @@ pub fn save_cache(
     workspace: &WorkspaceState,
     tree_selected: usize,
     flat: &[FlatEntry],
+    project_touched_unix_ms: &HashMap<PathBuf, u64>,
     dismissed_integration_prompts: &HashSet<crate::integration::IntegrationTarget>,
     sync: bool,
 ) -> Option<String> {
@@ -335,6 +362,11 @@ pub fn save_cache(
         cache
             .project_expanded
             .insert(project_path.clone(), project.expanded);
+        if let Some(touched_unix_ms) = project_touched_unix_ms.get(&project.path) {
+            cache
+                .project_touched_unix_ms
+                .insert(project_path.clone(), *touched_unix_ms);
+        }
         cache
             .routines_expanded
             .insert(project_path, project.routines_expanded);
@@ -473,6 +505,7 @@ mod tests {
     fn expansion_maps_round_trip_by_stable_path() {
         let cache = WorkspaceCache {
             project_expanded: HashMap::from([("/projects/app".into(), true)]),
+            project_touched_unix_ms: HashMap::from([("/projects/app".into(), 42)]),
             worktree_expanded: HashMap::from([("/projects/app/feature".into(), false)]),
             routines_expanded: HashMap::from([("/projects/app".into(), false)]),
             ..Default::default()
@@ -481,6 +514,10 @@ mod tests {
         let decoded: WorkspaceCache = toml::from_str(&toml::to_string(&cache).unwrap()).unwrap();
 
         assert_eq!(decoded.project_expanded, cache.project_expanded);
+        assert_eq!(
+            decoded.project_touched_unix_ms,
+            cache.project_touched_unix_ms
+        );
         assert_eq!(decoded.worktree_expanded, cache.worktree_expanded);
         assert_eq!(decoded.routines_expanded, cache.routines_expanded);
     }
@@ -498,6 +535,34 @@ mod tests {
         .unwrap();
 
         assert!(cache.routines_expanded.is_empty());
+        assert!(cache.project_touched_unix_ms.is_empty());
+    }
+
+    #[test]
+    fn missing_project_touch_uses_cache_write_time_once() {
+        let legacy = WorkspaceCache {
+            written_at_unix_ms: Some(41),
+            ..Default::default()
+        };
+        assert_eq!(
+            cached_project_touch_unix_ms(&legacy, "/projects/app", 99),
+            41
+        );
+
+        let current = WorkspaceCache {
+            written_at_unix_ms: Some(41),
+            project_touched_unix_ms: HashMap::from([("/projects/app".into(), 42)]),
+            ..Default::default()
+        };
+        assert_eq!(
+            cached_project_touch_unix_ms(&current, "/projects/app", 99),
+            42
+        );
+
+        assert_eq!(
+            cached_project_touch_unix_ms(&WorkspaceCache::default(), "/projects/app", 99),
+            99
+        );
     }
 
     #[test]
