@@ -1,6 +1,6 @@
 use super::protocol::{
-    binary_identity, encode_line, Request, Response, TerminalClientMessage, TerminalServerMessage,
-    MAX_RESPONSE_BYTES, PROTOCOL_VERSION,
+    binary_identity, binary_identity_with_version, encode_line, Request, Response,
+    TerminalClientMessage, TerminalServerMessage, MAX_RESPONSE_BYTES, PROTOCOL_VERSION,
 };
 use std::{
     collections::HashMap,
@@ -640,7 +640,20 @@ fn ensure_available_with_binary(
                     target_daemon_revision: super::protocol::DAEMON_REVISION,
                 }
             };
-            match lifecycle_round_trip(client, &replacement_request)? {
+            let mut response = lifecycle_round_trip(client, &replacement_request)?;
+            // ^ Protocol-15 daemons through revision 7 recompute a candidate identity with
+            // their own version. Retry once with that legacy prefix; the successor still
+            // validates the requested daemon revision and the source/target version bridge.
+            if let Some(request) = legacy_handoff_retry_request(
+                live_handoff,
+                &status,
+                &daemon_version,
+                &response,
+                binary,
+            )? {
+                response = lifecycle_round_trip(client, &request)?;
+            }
+            match response {
                 Response::Replacement {
                     disposition: super::domain::ReplacementDisposition::Stopping,
                     ..
@@ -733,6 +746,33 @@ fn ensure_available_with_binary(
             Ok(Availability::LegacyCompatible)
         }
     }
+}
+
+fn legacy_handoff_retry_request(
+    live_handoff: bool,
+    status: &super::domain::DaemonLifecycle,
+    daemon_version: &str,
+    response: &Response,
+    binary: &Path,
+) -> io::Result<Option<Request>> {
+    if !live_handoff
+        || status.daemon_revision >= super::protocol::DAEMON_REVISION
+        || super::protocol::compare_wsx_versions(daemon_version, super::protocol::WSX_VERSION)
+            != Some(std::cmp::Ordering::Less)
+        || !matches!(
+            response,
+            Response::Error(error) if error.code == "invalid_handoff_target"
+        )
+    {
+        return Ok(None);
+    }
+    Ok(Some(Request::PrepareHandoff {
+        target_binary_id: binary_identity_with_version(binary, daemon_version)?,
+        target_version: daemon_version.to_string(),
+        target_protocol: PROTOCOL_VERSION,
+        target_daemon_revision: super::protocol::DAEMON_REVISION,
+        executable: binary.to_path_buf(),
+    }))
 }
 
 fn lifecycle_status(client: &Client) -> io::Result<super::domain::DaemonLifecycle> {
@@ -1691,6 +1731,68 @@ mod tests {
         assert!(!daemon_needs_start(probe_existing_daemon(&Client::new(path)).unwrap()).unwrap());
         assert!(daemon_needs_start(ExistingDaemon::Missing).unwrap());
         server.join().unwrap();
+    }
+
+    #[test]
+    fn rejected_cross_version_handoff_retries_with_the_legacy_daemon_prefix() {
+        let executable = std::env::current_exe().unwrap();
+        let status = super::super::domain::DaemonLifecycle {
+            protocol: PROTOCOL_VERSION,
+            epoch: 7,
+            binary_id: "0.25.0:1:2:3:4".into(),
+            version: "0.25.0".into(),
+            daemon_revision: 5,
+            started_unix_ms: 1,
+            phase: super::super::domain::DaemonPhase::Ready,
+            live_runtimes: 1,
+            active_clients: 1,
+            active_tuis: 0,
+            recovered_from_backup: false,
+            replacement_target: None,
+            replacement_target_version: String::new(),
+            replacement_blockers: vec![],
+        };
+        let response = Response::Error(super::super::protocol::ApiError::new(
+            "invalid_handoff_target",
+            "unsafe wsxd handoff executable",
+        ));
+
+        let request = legacy_handoff_retry_request(true, &status, "0.25.0", &response, &executable)
+            .unwrap()
+            .expect("affected live-handoff daemon must receive one compatibility retry");
+        let Request::PrepareHandoff {
+            target_binary_id,
+            target_version,
+            target_daemon_revision,
+            ..
+        } = request
+        else {
+            panic!("expected handoff retry");
+        };
+        assert_eq!(target_version, "0.25.0");
+        assert_eq!(
+            super::super::protocol::binary_identity_version(&target_binary_id),
+            Some("0.25.0")
+        );
+        assert_eq!(
+            target_daemon_revision,
+            super::super::protocol::DAEMON_REVISION
+        );
+
+        assert!(
+            legacy_handoff_retry_request(false, &status, "0.25.0", &response, &executable,)
+                .unwrap()
+                .is_none()
+        );
+        assert!(legacy_handoff_retry_request(
+            true,
+            &status,
+            super::super::protocol::WSX_VERSION,
+            &response,
+            &executable,
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]

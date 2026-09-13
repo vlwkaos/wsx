@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Bug Fixes
+
+- Bridge live daemon handoff from affected protocol-15 daemons whose cross-version executable check used the source daemon's version, preserving live PTYs while allowing lifecycle reports and runtime refreshes to reach the successor.
+- Persist `stale` as the cause of the last automatic project collapse, retain it through restart and expansion, clear it after a manual project collapse, and recover the identifiable `0.26.1` migration cohort.
+
 ## [0.26.1] - 2026-09-13
 
 ### Bug Fixes

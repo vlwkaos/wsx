@@ -2456,7 +2456,7 @@ fn validate_handoff_executable(path: &Path, expected_identity: &str) -> io::Resu
     if !metadata.is_file()
         || (owner != unsafe { libc::geteuid() } && owner != 0)
         || metadata.mode() & 0o022 != 0
-        || binary_identity(&canonical)? != expected_identity
+        || !binary_identity_matches_file(&canonical, expected_identity)?
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -4701,6 +4701,18 @@ mod tests {
         assert!(handoff_blockers(&mut state, "target").is_empty());
         drop(state);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn handoff_executable_validation_accepts_cross_version_metadata_identity() {
+        let executable = std::env::current_exe().unwrap();
+        let legacy_identity = binary_identity_with_version(&executable, "0.25.0").unwrap();
+
+        assert_eq!(
+            validate_handoff_executable(&executable, &legacy_identity).unwrap(),
+            executable.canonicalize().unwrap()
+        );
+        assert!(validate_handoff_executable(&executable, "0.25.0:1:2:3:4").is_err());
     }
 
     #[test]
