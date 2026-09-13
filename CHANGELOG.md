@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.26.2] - 2026-09-13
+
 ### Bug Fixes
 
 - Bridge live daemon handoff from affected protocol-15 daemons whose cross-version executable check used the source daemon's version, preserving live PTYs while allowing lifecycle reports and runtime refreshes to reach the successor.
