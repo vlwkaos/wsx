@@ -18,7 +18,7 @@ pub const WSX_RUNTIME_GENERATION_ENV: &str = "WSX_RUNTIME_GENERATION";
 pub const WSX_PLUGIN_VIEW_ENV: &str = "WSX_PLUGIN_VIEW_JSON";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ^ Bump only when daemon-owned runtime behavior changes. UI-only releases reuse wsxd.
-pub const DAEMON_REVISION: u32 = 7;
+pub const DAEMON_REVISION: u32 = 8;
 
 fn default_attached() -> bool {
     true
@@ -150,6 +150,16 @@ fn compare_prerelease(left: &str, right: &str) -> Option<Ordering> {
 }
 
 pub fn binary_identity(path: &Path) -> io::Result<String> {
+    binary_identity_with_version(path, env!("CARGO_PKG_VERSION"))
+}
+
+pub fn binary_identity_with_version(path: &Path, version: &str) -> io::Result<String> {
+    if parse_wsx_version(version).is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid wsx binary identity version",
+        ));
+    }
     let path = path.canonicalize()?;
     let metadata = path.metadata()?;
     let modified = metadata
@@ -159,18 +169,20 @@ pub fn binary_identity(path: &Path) -> io::Result<String> {
         .as_nanos();
     #[cfg(unix)]
     return Ok(format!(
-        "{}:{:x}:{:x}:{:x}:{modified:x}",
-        env!("CARGO_PKG_VERSION"),
+        "{version}:{:x}:{:x}:{:x}:{modified:x}",
         metadata.dev(),
         metadata.ino(),
         metadata.len()
     ));
     #[cfg(not(unix))]
-    Ok(format!(
-        "{}:{:x}:{modified:x}",
-        env!("CARGO_PKG_VERSION"),
-        metadata.len()
-    ))
+    Ok(format!("{version}:{:x}:{modified:x}", metadata.len()))
+}
+
+pub fn binary_identity_matches_file(path: &Path, identity: &str) -> io::Result<bool> {
+    let version = binary_identity_version(identity).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "invalid wsx binary identity")
+    })?;
+    Ok(binary_identity_with_version(path, version)? == identity)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -540,6 +552,17 @@ mod tests {
                 "{malformed:?} must not be a binary identity"
             );
         }
+    }
+
+    #[test]
+    fn binary_file_identity_can_be_verified_across_compiled_versions() {
+        let executable = std::env::current_exe().unwrap();
+        let legacy = binary_identity_with_version(&executable, "0.25.0").unwrap();
+
+        assert_eq!(binary_identity_version(&legacy), Some("0.25.0"));
+        assert!(binary_identity_matches_file(&executable, &legacy).unwrap());
+        assert!(!binary_identity_matches_file(&executable, "0.25.0:1:2:3:4").unwrap());
+        assert!(binary_identity_with_version(&executable, "invalid").is_err());
     }
 
     #[test]

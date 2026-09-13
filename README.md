@@ -77,7 +77,7 @@ Installers preserve unrelated hooks and honor standard config-directory override
 
 Terminal mode uses the configured prefix, `Ctrl+A` by default. Follow it with `j/k` for adjacent sessions, `{`/`}` for the previous or next group, `i/I` for idle, `a/A` for active, `n/N` for attention, `B` to toggle the desktop sidebar, `W` for Workspace, or `Q` to quit only the TUI. Attention navigation defaults to Blocked sessions before other attention states and can restore Workspace order in Global Settings. Group navigation keeps Workspace order, selecting the first session needing attention and then the first idle agent session; if neither exists, the current terminal stays active. `Ctrl+A Ctrl+A` sends a literal prefix.
 
-Groups are ordered project filters. The default **ungrouped** anti-group matches projects with no memberships. A project becomes stale when no trusted agent work, terminal activity, session entry, or expansion change occurs within the configured window. Its last expanded or collapsed state persists until then. wsx never infers agent state from terminal output or process trees.
+Groups are ordered project filters. The default **ungrouped** anti-group matches projects with no memberships. Trusted agent work, terminal activity, session entry, and expansion changes restart each project's inactivity timer. When that timer auto-collapses an open project, wsx marks the project `stale` as the cause of its last collapse. The marker survives restart and later expansion; a manual project collapse replaces that cause and clears it. wsx never infers agent state from terminal output or process trees.
 
 ## Configuration
 

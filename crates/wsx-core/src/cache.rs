@@ -50,6 +50,9 @@ pub struct WorkspaceCache {
     /// Latest explicit project interaction, keyed by stable project path.
     #[serde(default)]
     pub project_touched_unix_ms: HashMap<String, u64>,
+    /// Projects whose last collapse was caused by the inactivity timer.
+    #[serde(default)]
+    pub stale_collapsed_projects: HashSet<String>,
     #[serde(default)]
     pub routines_expanded: HashMap<String, bool>,
     #[serde(default)]
@@ -67,6 +70,8 @@ pub struct WorkspaceCache {
     pub dismissed_integration_prompts: HashSet<crate::integration::IntegrationTarget>,
     #[serde(skip)]
     migration_needed: bool,
+    #[serde(skip)]
+    stale_provenance_missing: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -76,6 +81,7 @@ struct WorkspaceCacheWire {
     worktree_expanded: HashMap<String, bool>,
     project_expanded: HashMap<String, bool>,
     project_touched_unix_ms: HashMap<String, u64>,
+    stale_collapsed_projects: Option<HashSet<String>>,
     routines_expanded: HashMap<String, bool>,
     tree_selected: usize,
     cursor_identity: Option<CursorIdentity>,
@@ -105,6 +111,8 @@ impl<'de> Deserialize<'de> for WorkspaceCache {
             worktree_expanded: wire.worktree_expanded,
             project_expanded: wire.project_expanded,
             project_touched_unix_ms: wire.project_touched_unix_ms,
+            stale_provenance_missing: wire.stale_collapsed_projects.is_none(),
+            stale_collapsed_projects: wire.stale_collapsed_projects.unwrap_or_default(),
             routines_expanded: wire.routines_expanded,
             tree_selected: wire.tree_selected,
             cursor_identity: wire.cursor_identity,
@@ -176,6 +184,24 @@ fn cached_project_touch_unix_ms(
         .unwrap_or(loaded_at_unix_ms)
 }
 
+fn legacy_seeded_touch_cohort(cache: &WorkspaceCache) -> Option<u64> {
+    if !cache.stale_provenance_missing {
+        return None;
+    }
+    let mut counts = HashMap::<u64, usize>::new();
+    for timestamp in cache.project_touched_unix_ms.values() {
+        *counts.entry(*timestamp).or_default() += 1;
+    }
+    let cohort_size = cache.project_touched_unix_ms.len();
+    // ^ 0.26.1 seeded one timestamp across the large untouched-project cohort.
+    // Do not infer collapse provenance from a small or non-majority timestamp collision.
+    counts
+        .into_iter()
+        .filter(|(_, count)| *count >= 3 && *count > cohort_size / 2)
+        .max_by_key(|(timestamp, count)| (*count, *timestamp))
+        .map(|(timestamp, _)| timestamp)
+}
+
 fn cache_path() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -233,6 +259,7 @@ pub type AppliedCache = (
     usize,
     Option<CursorIdentity>,
     HashMap<PathBuf, u64>,
+    HashSet<PathBuf>,
     HashSet<String>,
     HashMap<String, u64>,
     HashSet<crate::integration::IntegrationTarget>,
@@ -241,17 +268,30 @@ pub type AppliedCache = (
 /// Apply only cached UI and local mute state. Sessions always come from wsxd.
 pub fn apply_cache(workspace: &mut WorkspaceState) -> anyhow::Result<AppliedCache> {
     let cache = WorkspaceCache::load()?;
+    apply_workspace_cache(workspace, cache, |cache| cache.save(false))
+}
+
+fn apply_workspace_cache(
+    workspace: &mut WorkspaceState,
+    mut cache: WorkspaceCache,
+    persist_migration: impl FnOnce(&WorkspaceCache) -> anyhow::Result<()>,
+) -> anyhow::Result<AppliedCache> {
     let mut migrated_muted_terminals = HashSet::new();
     let mut project_touched_unix_ms = HashMap::new();
+    let mut stale_collapsed_projects = HashSet::new();
     let loaded_at_unix_ms = now_unix_ms();
+    let legacy_seeded_touch = legacy_seeded_touch_cohort(&cache);
     for project in &mut workspace.projects {
         let project_key = project.path.to_string_lossy().to_string();
-        project_touched_unix_ms.insert(
-            project.path.clone(),
-            cached_project_touch_unix_ms(&cache, &project_key, loaded_at_unix_ms),
-        );
+        let touched_unix_ms = cached_project_touch_unix_ms(&cache, &project_key, loaded_at_unix_ms);
+        project_touched_unix_ms.insert(project.path.clone(), touched_unix_ms);
         if let Some(expanded) = cache.project_expanded.get(&project_key) {
             project.expanded = *expanded;
+        }
+        if cache.stale_collapsed_projects.contains(&project_key)
+            || (!project.expanded && legacy_seeded_touch == Some(touched_unix_ms))
+        {
+            stale_collapsed_projects.insert(project.path.clone());
         }
         if let Some(expanded) = cache.routines_expanded.get(&project_key) {
             project.routines_expanded = *expanded;
@@ -285,10 +325,23 @@ pub fn apply_cache(workspace: &mut WorkspaceState) -> anyhow::Result<AppliedCach
             }
         }
     }
+    if cache.stale_provenance_missing {
+        cache.project_touched_unix_ms = project_touched_unix_ms
+            .iter()
+            .map(|(path, timestamp)| (path.to_string_lossy().into_owned(), *timestamp))
+            .collect();
+        cache.stale_collapsed_projects = stale_collapsed_projects
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        cache.stale_provenance_missing = false;
+        persist_migration(&cache)?;
+    }
     Ok((
         cache.tree_selected,
         cache.cursor_identity,
         project_touched_unix_ms,
+        stale_collapsed_projects,
         migrated_muted_terminals,
         cache.acknowledged_outcomes,
         cache.dismissed_integration_prompts,
@@ -347,6 +400,7 @@ pub fn save_cache(
     tree_selected: usize,
     flat: &[FlatEntry],
     project_touched_unix_ms: &HashMap<PathBuf, u64>,
+    stale_collapsed_projects: &HashSet<PathBuf>,
     dismissed_integration_prompts: &HashSet<crate::integration::IntegrationTarget>,
     sync: bool,
 ) -> Option<String> {
@@ -366,6 +420,9 @@ pub fn save_cache(
             cache
                 .project_touched_unix_ms
                 .insert(project_path.clone(), *touched_unix_ms);
+        }
+        if stale_collapsed_projects.contains(&project.path) {
+            cache.stale_collapsed_projects.insert(project_path.clone());
         }
         cache
             .routines_expanded
@@ -506,6 +563,7 @@ mod tests {
         let cache = WorkspaceCache {
             project_expanded: HashMap::from([("/projects/app".into(), true)]),
             project_touched_unix_ms: HashMap::from([("/projects/app".into(), 42)]),
+            stale_collapsed_projects: HashSet::from(["/projects/old".into()]),
             worktree_expanded: HashMap::from([("/projects/app/feature".into(), false)]),
             routines_expanded: HashMap::from([("/projects/app".into(), false)]),
             ..Default::default()
@@ -518,8 +576,19 @@ mod tests {
             decoded.project_touched_unix_ms,
             cache.project_touched_unix_ms
         );
+        assert_eq!(
+            decoded.stale_collapsed_projects,
+            cache.stale_collapsed_projects
+        );
         assert_eq!(decoded.worktree_expanded, cache.worktree_expanded);
         assert_eq!(decoded.routines_expanded, cache.routines_expanded);
+        let empty = toml::to_string(&WorkspaceCache::default()).unwrap();
+        assert!(empty.contains("stale_collapsed_projects = []"));
+        assert!(
+            !toml::from_str::<WorkspaceCache>(&empty)
+                .unwrap()
+                .stale_provenance_missing
+        );
     }
 
     #[test]
@@ -536,6 +605,8 @@ mod tests {
 
         assert!(cache.routines_expanded.is_empty());
         assert!(cache.project_touched_unix_ms.is_empty());
+        assert!(cache.stale_collapsed_projects.is_empty());
+        assert!(cache.stale_provenance_missing);
     }
 
     #[test]
@@ -563,6 +634,43 @@ mod tests {
             cached_project_touch_unix_ms(&WorkspaceCache::default(), "/projects/app", 99),
             99
         );
+    }
+
+    #[test]
+    fn repeated_legacy_migration_timestamp_identifies_one_stale_cohort() {
+        let cache: WorkspaceCache = toml::from_str(
+            r#"written_at_unix_ms = 99
+
+[project_touched_unix_ms]
+"/projects/a" = 41
+"/projects/b" = 41
+"/projects/c" = 41
+"/projects/touched" = 72
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(legacy_seeded_touch_cohort(&cache), Some(41));
+
+        let ambiguous: WorkspaceCache = toml::from_str(
+            r#"[project_touched_unix_ms]
+"/projects/a" = 41
+"/projects/b" = 41
+"#,
+        )
+        .unwrap();
+        assert_eq!(legacy_seeded_touch_cohort(&ambiguous), None);
+
+        let current: WorkspaceCache = toml::from_str(
+            r#"stale_collapsed_projects = []
+
+[project_touched_unix_ms]
+"/projects/a" = 41
+"/projects/b" = 41
+"#,
+        )
+        .unwrap();
+        assert_eq!(legacy_seeded_touch_cohort(&current), None);
     }
 
     #[test]
@@ -704,6 +812,87 @@ pane_id = "pane-1"
         assert_eq!(
             std::fs::read_to_string(&canonical).unwrap(),
             "active_group = [\n"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn applying_legacy_touch_cohort_persists_stale_provenance_immediately() {
+        use crate::model::workspace::Project;
+
+        fn project(path: &str) -> Project {
+            Project {
+                name: path.into(),
+                path: path.into(),
+                default_branch: "main".into(),
+                last_agent_active_unix_ms: None,
+                last_terminal_active_unix_ms: None,
+                worktrees: vec![],
+                routines: vec![],
+                routine_revision: 0,
+                routines_expanded: true,
+                config: None,
+                expanded: true,
+                missing: false,
+            }
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::current_dir()
+            .unwrap()
+            .join(".work/cache-v2-tests")
+            .join(format!("stale-migration-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let canonical = directory.join("workspace-v2.toml");
+        let legacy = directory.join("workspace.toml");
+        let cache = WorkspaceCache {
+            project_expanded: HashMap::from([
+                ("/closed".into(), false),
+                ("/closed-two".into(), false),
+                ("/open".into(), true),
+            ]),
+            project_touched_unix_ms: HashMap::from([
+                ("/closed".into(), 100),
+                ("/closed-two".into(), 100),
+                ("/open".into(), 100),
+            ]),
+            stale_provenance_missing: true,
+            ..Default::default()
+        };
+        let mut workspace = WorkspaceState {
+            projects: vec![project("/closed"), project("/closed-two"), project("/open")],
+        };
+
+        let (_, _, touches, stale, _, _, _) =
+            apply_workspace_cache(&mut workspace, cache, |cache| {
+                cache.save_to(&canonical, false)
+            })
+            .unwrap();
+
+        assert!(!workspace.projects[0].expanded);
+        assert!(!workspace.projects[1].expanded);
+        assert!(workspace.projects[2].expanded);
+        assert_eq!(touches.get(&PathBuf::from("/closed")), Some(&100));
+        assert_eq!(
+            stale,
+            HashSet::from([PathBuf::from("/closed"), PathBuf::from("/closed-two")])
+        );
+        let persisted = WorkspaceCache::load_from_paths(&canonical, &legacy).unwrap();
+        assert!(!persisted.stale_provenance_missing);
+        assert_eq!(
+            persisted.stale_collapsed_projects,
+            HashSet::from(["/closed".into(), "/closed-two".into()])
+        );
+        assert_eq!(
+            persisted.project_touched_unix_ms,
+            HashMap::from([
+                ("/closed".into(), 100),
+                ("/closed-two".into(), 100),
+                ("/open".into(), 100),
+            ])
         );
         std::fs::remove_dir_all(directory).unwrap();
     }

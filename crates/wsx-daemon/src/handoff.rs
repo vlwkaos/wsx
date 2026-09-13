@@ -216,10 +216,18 @@ pub(super) fn receive(path: &Path, token: &str) -> io::Result<Received> {
 
 #[cfg(unix)]
 fn validate_manifest(manifest: &Manifest) -> io::Result<()> {
+    let current_version = manifest.expected_version == super::WSX_VERSION;
+    // ^ Protocol-15 daemons through revision 7 could only authorize a successor
+    // under the source version. Accept that one legacy bridge while the requested
+    // daemon revision and this successor's own version remain authoritative.
+    let legacy_identity_bridge = manifest.source_protocol == super::PROTOCOL_VERSION
+        && manifest.expected_version == manifest.source_version
+        && wsx_core::runtime::compare_wsx_versions(&manifest.source_version, super::WSX_VERSION)
+            == Some(std::cmp::Ordering::Less);
     if manifest.version != HANDOFF_VERSION
         || manifest.expected_protocol != super::PROTOCOL_VERSION
         || manifest.expected_daemon_revision != super::DAEMON_REVISION
-        || manifest.expected_version != super::WSX_VERSION
+        || !(current_version || legacy_identity_bridge)
         || manifest.panes.len() > MAX_HANDOFF_PANES
     {
         return Err(io::Error::new(
@@ -467,4 +475,38 @@ fn receive_fds(stream: &UnixStream, expected: usize) -> io::Result<Vec<OwnedFd>>
         ));
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest_for(source_version: &str, expected_version: &str) -> Manifest {
+        Manifest {
+            version: HANDOFF_VERSION,
+            source_version: source_version.into(),
+            source_protocol: super::super::PROTOCOL_VERSION,
+            expected_version: expected_version.into(),
+            expected_protocol: super::super::PROTOCOL_VERSION,
+            expected_daemon_revision: super::super::DAEMON_REVISION,
+            persisted: super::super::Persisted::default(),
+            panes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn successor_accepts_only_the_protocol_15_legacy_version_bridge() {
+        assert!(validate_manifest(&manifest_for("0.25.0", "0.25.0")).is_ok());
+        assert!(validate_manifest(&manifest_for(
+            super::super::WSX_VERSION,
+            super::super::WSX_VERSION,
+        ))
+        .is_ok());
+
+        let mut future = manifest_for("99.0.0", "99.0.0");
+        assert!(validate_manifest(&future).is_err());
+        future.source_version = "0.25.0".into();
+        future.source_protocol -= 1;
+        assert!(validate_manifest(&future).is_err());
+    }
 }

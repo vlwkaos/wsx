@@ -804,6 +804,7 @@ pub struct App {
     pub group_header_area: Rect,
     visible_projects: HashSet<usize>,
     project_touched_unix_ms: HashMap<PathBuf, u64>,
+    stale_collapsed_projects: HashSet<PathBuf>,
     pub notice: Option<Notice>,
     notice_started: Option<Instant>,
     pub jobs: Vec<BgJob>,
@@ -911,6 +912,7 @@ impl App {
             raw_selected,
             cursor_identity,
             project_touched_unix_ms,
+            stale_collapsed_projects,
             cached_muted,
             acknowledged_outcomes,
             dismissed_integration_prompts,
@@ -990,6 +992,7 @@ impl App {
             group_header_area: Rect::default(),
             visible_projects,
             project_touched_unix_ms,
+            stale_collapsed_projects,
             review: None,
             review_available: false,
             notice: initial_notice.clone().map(|title| Notice {
@@ -1282,8 +1285,8 @@ impl App {
         self.clamp_selected();
     }
 
-    // ^ [[wsx UI Patterns]] Expansion is durable user state. Staleness only
-    // collapses it after the configured period since the latest user or runtime activity.
+    // ^ [[wsx UI Patterns]] Expansion and the inactivity timer are durable user state.
+    // stale_collapsed_projects records only that the last collapse was timer-driven.
     fn collapse_stale_projects(&mut self) {
         let Some(window_ms) = self.config.auto_collapse_window_ms() else {
             return;
@@ -1301,6 +1304,7 @@ impl App {
                 window_ms,
             ) {
                 project.expanded = false;
+                self.stale_collapsed_projects.insert(project.path.clone());
                 changed = true;
             }
         }
@@ -1310,22 +1314,14 @@ impl App {
     }
 
     pub(crate) fn stale_project_indices(&self) -> HashSet<usize> {
-        let Some(window_ms) = self.config.auto_collapse_window_ms() else {
-            return HashSet::new();
-        };
-        let now_unix_ms = unix_time_millis();
         self.workspace
             .projects
             .iter()
             .enumerate()
             .filter_map(|(index, project)| {
-                project_is_stale(
-                    project,
-                    &self.project_touched_unix_ms,
-                    now_unix_ms,
-                    window_ms,
-                )
-                .then_some(index)
+                self.stale_collapsed_projects
+                    .contains(&project.path)
+                    .then_some(index)
             })
             .collect()
     }
@@ -2304,6 +2300,7 @@ impl App {
             self.tree_selected,
             self.flat(),
             &self.project_touched_unix_ms,
+            &self.stale_collapsed_projects,
             &self.dismissed_integration_prompts,
             sync,
         ) {
@@ -2932,6 +2929,17 @@ impl App {
         }
     }
 
+    fn manually_collapse_project(&mut self, project_idx: usize) {
+        let Some(path) = self.workspace.projects.get_mut(project_idx).map(|project| {
+            project.expanded = false;
+            project.path.clone()
+        }) else {
+            return;
+        };
+        self.stale_collapsed_projects.remove(&path);
+        self.touch_project(project_idx);
+    }
+
     fn nav_up(&mut self) {
         if self.tree_selected > 0 {
             self.tree_selected -= 1;
@@ -2952,8 +2960,7 @@ impl App {
         match entry {
             Some(FlatEntry::Project { idx }) => {
                 if self.workspace.projects[idx].expanded {
-                    self.workspace.projects[idx].expanded = false;
-                    self.touch_project(idx);
+                    self.manually_collapse_project(idx);
                     self.rebuild_flat();
                     self.clamp_selected();
                 }
@@ -3979,8 +3986,7 @@ impl App {
             }
             Selection::Project(pi) => {
                 if self.workspace.projects[pi].expanded {
-                    self.workspace.projects[pi].expanded = false;
-                    self.touch_project(pi);
+                    self.manually_collapse_project(pi);
                 } else {
                     self.manually_expand_project(pi);
                 }
@@ -6243,6 +6249,7 @@ mod tests {
             group_header_area: Rect::default(),
             visible_projects,
             project_touched_unix_ms: HashMap::new(),
+            stale_collapsed_projects: HashSet::new(),
             review: None,
             review_available: false,
             notice: None,
@@ -8364,6 +8371,8 @@ mod tests {
             },
             Some("work".into()),
         );
+        let stale_path = app.workspace.projects[0].path.clone();
+        app.stale_collapsed_projects.insert(stale_path);
         let backend = ratatui::backend::TestBackend::new(100, 16);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
@@ -8601,6 +8610,8 @@ mod tests {
         app.runtime_health = RuntimeHealth::Healthy {
             last_success: Instant::now(),
         };
+        let stale_path = app.workspace.projects[0].path.clone();
+        app.stale_collapsed_projects.insert(stale_path);
         let backend = ratatui::backend::TestBackend::new(80, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
@@ -10073,10 +10084,12 @@ mod tests {
     }
 
     #[test]
-    fn manually_toggled_project_refreshes_staleness() {
+    fn manually_expanded_project_refreshes_timer_without_rewriting_stale_cause() {
         let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
         app.workspace.projects[0].expanded = false;
         app.workspace.projects[0].last_terminal_active_unix_ms = Some(0);
+        let path = app.workspace.projects[0].path.clone();
+        app.stale_collapsed_projects.insert(path);
         let mut terminal = workspace_terminal();
         assert!(app.stale_project_indices().contains(&0));
 
@@ -10085,7 +10098,44 @@ mod tests {
         app.collapse_stale_projects();
 
         assert!(app.workspace.projects[0].expanded);
-        assert!(!app.stale_project_indices().contains(&0));
+        assert!(app.stale_project_indices().contains(&0));
+    }
+
+    #[test]
+    fn stale_marker_records_collapse_cause_not_current_elapsed_time() {
+        let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
+        let path = app.workspace.projects[0].path.clone();
+        app.workspace.projects[0].expanded = false;
+        app.project_touched_unix_ms.insert(path.clone(), 0);
+
+        assert!(app.stale_project_indices().is_empty());
+
+        app.stale_collapsed_projects.insert(path.clone());
+        app.config.auto_collapse_after_hours = 0;
+        app.workspace.projects[0].last_terminal_active_unix_ms = Some(u64::MAX);
+        assert_eq!(app.stale_project_indices(), HashSet::from([0]));
+
+        app.manually_expand_project(0);
+        assert_eq!(app.stale_project_indices(), HashSet::from([0]));
+        app.manually_collapse_project(0);
+        assert!(app.stale_project_indices().is_empty());
+    }
+
+    #[test]
+    fn stale_marker_survives_reconstruction_and_expansion_until_manual_collapse() {
+        let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
+        let path = app.workspace.projects[0].path.clone();
+        app.workspace.projects[0].expanded = false;
+        app.stale_collapsed_projects.insert(path.clone());
+
+        let mut reconstructed = make_test_app(GlobalConfig::default(), app.workspace.clone(), None);
+        reconstructed.stale_collapsed_projects = app.stale_collapsed_projects.clone();
+
+        assert_eq!(reconstructed.stale_project_indices(), HashSet::from([0]));
+        reconstructed.manually_expand_project(0);
+        assert!(reconstructed.stale_collapsed_projects.contains(&path));
+        reconstructed.manually_collapse_project(0);
+        assert!(!reconstructed.stale_collapsed_projects.contains(&path));
     }
 
     #[test]
