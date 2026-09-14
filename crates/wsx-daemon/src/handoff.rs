@@ -284,7 +284,9 @@ pub(super) fn report_owned(stream: &mut UnixStream) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-pub(super) fn wait_owned(stream: &mut UnixStream) {
+pub(super) fn wait_owned_best_effort(stream: &mut UnixStream) {
+    // ^ A successful commit write is the ownership boundary. A missing ACK is
+    // ambiguous, so rollback here could create two live PTY readers.
     let _ = expect_line(stream, "owned", OWNED_TIMEOUT);
 }
 

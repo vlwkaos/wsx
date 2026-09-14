@@ -18,7 +18,7 @@ use std::{
     ops::{Deref, DerefMut},
     os::unix::{
         fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
-        io::{AsRawFd, FromRawFd, IntoRawFd},
+        io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd},
         net::{UnixListener, UnixStream},
         process::CommandExt,
     },
@@ -31,8 +31,12 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use wsx_core::{config::global::GlobalConfig, integration::resume, runtime::*};
-use wsx_terminal::{validate_launch, TerminalRuntime};
+use wsx_core::{
+    config::global::GlobalConfig,
+    integration::{claude_status, resume},
+    runtime::*,
+};
+use wsx_terminal::{validate_launch, AgentTerminalObservation, TerminalRuntime};
 
 const EVENT_LIMIT: usize = 1024;
 const PLUGIN_EVENT_LIMIT: usize = 256;
@@ -43,6 +47,7 @@ const MAX_VIEW_CELLS: usize = 1_000_000;
 const LEASE_TTL: Duration = Duration::from_secs(3);
 const TUI_PRESENCE_TTL: Duration = Duration::from_secs(3);
 const AGENT_WAKE_LEASE_TTL: Duration = Duration::from_secs(30 * 60);
+const CLAUDE_RECONCILE_INTERVAL: Duration = Duration::from_millis(100);
 #[cfg(target_os = "macos")]
 const WAKE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const PRESENTATION_CADENCE: Duration = Duration::from_millis(4);
@@ -53,6 +58,9 @@ const PORT_SCAN_TIMEOUT: Duration = Duration::from_millis(750);
 const MAX_PORT_SCAN_BYTES: u64 = 256 * 1024;
 const RESUME_CLEAR_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 const RESUME_CLEAR_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+const RECOVERY_AGENT_READY_TIMEOUT: Duration = Duration::from_secs(30);
+const RECOVERY_AGENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const HANDOFF_RESTORE_WORKERS: usize = 4;
 pub const RESUME_SUPERVISOR_ARG: &str = "__wsx_resume_supervisor";
 pub const HANDOFF_IMPORT_ARG: &str = "__wsx_handoff_import";
 
@@ -68,6 +76,15 @@ struct LaunchRecipe {
 struct RecoveryLaunch {
     recipe: LaunchRecipe,
     resume_key: Option<String>,
+    provider: Option<String>,
+    await_readiness: bool,
+}
+
+struct RecoveryAttempt {
+    pane_id: PaneId,
+    terminal_id: TerminalId,
+    cwd: PathBuf,
+    launch: RecoveryLaunch,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -201,12 +218,31 @@ impl StopReason {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ClaudeReconciliation {
+    event_state: AgentState,
+    event_at: Instant,
+    terminal_revision: Option<u64>,
+    terminal: Option<claude_status::TerminalEvidence>,
+}
+
+impl ClaudeReconciliation {
+    fn effective(self, now: Instant) -> AgentState {
+        claude_status::reconcile(
+            self.event_state,
+            now.saturating_duration_since(self.event_at),
+            self.terminal,
+        )
+    }
+}
+
 struct State {
     persisted: Persisted,
     revision: u64,
     runtimes: HashMap<PaneId, Arc<TerminalRuntime>>,
     runtime_generations: HashMap<PaneId, String>,
     agent_wake_leases: HashMap<PaneId, Instant>,
+    claude_reconciliations: HashMap<PaneId, ClaudeReconciliation>,
     terminal_operation_locks: HashMap<PaneId, Arc<Mutex<()>>>,
     listening_ports: HashMap<PaneId, Vec<u16>>,
     foreground_jobs: HashSet<PaneId>,
@@ -226,6 +262,7 @@ struct State {
     handoff_started: Option<Instant>,
     stop_reason: Option<StopReason>,
     persistence_dirty: bool,
+    recovery_in_progress: bool,
     stopping: bool,
 }
 struct Daemon {
@@ -245,62 +282,40 @@ struct Daemon {
 }
 
 fn recover_runtimes(daemon: &Arc<Daemon>, resume_agents: bool) -> io::Result<()> {
-    let attempts = {
-        let mut state = lock(&daemon.state);
-        let session_worktrees = state
-            .persisted
-            .sessions
-            .iter()
-            .map(|session| (session.id, session.worktree_id))
-            .collect::<HashMap<_, _>>();
-        let worktree_paths = state
-            .persisted
-            .worktrees
-            .iter()
-            .map(|worktree| (worktree.id, worktree.path.clone()))
-            .collect::<HashMap<_, _>>();
-        let mut attempts = Vec::new();
-        for pane in &mut state.persisted.panes {
-            pane.exited = true;
-            if pane.recovery_quarantined {
-                continue;
-            }
-            if pane.recovery.is_none() {
-                pane.recovery = Some(default_launch_recipe());
-            }
-            let Some(saved_recipe) = pane.recovery.clone() else {
-                continue;
-            };
-            if let Err(error) = validate_recipe(&saved_recipe) {
-                eprintln!("wsxd recovery pane {}: {error}", pane.id.0);
-                pane.recovery = None;
-                pane.recovery_quarantined = true;
-                continue;
-            }
-            let launch = recovery_launch(pane.agent.as_mut(), &saved_recipe, resume_agents);
-            // ^ [[Session Model]] Persisted identity authorizes only the resume plan.
-            // The replacement runtime must report its own generation before projection.
-            pane.agent = None;
-            let Some(cwd) = session_worktrees
-                .get(&pane.session_id)
-                .and_then(|worktree_id| worktree_paths.get(worktree_id))
-                .cloned()
-            else {
-                eprintln!("wsxd recovery pane {}: worktree is absent", pane.id.0);
-                continue;
-            };
-            attempts.push((pane.id, pane.terminal_id, cwd, launch));
-        }
-        attempts
-    };
+    let mut attempts = prepare_recovery_attempts(daemon, resume_agents)?;
+    attempts.sort_by_key(|attempt| attempt.launch.resume_key.is_some());
+    let mut attempted_sessions = HashSet::new();
 
-    let mut resumed_sessions = HashSet::new();
-    for (pane_id, terminal_id, cwd, launch) in attempts {
-        let launch = deduplicate_recovery_launch(launch, &resumed_sessions);
+    for attempt in attempts {
+        let RecoveryAttempt {
+            pane_id,
+            terminal_id,
+            cwd,
+            launch,
+        } = attempt;
+        let (stopping, pane_exists) = {
+            let state = lock(&daemon.state);
+            (
+                state.stopping,
+                state.persisted.panes.iter().any(|pane| pane.id == pane_id),
+            )
+        };
+        if stopping {
+            break;
+        }
+        if !pane_exists {
+            continue;
+        }
+        let had_resume = launch.resume_key.is_some();
+        let launch = deduplicate_recovery_launch(launch, &attempted_sessions);
+        if had_resume && launch.resume_key.is_none() {
+            clear_pending_recovery_agent(daemon, pane_id)?;
+        }
         let launch = match prepare_recovery_launch(launch, &cwd) {
             Ok(launch) => launch,
             Err(error) => {
                 eprintln!("wsxd recovery pane {}: {error}", pane_id.0);
+                clear_pending_recovery_agent(daemon, pane_id)?;
                 continue;
             }
         };
@@ -308,16 +323,22 @@ fn recover_runtimes(daemon: &Arc<Daemon>, resume_agents: bool) -> io::Result<()>
             Ok(runtime) => Arc::new(runtime),
             Err(error) => {
                 eprintln!("wsxd recovery pane {}: {}", pane_id.0, error.message);
+                clear_pending_recovery_agent(daemon, pane_id)?;
                 continue;
             }
         };
-        let mut state = lock(&daemon.state);
-        state.runtimes.insert(pane_id, Arc::clone(&runtime));
-        if runtime.exited() {
-            record_terminal_exit(daemon, &mut state, pane_id);
-        } else {
-            resumed_sessions.extend(launch.resume_key);
-            if let Some(pane) = state
+        let generation = {
+            let mut state = lock(&daemon.state);
+            if !state.persisted.panes.iter().any(|pane| pane.id == pane_id) {
+                drop(state);
+                runtime.terminate();
+                continue;
+            }
+            let generation = state.runtime_generations.get(&pane_id).cloned();
+            state.runtimes.insert(pane_id, Arc::clone(&runtime));
+            if runtime.exited() {
+                record_terminal_exit(daemon, &mut state, pane_id);
+            } else if let Some(pane) = state
                 .persisted
                 .panes
                 .iter_mut()
@@ -325,10 +346,243 @@ fn recover_runtimes(daemon: &Arc<Daemon>, resume_agents: bool) -> io::Result<()>
             {
                 pane.exited = false;
             }
+            generation
+        };
+        let Some(resume_key) = launch.resume_key else {
+            continue;
+        };
+        attempted_sessions.insert(resume_key);
+        if !launch.await_readiness {
+            continue;
+        }
+        let Some(provider) = launch.provider.as_deref() else {
+            continue;
+        };
+        let Some(generation) = generation else {
+            continue;
+        };
+        if wait_for_recovered_agent(
+            daemon,
+            pane_id,
+            &generation,
+            provider,
+            RECOVERY_AGENT_READY_TIMEOUT,
+        ) == RecoveryReadiness::TimedOut
+        {
+            eprintln!(
+                "wsxd recovery pane {}: {provider} did not become ready within {} seconds; opening a shell",
+                pane_id.0,
+                RECOVERY_AGENT_READY_TIMEOUT.as_secs()
+            );
+            replace_timed_out_recovery_with_shell(
+                daemon,
+                pane_id,
+                terminal_id,
+                &cwd,
+                launch.recipe.rows,
+                launch.recipe.cols,
+                &runtime,
+            )?;
         }
     }
     let state = lock(&daemon.state);
     save_state(&daemon.state_path, &state.persisted)
+}
+
+fn prepare_recovery_attempts(
+    daemon: &Arc<Daemon>,
+    resume_agents: bool,
+) -> io::Result<Vec<RecoveryAttempt>> {
+    let mut state = lock(&daemon.state);
+    let mut persisted = state.persisted.clone();
+    let session_worktrees = persisted
+        .sessions
+        .iter()
+        .map(|session| (session.id, session.worktree_id))
+        .collect::<HashMap<_, _>>();
+    let worktree_paths = persisted
+        .worktrees
+        .iter()
+        .map(|worktree| (worktree.id, worktree.path.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut attempts = Vec::new();
+    for pane in &mut persisted.panes {
+        pane.exited = true;
+        if pane.recovery_quarantined {
+            continue;
+        }
+        if pane.recovery.is_none() {
+            pane.recovery = Some(default_launch_recipe());
+        }
+        let Some(saved_recipe) = pane.recovery.clone() else {
+            continue;
+        };
+        if let Err(error) = validate_recipe(&saved_recipe) {
+            eprintln!("wsxd recovery pane {}: {error}", pane.id.0);
+            pane.recovery = None;
+            pane.recovery_quarantined = true;
+            pane.agent = None;
+            continue;
+        }
+        let launch = recovery_launch(pane.agent.as_mut(), &saved_recipe, resume_agents);
+        // ^ [[Session Model]] A persisted identity authorizes the queued resume plan.
+        // It remains detached until the replacement runtime reports its own generation.
+        if launch.resume_key.is_some() {
+            if let Some(agent) = pane.agent.as_mut() {
+                agent.attached = false;
+                agent.state = AgentState::Unknown;
+            }
+        } else {
+            pane.agent = None;
+        }
+        let Some(cwd) = session_worktrees
+            .get(&pane.session_id)
+            .and_then(|worktree_id| worktree_paths.get(worktree_id))
+            .cloned()
+        else {
+            eprintln!("wsxd recovery pane {}: worktree is absent", pane.id.0);
+            pane.agent = None;
+            continue;
+        };
+        attempts.push(RecoveryAttempt {
+            pane_id: pane.id,
+            terminal_id: pane.terminal_id,
+            cwd,
+            launch,
+        });
+    }
+    save_state(&daemon.state_path, &persisted)?;
+    state.persisted = persisted;
+    Ok(attempts)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryReadiness {
+    Ready,
+    Failed,
+    Cancelled,
+    TimedOut,
+}
+
+fn wait_for_recovered_agent(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    generation: &str,
+    provider: &str,
+    timeout: Duration,
+) -> RecoveryReadiness {
+    let deadline = Instant::now() + timeout;
+    let mut state = lock(&daemon.state);
+    loop {
+        if state.stopping || !state.persisted.panes.iter().any(|pane| pane.id == pane_id) {
+            return RecoveryReadiness::Cancelled;
+        }
+        if state.runtime_generations.get(&pane_id).map(String::as_str) != Some(generation) {
+            return RecoveryReadiness::Failed;
+        }
+        if state
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .and_then(|pane| pane.agent.as_ref())
+            .is_some_and(|agent| agent.attached && agent.provider == provider)
+        {
+            return RecoveryReadiness::Ready;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return RecoveryReadiness::TimedOut;
+        }
+        let wait = (deadline - now).min(RECOVERY_AGENT_POLL_INTERVAL);
+        let (next, _) = daemon
+            .changed
+            .wait_timeout(state, wait)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state = next;
+    }
+}
+
+fn clear_pending_recovery_agent(daemon: &Daemon, pane_id: PaneId) -> io::Result<()> {
+    let mut state = lock(&daemon.state);
+    let mut persisted = state.persisted.clone();
+    if let Some(pane) = persisted.panes.iter_mut().find(|pane| pane.id == pane_id) {
+        pane.agent = None;
+    }
+    save_state(&daemon.state_path, &persisted)?;
+    state.persisted = persisted;
+    Ok(())
+}
+
+fn replace_timed_out_recovery_with_shell(
+    daemon: &Arc<Daemon>,
+    pane_id: PaneId,
+    terminal_id: TerminalId,
+    cwd: &Path,
+    rows: u16,
+    cols: u16,
+    runtime: &Arc<TerminalRuntime>,
+) -> io::Result<()> {
+    {
+        let mut state = lock(&daemon.state);
+        let owns_runtime = state
+            .runtimes
+            .get(&pane_id)
+            .is_some_and(|current| Arc::ptr_eq(current, runtime));
+        if !owns_runtime {
+            return Ok(());
+        }
+        let mut persisted = state.persisted.clone();
+        let Some(pane) = persisted.panes.iter_mut().find(|pane| pane.id == pane_id) else {
+            return Ok(());
+        };
+        pane.agent = None;
+        pane.exited = true;
+        save_state(&daemon.state_path, &persisted)?;
+        state.persisted = persisted;
+        state.runtimes.remove(&pane_id);
+        state.runtime_generations.remove(&pane_id);
+    }
+    runtime.terminate();
+    let recipe = shell_launch_recipe(rows, cols);
+    let replacement = Arc::new(
+        spawn_runtime(daemon, pane_id, terminal_id, cwd, &recipe)
+            .map_err(|error| io::Error::other(error.message))?,
+    );
+    let mut state = lock(&daemon.state);
+    let mut persisted = state.persisted.clone();
+    if let Some(pane) = persisted.panes.iter_mut().find(|pane| pane.id == pane_id) {
+        pane.exited = replacement.exited();
+        if let Err(error) = save_state(&daemon.state_path, &persisted) {
+            state.runtime_generations.remove(&pane_id);
+            drop(state);
+            replacement.terminate();
+            return Err(error);
+        }
+        state.persisted = persisted;
+        state.runtimes.insert(pane_id, replacement);
+    } else {
+        state.runtime_generations.remove(&pane_id);
+        drop(state);
+        replacement.terminate();
+    }
+    Ok(())
+}
+
+fn spawn_cold_recovery(daemon: &Arc<Daemon>, resume_agents: bool) -> thread::JoinHandle<()> {
+    {
+        let mut state = lock(&daemon.state);
+        state.recovery_in_progress = true;
+    }
+    let daemon = Arc::clone(daemon);
+    thread::spawn(move || {
+        if let Err(error) = recover_runtimes(&daemon, resume_agents) {
+            eprintln!("wsxd recovery: {error}");
+        }
+        let mut state = lock(&daemon.state);
+        state.recovery_in_progress = false;
+        daemon.changed.notify_all();
+    })
 }
 
 fn recovery_launch(
@@ -340,12 +594,16 @@ fn recovery_launch(
         return RecoveryLaunch {
             recipe: saved_recipe.clone(),
             resume_key: None,
+            provider: None,
+            await_readiness: false,
         };
     }
     let Some(agent) = agent else {
         return RecoveryLaunch {
             recipe: saved_recipe.clone(),
             resume_key: None,
+            provider: None,
+            await_readiness: false,
         };
     };
     let session_ref = agent.session_ref.clone().or_else(|| {
@@ -358,13 +616,19 @@ fn recovery_launch(
         return RecoveryLaunch {
             recipe: saved_recipe.clone(),
             resume_key: None,
+            provider: None,
+            await_readiness: false,
         };
     };
     agent.session_ref = Some(session_ref.clone());
-    let Some(plan) = resume::plan(&agent.provider, &session_ref) else {
+    let provider = agent.provider.clone();
+    let await_readiness = agent.capabilities.lifecycle;
+    let Some(plan) = resume::plan(&provider, &session_ref) else {
         return RecoveryLaunch {
             recipe: shell_launch_recipe(saved_recipe.rows, saved_recipe.cols),
             resume_key: None,
+            provider: None,
+            await_readiness: false,
         };
     };
     RecoveryLaunch {
@@ -375,6 +639,8 @@ fn recovery_launch(
             cols: saved_recipe.cols,
         },
         resume_key: Some(plan.dedupe_key),
+        provider: Some(provider),
+        await_readiness,
     }
 }
 
@@ -390,6 +656,8 @@ fn deduplicate_recovery_launch(
         RecoveryLaunch {
             recipe: shell_launch_recipe(launch.recipe.rows, launch.recipe.cols),
             resume_key: None,
+            provider: None,
+            await_readiness: false,
         }
     } else {
         launch
@@ -625,6 +893,7 @@ fn new_state(persisted: Persisted) -> State {
         runtimes: HashMap::new(),
         runtime_generations: HashMap::new(),
         agent_wake_leases: HashMap::new(),
+        claude_reconciliations: HashMap::new(),
         terminal_operation_locks: HashMap::new(),
         listening_ports: HashMap::new(),
         foreground_jobs: HashSet::new(),
@@ -644,6 +913,7 @@ fn new_state(persisted: Persisted) -> State {
         handoff_started: None,
         stop_reason: None,
         persistence_dirty: false,
+        recovery_in_progress: false,
         stopping: false,
     }
 }
@@ -694,6 +964,7 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
         lifecycle_path: lifecycle_marker_path(&socket),
     });
 
+    let cold_start = import.is_none();
     let mut import_stream = None;
     if let Some((panes, pane_fds, mut stream)) = import {
         if panes.len() != pane_fds.len() {
@@ -702,36 +973,11 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
                 "handoff pane and descriptor counts differ",
             ));
         }
-        for (pane, fd) in panes.into_iter().zip(pane_fds) {
-            let pane_id = pane.state.pane_id;
-            let runtime = unsafe {
-                TerminalRuntime::from_handoff_fd(
-                    fd.into_raw_fd(),
-                    pane.state,
-                    runtime_notify(&daemon, pane_id),
-                )
-            }
-            .map_err(|error| io::Error::other(error.to_string()))?;
-            runtime.protect_handoff_import();
-            let mut state = lock(&daemon.state);
-            if !state.persisted.panes.iter().any(|pane| pane.id == pane_id) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "handoff pane is absent from persisted state",
-                ));
-            }
-            if let Some(generation) = pane.runtime_generation {
-                state.runtime_generations.insert(pane_id, generation);
-            }
-            state.runtimes.insert(pane_id, Arc::new(runtime));
-        }
+        restore_handoff_runtimes(&daemon, panes, pane_fds)?;
         handoff::report_restored(&mut stream)?;
         handoff::wait_publish(&mut stream)?;
         prepare_socket(&socket)?;
         import_stream = Some(stream);
-    } else {
-        // ^ [[Session Model]] Cold recovery recreates processes only when no live handoff exists.
-        recover_runtimes(&daemon, resume_agents_on_restore())?;
     }
 
     let listener = UnixListener::bind(&socket)?;
@@ -764,7 +1010,12 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
         write_lifecycle_marker(&daemon.lifecycle_path, "ready")?;
     }
 
+    // ^ [[Session Model]] Cold recovery begins only after lifecycle hooks can reach
+    // the canonical socket. Agent resumes are queued by recover_runtimes.
+    let mut cold_recovery =
+        cold_start.then(|| spawn_cold_recovery(&daemon, resume_agents_on_restore()));
     let port_scanner = spawn_port_scanner(&daemon);
+    let claude_reconciler = spawn_claude_reconciler(&daemon);
     let wake_controller = spawn_wake_controller(&daemon);
 
     while !advance_replacement(&daemon) {
@@ -798,17 +1049,30 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
                 thread::sleep(Duration::from_millis(20))
             }
             Err(error) => {
+                {
+                    let mut state = lock(&daemon.state);
+                    state.stopping = true;
+                    daemon.changed.notify_all();
+                }
+                if let Some(recovery) = cold_recovery.take() {
+                    let _ = recovery.join();
+                }
                 cleanup(&daemon, &socket);
                 let _ = plugin_dispatcher.join();
                 let _ = port_scanner.join();
+                let _ = claude_reconciler.join();
                 let _ = wake_controller.join();
                 return Err(error);
             }
         }
     }
+    if let Some(recovery) = cold_recovery.take() {
+        let _ = recovery.join();
+    }
     cleanup(&daemon, &socket);
     let _ = plugin_dispatcher.join();
     let _ = port_scanner.join();
+    let _ = claude_reconciler.join();
     let _ = wake_controller.join();
     Ok(())
 }
@@ -968,7 +1232,7 @@ fn perform_live_handoff(
             daemon.changed.notify_all();
             daemon.plugin_changed.notify_all();
         }
-        handoff::wait_owned(&mut stream);
+        handoff::wait_owned_best_effort(&mut stream);
         Ok(())
     })();
 
@@ -1017,6 +1281,83 @@ fn rollback_handoff(
     state.replacement_protocol = None;
     state.replacement_executable = None;
     daemon.changed.notify_all();
+    Ok(())
+}
+
+fn restore_handoff_runtimes(
+    daemon: &Arc<Daemon>,
+    panes: Vec<handoff::PaneHandoff>,
+    pane_fds: Vec<OwnedFd>,
+) -> io::Result<()> {
+    let persisted_ids = lock(&daemon.state)
+        .persisted
+        .panes
+        .iter()
+        .map(|pane| pane.id)
+        .collect::<HashSet<_>>();
+    let mut seen = HashSet::new();
+    for pane in &panes {
+        if !persisted_ids.contains(&pane.state.pane_id) || !seen.insert(pane.state.pane_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "handoff pane is absent from persisted state or duplicated",
+            ));
+        }
+    }
+    if panes.is_empty() {
+        return Ok(());
+    }
+
+    let worker_count = panes.len().min(HANDOFF_RESTORE_WORKERS);
+    let mut buckets: Vec<Vec<(handoff::PaneHandoff, OwnedFd)>> =
+        (0..worker_count).map(|_| Vec::new()).collect();
+    for (index, pair) in panes.into_iter().zip(pane_fds).enumerate() {
+        buckets[index % worker_count].push(pair);
+    }
+
+    let restored = thread::scope(|scope| -> io::Result<Vec<_>> {
+        let handles = buckets
+            .into_iter()
+            .map(|bucket| {
+                let daemon = Arc::clone(daemon);
+                scope.spawn(move || -> io::Result<Vec<_>> {
+                    let mut restored = Vec::with_capacity(bucket.len());
+                    for (pane, fd) in bucket {
+                        let pane_id = pane.state.pane_id;
+                        let runtime = unsafe {
+                            TerminalRuntime::from_handoff_fd(
+                                fd.into_raw_fd(),
+                                pane.state,
+                                runtime_notify(&daemon, pane_id),
+                            )
+                        }
+                        .map_err(|error| {
+                            io::Error::other(format!("restore handoff pane {}: {error}", pane_id.0))
+                        })?;
+                        runtime.protect_handoff_import();
+                        restored.push((pane_id, pane.runtime_generation, Arc::new(runtime)));
+                    }
+                    Ok(restored)
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut restored = Vec::new();
+        for handle in handles {
+            let worker = handle
+                .join()
+                .map_err(|_| io::Error::other("handoff restore worker panicked"))??;
+            restored.extend(worker);
+        }
+        Ok(restored)
+    })?;
+
+    let mut state = lock(&daemon.state);
+    for (pane_id, generation, runtime) in restored {
+        if let Some(generation) = generation {
+            state.runtime_generations.insert(pane_id, generation);
+        }
+        state.runtimes.insert(pane_id, runtime);
+    }
     Ok(())
 }
 
@@ -1119,6 +1460,7 @@ fn cleanup(daemon: &Daemon, socket: &Path) {
         state.leases.clear();
         state.transferred_streams.clear();
         state.agent_wake_leases.clear();
+        state.claude_reconciliations.clear();
         state.plugin_events.clear();
         let runtimes = std::mem::take(&mut state.runtimes);
         state.runtime_generations.clear();
@@ -1591,64 +1933,42 @@ fn with_stream_runtime<T>(
     operation(&runtime)
 }
 
-fn agent_interrupt_revision(state: &State, pane_id: PaneId, interrupted: bool) -> Option<u64> {
-    if !interrupted {
-        return None;
-    }
-    let pane = state
-        .persisted
-        .panes
-        .iter()
-        .find(|pane| pane.id == pane_id)?;
-    pane.agent
-        .as_ref()
-        .is_some_and(|agent| {
-            agent.state == AgentState::Working && agent.capabilities.escape_interrupts
-        })
-        .then_some(pane.revision)
-}
-
 fn key_interrupts_agent(key: &KeyEvent) -> bool {
     key.code == KeyCode::Escape
         || (key.code == KeyCode::Text && key.control && key.text.eq_ignore_ascii_case("c"))
 }
 
-fn invalidate_working_agent_after_interrupt(
-    daemon: &Daemon,
-    pane_id: PaneId,
-    expected_revision: u64,
-) -> Result<(), ApiError> {
+fn request_claude_reconcile(daemon: &Daemon, pane_id: PaneId, interrupted: bool) {
+    if !interrupted {
+        return;
+    }
+    let now = Instant::now();
     let mut state = lock(&daemon.state);
-    let Some(pane_index) = state
+    let Some(agent) = state
         .persisted
         .panes
         .iter()
-        .position(|pane| pane.id == pane_id)
-    else {
-        return Ok(());
-    };
-    let pane = &state.persisted.panes[pane_index];
-    if pane.revision != expected_revision
-        || !pane.agent.as_ref().is_some_and(|agent| {
-            agent.state == AgentState::Working && agent.capabilities.escape_interrupts
+        .find(|pane| pane.id == pane_id)
+        .and_then(|pane| pane.agent.as_ref())
+        .filter(|agent| {
+            agent.attached && agent.provider == "claude" && agent.capabilities.escape_interrupts
         })
-    {
-        return Ok(());
-    }
-
-    let revision = state.revision.saturating_add(1);
-    let mut persisted = state.persisted.clone();
-    persisted.panes[pane_index]
-        .agent
-        .as_mut()
-        .expect("validated interruptible agent must remain present")
-        .state = AgentState::Unknown;
-    persisted.panes[pane_index].revision = revision;
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
-    state.agent_wake_leases.remove(&pane_id);
-    bump(daemon, &mut state, "agent.interrupted", pane_id.0);
-    Ok(())
+    else {
+        return;
+    };
+    let event_state = agent.state;
+    state
+        .claude_reconciliations
+        .entry(pane_id)
+        .and_modify(|reconciliation| reconciliation.terminal_revision = None)
+        .or_insert(ClaudeReconciliation {
+            event_state,
+            event_at: now
+                .checked_sub(claude_status::WORKING_EVENT_LEAD)
+                .unwrap_or(now),
+            terminal_revision: None,
+            terminal: None,
+        });
 }
 
 fn handle_terminal_stream_input(
@@ -1663,29 +1983,20 @@ fn handle_terminal_stream_input(
             if bytes.len() > MAX_INPUT_BYTES {
                 return Err(api("invalid_input", "input exceeds limit"));
             }
-            let interrupt_revision =
-                agent_interrupt_revision(&lock(&daemon.state), pane_id, bytes == [3]);
             with_stream_runtime(daemon, pane_id, client_id, lease_generation, |runtime| {
                 runtime.write(&bytes).map_err(terminal_api)
             })?;
-            if let Some(revision) = interrupt_revision {
-                invalidate_working_agent_after_interrupt(daemon, pane_id, revision)?;
-            }
+            request_claude_reconcile(daemon, pane_id, bytes == [3]);
             Ok(())
         }
         TerminalClientMessage::Key(key) => {
-            // Claude does not fire Stop after a user interrupt. Its adapter marks
-            // Escape and Ctrl+C as invalidating the current Working report; a newer
-            // concurrent report wins.
-            // ^ https://code.claude.com/docs/en/hooks#stop
-            let interrupt_revision =
-                agent_interrupt_revision(&lock(&daemon.state), pane_id, key_interrupts_agent(&key));
             with_stream_runtime(daemon, pane_id, client_id, lease_generation, |runtime| {
                 runtime.key(&key).map_err(terminal_api)
             })?;
-            if let Some(revision) = interrupt_revision {
-                invalidate_working_agent_after_interrupt(daemon, pane_id, revision)?;
-            }
+            // Claude has no interrupt hook. Input only requests a fresh terminal
+            // observation; current provider UI evidence decides the resulting state.
+            // ^ https://code.claude.com/docs/en/hooks#stop
+            request_claude_reconcile(daemon, pane_id, key_interrupts_agent(&key));
             Ok(())
         }
         TerminalClientMessage::Paste(text) => {
@@ -1928,13 +2239,9 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             if bytes.len() > MAX_INPUT_BYTES {
                 return Err(api("invalid_input", "input exceeds limit"));
             }
-            let interrupt_revision =
-                agent_interrupt_revision(&lock(&daemon.state), pane_id, bytes == [3]);
             let (runtime, revision) = leased_runtime(daemon, pane_id, client_id)?;
             runtime.write(&bytes).map_err(terminal_api)?;
-            if let Some(interrupted_revision) = interrupt_revision {
-                invalidate_working_agent_after_interrupt(daemon, pane_id, interrupted_revision)?;
-            }
+            request_claude_reconcile(daemon, pane_id, bytes == [3]);
             Ok(Response::Ack { revision })
         }
         Request::TerminalKey {
@@ -1942,13 +2249,9 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             client_id,
             key,
         } => {
-            let interrupt_revision =
-                agent_interrupt_revision(&lock(&daemon.state), pane_id, key_interrupts_agent(&key));
             let (runtime, revision) = leased_runtime(daemon, pane_id, client_id)?;
             runtime.key(&key).map_err(terminal_api)?;
-            if let Some(interrupted_revision) = interrupt_revision {
-                invalidate_working_agent_after_interrupt(daemon, pane_id, interrupted_revision)?;
-            }
+            request_claude_reconcile(daemon, pane_id, key_interrupts_agent(&key));
             Ok(Response::Ack { revision })
         }
         Request::TerminalPaste {
@@ -2274,6 +2577,9 @@ fn replacement_blockers(state: &mut State, target_binary_id: &str) -> Vec<Replac
     if has_fresh_working_agent(state, now) {
         blockers.push(ReplacementBlocker::WorkingAgent);
     }
+    if state.recovery_in_progress {
+        blockers.push(ReplacementBlocker::HandoffUnavailable);
+    }
     if live_runtime_count(state) > 0 && !state.listener_scan_complete {
         blockers.push(ReplacementBlocker::ListenerScanPending);
     }
@@ -2472,6 +2778,9 @@ fn handoff_blockers(state: &mut State, _target_binary_id: &str) -> Vec<Replaceme
     let mut blockers = Vec::new();
     if another_tui {
         blockers.push(ReplacementBlocker::OtherTui);
+    }
+    if state.recovery_in_progress {
+        blockers.push(ReplacementBlocker::HandoffUnavailable);
     }
     if state.runtimes.len() > handoff::MAX_HANDOFF_PANES {
         blockers.push(ReplacementBlocker::HandoffUnavailable);
@@ -3046,6 +3355,7 @@ fn close_session(daemon: &Arc<Daemon>, id: SessionId, expected: u64) -> Result<R
         }
         state.runtime_generations.remove(pane_id);
         state.agent_wake_leases.remove(pane_id);
+        state.claude_reconciliations.remove(pane_id);
         state.leases.remove(pane_id);
         state
             .transferred_streams
@@ -3097,6 +3407,7 @@ fn close_pane(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Respons
     let runtime = state.runtimes.remove(&id);
     state.runtime_generations.remove(&id);
     state.agent_wake_leases.remove(&id);
+    state.claude_reconciliations.remove(&id);
     state.leases.remove(&id);
     state
         .transferred_streams
@@ -3250,8 +3561,9 @@ fn touch_terminal_project(daemon: &Arc<Daemon>, pane_id: PaneId) -> Result<(), A
     Ok(())
 }
 
-// ^ [[Agent Lifecycle Authority]] Adapters normalize provider events in wsx-core;
-// this boundary owns generation checks, persistence, wake authority, and resume identity.
+// ^ [[Agent Lifecycle Authority]] wsx-core normalizes provider events and bounded
+// companion evidence; this boundary owns reconciliation, generation checks,
+// persistence, wake authority, and resume identity.
 struct AgentReportInput {
     provider: String,
     state: AgentState,
@@ -3350,8 +3662,27 @@ fn agent_report_with_attachment(
         }
     }
     capabilities.resume |= session_ref.is_some();
+    let now = Instant::now();
+    let is_claude = provider == "claude";
+    let claude_reconciliation = (is_claude && attached).then(|| {
+        let mut reconciliation = state
+            .claude_reconciliations
+            .get(&pane_id)
+            .copied()
+            .unwrap_or(ClaudeReconciliation {
+                event_state: agent_state,
+                event_at: now,
+                terminal_revision: None,
+                terminal: None,
+            });
+        reconciliation.event_state = agent_state;
+        reconciliation.event_at = now;
+        reconciliation.terminal_revision = None;
+        reconciliation.terminal = None;
+        reconciliation
+    });
     let reported_state = if attached {
-        agent_state
+        claude_reconciliation.map_or(agent_state, |reconciliation| reconciliation.effective(now))
     } else {
         AgentState::Unknown
     };
@@ -3373,8 +3704,13 @@ fn agent_report_with_attachment(
     }
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
     state.persisted = persisted;
-    if attached && agent_state == AgentState::Working {
-        state.agent_wake_leases.insert(pane_id, Instant::now());
+    if let Some(reconciliation) = claude_reconciliation {
+        state.claude_reconciliations.insert(pane_id, reconciliation);
+    } else {
+        state.claude_reconciliations.remove(&pane_id);
+    }
+    if attached && agent_state == AgentState::Working && reported_state == AgentState::Working {
+        state.agent_wake_leases.insert(pane_id, now);
     } else {
         state.agent_wake_leases.remove(&pane_id);
     }
@@ -3410,6 +3746,7 @@ fn agent_clear(
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
     state.persisted = persisted;
     state.agent_wake_leases.remove(&pane_id);
+    state.claude_reconciliations.remove(&pane_id);
     state
         .runtime_generations
         .insert(pane_id, next_runtime_generation);
@@ -3564,6 +3901,7 @@ fn spawn_runtime(
     {
         let mut state = lock(&daemon.state);
         state.agent_wake_leases.remove(&pane_id);
+        state.claude_reconciliations.remove(&pane_id);
         state
             .runtime_generations
             .insert(pane_id, runtime_generation.clone());
@@ -3599,6 +3937,7 @@ fn next_runtime_generation(daemon: &Daemon) -> String {
 fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
     state.runtime_generations.remove(&pane_id);
     state.agent_wake_leases.remove(&pane_id);
+    state.claude_reconciliations.remove(&pane_id);
     let Some(pane) = state
         .persisted
         .panes
@@ -3626,6 +3965,136 @@ fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
     state.persistence_dirty = true;
     daemon.changed.notify_all();
     daemon.plugin_changed.notify_one();
+}
+
+fn apply_claude_terminal_observation(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    runtime_generation: &str,
+    observation: AgentTerminalObservation,
+    now: Instant,
+) -> Result<(), ApiError> {
+    let terminal = claude_status::classify(&observation.title, &observation.text);
+    let mut state = lock(&daemon.state);
+    if state.runtime_generations.get(&pane_id).map(String::as_str) != Some(runtime_generation) {
+        return Ok(());
+    }
+    let Some(pane_index) = state
+        .persisted
+        .panes
+        .iter()
+        .position(|pane| pane.id == pane_id)
+    else {
+        return Ok(());
+    };
+    let Some(agent) = state.persisted.panes[pane_index]
+        .agent
+        .as_ref()
+        .filter(|agent| agent.attached && agent.provider == "claude")
+    else {
+        state.claude_reconciliations.remove(&pane_id);
+        return Ok(());
+    };
+    let event_at = now
+        .checked_sub(claude_status::WORKING_EVENT_LEAD)
+        .unwrap_or(now);
+    let mut reconciliation = state
+        .claude_reconciliations
+        .get(&pane_id)
+        .copied()
+        .unwrap_or(ClaudeReconciliation {
+            event_state: agent.state,
+            event_at,
+            terminal_revision: None,
+            terminal: None,
+        });
+    reconciliation.terminal_revision = Some(observation.revision);
+    reconciliation.terminal = terminal;
+    if terminal.is_none() {
+        state.claude_reconciliations.insert(pane_id, reconciliation);
+        return Ok(());
+    }
+    let effective = reconciliation.effective(now);
+    if effective == agent.state {
+        state.claude_reconciliations.insert(pane_id, reconciliation);
+        return Ok(());
+    }
+
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    persisted.panes[pane_index]
+        .agent
+        .as_mut()
+        .expect("validated Claude agent must remain present")
+        .state = effective;
+    persisted.panes[pane_index].revision = revision;
+    if effective == AgentState::Working {
+        let project_index = project_index_for_pane(&persisted, pane_id)?;
+        persisted.projects[project_index].last_agent_active_unix_ms = Some(unix_time_millis());
+        persisted.projects[project_index].revision = revision;
+    }
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    state.claude_reconciliations.insert(pane_id, reconciliation);
+    if effective != AgentState::Working {
+        state.agent_wake_leases.remove(&pane_id);
+    }
+    bump(daemon, &mut state, "agent.reconciled", pane_id.0);
+    Ok(())
+}
+
+fn spawn_claude_reconciler(daemon: &Arc<Daemon>) -> thread::JoinHandle<()> {
+    let daemon = Arc::clone(daemon);
+    thread::spawn(move || loop {
+        let now = Instant::now();
+        let targets = {
+            let state = lock(&daemon.state);
+            if state.stopping {
+                return;
+            }
+            state
+                .persisted
+                .panes
+                .iter()
+                .filter_map(|pane| {
+                    let agent = pane
+                        .agent
+                        .as_ref()
+                        .filter(|agent| agent.attached && agent.provider == "claude")?;
+                    let runtime = state.runtimes.get(&pane.id)?.clone();
+                    let generation = state.runtime_generations.get(&pane.id)?.clone();
+                    let runtime_revision = runtime.revision();
+                    let reconciliation = state.claude_reconciliations.get(&pane.id).copied();
+                    let grace_due = reconciliation.is_some_and(|reconciliation| {
+                        reconciliation.event_state == AgentState::Working
+                            && reconciliation.terminal
+                                == Some(claude_status::TerminalEvidence::Idle)
+                            && now.saturating_duration_since(reconciliation.event_at)
+                                >= claude_status::WORKING_EVENT_LEAD
+                            && reconciliation.effective(now) != agent.state
+                    });
+                    (reconciliation.is_none()
+                        || reconciliation.and_then(|value| value.terminal_revision)
+                            != Some(runtime_revision)
+                        || grace_due)
+                        .then_some((pane.id, generation, runtime))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (pane_id, generation, runtime) in targets {
+            let Ok(observation) = runtime.agent_observation() else {
+                continue;
+            };
+            let _ = apply_claude_terminal_observation(
+                &daemon,
+                pane_id,
+                &generation,
+                observation,
+                Instant::now(),
+            );
+        }
+        thread::sleep(CLAUDE_RECONCILE_INTERVAL);
+    })
 }
 
 fn has_fresh_working_agent(state: &mut State, now: Instant) -> bool {
@@ -4438,6 +4907,7 @@ mod tests {
                     "0000000000000001:0000000000000001".into(),
                 )]),
                 agent_wake_leases: HashMap::new(),
+                claude_reconciliations: HashMap::new(),
                 terminal_operation_locks: HashMap::new(),
                 listening_ports: HashMap::new(),
                 foreground_jobs: HashSet::new(),
@@ -4457,6 +4927,7 @@ mod tests {
                 handoff_started: None,
                 stop_reason: None,
                 persistence_dirty: false,
+                recovery_in_progress: false,
                 stopping: false,
             }),
             mutation_lock: Mutex::new(()),
@@ -4473,6 +4944,22 @@ mod tests {
             lifecycle_path: path.with_extension("lifecycle"),
         });
         (daemon, path)
+    }
+
+    #[test]
+    fn pending_agent_recovery_has_a_bounded_readiness_wait() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        assert_eq!(
+            wait_for_recovered_agent(
+                &daemon,
+                PaneId(4),
+                "0000000000000001:0000000000000001",
+                "claude",
+                Duration::ZERO,
+            ),
+            RecoveryReadiness::TimedOut
+        );
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -5808,12 +6295,22 @@ mod tests {
         let (daemon, path) = agent_test_daemon(agent_test_persisted());
         let old = "0000000000000001:0000000000000001";
         let next = "0000000000000001:0000000000000002";
+        lock(&daemon.state).claude_reconciliations.insert(
+            PaneId(4),
+            ClaudeReconciliation {
+                event_state: AgentState::Working,
+                event_at: Instant::now(),
+                terminal_revision: Some(1),
+                terminal: Some(claude_status::TerminalEvidence::Working),
+            },
+        );
 
         let response = agent_clear(&daemon, PaneId(4), old.into(), next.into()).unwrap();
         assert!(matches!(response, Response::Ack { revision: 8 }));
         {
             let state = lock(&daemon.state);
             assert!(state.persisted.panes[0].agent.is_none());
+            assert!(!state.claude_reconciliations.contains_key(&PaneId(4)));
             assert_eq!(
                 state
                     .runtime_generations
@@ -6024,8 +6521,23 @@ mod tests {
         }
     }
 
+    fn claude_capabilities() -> AgentCapabilities {
+        AgentCapabilities {
+            escape_interrupts: true,
+            ..AgentCapabilities::default()
+        }
+    }
+
+    fn claude_observation(revision: u64, title: &str, text: &str) -> AgentTerminalObservation {
+        AgentTerminalObservation {
+            revision,
+            title: title.into(),
+            text: text.into(),
+        }
+    }
+
     #[test]
-    fn streamed_escape_invalidates_only_the_matching_working_report() {
+    fn streamed_escape_requests_claude_reconcile_without_deciding_state() {
         let (daemon, path) = agent_test_daemon(agent_test_persisted());
         let pane_id = PaneId(4);
         let runtime = Arc::new(
@@ -6053,18 +6565,14 @@ mod tests {
             AgentState::Working,
             None,
             None,
-            AgentCapabilities {
-                escape_interrupts: true,
-                ..AgentCapabilities::default()
-            },
+            claude_capabilities(),
         )
         .unwrap();
-        assert!(agent_interrupt_revision(
-            &lock(&daemon.state),
-            pane_id,
-            key_interrupts_agent(&terminal_key(KeyCode::Enter)),
-        )
-        .is_none());
+        lock(&daemon.state)
+            .claude_reconciliations
+            .get_mut(&pane_id)
+            .unwrap()
+            .terminal_revision = Some(42);
         let (_, generation) = acquire_terminal_lease(&daemon, pane_id, 9, true).unwrap();
 
         handle_terminal_stream_input(
@@ -6079,17 +6587,92 @@ mod tests {
         let state = lock(&daemon.state);
         assert_eq!(
             state.persisted.panes[0].agent.as_ref().unwrap().state,
-            AgentState::Unknown
+            AgentState::Working
         );
-        assert!(!state.agent_wake_leases.contains_key(&pane_id));
-        assert_eq!(state.persisted.panes[0].revision, 9);
+        assert_eq!(
+            state.claude_reconciliations[&pane_id].terminal_revision,
+            None
+        );
+        assert!(state.agent_wake_leases.contains_key(&pane_id));
         drop(state);
         runtime.terminate();
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn one_shot_ctrl_c_invalidates_working_but_other_input_does_not() {
+    fn idle_terminal_evidence_corrects_delayed_claude_working_after_grace() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        agent_report(
+            &daemon,
+            current_agent_authority(&daemon),
+            "claude".into(),
+            AgentState::Working,
+            None,
+            None,
+            claude_capabilities(),
+        )
+        .unwrap();
+        let event_at = lock(&daemon.state).claude_reconciliations[&pane_id].event_at;
+        let generation = current_agent_authority(&daemon).generation.unwrap();
+        let idle = claude_observation(2, "✳ task", "❯ ");
+
+        apply_claude_terminal_observation(
+            &daemon,
+            pane_id,
+            &generation,
+            idle.clone(),
+            event_at + claude_status::WORKING_EVENT_LEAD - Duration::from_millis(1),
+        )
+        .unwrap();
+        assert_eq!(
+            lock(&daemon.state).persisted.panes[0]
+                .agent
+                .as_ref()
+                .unwrap()
+                .state,
+            AgentState::Working
+        );
+
+        apply_claude_terminal_observation(
+            &daemon,
+            pane_id,
+            &generation,
+            idle,
+            event_at + claude_status::WORKING_EVENT_LEAD + Duration::from_millis(1),
+        )
+        .unwrap();
+        {
+            let state = lock(&daemon.state);
+            assert_eq!(
+                state.persisted.panes[0].agent.as_ref().unwrap().state,
+                AgentState::Idle
+            );
+            assert!(!state.agent_wake_leases.contains_key(&pane_id));
+        }
+
+        agent_report(
+            &daemon,
+            current_agent_authority(&daemon),
+            "claude".into(),
+            AgentState::Working,
+            None,
+            None,
+            claude_capabilities(),
+        )
+        .unwrap();
+        let state = lock(&daemon.state);
+        assert_eq!(
+            state.persisted.panes[0].agent.as_ref().unwrap().state,
+            AgentState::Working
+        );
+        assert!(state.agent_wake_leases.contains_key(&pane_id));
+        drop(state);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn claude_reconciler_observes_real_pty_idle_after_delayed_working_hook() {
         let (daemon, path) = agent_test_daemon(agent_test_persisted());
         let pane_id = PaneId(4);
         let runtime = Arc::new(
@@ -6101,8 +6684,8 @@ mod tests {
                 &LaunchRecipe {
                     command: vec!["/bin/cat".into()],
                     initial_input: None,
-                    rows: 3,
-                    cols: 4,
+                    rows: 6,
+                    cols: 40,
                 },
             )
             .unwrap(),
@@ -6117,107 +6700,221 @@ mod tests {
             AgentState::Working,
             None,
             None,
-            AgentCapabilities {
-                escape_interrupts: true,
-                ..AgentCapabilities::default()
-            },
+            claude_capabilities(),
         )
         .unwrap();
-        acquire_terminal_lease(&daemon, pane_id, 9, false).unwrap();
+        let reconciler = spawn_claude_reconciler(&daemon);
 
-        handle_inner(
-            &daemon,
-            Request::TerminalInput {
-                pane_id,
-                client_id: 9,
-                bytes: b"x".to_vec(),
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            lock(&daemon.state).persisted.panes[0]
+        runtime.write("\x1b]2;✳ task\x07\r\n❯ ".as_bytes()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if lock(&daemon.state).persisted.panes[0]
                 .agent
                 .as_ref()
-                .unwrap()
-                .state,
-            AgentState::Working
-        );
+                .is_some_and(|agent| agent.state == AgentState::Idle)
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "Claude state remained working");
+            thread::sleep(Duration::from_millis(20));
+        }
 
-        handle_inner(
-            &daemon,
-            Request::TerminalInput {
-                pane_id,
-                client_id: 9,
-                bytes: vec![3],
-            },
-        )
-        .unwrap();
-
-        let state = lock(&daemon.state);
-        assert_eq!(
-            state.persisted.panes[0].agent.as_ref().unwrap().state,
-            AgentState::Unknown
-        );
-        assert!(!state.agent_wake_leases.contains_key(&pane_id));
-        drop(state);
+        {
+            let mut state = lock(&daemon.state);
+            assert!(!state.agent_wake_leases.contains_key(&pane_id));
+            state.stopping = true;
+        }
+        reconciler.join().unwrap();
         runtime.terminate();
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn ctrl_c_key_is_an_agent_interrupt() {
-        let mut key = terminal_key(KeyCode::Text);
-        key.text = "c".into();
-        key.control = true;
+    fn visible_claude_states_reconcile_without_granting_heuristic_wake_authority() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let generation = current_agent_authority(&daemon).generation.unwrap();
+        agent_report(
+            &daemon,
+            current_agent_authority(&daemon),
+            "claude".into(),
+            AgentState::Idle,
+            None,
+            None,
+            claude_capabilities(),
+        )
+        .unwrap();
 
-        assert!(key_interrupts_agent(&key));
+        apply_claude_terminal_observation(
+            &daemon,
+            pane_id,
+            &generation,
+            claude_observation(2, "◐ task", ""),
+            Instant::now(),
+        )
+        .unwrap();
+        {
+            let state = lock(&daemon.state);
+            assert_eq!(
+                state.persisted.panes[0].agent.as_ref().unwrap().state,
+                AgentState::Working
+            );
+            assert!(!state.agent_wake_leases.contains_key(&pane_id));
+        }
+
+        apply_claude_terminal_observation(
+            &daemon,
+            pane_id,
+            &generation,
+            claude_observation(
+                3,
+                "project",
+                "Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel",
+            ),
+            Instant::now(),
+        )
+        .unwrap();
+        let state = lock(&daemon.state);
+        assert_eq!(
+            state.persisted.panes[0].agent.as_ref().unwrap().state,
+            AgentState::Blocked
+        );
+        assert!(!state.agent_wake_leases.contains_key(&pane_id));
+        drop(state);
+        let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn escape_does_not_overwrite_a_newer_agent_report() {
-        let (daemon, path) = agent_test_daemon(agent_test_persisted());
-        let capabilities = AgentCapabilities {
-            escape_interrupts: true,
-            ..AgentCapabilities::default()
-        };
-        agent_report(
-            &daemon,
-            current_agent_authority(&daemon),
-            "claude".into(),
-            AgentState::Working,
-            None,
-            None,
-            capabilities.clone(),
-        )
-        .unwrap();
-        let interrupted_revision = agent_interrupt_revision(
-            &lock(&daemon.state),
-            PaneId(4),
-            key_interrupts_agent(&terminal_key(KeyCode::Escape)),
-        )
-        .unwrap();
-        agent_report(
-            &daemon,
-            current_agent_authority(&daemon),
-            "claude".into(),
-            AgentState::Working,
-            None,
-            None,
-            capabilities,
-        )
-        .unwrap();
+    fn terminal_mismatch_does_not_erase_claude_done_or_error() {
+        for event_state in [AgentState::Done, AgentState::Error] {
+            let (daemon, path) = agent_test_daemon(agent_test_persisted());
+            let generation = current_agent_authority(&daemon).generation.unwrap();
+            agent_report(
+                &daemon,
+                current_agent_authority(&daemon),
+                "claude".into(),
+                event_state,
+                None,
+                None,
+                claude_capabilities(),
+            )
+            .unwrap();
 
-        invalidate_working_agent_after_interrupt(&daemon, PaneId(4), interrupted_revision).unwrap();
+            apply_claude_terminal_observation(
+                &daemon,
+                PaneId(4),
+                &generation,
+                claude_observation(2, "◐ task", "❯ "),
+                Instant::now() + claude_status::WORKING_EVENT_LEAD,
+            )
+            .unwrap();
+
+            assert_eq!(
+                lock(&daemon.state).persisted.panes[0]
+                    .agent
+                    .as_ref()
+                    .unwrap()
+                    .state,
+                event_state
+            );
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn ambiguous_or_stale_terminal_evidence_cannot_override_claude_event_state() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        agent_report(
+            &daemon,
+            current_agent_authority(&daemon),
+            "claude".into(),
+            AgentState::Working,
+            None,
+            None,
+            claude_capabilities(),
+        )
+        .unwrap();
+        let event_at = lock(&daemon.state).claude_reconciliations[&pane_id].event_at;
+        let generation = current_agent_authority(&daemon).generation.unwrap();
+        let observation = claude_observation(2, "project", "ordinary output");
+
+        apply_claude_terminal_observation(
+            &daemon,
+            pane_id,
+            "0000000000000001:0000000000000099",
+            claude_observation(1, "✳ task", "❯ "),
+            event_at + claude_status::WORKING_EVENT_LEAD,
+        )
+        .unwrap();
+        apply_claude_terminal_observation(
+            &daemon,
+            pane_id,
+            &generation,
+            observation,
+            event_at + claude_status::WORKING_EVENT_LEAD,
+        )
+        .unwrap();
 
         let state = lock(&daemon.state);
         assert_eq!(
             state.persisted.panes[0].agent.as_ref().unwrap().state,
             AgentState::Working
         );
-        assert!(state.agent_wake_leases.contains_key(&PaneId(4)));
-        assert_eq!(state.persisted.panes[0].revision, 9);
+        assert!(state.agent_wake_leases.contains_key(&pane_id));
         drop(state);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn failed_claude_reconciliation_preserves_event_state_and_wake_lease() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        agent_report(
+            &daemon,
+            current_agent_authority(&daemon),
+            "claude".into(),
+            AgentState::Working,
+            None,
+            None,
+            claude_capabilities(),
+        )
+        .unwrap();
+        let event_at = lock(&daemon.state).claude_reconciliations[&pane_id].event_at;
+        let generation = current_agent_authority(&daemon).generation.unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+
+        assert!(apply_claude_terminal_observation(
+            &daemon,
+            pane_id,
+            &generation,
+            claude_observation(2, "✳ task", "❯ "),
+            event_at + claude_status::WORKING_EVENT_LEAD,
+        )
+        .is_err());
+
+        let state = lock(&daemon.state);
+        assert_eq!(
+            state.persisted.panes[0].agent.as_ref().unwrap().state,
+            AgentState::Working
+        );
+        assert_eq!(
+            state.claude_reconciliations[&pane_id].terminal_revision,
+            None
+        );
+        assert!(state.agent_wake_leases.contains_key(&pane_id));
+        drop(state);
+        fs::remove_dir(path).unwrap();
+    }
+
+    #[test]
+    fn ctrl_c_key_requests_an_agent_reconcile() {
+        let mut key = terminal_key(KeyCode::Text);
+        key.text = "c".into();
+        key.control = true;
+
+        assert!(key_interrupts_agent(&key));
     }
 
     #[test]

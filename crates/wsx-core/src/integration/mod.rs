@@ -1,11 +1,13 @@
 //! Installation and discovery for wsx-owned coding-agent adapters.
 //!
 //! Vendor hook schemas are mirrored here, but assets only invoke `wsx agent
-//! report` and trust lifecycle events emitted by each provider.
+//! report`. Complete providers own lifecycle directly; incomplete providers may
+//! reconcile those reports with bounded provider-specific terminal evidence.
 
 // ^ [[Session Model]] crates/wsx-core/src/integration/mod.rs -> crates/wsx-core/src/runtime/domain.rs, crates/wsx-core/integrations/pi/wsx-agent-status.ts
 mod assets;
 mod availability;
+pub mod claude_status;
 mod config_edit;
 mod install;
 mod model;

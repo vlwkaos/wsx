@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Bug Fixes
+
+- Reconcile known Claude sessions with bounded OSC title and live prompt evidence so immediate Escape or Ctrl+C interruption cannot leave a delayed lifecycle hook active. Preserve event-reported completion and errors, ignore ambiguous terminal text, and keep heuristic working state outside wake-mode authority.
+- Start cold recovery only after lifecycle reporting is available, restore ordinary shells first, and load lifecycle-capable resumable agents one at a time so several large Claude histories do not compete for startup memory. Keep pending identity detached until the resumed runtime reports its generation, and continue safely after failure, timeout, deletion, or shutdown.
+- Restore live-handoff terminal histories with bounded parallel workers so protocol-15 daemons can transfer a full 43-pane cohort within the legacy readiness window without changing PTYs or process IDs.
+
 ## [0.26.2] - 2026-09-13
 
 ### Bug Fixes

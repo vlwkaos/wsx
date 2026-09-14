@@ -4,6 +4,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -12,6 +13,8 @@ use wsx_core::runtime::{
     TerminalClientMessage, TerminalServerMessage, TerminalStream, TerminalUpdate, WorktreeSpec,
     DAEMON_REVISION, PROTOCOL_VERSION, WSX_VERSION,
 };
+
+static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture {
     root: PathBuf,
@@ -25,10 +28,11 @@ impl Fixture {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        let sequence = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
         let root = std::env::current_dir()
             .unwrap()
             .join(".work/s")
-            .join(format!("h{:x}{nonce:x}", std::process::id()));
+            .join(format!("h{:x}{nonce:x}{sequence:x}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
@@ -77,6 +81,17 @@ fn wait_for_socket(path: &Path) {
         thread::sleep(Duration::from_millis(20));
     }
     panic!("wsxd socket did not appear: {}", path.display());
+}
+
+fn wait_for_socket_removal(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if !path.exists() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("wsxd socket remained after shutdown: {}", path.display());
 }
 
 fn frame_text(stream: &TerminalStream, expected: &str) -> String {
@@ -332,4 +347,120 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
     );
     drop(stream);
     client.shutdown().unwrap();
+    wait_for_socket_removal(&fixture.socket);
+}
+
+#[test]
+fn daemon_handoff_restores_a_legacy_sized_history_cohort() {
+    const PANES: usize = 43;
+    let source_binary = PathBuf::from(env!("CARGO_BIN_EXE_wsxd"));
+    let mut fixture = Fixture::new();
+    fixture.source = Some(fixture.command(&source_binary).spawn().unwrap());
+    wait_for_socket(&fixture.socket);
+    let client = Client::new(fixture.socket.clone());
+    let worktree = std::env::current_dir().unwrap();
+    client
+        .call(&Request::SynchronizeProjects {
+            projects: vec![ProjectSpec {
+                path: worktree.clone(),
+                name: "handoff-cohort".into(),
+                worktrees: vec![WorktreeSpec {
+                    path: worktree,
+                    branch: "test".into(),
+                }],
+            }],
+        })
+        .unwrap();
+    let worktree_id = match client.call(&Request::Snapshot).unwrap() {
+        Response::Snapshot(snapshot) => snapshot.worktrees[0].id,
+        response => panic!("unexpected snapshot response: {response:?}"),
+    };
+
+    let mut identities = Vec::with_capacity(PANES);
+    for index in 0..PANES {
+        client
+            .call(&Request::SessionCreate {
+                worktree_id,
+                label: format!("history-{index}"),
+                command: vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    format!(
+                        "i=0; while [ $i -lt 1024 ]; do printf 'history-{index}-%04d-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n' \"$i\"; i=$((i+1)); done; printf 'ready-{index}:pid=[%s]\\n' $$; while IFS= read -r line; do printf 'echo-{index}:%s:pid=[%s]\\n' \"$line\" $$; done"
+                    ),
+                ],
+                initial_input: None,
+                rows: 12,
+                cols: 100,
+            })
+            .unwrap();
+        let pane = match client.call(&Request::Snapshot).unwrap() {
+            Response::Snapshot(snapshot) => snapshot
+                .sessions
+                .iter()
+                .find(|session| session.label == format!("history-{index}"))
+                .map(|session| session.primary_pane)
+                .expect("created history pane"),
+            response => panic!("unexpected snapshot response: {response:?}"),
+        };
+        let stream =
+            TerminalStream::connect(&client, pane, 10_000 + index as u64, true, 12, 100).unwrap();
+        let output = frame_text(&stream, &format!("ready-{index}:pid=["));
+        identities.push((pane, reported_pid(&output)));
+    }
+    let old_epoch = match client.call(&Request::LifecycleStatus).unwrap() {
+        Response::Lifecycle(status) => status.epoch,
+        response => panic!("unexpected lifecycle response: {response:?}"),
+    };
+
+    let target_binary = fixture.root.join("wsxd-next");
+    fs::write(&target_binary, fs::read(&source_binary).unwrap()).unwrap();
+    let mut permissions = fs::metadata(&target_binary).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    permissions.set_mode(0o700);
+    fs::set_permissions(&target_binary, permissions).unwrap();
+    let response = client
+        .call(&Request::PrepareHandoff {
+            target_binary_id: binary_identity(&target_binary).unwrap(),
+            target_version: WSX_VERSION.into(),
+            target_protocol: PROTOCOL_VERSION,
+            target_daemon_revision: DAEMON_REVISION,
+            executable: target_binary,
+        })
+        .unwrap();
+    assert!(matches!(response, Response::Replacement { .. }));
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let after = loop {
+        if let Ok(Response::Snapshot(snapshot)) = client.call(&Request::Snapshot) {
+            if snapshot.epoch != old_epoch {
+                break snapshot;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "history-cohort handoff successor did not become ready"
+        );
+        thread::sleep(Duration::from_millis(25));
+    };
+    assert_eq!(after.panes.len(), PANES);
+
+    for (client_id, (pane, pid)) in [identities.first().unwrap(), identities.last().unwrap()]
+        .into_iter()
+        .enumerate()
+    {
+        let stream =
+            TerminalStream::connect(&client, *pane, 20_000 + client_id as u64, true, 12, 100)
+                .unwrap();
+        stream
+            .try_send(TerminalClientMessage::Input(b"after\n".to_vec()))
+            .unwrap();
+        let output = frame_text(&stream, "after:pid=[");
+        assert_eq!(
+            reported_pid(&output[output.find("after:pid=[").unwrap()..]),
+            *pid
+        );
+    }
+    client.shutdown().unwrap();
+    wait_for_socket_removal(&fixture.socket);
 }
