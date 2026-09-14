@@ -61,7 +61,7 @@ wsx agent install pi
 wsx agent install claude
 ```
 
-Installers preserve unrelated hooks and honor standard config-directory overrides. Restart the affected agent after installation. Codex authoritative lifecycle reporting requires Codex 0.150.0 or newer. Pi reports standard blocking dialogs as blocked without extension-specific wiring. When Pi, OMP, Claude, Codex, Copilot, Devin, Droid, Kimi, Hermes, Qoder, Qwen, Cursor, MastraCode, or Grok exits back to the shell, wsx hides its live agent label but keeps bounded native resume metadata. OpenCode, Kilo, and Antigravity do not currently expose a trustworthy CLI-exit hook, so their identity may remain visible after exit.
+Installers preserve unrelated hooks and honor standard config-directory overrides. Restart the affected agent after installation. Codex authoritative lifecycle reporting requires Codex 0.150.0 or newer. Pi reports standard blocking dialogs as blocked without extension-specific wiring. Claude status combines lifecycle hooks with bounded OSC and live prompt evidence so interrupted turns can settle without treating arbitrary terminal text as agent identity. When Pi, OMP, Claude, Codex, Copilot, Devin, Droid, Kimi, Hermes, Qoder, Qwen, Cursor, MastraCode, or Grok exits back to the shell, wsx hides its live agent label but keeps bounded native resume metadata. OpenCode, Kilo, and Antigravity do not currently expose a trustworthy CLI-exit hook, so their identity may remain visible after exit.
 
 ## Navigation
 
@@ -77,7 +77,7 @@ Installers preserve unrelated hooks and honor standard config-directory override
 
 Terminal mode uses the configured prefix, `Ctrl+A` by default. Follow it with `j/k` for adjacent sessions, `{`/`}` for the previous or next group, `i/I` for idle, `a/A` for active, `n/N` for attention, `B` to toggle the desktop sidebar, `W` for Workspace, or `Q` to quit only the TUI. Attention navigation defaults to Blocked sessions before other attention states and can restore Workspace order in Global Settings. Group navigation keeps Workspace order, selecting the first session needing attention and then the first idle agent session; if neither exists, the current terminal stays active. `Ctrl+A Ctrl+A` sends a literal prefix.
 
-Groups are ordered project filters. The default **ungrouped** anti-group matches projects with no memberships. Trusted agent work, terminal activity, session entry, and expansion changes restart each project's inactivity timer. When that timer auto-collapses an open project, wsx marks the project `stale` as the cause of its last collapse. The marker survives restart and later expansion; a manual project collapse replaces that cause and clears it. wsx never infers agent state from terminal output or process trees.
+Groups are ordered project filters. The default **ungrouped** anti-group matches projects with no memberships. Trusted agent work, terminal activity, session entry, and expansion changes restart each project's inactivity timer. When that timer auto-collapses an open project, wsx marks the project `stale` as the cause of its last collapse. The marker survives restart and later expansion; a manual project collapse replaces that cause and clears it. wsx never infers agent identity or state from process trees. For an adapter-identified Claude session only, bounded live terminal evidence may reconcile incomplete lifecycle events.
 
 ## Configuration
 
@@ -95,6 +95,8 @@ terminal_title_position = "bottom"
 port_visibility = "non_agentic"
 attention_priority = "blocked_first"
 ```
+
+After an unplanned daemon loss, wsx restores ordinary shells first and resumes lifecycle-capable saved agents one at a time after reporting becomes available. This limits startup pressure from large histories and keeps each saved agent identity detached until the resumed runtime confirms it.
 
 The project-root file is `wsx.config.yml`:
 

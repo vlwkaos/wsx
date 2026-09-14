@@ -61,7 +61,7 @@ wsx agent install pi
 wsx agent install claude
 ```
 
-Installer는 관련 없는 hook을 보존하고 표준 config-directory override를 따릅니다. 설치 후 해당 agent를 다시 시작합니다. Codex authoritative lifecycle 보고에는 Codex 0.150.0 이상이 필요합니다. Pi는 표준 blocking dialog를 별도 wiring 없이 blocked로 보고합니다. Pi, OMP, Claude, Codex, Copilot, Devin, Droid, Kimi, Hermes, Qoder, Qwen, Cursor, MastraCode, Grok이 종료되어 shell로 돌아오면 wsx는 live agent label을 숨기고 제한된 native resume metadata는 유지합니다. OpenCode, Kilo, Antigravity는 현재 신뢰할 수 있는 CLI exit hook을 제공하지 않으므로 종료 후에도 identity가 남아 보일 수 있습니다.
+Installer는 관련 없는 hook을 보존하고 표준 config-directory override를 따릅니다. 설치 후 해당 agent를 다시 시작합니다. Codex authoritative lifecycle 보고에는 Codex 0.150.0 이상이 필요합니다. Pi는 표준 blocking dialog를 별도 wiring 없이 blocked로 보고합니다. Claude 상태는 lifecycle hook과 제한된 OSC 및 live prompt evidence를 함께 사용하므로 임의의 terminal text로 agent identity를 추론하지 않으면서 interrupted turn을 정리합니다. Pi, OMP, Claude, Codex, Copilot, Devin, Droid, Kimi, Hermes, Qoder, Qwen, Cursor, MastraCode, Grok이 종료되어 shell로 돌아오면 wsx는 live agent label을 숨기고 제한된 native resume metadata는 유지합니다. OpenCode, Kilo, Antigravity는 현재 신뢰할 수 있는 CLI exit hook을 제공하지 않으므로 종료 후에도 identity가 남아 보일 수 있습니다.
 
 ## 조작
 
@@ -77,7 +77,7 @@ Installer는 관련 없는 hook을 보존하고 표준 config-directory override
 
 Terminal mode는 기본 `Ctrl+A` prefix를 사용합니다. 이어서 `j/k`는 인접 session, `{`/`}`는 이전 또는 다음 group, `i/I`는 idle, `a/A`는 active, `n/N`은 attention session으로 이동합니다. Attention 이동은 기본적으로 다른 attention 상태보다 Blocked session을 먼저 선택하며 Global Settings에서 Workspace 순서로 되돌릴 수 있습니다. Group 이동은 Workspace 순서를 유지하며 먼저 확인이 필요한 session을 선택하고, 없으면 첫 idle agent session을 선택합니다. 둘 다 없으면 현재 terminal을 유지합니다. `B`는 desktop sidebar 전환, `W`는 Workspace, `Q`는 TUI만 종료합니다. `Ctrl+A Ctrl+A`는 literal prefix를 보냅니다.
 
-Group은 순서가 있는 project filter입니다. 기본 **ungrouped** anti-group은 membership이 없는 project를 표시합니다. Trusted agent 작업, terminal 활동, session 진입, expand 또는 collapse 변경은 project의 비활성 timer를 다시 시작합니다. 이 timer가 열린 project를 자동으로 접으면 wsx는 마지막 collapse 원인을 나타내기 위해 project를 `stale`로 표시합니다. 이 표시는 재시작과 이후 expand 뒤에도 유지되며, project를 직접 collapse하면 원인이 바뀌므로 사라집니다. wsx는 terminal output이나 process tree로 agent 상태를 추론하지 않습니다.
+Group은 순서가 있는 project filter입니다. 기본 **ungrouped** anti-group은 membership이 없는 project를 표시합니다. Trusted agent 작업, terminal 활동, session 진입, expand 또는 collapse 변경은 project의 비활성 timer를 다시 시작합니다. 이 timer가 열린 project를 자동으로 접으면 wsx는 마지막 collapse 원인을 나타내기 위해 project를 `stale`로 표시합니다. 이 표시는 재시작과 이후 expand 뒤에도 유지되며, project를 직접 collapse하면 원인이 바뀌므로 사라집니다. wsx는 process tree로 agent identity나 상태를 추론하지 않습니다. Adapter가 Claude session임을 확인한 경우에만 제한된 live terminal evidence로 누락된 lifecycle event를 보정할 수 있습니다.
 
 ## 설정
 
@@ -95,6 +95,8 @@ terminal_title_position = "bottom"
 port_visibility = "non_agentic"
 attention_priority = "blocked_first"
 ```
+
+예기치 않게 daemon이 종료되면 wsx는 일반 shell을 먼저 복원하고 lifecycle 보고가 가능해진 뒤 lifecycle 보고를 지원하는 저장된 agent를 하나씩 재개합니다. 큰 session history가 동시에 memory를 사용하지 않도록 제한하며, 재개된 runtime이 확인될 때까지 저장된 agent identity는 연결되지 않은 상태로 유지합니다.
 
 Project root 설정 파일은 `wsx.config.yml`입니다.
 

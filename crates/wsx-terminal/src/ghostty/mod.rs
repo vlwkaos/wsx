@@ -1474,6 +1474,27 @@ impl Terminal {
         Ok((wide, graphemes))
     }
 
+    pub fn title(&self) -> Result<String, Error> {
+        let mut title = ffi::GhosttyString::default();
+        unsafe {
+            ffi::ghostty_terminal_get(
+                self.raw,
+                ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_TITLE,
+                (&mut title as *mut ffi::GhosttyString).cast(),
+            )
+            .into_result()?;
+        }
+        if title.ptr.is_null() && title.len != 0 {
+            return Err(Error(ffi::GhosttyResult_GHOSTTY_INVALID_VALUE));
+        }
+        let bytes = if title.len == 0 {
+            &[]
+        } else {
+            unsafe { slice::from_raw_parts(title.ptr, title.len) }
+        };
+        Ok(String::from_utf8_lossy(bytes).into_owned())
+    }
+
     pub(crate) fn screen_text_rows(&self) -> Result<Vec<ScreenTextRow>, Error> {
         self.screen_text_rows_range(0, usize::MAX)
     }

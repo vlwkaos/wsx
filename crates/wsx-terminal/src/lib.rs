@@ -39,6 +39,9 @@ const BRACKETED_PASTE_MODE: u16 = 2004;
 const MOUSE_SCROLL_LINES: isize = 3;
 // ^ vendor/libghostty-vt/include/ghostty/vt/selection.h requires embedder-driven ticks.
 const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(15);
+const AGENT_OBSERVATION_ROWS: usize = 12;
+const AGENT_OBSERVATION_TEXT_BYTES: usize = 32 * 1024;
+const AGENT_OBSERVATION_TITLE_BYTES: usize = 1024;
 #[cfg(unix)]
 const HANDOFF_PAUSE_TIMEOUT: Duration = Duration::from_secs(2);
 pub const MAX_HANDOFF_ANSI_BYTES: usize = 512 * 1024;
@@ -190,6 +193,13 @@ pub struct PresentationSample {
     pub synchronized_output: bool,
     pub update: Result<Option<TerminalUpdate>, TerminalError>,
     pub clipboard_writes: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentTerminalObservation {
+    pub revision: u64,
+    pub title: String,
+    pub text: String,
 }
 
 impl TerminalRuntime {
@@ -781,6 +791,39 @@ impl TerminalRuntime {
         drop(emulator);
         (self.shared.notify)();
         Ok(())
+    }
+
+    pub fn agent_observation(&self) -> Result<AgentTerminalObservation, TerminalError> {
+        if let Some(error) = lock(&self.shared.error).clone() {
+            return Err(TerminalError::Runtime(error));
+        }
+        let emulator = lock(&self.shared.emulator);
+        let terminal = &emulator.terminal;
+        let cols = terminal.cols()?;
+        let total_rows = terminal.total_rows()?;
+        let visible_rows = usize::from(terminal.rows()?);
+        let rows = AGENT_OBSERVATION_ROWS.min(visible_rows).min(total_rows);
+        let mut text = if rows == 0 || cols == 0 {
+            String::new()
+        } else {
+            let start = total_rows - rows;
+            terminal.read_text_screen(
+                (0, u32::try_from(start).unwrap_or(u32::MAX)),
+                (
+                    cols.saturating_sub(1),
+                    u32::try_from(total_rows - 1).unwrap_or(u32::MAX),
+                ),
+                false,
+            )?
+        };
+        truncate_utf8_start(&mut text, AGENT_OBSERVATION_TEXT_BYTES);
+        let mut title = terminal.title()?;
+        truncate_utf8_end(&mut title, AGENT_OBSERVATION_TITLE_BYTES);
+        Ok(AgentTerminalObservation {
+            revision: self.shared.revision.load(Ordering::Acquire),
+            title,
+            text,
+        })
     }
 
     pub fn frame(&self) -> Result<TerminalFrame, TerminalError> {
@@ -1485,6 +1528,28 @@ fn mark_exited(shared: &Shared) {
         (shared.notify)();
     }
 }
+fn truncate_utf8_start(value: &mut String, max_bytes: usize) {
+    if value.len() <= max_bytes {
+        return;
+    }
+    let mut start = value.len() - max_bytes;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    value.drain(..start);
+}
+
+fn truncate_utf8_end(value: &mut String, max_bytes: usize) {
+    if value.len() <= max_bytes {
+        return;
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -1775,6 +1840,37 @@ mod tests {
         assert!(frame.cells.iter().all(|cell| cell.bg.is_none()));
         assert_eq!((frame.cursor.x, frame.cursor.y), (2, 1));
     }
+    #[test]
+    fn agent_observation_reads_bounded_live_bottom_and_osc_title() {
+        let runtime = TerminalRuntime::new_for_test(4, 24).unwrap();
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(
+                b"old-one\r\nold-two\r\nold-three\r\ncurrent-one\r\ncurrent-two\x1b]2;\xe2\xa0\x8b task\x07",
+            );
+        }
+
+        let observation = runtime.agent_observation().unwrap();
+
+        assert_eq!(observation.title, "⠋ task");
+        assert!(!observation.text.contains("old-one"));
+        assert!(observation.text.contains("current-one"));
+        assert!(observation.text.contains("current-two"));
+        assert!(observation.text.len() <= AGENT_OBSERVATION_TEXT_BYTES);
+        assert!(observation.title.len() <= AGENT_OBSERVATION_TITLE_BYTES);
+    }
+
+    #[test]
+    fn agent_observation_reports_runtime_errors_without_partial_evidence() {
+        let runtime = TerminalRuntime::new_for_test(2, 8).unwrap();
+        *lock(&runtime.shared.error) = Some("reader failed".into());
+
+        assert!(matches!(
+            runtime.agent_observation(),
+            Err(TerminalError::Runtime(message)) if message == "reader failed"
+        ));
+    }
+
     #[test]
     fn frame_keeps_only_explicit_cell_backgrounds() {
         let runtime = TerminalRuntime::new_for_test(1, 3).unwrap();
