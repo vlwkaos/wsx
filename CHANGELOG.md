@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Features
+
+- Finish Workspace filtering when Enter confirms the sole search result, while retaining Enter-based cycling when several results match.
+
 ### Bug Fixes
 
 - Reconcile known Claude sessions with bounded OSC title and live prompt evidence so immediate Escape or Ctrl+C interruption cannot leave a delayed lifecycle hook active. Preserve event-reported completion and errors, ignore ambiguous terminal text, and keep heuristic working state outside wake-mode authority.

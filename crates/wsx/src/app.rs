@@ -3952,14 +3952,14 @@ impl App {
         self.update_scroll();
     }
 
-    /// Enter: cycle to next match. Exits search when wrapping back to start.
+    /// Enter: finish a sole match or cycle to the next of multiple matches.
     fn search_advance(&mut self) {
         let (query, match_idx) = match &self.mode {
             Mode::Search { query, match_idx } => (query.clone(), *match_idx),
             _ => return,
         };
         let matches = self.search_matches(&query);
-        if matches.is_empty() {
+        if matches.len() <= 1 {
             self.mode = Mode::Workspace;
             return;
         }
@@ -6090,6 +6090,44 @@ mod tests {
     fn search_matches_no_match_returns_empty() {
         let cache = vec!["main".to_string(), "fix".to_string()];
         assert!(search_matches_in(&cache, "xyz").is_empty());
+    }
+
+    #[test]
+    fn enter_finishes_search_when_only_one_result_remains() {
+        let workspace = WorkspaceState {
+            projects: vec![make_project("alpha"), make_project("beta")],
+        };
+        let mut app = make_test_app(GlobalConfig::default(), workspace, None);
+        app.mode = Mode::Search {
+            query: "alpha".into(),
+            match_idx: 0,
+        };
+        app.search_apply();
+        let selected = app.tree_selected;
+
+        app.search_advance();
+
+        assert!(matches!(app.mode, Mode::Workspace));
+        assert_eq!(app.tree_selected, selected);
+    }
+
+    #[test]
+    fn enter_keeps_search_open_and_advances_when_multiple_results_remain() {
+        let workspace = WorkspaceState {
+            projects: vec![make_project("alpha-one"), make_project("alpha-two")],
+        };
+        let mut app = make_test_app(GlobalConfig::default(), workspace, None);
+        app.mode = Mode::Search {
+            query: "alpha".into(),
+            match_idx: 0,
+        };
+        app.search_apply();
+        let first = app.tree_selected;
+
+        app.search_advance();
+
+        assert!(matches!(app.mode, Mode::Search { match_idx: 1, .. }));
+        assert_ne!(app.tree_selected, first);
     }
 
     fn make_project(name: &str) -> wsx_core::model::workspace::Project {
