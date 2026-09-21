@@ -21,6 +21,10 @@
 - Start cold recovery only after lifecycle reporting is available, restore ordinary shells first, and load lifecycle-capable resumable agents one at a time so several large Claude histories do not compete for startup memory. Keep pending identity detached until the resumed runtime reports its generation, and continue safely after failure, timeout, deletion, or shutdown.
 - Restore live-handoff terminal histories with bounded parallel workers so protocol-15 daemons can transfer a full 43-pane cohort within the legacy readiness window without changing PTYs or process IDs.
 
+### Maintenance
+
+- Prepare the 0.27.0 workspace pins and locked package metadata, align runtime smoke and latency harnesses with protocol 16, keep generated Task Context sessions out of the release tree, and add evaluated operating guidance for provider-neutral agent exchanges.
+
 ## [0.26.2] - 2026-09-13
 
 ### Bug Fixes
