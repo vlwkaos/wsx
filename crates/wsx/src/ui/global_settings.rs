@@ -8,7 +8,8 @@ use ratatui::{
     widgets::{Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use wsx_core::config::global::{
-    AttentionPriority, GlobalConfig, PortVisibility, TerminalSidebar, TerminalTitlePosition,
+    AttentionPriority, AutoCollapsePolicy, GlobalConfig, PortVisibility, TerminalSidebar,
+    TerminalTitlePosition, ADAPTIVE_COLLAPSE_MAX_HOURS, ADAPTIVE_COLLAPSE_MIN_HOURS,
 };
 
 use super::{popup_block, popup_center, theme};
@@ -53,7 +54,8 @@ impl SettingsCategory {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingField {
-    AutoCollapse,
+    AutoCollapseMode,
+    AutoCollapseHours,
     AttentionPriority,
     ExcludedPaths,
     ShowRelease,
@@ -75,7 +77,8 @@ impl SettingField {
     fn for_category(category: SettingsCategory) -> &'static [Self] {
         match category {
             SettingsCategory::Workspace => &[
-                Self::AutoCollapse,
+                Self::AutoCollapseMode,
+                Self::AutoCollapseHours,
                 Self::AttentionPriority,
                 Self::ExcludedPaths,
             ],
@@ -97,7 +100,8 @@ impl SettingField {
 
     fn label(self) -> &'static str {
         match self {
-            Self::AutoCollapse => "Automatic collapse",
+            Self::AutoCollapseMode => "Automatic collapse",
+            Self::AutoCollapseHours => "Collapse window",
             Self::AttentionPriority => "Attention navigation",
             Self::ExcludedPaths => "Excluded worktree paths",
             Self::ShowRelease => "Release status",
@@ -116,7 +120,8 @@ impl SettingField {
 
     fn description(self) -> &'static str {
         match self {
-            Self::AutoCollapse => "Hours before inactive projects collapse. Use 0 to disable.",
+            Self::AutoCollapseMode => "Disable automatic collapse, use one flat window, or adapt the window to trusted daily activity.",
+            Self::AutoCollapseHours => "Flat hours, or the Adaptive starting window. Adaptive accepts 24 to 672 hours and grows by 12 hours per active day.",
             Self::AttentionPriority => "Choose Blocked sessions first or follow Workspace order when using N and Shift+N.",
             Self::ExcludedPaths => "Path fragments ignored during worktree discovery.",
             Self::ShowRelease => "Show the running version and available update in the footer.",
@@ -365,9 +370,40 @@ impl GlobalSettingsForm {
         let editor = self.editor.take().expect("editor checked above");
         let rollback = editor.clone();
         let result = match (field, editor) {
-            (SettingField::AutoCollapse, FieldEditor::Text(editor)) => {
-                parse_u64(&editor.value, true).map(|value| {
-                    self.draft.auto_collapse_after_hours = value;
+            (SettingField::AutoCollapseMode, FieldEditor::Choice(editor)) => {
+                let hours = self
+                    .draft
+                    .auto_collapse
+                    .base_hours()
+                    .unwrap_or(ADAPTIVE_COLLAPSE_MIN_HOURS);
+                self.draft.auto_collapse = match editor.selected {
+                    0 => AutoCollapsePolicy::Adaptive {
+                        base_hours: hours
+                            .clamp(ADAPTIVE_COLLAPSE_MIN_HOURS, ADAPTIVE_COLLAPSE_MAX_HOURS),
+                    },
+                    1 => AutoCollapsePolicy::Flat {
+                        hours: hours.max(1),
+                    },
+                    _ => AutoCollapsePolicy::Disabled,
+                };
+                Ok(())
+            }
+            (SettingField::AutoCollapseHours, FieldEditor::Text(editor)) => {
+                parse_u64(&editor.value, false).and_then(|hours| {
+                    self.draft.auto_collapse = match self.draft.auto_collapse {
+                        AutoCollapsePolicy::Disabled => {
+                            return Err(
+                                "enable Flat or Adaptive collapse before editing hours".into()
+                            )
+                        }
+                        AutoCollapsePolicy::Flat { .. } => AutoCollapsePolicy::Flat { hours },
+                        AutoCollapsePolicy::Adaptive { .. } => {
+                            AutoCollapsePolicy::Adaptive { base_hours: hours }
+                                .validate()
+                                .map_err(|error| error.to_string())?
+                        }
+                    };
+                    Ok(())
                 })
             }
             (SettingField::NotificationTimeout, FieldEditor::Text(editor)) => {
@@ -459,8 +495,20 @@ impl GlobalSettingsForm {
 
     fn editor_for_selected(&self) -> FieldEditor {
         match self.selected_field() {
-            SettingField::AutoCollapse => FieldEditor::Text(TextEditor::new(
-                self.draft.auto_collapse_after_hours.to_string(),
+            SettingField::AutoCollapseMode => FieldEditor::Choice(ChoiceEditor {
+                selected: match self.draft.auto_collapse {
+                    AutoCollapsePolicy::Adaptive { .. } => 0,
+                    AutoCollapsePolicy::Flat { .. } => 1,
+                    AutoCollapsePolicy::Disabled => 2,
+                },
+                labels: vec!["Adaptive", "Flat", "Disabled"],
+            }),
+            SettingField::AutoCollapseHours => FieldEditor::Text(TextEditor::new(
+                self.draft
+                    .auto_collapse
+                    .base_hours()
+                    .unwrap_or(ADAPTIVE_COLLAPSE_MIN_HOURS)
+                    .to_string(),
             )),
             SettingField::NotificationTimeout => FieldEditor::Text(TextEditor::new(
                 self.draft.notification_timeout_seconds.to_string(),
@@ -740,7 +788,16 @@ fn setting_value(form: &GlobalSettingsForm, field: SettingField) -> String {
         }
     }
     match field {
-        SettingField::AutoCollapse => format!("{} hours", form.draft.auto_collapse_after_hours),
+        SettingField::AutoCollapseMode => match form.draft.auto_collapse {
+            AutoCollapsePolicy::Adaptive { .. } => "Adaptive".into(),
+            AutoCollapsePolicy::Flat { .. } => "Flat".into(),
+            AutoCollapsePolicy::Disabled => "Disabled".into(),
+        },
+        SettingField::AutoCollapseHours => match form.draft.auto_collapse {
+            AutoCollapsePolicy::Adaptive { base_hours } => format!("{base_hours} hours base"),
+            AutoCollapsePolicy::Flat { hours } => format!("{hours} hours"),
+            AutoCollapsePolicy::Disabled => "Not used".into(),
+        },
         SettingField::ExcludedPaths => {
             format!("{} entries", form.draft.exclude_worktree_paths.len())
         }
@@ -1417,8 +1474,8 @@ mod tests {
         );
         assert_eq!(
             attention_row,
-            collapse_row + 1,
-            "j/k fields must form vertical rows"
+            collapse_row + 2,
+            "mode, window, and attention fields must form vertical rows"
         );
         assert_eq!(
             paths_row,
@@ -1445,6 +1502,7 @@ mod tests {
         let mut list_form = GlobalSettingsForm::new(GlobalConfig::default());
         list_form.next_field(false);
         list_form.next_field(false);
+        list_form.next_field(false);
         list_form.begin_or_commit().unwrap();
         let list_text = rendered(110, 24, &list_form);
         assert!(list_text.contains("(a)dd"));
@@ -1465,7 +1523,7 @@ mod tests {
     #[test]
     fn attention_priority_choice_cancels_and_commits() {
         let mut form = GlobalSettingsForm::new(GlobalConfig::default());
-        form.field = 1;
+        form.field = 2;
         assert_eq!(
             setting_value(&form, SettingField::AttentionPriority),
             "Blocked first"
@@ -1512,12 +1570,62 @@ mod tests {
     }
 
     #[test]
+    fn collapse_policy_mode_and_hours_commit_with_adaptive_bounds() {
+        let mut form = GlobalSettingsForm::new(GlobalConfig::default());
+        assert_eq!(
+            setting_value(&form, SettingField::AutoCollapseMode),
+            "Adaptive"
+        );
+        assert_eq!(
+            setting_value(&form, SettingField::AutoCollapseHours),
+            "24 hours base"
+        );
+
+        form.begin_or_commit().unwrap();
+        form.next_field(false);
+        form.begin_or_commit().unwrap();
+        assert_eq!(
+            form.draft.auto_collapse,
+            AutoCollapsePolicy::Flat { hours: 24 }
+        );
+
+        form.field = 1;
+        form.begin_or_commit().unwrap();
+        form.backspace();
+        form.backspace();
+        form.insert('7');
+        form.begin_or_commit().unwrap();
+        assert_eq!(
+            form.draft.auto_collapse,
+            AutoCollapsePolicy::Flat { hours: 7 }
+        );
+
+        form.field = 0;
+        form.begin_or_commit().unwrap();
+        form.next_field(true);
+        form.begin_or_commit().unwrap();
+        assert_eq!(
+            form.draft.auto_collapse,
+            AutoCollapsePolicy::Adaptive { base_hours: 24 }
+        );
+        form.field = 1;
+        form.begin_or_commit().unwrap();
+        form.backspace();
+        form.backspace();
+        form.insert('2');
+        form.insert('3');
+        assert!(form.begin_or_commit().is_err());
+        assert!(form.is_editing());
+    }
+
+    #[test]
     fn multi_list_supports_marked_deletion_and_cancel() {
         let config = GlobalConfig {
             exclude_worktree_paths: vec!["one".into(), "two".into(), "three".into()],
             ..GlobalConfig::default()
         };
         let mut form = GlobalSettingsForm::new(config);
+        form.next_field(false);
         form.next_field(false);
         form.next_field(false);
         form.begin_or_commit().unwrap();

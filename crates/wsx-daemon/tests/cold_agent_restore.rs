@@ -747,6 +747,7 @@ fn report_claude_ready(daemon: &DaemonGuard, invocation: &ClaudeInvocation) {
                     .get(1)
                     .cloned()
                     .and_then(wsx_core::runtime::AgentSessionRef::id),
+                wake_token: None,
                 capabilities: AgentCapabilities {
                     resume: true,
                     lifecycle: true,

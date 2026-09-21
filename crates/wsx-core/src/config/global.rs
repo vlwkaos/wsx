@@ -10,7 +10,10 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const MILLIS_PER_HOUR: u64 = 60 * 60 * 1_000;
+pub const MILLIS_PER_HOUR: u64 = 60 * 60 * 1_000;
+pub const ADAPTIVE_COLLAPSE_MIN_HOURS: u64 = 24;
+pub const ADAPTIVE_COLLAPSE_STEP_HOURS: u64 = 12;
+pub const ADAPTIVE_COLLAPSE_MAX_HOURS: u64 = 24 * 28;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const CONFIG_V2_FILE: &str = "config-v2.toml";
 const LEGACY_CONFIG_FILE: &str = "config.toml";
@@ -105,8 +108,54 @@ fn default_wake_mode() -> bool {
     true
 }
 
-fn default_auto_collapse_after_hours() -> u64 {
-    24
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum AutoCollapsePolicy {
+    Disabled,
+    Flat { hours: u64 },
+    Adaptive { base_hours: u64 },
+}
+
+impl Default for AutoCollapsePolicy {
+    fn default() -> Self {
+        Self::Adaptive {
+            base_hours: ADAPTIVE_COLLAPSE_MIN_HOURS,
+        }
+    }
+}
+
+impl AutoCollapsePolicy {
+    pub fn validate(self) -> std::result::Result<Self, String> {
+        match self {
+            Self::Disabled => Ok(self),
+            Self::Flat { hours } if hours > 0 => Ok(self),
+            Self::Flat { .. } => Err("flat automatic collapse must be at least 1 hour".into()),
+            Self::Adaptive { base_hours }
+                if (ADAPTIVE_COLLAPSE_MIN_HOURS..=ADAPTIVE_COLLAPSE_MAX_HOURS)
+                    .contains(&base_hours) =>
+            {
+                Ok(self)
+            }
+            Self::Adaptive { .. } => Err(format!(
+                "adaptive automatic collapse must be between {ADAPTIVE_COLLAPSE_MIN_HOURS} and {ADAPTIVE_COLLAPSE_MAX_HOURS} hours"
+            )),
+        }
+    }
+
+    pub fn base_hours(self) -> Option<u64> {
+        match self {
+            Self::Disabled => None,
+            Self::Flat { hours } => Some(hours),
+            Self::Adaptive { base_hours } => Some(base_hours),
+        }
+    }
+
+    pub fn flat_window_ms(self) -> Option<u64> {
+        match self {
+            Self::Flat { hours } => Some(hours.saturating_mul(MILLIS_PER_HOUR)),
+            Self::Disabled | Self::Adaptive { .. } => None,
+        }
+    }
 }
 
 fn default_notification_timeout_seconds() -> u64 {
@@ -183,8 +232,8 @@ pub struct GlobalConfig {
     pub resume_agents_on_restore: bool,
     #[serde(default = "default_wake_mode")]
     pub wake_mode: bool,
-    #[serde(default = "default_auto_collapse_after_hours")]
-    pub auto_collapse_after_hours: u64,
+    #[serde(default)]
+    pub auto_collapse: AutoCollapsePolicy,
     #[serde(default = "default_notification_timeout_seconds")]
     pub notification_timeout_seconds: u64,
     #[serde(default = "default_show_release_status")]
@@ -208,7 +257,7 @@ impl Default for GlobalConfig {
             terminal_escape_chord: default_terminal_escape_chord(),
             resume_agents_on_restore: default_resume_agents_on_restore(),
             wake_mode: default_wake_mode(),
-            auto_collapse_after_hours: default_auto_collapse_after_hours(),
+            auto_collapse: AutoCollapsePolicy::default(),
             notification_timeout_seconds: default_notification_timeout_seconds(),
             show_release_status: default_show_release_status(),
             terminal_sidebar: TerminalSidebar::default(),
@@ -262,8 +311,10 @@ struct GlobalConfigWire {
     resume_agents_on_restore: bool,
     #[serde(default = "default_wake_mode")]
     wake_mode: bool,
-    #[serde(default = "default_auto_collapse_after_hours")]
-    auto_collapse_after_hours: u64,
+    #[serde(default)]
+    auto_collapse: Option<AutoCollapsePolicy>,
+    #[serde(default)]
+    auto_collapse_after_hours: Option<u64>,
     #[serde(default = "default_notification_timeout_seconds")]
     notification_timeout_seconds: u64,
     #[serde(default = "default_show_release_status")]
@@ -342,6 +393,20 @@ impl<'de> Deserialize<'de> for GlobalConfig {
                 "notification_timeout_seconds must be at least 1",
             ));
         }
+        if wire.auto_collapse.is_some() && wire.auto_collapse_after_hours.is_some() {
+            return Err(D::Error::custom(
+                "configure only auto_collapse or legacy auto_collapse_after_hours",
+            ));
+        }
+        let auto_collapse = match (wire.auto_collapse, wire.auto_collapse_after_hours) {
+            (Some(policy), None) => policy,
+            (None, Some(0)) => AutoCollapsePolicy::Disabled,
+            (None, Some(hours)) => AutoCollapsePolicy::Flat { hours },
+            (None, None) => AutoCollapsePolicy::default(),
+            (Some(_), Some(_)) => unreachable!("conflict rejected above"),
+        }
+        .validate()
+        .map_err(D::Error::custom)?;
         let mut config = Self {
             groups,
             projects,
@@ -349,7 +414,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
             terminal_escape_chord: wire.terminal_escape_chord,
             resume_agents_on_restore: wire.resume_agents_on_restore,
             wake_mode: wire.wake_mode,
-            auto_collapse_after_hours: wire.auto_collapse_after_hours,
+            auto_collapse,
             notification_timeout_seconds: wire.notification_timeout_seconds,
             show_release_status: wire.show_release_status,
             terminal_sidebar: wire.terminal_sidebar,
@@ -378,6 +443,7 @@ fn stored_data_needs_migration(text: &str) -> bool {
     };
     if root.contains_key("tabs")
         || root.contains_key("group")
+        || root.contains_key("auto_collapse_after_hours")
         || root.get("groups").is_some_and(|value| !value.is_array())
         || contains_reserved(root.get("groups"))
     {
@@ -529,10 +595,7 @@ impl GlobalConfig {
     }
 
     pub fn auto_collapse_window_ms(&self) -> Option<u64> {
-        (self.auto_collapse_after_hours > 0).then(|| {
-            self.auto_collapse_after_hours
-                .saturating_mul(MILLIS_PER_HOUR)
-        })
+        self.auto_collapse.flat_window_ms()
     }
 
     pub fn is_worktree_excluded(&self, path: &Path) -> bool {

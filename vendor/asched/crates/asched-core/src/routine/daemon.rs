@@ -11,9 +11,10 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -36,6 +37,39 @@ static TICK_ADMISSION_HOOK: OnceLock<Mutex<Option<TickAdmissionHook>>> = OnceLoc
 
 pub fn serve(root: PathBuf) -> Result<(), RoutineError> {
     serve_with_startup(root, |_| {})
+}
+
+/// Serve and report startup through the descriptor supplied by `RoutineClient`.
+pub fn serve_from_startup_env(root: PathBuf) -> Result<(), RoutineError> {
+    let Some(mut startup) = startup_notifier()? else {
+        return serve(root);
+    };
+    serve_with_startup(root, move |result| {
+        let message = result.map_or_else(|error| format!("error:{error}"), |()| "ready".into());
+        let _ = startup.write_all(message.as_bytes());
+    })
+}
+
+fn startup_notifier() -> Result<Option<fs::File>, RoutineError> {
+    let Some(raw) = std::env::var_os(super::STARTUP_FD_ENV) else {
+        return Ok(None);
+    };
+    std::env::remove_var(super::STARTUP_FD_ENV);
+    let descriptor = validate_startup_descriptor(&raw)?;
+    Ok(Some(unsafe { fs::File::from_raw_fd(descriptor) }))
+}
+
+fn validate_startup_descriptor(raw: &OsStr) -> Result<i32, RoutineError> {
+    let descriptor = raw
+        .to_string_lossy()
+        .parse::<i32>()
+        .map_err(|_| RoutineError::Validation("invalid routine startup descriptor".into()))?;
+    if descriptor < 3 || unsafe { libc::fcntl(descriptor, libc::F_GETFD) } == -1 {
+        return Err(RoutineError::Validation(
+            "invalid routine startup descriptor".into(),
+        ));
+    }
+    Ok(descriptor)
 }
 
 /// Serve while reporting the one-shot startup result after the socket is bound.

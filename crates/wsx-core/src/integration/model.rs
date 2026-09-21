@@ -107,7 +107,7 @@ impl IntegrationTarget {
         match self {
             Self::Pi => 15,
             Self::Omp => 12,
-            Self::Claude => 14,
+            Self::Claude => 15,
             Self::Codex => 11,
             Self::Copilot | Self::Droid | Self::Qodercli => 5,
             Self::Devin => 4,

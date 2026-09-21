@@ -2,12 +2,21 @@
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-09-21
+
 ### Features
 
+- Replace the single automatic-collapse timeout with typed disabled, flat, and adaptive policies. New configurations start with a 24-hour adaptive window, gain one bounded 12-hour credit on the first trusted activity of each UTC day, persist earned windows by project, reset after expiry, and cap at 28 days. Existing numeric values retain fixed-window behavior, with zero mapped to disabled.
 - Finish Workspace filtering when Enter confirms the sole search result, while retaining Enter-based cycling when several results match.
+- Prompt at TUI startup before updating installed agent integrations whose embedded version is outdated. Missing integrations remain demand-driven, and declined updates prompt again on the next launch.
+- Add provider-neutral, runtime-generation-bound agent exchanges with durable delivery receipts, lifecycle-observed state, bounded terminal-frame fallback, multi-round continuation, cancellation requests, and non-overlapping writer claims. Pi, Claude, Codex, OpenCode, Hermes, and future terminal agents share the same wsx contract; optional native adapters may strengthen evidence without changing commands.
 
 ### Bug Fixes
 
+- Keep macOS wake mode active through long Claude responses with an asynchronous five-minute heartbeat bound to the exact prompt and runtime generation. Completed, blocked, failed, detached, replaced, and superseded turns revoke old heartbeat authority instead of letting stale helpers prevent sleep.
+- Revive an exited session pane instead of leaving a listed but hollow session after Ctrl+C or an agent crash. `wsx session restart` restarts the exact exited pane with its saved command or persisted native agent session, accepts only an exited pane at the caller's expected revision, fences the dead pane's old stream, and leaves the pane unchanged when a start fails. An exited pane also stops reporting a live foreground job or listener, and generation-bound callbacks prevent a replaced or abandoned runtime from publishing change or exit observations for a pane it no longer owns.
+- Run routine scheduling through the shipped adjacent `wsxd` binary instead of trying to launch an unshipped standalone `asched` executable during periodic refreshes. A newer client now safely stops an older internal scheduler with that scheduler's protocol before starting the adjacent replacement, while refusing to downgrade a newer scheduler.
+- Clear a project's persisted `stale` marker on the first explicit interaction, including expanding the project or entering one of its sessions, instead of requiring a later manual collapse.
 - Reconcile known Claude sessions with bounded OSC title and live prompt evidence so immediate Escape or Ctrl+C interruption cannot leave a delayed lifecycle hook active. Preserve event-reported completion and errors, ignore ambiguous terminal text, and keep heuristic working state outside wake-mode authority.
 - Start cold recovery only after lifecycle reporting is available, restore ordinary shells first, and load lifecycle-capable resumable agents one at a time so several large Claude histories do not compete for startup memory. Keep pending identity detached until the resumed runtime reports its generation, and continue safely after failure, timeout, deletion, or shutdown.
 - Restore live-handoff terminal histories with bounded parallel workers so protocol-15 daemons can transfer a full 43-pane cohort within the legacy readiness window without changing PTYs or process IDs.

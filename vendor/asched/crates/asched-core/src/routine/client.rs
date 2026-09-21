@@ -140,15 +140,116 @@ impl RoutineClient {
         match ipc::send_with_timeout(&self.socket_path(), status, remaining)
             .and_then(Response::into_result)
         {
+            Ok(Response::Daemon { protocol, .. }) if protocol == PROTOCOL_VERSION => return Ok(()),
+            Ok(Response::Daemon { protocol, .. }) if protocol < PROTOCOL_VERSION => {
+                if self.stop_older_daemon(status, protocol, deadline)? {
+                    return Ok(());
+                }
+            }
             Ok(response) => {
                 validate_status_response(response)?;
                 return Ok(());
             }
             Err(RoutineError::Unavailable(_)) => {}
+            Err(
+                error @ RoutineError::RemoteDaemon {
+                    kind: super::RoutineErrorKind::ProtocolMismatch,
+                    ..
+                },
+            ) => {
+                let Some(protocol) = self.probe_older_daemon(status, deadline)? else {
+                    return Err(error);
+                };
+                if self.stop_older_daemon(status, protocol, deadline)? {
+                    return Ok(());
+                }
+            }
             Err(error) => return Err(error),
         }
 
         self.spawn_and_await(status, command, deadline)
+    }
+
+    fn probe_older_daemon(
+        &self,
+        status: &Request,
+        deadline: Instant,
+    ) -> Result<Option<u32>, RoutineError> {
+        for protocol in (1..PROTOCOL_VERSION).rev() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(self.startup_timeout_error());
+            }
+            let mut probe = status.clone();
+            probe.protocol = protocol;
+            match ipc::send_with_timeout(&self.socket_path(), &probe, remaining)
+                .and_then(Response::into_result)
+            {
+                Ok(Response::Daemon {
+                    protocol: observed, ..
+                }) if observed == protocol => return Ok(Some(protocol)),
+                Ok(response) => validate_status_response(response)?,
+                Err(RoutineError::RemoteDaemon {
+                    kind: super::RoutineErrorKind::ProtocolMismatch,
+                    ..
+                }) => {}
+                Err(RoutineError::Unavailable(_)) => return Ok(None),
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(None)
+    }
+
+    fn stop_older_daemon(
+        &self,
+        status: &Request,
+        protocol: u32,
+        deadline: Instant,
+    ) -> Result<bool, RoutineError> {
+        let mut shutdown = Request::new(PathBuf::new(), Action::Shutdown);
+        shutdown.protocol = protocol;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(self.startup_timeout_error());
+        }
+        match ipc::send_with_timeout(&self.socket_path(), &shutdown, remaining) {
+            Ok(Response::Ok { .. }) | Err(RoutineError::Unavailable(_)) => {}
+            Ok(Response::Error { kind, message }) => {
+                return Err(RoutineError::RemoteDaemon { kind, message });
+            }
+            Ok(_) => {
+                return Err(RoutineError::Corrupt(
+                    "older routine daemon returned a non-shutdown response".into(),
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match ipc::send_with_timeout(&self.socket_path(), status, remaining)
+                .and_then(Response::into_result)
+            {
+                Ok(Response::Daemon { protocol, .. }) if protocol == PROTOCOL_VERSION => {
+                    return Ok(true)
+                }
+                Ok(Response::Daemon {
+                    protocol: observed, ..
+                }) if observed == protocol => {}
+                Ok(response) => {
+                    validate_status_response(response)?;
+                    return Ok(true);
+                }
+                Err(RoutineError::Unavailable(_)) => return Ok(false),
+                Err(RoutineError::RemoteDaemon {
+                    kind: super::RoutineErrorKind::ProtocolMismatch,
+                    ..
+                }) => {}
+                Err(error) => return Err(error),
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+        Err(self.startup_timeout_error())
     }
 
     fn spawn_and_await(
@@ -632,6 +733,70 @@ mod tests {
     }
 
     #[test]
+    fn older_daemon_is_stopped_with_its_protocol_before_starting_current_daemon() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::net::UnixListener;
+
+        let root = test_root("older-status-protocol");
+        std::fs::create_dir_all(&root).unwrap();
+        let socket = root.join("daemon-v1.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server_root = root.clone();
+        let server = std::thread::spawn(move || {
+            let (mut probe, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(probe.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let probe_request: Request = serde_json::from_str(&line).unwrap();
+            assert_eq!(probe_request.protocol, PROTOCOL_VERSION);
+            assert!(matches!(probe_request.action, Action::Status));
+            probe
+                .write_all(b"{\"result\":\"error\",\"kind\":\"protocol_mismatch\",\"message\":\"protocol mismatch\"}\n")
+                .unwrap();
+
+            let (mut older_probe, _) = listener.accept().unwrap();
+            line.clear();
+            BufReader::new(older_probe.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let older_probe_request: Request = serde_json::from_str(&line).unwrap();
+            assert_eq!(older_probe_request.protocol, PROTOCOL_VERSION - 1);
+            assert!(matches!(older_probe_request.action, Action::Status));
+            writeln!(
+                older_probe,
+                "{{\"result\":\"daemon\",\"protocol\":{},\"pid\":1}}",
+                PROTOCOL_VERSION - 1
+            )
+            .unwrap();
+
+            let (mut shutdown, _) = listener.accept().unwrap();
+            line.clear();
+            BufReader::new(shutdown.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let shutdown_request: Request = serde_json::from_str(&line).unwrap();
+            assert_eq!(shutdown_request.protocol, PROTOCOL_VERSION - 1);
+            assert!(matches!(shutdown_request.action, Action::Shutdown));
+            std::fs::remove_file(server_root.join("daemon-v1.sock")).unwrap();
+            shutdown
+                .write_all(b"{\"result\":\"ok\",\"revision\":null}\n")
+                .unwrap();
+        });
+
+        let client = RoutineClient::new(root.clone());
+        let response = client
+            .request_with_start(&list(&root), helper_command(&root, "daemon"))
+            .unwrap();
+        assert!(matches!(response, Response::Routines { .. }));
+        server.join().unwrap();
+        client
+            .request(&Request::new(root.clone(), Action::Shutdown))
+            .unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn mismatched_status_protocol_does_not_trigger_a_start() {
         use std::io::{BufRead, BufReader};
         use std::os::unix::net::UnixListener;
@@ -660,6 +825,43 @@ mod tests {
                 client: PROTOCOL_VERSION,
                 daemon,
             }) if daemon == PROTOCOL_VERSION + 1
+        ));
+        server.join().unwrap();
+        assert!(!root.join("helper.pid").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unrecognized_protocol_error_does_not_stop_or_replace_the_daemon() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::net::UnixListener;
+
+        let root = test_root("unrecognized-status-protocol");
+        std::fs::create_dir_all(&root).unwrap();
+        let listener = UnixListener::bind(root.join("daemon-v1.sock")).unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..PROTOCOL_VERSION {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: Request = serde_json::from_str(&request).unwrap();
+                assert!(matches!(request.action, Action::Status));
+                stream
+                    .write_all(b"{\"result\":\"error\",\"kind\":\"protocol_mismatch\",\"message\":\"newer daemon\"}\n")
+                    .unwrap();
+            }
+        });
+
+        let result = RoutineClient::new(root.clone())
+            .request_with_start(&list(&root), helper_command(&root, "must_not_start"));
+        assert!(matches!(
+            result,
+            Err(RoutineError::RemoteDaemon {
+                kind: crate::routine::RoutineErrorKind::ProtocolMismatch,
+                ..
+            })
         ));
         server.join().unwrap();
         assert!(!root.join("helper.pid").exists());

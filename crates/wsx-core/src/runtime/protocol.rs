@@ -10,15 +10,20 @@ use std::{
 };
 
 // ^ [[Terminal Stream Protocol v3]] Wire-version history and compatibility boundaries.
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+pub const MAX_AGENT_EXCHANGE_PROMPT_BYTES: usize = 64 * 1024;
+pub const MAX_AGENT_EXCHANGE_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1000;
+pub const MAX_AGENT_EXCHANGE_WRITE_CLAIMS: usize = 32;
 pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 pub const WSX_PANE_ID_ENV: &str = "WSX_PANE_ID";
 pub const WSX_RUNTIME_GENERATION_ENV: &str = "WSX_RUNTIME_GENERATION";
 pub const WSX_PLUGIN_VIEW_ENV: &str = "WSX_PLUGIN_VIEW_JSON";
+pub const ROUTINE_DAEMON_ARG: &str = "__wsx_routine_daemon";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
-// ^ Bump only when daemon-owned runtime behavior changes. UI-only releases reuse wsxd.
-pub const DAEMON_REVISION: u32 = 10;
+// ^ Exited-pane restart and prompt-bound wake renewal are daemon-owned runtime behavior.
+// Bump only when daemon-owned runtime behavior changes. UI-only releases reuse wsxd.
+pub const DAEMON_REVISION: u32 = 13;
 
 fn default_attached() -> bool {
     true
@@ -225,6 +230,10 @@ pub enum Request {
         session_id: SessionId,
         expected_revision: u64,
     },
+    SessionRestart {
+        pane_id: PaneId,
+        expected_revision: u64,
+    },
     PaneSplit {
         session_id: SessionId,
         target: PaneId,
@@ -306,12 +315,60 @@ pub enum Request {
         conversation_id: Option<String>,
         #[serde(default)]
         session_ref: Option<AgentSessionRef>,
+        #[serde(default)]
+        wake_token: Option<String>,
         capabilities: AgentCapabilities,
+    },
+    AgentWakeRenew {
+        pane_id: PaneId,
+        runtime_generation: String,
+        wake_token: String,
     },
     AgentClear {
         pane_id: PaneId,
         runtime_generation: String,
         next_runtime_generation: String,
+    },
+    AgentExchangeCreate {
+        pane_id: PaneId,
+        prompt: String,
+        timeout_ms: u64,
+        #[serde(default)]
+        access: AgentExchangeAccess,
+        #[serde(default)]
+        write_claims: Vec<PathBuf>,
+    },
+    AgentExchangeContinue {
+        exchange_id: AgentExchangeId,
+        expected_revision: u64,
+        prompt: String,
+        timeout_ms: u64,
+    },
+    AgentExchangeGet {
+        exchange_id: AgentExchangeId,
+        #[serde(default)]
+        include_frame: bool,
+    },
+    AgentExchangeList {
+        #[serde(default)]
+        pane_id: Option<PaneId>,
+    },
+    AgentExchangeWait {
+        exchange_id: AgentExchangeId,
+        after_revision: u64,
+        timeout_ms: u64,
+        #[serde(default)]
+        include_frame: bool,
+    },
+    AgentExchangeReceipt {
+        exchange_id: AgentExchangeId,
+        round: u32,
+        runtime_generation: String,
+        receipt: AgentExchangeReceipt,
+    },
+    AgentExchangeCancel {
+        exchange_id: AgentExchangeId,
+        expected_revision: u64,
     },
     PluginList,
     PluginReload,
@@ -400,6 +457,12 @@ pub enum Response {
         events: Vec<Event>,
     },
     Plugins(Vec<PluginManifest>),
+    AgentExchange {
+        exchange: AgentExchange,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        frame: Option<TerminalFrame>,
+    },
+    AgentExchanges(Vec<AgentExchange>),
     PluginView(PluginSidecarView),
     PluginReview {
         epoch: u64,
@@ -504,6 +567,108 @@ mod tests {
         assert!(!capabilities.foreground_jobs);
         assert!(!capabilities.lifecycle_coordination);
         assert!(!capabilities.daemon_revision_coordination);
+        assert!(!capabilities.agent_exchanges);
+    }
+
+    #[test]
+    fn agent_exchange_wire_is_provider_neutral_and_defaults_optional_fields() {
+        let request = serde_json::from_str::<Request>(
+            r#"{"method":"agent_exchange_create","params":{"pane_id":4,"prompt":"review","timeout_ms":60000}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            request,
+            Request::AgentExchangeCreate {
+                pane_id: PaneId(4),
+                access: AgentExchangeAccess::ReadOnly,
+                write_claims,
+                ..
+            } if write_claims.is_empty()
+        ));
+
+        let exchange = AgentExchange {
+            id: AgentExchangeId(7),
+            pane_id: PaneId(4),
+            session_id: SessionId(3),
+            worktree_id: WorktreeId(2),
+            project_id: ProjectId(1),
+            agent_id: AgentInstanceId(6),
+            provider: "claude".into(),
+            runtime_generation: "0000000000000001:0000000000000001".into(),
+            round: 1,
+            access: AgentExchangeAccess::ReadOnly,
+            write_claims: Vec::new(),
+            state: AgentExchangeState::Delivered,
+            evidence: AgentExchangeEvidence::PtyDelivery,
+            created_unix_ms: 10,
+            updated_unix_ms: 11,
+            deadline_unix_ms: 60_010,
+            delivery_revision: 8,
+            revision: 9,
+        };
+        let response = Response::AgentExchange {
+            exchange,
+            frame: None,
+        };
+        let encoded = serde_json::to_string(&response).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Response>(&encoded).unwrap(),
+            response
+        );
+        assert!(
+            !encoded.contains("prompt"),
+            "receipts must not persist request text"
+        );
+    }
+
+    #[test]
+    fn session_restart_wire_requires_exact_pane_and_revision() {
+        let request = serde_json::from_str::<Request>(
+            r#"{"method":"session_restart","params":{"pane_id":4,"expected_revision":7}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            request,
+            Request::SessionRestart {
+                pane_id: PaneId(4),
+                expected_revision: 7
+            }
+        ));
+    }
+
+    #[test]
+    fn agent_exchange_receipt_wire_and_legacy_capabilities_are_provider_neutral() {
+        let request = serde_json::from_str::<Request>(
+            r#"{"method":"agent_exchange_receipt","params":{"exchange_id":7,"round":2,"runtime_generation":"0000000000000001:0000000000000001","receipt":"completed"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            request,
+            Request::AgentExchangeReceipt {
+                exchange_id: AgentExchangeId(7),
+                round: 2,
+                runtime_generation,
+                receipt: AgentExchangeReceipt::Completed,
+            } if runtime_generation == "0000000000000001:0000000000000001"
+        ));
+
+        let capabilities = serde_json::from_str::<AgentCapabilities>(r#"{"prompt":true}"#).unwrap();
+        assert!(capabilities.prompt);
+        assert!(!capabilities.exchange_receipts);
+    }
+
+    #[test]
+    fn agent_exchange_legacy_receipt_defaults_to_persisted_intent() {
+        let response = serde_json::from_str::<Response>(
+            r#"{"type":"agent_exchange","data":{"exchange":{"id":7,"pane_id":4,"session_id":3,"worktree_id":2,"project_id":1,"agent_id":6,"provider":"claude","runtime_generation":"0000000000000001:0000000000000001","round":1,"access":"read_only","write_claims":[],"state":"submitted","created_unix_ms":10,"updated_unix_ms":11,"deadline_unix_ms":60010,"delivery_revision":8,"revision":9},"frame":null}}"#,
+        )
+        .unwrap();
+
+        let Response::AgentExchange { exchange, .. } = response else {
+            panic!("expected agent exchange response");
+        };
+        assert_eq!(exchange.evidence, AgentExchangeEvidence::IntentPersisted);
+        assert_eq!(exchange.state, AgentExchangeState::Submitted);
     }
 
     #[test]
@@ -686,6 +851,7 @@ mod tests {
             attached,
             session_ref,
             runtime_generation,
+            wake_token,
             capabilities,
             ..
         } = request
@@ -695,6 +861,7 @@ mod tests {
         assert!(attached);
         assert_eq!(session_ref, None);
         assert_eq!(runtime_generation, None);
+        assert_eq!(wake_token, None);
         assert!(!capabilities.escape_interrupts);
     }
 

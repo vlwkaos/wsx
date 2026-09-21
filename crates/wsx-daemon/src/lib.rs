@@ -22,7 +22,7 @@ use std::{
         net::{UnixListener, UnixStream},
         process::CommandExt,
     },
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -44,6 +44,7 @@ const MAX_CLIENTS: usize = 64;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_VIEW_PANES: usize = 32;
 const MAX_VIEW_CELLS: usize = 1_000_000;
+const MAX_AGENT_EXCHANGES: usize = 256;
 const LEASE_TTL: Duration = Duration::from_secs(3);
 const TUI_PRESENCE_TTL: Duration = Duration::from_secs(3);
 const AGENT_WAKE_LEASE_TTL: Duration = Duration::from_secs(30 * 60);
@@ -146,6 +147,8 @@ struct Persisted {
     worktrees: Vec<Worktree>,
     sessions: Vec<Session>,
     panes: Vec<PersistedPane>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    agent_exchanges: Vec<AgentExchange>,
 }
 impl Default for Persisted {
     fn default() -> Self {
@@ -155,6 +158,7 @@ impl Default for Persisted {
             worktrees: Vec::new(),
             sessions: Vec::new(),
             panes: Vec::new(),
+            agent_exchanges: Vec::new(),
         }
     }
 }
@@ -242,6 +246,7 @@ struct State {
     runtimes: HashMap<PaneId, Arc<TerminalRuntime>>,
     runtime_generations: HashMap<PaneId, String>,
     agent_wake_leases: HashMap<PaneId, Instant>,
+    agent_wake_tokens: HashMap<PaneId, String>,
     claude_reconciliations: HashMap<PaneId, ClaudeReconciliation>,
     terminal_operation_locks: HashMap<PaneId, Arc<Mutex<()>>>,
     listening_ports: HashMap<PaneId, Vec<u16>>,
@@ -868,6 +873,17 @@ pub fn run() -> io::Result<()> {
     run_daemon(None)
 }
 
+pub fn run_routine_daemon(mut arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
+    if arguments.next().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unexpected routine daemon argument",
+        ));
+    }
+    let root = asched_core::RegistryStore::default_root().map_err(io::Error::other)?;
+    asched_core::routine::daemon::serve_from_startup_env(root).map_err(io::Error::other)
+}
+
 pub fn run_handoff_import(mut arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
     let socket = arguments
         .next()
@@ -893,6 +909,7 @@ fn new_state(persisted: Persisted) -> State {
         runtimes: HashMap::new(),
         runtime_generations: HashMap::new(),
         agent_wake_leases: HashMap::new(),
+        agent_wake_tokens: HashMap::new(),
         claude_reconciliations: HashMap::new(),
         terminal_operation_locks: HashMap::new(),
         listening_ports: HashMap::new(),
@@ -1328,7 +1345,7 @@ fn restore_handoff_runtimes(
                             TerminalRuntime::from_handoff_fd(
                                 fd.into_raw_fd(),
                                 pane.state,
-                                runtime_notify(&daemon, pane_id),
+                                runtime_notify(&daemon, pane_id, pane.runtime_generation.clone()),
                             )
                         }
                         .map_err(|error| {
@@ -1460,6 +1477,7 @@ fn cleanup(daemon: &Daemon, socket: &Path) {
         state.leases.clear();
         state.transferred_streams.clear();
         state.agent_wake_leases.clear();
+        state.agent_wake_tokens.clear();
         state.claude_reconciliations.clear();
         state.plugin_events.clear();
         let runtimes = std::mem::take(&mut state.runtimes);
@@ -2102,6 +2120,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             | Request::Snapshot
             | Request::Poll { .. }
             | Request::View { .. }
+            | Request::AgentExchangeWait { .. }
             | Request::PluginList
             | Request::LifecycleStatus
     ))
@@ -2174,6 +2193,10 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             session_id,
             expected_revision,
         } => close_session(daemon, session_id, expected_revision),
+        Request::SessionRestart {
+            pane_id,
+            expected_revision,
+        } => restart_session(daemon, pane_id, expected_revision),
         Request::PaneSplit {
             session_id,
             target,
@@ -2290,6 +2313,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             attached,
             conversation_id,
             session_ref,
+            wake_token,
             capabilities,
         } => agent_report_with_attachment(
             daemon,
@@ -2300,14 +2324,62 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
                 attached,
                 conversation_id,
                 session_ref,
+                wake_token,
                 capabilities,
             },
         ),
+        Request::AgentWakeRenew {
+            pane_id,
+            runtime_generation,
+            wake_token,
+        } => renew_agent_wake(daemon, pane_id, runtime_generation, wake_token),
         Request::AgentClear {
             pane_id,
             runtime_generation,
             next_runtime_generation,
         } => agent_clear(daemon, pane_id, runtime_generation, next_runtime_generation),
+        Request::AgentExchangeCreate {
+            pane_id,
+            prompt,
+            timeout_ms,
+            access,
+            write_claims,
+        } => create_agent_exchange(daemon, pane_id, prompt, timeout_ms, access, write_claims),
+        Request::AgentExchangeContinue {
+            exchange_id,
+            expected_revision,
+            prompt,
+            timeout_ms,
+        } => continue_agent_exchange(daemon, exchange_id, expected_revision, prompt, timeout_ms),
+        Request::AgentExchangeGet {
+            exchange_id,
+            include_frame,
+        } => get_agent_exchange(daemon, exchange_id, include_frame),
+        Request::AgentExchangeList { pane_id } => list_agent_exchanges(daemon, pane_id),
+        Request::AgentExchangeWait {
+            exchange_id,
+            after_revision,
+            timeout_ms,
+            include_frame,
+        } => wait_agent_exchange(
+            daemon,
+            exchange_id,
+            after_revision,
+            timeout_ms,
+            include_frame,
+        ),
+        Request::AgentExchangeReceipt {
+            exchange_id,
+            round,
+            runtime_generation,
+            receipt,
+        } => {
+            report_agent_exchange_receipt(daemon, exchange_id, round, &runtime_generation, receipt)
+        }
+        Request::AgentExchangeCancel {
+            exchange_id,
+            expected_revision,
+        } => cancel_agent_exchange(daemon, exchange_id, expected_revision),
         Request::PluginList => Ok(Response::Plugins(lock(&daemon.state).plugins.clone())),
         Request::PluginReload => {
             let mut state = lock(&daemon.state);
@@ -2505,6 +2577,7 @@ fn capabilities() -> Capabilities {
         version_coordination: true,
         daemon_revision_coordination: true,
         live_handoff: true,
+        agent_exchanges: true,
     }
 }
 
@@ -3344,6 +3417,12 @@ fn close_session(daemon: &Arc<Daemon>, id: SessionId, expected: u64) -> Result<R
     expect_revision(session.revision, expected)?;
     let revision = state.revision.saturating_add(1);
     let mut persisted = state.persisted.clone();
+    terminate_agent_exchanges(
+        &mut persisted,
+        &session.panes,
+        AgentExchangeState::TargetExited,
+        revision,
+    );
     persisted.panes.retain(|pane| pane.session_id != id);
     persisted.sessions.retain(|session| session.id != id);
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
@@ -3354,7 +3433,7 @@ fn close_session(daemon: &Arc<Daemon>, id: SessionId, expected: u64) -> Result<R
             runtimes.push(runtime);
         }
         state.runtime_generations.remove(pane_id);
-        state.agent_wake_leases.remove(pane_id);
+        clear_agent_wake(&mut state, *pane_id);
         state.claude_reconciliations.remove(pane_id);
         state.leases.remove(pane_id);
         state
@@ -3368,6 +3447,126 @@ fn close_session(daemon: &Arc<Daemon>, id: SessionId, expected: u64) -> Result<R
     drop(state);
     for runtime in runtimes {
         runtime.terminate();
+    }
+    Ok(Response::Ack { revision })
+}
+
+// ^ [[Session Model]] An exited pane keeps its saved recipe, so a restart restores the transcript identity instead of leaving a hollow session.
+fn restart_session(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Response, ApiError> {
+    let operation_lock = terminal_operation_lock(daemon, id);
+    let _operation = lock(&operation_lock);
+    let (cwd, terminal_id, launch, agent) = {
+        let state = lock(&daemon.state);
+        if state.stopping || state.handoff_in_progress {
+            return Err(api(
+                "daemon_replacing",
+                "wsxd is replacing its runtime owner",
+            ));
+        }
+        if state.recovery_in_progress {
+            return Err(api(
+                "recovery_in_progress",
+                "wsxd is still restoring saved sessions",
+            ));
+        }
+        let pane = state
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == id)
+            .cloned()
+            .ok_or_else(|| api("not_found", "pane not found"))?;
+        expect_revision(pane.revision, expected)?;
+        if !pane.exited {
+            return Err(api(
+                "invalid_state",
+                "pane is still running; restart accepts only an exited pane",
+            ));
+        }
+        let session = state
+            .persisted
+            .sessions
+            .iter()
+            .find(|session| session.id == pane.session_id)
+            .ok_or_else(|| api("not_found", "session not found"))?;
+        let cwd = state
+            .persisted
+            .worktrees
+            .iter()
+            .find(|worktree| worktree.id == session.worktree_id)
+            .map(|worktree| worktree.path.clone())
+            .ok_or_else(|| api("not_found", "worktree not found"))?;
+        let recipe = pane
+            .recovery
+            .clone()
+            .filter(|recipe| validate_recipe(recipe).is_ok())
+            .unwrap_or_else(default_launch_recipe);
+        let mut agent = pane.agent.clone();
+        let launch = recovery_launch(agent.as_mut(), &recipe, true);
+        let launch = match prepare_recovery_launch(launch, &cwd) {
+            Ok(launch) => launch,
+            Err(error) => {
+                eprintln!("wsxd restart pane {}: {error}", id.0);
+                RecoveryLaunch {
+                    recipe: shell_launch_recipe(recipe.rows, recipe.cols),
+                    resume_key: None,
+                    provider: None,
+                    await_readiness: false,
+                }
+            }
+        };
+        // ^ A saved identity only authorizes a resume plan; the replacement runtime must report its own generation.
+        let agent = if launch.resume_key.is_some() {
+            agent.map(|mut agent| {
+                agent.attached = false;
+                agent.state = AgentState::Unknown;
+                agent
+            })
+        } else {
+            None
+        };
+        (cwd, pane.terminal_id, launch, agent)
+    };
+    let runtime = spawn_runtime(daemon, id, terminal_id, &cwd, &launch.recipe)?;
+    let runtime = Arc::new(runtime);
+    let live = !runtime.exited();
+    let mut state = lock(&daemon.state);
+    if state.stopping || !state.persisted.panes.iter().any(|pane| pane.id == id) {
+        state.runtime_generations.remove(&id);
+        drop(state);
+        runtime.terminate();
+        return Err(api(
+            "conflict",
+            "session changed while the terminal was restarting",
+        ));
+    }
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    let pane = persisted
+        .panes
+        .iter_mut()
+        .find(|pane| pane.id == id)
+        .expect("pane was checked above");
+    pane.exited = !live;
+    pane.revision = revision;
+    pane.agent = agent;
+    if let Err(error) = save_state(&daemon.state_path, &persisted).map_err(io_api) {
+        // ^ A failed restart must not leave a generation that could authorize agent reports.
+        state.runtime_generations.remove(&id);
+        drop(state);
+        runtime.terminate();
+        return Err(error);
+    }
+    state.persisted = persisted;
+    // ^ The dead pane's stream has no authority over the replacement runtime.
+    state.leases.remove(&id);
+    state
+        .transferred_streams
+        .retain(|stream| stream.pane_id != id);
+    state.runtimes.insert(id, Arc::clone(&runtime));
+    publish(daemon, &mut state, revision, "session.restarted", id.0);
+    if !live {
+        record_terminal_exit(daemon, &mut state, id);
     }
     Ok(Response::Ack { revision })
 }
@@ -3401,12 +3600,18 @@ fn close_pane(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Respons
         session.primary_pane = session.panes[0];
     }
     session.revision = revision;
+    terminate_agent_exchanges(
+        &mut persisted,
+        &[id],
+        AgentExchangeState::TargetExited,
+        revision,
+    );
     persisted.panes.retain(|candidate| candidate.id != id);
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
     state.persisted = persisted;
     let runtime = state.runtimes.remove(&id);
     state.runtime_generations.remove(&id);
-    state.agent_wake_leases.remove(&id);
+    clear_agent_wake(&mut state, id);
     state.claude_reconciliations.remove(&id);
     state.leases.remove(&id);
     state
@@ -3561,6 +3766,61 @@ fn touch_terminal_project(daemon: &Arc<Daemon>, pane_id: PaneId) -> Result<(), A
     Ok(())
 }
 
+fn terminate_agent_exchanges(
+    persisted: &mut Persisted,
+    pane_ids: &[PaneId],
+    exchange_state: AgentExchangeState,
+    revision: u64,
+) {
+    let now = unix_time_millis();
+    for exchange in &mut persisted.agent_exchanges {
+        if pane_ids.contains(&exchange.pane_id) && !exchange.state.is_terminal() {
+            exchange.state = exchange_state;
+            exchange.updated_unix_ms = now;
+            exchange.revision = revision;
+        }
+    }
+}
+
+fn observe_agent_exchange(
+    persisted: &mut Persisted,
+    pane_id: PaneId,
+    agent_state: AgentState,
+    attached: bool,
+    revision: u64,
+    now: u64,
+) {
+    let Some(exchange) = persisted
+        .agent_exchanges
+        .iter_mut()
+        .rev()
+        .find(|exchange| exchange.pane_id == pane_id && !exchange.state.is_terminal())
+    else {
+        return;
+    };
+    let next = if !attached {
+        Some(AgentExchangeState::Interrupted)
+    } else if exchange.state == AgentExchangeState::CancelRequested
+        && agent_state != AgentState::Working
+    {
+        Some(AgentExchangeState::Cancelled)
+    } else {
+        match agent_state {
+            AgentState::Working => Some(AgentExchangeState::WorkingObserved),
+            AgentState::Blocked => Some(AgentExchangeState::BlockedObserved),
+            AgentState::Done => Some(AgentExchangeState::DoneObserved),
+            AgentState::Error => Some(AgentExchangeState::ErrorObserved),
+            AgentState::Unknown | AgentState::Idle => None,
+        }
+    };
+    if let Some(next) = next {
+        exchange.state = next;
+        exchange.evidence = AgentExchangeEvidence::PaneLifecycle;
+        exchange.updated_unix_ms = now;
+        exchange.revision = revision;
+    }
+}
+
 // ^ [[Agent Lifecycle Authority]] wsx-core normalizes provider events and bounded
 // companion evidence; this boundary owns reconciliation, generation checks,
 // persistence, wake authority, and resume identity.
@@ -3570,6 +3830,7 @@ struct AgentReportInput {
     attached: bool,
     conversation_id: Option<String>,
     session_ref: Option<AgentSessionRef>,
+    wake_token: Option<String>,
     capabilities: AgentCapabilities,
 }
 
@@ -3592,6 +3853,7 @@ fn agent_report(
             attached: true,
             conversation_id,
             session_ref,
+            wake_token: None,
             capabilities,
         },
     )
@@ -3608,6 +3870,7 @@ fn agent_report_with_attachment(
         attached,
         conversation_id,
         session_ref,
+        wake_token,
         mut capabilities,
     } = report;
     let RuntimeAgentAuthority {
@@ -3615,6 +3878,20 @@ fn agent_report_with_attachment(
         generation: runtime_generation,
     } = runtime;
     let provider = bounded_provider(provider)?;
+    let wake_token = match wake_token {
+        Some(wake_token)
+            if attached && agent_state == AgentState::Working && provider == "claude" =>
+        {
+            Some(bounded_wake_token(wake_token)?)
+        }
+        Some(_) => {
+            return Err(api(
+                "invalid_wake_token",
+                "wake token requires an attached Claude Working report",
+            ))
+        }
+        None => None,
+    };
     let conversation_id = conversation_id.map(|value| truncate_utf8(value, 512));
     let explicit_session_ref = validated_session_ref(session_ref)?;
     if explicit_session_ref
@@ -3702,6 +3979,14 @@ fn agent_report_with_attachment(
         persisted.projects[project_index].last_agent_active_unix_ms = Some(unix_time_millis());
         persisted.projects[project_index].revision = revision;
     }
+    observe_agent_exchange(
+        &mut persisted,
+        pane_id,
+        reported_state,
+        attached,
+        revision,
+        unix_time_millis(),
+    );
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
     state.persisted = persisted;
     if let Some(reconciliation) = claude_reconciliation {
@@ -3711,11 +3996,65 @@ fn agent_report_with_attachment(
     }
     if attached && agent_state == AgentState::Working && reported_state == AgentState::Working {
         state.agent_wake_leases.insert(pane_id, now);
+        if let Some(wake_token) = wake_token {
+            state.agent_wake_tokens.insert(pane_id, wake_token);
+        } else {
+            state.agent_wake_tokens.remove(&pane_id);
+        }
     } else {
-        state.agent_wake_leases.remove(&pane_id);
+        clear_agent_wake(&mut state, pane_id);
     }
     let revision = bump(daemon, &mut state, "agent.reported", pane_id.0);
     Ok(Response::Ack { revision })
+}
+
+fn clear_agent_wake(state: &mut State, pane_id: PaneId) {
+    state.agent_wake_leases.remove(&pane_id);
+    state.agent_wake_tokens.remove(&pane_id);
+}
+
+// ^ [[Wake Mode and Report Lease]] Renewal is ephemeral and cannot mutate agent state.
+fn renew_agent_wake(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    runtime_generation: String,
+    wake_token: String,
+) -> Result<Response, ApiError> {
+    let runtime_generation = bounded_runtime_generation(runtime_generation)?;
+    let wake_token = bounded_wake_token(wake_token)?;
+    let mut state = lock(&daemon.state);
+    expect_runtime_generation(&state, pane_id, Some(&runtime_generation))?;
+    let active = state
+        .persisted
+        .panes
+        .iter()
+        .find(|pane| pane.id == pane_id)
+        .and_then(|pane| pane.agent.as_ref())
+        .is_some_and(|agent| {
+            agent.attached && agent.provider == "claude" && agent.state == AgentState::Working
+        });
+    if !active {
+        return Err(api(
+            "wake_not_active",
+            "pane does not have an attached working Claude agent",
+        ));
+    }
+    match state.agent_wake_tokens.get(&pane_id) {
+        Some(active_token) if active_token != &wake_token => {
+            return Err(api(
+                "stale_wake_heartbeat",
+                "wake heartbeat does not belong to the active Claude prompt",
+            ));
+        }
+        Some(_) => {}
+        None => {
+            state.agent_wake_tokens.insert(pane_id, wake_token);
+        }
+    }
+    state.agent_wake_leases.insert(pane_id, Instant::now());
+    Ok(Response::Ack {
+        revision: state.revision,
+    })
 }
 
 fn agent_clear(
@@ -3743,15 +4082,807 @@ fn agent_clear(
     let revision = state.revision.saturating_add(1);
     pane.agent = None;
     pane.revision = revision;
+    terminate_agent_exchanges(
+        &mut persisted,
+        &[pane_id],
+        AgentExchangeState::TargetReplaced,
+        revision,
+    );
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
     state.persisted = persisted;
-    state.agent_wake_leases.remove(&pane_id);
+    clear_agent_wake(&mut state, pane_id);
     state.claude_reconciliations.remove(&pane_id);
     state
         .runtime_generations
         .insert(pane_id, next_runtime_generation);
     let revision = bump(daemon, &mut state, "agent.cleared", pane_id.0);
     Ok(Response::Ack { revision })
+}
+
+fn validate_exchange_prompt(prompt: &str) -> Result<(), ApiError> {
+    if prompt.is_empty() || prompt.len() > MAX_AGENT_EXCHANGE_PROMPT_BYTES {
+        return Err(api("invalid_prompt", "prompt must be 1..65536 bytes"));
+    }
+    if prompt
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+    {
+        return Err(api(
+            "invalid_prompt",
+            "prompt contains terminal control characters",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_exchange_timeout(timeout_ms: u64) -> Result<u64, ApiError> {
+    (timeout_ms > 0 && timeout_ms <= MAX_AGENT_EXCHANGE_TIMEOUT_MS)
+        .then_some(timeout_ms)
+        .ok_or_else(|| api("invalid_timeout", "timeout must be 1ms..24h"))
+}
+
+fn exchange_claims(
+    access: AgentExchangeAccess,
+    claims: Vec<PathBuf>,
+    worktree: &Worktree,
+) -> Result<Vec<PathBuf>, ApiError> {
+    if access == AgentExchangeAccess::ReadOnly {
+        if !claims.is_empty() {
+            return Err(api(
+                "invalid_claim",
+                "read-only exchanges cannot declare write claims",
+            ));
+        }
+        return Ok(Vec::new());
+    }
+    if claims.len() > MAX_AGENT_EXCHANGE_WRITE_CLAIMS {
+        return Err(api("invalid_claim", "too many write claims"));
+    }
+    let claims = if claims.is_empty() {
+        vec![worktree.path.clone()]
+    } else {
+        claims
+    };
+    if claims.iter().any(|claim| {
+        !claim.is_absolute()
+            || !claim.starts_with(&worktree.path)
+            || claim
+                .components()
+                .any(|part| matches!(part, Component::ParentDir))
+    }) {
+        return Err(api(
+            "invalid_claim",
+            "write claims must be absolute paths inside the target worktree",
+        ));
+    }
+    let canonical_worktree = fs::canonicalize(&worktree.path)
+        .map_err(|error| api("invalid_claim", format!("cannot resolve worktree: {error}")))?;
+    let mut unique = claims
+        .into_iter()
+        .map(|claim| canonical_exchange_claim(&claim, &worktree.path, &canonical_worktree))
+        .collect::<Result<Vec<_>, _>>()?;
+    unique.sort();
+    unique.dedup();
+    Ok(unique)
+}
+
+fn canonical_exchange_claim(
+    claim: &Path,
+    worktree: &Path,
+    canonical_worktree: &Path,
+) -> Result<PathBuf, ApiError> {
+    let relative = claim.strip_prefix(worktree).map_err(|_| {
+        api(
+            "invalid_claim",
+            "write claim is outside the target worktree",
+        )
+    })?;
+    let mut resolved = canonical_worktree.to_path_buf();
+    let mut components = relative.components();
+    while let Some(component) = components.next() {
+        let Component::Normal(component) = component else {
+            return Err(api(
+                "invalid_claim",
+                "write claim contains an invalid path component",
+            ));
+        };
+        let candidate = resolved.join(component);
+        match fs::canonicalize(&candidate) {
+            Ok(path) => {
+                if !path.starts_with(canonical_worktree) {
+                    return Err(api(
+                        "invalid_claim",
+                        "write claim resolves outside the target worktree",
+                    ));
+                }
+                resolved = path;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                resolved = candidate;
+                for remaining in components {
+                    let Component::Normal(remaining) = remaining else {
+                        return Err(api(
+                            "invalid_claim",
+                            "write claim contains an invalid path component",
+                        ));
+                    };
+                    resolved.push(remaining);
+                }
+                break;
+            }
+            Err(error) => {
+                return Err(api(
+                    "invalid_claim",
+                    format!("cannot resolve write claim: {error}"),
+                ))
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+fn claims_overlap(left: &[PathBuf], right: &[PathBuf]) -> bool {
+    left.iter().any(|left| {
+        right
+            .iter()
+            .any(|right| left.starts_with(right) || right.starts_with(left))
+    })
+}
+
+fn has_writer_claim_conflict(exchanges: &[AgentExchange], claims: &[PathBuf]) -> bool {
+    exchanges.iter().any(|exchange| {
+        exchange.access == AgentExchangeAccess::Writer
+            && !exchange.state.is_terminal()
+            && claims_overlap(claims, &exchange.write_claims)
+    })
+}
+
+fn exchange_terminal_input(
+    id: AgentExchangeId,
+    round: u32,
+    access: AgentExchangeAccess,
+    prompt: &str,
+) -> String {
+    let access = match access {
+        AgentExchangeAccess::ReadOnly => "read-only",
+        AgentExchangeAccess::Writer => "writer",
+    };
+    format!("[wsx exchange {id}, round {round}, {access}]\n{prompt}")
+}
+
+fn deliver_agent_exchange(
+    runtime: &TerminalRuntime,
+    input: &str,
+) -> Result<(), wsx_terminal::TerminalError> {
+    runtime.paste(input)?;
+    runtime.write(b"\r")
+}
+
+fn expire_due_agent_exchanges(daemon: &Daemon, state: &mut State) -> Result<(), ApiError> {
+    let now = unix_time_millis();
+    if !state
+        .persisted
+        .agent_exchanges
+        .iter()
+        .any(|exchange| !exchange.state.is_terminal() && exchange.deadline_unix_ms <= now)
+    {
+        return Ok(());
+    }
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    for exchange in &mut persisted.agent_exchanges {
+        if !exchange.state.is_terminal() && exchange.deadline_unix_ms <= now {
+            exchange.state = AgentExchangeState::Expired;
+            exchange.updated_unix_ms = now;
+            exchange.revision = revision;
+        }
+    }
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    publish(daemon, state, revision, "agent_exchange.expired", 0);
+    Ok(())
+}
+
+fn create_agent_exchange(
+    daemon: &Arc<Daemon>,
+    pane_id: PaneId,
+    prompt: String,
+    timeout_ms: u64,
+    access: AgentExchangeAccess,
+    write_claims: Vec<PathBuf>,
+) -> Result<Response, ApiError> {
+    validate_exchange_prompt(&prompt)?;
+    let timeout_ms = validate_exchange_timeout(timeout_ms)?;
+    let operation_lock = terminal_operation_lock(daemon, pane_id);
+    let _operation = lock(&operation_lock);
+    let mut state = lock(&daemon.state);
+    expire_due_agent_exchanges(daemon, &mut state)?;
+    if state.stopping || state.handoff_in_progress {
+        return Err(api(
+            "daemon_unavailable",
+            "wsxd cannot start an exchange during shutdown or handoff",
+        ));
+    }
+    if state
+        .leases
+        .get(&pane_id)
+        .is_some_and(|lease| lease.expires_at > Instant::now())
+    {
+        return Err(api("terminal_busy", "pane has another writable controller"));
+    }
+    let pane = state
+        .persisted
+        .panes
+        .iter()
+        .find(|pane| pane.id == pane_id)
+        .cloned()
+        .ok_or_else(|| api("not_found", "pane not found"))?;
+    let agent = pane
+        .agent
+        .as_ref()
+        .filter(|agent| agent.attached && agent.capabilities.prompt)
+        .ok_or_else(|| {
+            api(
+                "agent_unavailable",
+                "pane has no attached prompt-capable agent",
+            )
+        })?;
+    if matches!(
+        agent.state,
+        AgentState::Working | AgentState::Unknown | AgentState::Error
+    ) {
+        return Err(api(
+            "agent_busy",
+            "agent is not ready for an explicit exchange",
+        ));
+    }
+    if state
+        .persisted
+        .agent_exchanges
+        .iter()
+        .any(|exchange| exchange.pane_id == pane_id && !exchange.state.is_terminal())
+    {
+        return Err(api("exchange_busy", "pane already has an active exchange"));
+    }
+    let session = state
+        .persisted
+        .sessions
+        .iter()
+        .find(|session| session.id == pane.session_id)
+        .cloned()
+        .ok_or_else(|| api("not_found", "session not found"))?;
+    let worktree = state
+        .persisted
+        .worktrees
+        .iter()
+        .find(|worktree| worktree.id == session.worktree_id)
+        .cloned()
+        .ok_or_else(|| api("not_found", "worktree not found"))?;
+    let claims = exchange_claims(access, write_claims, &worktree)?;
+    if access == AgentExchangeAccess::Writer
+        && has_writer_claim_conflict(&state.persisted.agent_exchanges, &claims)
+    {
+        return Err(api(
+            "write_claim_conflict",
+            "an active writer already owns an overlapping path",
+        ));
+    }
+    let generation = state
+        .runtime_generations
+        .get(&pane_id)
+        .cloned()
+        .ok_or_else(|| {
+            api(
+                "terminal_unavailable",
+                "pane has no live runtime generation",
+            )
+        })?;
+    let runtime = state
+        .runtimes
+        .get(&pane_id)
+        .filter(|runtime| !runtime.exited())
+        .cloned()
+        .ok_or_else(|| api("terminal_unavailable", "pane has no live terminal"))?;
+    let revision = state.revision.saturating_add(1);
+    let now = unix_time_millis();
+    let mut persisted = state.persisted.clone();
+    while persisted.agent_exchanges.len() >= MAX_AGENT_EXCHANGES {
+        let Some(index) = persisted
+            .agent_exchanges
+            .iter()
+            .position(|exchange| exchange.state.is_terminal())
+        else {
+            return Err(api("exchange_limit", "too many active agent exchanges"));
+        };
+        persisted.agent_exchanges.remove(index);
+    }
+    let id = AgentExchangeId(next_id(&mut persisted)?);
+    let deadline = now.saturating_add(timeout_ms);
+    persisted.agent_exchanges.push(AgentExchange {
+        id,
+        pane_id,
+        session_id: session.id,
+        worktree_id: worktree.id,
+        project_id: worktree.project_id,
+        agent_id: agent.id,
+        provider: agent.provider.clone(),
+        runtime_generation: generation,
+        round: 1,
+        access,
+        write_claims: claims,
+        state: AgentExchangeState::Submitted,
+        evidence: AgentExchangeEvidence::IntentPersisted,
+        created_unix_ms: now,
+        updated_unix_ms: now,
+        deadline_unix_ms: deadline,
+        delivery_revision: revision,
+        revision,
+    });
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    publish(
+        daemon,
+        &mut state,
+        revision,
+        "agent_exchange.submitted",
+        id.0,
+    );
+
+    let input = exchange_terminal_input(id, 1, access, &prompt);
+    let delivery = deliver_agent_exchange(&runtime, &input);
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    let exchange = persisted
+        .agent_exchanges
+        .iter_mut()
+        .find(|exchange| exchange.id == id)
+        .expect("new exchange remains persisted");
+    exchange.state = if delivery.is_ok() {
+        exchange.evidence = AgentExchangeEvidence::PtyDelivery;
+        AgentExchangeState::Delivered
+    } else {
+        AgentExchangeState::DeliveryFailed
+    };
+    exchange.updated_unix_ms = unix_time_millis();
+    exchange.revision = revision;
+    let response = exchange.clone();
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    publish(
+        daemon,
+        &mut state,
+        revision,
+        "agent_exchange.delivery",
+        id.0,
+    );
+    Ok(Response::AgentExchange {
+        exchange: response,
+        frame: None,
+    })
+}
+
+fn continue_agent_exchange(
+    daemon: &Arc<Daemon>,
+    id: AgentExchangeId,
+    expected_revision: u64,
+    prompt: String,
+    timeout_ms: u64,
+) -> Result<Response, ApiError> {
+    validate_exchange_prompt(&prompt)?;
+    let timeout_ms = validate_exchange_timeout(timeout_ms)?;
+    let pane_id = lock(&daemon.state)
+        .persisted
+        .agent_exchanges
+        .iter()
+        .find(|exchange| exchange.id == id)
+        .map(|exchange| exchange.pane_id)
+        .ok_or_else(|| api("not_found", "agent exchange not found"))?;
+    let operation_lock = terminal_operation_lock(daemon, pane_id);
+    let _operation = lock(&operation_lock);
+    let mut state = lock(&daemon.state);
+    let previous = state
+        .persisted
+        .agent_exchanges
+        .iter()
+        .find(|exchange| exchange.id == id)
+        .cloned()
+        .ok_or_else(|| api("not_found", "agent exchange not found"))?;
+    expect_revision(previous.revision, expected_revision)?;
+    if !previous.state.can_continue()
+        || matches!(
+            previous.state,
+            AgentExchangeState::Cancelled
+                | AgentExchangeState::TargetExited
+                | AgentExchangeState::TargetReplaced
+        )
+    {
+        return Err(api(
+            "invalid_exchange_state",
+            "exchange cannot continue from its current state",
+        ));
+    }
+    expect_runtime_generation(&state, pane_id, Some(&previous.runtime_generation))?;
+    if state
+        .leases
+        .get(&pane_id)
+        .is_some_and(|lease| lease.expires_at > Instant::now())
+    {
+        return Err(api("terminal_busy", "pane has another writable controller"));
+    }
+    let runtime = state
+        .runtimes
+        .get(&pane_id)
+        .filter(|runtime| !runtime.exited())
+        .cloned()
+        .ok_or_else(|| api("terminal_unavailable", "pane has no live terminal"))?;
+    let next_round = previous
+        .round
+        .checked_add(1)
+        .ok_or_else(|| api("round_exhausted", "exchange round space exhausted"))?;
+    let revision = state.revision.saturating_add(1);
+    let now = unix_time_millis();
+    let mut persisted = state.persisted.clone();
+    let exchange = persisted
+        .agent_exchanges
+        .iter_mut()
+        .find(|exchange| exchange.id == id)
+        .unwrap();
+    exchange.round = next_round;
+    exchange.state = AgentExchangeState::Submitted;
+    exchange.evidence = AgentExchangeEvidence::IntentPersisted;
+    exchange.updated_unix_ms = now;
+    exchange.deadline_unix_ms = now.saturating_add(timeout_ms);
+    exchange.delivery_revision = revision;
+    exchange.revision = revision;
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    publish(
+        daemon,
+        &mut state,
+        revision,
+        "agent_exchange.continued",
+        id.0,
+    );
+    let input = exchange_terminal_input(id, next_round, previous.access, &prompt);
+    let delivery = deliver_agent_exchange(&runtime, &input);
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    let exchange = persisted
+        .agent_exchanges
+        .iter_mut()
+        .find(|exchange| exchange.id == id)
+        .unwrap();
+    exchange.state = if delivery.is_ok() {
+        exchange.evidence = AgentExchangeEvidence::PtyDelivery;
+        AgentExchangeState::Delivered
+    } else {
+        AgentExchangeState::DeliveryFailed
+    };
+    exchange.updated_unix_ms = unix_time_millis();
+    exchange.revision = revision;
+    let response = exchange.clone();
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    publish(
+        daemon,
+        &mut state,
+        revision,
+        "agent_exchange.delivery",
+        id.0,
+    );
+    Ok(Response::AgentExchange {
+        exchange: response,
+        frame: None,
+    })
+}
+
+fn expire_agent_exchange(
+    daemon: &Daemon,
+    state: &mut State,
+    id: AgentExchangeId,
+) -> Result<(), ApiError> {
+    let now = unix_time_millis();
+    let should_expire = state.persisted.agent_exchanges.iter().any(|exchange| {
+        exchange.id == id && !exchange.state.is_terminal() && exchange.deadline_unix_ms <= now
+    });
+    if !should_expire {
+        return Ok(());
+    }
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    let exchange = persisted
+        .agent_exchanges
+        .iter_mut()
+        .find(|exchange| exchange.id == id)
+        .unwrap();
+    exchange.state = AgentExchangeState::Expired;
+    exchange.updated_unix_ms = now;
+    exchange.revision = revision;
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    publish(daemon, state, revision, "agent_exchange.expired", id.0);
+    Ok(())
+}
+
+fn agent_exchange_response(
+    daemon: &Daemon,
+    exchange: AgentExchange,
+    include_frame: bool,
+) -> Result<Response, ApiError> {
+    let frame = if include_frame {
+        let runtime = lock(&daemon.state).runtimes.get(&exchange.pane_id).cloned();
+        runtime
+            .filter(|runtime| !runtime.exited())
+            .map(|runtime| runtime.frame().map_err(terminal_api))
+            .transpose()?
+    } else {
+        None
+    };
+    Ok(Response::AgentExchange { exchange, frame })
+}
+
+fn get_agent_exchange(
+    daemon: &Daemon,
+    id: AgentExchangeId,
+    include_frame: bool,
+) -> Result<Response, ApiError> {
+    let exchange = {
+        let mut state = lock(&daemon.state);
+        expire_agent_exchange(daemon, &mut state, id)?;
+        state
+            .persisted
+            .agent_exchanges
+            .iter()
+            .find(|exchange| exchange.id == id)
+            .cloned()
+            .ok_or_else(|| api("not_found", "agent exchange not found"))?
+    };
+    agent_exchange_response(daemon, exchange, include_frame)
+}
+
+fn list_agent_exchanges(daemon: &Daemon, pane_id: Option<PaneId>) -> Result<Response, ApiError> {
+    let mut state = lock(&daemon.state);
+    expire_due_agent_exchanges(daemon, &mut state)?;
+    let exchanges = state
+        .persisted
+        .agent_exchanges
+        .iter()
+        .filter(|exchange| pane_id.is_none_or(|pane_id| exchange.pane_id == pane_id))
+        .cloned()
+        .collect();
+    Ok(Response::AgentExchanges(exchanges))
+}
+
+fn wait_agent_exchange(
+    daemon: &Daemon,
+    id: AgentExchangeId,
+    after_revision: u64,
+    timeout_ms: u64,
+    include_frame: bool,
+) -> Result<Response, ApiError> {
+    let timeout = Duration::from_millis(timeout_ms.min(30_000));
+    let deadline = Instant::now() + timeout;
+    {
+        let _mutation = lock(&daemon.mutation_lock);
+        expire_agent_exchange(daemon, &mut lock(&daemon.state), id)?;
+    }
+    let mut state = lock(&daemon.state);
+    loop {
+        let current = state
+            .persisted
+            .agent_exchanges
+            .iter()
+            .find(|exchange| exchange.id == id)
+            .ok_or_else(|| api("not_found", "agent exchange not found"))?;
+        if current.revision > after_revision || current.state.is_wait_boundary() {
+            break;
+        }
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        let (next_state, timeout_result) = daemon
+            .changed
+            .wait_timeout(state, remaining)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state = next_state;
+        if timeout_result.timed_out() {
+            break;
+        }
+    }
+    drop(state);
+    {
+        let _mutation = lock(&daemon.mutation_lock);
+        expire_agent_exchange(daemon, &mut lock(&daemon.state), id)?;
+    }
+    let exchange = lock(&daemon.state)
+        .persisted
+        .agent_exchanges
+        .iter()
+        .find(|exchange| exchange.id == id)
+        .cloned()
+        .ok_or_else(|| api("not_found", "agent exchange not found"))?;
+    agent_exchange_response(daemon, exchange, include_frame)
+}
+
+fn report_agent_exchange_receipt(
+    daemon: &Arc<Daemon>,
+    id: AgentExchangeId,
+    round: u32,
+    runtime_generation: &str,
+    receipt: AgentExchangeReceipt,
+) -> Result<Response, ApiError> {
+    let mut state = lock(&daemon.state);
+    let previous = state
+        .persisted
+        .agent_exchanges
+        .iter()
+        .find(|exchange| exchange.id == id)
+        .cloned()
+        .ok_or_else(|| api("not_found", "agent exchange not found"))?;
+    if previous.runtime_generation != runtime_generation {
+        return Err(api(
+            "stale_runtime",
+            "agent exchange receipt has a stale runtime generation",
+        ));
+    }
+    if previous.round != round {
+        return Err(api(
+            "stale_exchange_round",
+            "agent exchange receipt has a stale round",
+        ));
+    }
+    let supports_receipts = state
+        .persisted
+        .panes
+        .iter()
+        .find(|pane| pane.id == previous.pane_id)
+        .and_then(|pane| pane.agent.as_ref())
+        .is_some_and(|agent| {
+            agent.id == previous.agent_id && agent.attached && agent.capabilities.exchange_receipts
+        });
+    if !supports_receipts {
+        return Err(api(
+            "unsupported_exchange_receipt",
+            "bound agent did not advertise request-bound exchange receipts",
+        ));
+    }
+    let next_state = match receipt {
+        AgentExchangeReceipt::Accepted
+            if matches!(
+                previous.state,
+                AgentExchangeState::Submitted
+                    | AgentExchangeState::Delivered
+                    | AgentExchangeState::Accepted
+                    | AgentExchangeState::WorkingObserved
+                    | AgentExchangeState::BlockedObserved
+            ) =>
+        {
+            if matches!(
+                previous.state,
+                AgentExchangeState::WorkingObserved | AgentExchangeState::BlockedObserved
+            ) {
+                previous.state
+            } else {
+                AgentExchangeState::Accepted
+            }
+        }
+        AgentExchangeReceipt::Completed
+            if matches!(
+                previous.state,
+                AgentExchangeState::Submitted
+                    | AgentExchangeState::Delivered
+                    | AgentExchangeState::Accepted
+                    | AgentExchangeState::WorkingObserved
+                    | AgentExchangeState::BlockedObserved
+                    | AgentExchangeState::DoneObserved
+                    | AgentExchangeState::CancelRequested
+                    | AgentExchangeState::Completed
+            ) =>
+        {
+            AgentExchangeState::Completed
+        }
+        _ => {
+            return Err(api(
+                "invalid_exchange_state",
+                "exchange cannot accept a request-bound receipt in its current state",
+            ))
+        }
+    };
+    if previous.state == next_state && previous.evidence == AgentExchangeEvidence::RequestBound {
+        return Ok(Response::AgentExchange {
+            exchange: previous,
+            frame: None,
+        });
+    }
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    let exchange = persisted
+        .agent_exchanges
+        .iter_mut()
+        .find(|exchange| exchange.id == id)
+        .expect("validated exchange remains present");
+    exchange.state = next_state;
+    exchange.evidence = AgentExchangeEvidence::RequestBound;
+    exchange.updated_unix_ms = unix_time_millis();
+    exchange.revision = revision;
+    let response = exchange.clone();
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    publish(daemon, &mut state, revision, "agent_exchange.receipt", id.0);
+    Ok(Response::AgentExchange {
+        exchange: response,
+        frame: None,
+    })
+}
+
+fn cancel_agent_exchange(
+    daemon: &Arc<Daemon>,
+    id: AgentExchangeId,
+    expected_revision: u64,
+) -> Result<Response, ApiError> {
+    let pane_id = lock(&daemon.state)
+        .persisted
+        .agent_exchanges
+        .iter()
+        .find(|exchange| exchange.id == id)
+        .map(|exchange| exchange.pane_id)
+        .ok_or_else(|| api("not_found", "agent exchange not found"))?;
+    let operation_lock = terminal_operation_lock(daemon, pane_id);
+    let _operation = lock(&operation_lock);
+    let mut state = lock(&daemon.state);
+    let exchange = state
+        .persisted
+        .agent_exchanges
+        .iter()
+        .find(|exchange| exchange.id == id)
+        .cloned()
+        .ok_or_else(|| api("not_found", "agent exchange not found"))?;
+    expect_revision(exchange.revision, expected_revision)?;
+    if exchange.state.is_terminal() {
+        return Err(api(
+            "invalid_exchange_state",
+            "exchange is already terminal",
+        ));
+    }
+    expect_runtime_generation(&state, pane_id, Some(&exchange.runtime_generation))?;
+    if state
+        .leases
+        .get(&pane_id)
+        .is_some_and(|lease| lease.expires_at > Instant::now())
+    {
+        return Err(api("terminal_busy", "pane has another writable controller"));
+    }
+    let runtime = state
+        .runtimes
+        .get(&pane_id)
+        .filter(|runtime| !runtime.exited())
+        .cloned()
+        .ok_or_else(|| api("terminal_unavailable", "pane has no live terminal"))?;
+    runtime.write(&[3]).map_err(terminal_api)?;
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    let exchange = persisted
+        .agent_exchanges
+        .iter_mut()
+        .find(|exchange| exchange.id == id)
+        .unwrap();
+    exchange.state = AgentExchangeState::CancelRequested;
+    exchange.updated_unix_ms = unix_time_millis();
+    exchange.revision = revision;
+    let response = exchange.clone();
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    publish(
+        daemon,
+        &mut state,
+        revision,
+        "agent_exchange.cancel_requested",
+        id.0,
+    );
+    Ok(Response::AgentExchange {
+        exchange: response,
+        frame: None,
+    })
 }
 
 fn expect_runtime_generation(
@@ -3862,16 +4993,24 @@ fn terminal_agent_environment(pane_id: PaneId, runtime_generation: &str) -> Vec<
     environment
 }
 
-fn runtime_notify(daemon: &Arc<Daemon>, pane_id: PaneId) -> Arc<dyn Fn() + Send + Sync> {
+fn runtime_notify(
+    daemon: &Arc<Daemon>,
+    pane_id: PaneId,
+    runtime_generation: Option<String>,
+) -> Arc<dyn Fn() + Send + Sync> {
     let weak: Weak<Daemon> = Arc::downgrade(daemon);
     Arc::new(move || {
         let Some(daemon) = weak.upgrade() else { return };
         let mut state = lock(&daemon.state);
-        let exited = state
-            .runtimes
-            .get(&pane_id)
-            .is_some_and(|runtime| runtime.exited());
-        if exited {
+        // ^ Bind the callback itself to the registered runtime generation. Looking up only the
+        // current runtime would let an abandoned callback publish a change for its successor.
+        if state.runtime_generations.get(&pane_id) != runtime_generation.as_ref() {
+            return;
+        }
+        let Some(runtime) = state.runtimes.get(&pane_id).cloned() else {
+            return;
+        };
+        if runtime.exited() {
             record_terminal_exit(&daemon, &mut state, pane_id);
         } else {
             let revision = state.revision.saturating_add(1);
@@ -3896,11 +5035,11 @@ fn spawn_runtime(
     cwd: &Path,
     recipe: &LaunchRecipe,
 ) -> Result<TerminalRuntime, ApiError> {
-    let notify = runtime_notify(daemon, pane_id);
     let runtime_generation = next_runtime_generation(daemon);
+    let notify = runtime_notify(daemon, pane_id, Some(runtime_generation.clone()));
     {
         let mut state = lock(&daemon.state);
-        state.agent_wake_leases.remove(&pane_id);
+        clear_agent_wake(&mut state, pane_id);
         state.claude_reconciliations.remove(&pane_id);
         state
             .runtime_generations
@@ -3936,8 +5075,12 @@ fn next_runtime_generation(daemon: &Daemon) -> String {
 
 fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
     state.runtime_generations.remove(&pane_id);
-    state.agent_wake_leases.remove(&pane_id);
+    clear_agent_wake(state, pane_id);
     state.claude_reconciliations.remove(&pane_id);
+    // ^ A dead pane must stop reporting a live foreground job or listener; the periodic
+    // scan can never re-attribute them because it skips exited runtimes.
+    state.foreground_jobs.remove(&pane_id);
+    state.listening_ports.remove(&pane_id);
     let Some(pane) = state
         .persisted
         .panes
@@ -3950,6 +5093,12 @@ fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
     let revision = state.revision;
     pane.exited = true;
     pane.revision = revision;
+    terminate_agent_exchanges(
+        &mut state.persisted,
+        &[pane_id],
+        AgentExchangeState::TargetExited,
+        revision,
+    );
     state.events.push_back(Event::Exited { revision, pane_id });
     while state.events.len() > EVENT_LIMIT {
         state.events.pop_front();
@@ -4037,7 +5186,7 @@ fn apply_claude_terminal_observation(
     state.persisted = persisted;
     state.claude_reconciliations.insert(pane_id, reconciliation);
     if effective != AgentState::Working {
-        state.agent_wake_leases.remove(&pane_id);
+        clear_agent_wake(&mut state, pane_id);
     }
     bump(daemon, &mut state, "agent.reconciled", pane_id.0);
     Ok(())
@@ -4118,6 +5267,9 @@ fn has_fresh_working_agent(state: &mut State, now: Instant) -> bool {
         live_working.contains(pane_id)
             && now.saturating_duration_since(*renewed_at) < AGENT_WAKE_LEASE_TTL
     });
+    state
+        .agent_wake_tokens
+        .retain(|pane_id, _| state.agent_wake_leases.contains_key(pane_id));
     !state.agent_wake_leases.is_empty()
 }
 
@@ -4599,6 +5751,18 @@ fn bounded_provider(value: String) -> Result<String, ApiError> {
         Ok(value)
     }
 }
+fn bounded_wake_token(value: String) -> Result<String, ApiError> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        Err(api("invalid_wake_token", "wake token is malformed"))
+    } else {
+        Ok(value)
+    }
+}
 fn bounded_runtime_generation(value: String) -> Result<String, ApiError> {
     if value.is_empty()
         || value.len() > 128
@@ -4765,6 +5929,14 @@ fn load_state_with_status(path: &Path) -> io::Result<(Persisted, bool)> {
     for pane in &mut state.panes {
         pane.exited = true;
     }
+    let now = unix_time_millis();
+    for exchange in &mut state.agent_exchanges {
+        if !exchange.state.is_terminal() {
+            exchange.state = AgentExchangeState::Interrupted;
+            exchange.updated_unix_ms = now;
+            exchange.revision = exchange.revision.saturating_add(1);
+        }
+    }
     Ok((state, loaded.recovered_from_backup))
 }
 
@@ -4833,6 +6005,54 @@ fn validate_persisted(state: &Persisted) -> io::Result<()> {
                 .any(|session| session.id == pane.session_id && session.panes.contains(&pane.id))
         {
             return Err(invalid());
+        }
+    }
+    if state.agent_exchanges.len() > MAX_AGENT_EXCHANGES {
+        return Err(invalid());
+    }
+    for exchange in &state.agent_exchanges {
+        if !insert(exchange.id.0)
+            || exchange.round == 0
+            || exchange.runtime_generation.is_empty()
+            || exchange.deadline_unix_ms < exchange.created_unix_ms
+            || (exchange.access == AgentExchangeAccess::ReadOnly
+                && !exchange.write_claims.is_empty())
+            || exchange
+                .write_claims
+                .iter()
+                .any(|claim| !claim.is_absolute())
+        {
+            return Err(invalid());
+        }
+        if !exchange.state.is_terminal() {
+            let Some(pane) = state.panes.iter().find(|pane| pane.id == exchange.pane_id) else {
+                return Err(invalid());
+            };
+            let Some(session) = state
+                .sessions
+                .iter()
+                .find(|session| session.id == exchange.session_id)
+            else {
+                return Err(invalid());
+            };
+            let Some(worktree) = state
+                .worktrees
+                .iter()
+                .find(|worktree| worktree.id == exchange.worktree_id)
+            else {
+                return Err(invalid());
+            };
+            if pane.session_id != session.id
+                || session.worktree_id != worktree.id
+                || worktree.project_id != exchange.project_id
+                || pane.agent.as_ref().map(|agent| agent.id) != Some(exchange.agent_id)
+                || exchange
+                    .write_claims
+                    .iter()
+                    .any(|claim| !claim.starts_with(&worktree.path))
+            {
+                return Err(invalid());
+            }
         }
     }
     if state.sessions.iter().any(|session| {
@@ -4907,6 +6127,7 @@ mod tests {
                     "0000000000000001:0000000000000001".into(),
                 )]),
                 agent_wake_leases: HashMap::new(),
+                agent_wake_tokens: HashMap::new(),
                 claude_reconciliations: HashMap::new(),
                 terminal_operation_locks: HashMap::new(),
                 listening_ports: HashMap::new(),
@@ -4944,6 +6165,39 @@ mod tests {
             lifecycle_path: path.with_extension("lifecycle"),
         });
         (daemon, path)
+    }
+
+    #[test]
+    fn stale_runtime_callback_cannot_publish_for_replacement_generation() {
+        let (daemon, path, replacement, generation) = exchange_test_daemon();
+        {
+            let mut state = lock(&daemon.state);
+            state.persisted.panes[0].exited = false;
+        }
+        let notify = runtime_notify(
+            &daemon,
+            PaneId(4),
+            Some("0000000000000000:0000000000000001".into()),
+        );
+        assert_ne!(generation, "0000000000000000:0000000000000001");
+        let (revision, event_count) = {
+            let state = lock(&daemon.state);
+            (state.revision, state.events.len())
+        };
+
+        notify();
+
+        let state = lock(&daemon.state);
+        assert_eq!(state.revision, revision);
+        assert_eq!(state.events.len(), event_count);
+        assert!(!state.persisted.panes[0].exited);
+        assert!(state
+            .runtimes
+            .get(&PaneId(4))
+            .is_some_and(|runtime| Arc::ptr_eq(runtime, &replacement)));
+        drop(state);
+        replacement.terminate();
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -6164,6 +7418,7 @@ mod tests {
                 attached: false,
                 conversation_id: None,
                 session_ref: None,
+                wake_token: None,
                 capabilities: AgentCapabilities::default(),
             },
         )
@@ -6526,6 +7781,165 @@ mod tests {
             escape_interrupts: true,
             ..AgentCapabilities::default()
         }
+    }
+
+    fn report_claude_prompt(
+        daemon: &Arc<Daemon>,
+        state: AgentState,
+        wake_token: Option<&str>,
+    ) -> Result<Response, ApiError> {
+        agent_report_with_attachment(
+            daemon,
+            current_agent_authority(daemon),
+            AgentReportInput {
+                provider: "claude".into(),
+                state,
+                attached: true,
+                conversation_id: None,
+                session_ref: None,
+                wake_token: wake_token.map(str::to_string),
+                capabilities: claude_capabilities(),
+            },
+        )
+    }
+
+    #[test]
+    fn claude_wake_heartbeat_is_prompt_and_generation_bound() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let generation = current_agent_authority(&daemon).generation.unwrap();
+        report_claude_prompt(&daemon, AgentState::Working, Some("prompt-a")).unwrap();
+        let expired = Instant::now() - AGENT_WAKE_LEASE_TTL;
+        lock(&daemon.state)
+            .agent_wake_leases
+            .insert(pane_id, expired);
+
+        assert!(matches!(
+            renew_agent_wake(&daemon, pane_id, generation.clone(), "prompt-a".into()),
+            Ok(Response::Ack { .. })
+        ));
+        assert!(lock(&daemon.state).agent_wake_leases[&pane_id] > expired);
+
+        assert_eq!(
+            renew_agent_wake(&daemon, pane_id, generation.clone(), "prompt-old".into())
+                .unwrap_err()
+                .code,
+            "stale_wake_heartbeat"
+        );
+        assert_eq!(
+            renew_agent_wake(&daemon, pane_id, generation.clone(), "bad/token".into())
+                .unwrap_err()
+                .code,
+            "invalid_wake_token"
+        );
+        assert_eq!(
+            renew_agent_wake(
+                &daemon,
+                pane_id,
+                "0000000000000001:0000000000000099".into(),
+                "prompt-a".into()
+            )
+            .unwrap_err()
+            .code,
+            "stale_runtime"
+        );
+
+        report_claude_prompt(&daemon, AgentState::Working, Some("prompt-b")).unwrap();
+        lock(&daemon.state).agent_wake_tokens.remove(&pane_id);
+        assert!(renew_agent_wake(&daemon, pane_id, generation.clone(), "prompt-b".into()).is_ok());
+        assert_eq!(lock(&daemon.state).agent_wake_tokens[&pane_id], "prompt-b");
+        assert_eq!(
+            renew_agent_wake(&daemon, pane_id, generation.clone(), "prompt-a".into())
+                .unwrap_err()
+                .code,
+            "stale_wake_heartbeat"
+        );
+        assert!(renew_agent_wake(&daemon, pane_id, generation, "prompt-b".into()).is_ok());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn claude_wake_heartbeat_cannot_outlive_authoritative_working_state() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let generation = current_agent_authority(&daemon).generation.unwrap();
+        for (index, ending) in [
+            AgentState::Idle,
+            AgentState::Blocked,
+            AgentState::Done,
+            AgentState::Error,
+            AgentState::Unknown,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let wake_token = format!("prompt-{index}");
+            report_claude_prompt(&daemon, AgentState::Working, Some(&wake_token)).unwrap();
+            report_claude_prompt(&daemon, ending, None).unwrap();
+            let state = lock(&daemon.state);
+            assert!(!state.agent_wake_leases.contains_key(&pane_id));
+            assert!(!state.agent_wake_tokens.contains_key(&pane_id));
+            drop(state);
+            assert_eq!(
+                renew_agent_wake(&daemon, pane_id, generation.clone(), wake_token.clone(),)
+                    .unwrap_err()
+                    .code,
+                "wake_not_active"
+            );
+        }
+
+        report_claude_prompt(&daemon, AgentState::Working, Some("prompt-detached")).unwrap();
+        agent_report_with_attachment(
+            &daemon,
+            current_agent_authority(&daemon),
+            AgentReportInput {
+                provider: "claude".into(),
+                state: AgentState::Done,
+                attached: false,
+                conversation_id: None,
+                session_ref: None,
+                wake_token: None,
+                capabilities: claude_capabilities(),
+            },
+        )
+        .unwrap();
+        assert!(!lock(&daemon.state).agent_wake_tokens.contains_key(&pane_id));
+        assert_eq!(
+            renew_agent_wake(&daemon, pane_id, generation, "prompt-detached".into())
+                .unwrap_err()
+                .code,
+            "wake_not_active"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn claude_wake_authority_clears_on_runtime_replacement_and_exit() {
+        let pane_id = PaneId(4);
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let generation = current_agent_authority(&daemon).generation.unwrap();
+        report_claude_prompt(&daemon, AgentState::Working, Some("prompt-replaced")).unwrap();
+        agent_clear(
+            &daemon,
+            pane_id,
+            generation,
+            "0000000000000002:0000000000000002".into(),
+        )
+        .unwrap();
+        let state = lock(&daemon.state);
+        assert!(!state.agent_wake_leases.contains_key(&pane_id));
+        assert!(!state.agent_wake_tokens.contains_key(&pane_id));
+        drop(state);
+        let _ = fs::remove_file(path);
+
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        report_claude_prompt(&daemon, AgentState::Working, Some("prompt-exited")).unwrap();
+        let mut state = lock(&daemon.state);
+        record_terminal_exit(&daemon, &mut state, pane_id);
+        assert!(!state.agent_wake_leases.contains_key(&pane_id));
+        assert!(!state.agent_wake_tokens.contains_key(&pane_id));
+        drop(state);
+        let _ = fs::remove_file(path);
     }
 
     fn claude_observation(revision: u64, title: &str, text: &str) -> AgentTerminalObservation {
@@ -7003,6 +8417,1633 @@ mod tests {
         let reloaded = load_state(&path).unwrap();
         assert!(reloaded.projects[0].last_agent_active_unix_ms.is_some());
         fs::remove_file(path).unwrap();
+    }
+
+    fn exchange_test_daemon() -> (Arc<Daemon>, PathBuf, Arc<TerminalRuntime>, String) {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let fixture_root = fs::canonicalize(path.parent().unwrap()).unwrap();
+        let mut state = lock(&daemon.state);
+        state.persisted.projects[0].path = fixture_root.clone();
+        state.persisted.worktrees[0].path = fixture_root;
+        drop(state);
+        let pane_id = PaneId(4);
+        let runtime = Arc::new(
+            spawn_runtime(
+                &daemon,
+                pane_id,
+                TerminalId(5),
+                Path::new("/"),
+                &LaunchRecipe {
+                    command: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "trap '' INT; exec /bin/cat".into(),
+                    ],
+                    initial_input: None,
+                    rows: 8,
+                    cols: 80,
+                },
+            )
+            .unwrap(),
+        );
+        let generation = {
+            let mut state = lock(&daemon.state);
+            state.runtimes.insert(pane_id, Arc::clone(&runtime));
+            state.runtime_generations[&pane_id].clone()
+        };
+        agent_report(
+            &daemon,
+            RuntimeAgentAuthority::new(pane_id, Some(generation.clone())),
+            "pi".into(),
+            AgentState::Idle,
+            None,
+            None,
+            AgentCapabilities {
+                prompt: true,
+                lifecycle: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (daemon, path, runtime, generation)
+    }
+
+    fn terminal_text(runtime: &TerminalRuntime) -> String {
+        runtime
+            .frame()
+            .unwrap()
+            .cells
+            .chunks(80)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn wait_for_terminal_text(runtime: &TerminalRuntime, expected: &str) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if terminal_text(runtime).contains(expected) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "terminal never contained {expected:?}: {:?}",
+            terminal_text(runtime)
+        );
+    }
+
+    fn listed_agent_exchange(daemon: &Daemon, exchange_id: AgentExchangeId) -> AgentExchange {
+        let Response::AgentExchanges(exchanges) = list_agent_exchanges(daemon, None).unwrap()
+        else {
+            panic!("expected exchange list");
+        };
+        exchanges
+            .into_iter()
+            .find(|exchange| exchange.id == exchange_id)
+            .expect("created exchange must be listed")
+    }
+
+    // The shared exchange fixture keeps a live runtime but leaves the pane marked exited.
+    // Production marks a pane exited only when its runtime dies, so these helpers restore that.
+    fn live_agent_daemon() -> (Arc<Daemon>, PathBuf, Arc<TerminalRuntime>) {
+        let (daemon, path, runtime, _generation) = exchange_test_daemon();
+        let mut state = lock(&daemon.state);
+        if let Some(pane) = state
+            .persisted
+            .panes
+            .iter_mut()
+            .find(|pane| pane.id == PaneId(4))
+        {
+            pane.exited = false;
+        }
+        drop(state);
+        (daemon, path, runtime)
+    }
+
+    fn record_runtime_death(daemon: &Arc<Daemon>, pane_id: PaneId) {
+        let runtime = lock(&daemon.state).runtimes.remove(&pane_id);
+        if let Some(runtime) = runtime {
+            runtime.terminate();
+        }
+        let mut state = lock(&daemon.state);
+        record_terminal_exit(daemon, &mut state, pane_id);
+        assert!(
+            state
+                .persisted
+                .panes
+                .iter()
+                .find(|pane| pane.id == pane_id)
+                .is_some_and(|pane| pane.exited),
+            "the fixture must record a real runtime death"
+        );
+        drop(state);
+    }
+
+    fn exited_pane_daemon() -> (Arc<Daemon>, PathBuf) {
+        let (daemon, path, _runtime) = live_agent_daemon();
+        record_runtime_death(&daemon, PaneId(4));
+        (daemon, path)
+    }
+
+    fn restart_pane(daemon: &Arc<Daemon>, pane_id: PaneId) -> u64 {
+        let pane = lock(&daemon.state)
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .cloned()
+            .expect("pane exists");
+        let Response::Ack { revision } =
+            restart_session(daemon, pane_id, pane.revision).expect("restart succeeds")
+        else {
+            panic!("expected an ack");
+        };
+        revision
+    }
+
+    fn stop_restarted_runtime(daemon: &Arc<Daemon>, pane_id: PaneId) {
+        let runtime = lock(&daemon.state).runtimes.remove(&pane_id);
+        if let Some(runtime) = runtime {
+            runtime.terminate();
+        }
+    }
+
+    #[test]
+    fn restart_revives_an_exited_pane_and_fences_its_old_stream() {
+        let (daemon, path) = exited_pane_daemon();
+        let pane_id = PaneId(4);
+        let before = {
+            let mut state = lock(&daemon.state);
+            let before = state
+                .persisted
+                .panes
+                .iter()
+                .find(|pane| pane.id == pane_id)
+                .cloned()
+                .expect("pane exists");
+            assert!(before.exited, "fixture must start from an exited pane");
+            state.leases.insert(
+                pane_id,
+                Lease {
+                    client_id: 99,
+                    generation: 4,
+                    expires_at: Instant::now() + LEASE_TTL,
+                },
+            );
+            state.transferred_streams.push_back(StreamLease {
+                pane_id,
+                client_id: 99,
+                generation: 4,
+            });
+            before
+        };
+
+        let revision = restart_pane(&daemon, pane_id);
+
+        assert!(revision > before.revision);
+        let state = lock(&daemon.state);
+        let pane = state
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .expect("pane kept");
+        assert!(!pane.exited, "restart must clear the exited flag");
+        assert!(pane.revision > before.revision);
+        assert_eq!(pane.session_id, before.session_id);
+        assert_eq!(pane.terminal_id, before.terminal_id);
+        assert!(state
+            .runtimes
+            .get(&pane_id)
+            .is_some_and(|runtime| !runtime.exited()));
+        assert!(state.runtime_generations.contains_key(&pane_id));
+        assert!(
+            !state.leases.contains_key(&pane_id),
+            "the dead pane's lease must not carry authority into the replacement runtime"
+        );
+        assert!(!state
+            .transferred_streams
+            .iter()
+            .any(|stream| stream.pane_id == pane_id));
+        drop(state);
+        stop_restarted_runtime(&daemon, pane_id);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn restart_save_failure_leaves_no_runtime_authority() {
+        let (daemon, path) = exited_pane_daemon();
+        let pane_id = PaneId(4);
+        let before = {
+            let state = lock(&daemon.state);
+            (
+                state
+                    .persisted
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id == pane_id)
+                    .expect("pane exists")
+                    .revision,
+                serde_json::to_value(&state.persisted).unwrap(),
+                state.revision,
+            )
+        };
+        let _ = fs::remove_file(&path);
+        fs::create_dir(&path).unwrap();
+        assert!(
+            restart_session(&daemon, pane_id, before.0).is_err(),
+            "an unwritable state store must fail the restart"
+        );
+        let state = lock(&daemon.state);
+        let pane = state
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .expect("pane kept");
+        assert!(pane.exited, "a failed restart must leave the pane exited");
+        assert_eq!(pane.revision, before.0);
+        assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before.1);
+        assert_eq!(state.revision, before.2);
+        assert!(
+            !state.runtime_generations.contains_key(&pane_id),
+            "a failed restart must not leave a generation that can authorize agent reports"
+        );
+        assert!(!state.runtimes.contains_key(&pane_id));
+        drop(state);
+        fs::remove_dir(&path).unwrap();
+    }
+
+    #[test]
+    fn restart_missing_worktree_record_leaves_state_unchanged() {
+        let (daemon, path) = exited_pane_daemon();
+        let pane_id = PaneId(4);
+        let before = {
+            let mut state = lock(&daemon.state);
+            state.persisted.worktrees.clear();
+            (
+                state.persisted.panes[0].revision,
+                serde_json::to_value(&state.persisted).unwrap(),
+                state.revision,
+            )
+        };
+
+        assert_eq!(
+            restart_session(&daemon, pane_id, before.0)
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
+        let state = lock(&daemon.state);
+        assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before.1);
+        assert_eq!(state.revision, before.2);
+        assert!(!state.runtime_generations.contains_key(&pane_id));
+        assert!(!state.runtimes.contains_key(&pane_id));
+        drop(state);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn restart_refuses_running_stale_stopping_handoff_and_recovering_panes() {
+        let (daemon, path, _runtime) = live_agent_daemon();
+        let pane_id = PaneId(4);
+        let running = lock(&daemon.state)
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .cloned()
+            .expect("pane exists");
+        assert!(!running.exited);
+        assert_eq!(
+            restart_session(&daemon, pane_id, running.revision)
+                .unwrap_err()
+                .code,
+            "invalid_state"
+        );
+        assert_eq!(
+            lock(&daemon.state)
+                .persisted
+                .panes
+                .iter()
+                .find(|pane| pane.id == pane_id)
+                .expect("pane kept")
+                .revision,
+            running.revision,
+            "a refused restart must not mutate the pane"
+        );
+
+        record_runtime_death(&daemon, pane_id);
+        let exited = lock(&daemon.state)
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .cloned()
+            .expect("pane kept");
+        assert!(exited.exited);
+        assert_eq!(
+            restart_session(&daemon, pane_id, exited.revision + 1)
+                .unwrap_err()
+                .code,
+            "revision_conflict"
+        );
+        assert!(
+            lock(&daemon.state)
+                .persisted
+                .panes
+                .iter()
+                .find(|pane| pane.id == pane_id)
+                .expect("pane kept")
+                .exited,
+            "a stale revision must leave the pane exited"
+        );
+
+        lock(&daemon.state).stopping = true;
+        assert_eq!(
+            restart_session(&daemon, pane_id, exited.revision)
+                .unwrap_err()
+                .code,
+            "daemon_replacing"
+        );
+        lock(&daemon.state).stopping = false;
+        lock(&daemon.state).handoff_in_progress = true;
+        assert_eq!(
+            restart_session(&daemon, pane_id, exited.revision)
+                .unwrap_err()
+                .code,
+            "daemon_replacing"
+        );
+        lock(&daemon.state).handoff_in_progress = false;
+        lock(&daemon.state).recovery_in_progress = true;
+        assert_eq!(
+            restart_session(&daemon, pane_id, exited.revision)
+                .unwrap_err()
+                .code,
+            "recovery_in_progress"
+        );
+        lock(&daemon.state).recovery_in_progress = false;
+        assert!(
+            lock(&daemon.state)
+                .persisted
+                .panes
+                .iter()
+                .find(|pane| pane.id == pane_id)
+                .expect("pane kept")
+                .exited
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn restart_never_falsely_attaches_a_persisted_agent_identity() {
+        let (daemon, path) = exited_pane_daemon();
+        let pane_id = PaneId(4);
+        let attached = lock(&daemon.state)
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .and_then(|pane| pane.agent.clone());
+        assert!(
+            attached.is_some(),
+            "fixture must carry a persisted agent identity"
+        );
+
+        restart_pane(&daemon, pane_id);
+
+        let revived = lock(&daemon.state)
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .cloned()
+            .expect("pane kept");
+        assert!(!revived.exited);
+        assert!(
+            revived.agent.as_ref().is_none_or(|agent| !agent.attached),
+            "a replacement runtime must never inherit an attached identity"
+        );
+        record_runtime_death(&daemon, pane_id);
+        let mut state = lock(&daemon.state);
+        if let Some(pane) = state
+            .persisted
+            .panes
+            .iter_mut()
+            .find(|pane| pane.id == pane_id)
+        {
+            pane.agent = None;
+        }
+        drop(state);
+        restart_pane(&daemon, pane_id);
+        let plain = lock(&daemon.state)
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .cloned()
+            .expect("pane kept");
+        assert!(!plain.exited);
+        assert!(
+            plain.agent.is_none(),
+            "a pane without a saved identity restarts without one"
+        );
+        stop_restarted_runtime(&daemon, pane_id);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn restart_sequence_advances_revision_and_leaves_exchanges_terminal() {
+        let (daemon, path, _runtime) = live_agent_daemon();
+        let pane_id = PaneId(4);
+        let Response::AgentExchange { exchange, .. } = create_agent_exchange(
+            &daemon,
+            pane_id,
+            "survive the exit".into(),
+            60_000,
+            AgentExchangeAccess::ReadOnly,
+            Vec::new(),
+        )
+        .unwrap() else {
+            panic!("expected exchange");
+        };
+        let exchange_id = exchange.id;
+        record_runtime_death(&daemon, pane_id);
+        let first_exit = {
+            let state = lock(&daemon.state);
+            assert_eq!(
+                state
+                    .persisted
+                    .agent_exchanges
+                    .iter()
+                    .find(|candidate| candidate.id == exchange_id)
+                    .map(|candidate| candidate.state),
+                Some(AgentExchangeState::TargetExited)
+            );
+            state.revision
+        };
+
+        let first_restart = restart_pane(&daemon, pane_id);
+        assert!(first_restart > first_exit);
+        assert_eq!(
+            lock(&daemon.state)
+                .persisted
+                .agent_exchanges
+                .iter()
+                .find(|candidate| candidate.id == exchange_id)
+                .map(|candidate| candidate.state),
+            Some(AgentExchangeState::TargetExited),
+            "restart must not revive an exchange bound to the dead runtime"
+        );
+
+        record_runtime_death(&daemon, pane_id);
+        let second_exit = lock(&daemon.state).revision;
+        assert!(
+            lock(&daemon.state)
+                .persisted
+                .panes
+                .iter()
+                .find(|pane| pane.id == pane_id)
+                .expect("pane kept")
+                .exited
+        );
+        let second_restart = restart_pane(&daemon, pane_id);
+        assert!(second_restart > second_exit);
+        let live = lock(&daemon.state)
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .cloned()
+            .expect("pane kept");
+        assert!(!live.exited);
+        assert_eq!(
+            restart_session(&daemon, pane_id, live.revision)
+                .unwrap_err()
+                .code,
+            "invalid_state",
+            "a running pane is never restartable"
+        );
+        stop_restarted_runtime(&daemon, pane_id);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ctrl_c_bytes_end_a_pane_and_restart_reuses_its_saved_recipe() {
+        let (daemon, path, fixture_runtime, _generation) = exchange_test_daemon();
+        let pane_id = PaneId(4);
+        let cwd = lock(&daemon.state)
+            .persisted
+            .worktrees
+            .first()
+            .expect("fixture worktree")
+            .path
+            .clone();
+        let recipe = LaunchRecipe {
+            command: vec!["/bin/sh".into(), "-c".into(), "exec sleep 30".into()],
+            initial_input: None,
+            rows: 8,
+            cols: 80,
+        };
+        let runtime = Arc::new(
+            spawn_runtime(&daemon, pane_id, TerminalId(5), &cwd, &recipe).expect("spawns"),
+        );
+        {
+            let mut state = lock(&daemon.state);
+            state.runtimes.insert(pane_id, Arc::clone(&runtime));
+            if let Some(pane) = state
+                .persisted
+                .panes
+                .iter_mut()
+                .find(|pane| pane.id == pane_id)
+            {
+                pane.exited = false;
+                pane.recovery = Some(recipe.clone());
+            }
+        }
+        fixture_runtime.terminate();
+
+        // ^ A terminal Ctrl+C is the VINTR byte, so the line discipline signals the foreground group.
+        runtime.write(&[3]).expect("writes the interrupt byte");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !runtime.exited() {
+            assert!(
+                Instant::now() < deadline,
+                "Ctrl+C must end a foreground process that does not trap SIGINT"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let exited = {
+            let mut state = lock(&daemon.state);
+            state.foreground_jobs.insert(pane_id);
+            state.listening_ports.insert(pane_id, vec![3000]);
+            record_terminal_exit(&daemon, &mut state, pane_id);
+            assert!(
+                !state.foreground_jobs.contains(&pane_id)
+                    && !state.listening_ports.contains_key(&pane_id),
+                "an exited pane must not keep reporting a live job or listener"
+            );
+            state
+                .persisted
+                .panes
+                .iter()
+                .find(|pane| pane.id == pane_id)
+                .cloned()
+                .expect("pane kept")
+        };
+        assert!(exited.exited);
+
+        let revision = restart_pane(&daemon, pane_id);
+        assert!(revision > exited.revision);
+        let revived = lock(&daemon.state)
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .cloned()
+            .expect("pane kept");
+        assert!(
+            !revived.exited,
+            "the reported hollow session must become live"
+        );
+        assert_eq!(
+            revived
+                .recovery
+                .as_ref()
+                .map(|recipe| recipe.command.clone()),
+            Some(recipe.command.clone()),
+            "restart reuses the pane's saved command"
+        );
+        assert!(lock(&daemon.state)
+            .runtimes
+            .get(&pane_id)
+            .is_some_and(|runtime| !runtime.exited()));
+        stop_restarted_runtime(&daemon, pane_id);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn one_active_exchange_per_pane_releases_after_terminal_state() {
+        let (daemon, path, runtime, generation) = exchange_test_daemon();
+        let Response::AgentExchange {
+            exchange: first, ..
+        } = create_agent_exchange(
+            &daemon,
+            PaneId(4),
+            "first request".into(),
+            60_000,
+            AgentExchangeAccess::ReadOnly,
+            Vec::new(),
+        )
+        .unwrap()
+        else {
+            panic!("expected first exchange");
+        };
+
+        assert_eq!(
+            create_agent_exchange(
+                &daemon,
+                PaneId(4),
+                "overlapping request".into(),
+                60_000,
+                AgentExchangeAccess::ReadOnly,
+                Vec::new(),
+            )
+            .unwrap_err()
+            .code,
+            "exchange_busy"
+        );
+
+        agent_report(
+            &daemon,
+            RuntimeAgentAuthority::new(PaneId(4), Some(generation)),
+            "pi".into(),
+            AgentState::Done,
+            None,
+            None,
+            AgentCapabilities {
+                prompt: true,
+                lifecycle: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            listed_agent_exchange(&daemon, first.id).state,
+            AgentExchangeState::DoneObserved
+        );
+        assert!(matches!(
+            create_agent_exchange(
+                &daemon,
+                PaneId(4),
+                "next request".into(),
+                60_000,
+                AgentExchangeAccess::ReadOnly,
+                Vec::new(),
+            )
+            .unwrap(),
+            Response::AgentExchange { exchange, .. }
+                if exchange.id != first.id && exchange.state == AgentExchangeState::Delivered
+        ));
+
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn request_bound_exchange_receipts_require_capability_and_exact_authority() {
+        let (daemon, path, runtime, generation) = exchange_test_daemon();
+        let Response::AgentExchange { exchange, .. } = create_agent_exchange(
+            &daemon,
+            PaneId(4),
+            "receipt review".into(),
+            60_000,
+            AgentExchangeAccess::ReadOnly,
+            Vec::new(),
+        )
+        .unwrap() else {
+            panic!("expected exchange");
+        };
+
+        let before_unsupported = listed_agent_exchange(&daemon, exchange.id);
+        assert_eq!(
+            report_agent_exchange_receipt(
+                &daemon,
+                exchange.id,
+                exchange.round,
+                &generation,
+                AgentExchangeReceipt::Accepted,
+            )
+            .unwrap_err()
+            .code,
+            "unsupported_exchange_receipt"
+        );
+        assert_eq!(
+            listed_agent_exchange(&daemon, exchange.id),
+            before_unsupported
+        );
+
+        agent_report(
+            &daemon,
+            RuntimeAgentAuthority::new(PaneId(4), Some(generation.clone())),
+            "pi".into(),
+            AgentState::Idle,
+            None,
+            None,
+            AgentCapabilities {
+                prompt: true,
+                lifecycle: true,
+                exchange_receipts: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let before_stale_receipts = listed_agent_exchange(&daemon, exchange.id);
+
+        assert_eq!(
+            report_agent_exchange_receipt(
+                &daemon,
+                exchange.id,
+                exchange.round,
+                "stale-generation",
+                AgentExchangeReceipt::Accepted,
+            )
+            .unwrap_err()
+            .code,
+            "stale_runtime"
+        );
+        assert_eq!(
+            listed_agent_exchange(&daemon, exchange.id),
+            before_stale_receipts
+        );
+        assert_eq!(
+            report_agent_exchange_receipt(
+                &daemon,
+                exchange.id,
+                exchange.round + 1,
+                &generation,
+                AgentExchangeReceipt::Accepted,
+            )
+            .unwrap_err()
+            .code,
+            "stale_exchange_round"
+        );
+        assert_eq!(
+            listed_agent_exchange(&daemon, exchange.id),
+            before_stale_receipts
+        );
+
+        let Response::AgentExchange {
+            exchange: accepted, ..
+        } = report_agent_exchange_receipt(
+            &daemon,
+            exchange.id,
+            exchange.round,
+            &generation,
+            AgentExchangeReceipt::Accepted,
+        )
+        .unwrap()
+        else {
+            panic!("expected accepted exchange");
+        };
+        assert_eq!(accepted.state, AgentExchangeState::Accepted);
+        assert_eq!(accepted.evidence, AgentExchangeEvidence::RequestBound);
+
+        let Response::AgentExchange {
+            exchange: duplicate,
+            ..
+        } = report_agent_exchange_receipt(
+            &daemon,
+            exchange.id,
+            exchange.round,
+            &generation,
+            AgentExchangeReceipt::Accepted,
+        )
+        .unwrap()
+        else {
+            panic!("expected idempotent accepted exchange");
+        };
+        assert_eq!(duplicate, accepted);
+        assert_eq!(listed_agent_exchange(&daemon, exchange.id), accepted);
+
+        let Response::AgentExchange {
+            exchange: completed,
+            ..
+        } = report_agent_exchange_receipt(
+            &daemon,
+            exchange.id,
+            exchange.round,
+            &generation,
+            AgentExchangeReceipt::Completed,
+        )
+        .unwrap()
+        else {
+            panic!("expected completed exchange");
+        };
+        assert_eq!(completed.state, AgentExchangeState::Completed);
+        assert_eq!(completed.evidence, AgentExchangeEvidence::RequestBound);
+        assert!(completed.state.is_terminal());
+
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn exchange_mutations_require_current_revision_without_stale_side_effects() {
+        let (daemon, path, runtime, generation) = exchange_test_daemon();
+        let worktree_path = lock(&daemon.state).persisted.worktrees[0].path.clone();
+        let Response::AgentExchange {
+            exchange: delivered,
+            ..
+        } = create_agent_exchange(
+            &daemon,
+            PaneId(4),
+            "review".into(),
+            60_000,
+            AgentExchangeAccess::Writer,
+            vec![worktree_path.join("src")],
+        )
+        .unwrap()
+        else {
+            panic!("expected exchange");
+        };
+        agent_report(
+            &daemon,
+            RuntimeAgentAuthority::new(PaneId(4), Some(generation)),
+            "pi".into(),
+            AgentState::Blocked,
+            None,
+            None,
+            AgentCapabilities {
+                prompt: true,
+                lifecycle: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let blocked = listed_agent_exchange(&daemon, delivered.id);
+
+        assert_eq!(
+            continue_agent_exchange(
+                &daemon,
+                blocked.id,
+                delivered.revision,
+                "stale continuation".into(),
+                60_000,
+            )
+            .unwrap_err()
+            .code,
+            "revision_conflict"
+        );
+        assert_eq!(listed_agent_exchange(&daemon, blocked.id), blocked);
+        assert_eq!(
+            cancel_agent_exchange(&daemon, blocked.id, delivered.revision)
+                .unwrap_err()
+                .code,
+            "revision_conflict"
+        );
+        assert_eq!(listed_agent_exchange(&daemon, blocked.id), blocked);
+
+        let Response::AgentExchange {
+            exchange: continued,
+            ..
+        } = continue_agent_exchange(
+            &daemon,
+            blocked.id,
+            blocked.revision,
+            "current continuation".into(),
+            60_000,
+        )
+        .unwrap()
+        else {
+            panic!("expected continued exchange");
+        };
+        assert_eq!(continued.state, AgentExchangeState::Delivered);
+        let Response::AgentExchange {
+            exchange: cancelling,
+            ..
+        } = cancel_agent_exchange(&daemon, continued.id, continued.revision).unwrap()
+        else {
+            panic!("expected cancellation request");
+        };
+        assert_eq!(cancelling.state, AgentExchangeState::CancelRequested);
+
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn stale_runtime_report_cannot_mutate_or_confirm_exchange_cancellation() {
+        let (daemon, path, runtime, generation) = exchange_test_daemon();
+        let stale_generation = [
+            "0000000000000001:0000000000000001",
+            "0000000000000001:0000000000000002",
+        ]
+        .into_iter()
+        .find(|candidate| *candidate != generation)
+        .expect("one well-formed generation must differ from the fixture")
+        .to_string();
+        assert_ne!(stale_generation, generation);
+        let Response::AgentExchange { exchange, .. } = create_agent_exchange(
+            &daemon,
+            PaneId(4),
+            "cancel me".into(),
+            60_000,
+            AgentExchangeAccess::ReadOnly,
+            Vec::new(),
+        )
+        .unwrap() else {
+            panic!("expected exchange");
+        };
+        let Response::AgentExchange {
+            exchange: cancelling,
+            ..
+        } = cancel_agent_exchange(&daemon, exchange.id, exchange.revision).unwrap()
+        else {
+            panic!("expected cancellation request");
+        };
+
+        assert_eq!(
+            agent_report(
+                &daemon,
+                RuntimeAgentAuthority::new(PaneId(4), Some(stale_generation)),
+                "pi".into(),
+                AgentState::Idle,
+                None,
+                None,
+                AgentCapabilities {
+                    prompt: true,
+                    lifecycle: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap_err()
+            .code,
+            "stale_runtime"
+        );
+        assert_eq!(listed_agent_exchange(&daemon, cancelling.id), cancelling);
+
+        agent_report(
+            &daemon,
+            RuntimeAgentAuthority::new(PaneId(4), Some(generation)),
+            "pi".into(),
+            AgentState::Idle,
+            None,
+            None,
+            AgentCapabilities {
+                prompt: true,
+                lifecycle: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            listed_agent_exchange(&daemon, cancelling.id).state,
+            AgentExchangeState::Cancelled
+        );
+
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn continue_retains_target_authority_access_and_claims_for_each_wait_boundary() {
+        for (lifecycle_state, expected_exchange_state) in [
+            (AgentState::Blocked, AgentExchangeState::BlockedObserved),
+            (AgentState::Done, AgentExchangeState::DoneObserved),
+        ] {
+            let (daemon, path, runtime, generation) = exchange_test_daemon();
+            let worktree_path = lock(&daemon.state).persisted.worktrees[0].path.clone();
+            let Response::AgentExchange {
+                exchange: delivered,
+                ..
+            } = create_agent_exchange(
+                &daemon,
+                PaneId(4),
+                "initial round".into(),
+                60_000,
+                AgentExchangeAccess::Writer,
+                vec![worktree_path.join("src")],
+            )
+            .unwrap()
+            else {
+                panic!("expected exchange");
+            };
+            agent_report(
+                &daemon,
+                RuntimeAgentAuthority::new(PaneId(4), Some(generation)),
+                "pi".into(),
+                lifecycle_state,
+                None,
+                None,
+                AgentCapabilities {
+                    prompt: true,
+                    lifecycle: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let observed = listed_agent_exchange(&daemon, delivered.id);
+            assert_eq!(observed.state, expected_exchange_state);
+
+            let Response::AgentExchange {
+                exchange: continued,
+                ..
+            } = continue_agent_exchange(
+                &daemon,
+                observed.id,
+                observed.revision,
+                "next round".into(),
+                60_000,
+            )
+            .unwrap()
+            else {
+                panic!("expected continued exchange");
+            };
+            assert_eq!(continued.state, AgentExchangeState::Delivered);
+            assert_eq!(continued.evidence, AgentExchangeEvidence::PtyDelivery);
+            assert_eq!(continued.round, observed.round + 1);
+            assert_eq!(continued.pane_id, observed.pane_id);
+            assert_eq!(continued.session_id, observed.session_id);
+            assert_eq!(continued.worktree_id, observed.worktree_id);
+            assert_eq!(continued.project_id, observed.project_id);
+            assert_eq!(continued.agent_id, observed.agent_id);
+            assert_eq!(continued.provider, observed.provider);
+            assert_eq!(continued.runtime_generation, observed.runtime_generation);
+            assert_eq!(continued.access, observed.access);
+            assert_eq!(continued.write_claims, observed.write_claims);
+
+            runtime.terminate();
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn exchange_prompt_and_timeout_boundaries_are_exact_and_typed() {
+        let (daemon, path, runtime, _) = exchange_test_daemon();
+        assert_eq!(
+            create_agent_exchange(
+                &daemon,
+                PaneId(4),
+                String::new(),
+                1,
+                AgentExchangeAccess::ReadOnly,
+                Vec::new(),
+            )
+            .unwrap_err()
+            .code,
+            "invalid_prompt"
+        );
+        assert_eq!(
+            create_agent_exchange(
+                &daemon,
+                PaneId(4),
+                "x".repeat(MAX_AGENT_EXCHANGE_PROMPT_BYTES + 1),
+                1,
+                AgentExchangeAccess::ReadOnly,
+                Vec::new(),
+            )
+            .unwrap_err()
+            .code,
+            "invalid_prompt"
+        );
+        for timeout_ms in [0, MAX_AGENT_EXCHANGE_TIMEOUT_MS + 1] {
+            assert_eq!(
+                create_agent_exchange(
+                    &daemon,
+                    PaneId(4),
+                    "valid".into(),
+                    timeout_ms,
+                    AgentExchangeAccess::ReadOnly,
+                    Vec::new(),
+                )
+                .unwrap_err()
+                .code,
+                "invalid_timeout"
+            );
+        }
+        assert!(matches!(
+            create_agent_exchange(
+                &daemon,
+                PaneId(4),
+                "x".repeat(MAX_AGENT_EXCHANGE_PROMPT_BYTES),
+                MAX_AGENT_EXCHANGE_TIMEOUT_MS,
+                AgentExchangeAccess::ReadOnly,
+                Vec::new(),
+            )
+            .unwrap(),
+            Response::AgentExchange { exchange, .. }
+                if exchange.state == AgentExchangeState::Delivered
+        ));
+
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+
+        let (daemon, path, runtime, _) = exchange_test_daemon();
+        assert!(matches!(
+            create_agent_exchange(
+                &daemon,
+                PaneId(4),
+                "minimum timeout".into(),
+                1,
+                AgentExchangeAccess::ReadOnly,
+                Vec::new(),
+            )
+            .unwrap(),
+            Response::AgentExchange { exchange, .. }
+                if exchange.state == AgentExchangeState::Delivered
+        ));
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn exchange_delivery_promotes_only_observed_lifecycle_and_continues_same_target() {
+        let (daemon, path, runtime, generation) = exchange_test_daemon();
+        let response = create_agent_exchange(
+            &daemon,
+            PaneId(4),
+            "inspect the boundary".into(),
+            60_000,
+            AgentExchangeAccess::ReadOnly,
+            Vec::new(),
+        )
+        .unwrap();
+        let Response::AgentExchange {
+            exchange,
+            frame: None,
+        } = response
+        else {
+            panic!("unexpected exchange response: {response:?}");
+        };
+        assert_eq!(exchange.state, AgentExchangeState::Delivered);
+        assert_eq!(exchange.evidence, AgentExchangeEvidence::PtyDelivery);
+        assert!(exchange.write_claims.is_empty());
+        wait_for_terminal_text(&runtime, "[wsx exchange 7, round 1, read-only]");
+        wait_for_terminal_text(&runtime, "inspect the boundary");
+
+        agent_report(
+            &daemon,
+            RuntimeAgentAuthority::new(PaneId(4), Some(generation.clone())),
+            "pi".into(),
+            AgentState::Working,
+            None,
+            None,
+            AgentCapabilities {
+                prompt: true,
+                lifecycle: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let working = lock(&daemon.state).persisted.agent_exchanges[0].clone();
+        assert_eq!(working.state, AgentExchangeState::WorkingObserved);
+        assert_eq!(working.evidence, AgentExchangeEvidence::PaneLifecycle);
+
+        agent_report(
+            &daemon,
+            RuntimeAgentAuthority::new(PaneId(4), Some(generation.clone())),
+            "pi".into(),
+            AgentState::Blocked,
+            None,
+            None,
+            AgentCapabilities {
+                prompt: true,
+                lifecycle: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let blocked = lock(&daemon.state).persisted.agent_exchanges[0].clone();
+        assert_eq!(blocked.state, AgentExchangeState::BlockedObserved);
+        assert!(matches!(
+            wait_agent_exchange(&daemon, blocked.id, working.revision, 1, false).unwrap(),
+            Response::AgentExchange { exchange, .. }
+                if exchange.state == AgentExchangeState::BlockedObserved
+        ));
+        let continued = continue_agent_exchange(
+            &daemon,
+            blocked.id,
+            blocked.revision,
+            "verify once more".into(),
+            60_000,
+        )
+        .unwrap();
+        assert!(
+            matches!(continued, Response::AgentExchange { exchange, .. } if exchange.round == 2 && exchange.state == AgentExchangeState::Delivered)
+        );
+        wait_for_terminal_text(&runtime, "[wsx exchange 7, round 2, read-only]");
+        agent_report(
+            &daemon,
+            RuntimeAgentAuthority::new(PaneId(4), Some(generation)),
+            "pi".into(),
+            AgentState::Done,
+            None,
+            None,
+            AgentCapabilities {
+                prompt: true,
+                lifecycle: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            lock(&daemon.state).persisted.agent_exchanges[0].state,
+            AgentExchangeState::DoneObserved
+        );
+
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn exchange_wait_releases_the_mutation_fence_for_lifecycle_reports() {
+        let (daemon, path, runtime, generation) = exchange_test_daemon();
+        let Response::AgentExchange { exchange, .. } = create_agent_exchange(
+            &daemon,
+            PaneId(4),
+            "wait concurrently".into(),
+            60_000,
+            AgentExchangeAccess::ReadOnly,
+            Vec::new(),
+        )
+        .unwrap() else {
+            panic!("expected exchange");
+        };
+        let waiter_daemon = Arc::clone(&daemon);
+        let waiter = thread::spawn(move || {
+            handle(
+                &waiter_daemon,
+                Request::AgentExchangeWait {
+                    exchange_id: exchange.id,
+                    after_revision: exchange.revision,
+                    timeout_ms: 1_000,
+                    include_frame: false,
+                },
+            )
+        });
+        thread::sleep(Duration::from_millis(20));
+        let report = handle(
+            &daemon,
+            Request::AgentReport {
+                pane_id: PaneId(4),
+                runtime_generation: Some(generation),
+                provider: "pi".into(),
+                state: AgentState::Blocked,
+                attached: true,
+                conversation_id: None,
+                session_ref: None,
+                wake_token: None,
+                capabilities: AgentCapabilities {
+                    prompt: true,
+                    lifecycle: true,
+                    ..Default::default()
+                },
+            },
+        );
+        assert!(matches!(report, Response::Ack { .. }));
+        assert!(matches!(
+            waiter.join().unwrap(),
+            Response::AgentExchange { exchange, .. }
+                if exchange.state == AgentExchangeState::BlockedObserved
+        ));
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn exchange_cancel_is_requested_until_lifecycle_confirms_and_stale_generation_fails() {
+        let (daemon, path, runtime, generation) = exchange_test_daemon();
+        let Response::AgentExchange { exchange, .. } = create_agent_exchange(
+            &daemon,
+            PaneId(4),
+            "long review".into(),
+            60_000,
+            AgentExchangeAccess::ReadOnly,
+            Vec::new(),
+        )
+        .unwrap() else {
+            panic!("expected exchange");
+        };
+        lock(&daemon.state)
+            .runtime_generations
+            .insert(PaneId(4), "0000000000000002:0000000000000002".into());
+        assert_eq!(
+            cancel_agent_exchange(&daemon, exchange.id, exchange.revision)
+                .unwrap_err()
+                .code,
+            "stale_runtime"
+        );
+        lock(&daemon.state)
+            .runtime_generations
+            .insert(PaneId(4), generation.clone());
+        let Response::AgentExchange {
+            exchange: cancelling,
+            ..
+        } = cancel_agent_exchange(&daemon, exchange.id, exchange.revision).unwrap()
+        else {
+            panic!("expected cancellation");
+        };
+        assert_eq!(cancelling.state, AgentExchangeState::CancelRequested);
+        agent_report(
+            &daemon,
+            RuntimeAgentAuthority::new(PaneId(4), Some(generation)),
+            "pi".into(),
+            AgentState::Idle,
+            None,
+            None,
+            AgentCapabilities {
+                prompt: true,
+                lifecycle: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let cancelled = lock(&daemon.state).persisted.agent_exchanges[0].clone();
+        assert_eq!(cancelled.state, AgentExchangeState::Cancelled);
+
+        assert_eq!(
+            continue_agent_exchange(
+                &daemon,
+                cancelled.id,
+                cancelled.revision,
+                "retry".into(),
+                60_000
+            )
+            .unwrap_err()
+            .code,
+            "invalid_exchange_state"
+        );
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn writer_claims_reject_outside_symlinks_and_normalize_in_worktree_descendants() {
+        let (_, state_path) = agent_test_daemon(agent_test_persisted());
+        let worktree_path = state_path.with_extension("worktree");
+        let outside_path = state_path.with_extension("outside");
+        fs::create_dir(&worktree_path).unwrap();
+        fs::create_dir(&outside_path).unwrap();
+        let outside_link = worktree_path.join("outside");
+        std::os::unix::fs::symlink(&outside_path, &outside_link).unwrap();
+        let allowed_directory = worktree_path.join("allowed");
+        fs::create_dir(&allowed_directory).unwrap();
+        let worktree = Worktree {
+            id: WorktreeId(2),
+            project_id: ProjectId(1),
+            path: worktree_path.clone(),
+            branch: "main".into(),
+            revision: 7,
+        };
+
+        assert_eq!(
+            exchange_claims(
+                AgentExchangeAccess::Writer,
+                vec![outside_link.join("claimed")],
+                &worktree,
+            )
+            .unwrap_err()
+            .code,
+            "invalid_claim"
+        );
+
+        let future_claim = allowed_directory.join("future");
+        assert_eq!(
+            exchange_claims(AgentExchangeAccess::Writer, vec![future_claim], &worktree,).unwrap(),
+            vec![worktree_path.canonicalize().unwrap().join("allowed/future")]
+        );
+
+        fs::remove_dir_all(&worktree_path).unwrap();
+        fs::remove_dir_all(&outside_path).unwrap();
+    }
+
+    #[test]
+    fn writer_claim_conflicts_are_nested_active_and_release_at_terminal_state() {
+        let exchange = AgentExchange {
+            id: AgentExchangeId(7),
+            pane_id: PaneId(4),
+            session_id: SessionId(3),
+            worktree_id: WorktreeId(2),
+            project_id: ProjectId(1),
+            agent_id: AgentInstanceId(6),
+            provider: "codex".into(),
+            runtime_generation: "0000000000000001:0000000000000001".into(),
+            round: 1,
+            access: AgentExchangeAccess::Writer,
+            write_claims: vec![PathBuf::from("/project/src")],
+            state: AgentExchangeState::Delivered,
+            evidence: AgentExchangeEvidence::PtyDelivery,
+            created_unix_ms: 1,
+            updated_unix_ms: 1,
+            deadline_unix_ms: 2,
+            delivery_revision: 8,
+            revision: 9,
+        };
+        assert!(has_writer_claim_conflict(
+            std::slice::from_ref(&exchange),
+            &[PathBuf::from("/project/src/runtime")]
+        ));
+        assert!(has_writer_claim_conflict(
+            std::slice::from_ref(&exchange),
+            &[PathBuf::from("/project/src")]
+        ));
+        assert!(!has_writer_claim_conflict(
+            std::slice::from_ref(&exchange),
+            &[PathBuf::from("/project/src2")]
+        ));
+        assert!(!has_writer_claim_conflict(
+            std::slice::from_ref(&exchange),
+            &[PathBuf::from("/project/docs")]
+        ));
+
+        let mut child = exchange.clone();
+        child.write_claims = vec![PathBuf::from("/project/src/runtime")];
+        assert!(has_writer_claim_conflict(
+            &[child],
+            &[PathBuf::from("/project/src")]
+        ));
+
+        let mut done = exchange.clone();
+        done.state = AgentExchangeState::DoneObserved;
+        assert!(!has_writer_claim_conflict(
+            &[done],
+            &[PathBuf::from("/project/src")]
+        ));
+        let mut expired = exchange;
+        expired.state = AgentExchangeState::Expired;
+        assert!(!has_writer_claim_conflict(
+            &[expired],
+            &[PathBuf::from("/project/src")]
+        ));
+    }
+
+    #[test]
+    fn writer_claim_conflict_matrix_distinguishes_ancestors_duplicates_and_siblings() {
+        let exchange = AgentExchange {
+            id: AgentExchangeId(7),
+            pane_id: PaneId(4),
+            session_id: SessionId(3),
+            worktree_id: WorktreeId(2),
+            project_id: ProjectId(1),
+            agent_id: AgentInstanceId(6),
+            provider: "codex".into(),
+            runtime_generation: "0000000000000001:0000000000000001".into(),
+            round: 1,
+            access: AgentExchangeAccess::Writer,
+            write_claims: vec![PathBuf::from("/project/src")],
+            state: AgentExchangeState::Delivered,
+            evidence: AgentExchangeEvidence::PtyDelivery,
+            created_unix_ms: 1,
+            updated_unix_ms: 1,
+            deadline_unix_ms: 2,
+            delivery_revision: 8,
+            revision: 9,
+        };
+
+        for (active_claim, requested_claim, must_conflict) in [
+            ("/project/src", "/project/src/child", true),
+            ("/project/src/child", "/project/src", true),
+            ("/project/src", "/project/src", true),
+            ("/project/src", "/project/src2", false),
+            ("/project/src", "/project/docs", false),
+        ] {
+            let mut active = exchange.clone();
+            active.write_claims = vec![PathBuf::from(active_claim)];
+            assert_eq!(
+                has_writer_claim_conflict(&[active], &[PathBuf::from(requested_claim)]),
+                must_conflict,
+                "active {active_claim:?}, requested {requested_claim:?}"
+            );
+        }
+
+        let mut read_only = exchange;
+        read_only.access = AgentExchangeAccess::ReadOnly;
+        read_only.write_claims.clear();
+        assert!(read_only.write_claims.is_empty());
+        assert!(!has_writer_claim_conflict(
+            &[read_only],
+            &[PathBuf::from("/project/src")]
+        ));
+    }
+
+    #[test]
+    fn continue_rejects_noncontinuable_terminal_states_without_mutation() {
+        let (daemon, path, runtime, _) = exchange_test_daemon();
+        let Response::AgentExchange { exchange, .. } = create_agent_exchange(
+            &daemon,
+            PaneId(4),
+            "terminal state".into(),
+            60_000,
+            AgentExchangeAccess::ReadOnly,
+            Vec::new(),
+        )
+        .unwrap() else {
+            panic!("expected exchange");
+        };
+
+        for terminal_state in [
+            AgentExchangeState::Cancelled,
+            AgentExchangeState::TargetExited,
+            AgentExchangeState::TargetReplaced,
+        ] {
+            let before = {
+                let mut state = lock(&daemon.state);
+                let record = state
+                    .persisted
+                    .agent_exchanges
+                    .iter_mut()
+                    .find(|record| record.id == exchange.id)
+                    .unwrap();
+                record.state = terminal_state;
+                record.clone()
+            };
+            assert_eq!(
+                continue_agent_exchange(
+                    &daemon,
+                    before.id,
+                    before.revision,
+                    "must not continue".into(),
+                    60_000,
+                )
+                .unwrap_err()
+                .code,
+                "invalid_exchange_state"
+            );
+            let state = lock(&daemon.state);
+            assert_eq!(
+                state
+                    .persisted
+                    .agent_exchanges
+                    .iter()
+                    .find(|record| record.id == before.id)
+                    .unwrap(),
+                &before
+            );
+        }
+
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn expired_exchange_releases_its_writer_claim_on_list() {
+        let (daemon, path, runtime, _) = exchange_test_daemon();
+        let worktree_path = lock(&daemon.state).persisted.worktrees[0].path.clone();
+        let Response::AgentExchange { exchange, .. } = create_agent_exchange(
+            &daemon,
+            PaneId(4),
+            "bounded work".into(),
+            60_000,
+            AgentExchangeAccess::Writer,
+            Vec::new(),
+        )
+        .unwrap() else {
+            panic!("expected exchange");
+        };
+        lock(&daemon.state).persisted.agent_exchanges[0].deadline_unix_ms =
+            exchange.created_unix_ms;
+        let Response::AgentExchanges(exchanges) = list_agent_exchanges(&daemon, None).unwrap()
+        else {
+            panic!("expected exchange list");
+        };
+        assert_eq!(exchanges[0].state, AgentExchangeState::Expired);
+        assert!(!has_writer_claim_conflict(&exchanges, &[worktree_path]));
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn exchange_respects_terminal_lease_and_cold_recovery_interrupts_delivery() {
+        let (daemon, path, runtime, _) = exchange_test_daemon();
+        let worktree_path = lock(&daemon.state).persisted.worktrees[0].path.clone();
+        lock(&daemon.state).leases.insert(
+            PaneId(4),
+            Lease {
+                client_id: 99,
+                generation: 1,
+                expires_at: Instant::now() + LEASE_TTL,
+            },
+        );
+        assert_eq!(
+            create_agent_exchange(
+                &daemon,
+                PaneId(4),
+                "blocked".into(),
+                60_000,
+                AgentExchangeAccess::ReadOnly,
+                Vec::new()
+            )
+            .unwrap_err()
+            .code,
+            "terminal_busy"
+        );
+        lock(&daemon.state).leases.clear();
+        let Response::AgentExchange { exchange, .. } = create_agent_exchange(
+            &daemon,
+            PaneId(4),
+            "persist me".into(),
+            60_000,
+            AgentExchangeAccess::Writer,
+            Vec::new(),
+        )
+        .unwrap() else {
+            panic!("expected exchange");
+        };
+        assert_eq!(exchange.write_claims, [worktree_path]);
+        let restored = load_state(&path).unwrap();
+        assert_eq!(
+            restored.agent_exchanges[0].state,
+            AgentExchangeState::Interrupted
+        );
+        runtime.terminate();
+        let _ = fs::remove_file(path);
     }
 
     #[test]

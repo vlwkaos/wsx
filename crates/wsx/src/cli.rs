@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::session_state;
 use wsx_core::{
@@ -127,6 +127,8 @@ pub enum AgentCmd {
         session_id: Option<String>,
         #[arg(long)]
         session_path: Option<String>,
+        #[arg(long, hide = true)]
+        wake_token: Option<String>,
         #[arg(long)]
         prompt: bool,
         #[arg(long)]
@@ -138,6 +140,70 @@ pub enum AgentCmd {
         detached: bool,
         #[arg(long, hide = true)]
         escape_interrupts: bool,
+        #[arg(long, hide = true)]
+        exchange_receipts: bool,
+    },
+    #[command(hide = true)]
+    WakeHeartbeat {
+        pane: String,
+        #[arg(long)]
+        prompt_id: String,
+    },
+    /// Deliver a bounded provider-neutral request to an explicit agent session
+    Request {
+        session: String,
+        prompt: String,
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
+        #[arg(long)]
+        writer: bool,
+        #[arg(long = "write-claim", requires = "writer")]
+        write_claims: Vec<PathBuf>,
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        scope: SessionScope,
+    },
+    /// Inspect one exchange and optionally include its bounded terminal frame
+    Inspect {
+        exchange: runtime::AgentExchangeId,
+        #[arg(long)]
+        frame: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Wait for one exchange revision or terminal lifecycle state
+    Wait {
+        exchange: runtime::AgentExchangeId,
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+        #[arg(long)]
+        frame: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Deliver a follow-up round to a terminal exchange
+    Continue {
+        exchange: runtime::AgentExchangeId,
+        prompt: String,
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Request cancellation of one active exchange
+    Cancel {
+        exchange: runtime::AgentExchangeId,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List retained exchanges, optionally scoped to one session or pane
+    Exchanges {
+        session: Option<String>,
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        scope: SessionScope,
     },
 }
 
@@ -345,6 +411,14 @@ pub enum SessionCmd {
         #[command(flatten)]
         scope: SessionScope,
     },
+    /// Restart an exited session pane with its saved command
+    Restart {
+        session: String,
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        scope: SessionScope,
+    },
     /// Deprecated alias for send-text
     SendKeys {
         session: String,
@@ -438,6 +512,11 @@ pub fn run(cmd: Command) -> Result<()> {
                 json,
                 scope,
             } => cmd_session_delete(&session, &scope, json),
+            SessionCmd::Restart {
+                session,
+                json,
+                scope,
+            } => cmd_session_restart(&session, json, &scope),
             SessionCmd::SendKeys {
                 session: s,
                 keys,
@@ -490,11 +569,13 @@ pub fn run(cmd: Command) -> Result<()> {
                 conversation_id,
                 session_id,
                 session_path,
+                wake_token,
                 prompt,
                 resume,
                 lifecycle,
                 detached,
                 escape_interrupts,
+                exchange_receipts,
             } => cmd_agent_report(
                 &pane,
                 AgentReportOptions {
@@ -504,14 +585,59 @@ pub fn run(cmd: Command) -> Result<()> {
                     conversation_id,
                     session_id,
                     session_path,
+                    wake_token,
                     capabilities: runtime::AgentCapabilities {
                         prompt,
                         resume,
                         lifecycle,
                         escape_interrupts,
+                        exchange_receipts,
                     },
                 },
             ),
+            AgentCmd::WakeHeartbeat { pane, prompt_id } => {
+                cmd_agent_wake_heartbeat(&pane, &prompt_id)
+            }
+            AgentCmd::Request {
+                session,
+                prompt,
+                timeout,
+                writer,
+                write_claims,
+                json,
+                scope,
+            } => cmd_agent_exchange_request(
+                &session,
+                prompt,
+                timeout,
+                writer,
+                write_claims,
+                json,
+                &scope,
+            ),
+            AgentCmd::Inspect {
+                exchange,
+                frame,
+                json,
+            } => cmd_agent_exchange_inspect(exchange, frame, json),
+            AgentCmd::Wait {
+                exchange,
+                timeout,
+                frame,
+                json,
+            } => cmd_agent_exchange_wait(exchange, timeout, frame, json),
+            AgentCmd::Continue {
+                exchange,
+                prompt,
+                timeout,
+                json,
+            } => cmd_agent_exchange_continue(exchange, prompt, timeout, json),
+            AgentCmd::Cancel { exchange, json } => cmd_agent_exchange_cancel(exchange, json),
+            AgentCmd::Exchanges {
+                session,
+                json,
+                scope,
+            } => cmd_agent_exchange_list(session.as_deref(), json, &scope),
         },
         Command::Plugin { subcommand } => match subcommand {
             PluginCmd::List { json } => cmd_plugin_list(json),
@@ -715,23 +841,12 @@ pub(crate) fn send_routine(
     action: asched_core::routine::ipc::Action,
 ) -> Result<asched_core::routine::ipc::Response> {
     let request = asched_core::routine::ipc::Request::new(project.to_path_buf(), action);
-    // ^ asched owns daemon lifecycle: vendor/asched/README.md#architecture
-    Ok(routine_client()?.request_with_start(&request, asched_daemon_command()?)?)
+    // ^ wsxd hosts the asched-core scheduler while this client retains its socket protocol.
+    Ok(routine_client()?.request_with_start(&request, runtime::routine_daemon_command())?)
 }
 
 fn routine_client() -> Result<asched_core::routine::RoutineClient> {
     Ok(asched_core::routine::RoutineClient::new(routine_root()?))
-}
-
-fn asched_daemon_command() -> Result<ProcessCommand> {
-    let binary = std::env::var_os("ASCHED_BIN").unwrap_or_else(|| "asched".into());
-    let mut command = ProcessCommand::new(binary);
-    command
-        .arg("daemon-serve")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    Ok(command)
 }
 
 fn fetch_routines(project: &Path) -> Result<(u64, Vec<asched_core::routine::ipc::RoutineView>)> {
@@ -1025,6 +1140,36 @@ mod session_command_tests {
     }
 
     #[test]
+    fn restart_requires_a_selector_and_accepts_scope_and_json() {
+        let args = Args::try_parse_from([
+            "wsx",
+            "session",
+            "restart",
+            "worker",
+            "-p",
+            "api",
+            "-w",
+            "fix/timeout",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Session {
+                subcommand: SessionCmd::Restart {
+                    session,
+                    json: true,
+                    scope,
+                }
+            }) if session == "worker"
+                && scope.project.as_deref() == Some("api")
+                && scope.worktree.as_deref() == Some("fix/timeout")
+        ));
+        assert!(Args::try_parse_from(["wsx", "session", "restart"]).is_err());
+        assert!(Args::try_parse_from(["wsx", "session", "restart", "worker", "--nope"]).is_err());
+    }
+
+    #[test]
     fn created_identity_is_labeled_as_a_session() {
         assert_eq!(created_session_line(SessionId(42)), "session:  42");
     }
@@ -1093,6 +1238,74 @@ mod agent_command_tests {
     }
 
     #[test]
+    fn exchange_commands_parse_exact_targets_bounds_and_writer_claims() {
+        let request = Args::try_parse_from([
+            "wsx",
+            "agent",
+            "request",
+            "reviewer",
+            "inspect lifecycle",
+            "-p",
+            "api",
+            "-w",
+            "fix/timeout",
+            "--timeout",
+            "300",
+            "--writer",
+            "--write-claim",
+            "/repo/src",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            request.command,
+            Some(Command::Agent {
+                subcommand: AgentCmd::Request {
+                    session,
+                    prompt,
+                    timeout: 300,
+                    writer: true,
+                    write_claims,
+                    json: true,
+                    scope,
+                }
+            }) if session == "reviewer"
+                && prompt == "inspect lifecycle"
+                && write_claims == [std::path::PathBuf::from("/repo/src")]
+                && scope.project.as_deref() == Some("api")
+                && scope.worktree.as_deref() == Some("fix/timeout")
+        ));
+        assert!(Args::try_parse_from([
+            "wsx",
+            "agent",
+            "request",
+            "reviewer",
+            "inspect",
+            "--write-claim",
+            "/repo/src"
+        ])
+        .is_err());
+
+        for argv in [
+            vec!["wsx", "agent", "inspect", "17", "--frame", "--json"],
+            vec!["wsx", "agent", "wait", "17", "--timeout", "30", "--frame"],
+            vec![
+                "wsx",
+                "agent",
+                "continue",
+                "17",
+                "challenge evidence",
+                "--timeout",
+                "90",
+            ],
+            vec!["wsx", "agent", "cancel", "17", "--json"],
+            vec!["wsx", "agent", "exchanges", "reviewer", "-p", "api"],
+        ] {
+            assert!(Args::try_parse_from(argv).is_ok());
+        }
+    }
+
+    #[test]
     fn report_accepts_escape_interrupt_capability() {
         let args = Args::try_parse_from([
             "wsx",
@@ -1115,6 +1328,48 @@ mod agent_command_tests {
                     ..
                 }
             })
+        ));
+    }
+
+    #[test]
+    fn claude_wake_commands_accept_prompt_bound_tokens() {
+        let report = Args::try_parse_from([
+            "wsx",
+            "agent",
+            "report",
+            "7",
+            "--provider",
+            "claude",
+            "--state",
+            "working",
+            "--wake-token",
+            "prompt-123",
+        ])
+        .unwrap();
+        assert!(matches!(
+            report.command,
+            Some(Command::Agent {
+                subcommand: AgentCmd::Report {
+                    wake_token: Some(token),
+                    ..
+                }
+            }) if token == "prompt-123"
+        ));
+
+        let heartbeat = Args::try_parse_from([
+            "wsx",
+            "agent",
+            "wake-heartbeat",
+            "7",
+            "--prompt-id",
+            "prompt-123",
+        ])
+        .unwrap();
+        assert!(matches!(
+            heartbeat.command,
+            Some(Command::Agent {
+                subcommand: AgentCmd::WakeHeartbeat { pane, prompt_id }
+            }) if pane == "7" && prompt_id == "prompt-123"
         ));
     }
 
@@ -1652,6 +1907,7 @@ struct AgentReportOptions {
     conversation_id: Option<String>,
     session_id: Option<String>,
     session_path: Option<String>,
+    wake_token: Option<String>,
     capabilities: runtime::AgentCapabilities,
 }
 
@@ -1663,6 +1919,7 @@ fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
         conversation_id,
         session_id,
         session_path,
+        wake_token,
         capabilities,
     } = report;
     let pane_id = resolve_pane(selector, &SessionScope::default())?;
@@ -1693,6 +1950,7 @@ fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
         attached,
         conversation_id,
         session_ref,
+        wake_token,
         capabilities,
     })? {
         runtime::Response::Ack { revision } => {
@@ -1702,6 +1960,267 @@ fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
         runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
         _ => bail!("wsxd returned an unexpected agent response"),
     }
+}
+
+const AGENT_WAKE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const AGENT_WAKE_START_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+const AGENT_WAKE_START_RETRIES: usize = 50;
+
+fn cmd_agent_wake_heartbeat(selector: &str, prompt_id: &str) -> Result<()> {
+    let pane_id = resolve_pane(selector, &SessionScope::default())?;
+    let runtime_generation = std::env::var(runtime::WSX_RUNTIME_GENERATION_ENV)
+        .context("wake heartbeat requires a managed wsx runtime generation")?;
+    let renew = || {
+        runtime::Client::local().call(&runtime::Request::AgentWakeRenew {
+            pane_id,
+            runtime_generation: runtime_generation.clone(),
+            wake_token: prompt_id.to_string(),
+        })
+    };
+
+    let mut started = false;
+    for _ in 0..AGENT_WAKE_START_RETRIES {
+        match renew() {
+            Ok(runtime::Response::Ack { .. }) => {
+                started = true;
+                break;
+            }
+            Ok(runtime::Response::Error(error)) if error.code == "wake_not_active" => {
+                std::thread::sleep(AGENT_WAKE_START_RETRY_INTERVAL);
+            }
+            _ => return Ok(()),
+        }
+    }
+    if !started {
+        return Ok(());
+    }
+
+    loop {
+        std::thread::sleep(AGENT_WAKE_HEARTBEAT_INTERVAL);
+        if !matches!(renew(), Ok(runtime::Response::Ack { .. })) {
+            return Ok(());
+        }
+    }
+}
+
+fn exchange_timeout_ms(seconds: u64) -> Result<u64> {
+    seconds
+        .checked_mul(1000)
+        .filter(|value| *value > 0 && *value <= runtime::MAX_AGENT_EXCHANGE_TIMEOUT_MS)
+        .context("exchange timeout must be between 1 second and 24 hours")
+}
+
+fn terminal_frame_text(frame: &runtime::TerminalFrame) -> String {
+    frame
+        .cells
+        .chunks(usize::from(frame.cols))
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_string()
+}
+
+fn print_agent_exchange(
+    exchange: &runtime::AgentExchange,
+    frame: Option<&runtime::TerminalFrame>,
+    json: bool,
+) -> Result<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "exchange": exchange,
+                "fallback": frame.map(|frame| serde_json::json!({
+                    "kind": "terminal_frame",
+                    "text": terminal_frame_text(frame),
+                    "frame_revision": frame.revision,
+                })),
+            }))?
+        );
+    } else {
+        println!(
+            "exchange {} round {}: {:?}",
+            exchange.id, exchange.round, exchange.state
+        );
+        println!("target: pane {} ({})", exchange.pane_id, exchange.provider);
+        println!("evidence: {:?}", exchange.evidence);
+        println!("revision: {}", exchange.revision);
+        if let Some(frame) = frame {
+            let text = terminal_frame_text(frame);
+            if !text.is_empty() {
+                println!("terminal frame (fallback):\n{text}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn agent_exchange_response(
+    response: runtime::Response,
+    json: bool,
+) -> Result<runtime::AgentExchange> {
+    match response {
+        runtime::Response::AgentExchange { exchange, frame } => {
+            print_agent_exchange(&exchange, frame.as_ref(), json)?;
+            Ok(exchange)
+        }
+        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
+        _ => bail!("wsxd returned an unexpected agent exchange response"),
+    }
+}
+
+fn cmd_agent_exchange_request(
+    selector: &str,
+    prompt: String,
+    timeout: u64,
+    writer: bool,
+    write_claims: Vec<PathBuf>,
+    json: bool,
+    scope: &SessionScope,
+) -> Result<()> {
+    let pane_id = resolve_pane(selector, scope)?;
+    agent_exchange_response(
+        runtime::Client::local().call(&runtime::Request::AgentExchangeCreate {
+            pane_id,
+            prompt,
+            timeout_ms: exchange_timeout_ms(timeout)?,
+            access: if writer {
+                runtime::AgentExchangeAccess::Writer
+            } else {
+                runtime::AgentExchangeAccess::ReadOnly
+            },
+            write_claims,
+        })?,
+        json,
+    )?;
+    Ok(())
+}
+
+fn cmd_agent_exchange_inspect(
+    exchange_id: runtime::AgentExchangeId,
+    frame: bool,
+    json: bool,
+) -> Result<()> {
+    agent_exchange_response(
+        runtime::Client::local().call(&runtime::Request::AgentExchangeGet {
+            exchange_id,
+            include_frame: frame,
+        })?,
+        json,
+    )?;
+    Ok(())
+}
+
+fn current_agent_exchange(exchange_id: runtime::AgentExchangeId) -> Result<runtime::AgentExchange> {
+    match runtime::Client::local().call(&runtime::Request::AgentExchangeGet {
+        exchange_id,
+        include_frame: false,
+    })? {
+        runtime::Response::AgentExchange { exchange, .. } => Ok(exchange),
+        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
+        _ => bail!("wsxd returned an unexpected agent exchange response"),
+    }
+}
+
+fn cmd_agent_exchange_wait(
+    exchange_id: runtime::AgentExchangeId,
+    timeout: u64,
+    frame: bool,
+    json: bool,
+) -> Result<()> {
+    let timeout_ms = exchange_timeout_ms(timeout)?;
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut exchange = current_agent_exchange(exchange_id)?;
+    while !exchange.state.is_wait_boundary() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            bail!(
+                "wait_timeout: exchange {} remains {:?}",
+                exchange.id,
+                exchange.state
+            );
+        }
+        let wait_ms = u64::try_from(remaining.as_millis())
+            .unwrap_or(u64::MAX)
+            .clamp(1, 30_000);
+        exchange = match runtime::Client::local().wait_agent_exchange(
+            &runtime::Request::AgentExchangeWait {
+                exchange_id,
+                after_revision: exchange.revision,
+                timeout_ms: wait_ms,
+                include_frame: false,
+            },
+        )? {
+            runtime::Response::AgentExchange { exchange, .. } => exchange,
+            runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
+            _ => bail!("wsxd returned an unexpected agent exchange response"),
+        };
+    }
+    cmd_agent_exchange_inspect(exchange_id, frame, json)
+}
+
+fn cmd_agent_exchange_continue(
+    exchange_id: runtime::AgentExchangeId,
+    prompt: String,
+    timeout: u64,
+    json: bool,
+) -> Result<()> {
+    let current = current_agent_exchange(exchange_id)?;
+    agent_exchange_response(
+        runtime::Client::local().call(&runtime::Request::AgentExchangeContinue {
+            exchange_id,
+            expected_revision: current.revision,
+            prompt,
+            timeout_ms: exchange_timeout_ms(timeout)?,
+        })?,
+        json,
+    )?;
+    Ok(())
+}
+
+fn cmd_agent_exchange_cancel(exchange_id: runtime::AgentExchangeId, json: bool) -> Result<()> {
+    let current = current_agent_exchange(exchange_id)?;
+    agent_exchange_response(
+        runtime::Client::local().call(&runtime::Request::AgentExchangeCancel {
+            exchange_id,
+            expected_revision: current.revision,
+        })?,
+        json,
+    )?;
+    Ok(())
+}
+
+fn cmd_agent_exchange_list(selector: Option<&str>, json: bool, scope: &SessionScope) -> Result<()> {
+    let pane_id = selector
+        .map(|selector| resolve_pane(selector, scope))
+        .transpose()?;
+    match runtime::Client::local().call(&runtime::Request::AgentExchangeList { pane_id })? {
+        runtime::Response::AgentExchanges(exchanges) if json => {
+            println!("{}", serde_json::to_string_pretty(&exchanges)?);
+        }
+        runtime::Response::AgentExchanges(exchanges) => {
+            for exchange in exchanges {
+                println!(
+                    "{}\tpane {}\tround {}\t{:?}\t{:?}",
+                    exchange.id,
+                    exchange.pane_id,
+                    exchange.round,
+                    exchange.state,
+                    exchange.evidence
+                );
+            }
+        }
+        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
+        _ => bail!("wsxd returned an unexpected agent exchange list response"),
+    }
+    Ok(())
 }
 
 fn cmd_plugin_list(json: bool) -> Result<()> {
@@ -2353,6 +2872,29 @@ fn cmd_session_delete(selector: &str, scope: &SessionScope, json: bool) -> Resul
     } else {
         println!(
             "deleted session: {} ({})",
+            session.session_id, session.label
+        );
+    }
+    Ok(())
+}
+
+fn cmd_session_restart(selector: &str, json: bool, scope: &SessionScope) -> Result<()> {
+    let session = resolve_session(selector, scope)?;
+    let revision = ops::restart_session(session.pane_id)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "restarted": true,
+                "session_id": session.session_id,
+                "pane_id": session.pane_id,
+                "label": session.label,
+                "revision": revision,
+            }))?
+        );
+    } else {
+        println!(
+            "restarted session: {} ({})",
             session.session_id, session.label
         );
     }

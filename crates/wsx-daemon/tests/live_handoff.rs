@@ -209,6 +209,7 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
                 attached: true,
                 conversation_id: None,
                 session_ref: None,
+                wake_token: None,
                 capabilities: AgentCapabilities {
                     lifecycle: true,
                     ..Default::default()
@@ -319,6 +320,7 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
                 attached: true,
                 conversation_id: None,
                 session_ref: None,
+                wake_token: None,
                 capabilities: AgentCapabilities {
                     lifecycle: true,
                     ..Default::default()
