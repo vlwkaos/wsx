@@ -3,14 +3,11 @@
 
 use anyhow::{bail, Context, Result};
 use asched_core::routine::ipc::{Action, Request, Response, RoutineView};
-use asched_core::routine::{FireOutcome, Routine, RoutineFire, Trigger, STARTUP_FD_ENV};
+use asched_core::routine::{FireOutcome, Routine, RoutineFire, Trigger};
 use asched_core::{Project, RegistryStore};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
-use std::ffi::OsStr;
-use std::fs::{self, File};
-use std::io::Write;
-use std::os::fd::FromRawFd;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::service::{client, daemon_command, registry, resolve_project, send, terminal_safe};
@@ -558,38 +555,8 @@ fn run_daemon(command: DaemonCommand) -> Result<()> {
 
 fn serve_daemon() -> Result<()> {
     let root = RegistryStore::default_root()?;
-    if let Some(mut startup) = startup_notifier()? {
-        asched_core::routine::daemon::serve_with_startup(root, move |result| {
-            let message = match result {
-                Ok(()) => "ready".to_string(),
-                Err(error) => format!("error:{error}"),
-            };
-            let _ = startup.write_all(message.as_bytes());
-        })?;
-    } else {
-        asched_core::routine::daemon::serve(root)?;
-    }
+    asched_core::routine::daemon::serve_from_startup_env(root)?;
     Ok(())
-}
-
-fn startup_notifier() -> Result<Option<File>> {
-    let Some(raw) = std::env::var_os(STARTUP_FD_ENV) else {
-        return Ok(None);
-    };
-    std::env::remove_var(STARTUP_FD_ENV);
-    let descriptor = validate_startup_descriptor(&raw)?;
-    Ok(Some(unsafe { File::from_raw_fd(descriptor) }))
-}
-
-fn validate_startup_descriptor(raw: &OsStr) -> Result<i32> {
-    let descriptor = raw
-        .to_string_lossy()
-        .parse::<i32>()
-        .context("invalid asched startup descriptor")?;
-    if descriptor < 3 || unsafe { libc::fcntl(descriptor, libc::F_GETFD) } == -1 {
-        bail!("invalid asched startup descriptor");
-    }
-    Ok(descriptor)
 }
 
 fn fetch_revision(working_dir: &Path) -> Result<u64> {

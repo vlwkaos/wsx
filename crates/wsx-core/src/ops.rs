@@ -10,8 +10,8 @@ use crate::{
         WorktreeInfo, WorktreeInitialSession,
     },
     runtime::{
-        AgentState, Client, ProjectSpec, Request, Response, SessionId, SessionPlacement, Snapshot,
-        WorktreeId, WorktreeSpec,
+        AgentState, Client, PaneId, ProjectSpec, Request, Response, SessionId, SessionPlacement,
+        Snapshot, WorktreeId, WorktreeSpec,
     },
 };
 use anyhow::{anyhow, bail, Result};
@@ -660,6 +660,21 @@ pub fn kill_session(session_id: SessionId) -> Result<()> {
     expect_ack(Client::local().call(&Request::SessionClose {
         session_id,
         expected_revision: session.revision,
+    })?)
+}
+
+/// Restart one exited pane with its own saved command.
+/// ^ [[Session Model]] Only an exited pane is restartable, so this never interrupts live work.
+pub fn restart_session(pane_id: PaneId) -> Result<u64> {
+    let snapshot = runtime_snapshot()?;
+    let pane = snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.id == pane_id)
+        .ok_or_else(|| anyhow!("session pane not found"))?;
+    expect_ack_revision(Client::local().call(&Request::SessionRestart {
+        pane_id,
+        expected_revision: pane.revision,
     })?)
 }
 

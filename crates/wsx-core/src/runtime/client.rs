@@ -1,6 +1,7 @@
 use super::protocol::{
     binary_identity, binary_identity_with_version, encode_line, Request, Response,
     TerminalClientMessage, TerminalServerMessage, MAX_RESPONSE_BYTES, PROTOCOL_VERSION,
+    ROUTINE_DAEMON_ARG,
 };
 use std::{
     collections::HashMap,
@@ -120,6 +121,25 @@ impl Client {
 
     pub fn call(&self, request: &Request) -> io::Result<Response> {
         self.call_at_protocol(request, active_protocol(&self.socket))
+    }
+
+    pub fn wait_agent_exchange(&self, request: &Request) -> io::Result<Response> {
+        let Request::AgentExchangeWait { timeout_ms, .. } = request else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "exchange wait requires an agent_exchange_wait request",
+            ));
+        };
+        let protocol = active_protocol(&self.socket);
+        let mut stream = self.connect()?;
+        validate_hello(
+            round_trip(&mut stream, &Request::Hello { protocol })?,
+            protocol,
+        )?;
+        stream.set_read_timeout(Some(
+            Duration::from_millis((*timeout_ms).min(30_000)).saturating_add(IO_TIMEOUT),
+        ))?;
+        round_trip(&mut stream, request)
     }
 
     fn call_at_protocol(&self, request: &Request, protocol: u32) -> io::Result<Response> {
@@ -1356,7 +1376,8 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
             ..
         } if protocol == PROTOCOL_VERSION
             && capabilities.resume_shell_fallback
-            && capabilities.foreground_jobs =>
+            && capabilities.foreground_jobs
+            && capabilities.agent_exchanges =>
         {
             let lifecycle_coordination = capabilities.lifecycle_coordination;
             let version_coordination = capabilities.version_coordination;
@@ -1525,6 +1546,17 @@ fn wait_until_handoff_ready(client: &Client, target_revision: u32) -> io::Result
     }
 }
 
+// ^ Routine startup boundary. Keep wsxd's process submode and asched-core's startup handshake aligned.
+pub fn routine_daemon_command() -> Command {
+    let mut command = Command::new(daemon_binary());
+    command
+        .arg(ROUTINE_DAEMON_ARG)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
 fn daemon_binary() -> PathBuf {
     if let Some(path) = std::env::var_os("WSX_DAEMON_BIN").filter(|value| !value.is_empty()) {
         return PathBuf::from(path);
@@ -1680,6 +1712,7 @@ mod tests {
             resume_shell_fallback: true,
             foreground_jobs: true,
             lifecycle_coordination: true,
+            agent_exchanges: true,
             ..Default::default()
         }
     }

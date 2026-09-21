@@ -1,5 +1,6 @@
 /target/
 .work/
+/knowledge/sessions/
 *.tar.gz
 *.sha256
 *.pem

@@ -50,9 +50,9 @@ cargo xtask build
 
 ## Agent integration과 routine
 
-`u`를 눌러 routine을 만듭니다. 문서로 확인된 one-shot agent template 또는 Custom을 선택합니다. Template은 다음 form에 보이는 command argv를 교체합니다. argv는 계속 편집할 수 있고 Custom은 빈 값으로 시작합니다.
+`u`를 눌러 routine을 만듭니다. 문서로 확인된 one-shot agent template 또는 Custom을 선택합니다. Template은 다음 form에 보이는 command argv를 교체합니다. argv는 계속 편집할 수 있고 Custom은 빈 값으로 시작합니다. 배포에 포함된 `wsxd`가 routine 예약 실행을 담당하므로 별도 `asched` executable은 필요하지 않습니다.
 
-wsx는 설치되어 있고 setup이 필요한 agent를 사용자가 명시적으로 선택했을 때만 integration 설치를 제안합니다. 거절하면 **Global Settings → Runtime → Agent integrations**에서 직접 설치할 때까지 해당 agent prompt를 영구적으로 숨깁니다. PATH 감지나 남은 config file만으로는 prompt를 표시하지 않습니다.
+wsx는 시작할 때 설치된 integration의 embedded version이 오래되었으면 업데이트를 제안합니다. 거절하면 다음 실행 때 다시 제안합니다. 빠진 integration은 계속 사용 시점에 처리합니다. 설치되어 있고 setup이 필요한 agent를 사용자가 명시적으로 선택했을 때만 설치를 제안하며, 거절하면 **Global Settings → Runtime → Agent integrations**에서 직접 설치할 때까지 해당 agent prompt를 숨깁니다. PATH 감지나 남은 config file만으로는 빠진 integration prompt를 표시하지 않습니다.
 
 필요하면 직접 설치할 수 있습니다.
 
@@ -77,7 +77,7 @@ Installer는 관련 없는 hook을 보존하고 표준 config-directory override
 
 Terminal mode는 기본 `Ctrl+A` prefix를 사용합니다. 이어서 `j/k`는 인접 session, `{`/`}`는 이전 또는 다음 group, `i/I`는 idle, `a/A`는 active, `n/N`은 attention session으로 이동합니다. Attention 이동은 기본적으로 다른 attention 상태보다 Blocked session을 먼저 선택하며 Global Settings에서 Workspace 순서로 되돌릴 수 있습니다. Group 이동은 Workspace 순서를 유지하며 먼저 확인이 필요한 session을 선택하고, 없으면 첫 idle agent session을 선택합니다. 둘 다 없으면 현재 terminal을 유지합니다. `B`는 desktop sidebar 전환, `W`는 Workspace, `Q`는 TUI만 종료합니다. `Ctrl+A Ctrl+A`는 literal prefix를 보냅니다.
 
-Group은 순서가 있는 project filter입니다. 기본 **ungrouped** anti-group은 membership이 없는 project를 표시합니다. Trusted agent 작업, terminal 활동, session 진입, expand 또는 collapse 변경은 project의 비활성 timer를 다시 시작합니다. 이 timer가 열린 project를 자동으로 접으면 wsx는 마지막 collapse 원인을 나타내기 위해 project를 `stale`로 표시합니다. 이 표시는 재시작과 이후 expand 뒤에도 유지되며, project를 직접 collapse하면 원인이 바뀌므로 사라집니다. wsx는 process tree로 agent identity나 상태를 추론하지 않습니다. Adapter가 Claude session임을 확인한 경우에만 제한된 live terminal evidence로 누락된 lifecycle event를 보정할 수 있습니다.
+Group은 순서가 있는 project filter입니다. 기본 **ungrouped** anti-group은 membership이 없는 project를 표시합니다. Trusted agent 작업, terminal 활동, session 진입, expand 또는 collapse 변경은 project의 비활성 window를 갱신합니다. 기본 adaptive policy는 24시간으로 시작하고, 새로운 UTC 날짜의 첫 trusted activity마다 12시간을 더해 최대 28일까지 늘어납니다. 활동이 확보한 window를 넘게 중단되면 다음 active period는 설정된 base부터 다시 시작합니다. Timer가 열린 project를 자동으로 접으면 wsx는 마지막 collapse 원인을 나타내기 위해 project를 `stale`로 표시합니다. 이 표시는 재시작 뒤에도 유지되지만 project와 직접 상호작용하면 즉시 사라집니다. wsx는 process tree로 agent identity나 상태를 추론하지 않습니다. Adapter가 Claude session임을 확인한 경우에만 제한된 live terminal evidence로 누락된 lifecycle event를 보정할 수 있습니다.
 
 ## 설정
 
@@ -87,7 +87,7 @@ Group은 순서가 있는 project filter입니다. 기본 **ungrouped** anti-gro
 terminal_escape_chord = "ctrl+a w"
 resume_agents_on_restore = true
 wake_mode = true
-auto_collapse_after_hours = 24
+auto_collapse = { mode = "adaptive", base_hours = 24 }
 notification_timeout_seconds = 4
 show_release_status = true
 terminal_sidebar = "compact"
@@ -95,6 +95,10 @@ terminal_title_position = "bottom"
 port_visibility = "non_agentic"
 attention_priority = "blocked_first"
 ```
+
+macOS에서 `wake_mode`를 켜면 현재 runtime generation에서 권한을 받은 Working report가 제한된 idle sleep 방지 assertion을 유지합니다. Claude는 prompt마다 5분 간격의 비동기 heartbeat를 시작하므로 긴 streaming response도 기본 30분 lease를 넘어 보호됩니다. Heartbeat는 정확한 prompt와 runtime generation에 묶입니다. 완료, blocked 상태, error, detach, runtime 교체 또는 다음 prompt가 발생하면 이전 heartbeat의 권한은 사라집니다.
+
+자동 collapse를 끄려면 `auto_collapse`를 `{ mode = "disabled" }`로 설정하고, 고정 window를 사용하려면 `{ mode = "flat", hours = 72 }`로 설정합니다. 기존 numeric `auto_collapse_after_hours`는 flat mode로 호환되며, 0은 disabled로 migration됩니다.
 
 예기치 않게 daemon이 종료되면 wsx는 일반 shell을 먼저 복원하고 lifecycle 보고가 가능해진 뒤 lifecycle 보고를 지원하는 저장된 agent를 하나씩 재개합니다. 큰 session history가 동시에 memory를 사용하지 않도록 제한하며, 재개된 runtime이 확인될 때까지 저장된 agent identity는 연결되지 않은 상태로 유지합니다.
 
@@ -124,10 +128,11 @@ wsx는 file을 검증하고 unknown field, 크기 제한을 벗어난 worktree d
 ```text
 wsx status [--json]
 wsx worktree list|create|delete
-wsx session create|delete|list|send-keys|send-text|prompt|peek|rename
+wsx session create|delete|restart|list|send-keys|send-text|prompt|peek|rename
 wsx group ls|create|rename|add|remove
 wsx routine ...
 wsx agent install <target>
+wsx agent request|inspect|wait|continue|cancel|exchanges
 wsx agent report <pane> --provider <name> --state <state> [--session-id <id>|--session-path <path>]
 wsx plugin list|reload
 wsx runtime status [--json]
@@ -141,9 +146,15 @@ wsx session create [--name <label>] [--command <shell-input>] [--json]
                    [-p <project>] [-w <branch|alias|path>]
 wsx session delete <session|pane|label> [--json]
                    [-p <project>] [-w <branch|alias|path>]
+wsx session restart <session|pane|label> [--json]
+                   [-p <project>] [-w <branch|alias|path>]
 ```
 
-Session input, prompt, peek, rename 명령에도 `-p`와 `-w` scope를 선택적으로 지정할 수 있습니다. 정확한 session ID와 pane ID는 project scope 없이 바로 사용할 수 있습니다. Project와 worktree 안에서 유일한 label을 지정하면 사전에 목록을 조회하지 않아도 되며, 대상이 모호하면 실행하지 않고 오류를 반환합니다. `--command`는 새 shell이 시작된 뒤 입력할 text이며 direct argv 실행이 아닙니다.
+Session input, prompt, peek, rename, restart 명령에도 `-p`와 `-w` scope를 선택적으로 지정할 수 있습니다. 정확한 session ID와 pane ID는 project scope 없이 바로 사용할 수 있습니다. Project와 worktree 안에서 유일한 label을 지정하면 사전에 목록을 조회하지 않아도 되며, 대상이 모호하면 실행하지 않고 오류를 반환합니다. `--command`는 새 shell이 시작된 뒤 입력할 text이며 direct argv 실행이 아닙니다.
+
+Ctrl+C나 agent crash로 pane process가 종료되어도 session은 저장된 명령과 함께 남습니다. `wsx session restart`는 정확히 그 종료된 pane 하나를 저장된 명령 또는 보존된 native agent session으로 다시 시작하며, 새 runtime generation으로 session이 다시 사용 가능해집니다. 아직 실행 중인 pane, 오래된 revision, 종료 또는 runtime 교체 중인 daemon, session 복원이 진행 중인 daemon, 사라진 worktree는 거부합니다. 시작에 실패하면 pane은 종료 상태로 남고 상태는 바뀌지 않습니다.
+
+`wsx agent request <session> <prompt>`는 명시한 prompt-capable agent에 provider-neutral하고 runtime generation에 묶인 exchange를 시작합니다. 반환된 exchange ID로 `inspect`, `wait`, `continue`, `cancel`을 실행하고 `exchanges`로 보존된 receipt를 조회합니다. 저장된 intent와 실패한 delivery는 `intent_persisted`, 성공한 universal delivery는 `pty_delivery`, lifecycle 전이는 `pane_lifecycle`로 표시합니다. `--frame`은 structured assistant output이라고 주장하지 않고 bounded `terminal_frame` fallback을 반환합니다. Read-only exchange는 서로 다른 pane에서 병렬 실행할 수 있습니다. `--writer`는 기본으로 대상 worktree 전체를 claim하고, 반복 가능한 `--write-claim <absolute-path>`로 범위를 좁힙니다. 겹치는 active writer claim은 거부합니다. 이 claim은 협력 scheduling만 조정하며 repository permission을 부여하거나 회수하지 않습니다. Exchange는 live Terminal lease를 빼앗지 않습니다. Native adapter는 `exchange_receipts` capability를 알리고 generation과 round에 묶인 `accepted` 또는 `completed` receipt를 `request_bound` evidence로 제출할 수 있습니다. Pygmalion은 이후 Pi에서 이를 최적화할 수 있지만 이 contract의 필수 조건은 아닙니다.
 
 Routine의 각 `--arg`는 direct argv item 하나입니다. wsx는 routine argv를 실행할 때 shell을 사용하지 않습니다. 신뢰하지 않는 routine은 enable 또는 run하기 전에 `wsx routine show <name>`으로 확인합니다.
 
@@ -158,8 +169,8 @@ Live handoff를 지원하는 wsxd update는 wsx TUI가 모두 종료될 때까�
 - wsxd는 login session이 아니라 host와 Unix user에 귀속됩니다. 동일 사용자의 SSH 재연결은 live PTY와 buffer를 재사용합니다.
 - Owner-only socket과 peer-UID 검사로 다른 사용자의 접근을 거부합니다.
 - Pane마다 writable lease는 하나입니다. 명시적으로 Terminal에 들어가면 가장 최근 wsx instance로 control이 이전되고, 이전 instance는 Workspace로 돌아갑니다. Lease generation은 이전 controller의 input, resize, heartbeat, selection, release를 거부합니다. Event는 revision을 invalidate하고 client는 authoritative snapshot으로 복구합니다.
-- Message, frame, command, plugin manifest와 view output, listener, resource count는 bounded입니다.
-- UI-only wsx release는 compatible daemon을 계속 사용합니다. Protocol 15 daemon update는 TUI client가 종료되기를 기다린 뒤 live terminal을 handoff합니다. Protocol 11–14 daemon은 안전한 최초 cold replacement 전까지 계속 사용할 수 있고, 일반적인 지연과 재연결 중에도 wsx를 열면 기존 workspace가 그대로 표시됩니다.
+- Message, frame, agent exchange prompt, deadline, write claim, retained receipt, command, plugin manifest와 view output, listener, resource count는 bounded입니다.
+- UI-only wsx release는 compatible daemon을 계속 사용합니다. Protocol 16은 provider-neutral하고 runtime generation에 묶인 agent exchange, exited pane restart, prompt-bound Claude wake renewal을 추가하며 Protocol 15 live handoff를 유지합니다. Protocol 11–15 daemon은 안전한 최초 전환 전까지 계속 사용할 수 있고, 일반적인 지연과 재연결 중에도 wsx를 열면 기존 workspace가 그대로 표시됩니다.
 - Native resume은 검증된 provider reference로 새 process, PTY, terminal buffer를 만듭니다. Unsupported reference는 clean shell을 엽니다.
 - Remote access, handoff 중 transient graphics 보존, marketplace, 예기치 않은 daemon crash 뒤 original-process 복원은 지원하지 않습니다.
 

@@ -187,6 +187,71 @@ mod tests {
         );
         fs::remove_dir_all(dir).unwrap();
     }
+    #[cfg(unix)]
+    #[test]
+    fn claude_shell_asset_binds_reports_and_heartbeats_to_prompt_id() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::{Command, Stdio};
+
+        let root = test_root("claude-wake-heartbeat");
+        let hook = root.join("wsx-agent-status.sh");
+        let fake_wsx = root.join("wsx");
+        let log = root.join("args.log");
+        fs::write(&hook, assets::primary(IntegrationTarget::Claude)).unwrap();
+        fs::write(
+            &fake_wsx,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$WSX_TEST_LOG\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake_wsx, fs::Permissions::from_mode(0o700)).unwrap();
+        let run = |action: &str, input: &[u8]| {
+            let mut child = Command::new("/bin/sh")
+                .arg(&hook)
+                .arg(action)
+                .env("WSX_PANE_ID", "42")
+                .env("WSX_AGENT_REPORT_BIN", &fake_wsx)
+                .env("WSX_TEST_LOG", &log)
+                .stdin(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(input).unwrap();
+            assert!(child.wait().unwrap().success());
+            fs::read_to_string(&log)
+                .unwrap()
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            run(
+                "working",
+                br#"{"session_id":"session-abc","prompt_id":"prompt-123"}"#,
+            ),
+            [
+                "agent",
+                "report",
+                "42",
+                "--provider",
+                "claude",
+                "--state",
+                "working",
+                "--lifecycle",
+                "--escape-interrupts",
+                "--wake-token",
+                "prompt-123",
+                "--session-id",
+                "session-abc",
+            ]
+        );
+        assert_eq!(
+            run("heartbeat", br#"{"prompt_id":"prompt-123"}"#),
+            ["agent", "wake-heartbeat", "42", "--prompt-id", "prompt-123",]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn representative_config_shapes() {
         let p = PathBuf::from("target/wsx hook.sh");
@@ -239,6 +304,15 @@ mod tests {
                 "missing Claude action {action}"
             );
         }
+        let prompt_hooks = claude["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert!(prompt_hooks.iter().any(|entry| {
+            entry["hooks"].as_array().is_some_and(|hooks| {
+                hooks.iter().any(|hook| {
+                    hook["command"] == config_edit::command(&p, "heartbeat")
+                        && hook["async"] == true
+                })
+            })
+        }));
         assert_eq!(
             config_edit::json_config(IntegrationTarget::Claude, &nested, &cfg, &p).unwrap(),
             nested
@@ -333,6 +407,9 @@ mod tests {
 
     #[test]
     fn authoritative_assets_and_configs_report_completion() {
+        let claude = assets::primary(IntegrationTarget::Claude);
+        assert!(claude.contains("agent wake-heartbeat"));
+        assert!(claude.contains("--wake-token"));
         let pi = assets::primary(IntegrationTarget::Pi);
         assert!(pi.contains("SETTLEMENT_DELAY_MS = 25"));
         assert!(pi.contains("BLOCKING_UI_METHODS"));

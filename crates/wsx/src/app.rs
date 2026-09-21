@@ -28,9 +28,10 @@ use crate::{
     },
 };
 use wsx_core::{
+    cache::AdaptiveCollapseState,
     config::global::{
-        project_has_activity_within, project_matches_group, AttentionPriority, GlobalConfig,
-        GroupKey, TerminalSidebar,
+        project_has_activity_within, project_matches_group, AttentionPriority, AutoCollapsePolicy,
+        GlobalConfig, GroupKey, TerminalSidebar, MILLIS_PER_HOUR,
     },
     git::{info as git_info, worktree as git_worktree},
     model::workspace::{
@@ -300,27 +301,26 @@ fn unix_time_millis() -> u64 {
     u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
+fn project_latest_activity_unix_ms(
+    project: &Project,
+    project_touched_unix_ms: &HashMap<PathBuf, u64>,
+) -> Option<u64> {
+    project
+        .last_agent_active_unix_ms
+        .into_iter()
+        .chain(project.last_terminal_active_unix_ms)
+        .chain(project_touched_unix_ms.get(&project.path).copied())
+        .max()
+}
+
 fn project_is_stale(
     project: &Project,
     project_touched_unix_ms: &HashMap<PathBuf, u64>,
     now_unix_ms: u64,
     window_ms: u64,
 ) -> bool {
-    let last_user_touch_unix_ms = project_touched_unix_ms.get(&project.path).copied();
-    let last_agent_or_user_unix_ms = project
-        .last_agent_active_unix_ms
-        .into_iter()
-        .chain(last_user_touch_unix_ms)
-        .max();
-    let activity_is_known =
-        last_agent_or_user_unix_ms.is_some() || project.last_terminal_active_unix_ms.is_some();
-    activity_is_known
-        && !project_has_activity_within(
-            last_agent_or_user_unix_ms,
-            project.last_terminal_active_unix_ms,
-            now_unix_ms,
-            window_ms,
-        )
+    let latest = project_latest_activity_unix_ms(project, project_touched_unix_ms);
+    latest.is_some() && !project_has_activity_within(latest, None, now_unix_ms, window_ms)
 }
 
 fn action_needs_immediate_redraw(action: &Action) -> bool {
@@ -580,6 +580,7 @@ pub enum PendingAction {
     ShutdownDaemon,
     InstallIntegrations {
         targets: Vec<wsx_core::integration::IntegrationTarget>,
+        remember_dismissal: bool,
     },
 }
 
@@ -651,7 +652,7 @@ fn routine_error_kind(error: &anyhow::Error) -> Option<asched_core::routine::Rou
 fn routine_error_text(error: &anyhow::Error) -> String {
     match routine_error_kind(error) {
         Some(asched_core::routine::RoutineErrorKind::ProtocolMismatch) => {
-            "asched protocol mismatch; upgrade wsx and asched together, then restart asched".into()
+            "routine scheduler is newer than wsx; upgrade wsx and retry".into()
         }
         Some(asched_core::routine::RoutineErrorKind::Conflict) => {
             "routine changed in asched; refreshed the latest revision".into()
@@ -805,6 +806,7 @@ pub struct App {
     visible_projects: HashSet<usize>,
     project_touched_unix_ms: HashMap<PathBuf, u64>,
     stale_collapsed_projects: HashSet<PathBuf>,
+    adaptive_collapse: HashMap<PathBuf, AdaptiveCollapseState>,
     pub notice: Option<Notice>,
     notice_started: Option<Instant>,
     pub jobs: Vec<BgJob>,
@@ -893,6 +895,7 @@ pub struct App {
     integration_scan_rx: mpsc::Receiver<Result<Vec<wsx_core::integration::IntegrationMetadata>>>,
     integration_metadata: Vec<wsx_core::integration::IntegrationMetadata>,
     pending_integration_demand: Option<wsx_core::integration::IntegrationTarget>,
+    pending_integration_updates: Vec<wsx_core::integration::IntegrationTarget>,
     dismissed_integration_prompts: HashSet<wsx_core::integration::IntegrationTarget>,
     persist_group_selection: bool,
 }
@@ -913,6 +916,7 @@ impl App {
             cursor_identity,
             project_touched_unix_ms,
             stale_collapsed_projects,
+            adaptive_collapse,
             cached_muted,
             acknowledged_outcomes,
             dismissed_integration_prompts,
@@ -993,6 +997,7 @@ impl App {
             visible_projects,
             project_touched_unix_ms,
             stale_collapsed_projects,
+            adaptive_collapse,
             review: None,
             review_available: false,
             notice: initial_notice.clone().map(|title| Notice {
@@ -1073,6 +1078,7 @@ impl App {
             integration_scan_rx,
             integration_metadata: Vec::new(),
             pending_integration_demand: None,
+            pending_integration_updates: Vec::new(),
             dismissed_integration_prompts,
             persist_group_selection: true,
         };
@@ -1286,14 +1292,38 @@ impl App {
     }
 
     // ^ [[wsx UI Patterns]] Expansion and the inactivity timer are durable user state.
-    // stale_collapsed_projects records only that the last collapse was timer-driven.
+    // stale_collapsed_projects records a timer-driven collapse until explicit interaction.
     fn collapse_stale_projects(&mut self) {
-        let Some(window_ms) = self.config.auto_collapse_window_ms() else {
-            return;
-        };
+        let policy = self.config.auto_collapse;
+        if !matches!(policy, AutoCollapsePolicy::Adaptive { .. })
+            && !self.adaptive_collapse.is_empty()
+        {
+            self.adaptive_collapse.clear();
+            self.mark_dirty();
+        }
         let now_unix_ms = unix_time_millis();
         let mut changed = false;
         for project in &mut self.workspace.projects {
+            let window_ms = match policy {
+                AutoCollapsePolicy::Disabled => continue,
+                AutoCollapsePolicy::Flat { hours } => hours.saturating_mul(MILLIS_PER_HOUR),
+                AutoCollapsePolicy::Adaptive { base_hours } => {
+                    let Some(activity_unix_ms) =
+                        project_latest_activity_unix_ms(project, &self.project_touched_unix_ms)
+                    else {
+                        continue;
+                    };
+                    let state = match self.adaptive_collapse.entry(project.path.clone()) {
+                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            changed = true;
+                            entry.insert(AdaptiveCollapseState::new(base_hours, activity_unix_ms))
+                        }
+                    };
+                    changed |= state.observe(base_hours, activity_unix_ms);
+                    state.window_ms()
+                }
+            };
             if !project.expanded {
                 continue;
             }
@@ -1305,6 +1335,11 @@ impl App {
             ) {
                 project.expanded = false;
                 self.stale_collapsed_projects.insert(project.path.clone());
+                if let AutoCollapsePolicy::Adaptive { base_hours } = policy {
+                    if let Some(state) = self.adaptive_collapse.get_mut(&project.path) {
+                        state.reset_after_expiry(base_hours);
+                    }
+                }
                 changed = true;
             }
         }
@@ -1859,42 +1894,88 @@ impl App {
                     manager.replace_metadata(metadata.clone());
                 }
                 self.integration_metadata = metadata;
+                self.pending_integration_updates = self
+                    .integration_metadata
+                    .iter()
+                    .filter(|metadata| {
+                        metadata.available
+                            && metadata.compatible
+                            && metadata.install_status
+                                == wsx_core::integration::InstallStatus::Outdated
+                    })
+                    .map(|metadata| metadata.target)
+                    .collect();
                 if let Some(target) = self.pending_integration_demand.take() {
                     self.prompt_for_integration_if_needed(target);
                 }
+                self.prompt_for_pending_integration_updates();
                 self.needs_redraw = true;
             }
             Err(error) => self.set_warning(format!("Agent integration scan failed: {error}")),
         }
     }
 
+    // ^ Startup and demand prompts share this modal-safe boundary and dismissal policy.
     fn prompt_for_integration_if_needed(
         &mut self,
         target: wsx_core::integration::IntegrationTarget,
     ) {
         use wsx_core::integration::InstallStatus;
+        if !matches!(self.mode, Mode::Workspace) {
+            self.pending_integration_demand = Some(target);
+            return;
+        }
         if self.integration_metadata.is_empty() {
             self.pending_integration_demand = Some(target);
             return;
         }
         self.pending_integration_demand = None;
-        if self.dismissed_integration_prompts.contains(&target)
-            || !self.integration_metadata.iter().any(|metadata| {
-                metadata.target == target
-                    && metadata.available
-                    && metadata.compatible
-                    && metadata.install_status != InstallStatus::Current
-            })
-        {
+        let Some(metadata) = self.integration_metadata.iter().find(|metadata| {
+            metadata.target == target
+                && metadata.available
+                && metadata.compatible
+                && metadata.install_status != InstallStatus::Current
+        }) else {
+            return;
+        };
+        let remember_dismissal = metadata.install_status == InstallStatus::Missing;
+        if remember_dismissal && self.dismissed_integration_prompts.contains(&target) {
             return;
         }
+        self.pending_integration_updates
+            .retain(|pending| *pending != target);
         self.mode = Mode::Confirm {
-            message: format!(
-                "Install the {} status integration? Declining disables this prompt until you install it in Global Settings.",
-                target.label()
-            ),
+            message: if remember_dismissal {
+                format!(
+                    "Install the {} status integration? Declining disables this prompt until you install it in Global Settings.",
+                    target.label()
+                )
+            } else {
+                format!("Update the {} status integration?", target.label())
+            },
             pending: PendingAction::InstallIntegrations {
                 targets: vec![target],
+                remember_dismissal,
+            },
+        };
+        self.needs_redraw = true;
+    }
+
+    fn prompt_for_pending_integration_updates(&mut self) {
+        if !matches!(self.mode, Mode::Workspace) || self.pending_integration_updates.is_empty() {
+            return;
+        }
+        let targets = std::mem::take(&mut self.pending_integration_updates);
+        let labels = targets
+            .iter()
+            .map(|target| target.label())
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.mode = Mode::Confirm {
+            message: format!("Update outdated agent integrations: {labels}?"),
+            pending: PendingAction::InstallIntegrations {
+                targets,
+                remember_dismissal: false,
             },
         };
         self.needs_redraw = true;
@@ -2081,6 +2162,10 @@ impl App {
             self.needs_redraw = true;
         }
         self.expire_notice(Instant::now());
+        if let Some(target) = self.pending_integration_demand.take() {
+            self.prompt_for_integration_if_needed(target);
+        }
+        self.prompt_for_pending_integration_updates();
 
         if self.slow_timer.ready() {
             // Staleness is wall-clock based and can change without a runtime event.
@@ -2295,15 +2380,17 @@ impl App {
     /// Single write point — both cache and session snapshot always written together.
     /// `sync=true` on quit (fsync), `sync=false` on periodic writes.
     fn persist_state(&mut self, sync: bool) {
-        if let Some(error) = wsx_core::cache::save_cache(
-            &self.workspace,
-            self.tree_selected,
-            self.flat(),
-            &self.project_touched_unix_ms,
-            &self.stale_collapsed_projects,
-            &self.dismissed_integration_prompts,
-            sync,
-        ) {
+        self.ensure_flat();
+        let snapshot = wsx_core::cache::WorkspaceCacheSnapshot {
+            workspace: &self.workspace,
+            tree_selected: self.tree_selected,
+            flat: &self.cached_flat,
+            project_touched_unix_ms: &self.project_touched_unix_ms,
+            stale_collapsed_projects: &self.stale_collapsed_projects,
+            adaptive_collapse: &self.adaptive_collapse,
+            dismissed_integration_prompts: &self.dismissed_integration_prompts,
+        };
+        if let Some(error) = wsx_core::cache::save_cache(snapshot, sync) {
             self.set_error(error);
             self.cache_dirty = true;
         } else {
@@ -2917,8 +3004,18 @@ impl App {
         else {
             return;
         };
+        self.stale_collapsed_projects.remove(&path);
+        let now_unix_ms = unix_time_millis();
         self.project_touched_unix_ms
-            .insert(path, unix_time_millis());
+            .insert(path.clone(), now_unix_ms);
+        if let AutoCollapsePolicy::Adaptive { base_hours } = self.config.auto_collapse {
+            self.adaptive_collapse
+                .entry(path)
+                .and_modify(|state| {
+                    state.observe(base_hours, now_unix_ms);
+                })
+                .or_insert_with(|| AdaptiveCollapseState::new(base_hours, now_unix_ms));
+        }
         self.mark_dirty();
     }
 
@@ -2930,14 +3027,10 @@ impl App {
     }
 
     fn manually_collapse_project(&mut self, project_idx: usize) {
-        let Some(path) = self.workspace.projects.get_mut(project_idx).map(|project| {
+        if let Some(project) = self.workspace.projects.get_mut(project_idx) {
             project.expanded = false;
-            project.path.clone()
-        }) else {
-            return;
-        };
-        self.stale_collapsed_projects.remove(&path);
-        self.touch_project(project_idx);
+            self.touch_project(project_idx);
+        }
     }
 
     fn nav_up(&mut self) {
@@ -3721,7 +3814,11 @@ impl App {
                         ..
                     } => (Some(group_idx + 1), None),
                     Mode::Confirm {
-                        pending: PendingAction::InstallIntegrations { targets },
+                        pending:
+                            PendingAction::InstallIntegrations {
+                                targets,
+                                remember_dismissal: true,
+                            },
                         ..
                     } => (None, Some(targets.clone())),
                     _ => (None, None),
@@ -5369,7 +5466,7 @@ impl App {
                     self.runtime_client.shutdown()?;
                     self.should_quit = true;
                 }
-                PendingAction::InstallIntegrations { targets } => {
+                PendingAction::InstallIntegrations { targets, .. } => {
                     self.spawn_install_integrations(targets);
                 }
                 PendingAction::DeleteRoutine {
@@ -6288,6 +6385,7 @@ mod tests {
             visible_projects,
             project_touched_unix_ms: HashMap::new(),
             stale_collapsed_projects: HashSet::new(),
+            adaptive_collapse: HashMap::new(),
             review: None,
             review_available: false,
             notice: None,
@@ -6360,6 +6458,7 @@ mod tests {
             integration_scan_rx,
             integration_metadata: Vec::new(),
             pending_integration_demand: None,
+            pending_integration_updates: Vec::new(),
             dismissed_integration_prompts: HashSet::new(),
             persist_group_selection: false,
         }
@@ -6679,6 +6778,7 @@ mod tests {
             None,
         );
         let project_path = app.workspace.projects[0].path.clone();
+        app.stale_collapsed_projects.insert(project_path.clone());
         app.tree_selected = app
             .flat()
             .iter()
@@ -6763,6 +6863,7 @@ mod tests {
         let mut terminal = workspace_terminal();
         app.attach_session(0, 0, 0, &mut terminal).unwrap();
         assert!(app.project_touched_unix_ms[&project_path] > 0);
+        assert!(!app.stale_collapsed_projects.contains(&project_path));
         assert!(matches!(app.mode, Mode::Workspace));
         assert!(app.pending_terminal_entry.is_some());
         assert_eq!(app.terminal_cursor(), None);
@@ -7282,7 +7383,7 @@ mod tests {
         assert!(matches!(
             &app.mode,
             Mode::Confirm {
-                pending: PendingAction::InstallIntegrations { targets },
+                pending: PendingAction::InstallIntegrations { targets, .. },
                 ..
             } if targets == &[wsx_core::integration::IntegrationTarget::Pi]
         ));
@@ -7301,7 +7402,7 @@ mod tests {
         assert!(matches!(
             &app.mode,
             Mode::Confirm {
-                pending: PendingAction::InstallIntegrations { targets },
+                pending: PendingAction::InstallIntegrations { targets, .. },
                 ..
             } if targets == &[wsx_core::integration::IntegrationTarget::Pi]
         ));
@@ -7314,6 +7415,95 @@ mod tests {
 
         app.prompt_for_integration_if_needed(wsx_core::integration::IntegrationTarget::Pi);
         assert!(matches!(app.mode, Mode::Workspace));
+    }
+
+    #[test]
+    fn delayed_demand_scan_waits_for_active_modal() {
+        let target = wsx_core::integration::IntegrationTarget::Pi;
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.mode = Mode::Help;
+        app.prompt_for_integration_if_needed(target);
+
+        app.apply_integration_scan(Ok(vec![integration_metadata(
+            target,
+            true,
+            wsx_core::integration::InstallStatus::Missing,
+        )]));
+        assert!(matches!(app.mode, Mode::Help));
+        assert_eq!(app.pending_integration_demand, Some(target));
+
+        app.mode = Mode::Workspace;
+        app.tick().unwrap();
+        assert!(matches!(
+            &app.mode,
+            Mode::Confirm {
+                pending: PendingAction::InstallIntegrations { targets, .. },
+                ..
+            } if targets == &[target]
+        ));
+    }
+
+    #[test]
+    fn startup_scan_prompts_for_outdated_integrations_despite_prior_dismissal() {
+        let target = wsx_core::integration::IntegrationTarget::Claude;
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.dismissed_integration_prompts.insert(target);
+
+        app.apply_integration_scan(Ok(vec![integration_metadata(
+            target,
+            true,
+            wsx_core::integration::InstallStatus::Outdated,
+        )]));
+
+        assert!(matches!(
+            &app.mode,
+            Mode::Confirm {
+                pending: PendingAction::InstallIntegrations {
+                    targets,
+                    remember_dismissal: false,
+                },
+                ..
+            } if targets == &[target]
+        ));
+    }
+
+    #[test]
+    fn delayed_outdated_scan_waits_for_workspace_and_decline_is_run_local() {
+        let target = wsx_core::integration::IntegrationTarget::Claude;
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        app.mode = Mode::Help;
+
+        app.apply_integration_scan(Ok(vec![integration_metadata(
+            target,
+            true,
+            wsx_core::integration::InstallStatus::Outdated,
+        )]));
+        assert!(matches!(app.mode, Mode::Help));
+        assert_eq!(app.pending_integration_updates, vec![target]);
+
+        app.mode = Mode::Workspace;
+        app.prompt_for_pending_integration_updates();
+        let mut terminal = workspace_terminal();
+        app.dispatch_confirm(Action::InputEscape, &mut terminal)
+            .unwrap();
+        assert!(matches!(app.mode, Mode::Workspace));
+        assert!(!app.dismissed_integration_prompts.contains(&target));
+
+        app.apply_integration_scan(Ok(vec![integration_metadata(
+            target,
+            true,
+            wsx_core::integration::InstallStatus::Outdated,
+        )]));
+        assert!(matches!(
+            &app.mode,
+            Mode::Confirm {
+                pending: PendingAction::InstallIntegrations {
+                    targets,
+                    remember_dismissal: false,
+                },
+                ..
+            } if targets == &[target]
+        ));
     }
 
     #[test]
@@ -7378,14 +7568,14 @@ mod tests {
     }
 
     #[test]
-    fn protocol_mismatch_surfaces_joint_upgrade_and_restart_guidance() {
+    fn protocol_mismatch_surfaces_packaged_wsx_upgrade_guidance() {
         let error = anyhow::Error::new(asched_core::routine::RoutineError::ProtocolMismatch {
             client: 3,
             daemon: 2,
         });
         assert_eq!(
             routine_error_text(&error),
-            "asched protocol mismatch; upgrade wsx and asched together, then restart asched"
+            "routine scheduler is newer than wsx; upgrade wsx and retry"
         );
     }
 
@@ -7854,7 +8044,7 @@ mod tests {
             exclude_worktree_paths: vec![],
             terminal_escape_chord: "ctrl+a w".into(),
             resume_agents_on_restore: true,
-            auto_collapse_after_hours: 24,
+            auto_collapse: AutoCollapsePolicy::Adaptive { base_hours: 24 },
             notification_timeout_seconds: 4,
             ..GlobalConfig::default()
         };
@@ -8183,6 +8373,8 @@ mod tests {
                 set_expandable(&mut app, selection, initially_expanded);
                 app.rebuild_flat();
                 select_rendered_navigation_entry(&mut app, selection.clone());
+                let project_path = app.workspace.projects[0].path.clone();
+                app.stale_collapsed_projects.insert(project_path.clone());
                 app.cache_dirty = false;
 
                 match input {
@@ -8202,9 +8394,12 @@ mod tests {
                     "{input} changed {selection:?} without marking the cache dirty"
                 );
                 assert!(
-                    app.project_touched_unix_ms
-                        .contains_key(&app.workspace.projects[0].path),
+                    app.project_touched_unix_ms.contains_key(&project_path),
                     "{input} changed {selection:?} without refreshing project staleness"
+                );
+                assert!(
+                    !app.stale_collapsed_projects.contains(&project_path),
+                    "{input} changed {selection:?} without clearing stale provenance"
                 );
             }
         }
@@ -8213,11 +8408,18 @@ mod tests {
     #[test]
     fn workspace_cursor_navigation_without_expansion_keeps_cache_clean() {
         let mut child_app = make_navigation_test_app();
+        let child_project_path = child_app.workspace.projects[0].path.clone();
+        child_app
+            .stale_collapsed_projects
+            .insert(child_project_path.clone());
         select_rendered_navigation_entry(&mut child_app, Selection::Project(0));
         child_app.nav_right();
         assert_eq!(child_app.current_selection(), Selection::Worktree(0, 0));
         assert!(child_app.workspace.projects[0].expanded);
         assert!(!child_app.cache_dirty);
+        assert!(child_app
+            .stale_collapsed_projects
+            .contains(&child_project_path));
 
         let mut parent_app = make_navigation_test_app();
         parent_app.workspace.projects[0].worktrees[0].expanded = false;
@@ -9951,7 +10153,7 @@ mod tests {
     fn positive_auto_collapse_window_collapses_expired_activity_from_both_sources() {
         let mut app = make_test_app(
             GlobalConfig {
-                auto_collapse_after_hours: 1,
+                auto_collapse: AutoCollapsePolicy::Flat { hours: 1 },
                 ..GlobalConfig::default()
             },
             projects_for_tree(1),
@@ -9969,7 +10171,7 @@ mod tests {
     fn fresh_agent_activity_keeps_an_expanded_project_open() {
         let mut app = make_test_app(
             GlobalConfig {
-                auto_collapse_after_hours: 1,
+                auto_collapse: AutoCollapsePolicy::Flat { hours: 1 },
                 ..GlobalConfig::default()
             },
             WorkspaceState {
@@ -9996,7 +10198,7 @@ mod tests {
     fn fresh_terminal_activity_keeps_an_expanded_project_open() {
         let mut app = make_test_app(
             GlobalConfig {
-                auto_collapse_after_hours: 1,
+                auto_collapse: AutoCollapsePolicy::Flat { hours: 1 },
                 ..GlobalConfig::default()
             },
             WorkspaceState {
@@ -10020,10 +10222,45 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_window_credits_agent_terminal_and_explicit_user_activity_once_per_day() {
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project_with_available_session("adaptive-sources")],
+            },
+            None,
+        );
+        let path = app.workspace.projects[0].path.clone();
+        let now = unix_time_millis();
+        let day_ms = 24 * MILLIS_PER_HOUR;
+        app.adaptive_collapse
+            .insert(path.clone(), AdaptiveCollapseState::new(24, now));
+        app.workspace.projects[0].last_agent_active_unix_ms = Some(now + day_ms);
+        app.collapse_stale_projects();
+        assert_eq!(app.adaptive_collapse[&path].window_hours, 36);
+
+        app.workspace.projects[0].last_terminal_active_unix_ms = Some(now + 2 * day_ms);
+        app.collapse_stale_projects();
+        assert_eq!(app.adaptive_collapse[&path].window_hours, 48);
+
+        let mut explicit = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
+        let explicit_path = explicit.workspace.projects[0].path.clone();
+        let previous_utc_day_end = (now / day_ms).saturating_mul(day_ms).saturating_sub(1);
+        explicit.adaptive_collapse.insert(
+            explicit_path.clone(),
+            AdaptiveCollapseState::new(24, previous_utc_day_end),
+        );
+        explicit.touch_project(0);
+        assert_eq!(explicit.adaptive_collapse[&explicit_path].window_hours, 36);
+        explicit.touch_project(0);
+        assert_eq!(explicit.adaptive_collapse[&explicit_path].window_hours, 36);
+    }
+
+    #[test]
     fn future_activity_keeps_an_expanded_project_open() {
         let mut app = make_test_app(
             GlobalConfig {
-                auto_collapse_after_hours: 1,
+                auto_collapse: AutoCollapsePolicy::Flat { hours: 1 },
                 ..GlobalConfig::default()
             },
             WorkspaceState {
@@ -10042,7 +10279,7 @@ mod tests {
     fn zero_auto_collapse_window_leaves_an_expanded_inactive_project_open() {
         let mut app = make_test_app(
             GlobalConfig {
-                auto_collapse_after_hours: 0,
+                auto_collapse: AutoCollapsePolicy::Disabled,
                 ..GlobalConfig::default()
             },
             projects_for_tree(1),
@@ -10060,7 +10297,7 @@ mod tests {
     fn already_collapsed_project_is_not_auto_expanded() {
         let mut app = make_test_app(
             GlobalConfig {
-                auto_collapse_after_hours: 1,
+                auto_collapse: AutoCollapsePolicy::Flat { hours: 1 },
                 ..GlobalConfig::default()
             },
             projects_for_tree(1),
@@ -10078,7 +10315,7 @@ mod tests {
     fn very_large_auto_collapse_window_does_not_overflow_and_keeps_old_activity_open() {
         let mut app = make_test_app(
             GlobalConfig {
-                auto_collapse_after_hours: u64::MAX,
+                auto_collapse: AutoCollapsePolicy::Flat { hours: u64::MAX },
                 ..GlobalConfig::default()
             },
             WorkspaceState {
@@ -10122,7 +10359,7 @@ mod tests {
     }
 
     #[test]
-    fn manually_expanded_project_refreshes_timer_without_rewriting_stale_cause() {
+    fn manually_expanded_project_refreshes_timer_and_clears_stale_cause() {
         let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
         app.workspace.projects[0].expanded = false;
         app.workspace.projects[0].last_terminal_active_unix_ms = Some(0);
@@ -10136,7 +10373,7 @@ mod tests {
         app.collapse_stale_projects();
 
         assert!(app.workspace.projects[0].expanded);
-        assert!(app.stale_project_indices().contains(&0));
+        assert!(!app.stale_project_indices().contains(&0));
     }
 
     #[test]
@@ -10149,18 +10386,16 @@ mod tests {
         assert!(app.stale_project_indices().is_empty());
 
         app.stale_collapsed_projects.insert(path.clone());
-        app.config.auto_collapse_after_hours = 0;
+        app.config.auto_collapse = AutoCollapsePolicy::Disabled;
         app.workspace.projects[0].last_terminal_active_unix_ms = Some(u64::MAX);
         assert_eq!(app.stale_project_indices(), HashSet::from([0]));
 
         app.manually_expand_project(0);
-        assert_eq!(app.stale_project_indices(), HashSet::from([0]));
-        app.manually_collapse_project(0);
         assert!(app.stale_project_indices().is_empty());
     }
 
     #[test]
-    fn stale_marker_survives_reconstruction_and_expansion_until_manual_collapse() {
+    fn stale_marker_survives_reconstruction_until_explicit_interaction() {
         let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
         let path = app.workspace.projects[0].path.clone();
         app.workspace.projects[0].expanded = false;
@@ -10171,9 +10406,15 @@ mod tests {
 
         assert_eq!(reconstructed.stale_project_indices(), HashSet::from([0]));
         reconstructed.manually_expand_project(0);
-        assert!(reconstructed.stale_collapsed_projects.contains(&path));
-        reconstructed.manually_collapse_project(0);
         assert!(!reconstructed.stale_collapsed_projects.contains(&path));
+
+        let mut after_interaction = make_test_app(
+            GlobalConfig::default(),
+            reconstructed.workspace.clone(),
+            None,
+        );
+        after_interaction.stale_collapsed_projects = reconstructed.stale_collapsed_projects.clone();
+        assert!(!after_interaction.stale_collapsed_projects.contains(&path));
     }
 
     #[test]

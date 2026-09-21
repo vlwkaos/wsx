@@ -50,9 +50,9 @@ cargo xtask build
 
 ## Agent integrations and routines
 
-Press `u` to create a routine. Choose a documented one-shot agent template or Custom. A template replaces the command argv shown in the next form. The argv remains editable; Custom starts empty.
+Press `u` to create a routine. Choose a documented one-shot agent template or Custom. A template replaces the command argv shown in the next form. The argv remains editable; Custom starts empty. The shipped `wsxd` binary owns routine scheduling, so release installations do not require a separate `asched` executable.
 
-wsx offers integration setup only after you explicitly choose an agent that is installed and needs setup. Declining suppresses that agent permanently until you install it from **Global Settings → Runtime → Agent integrations**. PATH detection and residual config files never trigger a prompt.
+At startup, wsx offers to update installed integrations whose embedded version is outdated. Declining defers that update until the next launch. Missing integrations remain demand-driven: wsx offers setup only after you explicitly choose an installed agent that needs it, and declining suppresses that agent until you install it from **Global Settings → Runtime → Agent integrations**. PATH detection and residual config files alone never trigger a missing-integration prompt.
 
 Install directly when needed:
 
@@ -77,7 +77,7 @@ Installers preserve unrelated hooks and honor standard config-directory override
 
 Terminal mode uses the configured prefix, `Ctrl+A` by default. Follow it with `j/k` for adjacent sessions, `{`/`}` for the previous or next group, `i/I` for idle, `a/A` for active, `n/N` for attention, `B` to toggle the desktop sidebar, `W` for Workspace, or `Q` to quit only the TUI. Attention navigation defaults to Blocked sessions before other attention states and can restore Workspace order in Global Settings. Group navigation keeps Workspace order, selecting the first session needing attention and then the first idle agent session; if neither exists, the current terminal stays active. `Ctrl+A Ctrl+A` sends a literal prefix.
 
-Groups are ordered project filters. The default **ungrouped** anti-group matches projects with no memberships. Trusted agent work, terminal activity, session entry, and expansion changes restart each project's inactivity timer. When that timer auto-collapses an open project, wsx marks the project `stale` as the cause of its last collapse. The marker survives restart and later expansion; a manual project collapse replaces that cause and clears it. wsx never infers agent identity or state from process trees. For an adapter-identified Claude session only, bounded live terminal evidence may reconcile incomplete lifecycle events.
+Groups are ordered project filters. The default **ungrouped** anti-group matches projects with no memberships. Trusted agent work, terminal activity, session entry, and expansion changes update each project's inactivity window. The default adaptive policy starts at 24 hours, adds 12 hours on the first trusted activity of each new UTC day, and stops growing at 28 days. If inactivity exceeds the earned window, the next active period starts again at the configured base. When the timer auto-collapses an open project, wsx marks the project `stale` as the cause of its last collapse. The marker survives restart but clears as soon as you interact with the project. wsx never infers agent identity or state from process trees. For an adapter-identified Claude session only, bounded live terminal evidence may reconcile incomplete lifecycle events.
 
 ## Configuration
 
@@ -87,7 +87,7 @@ Open typed Global Settings with `,`. The platform configuration file is `~/.conf
 terminal_escape_chord = "ctrl+a w"
 resume_agents_on_restore = true
 wake_mode = true
-auto_collapse_after_hours = 24
+auto_collapse = { mode = "adaptive", base_hours = 24 }
 notification_timeout_seconds = 4
 show_release_status = true
 terminal_sidebar = "compact"
@@ -95,6 +95,10 @@ terminal_title_position = "bottom"
 port_visibility = "non_agentic"
 attention_priority = "blocked_first"
 ```
+
+With `wake_mode` enabled on macOS, generation-authorized Working reports keep a bounded idle-sleep assertion active. Claude starts an asynchronous five-minute heartbeat for each prompt so a long streamed response remains protected beyond the base 30-minute lease. The heartbeat is bound to the exact prompt and runtime generation; completion, blocking, errors, detachment, runtime replacement, or a later prompt revokes the old heartbeat.
+
+Set `auto_collapse` to `{ mode = "disabled" }` to turn automatic collapse off, or `{ mode = "flat", hours = 72 }` for a fixed window. Legacy numeric `auto_collapse_after_hours` values remain compatible and migrate to flat mode; zero migrates to disabled.
 
 After an unplanned daemon loss, wsx restores ordinary shells first and resumes lifecycle-capable saved agents one at a time after reporting becomes available. This limits startup pressure from large histories and keeps each saved agent identity detached until the resumed runtime confirms it.
 
@@ -124,11 +128,12 @@ wsx validates files, rejects unknown fields, bounded worktree defaults, and unsa
 ```text
 wsx status [--json]
 wsx worktree list|create|delete
-wsx session create|delete|list|send-keys|send-text|prompt|peek|rename
+wsx session create|delete|restart|list|send-keys|send-text|prompt|peek|rename
 wsx group ls|create|rename|add|remove
 wsx routine ...
 wsx agent install <target>
 wsx agent report <pane> --provider <name> --state <state> [--session-id <id>|--session-path <path>]
+wsx agent request|inspect|wait|continue|cancel|exchanges
 wsx plugin list|reload
 wsx runtime status [--json]
 wsx daemon stop|recover
@@ -141,9 +146,15 @@ wsx session create [--name <label>] [--command <shell-input>] [--json]
                    [-p <project>] [-w <branch|alias|path>]
 wsx session delete <session|pane|label> [--json]
                    [-p <project>] [-w <branch|alias|path>]
+wsx session restart <session|pane|label> [--json]
+                   [-p <project>] [-w <branch|alias|path>]
 ```
 
-Session input, prompt, peek, and rename commands accept the same optional `-p` and `-w` scope. Exact session or pane IDs remain globally addressable. Scoped unique labels avoid a preliminary list; ambiguous targets fail with an actionable error. `--command` is text entered into the new shell after startup, not a direct argv execution.
+Session input, prompt, peek, rename, and restart commands accept the same optional `-p` and `-w` scope. Exact session or pane IDs remain globally addressable. Scoped unique labels avoid a preliminary list; ambiguous targets fail with an actionable error. `--command` is text entered into the new shell after startup, not a direct argv execution.
+
+A pane whose process exits, for example after Ctrl+C or an agent crash, stays listed with its saved command. `wsx session restart` restarts that exact exited pane using the saved command or the persisted native agent session so the session is usable again with a new runtime generation. It refuses a pane that is still running, a stale revision, a daemon that is stopping or replacing its runtime owner, a daemon that is still restoring saved sessions, and a worktree that is gone; a failed start leaves the pane exited and unchanged.
+
+`wsx agent request <session> <prompt>` starts a provider-neutral, generation-bound exchange with an explicit prompt-capable agent. `inspect`, `wait`, `continue`, and `cancel` use the returned exchange ID; `exchanges` lists retained receipts. Persisted intent and failed delivery remain labeled `intent_persisted`; successful universal delivery is labeled `pty_delivery`, lifecycle transitions are labeled `pane_lifecycle`, and `--frame` returns a bounded `terminal_frame` fallback rather than claiming structured assistant output. Read-only exchanges may run concurrently on separate panes. `--writer` claims the target worktree by default, while repeated `--write-claim <absolute-path>` narrows ownership; overlapping active writer claims fail closed. These claims coordinate cooperative scheduling and never grant or revoke repository permissions. Exchanges never steal a live Terminal lease. Native adapters may advertise `exchange_receipts` and submit generation- and round-bound `accepted` or `completed` receipts with `request_bound` evidence. Pygmalion may provide this optimization for Pi later, but is not required by the contract.
 
 Each routine `--arg` is one direct argv item. wsx never invokes a shell for routine argv. Inspect untrusted routines with `wsx routine show <name>` before enabling or running them.
 
@@ -158,8 +169,8 @@ Handoff-capable wsxd updates wait until wsx TUI clients detach, then transfer li
 - wsxd belongs to the host and Unix user, not one login session. Same-user SSH reconnects reuse live PTYs and buffers.
 - Owner-only sockets and peer-UID checks reject cross-user access.
 - One writable lease owns each pane. Explicit Terminal entry transfers control to the latest wsx instance; the displaced instance returns to Workspace, and lease generations reject stale input, resize, heartbeat, selection, and release operations. Events invalidate revisions; clients reconcile from authoritative snapshots.
-- Messages, frames, commands, plugin manifests, plugin view output, listeners, and resource counts are bounded.
-- UI-only wsx releases reuse the compatible daemon. Protocol 15 daemon updates wait for TUI clients to detach, then hand off live terminals. Protocol 11–14 daemons remain usable until their safe one-time cold replacement, and opening wsx keeps the existing workspace visible throughout normal deferral and reconnection.
+- Messages, frames, agent exchange prompts, deadlines, write claims, retained receipts, commands, plugin manifests, plugin view output, listeners, and resource counts are bounded.
+- UI-only wsx releases reuse the compatible daemon. Protocol 16 adds provider-neutral generation-bound agent exchanges, exited-pane restart, and prompt-bound Claude wake renewal while retaining protocol-15 live handoff. Protocol 11–15 daemons remain usable until their safe one-time transition, and opening wsx keeps the existing workspace visible throughout normal deferral and reconnection.
 - Native resume creates a new process, PTY, and terminal buffer from a validated provider reference. Unsupported references open a clean shell.
 - Remote access, transient graphics preservation across handoff, marketplace installation, and original-process restoration after an unplanned daemon crash are not supported.
 

@@ -80,14 +80,42 @@ fn nested(
     action: &str,
     matcher: Option<&str>,
 ) -> io::Result<()> {
+    nested_command(map, event, path, action, matcher, false)
+}
+
+fn nested_async(
+    map: &mut Map<String, Value>,
+    event: &str,
+    path: &Path,
+    action: &str,
+    matcher: Option<&str>,
+) -> io::Result<()> {
+    nested_command(map, event, path, action, matcher, true)
+}
+
+fn nested_command(
+    map: &mut Map<String, Value>,
+    event: &str,
+    path: &Path,
+    action: &str,
+    matcher: Option<&str>,
+    asynchronous: bool,
+) -> io::Result<()> {
     let cmd = command(path, action);
-    let mut e = json!({"hooks":[{"type":"command","command":cmd,"timeout":10}]});
-    if let Some(m) = matcher {
-        e.as_object_mut()
+    let mut hook = json!({"type":"command","command":cmd,"timeout":10});
+    if asynchronous {
+        hook.as_object_mut()
             .unwrap()
-            .insert("matcher".into(), json!(m));
+            .insert("async".into(), json!(true));
     }
-    push_unique(map, event, e, &cmd)
+    let mut entry = json!({"hooks":[hook]});
+    if let Some(matcher) = matcher {
+        entry
+            .as_object_mut()
+            .unwrap()
+            .insert("matcher".into(), json!(matcher));
+    }
+    push_unique(map, event, entry, &cmd)
 }
 
 pub(crate) fn json_config(
@@ -101,7 +129,14 @@ pub(crate) fn json_config(
         IntegrationTarget::Claude => {
             let hooks = hooks(&mut root)?;
             let actions = &[
-                "session", "detached", "idle", "working", "blocked", "done", "error",
+                "session",
+                "detached",
+                "idle",
+                "working",
+                "blocked",
+                "done",
+                "error",
+                "heartbeat",
             ];
             // Claude has no permission-resolved hook before an approved tool runs,
             // so PermissionRequest cannot authoritatively publish a bounded blocked state.
@@ -124,6 +159,7 @@ pub(crate) fn json_config(
             for (event, action) in events {
                 nested(hooks, event, hook, action, Some("*"))?;
             }
+            nested_async(hooks, "UserPromptSubmit", hook, "heartbeat", Some("*"))?;
             nested(hooks, "StopFailure", hook, "blocked", Some("rate_limit"))?;
             nested(
                 hooks,

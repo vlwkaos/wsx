@@ -28,6 +28,7 @@ id_type!(SessionId);
 id_type!(PaneId);
 id_type!(TerminalId);
 id_type!(AgentInstanceId);
+id_type!(AgentExchangeId);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectSpec {
@@ -210,6 +211,7 @@ pub struct AgentCapabilities {
     pub resume: bool,
     pub lifecycle: bool,
     pub escape_interrupts: bool,
+    pub exchange_receipts: bool,
 }
 
 fn default_attached() -> bool {
@@ -229,6 +231,101 @@ pub struct AgentInfo {
     pub session_ref: Option<AgentSessionRef>,
     pub capabilities: AgentCapabilities,
     pub source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentExchangeAccess {
+    #[default]
+    ReadOnly,
+    Writer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentExchangeState {
+    #[default]
+    Submitted,
+    Delivered,
+    Accepted,
+    DeliveryFailed,
+    WorkingObserved,
+    BlockedObserved,
+    DoneObserved,
+    Completed,
+    ErrorObserved,
+    CancelRequested,
+    Cancelled,
+    Expired,
+    Interrupted,
+    TargetExited,
+    TargetReplaced,
+}
+
+impl AgentExchangeState {
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::DoneObserved
+                | Self::Completed
+                | Self::ErrorObserved
+                | Self::DeliveryFailed
+                | Self::Cancelled
+                | Self::Expired
+                | Self::Interrupted
+                | Self::TargetExited
+                | Self::TargetReplaced
+        )
+    }
+
+    pub fn is_wait_boundary(self) -> bool {
+        self.is_terminal() || self == Self::BlockedObserved
+    }
+
+    pub fn can_continue(self) -> bool {
+        self.is_terminal() || self == Self::BlockedObserved
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentExchangeEvidence {
+    #[default]
+    IntentPersisted,
+    PtyDelivery,
+    PaneLifecycle,
+    RequestBound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentExchangeReceipt {
+    Accepted,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentExchange {
+    pub id: AgentExchangeId,
+    pub pane_id: PaneId,
+    pub session_id: SessionId,
+    pub worktree_id: WorktreeId,
+    pub project_id: ProjectId,
+    pub agent_id: AgentInstanceId,
+    pub provider: String,
+    pub runtime_generation: String,
+    pub round: u32,
+    pub access: AgentExchangeAccess,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub write_claims: Vec<PathBuf>,
+    pub state: AgentExchangeState,
+    #[serde(default)]
+    pub evidence: AgentExchangeEvidence,
+    pub created_unix_ms: u64,
+    pub updated_unix_ms: u64,
+    pub deadline_unix_ms: u64,
+    pub delivery_revision: u64,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -290,6 +387,7 @@ pub struct Capabilities {
     pub version_coordination: bool,
     pub daemon_revision_coordination: bool,
     pub live_handoff: bool,
+    pub agent_exchanges: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
-    config::global::{atomic_write_private, GroupKey},
+    config::global::{
+        atomic_write_private, GroupKey, ADAPTIVE_COLLAPSE_MAX_HOURS, ADAPTIVE_COLLAPSE_STEP_HOURS,
+        MILLIS_PER_HOUR,
+    },
     model::workspace::{FlatEntry, WorkspaceState},
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -39,6 +42,67 @@ pub enum CursorIdentity {
     },
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdaptiveCollapseState {
+    #[serde(default)]
+    pub base_hours: u64,
+    pub window_hours: u64,
+    pub last_activity_unix_ms: u64,
+    pub last_credit_unix_ms: u64,
+}
+
+impl AdaptiveCollapseState {
+    pub fn new(base_hours: u64, activity_unix_ms: u64) -> Self {
+        Self {
+            base_hours,
+            window_hours: base_hours.min(ADAPTIVE_COLLAPSE_MAX_HOURS),
+            last_activity_unix_ms: activity_unix_ms,
+            last_credit_unix_ms: activity_unix_ms,
+        }
+    }
+
+    pub fn observe(&mut self, base_hours: u64, activity_unix_ms: u64) -> bool {
+        let base_hours = base_hours.min(ADAPTIVE_COLLAPSE_MAX_HOURS);
+        let previous = *self;
+        if self.base_hours != base_hours {
+            *self = Self::new(base_hours, activity_unix_ms);
+            return *self != previous;
+        }
+        self.window_hours = self
+            .window_hours
+            .clamp(base_hours, ADAPTIVE_COLLAPSE_MAX_HOURS);
+        if activity_unix_ms <= self.last_activity_unix_ms {
+            return *self != previous;
+        }
+        let window_ms = self.window_hours.saturating_mul(MILLIS_PER_HOUR);
+        if activity_unix_ms.saturating_sub(self.last_activity_unix_ms) > window_ms {
+            *self = Self::new(base_hours, activity_unix_ms);
+            return *self != previous;
+        }
+        self.last_activity_unix_ms = activity_unix_ms;
+        let millis_per_day = 24 * MILLIS_PER_HOUR;
+        if activity_unix_ms / millis_per_day > self.last_credit_unix_ms / millis_per_day {
+            self.window_hours = self
+                .window_hours
+                .saturating_add(ADAPTIVE_COLLAPSE_STEP_HOURS)
+                .min(ADAPTIVE_COLLAPSE_MAX_HOURS);
+            self.last_credit_unix_ms = activity_unix_ms;
+        }
+        *self != previous
+    }
+
+    pub fn reset_after_expiry(&mut self, base_hours: u64) -> bool {
+        let previous = *self;
+        self.window_hours = base_hours.min(ADAPTIVE_COLLAPSE_MAX_HOURS);
+        self.last_credit_unix_ms = self.last_activity_unix_ms;
+        *self != previous
+    }
+
+    pub fn window_ms(self) -> u64 {
+        self.window_hours.saturating_mul(MILLIS_PER_HOUR)
+    }
+}
+
 #[derive(Serialize, Default, Clone)]
 pub struct WorkspaceCache {
     #[serde(default)]
@@ -53,6 +117,9 @@ pub struct WorkspaceCache {
     /// Projects whose last collapse was caused by the inactivity timer.
     #[serde(default)]
     pub stale_collapsed_projects: HashSet<String>,
+    /// Adaptive inactivity windows keyed by stable project path.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub adaptive_collapse: HashMap<String, AdaptiveCollapseState>,
     #[serde(default)]
     pub routines_expanded: HashMap<String, bool>,
     #[serde(default)]
@@ -82,6 +149,7 @@ struct WorkspaceCacheWire {
     project_expanded: HashMap<String, bool>,
     project_touched_unix_ms: HashMap<String, u64>,
     stale_collapsed_projects: Option<HashSet<String>>,
+    adaptive_collapse: HashMap<String, AdaptiveCollapseState>,
     routines_expanded: HashMap<String, bool>,
     tree_selected: usize,
     cursor_identity: Option<CursorIdentity>,
@@ -113,6 +181,7 @@ impl<'de> Deserialize<'de> for WorkspaceCache {
             project_touched_unix_ms: wire.project_touched_unix_ms,
             stale_provenance_missing: wire.stale_collapsed_projects.is_none(),
             stale_collapsed_projects: wire.stale_collapsed_projects.unwrap_or_default(),
+            adaptive_collapse: wire.adaptive_collapse,
             routines_expanded: wire.routines_expanded,
             tree_selected: wire.tree_selected,
             cursor_identity: wire.cursor_identity,
@@ -260,6 +329,7 @@ pub type AppliedCache = (
     Option<CursorIdentity>,
     HashMap<PathBuf, u64>,
     HashSet<PathBuf>,
+    HashMap<PathBuf, AdaptiveCollapseState>,
     HashSet<String>,
     HashMap<String, u64>,
     HashSet<crate::integration::IntegrationTarget>,
@@ -279,6 +349,7 @@ fn apply_workspace_cache(
     let mut migrated_muted_terminals = HashSet::new();
     let mut project_touched_unix_ms = HashMap::new();
     let mut stale_collapsed_projects = HashSet::new();
+    let mut adaptive_collapse = HashMap::new();
     let loaded_at_unix_ms = now_unix_ms();
     let legacy_seeded_touch = legacy_seeded_touch_cohort(&cache);
     for project in &mut workspace.projects {
@@ -292,6 +363,9 @@ fn apply_workspace_cache(
             || (!project.expanded && legacy_seeded_touch == Some(touched_unix_ms))
         {
             stale_collapsed_projects.insert(project.path.clone());
+        }
+        if let Some(state) = cache.adaptive_collapse.get(&project_key) {
+            adaptive_collapse.insert(project.path.clone(), *state);
         }
         if let Some(expanded) = cache.routines_expanded.get(&project_key) {
             project.routines_expanded = *expanded;
@@ -342,6 +416,7 @@ fn apply_workspace_cache(
         cache.cursor_identity,
         project_touched_unix_ms,
         stale_collapsed_projects,
+        adaptive_collapse,
         migrated_muted_terminals,
         cache.acknowledged_outcomes,
         cache.dismissed_integration_prompts,
@@ -395,15 +470,26 @@ pub fn find_cursor_index(
     }
 }
 
-pub fn save_cache(
-    workspace: &WorkspaceState,
-    tree_selected: usize,
-    flat: &[FlatEntry],
-    project_touched_unix_ms: &HashMap<PathBuf, u64>,
-    stale_collapsed_projects: &HashSet<PathBuf>,
-    dismissed_integration_prompts: &HashSet<crate::integration::IntegrationTarget>,
-    sync: bool,
-) -> Option<String> {
+pub struct WorkspaceCacheSnapshot<'a> {
+    pub workspace: &'a WorkspaceState,
+    pub tree_selected: usize,
+    pub flat: &'a [FlatEntry],
+    pub project_touched_unix_ms: &'a HashMap<PathBuf, u64>,
+    pub stale_collapsed_projects: &'a HashSet<PathBuf>,
+    pub adaptive_collapse: &'a HashMap<PathBuf, AdaptiveCollapseState>,
+    pub dismissed_integration_prompts: &'a HashSet<crate::integration::IntegrationTarget>,
+}
+
+pub fn save_cache(snapshot: WorkspaceCacheSnapshot<'_>, sync: bool) -> Option<String> {
+    let WorkspaceCacheSnapshot {
+        workspace,
+        tree_selected,
+        flat,
+        project_touched_unix_ms,
+        stale_collapsed_projects,
+        adaptive_collapse,
+        dismissed_integration_prompts,
+    } = snapshot;
     let mut cache = WorkspaceCache {
         written_at_unix_ms: Some(now_unix_ms()),
         tree_selected,
@@ -423,6 +509,9 @@ pub fn save_cache(
         }
         if stale_collapsed_projects.contains(&project.path) {
             cache.stale_collapsed_projects.insert(project_path.clone());
+        }
+        if let Some(state) = adaptive_collapse.get(&project.path) {
+            cache.adaptive_collapse.insert(project_path.clone(), *state);
         }
         cache
             .routines_expanded
@@ -530,6 +619,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn adaptive_collapse_credits_one_active_day_without_rapid_inflation() {
+        let day_ms = 24 * MILLIS_PER_HOUR;
+        let mut state = AdaptiveCollapseState::new(24, 1_000);
+
+        assert!(state.observe(24, 1_000 + day_ms));
+        assert_eq!(state.window_hours, 36);
+        assert!(state.observe(24, 1_000 + day_ms + 1));
+        assert_eq!(state.window_hours, 36);
+        assert!(state.observe(24, 1_000 + 2 * day_ms));
+        assert_eq!(state.window_hours, 48);
+    }
+
+    #[test]
+    fn adaptive_collapse_credits_the_first_activity_on_a_new_utc_day() {
+        let day_ms = 24 * MILLIS_PER_HOUR;
+        let mut state = AdaptiveCollapseState::new(24, day_ms - 1);
+
+        assert!(state.observe(24, day_ms));
+        assert_eq!(state.window_hours, 36);
+        assert!(state.observe(24, day_ms + 1));
+        assert_eq!(state.window_hours, 36);
+    }
+
+    #[test]
+    fn adaptive_collapse_caps_at_four_weeks_and_resets_after_an_expired_gap() {
+        let day_ms = 24 * MILLIS_PER_HOUR;
+        let mut state = AdaptiveCollapseState::new(24, 1_000);
+        for day in 1..=100 {
+            state.observe(24, 1_000 + day * day_ms);
+        }
+        assert_eq!(state.window_hours, ADAPTIVE_COLLAPSE_MAX_HOURS);
+
+        let after_expiry = state
+            .last_activity_unix_ms
+            .saturating_add(state.window_ms())
+            .saturating_add(1);
+        assert!(state.observe(24, after_expiry));
+        assert_eq!(state.window_hours, 24);
+        assert_eq!(state.last_activity_unix_ms, after_expiry);
+        assert_eq!(state.last_credit_unix_ms, after_expiry);
+    }
+
+    #[test]
+    fn adaptive_collapse_accepts_the_exact_window_boundary_and_resets_on_base_change() {
+        let mut state = AdaptiveCollapseState::new(24, 1_000);
+        let boundary = 1_000 + state.window_ms();
+        assert!(state.observe(24, boundary));
+        assert_eq!(state.window_hours, 36);
+
+        assert!(state.observe(48, boundary + 1));
+        assert_eq!(state.base_hours, 48);
+        assert_eq!(state.window_hours, 48);
+        assert_eq!(state.last_credit_unix_ms, boundary + 1);
+    }
+
+    #[test]
     fn legacy_cache_defaults_missing_dismissed_integration_prompts() {
         let cache: WorkspaceCache = toml::from_str("tree_selected = 2\n").unwrap();
         assert!(cache.dismissed_integration_prompts.is_empty());
@@ -564,6 +709,10 @@ mod tests {
             project_expanded: HashMap::from([("/projects/app".into(), true)]),
             project_touched_unix_ms: HashMap::from([("/projects/app".into(), 42)]),
             stale_collapsed_projects: HashSet::from(["/projects/old".into()]),
+            adaptive_collapse: HashMap::from([(
+                "/projects/app".into(),
+                AdaptiveCollapseState::new(24, 42),
+            )]),
             worktree_expanded: HashMap::from([("/projects/app/feature".into(), false)]),
             routines_expanded: HashMap::from([("/projects/app".into(), false)]),
             ..Default::default()
@@ -580,6 +729,7 @@ mod tests {
             decoded.stale_collapsed_projects,
             cache.stale_collapsed_projects
         );
+        assert_eq!(decoded.adaptive_collapse, cache.adaptive_collapse);
         assert_eq!(decoded.worktree_expanded, cache.worktree_expanded);
         assert_eq!(decoded.routines_expanded, cache.routines_expanded);
         let empty = toml::to_string(&WorkspaceCache::default()).unwrap();
@@ -866,7 +1016,7 @@ pane_id = "pane-1"
             projects: vec![project("/closed"), project("/closed-two"), project("/open")],
         };
 
-        let (_, _, touches, stale, _, _, _) =
+        let (_, _, touches, stale, _, _, _, _) =
             apply_workspace_cache(&mut workspace, cache, |cache| {
                 cache.save_to(&canonical, false)
             })
