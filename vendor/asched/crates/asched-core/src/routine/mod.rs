@@ -23,7 +23,8 @@ pub const RUNTIME_STATE_VERSION: u32 = 2;
 pub const TRANSACTION_VERSION: u32 = 1;
 /// Current project-config version. Retained as a source-compatibility alias.
 pub const SCHEMA_VERSION: u32 = PROJECT_CONFIG_VERSION;
-pub const PROTOCOL_VERSION: u32 = 3;
+// ^ Protocol 4 separates the wsxd-hosted scheduler from legacy standalone asched daemons.
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const MAX_RUNS: usize = 20;
 pub const MAX_EVENT_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_EVENT_RECEIPTS: usize = 4_096;

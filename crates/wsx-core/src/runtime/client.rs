@@ -69,6 +69,13 @@ pub enum Availability {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonStatus {
+    Missing,
+    Compatible,
+    Incompatible { daemon_protocol: Option<u32> },
+}
+
 #[derive(Debug, Clone)]
 pub struct Client {
     socket: PathBuf,
@@ -89,6 +96,20 @@ impl Client {
     }
     pub fn socket(&self) -> &Path {
         &self.socket
+    }
+
+    /// Observe whether a daemon exists and can serve this client without starting or replacing it.
+    pub fn status(&self) -> io::Result<DaemonStatus> {
+        Ok(match probe_existing_daemon(self)? {
+            ExistingDaemon::Missing => DaemonStatus::Missing,
+            ExistingDaemon::Ready { .. } => DaemonStatus::Compatible,
+            ExistingDaemon::Incompatible {
+                advertised_protocol,
+                ..
+            } => DaemonStatus::Incompatible {
+                daemon_protocol: advertised_protocol,
+            },
+        })
     }
 
     /// Gracefully stop the current daemon and wait for its socket cleanup.
@@ -690,13 +711,9 @@ fn ensure_available_with_binary(
                         )?;
                         start_daemon(client, binary, &mut bootstrap, true)?;
                     }
-                    if live_handoff {
-                        Ok(Availability::Current)
-                    } else {
-                        Ok(Availability::DaemonReplaced {
-                            previous_version: daemon_version,
-                        })
-                    }
+                    Ok(Availability::DaemonReplaced {
+                        previous_version: daemon_version,
+                    })
                 }
                 Response::Replacement {
                     disposition: super::domain::ReplacementDisposition::Deferred,
@@ -1761,7 +1778,10 @@ mod tests {
             std::fs::remove_file(server_path).unwrap();
         });
 
-        assert!(!daemon_needs_start(probe_existing_daemon(&Client::new(path)).unwrap()).unwrap());
+        assert_eq!(
+            Client::new(path).status().unwrap(),
+            DaemonStatus::Compatible
+        );
         assert!(daemon_needs_start(ExistingDaemon::Missing).unwrap());
         server.join().unwrap();
     }
@@ -2440,6 +2460,58 @@ mod tests {
         assert!(error.to_string().contains("refusing automatic shutdown"));
         assert!(error.to_string().contains("wsx daemon stop"));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn daemon_status_reports_an_answering_incompatible_daemon_as_running() {
+        let (path, listener) = test_listener("status-incompatible");
+        let server_path = path.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert_eq!(
+                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+                Request::Hello {
+                    protocol: PROTOCOL_VERSION
+                }
+            );
+            send_response(
+                &mut stream,
+                &Response::Hello {
+                    protocol: PROTOCOL_VERSION - 1,
+                    epoch: 1,
+                    capabilities: super::super::domain::Capabilities::default(),
+                },
+            );
+            assert_eq!(
+                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+            drop(listener);
+            std::fs::remove_file(server_path).unwrap();
+        });
+
+        assert_eq!(
+            Client::new(path).status().unwrap(),
+            DaemonStatus::Incompatible {
+                daemon_protocol: Some(PROTOCOL_VERSION - 1),
+            }
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn daemon_status_reports_a_missing_socket_as_stopped() {
+        let directory = std::env::current_dir()
+            .unwrap()
+            .join(".work/tests")
+            .join(format!("missing-status-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("wsx.sock");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(Client::new(path).status().unwrap(), DaemonStatus::Missing);
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]

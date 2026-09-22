@@ -12,6 +12,8 @@ use asched_core::{
 };
 use std::{
     env, fs,
+    io::{BufRead, BufReader, Write},
+    os::unix::net::UnixListener,
     path::{Path, PathBuf},
     process::{Command, Output},
     sync::atomic::{AtomicU64, Ordering},
@@ -281,4 +283,85 @@ fn routine_cli_starts_adjacent_wsxd_without_asched_and_cleans_up() {
     install.shutdown();
     wait_for_socket_removal(&socket);
     wait_for_pid_exit(pid);
+}
+
+#[test]
+fn routine_cli_replaces_legacy_same_schema_scheduler_with_adjacent_wsxd() {
+    let install = IsolatedInstall::new();
+    let socket = install.socket();
+    let listener = UnixListener::bind(&socket).expect("bind legacy routine daemon socket");
+    let server_socket = socket.clone();
+    let legacy = thread::spawn(move || {
+        let (mut current_probe, _) = listener.accept().expect("accept current protocol probe");
+        let mut line = String::new();
+        BufReader::new(current_probe.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let request: Request = serde_json::from_str(&line).unwrap();
+        assert_eq!(request.protocol, asched_core::routine::PROTOCOL_VERSION);
+        assert!(matches!(request.action, Action::Status));
+        current_probe
+            .write_all(
+                b"{\"result\":\"error\",\"kind\":\"protocol_mismatch\",\"message\":\"legacy scheduler protocol\"}\n",
+            )
+            .unwrap();
+
+        let (mut legacy_probe, _) = listener.accept().expect("accept legacy protocol probe");
+        line.clear();
+        BufReader::new(legacy_probe.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let request: Request = serde_json::from_str(&line).unwrap();
+        assert_eq!(request.protocol, asched_core::routine::PROTOCOL_VERSION - 1);
+        assert!(matches!(request.action, Action::Status));
+        writeln!(
+            legacy_probe,
+            "{{\"result\":\"daemon\",\"protocol\":{},\"pid\":4242}}",
+            asched_core::routine::PROTOCOL_VERSION - 1
+        )
+        .unwrap();
+
+        let (mut shutdown, _) = listener.accept().expect("accept legacy shutdown");
+        line.clear();
+        BufReader::new(shutdown.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let request: Request = serde_json::from_str(&line).unwrap();
+        assert_eq!(request.protocol, asched_core::routine::PROTOCOL_VERSION - 1);
+        assert!(matches!(request.action, Action::Shutdown));
+        shutdown
+            .write_all(b"{\"result\":\"ok\",\"revision\":null}\n")
+            .unwrap();
+        drop(shutdown);
+        drop(listener);
+        fs::remove_file(server_socket).expect("remove legacy routine daemon socket");
+    });
+
+    let output = install.wsx(&[
+        "routine",
+        "fire",
+        "--project",
+        install.project_arg(),
+        "--kind",
+        "upgrade.probe",
+        "--event-id",
+        "upgrade-probe-1",
+        "--payload",
+        "{}",
+        "--json",
+    ]);
+    assert_success(&output, "routine fire after legacy scheduler replacement");
+    legacy.join().unwrap();
+
+    let response = install
+        .client()
+        .request(&Request::new(PathBuf::new(), Action::Status))
+        .expect("query replacement scheduler");
+    assert!(matches!(
+        response,
+        Response::Daemon { protocol, pid }
+            if protocol == asched_core::routine::PROTOCOL_VERSION && pid != 4242
+    ));
+    install.shutdown();
+    wait_for_socket_removal(&socket);
 }

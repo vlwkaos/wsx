@@ -18,7 +18,14 @@ struct NoticeView<'a> {
 }
 
 fn notice_view(app: &App) -> Option<NoticeView<'_>> {
-    if let Some(notice) = app.notice.as_ref() {
+    notice_view_for(app.notice.as_ref(), &app.runtime_health)
+}
+
+fn notice_view_for<'a>(
+    notice: Option<&'a crate::app::Notice>,
+    runtime_health: &'a RuntimeHealth,
+) -> Option<NoticeView<'a>> {
+    if let Some(notice) = notice {
         return Some(NoticeView {
             level: notice.level,
             title: &notice.title,
@@ -26,7 +33,7 @@ fn notice_view(app: &App) -> Option<NoticeView<'_>> {
             sticky: false,
         });
     }
-    match &app.runtime_health {
+    match runtime_health {
         RuntimeHealth::Reconnecting {
             last_success,
             error,
@@ -163,5 +170,26 @@ mod tests {
         let width = Line::from(title).width() as u16;
         assert!(width > 28);
         assert!(area.width >= 8);
+    }
+
+    #[test]
+    fn explicit_disconnect_notice_precedes_the_sticky_runtime_fallback() {
+        let notice = crate::app::Notice {
+            level: NoticeLevel::Error,
+            title: "Runtime disconnected; retrying".into(),
+            body: Some("socket closed".into()),
+        };
+        let health = RuntimeHealth::Reconnecting {
+            last_success: Some(std::time::Instant::now()),
+            error: "newer retry error".into(),
+        };
+
+        let explicit = notice_view_for(Some(&notice), &health).unwrap();
+        assert_eq!(explicit.body, Some("socket closed"));
+        assert!(!explicit.sticky);
+
+        let fallback = notice_view_for(None, &health).unwrap();
+        assert_eq!(fallback.body, Some("newer retry error"));
+        assert!(fallback.sticky);
     }
 }

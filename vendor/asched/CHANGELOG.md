@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Compatibility
+
+- IPC advances to protocol version 4 so wsx can distinguish and replace legacy
+  standalone schedulers before starting the adjacent `wsxd` scheduler. All
+  clients sharing an `ASCHED_ROOT` must upgrade together.
+
 ## [0.2.0] - 2026-08-05
 
 ### Features

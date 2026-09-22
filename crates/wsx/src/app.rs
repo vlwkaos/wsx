@@ -1,7 +1,7 @@
 // App state machine and event loop.
 // ref: ratatui app patterns — https://ratatui.rs/concepts/application-patterns/
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -292,6 +292,8 @@ const FAST_INTERVAL_MS: u64 = 500;
 const GIT_SWEEP_INTERVAL_MS: u64 = 15_000;
 const SLOW_INTERVAL_MS: u64 = 30_000;
 const WORKSPACE_SCROLL_LINES: isize = 3;
+const NOTICE_MIN_DWELL: Duration = Duration::from_secs(2);
+const NOTICE_QUEUE_CAPACITY: usize = 8;
 
 fn unix_time_millis() -> u64 {
     let millis = SystemTime::now()
@@ -743,11 +745,33 @@ pub enum NoticeLevel {
     Error,
 }
 
-#[derive(Debug, Clone)]
+fn notice_priority(level: NoticeLevel) -> u8 {
+    match level {
+        NoticeLevel::Info => 0,
+        NoticeLevel::Success => 1,
+        NoticeLevel::Warning => 2,
+        NoticeLevel::Error => 3,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     pub level: NoticeLevel,
     pub title: String,
     pub body: Option<String>,
+}
+
+fn replacement_blocker_label(blocker: runtime::ReplacementBlocker) -> &'static str {
+    match blocker {
+        runtime::ReplacementBlocker::OtherTui => "another wsx TUI",
+        runtime::ReplacementBlocker::WorkingAgent => "a working agent",
+        runtime::ReplacementBlocker::ListenerScanPending => "a pending listener scan",
+        runtime::ReplacementBlocker::ForegroundJob => "a foreground job",
+        runtime::ReplacementBlocker::ListeningPort => "a listening port",
+        runtime::ReplacementBlocker::LegacyDaemon => "a legacy daemon",
+        runtime::ReplacementBlocker::PendingTarget => "another pending upgrade",
+        runtime::ReplacementBlocker::HandoffUnavailable => "unavailable live handoff",
+    }
 }
 
 pub(crate) fn runtime_availability_notice(
@@ -759,7 +783,11 @@ pub(crate) fn runtime_availability_notice(
             NoticeLevel::Warning,
             "wsxd recovered a corrupt primary state from its last-known-good backup".into(),
         )),
-        runtime::Availability::LegacyCompatible => None,
+        runtime::Availability::LegacyCompatible => Some((
+            NoticeLevel::Warning,
+            "Legacy wsxd is still running\nAutomatic upgrade is unavailable; use `wsx daemon stop` when live sessions can restart"
+                .into(),
+        )),
         runtime::Availability::NewerDaemon { daemon_version }
             if daemon_version == runtime::WSX_VERSION =>
         {
@@ -772,9 +800,39 @@ pub(crate) fn runtime_availability_notice(
                 runtime::WSX_VERSION
             ),
         )),
-        runtime::Availability::DaemonReplaced { .. }
-        | runtime::Availability::DaemonRestarted
-        | runtime::Availability::ReplacementDeferred { .. } => None,
+        runtime::Availability::DaemonReplaced { previous_version } => Some((
+            NoticeLevel::Success,
+            format!(
+                "Runtime upgraded to wsxd {}\nPrevious version: {previous_version}",
+                runtime::WSX_VERSION
+            ),
+        )),
+        runtime::Availability::DaemonRestarted => Some((
+            NoticeLevel::Success,
+            format!("Runtime restarted with wsxd {}", runtime::WSX_VERSION),
+        )),
+        runtime::Availability::ReplacementDeferred {
+            daemon_version,
+            target_version,
+            live_runtimes,
+            blockers,
+        } => {
+            let blockers = if blockers.is_empty() {
+                "an unknown lifecycle blocker".into()
+            } else {
+                blockers
+                    .iter()
+                    .map(|blocker| replacement_blocker_label(*blocker))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            Some((
+                NoticeLevel::Warning,
+                format!(
+                    "Runtime upgrade deferred\nRunning wsxd {daemon_version}; target {target_version}\nBlocked by: {blockers}\nProtected live runtimes: {live_runtimes}"
+                ),
+            ))
+        }
     }
 }
 
@@ -813,6 +871,7 @@ pub struct App {
     adaptive_collapse: HashMap<PathBuf, AdaptiveCollapseState>,
     pub notice: Option<Notice>,
     notice_started: Option<Instant>,
+    notice_queue: VecDeque<Notice>,
     pub jobs: Vec<BgJob>,
     pub spinner_frame: usize,
     bg_tx: mpsc::Sender<BgResult>,
@@ -958,8 +1017,8 @@ impl App {
         let (bg_tx, bg_rx) = mpsc::channel();
         let (runtime_tx, runtime_rx) = mpsc::channel();
         let runtime_client = runtime::Client::local();
-        let (runtime_monitor, runtime_event_rx) =
-            runtime::EventMonitor::start(runtime_client.clone())?;
+        // ^ Register TUI presence only after initial ensure_available, or this TUI blocks its own handoff.
+        let (_runtime_event_tx, runtime_event_rx) = mpsc::channel();
         let (update_tx, update_rx) = mpsc::channel::<String>();
         let (routine_tx, routine_rx) = mpsc::channel();
         let (integration_scan_tx, integration_scan_rx) = mpsc::channel();
@@ -1010,6 +1069,7 @@ impl App {
                 body: None,
             }),
             notice_started: initial_notice.as_ref().map(|_| Instant::now()),
+            notice_queue: VecDeque::new(),
             jobs: vec![],
             spinner_frame: 0,
             bg_tx,
@@ -1039,7 +1099,7 @@ impl App {
                     .unwrap_or(4),
             ),
             runtime_client,
-            _runtime_monitor: Some(runtime_monitor),
+            _runtime_monitor: None,
             runtime_event_rx,
             runtime_health: RuntimeHealth::Connecting,
             runtime_tx,
@@ -1124,6 +1184,10 @@ impl App {
     }
 
     fn set_notice(&mut self, level: NoticeLevel, msg: impl Into<String>) {
+        self.set_notice_at(level, msg, Instant::now());
+    }
+
+    fn set_notice_at(&mut self, level: NoticeLevel, msg: impl Into<String>, now: Instant) {
         let message = msg.into();
         let mut lines = message.lines();
         let title = lines.next().unwrap_or_default().to_string();
@@ -1131,8 +1195,51 @@ impl App {
             let rest = lines.collect::<Vec<_>>().join("\n");
             (!rest.is_empty()).then_some(rest)
         };
-        self.notice = Some(Notice { level, title, body });
-        self.notice_started = Some(Instant::now());
+        let notice = Notice { level, title, body };
+        if self.notice.as_ref() == Some(&notice) || self.notice_queue.contains(&notice) {
+            return;
+        }
+        if self.notice.is_none() {
+            self.notice = Some(notice);
+            self.notice_started = Some(now);
+            self.needs_redraw = true;
+            return;
+        }
+        if self.notice_queue.len() >= NOTICE_QUEUE_CAPACITY {
+            let incoming_priority = notice_priority(notice.level);
+            let Some(index) = self
+                .notice_queue
+                .iter()
+                .position(|queued| notice_priority(queued.level) <= incoming_priority)
+            else {
+                return;
+            };
+            self.notice_queue.remove(index);
+        }
+        if notice.level == NoticeLevel::Error {
+            let index = self
+                .notice_queue
+                .iter()
+                .position(|queued| queued.level != NoticeLevel::Error)
+                .unwrap_or(self.notice_queue.len());
+            self.notice_queue.insert(index, notice);
+        } else {
+            self.notice_queue.push_back(notice);
+        }
+        if self
+            .notice_started
+            .is_some_and(|started| now.saturating_duration_since(started) >= NOTICE_MIN_DWELL)
+        {
+            self.promote_notice(now);
+        }
+    }
+
+    fn promote_notice(&mut self, now: Instant) {
+        let Some(notice) = self.notice_queue.pop_front() else {
+            return;
+        };
+        self.notice = Some(notice);
+        self.notice_started = Some(now);
         self.needs_redraw = true;
     }
 
@@ -2005,6 +2112,8 @@ impl App {
                 self.needs_redraw = true;
             }
             runtime::EventSignal::Disconnected(error) => {
+                let first_disconnect =
+                    !matches!(self.runtime_health, RuntimeHealth::Reconnecting { .. });
                 let last_success = match self.runtime_health {
                     RuntimeHealth::Healthy { last_success } => Some(last_success),
                     RuntimeHealth::Reconnecting { last_success, .. } => last_success,
@@ -2012,8 +2121,14 @@ impl App {
                 };
                 self.runtime_health = RuntimeHealth::Reconnecting {
                     last_success,
-                    error,
+                    error: error.clone(),
                 };
+                if first_disconnect {
+                    self.set_notice(
+                        NoticeLevel::Error,
+                        format!("Runtime disconnected; retrying\n{error}"),
+                    );
+                }
                 self.needs_redraw = true;
             }
         }
@@ -2206,11 +2321,17 @@ impl App {
     }
 
     fn expire_notice(&mut self, now: Instant) {
-        let timeout = Duration::from_secs(self.config.notification_timeout_seconds);
-        if self
-            .notice_started
-            .is_some_and(|started| now.saturating_duration_since(started) >= timeout)
-        {
+        let Some(started) = self.notice_started else {
+            return;
+        };
+        let elapsed = now.saturating_duration_since(started);
+        if !self.notice_queue.is_empty() && elapsed >= NOTICE_MIN_DWELL {
+            self.promote_notice(now);
+            return;
+        }
+        let timeout =
+            Duration::from_secs(self.config.notification_timeout_seconds).max(NOTICE_MIN_DWELL);
+        if elapsed >= timeout {
             self.notice = None;
             self.notice_started = None;
             self.needs_redraw = true;
@@ -2502,7 +2623,21 @@ impl App {
                 self.apply_runtime_event(runtime::EventSignal::Disconnected(error.to_string()))
             }
         }
+        self.start_runtime_monitor();
         self.spawn_queued_runtime_refresh();
+    }
+
+    fn start_runtime_monitor(&mut self) {
+        if self._runtime_monitor.is_some() {
+            return;
+        }
+        match runtime::EventMonitor::start(self.runtime_client.clone()) {
+            Ok((monitor, receiver)) => {
+                self._runtime_monitor = Some(monitor);
+                self.runtime_event_rx = receiver;
+            }
+            Err(error) => self.set_error(format!("Runtime monitor unavailable: {error}")),
+        }
     }
 
     fn announce_startup_availability(&mut self, availability: &runtime::Availability) {
@@ -6509,6 +6644,7 @@ mod tests {
             review_available: false,
             notice: None,
             notice_started: None,
+            notice_queue: VecDeque::new(),
             jobs: Vec::new(),
             spinner_frame: 0,
             bg_tx,
@@ -7268,8 +7404,14 @@ mod tests {
             Some("No idle sessions")
         );
 
+        let first_started = app.notice_started.unwrap();
         app.dispatch(Action::PrevActive, &mut terminal).unwrap();
         assert!(matches!(app.mode, Mode::Terminal { .. }));
+        assert_eq!(
+            app.notice.as_ref().map(|notice| notice.title.as_str()),
+            Some("No idle sessions")
+        );
+        app.expire_notice(first_started + NOTICE_MIN_DWELL);
         assert_eq!(
             app.notice.as_ref().map(|notice| notice.title.as_str()),
             Some("No active sessions")
@@ -9869,46 +10011,47 @@ mod tests {
     }
 
     #[test]
-    fn routine_update_states_are_silent_but_incompatible_newer_daemon_is_actionable() {
-        let routine = [
-            runtime::Availability::LegacyCompatible,
-            runtime::Availability::NewerDaemon {
+    fn daemon_upgrade_outcomes_are_actionable() {
+        let replaced = runtime_availability_notice(&runtime::Availability::DaemonReplaced {
+            previous_version: "0.24.0".into(),
+        })
+        .unwrap();
+        assert_eq!(replaced.0, NoticeLevel::Success);
+        assert!(replaced.1.contains("Runtime upgraded"), "{}", replaced.1);
+        assert!(replaced.1.contains("0.24.0"), "{}", replaced.1);
+
+        let deferred = runtime_availability_notice(&runtime::Availability::ReplacementDeferred {
+            daemon_version: "0.24.0".into(),
+            target_version: "0.25.0".into(),
+            live_runtimes: 4,
+            blockers: vec![
+                runtime::ReplacementBlocker::OtherTui,
+                runtime::ReplacementBlocker::WorkingAgent,
+                runtime::ReplacementBlocker::ForegroundJob,
+                runtime::ReplacementBlocker::ListeningPort,
+            ],
+        })
+        .unwrap();
+        assert_eq!(deferred.0, NoticeLevel::Warning);
+        assert!(
+            deferred.1.contains("Runtime upgrade deferred"),
+            "{}",
+            deferred.1
+        );
+        assert!(deferred.1.contains("another wsx TUI"), "{}", deferred.1);
+        assert!(deferred.1.contains("4"), "{}", deferred.1);
+
+        let legacy = runtime_availability_notice(&runtime::Availability::LegacyCompatible).unwrap();
+        assert_eq!(legacy.0, NoticeLevel::Warning);
+        assert!(legacy.1.contains("Legacy wsxd"), "{}", legacy.1);
+
+        assert!(runtime_availability_notice(&runtime::Availability::Current).is_none());
+        assert!(
+            runtime_availability_notice(&runtime::Availability::NewerDaemon {
                 daemon_version: runtime::WSX_VERSION.into(),
-            },
-            runtime::Availability::DaemonReplaced {
-                previous_version: "0.24.0".into(),
-            },
-            runtime::Availability::DaemonRestarted,
-            runtime::Availability::ReplacementDeferred {
-                daemon_version: "0.24.0".into(),
-                target_version: "0.25.0".into(),
-                live_runtimes: 4,
-                blockers: vec![
-                    runtime::ReplacementBlocker::OtherTui,
-                    runtime::ReplacementBlocker::WorkingAgent,
-                    runtime::ReplacementBlocker::ForegroundJob,
-                    runtime::ReplacementBlocker::ListeningPort,
-                ],
-            },
-            runtime::Availability::ReplacementDeferred {
-                daemon_version: "0.24.0".into(),
-                target_version: "0.25.0".into(),
-                live_runtimes: 65,
-                blockers: vec![runtime::ReplacementBlocker::HandoffUnavailable],
-            },
-            runtime::Availability::ReplacementDeferred {
-                daemon_version: "0.24.0".into(),
-                target_version: "0.25.0".into(),
-                live_runtimes: 5,
-                blockers: vec![runtime::ReplacementBlocker::LegacyDaemon],
-            },
-        ];
-        for availability in routine {
-            assert!(
-                runtime_availability_notice(&availability).is_none(),
-                "routine update state should not interrupt the workspace: {availability:?}"
-            );
-        }
+            })
+            .is_none()
+        );
 
         let newer = runtime_availability_notice(&runtime::Availability::NewerDaemon {
             daemon_version: "99.0.0".into(),
@@ -9935,13 +10078,103 @@ mod tests {
             NoticeLevel::Warning,
             NoticeLevel::Error,
         ] {
-            app.set_notice(level, "notice");
-            app.notice_started = Some(started);
+            app.set_notice_at(level, "notice", started);
             app.expire_notice(started + Duration::from_secs(1));
             assert!(app.notice.is_some());
             app.expire_notice(started + Duration::from_secs(2));
             assert!(app.notice.is_none());
         }
+    }
+
+    #[test]
+    fn notice_bursts_preserve_minimum_dwell_and_fifo_order() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        let started = Instant::now();
+        app.set_notice_at(NoticeLevel::Error, "first", started);
+        app.set_notice_at(
+            NoticeLevel::Success,
+            "second",
+            started + Duration::from_millis(100),
+        );
+        app.set_notice_at(
+            NoticeLevel::Warning,
+            "third",
+            started + Duration::from_millis(200),
+        );
+
+        app.expire_notice(started + Duration::from_millis(1_999));
+        assert_eq!(app.notice.as_ref().unwrap().title, "first");
+        app.expire_notice(started + Duration::from_secs(2));
+        assert_eq!(app.notice.as_ref().unwrap().title, "second");
+        app.expire_notice(started + Duration::from_secs(4));
+        assert_eq!(app.notice.as_ref().unwrap().title, "third");
+        app.expire_notice(started + Duration::from_secs(8));
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
+    fn duplicate_notices_are_coalesced_without_extending_dwell() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        let started = Instant::now();
+        app.set_notice_at(NoticeLevel::Warning, "same", started);
+        app.set_notice_at(
+            NoticeLevel::Warning,
+            "same",
+            started + Duration::from_secs(1),
+        );
+        assert!(app.notice_queue.is_empty());
+        assert_eq!(app.notice_started, Some(started));
+    }
+
+    #[test]
+    fn notice_queue_is_bounded_and_retains_new_errors() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        let started = Instant::now();
+        app.set_notice_at(NoticeLevel::Info, "active", started);
+        for index in 0..NOTICE_QUEUE_CAPACITY {
+            app.set_notice_at(
+                NoticeLevel::Success,
+                format!("progress {index}"),
+                started + Duration::from_millis(1),
+            );
+        }
+        app.set_notice_at(
+            NoticeLevel::Error,
+            "terminal failure",
+            started + Duration::from_millis(2),
+        );
+
+        assert_eq!(app.notice_queue.len(), NOTICE_QUEUE_CAPACITY);
+        assert_eq!(app.notice_queue.front().unwrap().title, "terminal failure");
+        assert!(app
+            .notice_queue
+            .iter()
+            .any(|notice| notice.title == "terminal failure"));
+        assert!(!app
+            .notice_queue
+            .iter()
+            .any(|notice| notice.title == "progress 0"));
+    }
+
+    #[test]
+    fn disconnect_notice_survives_an_immediate_success_notice() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        let started = Instant::now();
+        app.apply_runtime_event(runtime::EventSignal::Disconnected("socket closed".into()));
+        app.notice_started = Some(started);
+        app.set_notice_at(
+            NoticeLevel::Success,
+            "Runtime upgraded",
+            started + Duration::from_millis(10),
+        );
+
+        assert_eq!(
+            app.notice.as_ref().unwrap().title,
+            "Runtime disconnected; retrying"
+        );
+        assert_eq!(app.notice_queue.len(), 1);
+        app.expire_notice(started + NOTICE_MIN_DWELL);
+        assert_eq!(app.notice.as_ref().unwrap().title, "Runtime upgraded");
     }
 
     #[test]
@@ -9993,6 +10226,20 @@ mod tests {
             terminal_stream_error_notice(&error, &target),
             "Terminal busy: another writable controller\nTarget: kgeditor › feature/#312 › ss › terminal"
         );
+    }
+
+    #[test]
+    fn initial_runtime_refresh_starts_monitor_only_after_upgrade_attempt() {
+        let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
+        assert!(app._runtime_monitor.is_none());
+
+        app.apply_runtime_refresh(Err(anyhow::anyhow!("initial probe failed")));
+
+        assert!(app._runtime_monitor.is_some());
+        assert!(matches!(
+            app.runtime_health,
+            RuntimeHealth::Reconnecting { .. }
+        ));
     }
 
     #[test]
@@ -10130,7 +10377,10 @@ mod tests {
             None,
         );
         assert!(matches!(app.runtime_health, RuntimeHealth::Healthy { .. }));
-        assert!(app.notice.is_none());
+        assert_eq!(
+            app.notice.as_ref().map(|notice| notice.title.as_str()),
+            Some("Runtime disconnected; retrying")
+        );
     }
 
     #[test]
