@@ -491,6 +491,13 @@ fn render_terminal_frame(
             };
             let target = &mut buffer[(inner.x + x, inner.y + target_y)];
             project_terminal_cell(target, cell);
+            // ^ [[Terminal Stream Protocol v3]] Cropping may omit a Wide cell's
+            // SpacerTail. Never emit the orphaned width-2 glyph at the viewport edge.
+            if cell.width == wsx_core::runtime::CellWidth::Wide
+                && x.saturating_add(1) >= visible_cols
+            {
+                target.set_symbol(" ").set_skip(false);
+            }
             if selection
                 .is_some_and(|selection| (selection.start_col..=selection.end_col).contains(&x))
             {
@@ -1296,6 +1303,38 @@ mod tests {
         assert_eq!(buffer[(0, 0)].bg, Color::Reset);
         assert_eq!(buffer[(1, 0)].bg, Color::Rgb(1, 2, 3));
         assert_eq!(buffer[(2, 0)].bg, Color::Reset);
+    }
+
+    #[test]
+    fn cropped_wide_lead_does_not_escape_the_terminal_right_edge() {
+        let backend = TestBackend::new(4, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let frame = terminal_frame(vec![
+            Cell {
+                symbol: "a".into(),
+                ..Cell::default()
+            },
+            Cell {
+                symbol: "한".into(),
+                width: CellWidth::Wide,
+                ..Cell::default()
+            },
+            Cell {
+                width: CellWidth::SpacerTail,
+                ..Cell::default()
+            },
+        ]);
+
+        terminal
+            .draw(|terminal| {
+                render_terminal_frame(terminal, Rect::new(2, 0, 2, 1), Some(&frame), true)
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(2, 0)].symbol(), "a");
+        assert_eq!(buffer[(3, 0)].symbol(), " ");
+        assert_eq!(buffer[(0, 1)].symbol(), " ");
     }
 
     #[test]
