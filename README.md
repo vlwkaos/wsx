@@ -164,9 +164,9 @@ Each routine `--arg` is one direct argv item. wsx never invokes a shell for rout
 
 See [Executable plugins](docs/plugins.md) for the versioned event, Terminal-sidecar, and worktree-review contracts. With a review provider installed, Tab on a worktree opens keyboard-driven file and diff review inside its preview. The [reference Git provider setup](docs/worktree-review.md) does not change the agent terminal.
 
-Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed terminal. Explicit subcommands remain available. `wsx runtime status` and `wsx daemon stop` never start the daemon.
+Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed terminal. Explicit subcommands remain available. `wsx runtime status` and `wsx daemon stop` never start the daemon. Runtime status distinguishes a stopped daemon from one that is running but incompatible, awaiting an upgrade, deferring replacement, or ready. Its lifecycle output includes the daemon version and revision when the daemon supports them.
 
-Handoff-capable wsxd updates wait until wsx TUI clients detach, then transfer live terminal ownership to the new daemon without restarting shells, agents, foreground jobs, or listening servers.
+Handoff-capable wsxd updates wait until other wsx TUI generations detach, then transfer live terminal ownership to the new daemon without restarting shells, agents, foreground jobs, or listening servers. The TUI reports a successful upgrade or the blockers that deferred it. Routine requests similarly replace legacy standalone schedulers with the adjacent wsxd automatically.
 
 ## Runtime and security
 

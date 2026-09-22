@@ -783,7 +783,17 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
             let path = routine_project(project.as_deref())?;
             let payload = serde_json::from_str(&payload)
                 .map_err(|error| anyhow::anyhow!("event payload must be JSON: {error}"))?;
-            let outcome = routine_client()?.fire(&path, &kind, payload, &event_id)?;
+            let response = send_routine(
+                &path,
+                Action::Fire {
+                    kind,
+                    payload,
+                    event_id,
+                },
+            )?;
+            let asched_core::routine::ipc::Response::Fire { outcome } = response else {
+                bail!("routine daemon returned an unexpected fire response")
+            };
             if json {
                 println!("{}", serde_json::to_string_pretty(&outcome)?);
             } else {
@@ -1543,8 +1553,9 @@ mod agent_command_tests {
 
 #[cfg(test)]
 mod daemon_command_tests {
-    use super::{Args, Command, DaemonCmd};
+    use super::{runtime_status_state, Args, Command, DaemonCmd};
     use clap::Parser;
+    use wsx_core::runtime::{self, DaemonLifecycle, DaemonPhase};
 
     #[test]
     fn daemon_stop_is_a_top_level_command() {
@@ -1566,6 +1577,51 @@ mod daemon_command_tests {
                 subcommand: DaemonCmd::Recover
             })
         ));
+    }
+
+    fn lifecycle(phase: DaemonPhase, daemon_revision: u32) -> DaemonLifecycle {
+        DaemonLifecycle {
+            protocol: runtime::PROTOCOL_VERSION,
+            epoch: 1,
+            binary_id: "binary".into(),
+            version: runtime::WSX_VERSION.into(),
+            daemon_revision,
+            started_unix_ms: 1,
+            phase,
+            live_runtimes: 0,
+            active_clients: 1,
+            active_tuis: 0,
+            recovered_from_backup: false,
+            replacement_target: None,
+            replacement_target_version: String::new(),
+            replacement_blockers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn runtime_status_distinguishes_ready_upgrade_and_deferred_states() {
+        assert_eq!(runtime_status_state(None), "ready");
+        assert_eq!(
+            runtime_status_state(Some(&lifecycle(
+                DaemonPhase::Ready,
+                runtime::DAEMON_REVISION
+            ))),
+            "ready"
+        );
+        assert_eq!(
+            runtime_status_state(Some(&lifecycle(
+                DaemonPhase::Ready,
+                runtime::DAEMON_REVISION - 1
+            ))),
+            "upgrade_available"
+        );
+        assert_eq!(
+            runtime_status_state(Some(&lifecycle(
+                DaemonPhase::ReplacementPending,
+                runtime::DAEMON_REVISION - 1
+            ))),
+            "replacement_deferred"
+        );
     }
 }
 
@@ -2339,29 +2395,94 @@ fn cmd_daemon_recover() -> Result<()> {
     Ok(())
 }
 
+fn runtime_status_state(lifecycle: Option<&runtime::DaemonLifecycle>) -> &'static str {
+    match lifecycle {
+        Some(status) if status.phase == runtime::DaemonPhase::ReplacementPending => {
+            "replacement_deferred"
+        }
+        Some(status) if status.daemon_revision < runtime::DAEMON_REVISION => "upgrade_available",
+        _ => "ready",
+    }
+}
+
 fn cmd_runtime_status(json: bool) -> Result<()> {
     let client = runtime::Client::local();
-    let snapshot = match client.call(&runtime::Request::Snapshot) {
-        Ok(runtime::Response::Snapshot(snapshot)) => snapshot,
-        Ok(runtime::Response::Error(error)) => bail!("{}: {}", error.code, error.message),
-        Ok(_) => bail!("wsxd returned an unexpected status response"),
-        Err(error) => {
+    match client.status() {
+        Ok(runtime::DaemonStatus::Missing) => {
             if json {
                 println!(
                     "{}",
                     serde_json::json!({
                         "running": false,
+                        "compatible": false,
+                        "state": "stopped",
+                        "socket": client.socket(),
+                    })
+                );
+            } else {
+                println!("Runtime: stopped");
+                println!("Socket: {}", client.socket().display());
+            }
+            return Ok(());
+        }
+        Ok(runtime::DaemonStatus::Incompatible { daemon_protocol }) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "running": true,
+                        "compatible": false,
+                        "state": "incompatible",
+                        "socket": client.socket(),
+                        "daemon_protocol": daemon_protocol,
+                        "client": {
+                            "version": runtime::WSX_VERSION,
+                            "protocol": runtime::PROTOCOL_VERSION,
+                            "daemon_revision": runtime::DAEMON_REVISION,
+                        },
+                    })
+                );
+            } else {
+                println!("Runtime: running (incompatible)");
+                println!("Socket: {}", client.socket().display());
+                println!(
+                    "Protocol: daemon {}, client {}",
+                    daemon_protocol
+                        .map(|protocol| protocol.to_string())
+                        .unwrap_or_else(|| "unknown".into()),
+                    runtime::PROTOCOL_VERSION
+                );
+                println!("Open the matching wsx version or launch wsx to request an upgrade.");
+            }
+            return Ok(());
+        }
+        Ok(runtime::DaemonStatus::Compatible) => {}
+        Err(error) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "running": serde_json::Value::Null,
+                        "compatible": false,
+                        "state": "unavailable",
                         "socket": client.socket(),
                         "error": error.to_string(),
                     })
                 );
-                return Ok(());
+            } else {
+                println!("Runtime: unavailable");
+                println!("Socket: {}", client.socket().display());
+                println!("Reason: {error}");
             }
-            println!("Runtime: stopped");
-            println!("Socket: {}", client.socket().display());
-            println!("Reason: {error}");
             return Ok(());
         }
+    }
+
+    let snapshot = match client.call(&runtime::Request::Snapshot) {
+        Ok(runtime::Response::Snapshot(snapshot)) => snapshot,
+        Ok(runtime::Response::Error(error)) => bail!("{}: {}", error.code, error.message),
+        Ok(_) => bail!("wsxd returned an unexpected status response"),
+        Err(error) => bail!("wsxd became unavailable while reading status: {error}"),
     };
     let lifecycle = if snapshot.capabilities.lifecycle_coordination {
         match client.call(&runtime::Request::LifecycleStatus) {
@@ -2371,11 +2492,14 @@ fn cmd_runtime_status(json: bool) -> Result<()> {
     } else {
         None
     };
+    let state = runtime_status_state(lifecycle.as_ref());
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "running": true,
+                "compatible": true,
+                "state": state,
                 "socket": client.socket(),
                 "protocol": snapshot.protocol,
                 "epoch": snapshot.epoch,
@@ -2386,25 +2510,36 @@ fn cmd_runtime_status(json: bool) -> Result<()> {
                 "panes": snapshot.panes.len(),
                 "capabilities": snapshot.capabilities,
                 "lifecycle": lifecycle,
+                "client": {
+                    "version": runtime::WSX_VERSION,
+                    "protocol": runtime::PROTOCOL_VERSION,
+                    "daemon_revision": runtime::DAEMON_REVISION,
+                },
             }))?
         );
     } else {
         println!(
-            "Runtime: running · protocol {} · epoch {} · revision {}",
+            "Runtime: running ({state}), protocol {}, epoch {}, revision {}",
             snapshot.protocol, snapshot.epoch, snapshot.revision
         );
         println!("Socket: {}", client.socket().display());
         if let Some(lifecycle) = lifecycle {
             println!(
-                "Lifecycle: {:?} ({} live runtimes, {} clients, binary {})",
+                "Lifecycle: {:?}, version {}, daemon revision {}, {} live runtimes, {} clients",
                 lifecycle.phase,
+                if lifecycle.version.is_empty() {
+                    "unknown"
+                } else {
+                    &lifecycle.version
+                },
+                lifecycle.daemon_revision,
                 lifecycle.live_runtimes,
                 lifecycle.active_clients,
-                lifecycle.binary_id
             );
+            println!("Binary: {}", lifecycle.binary_id);
         }
         println!(
-            "Resources: {} projects · {} worktrees · {} sessions · {} panes",
+            "Resources: {} projects, {} worktrees, {} sessions, {} panes",
             snapshot.projects.len(),
             snapshot.worktrees.len(),
             snapshot.sessions.len(),

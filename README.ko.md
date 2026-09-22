@@ -164,9 +164,9 @@ Routine의 각 `--arg`는 direct argv item 하나입니다. wsx는 routine argv�
 
 Versioned event, Terminal sidecar, worktree review contract는 [Executable plugins](docs/plugins.md)에서 확인할 수 있습니다. Review provider를 설치하면 worktree에서 Tab을 눌러 preview 안에서 파일과 diff를 키보드로 살펴볼 수 있습니다. [Git provider 설정](docs/worktree-review.md)은 agent terminal을 변경하지 않습니다.
 
-wsx-managed terminal 안에서는 plain `wsx`와 `wsx --mobile`이 nested TUI startup을 거부합니다. 명시적인 subcommand는 계속 사용할 수 있습니다. `wsx runtime status`와 `wsx daemon stop`은 daemon을 시작하지 않습니다.
+wsx-managed terminal 안에서는 plain `wsx`와 `wsx --mobile`이 nested TUI startup을 거부합니다. 명시적인 subcommand는 계속 사용할 수 있습니다. `wsx runtime status`와 `wsx daemon stop`은 daemon을 시작하지 않습니다. Runtime status는 daemon이 중지된 상태와 실행 중이지만 호환되지 않는 상태, upgrade 대기 상태, 교체 지연 상태, 준비 상태를 구분합니다. Daemon이 lifecycle 정보를 지원하면 version과 revision도 함께 표시합니다.
 
-Live handoff를 지원하는 wsxd update는 wsx TUI가 모두 종료될 때까지 기다린 뒤, shell, agent, foreground job, listening server를 재시작하지 않고 새 daemon으로 terminal 소유권을 이전합니다.
+Live handoff를 지원하는 wsxd update는 다른 wsx TUI generation이 종료될 때까지 기다린 뒤, shell, agent, foreground job, listening server를 재시작하지 않고 새 daemon으로 terminal 소유권을 이전합니다. TUI는 upgrade 성공 또는 교체를 지연시킨 blocker를 표시합니다. Routine 요청도 기존 standalone scheduler를 adjacent wsxd로 자동 교체합니다.
 
 ## Runtime과 보안
 
