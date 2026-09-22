@@ -136,6 +136,7 @@ mod tests {
                 path: PathBuf::from("/wsx"),
                 groups: vec!["work".into()],
                 aliases: Default::default(),
+                worktree_order: Vec::new(),
             }],
             ..Default::default()
         }

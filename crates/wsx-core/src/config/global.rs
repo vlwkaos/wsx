@@ -282,6 +282,8 @@ pub struct ProjectEntry {
     pub groups: Vec<String>,
     #[serde(default)]
     pub aliases: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worktree_order: Vec<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -350,6 +352,8 @@ struct ProjectEntryWire {
     tab: Option<String>,
     #[serde(default)]
     aliases: HashMap<String, String>,
+    #[serde(default)]
+    worktree_order: Vec<PathBuf>,
 }
 
 fn append_unique(target: &mut Vec<String>, values: impl IntoIterator<Item = String>) {
@@ -394,6 +398,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
                 path: normalize_project_path(&project.path),
                 groups: project_groups,
                 aliases: project.aliases,
+                worktree_order: project.worktree_order,
             });
         }
 
@@ -662,6 +667,7 @@ impl GlobalConfig {
             path,
             groups: Vec::new(),
             aliases: Default::default(),
+            worktree_order: Vec::new(),
         });
     }
 
@@ -680,6 +686,16 @@ impl GlobalConfig {
             } else {
                 entry.aliases.insert(branch.to_string(), alias.to_string());
             }
+        }
+    }
+
+    pub fn set_worktree_order(&mut self, project_path: &Path, order: Vec<PathBuf>) {
+        if let Some(entry) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.path == project_path)
+        {
+            entry.worktree_order = order;
         }
     }
 }
@@ -912,6 +928,27 @@ mod tests {
         assert!(!encoded.contains("tab"));
         assert!(!encoded.contains("tag"));
         assert!(!encoded.contains("filter"));
+    }
+
+    #[test]
+    fn worktree_order_defaults_empty_and_round_trips_stable_paths() {
+        let legacy: GlobalConfig =
+            toml::from_str("[[projects]]\nname = \"p\"\npath = \"/p\"\n").unwrap();
+        assert!(legacy.projects[0].worktree_order.is_empty());
+
+        let configured: GlobalConfig = toml::from_str(
+            "[[projects]]\nname = \"p\"\npath = \"/p\"\nworktree_order = [\"/p-feature\", \"/p\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            configured.projects[0].worktree_order,
+            [PathBuf::from("/p-feature"), PathBuf::from("/p")]
+        );
+        let decoded: GlobalConfig = toml::from_str(&toml::to_string(&configured).unwrap()).unwrap();
+        assert_eq!(
+            decoded.projects[0].worktree_order,
+            configured.projects[0].worktree_order
+        );
     }
 
     #[test]

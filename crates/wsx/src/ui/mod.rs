@@ -226,7 +226,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let terminal_breadcrumb_area =
         terminal_layout.map_or(Rect::default(), |layout| layout.breadcrumb);
 
-    let is_move_mode = matches!(app.mode, Mode::Move { .. } | Mode::MoveSession { .. });
+    let is_move_mode = matches!(
+        app.mode,
+        Mode::Move { .. } | Mode::MoveWorktree { .. } | Mode::MoveSession { .. }
+    );
     if tree_area.width > 0 && tree_area.height > 0 {
         if workspace_focused {
             frame.render_widget(
@@ -509,6 +512,7 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
         Mode::Workspace
         | Mode::Terminal { .. }
         | Mode::Move { .. }
+        | Mode::MoveWorktree { .. }
         | Mode::MoveSession { .. }
         | Mode::Search { .. }
         | Mode::GroupManager { .. } => {}
@@ -555,6 +559,7 @@ fn status_bar_view(app: &App) -> StatusBarView {
                     "(e)dit",
                     "(w)orktree",
                     "(u)routine",
+                    "(m)ove",
                     "(g)roup",
                     "(d)unregister",
                 ],
@@ -576,16 +581,21 @@ fn status_bar_view(app: &App) -> StatusBarView {
                             "(tab)changes",
                             "(s)ession",
                             "(u)routine",
+                            "(m)ove",
                             "(d)elete",
                             "(?)help",
                         ]
                     } else {
-                        vec!["(s)ession", "(u)routine", "(d)elete", "(?)help"]
+                        vec!["(s)ession", "(u)routine", "(m)ove", "(d)elete", "(?)help"]
                     }
                 }
-                Selection::Session(..) => {
-                    vec!["(C)interrupt", "(u)routine", "(d)close", "(?)help"]
-                }
+                Selection::Session(..) => vec![
+                    "(C)interrupt",
+                    "(u)routine",
+                    "(m)ove",
+                    "(d)close",
+                    "(?)help",
+                ],
                 Selection::Pane(..) => vec![
                     "(|)split",
                     "(-)split",
@@ -624,7 +634,7 @@ fn status_bar_view(app: &App) -> StatusBarView {
         Mode::Config { .. } | Mode::GlobalSettings { .. } | Mode::IntegrationManager { .. } => {
             ("CONFIG", theme::ModeBadge::Config, Vec::new())
         }
-        Mode::Move { .. } | Mode::MoveSession { .. } => (
+        Mode::Move { .. } | Mode::MoveWorktree { .. } | Mode::MoveSession { .. } => (
             "MOVE",
             theme::ModeBadge::Move,
             vec!["(j/k)reorder".into(), "Esc: done".into()],
@@ -903,6 +913,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  w             Add worktree (branch: prompt)",
         "  s             New persistent session (optional init command)",
         "  r             Set alias",
+        "  m             Move worktree (reorder project list)",
         "  d             Delete worktree + kill all sessions",
         "  e             View/edit wsx.config.yml",
         "",
@@ -910,6 +921,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  Enter         Enter Terminal mode",
         "  C             Send Ctrl+C to session",
         "  r             Rename",
+        "  m             Move session (reorder worktree list)",
         "  d             Kill session",
         "  x             Acknowledge done, otherwise toggle ⊘ mute",
         "",

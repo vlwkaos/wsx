@@ -69,7 +69,7 @@ Installer는 관련 없는 hook을 보존하고 표준 config-directory override
 |---|---|
 | Workspace | `j/k` 이동, `h/l` 접기/펼치기, `Enter` 선택, `m` 순서 변경, `i/I` idle, `a/A` active, `n/N` attention |
 | Project | `p` project 추가, `w` worktree 추가, `u` routine 추가, `e` config, `g` group 지정 |
-| Worktree | `s` session 추가, `r` alias, `d` 삭제 |
+| Worktree | `s` session 추가, `r` alias, `m` 순서 변경, `d` 삭제 |
 | Session/Pane | `Enter` Terminal, `x` 확인 또는 mute, `C` interrupt |
 | Pane | `|` 오른쪽 분할, `-` 아래 분할, `d` 닫기 |
 | Group | `T` 관리, `{`/`}` 전환, `g` 지정 |
