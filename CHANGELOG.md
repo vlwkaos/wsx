@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-09-22
+
 ### Bug Fixes
 
 - Replace legacy standalone routine schedulers automatically by advancing the routine protocol for the `wsxd` ownership boundary. This closes the `0.26.2` to `0.27.0` migration gap where both processes advertised protocol 3 and the obsolete scheduler was reused indefinitely.
