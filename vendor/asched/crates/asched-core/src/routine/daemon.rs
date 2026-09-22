@@ -1279,12 +1279,37 @@ mod tests {
     use super::*;
     use crate::routine::{Routine, RoutineErrorKind, RunCause, RunRecord, SCHEMA_VERSION};
     use std::io::Cursor;
+    use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::time::Instant;
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn startup_descriptor_rejects_nonnumeric_negative_and_stdio_values() {
+        assert!(validate_startup_descriptor(OsStr::new("not-a-number")).is_err());
+        assert!(validate_startup_descriptor(OsStr::new("-1")).is_err());
+        assert!([0, 1, 2].into_iter().all(|descriptor| {
+            validate_startup_descriptor(OsStr::new(&descriptor.to_string())).is_err()
+        }));
+    }
+
+    #[test]
+    fn startup_descriptor_rejects_a_closed_positive_descriptor() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/startup-closed-descriptor");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let file = fs::File::create(&path).unwrap();
+        let descriptor = file.as_raw_fd();
+        drop(file);
+
+        let result = validate_startup_descriptor(OsStr::new(&descriptor.to_string()));
+        let _ = fs::remove_file(path);
+
+        assert!(result.is_err());
+    }
 
     fn fixture() -> (PathBuf, PathBuf, Arc<DaemonState>) {
         // ^ Unix-domain socket paths have a small platform limit; keep this fixture root short.
