@@ -100,6 +100,10 @@ fn default_terminal_escape_chord() -> String {
     "ctrl+a w".to_string()
 }
 
+fn default_terminal_prefix_shows_sidebar() -> bool {
+    true
+}
+
 fn default_resume_agents_on_restore() -> bool {
     true
 }
@@ -228,6 +232,8 @@ pub struct GlobalConfig {
     pub exclude_worktree_paths: Vec<String>,
     #[serde(default = "default_terminal_escape_chord")]
     pub terminal_escape_chord: String,
+    #[serde(default = "default_terminal_prefix_shows_sidebar")]
+    pub terminal_prefix_shows_sidebar: bool,
     #[serde(default = "default_resume_agents_on_restore")]
     pub resume_agents_on_restore: bool,
     #[serde(default = "default_wake_mode")]
@@ -255,6 +261,7 @@ impl Default for GlobalConfig {
             projects: vec![],
             exclude_worktree_paths: default_exclude_worktree_paths(),
             terminal_escape_chord: default_terminal_escape_chord(),
+            terminal_prefix_shows_sidebar: default_terminal_prefix_shows_sidebar(),
             resume_agents_on_restore: default_resume_agents_on_restore(),
             wake_mode: default_wake_mode(),
             auto_collapse: AutoCollapsePolicy::default(),
@@ -307,6 +314,8 @@ struct GlobalConfigWire {
     exclude_worktree_paths: Vec<String>,
     #[serde(default = "default_terminal_escape_chord")]
     terminal_escape_chord: String,
+    #[serde(default = "default_terminal_prefix_shows_sidebar")]
+    terminal_prefix_shows_sidebar: bool,
     #[serde(default = "default_resume_agents_on_restore")]
     resume_agents_on_restore: bool,
     #[serde(default = "default_wake_mode")]
@@ -412,6 +421,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
             projects,
             exclude_worktree_paths: wire.exclude_worktree_paths,
             terminal_escape_chord: wire.terminal_escape_chord,
+            terminal_prefix_shows_sidebar: wire.terminal_prefix_shows_sidebar,
             resume_agents_on_restore: wire.resume_agents_on_restore,
             wake_mode: wire.wake_mode,
             auto_collapse,
@@ -925,6 +935,7 @@ mod tests {
         let defaulted: GlobalConfig = toml::from_str("").unwrap();
         assert!(defaulted.show_release_status);
         assert!(defaulted.wake_mode);
+        assert!(defaulted.terminal_prefix_shows_sidebar);
         assert_eq!(defaulted.terminal_sidebar, TerminalSidebar::Compact);
         assert_eq!(
             defaulted.terminal_title_position,
@@ -939,11 +950,12 @@ mod tests {
         assert!(defaulted.port_visibility.shows_session(false));
 
         let configured: GlobalConfig = toml::from_str(
-            "show_release_status = false\nwake_mode = false\nterminal_sidebar = \"expanded\"\nterminal_title_position = \"top\"\nport_visibility = \"all\"\nattention_priority = \"workspace_order\"\n",
+            "show_release_status = false\nwake_mode = false\nterminal_prefix_shows_sidebar = false\nterminal_sidebar = \"expanded\"\nterminal_title_position = \"top\"\nport_visibility = \"all\"\nattention_priority = \"workspace_order\"\n",
         )
         .unwrap();
         assert!(!configured.show_release_status);
         assert!(!configured.wake_mode);
+        assert!(!configured.terminal_prefix_shows_sidebar);
         assert_eq!(configured.terminal_sidebar, TerminalSidebar::Expanded);
         assert_eq!(
             configured.terminal_title_position,

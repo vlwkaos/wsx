@@ -64,6 +64,7 @@ enum SettingField {
     PrefixModifier,
     PrefixKey,
     WorkspaceKey,
+    TerminalPrefixSidebar,
     TerminalSidebar,
     TerminalTitlePosition,
     ResumeAgents,
@@ -91,6 +92,7 @@ impl SettingField {
                 Self::PrefixModifier,
                 Self::PrefixKey,
                 Self::WorkspaceKey,
+                Self::TerminalPrefixSidebar,
                 Self::TerminalSidebar,
                 Self::TerminalTitlePosition,
             ],
@@ -110,6 +112,7 @@ impl SettingField {
             Self::PrefixModifier => "Prefix modifier",
             Self::PrefixKey => "Prefix key",
             Self::WorkspaceKey => "Workspace key",
+            Self::TerminalPrefixSidebar => "Prefix shows sidebar",
             Self::TerminalSidebar => "Terminal sidebar",
             Self::TerminalTitlePosition => "Terminal title",
             Self::ResumeAgents => "Resume agents",
@@ -130,6 +133,7 @@ impl SettingField {
             Self::PrefixModifier => "Modifier combination used by the terminal prefix.",
             Self::PrefixKey => "One key combined with the selected modifier, for example Ctrl+A.",
             Self::WorkspaceKey => "Key pressed after the prefix to focus Workspace. Reserved b, j, k, n, and q run Terminal commands.",
+            Self::TerminalPrefixSidebar => "Show the full Workspace tree only while Terminal waits for the key after the prefix.",
             Self::TerminalSidebar => "Use a two-column status rail or the full Workspace tree in Terminal mode.",
             Self::TerminalTitlePosition => "Place the terminal breadcrumb above or below terminal content in Workspace and Terminal modes.",
             Self::ResumeAgents => "Resume saved agent commands when wsxd starts again.",
@@ -441,6 +445,10 @@ impl GlobalSettingsForm {
                 self.draft.show_release_status = editor.selected == 0;
                 Ok(())
             }
+            (SettingField::TerminalPrefixSidebar, FieldEditor::Choice(editor)) => {
+                self.draft.terminal_prefix_shows_sidebar = editor.selected == 0;
+                Ok(())
+            }
             (SettingField::AttentionPriority, FieldEditor::Choice(editor)) => {
                 self.draft.attention_priority = if editor.selected == 0 {
                     AttentionPriority::BlockedFirst
@@ -536,6 +544,10 @@ impl GlobalSettingsForm {
                 ),
                 labels: vec!["Blocked first", "Workspace order"],
             }),
+            SettingField::TerminalPrefixSidebar => FieldEditor::Choice(ChoiceEditor {
+                selected: usize::from(!self.draft.terminal_prefix_shows_sidebar),
+                labels: vec!["On", "Off"],
+            }),
             SettingField::TerminalSidebar => FieldEditor::Choice(ChoiceEditor {
                 selected: usize::from(self.draft.terminal_sidebar == TerminalSidebar::Expanded),
                 labels: vec!["Compact", "Expanded"],
@@ -600,6 +612,10 @@ impl GlobalSettingsForm {
             None => match self.selected_field() {
                 SettingField::ShowRelease => {
                     self.draft.show_release_status = !self.draft.show_release_status
+                }
+                SettingField::TerminalPrefixSidebar => {
+                    self.draft.terminal_prefix_shows_sidebar =
+                        !self.draft.terminal_prefix_shows_sidebar
                 }
                 SettingField::ResumeAgents => {
                     self.draft.resume_agents_on_restore = !self.draft.resume_agents_on_restore
@@ -819,6 +835,9 @@ fn setting_value(form: &GlobalSettingsForm, field: SettingField) -> String {
         }
         SettingField::PrefixKey => current_escape_binding(&form.draft).prefix_key,
         SettingField::WorkspaceKey => current_escape_binding(&form.draft).workspace_key,
+        SettingField::TerminalPrefixSidebar => {
+            on_off(form.draft.terminal_prefix_shows_sidebar).into()
+        }
         SettingField::TerminalSidebar => match form.draft.terminal_sidebar {
             TerminalSidebar::Compact => "Compact".into(),
             TerminalSidebar::Expanded => "Expanded".into(),
@@ -1016,7 +1035,10 @@ fn settings_view(form: &GlobalSettingsForm, width: u16) -> SettingsViewModel {
         ];
         if matches!(
             field,
-            SettingField::ShowRelease | SettingField::ResumeAgents | SettingField::WakeMode
+            SettingField::ShowRelease
+                | SettingField::TerminalPrefixSidebar
+                | SettingField::ResumeAgents
+                | SettingField::WakeMode
         ) {
             hints.push(HintView::named("Space", "toggle"));
         }
@@ -1376,10 +1398,29 @@ mod tests {
     }
 
     #[test]
-    fn terminal_sidebar_choice_defaults_compact_and_commits_expanded() {
+    fn terminal_prefix_sidebar_defaults_on_and_can_be_disabled() {
         let mut form = GlobalSettingsForm::new(GlobalConfig::default());
         form.category = SettingsCategory::Terminal;
         form.field = 3;
+        assert_eq!(
+            setting_value(&form, SettingField::TerminalPrefixSidebar),
+            "On"
+        );
+
+        form.toggle();
+
+        assert!(!form.draft.terminal_prefix_shows_sidebar);
+        assert_eq!(
+            setting_value(&form, SettingField::TerminalPrefixSidebar),
+            "Off"
+        );
+    }
+
+    #[test]
+    fn terminal_sidebar_choice_defaults_compact_and_commits_expanded() {
+        let mut form = GlobalSettingsForm::new(GlobalConfig::default());
+        form.category = SettingsCategory::Terminal;
+        form.field = 4;
         assert_eq!(
             setting_value(&form, SettingField::TerminalSidebar),
             "Compact"
@@ -1400,7 +1441,7 @@ mod tests {
     fn terminal_title_choice_defaults_bottom_and_commits_top() {
         let mut form = GlobalSettingsForm::new(GlobalConfig::default());
         form.category = SettingsCategory::Terminal;
-        form.field = 4;
+        form.field = 5;
         assert_eq!(
             setting_value(&form, SettingField::TerminalTitlePosition),
             "Bottom"
