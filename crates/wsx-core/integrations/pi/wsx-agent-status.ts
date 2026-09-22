@@ -1,12 +1,13 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=15
+// WSX_INTEGRATION_VERSION=16
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 import path from "node:path";
 
 const REPORT_TIMEOUT_MS = 1_000;
+const REPORT_RETRY_DELAYS_MS = [100, 500, 2_000] as const;
 // ^ A later agent_settled handler may start an automatic continuation. Give its
-// agent_start event one turn to cancel this adapter's stale final report.
+// agent_start event one turn to invalidate this adapter's stale final report.
 const SETTLEMENT_DELAY_MS = 25;
 const BLOCKING_UI_METHODS = ["select", "confirm", "input", "custom", "editor"] as const;
 const paneId = process.env.WSX_PANE_ID;
@@ -16,15 +17,29 @@ const enabled = typeof paneId === "string" && /^[1-9][0-9]*$/.test(paneId);
 type ReportState = "idle" | "working" | "blocked" | "done";
 type SessionRef = { id?: string; path?: string };
 
+type PendingReport = {
+  state: ReportState;
+  sessionRef?: SessionRef;
+  attached: boolean;
+  retry: number;
+};
+
 let sendInFlight = false;
-let pending: { state: ReportState; sessionRef?: SessionRef; attached: boolean } | undefined;
+let pending: PendingReport | undefined;
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let drainWaiters: Array<() => void> = [];
 let agentActive = false;
 let blockedCount = 0;
 let lastRunAborted = false;
 let currentSessionRef: SessionRef | undefined;
+let agentRunGeneration = 0;
 let pendingSettlement: ReturnType<typeof setTimeout> | undefined;
 let heartbeat: ReturnType<typeof setInterval> | undefined;
+
+function clearReportRetry(): void {
+  if (retryTimer !== undefined) clearTimeout(retryTimer);
+  retryTimer = undefined;
+}
 
 function report(
   state: ReportState,
@@ -32,22 +47,24 @@ function report(
   attached = true,
 ): void {
   if (!enabled) return;
-  pending = { state, sessionRef, attached };
+  clearReportRetry();
+  pending = { state, sessionRef, attached, retry: 0 };
   drain();
 }
 
 function settleDrainWaiters(): void {
-  if (sendInFlight || pending) return;
+  if (sendInFlight || pending || retryTimer !== undefined) return;
   for (const resolve of drainWaiters.splice(0)) resolve();
 }
 
 function flushReports(): Promise<void> {
-  if (!sendInFlight && !pending) return Promise.resolve();
+  if (!sendInFlight && !pending && retryTimer === undefined) return Promise.resolve();
+  retryTimer?.ref?.();
   return new Promise((resolve) => drainWaiters.push(resolve));
 }
 
 function drain(): void {
-  if (sendInFlight || !pending || !paneId) {
+  if (sendInFlight || retryTimer !== undefined || !pending || !paneId) {
     settleDrainWaiters();
     return;
   }
@@ -58,8 +75,21 @@ function drain(): void {
   if (!next.attached) args.push("--detached");
   if (next.sessionRef?.path) args.push("--session-path", next.sessionRef.path);
   else if (next.sessionRef?.id) args.push("--session-id", next.sessionRef.id);
-  execFile(reportBin, args, { timeout: REPORT_TIMEOUT_MS, windowsHide: true }, () => {
+  execFile(reportBin, args, { timeout: REPORT_TIMEOUT_MS, windowsHide: true }, (error) => {
     sendInFlight = false;
+    if (error && !pending && next.retry < REPORT_RETRY_DELAYS_MS.length) {
+      const delay = REPORT_RETRY_DELAYS_MS[next.retry];
+      pending = { ...next, retry: next.retry + 1 };
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined;
+        drain();
+      }, delay);
+      if (drainWaiters.length === 0) retryTimer.unref?.();
+      return;
+    }
+    if (error && !pending) {
+      console.warn(`wsx: failed to report Pi agent state ${next.state}: ${error.message}`);
+    }
     drain();
   });
 }
@@ -172,6 +202,7 @@ export default function wsxAgentStatus(pi: ExtensionAPI): void {
   });
   pi.on("agent_start", (_event, ctx) => {
     clearPendingSettlement();
+    agentRunGeneration += 1;
     currentSessionRef = sessionRef(ctx);
     agentActive = true;
     lastRunAborted = false;
@@ -185,15 +216,12 @@ export default function wsxAgentStatus(pi: ExtensionAPI): void {
   pi.on("agent_settled", (_event, ctx) => {
     currentSessionRef = sessionRef(ctx);
     const settledSessionRef = currentSessionRef;
+    const settledRunGeneration = agentRunGeneration;
     const settledRunAborted = lastRunAborted;
     clearPendingSettlement();
     pendingSettlement = setTimeout(() => {
       pendingSettlement = undefined;
-      if (ctx.isIdle() === false) {
-        agentActive = true;
-        publish();
-        return;
-      }
+      if (agentRunGeneration !== settledRunGeneration) return;
       agentActive = false;
       blockedCount = 0;
       report(settledRunAborted ? "idle" : "done", settledSessionRef);

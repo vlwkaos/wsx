@@ -1,6 +1,37 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+
+const workDir = path.resolve(`.work/pi-agent-status-test-${process.pid}`);
+const reportBin = path.join(workDir, "fake-wsx.mjs");
+const reportLog = path.join(workDir, "reports.jsonl");
+const failureCount = path.join(workDir, "failures");
+fs.mkdirSync(workDir, { recursive: true });
+fs.writeFileSync(
+  reportBin,
+  `#!/usr/bin/env node
+import fs from "node:fs";
+const log = process.env.WSX_TEST_REPORT_LOG;
+const failureFile = process.env.WSX_TEST_FAILURE_COUNT;
+let failures = 0;
+try { failures = Number(fs.readFileSync(failureFile, "utf8")); } catch {}
+if (failures > 0) {
+  fs.writeFileSync(failureFile, String(failures - 1));
+  process.exit(1);
+}
+fs.appendFileSync(log, JSON.stringify(process.argv.slice(2)) + "\\n");
+`,
+);
+fs.chmodSync(reportBin, 0o755);
+process.env.WSX_PANE_ID = "982";
+process.env.WSX_AGENT_REPORT_BIN = reportBin;
+process.env.WSX_TEST_REPORT_LOG = reportLog;
+process.env.WSX_TEST_FAILURE_COUNT = failureCount;
+
 const source = new URL("../crates/wsx-core/integrations/pi/wsx-agent-status.ts", import.meta.url);
-const { observeBlockingUi } = await import(`${source.href}?test=${Date.now()}`);
+const { default: wsxAgentStatus, observeBlockingUi } = await import(
+  `${source.href}?test=${Date.now()}`
+);
 
 const deferred = () => {
   let resolve;
@@ -56,4 +87,106 @@ assert.deepEqual(pendingDeltas, [1]);
 restore();
 for (const method of Object.keys(originals)) assert.equal(ui[method], originals[method]);
 assert.equal(typeof ui.notify, "function");
-console.log("Pi agent status UI lifecycle passed");
+
+const handlers = new Map();
+const pi = {
+  on(name, handler) {
+    const registered = handlers.get(name) ?? [];
+    registered.push(handler);
+    handlers.set(name, registered);
+  },
+  events: { on() {} },
+};
+const emit = async (name, ...args) => {
+  for (const handler of handlers.get(name) ?? []) await handler(...args);
+};
+const states = () => {
+  let lines;
+  try {
+    lines = fs.readFileSync(reportLog, "utf8").trim().split("\n").filter(Boolean);
+  } catch {
+    return [];
+  }
+  return lines.map((line) => {
+    const args = JSON.parse(line);
+    return args[args.indexOf("--state") + 1];
+  });
+};
+const waitFor = async (predicate, message, timeoutMs = 2_000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`${message}: ${JSON.stringify(states())}`);
+};
+
+let idle = true;
+const ctx = {
+  hasUI: false,
+  isIdle: () => idle,
+  sessionManager: {
+    getSessionFile: () => path.join(workDir, "session.jsonl"),
+    getSessionId: () => "session-id",
+  },
+};
+const assistantEnd = (stopReason = "stop") => ({
+  messages: [{ role: "assistant", stopReason }],
+});
+
+wsxAgentStatus(pi);
+let shutdownComplete = false;
+try {
+  await emit("session_start", {}, ctx);
+  await waitFor(() => states().at(-1) === "idle", "session start should report idle");
+
+  await emit("agent_start", {}, ctx);
+  await waitFor(() => states().at(-1) === "working", "agent start should report working");
+  await emit("agent_end", assistantEnd(), ctx);
+  idle = false;
+  await emit("agent_settled", {}, ctx);
+  await waitFor(
+    () => states().at(-1) === "done",
+    "post-settlement maintenance must not retain working",
+  );
+
+  idle = true;
+  const continuationStart = states().length;
+  await emit("agent_start", {}, ctx);
+  await waitFor(
+    () => states().slice(continuationStart).includes("working"),
+    "continuation setup should report working",
+  );
+  await emit("agent_end", assistantEnd(), ctx);
+  await emit("agent_settled", {}, ctx);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await emit("agent_start", {}, ctx);
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  const continuationStates = states().slice(continuationStart);
+  assert.equal(continuationStates.at(-1), "working");
+  assert.equal(continuationStates.includes("done"), false);
+
+  fs.writeFileSync(failureCount, "1");
+  const retryStart = states().length;
+  await emit("agent_end", assistantEnd(), ctx);
+  await emit("agent_settled", {}, ctx);
+  await waitFor(
+    () => states().slice(retryStart).includes("done"),
+    "a transient report failure should retry the latest Done state",
+  );
+
+  fs.writeFileSync(failureCount, "1");
+  idle = true;
+  await emit("session_shutdown", {}, ctx);
+  shutdownComplete = true;
+  assert.equal(states().at(-1), "idle");
+} finally {
+  if (!shutdownComplete) {
+    fs.writeFileSync(failureCount, "0");
+    idle = true;
+    await emit("session_shutdown", {}, ctx);
+  }
+  fs.rmSync(workDir, { recursive: true, force: true });
+}
+
+console.log("Pi agent status lifecycle passed");

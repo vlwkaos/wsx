@@ -419,7 +419,16 @@ mod tests {
         );
         assert!(pi.contains("restoreBlockingUi?.();"));
         assert!(pi.contains("clearPendingSettlement();"));
-        assert!(pi.contains("ctx.isIdle() === false"));
+        assert!(pi.contains("agentRunGeneration !== settledRunGeneration"));
+        let settled_handler = pi
+            .split_once("pi.on(\"agent_settled\"")
+            .unwrap()
+            .1
+            .split_once("pi.on(\"session_shutdown\"")
+            .unwrap()
+            .0;
+        assert!(!settled_handler.contains("ctx.isIdle() === false"));
+        assert!(pi.contains("REPORT_RETRY_DELAYS_MS"));
         assert!(pi.contains("report(settledRunAborted ? \"idle\" : \"done\", settledSessionRef)"));
         assert!(pi.contains("stopReason === \"aborted\""));
         assert!(pi.contains("pi.on(\"session_shutdown\""));
