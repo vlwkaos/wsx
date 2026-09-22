@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-09-22
+
 ### Features
 
 - Reorder worktrees within a project with the existing `m` then `j/k` Workspace flow. The order persists by stable worktree path across refreshes and restarts, while newly discovered worktrees remain visible.
@@ -15,6 +17,7 @@
 
 ### Maintenance
 
+- Prepare the 0.28.0 workspace versions and exact internal dependency pins for tag-driven publication.
 - Keep vendored scheduler startup-descriptor contract tests with the `asched-core` validator they cover so the excluded scheduler suite compiles and runs in release validation.
 
 ## [0.27.0] - 2026-09-21

@@ -19,5 +19,5 @@ libc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 asched-core = { workspace = true }
-wsx-core = { path = "../wsx-core", version = "=0.27.0" }
-wsx-terminal = { path = "../wsx-terminal", version = "=0.27.0" }
+wsx-core = { path = "../wsx-core", version = "=0.28.0" }
+wsx-terminal = { path = "../wsx-terminal", version = "=0.28.0" }
