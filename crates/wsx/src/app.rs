@@ -1494,6 +1494,8 @@ impl App {
             };
             let terminal_prefix_was_pending =
                 event_mode == EventMode::Terminal && self.terminal_escape_chord.is_pending();
+            let terminal_sidebar_before =
+                (event_mode == EventMode::Terminal).then(|| self.effective_terminal_sidebar());
             let action = poll_event(
                 Duration::from_millis(
                     if event_mode == EventMode::Terminal || self.pending_terminal_entry.is_some() {
@@ -1505,11 +1507,7 @@ impl App {
                 event_mode,
                 &mut self.terminal_escape_chord,
             )?;
-            if terminal_prefix_was_pending
-                != (event_mode == EventMode::Terminal && self.terminal_escape_chord.is_pending())
-            {
-                self.needs_redraw = true;
-            }
+            let mut terminal_sidebar_action = false;
             if let Some(action) = action {
                 if action == Action::Quit && matches!(self.mode, Mode::Workspace) {
                     break;
@@ -1517,12 +1515,22 @@ impl App {
                 if action != Action::None && action_needs_immediate_redraw(&action) {
                     self.needs_redraw = true;
                 }
+                terminal_sidebar_action = action == Action::ToggleTerminalSidebar;
                 if let Err(e) = self.dispatch(action, terminal) {
                     self.set_error(format!("Action failed: {e}"));
                 }
-                if self.should_quit {
-                    break;
-                }
+            }
+            if terminal_prefix_was_pending
+                != (matches!(self.mode, Mode::Terminal { .. })
+                    && self.terminal_escape_chord.is_pending())
+            {
+                self.needs_redraw = true;
+            }
+            if !terminal_sidebar_action {
+                self.sync_terminal_sidebar_geometry(terminal_sidebar_before, terminal);
+            }
+            if self.should_quit {
+                break;
             }
             if let Err(e) = self.tick() {
                 self.set_error(format!("Background update failed: {e}"));
@@ -2965,9 +2973,48 @@ impl App {
             .map(|label| format!("({label})sidebar"))
     }
 
-    pub(crate) fn effective_terminal_sidebar(&self) -> TerminalSidebar {
+    fn terminal_sidebar_baseline(&self) -> TerminalSidebar {
         self.terminal_sidebar_override
             .unwrap_or(self.config.terminal_sidebar)
+    }
+
+    pub(crate) fn effective_terminal_sidebar(&self) -> TerminalSidebar {
+        let baseline = self.terminal_sidebar_baseline();
+        if !self.is_mobile
+            && self.config.terminal_prefix_shows_sidebar
+            && self.terminal_prefix_pending()
+            && baseline == TerminalSidebar::Compact
+        {
+            TerminalSidebar::Expanded
+        } else {
+            baseline
+        }
+    }
+
+    fn sync_terminal_sidebar_geometry(
+        &mut self,
+        previous: Option<TerminalSidebar>,
+        terminal: &Tui,
+    ) {
+        let current =
+            matches!(self.mode, Mode::Terminal { .. }).then(|| self.effective_terminal_sidebar());
+        let (Some(previous), Some(current)) = (previous, current) else {
+            return;
+        };
+        if previous == current {
+            return;
+        }
+        let pane_id = match &self.mode {
+            Mode::Terminal { pane_id } => *pane_id,
+            _ => return,
+        };
+        if self.pending_terminal_entry.is_some() {
+            self.resize_pending_terminal_entry(terminal);
+        } else {
+            self.resize_terminal_pane(pane_id, terminal);
+        }
+        self.force_terminal_redraw = true;
+        self.needs_redraw = true;
     }
 
     pub fn current_selection(&self) -> Selection {
@@ -3452,7 +3499,7 @@ impl App {
                 }
             }
             Action::ToggleTerminalSidebar if !self.is_mobile => {
-                self.terminal_sidebar_override = Some(match self.effective_terminal_sidebar() {
+                self.terminal_sidebar_override = Some(match self.terminal_sidebar_baseline() {
                     TerminalSidebar::Compact => TerminalSidebar::Expanded,
                     TerminalSidebar::Expanded => TerminalSidebar::Compact,
                 });
@@ -6954,11 +7001,21 @@ mod tests {
                     test_terminal_frame(pane_id, terminal_id, 1, rows, cols),
                 )),
             );
-            let expanded = read_terminal_client_message(&mut reader);
-            let compact = read_terminal_client_message(&mut reader);
+            let prefix_expanded = read_terminal_client_message(&mut reader);
+            let prefix_compact = read_terminal_client_message(&mut reader);
+            let command_prefix_expanded = read_terminal_client_message(&mut reader);
+            let toggled_expanded = read_terminal_client_message(&mut reader);
+            let toggled_compact = read_terminal_client_message(&mut reader);
             drop(listener);
             let _ = std::fs::remove_file(server_path);
-            ((rows, cols), expanded, compact)
+            (
+                (rows, cols),
+                prefix_expanded,
+                prefix_compact,
+                command_prefix_expanded,
+                toggled_expanded,
+                toggled_compact,
+            )
         });
         let backend = ratatui::backend::CrosstermBackend::new(std::io::stdout());
         let mut terminal = ratatui::Terminal::with_options(
@@ -6978,30 +7035,149 @@ mod tests {
         }
         assert!(matches!(app.mode, Mode::Terminal { .. }));
 
+        let prefix = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('a'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        let unknown_suffix = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let compact_before_prefix = Some(app.effective_terminal_sidebar());
+        assert_eq!(
+            app.terminal_escape_chord.terminal_key(prefix),
+            crate::event::TerminalEscapeAction::Pending
+        );
+        app.sync_terminal_sidebar_geometry(compact_before_prefix, &terminal);
+        assert_eq!(app.effective_terminal_sidebar(), TerminalSidebar::Expanded);
+        let expanded_before_suffix = Some(app.effective_terminal_sidebar());
+        assert!(matches!(
+            app.terminal_escape_chord.terminal_key(unknown_suffix),
+            crate::event::TerminalEscapeAction::Forward(_)
+        ));
+        app.sync_terminal_sidebar_geometry(expanded_before_suffix, &terminal);
+        assert_eq!(app.effective_terminal_sidebar(), TerminalSidebar::Compact);
+
+        let compact_before_command = Some(app.effective_terminal_sidebar());
+        assert_eq!(
+            app.terminal_escape_chord.terminal_key(prefix),
+            crate::event::TerminalEscapeAction::Pending
+        );
+        app.sync_terminal_sidebar_geometry(compact_before_command, &terminal);
+        let toggle = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('b'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert_eq!(
+            app.terminal_escape_chord.terminal_key(toggle),
+            crate::event::TerminalEscapeAction::ToggleSidebar
+        );
         app.dispatch(Action::ToggleTerminalSidebar, &mut terminal)
             .unwrap();
         assert_eq!(app.effective_terminal_sidebar(), TerminalSidebar::Expanded);
+
+        assert_eq!(
+            app.terminal_escape_chord.terminal_key(prefix),
+            crate::event::TerminalEscapeAction::Pending
+        );
+        assert_eq!(app.effective_terminal_sidebar(), TerminalSidebar::Expanded);
+        assert_eq!(
+            app.terminal_escape_chord.terminal_key(toggle),
+            crate::event::TerminalEscapeAction::ToggleSidebar
+        );
         app.dispatch(Action::ToggleTerminalSidebar, &mut terminal)
             .unwrap();
         assert_eq!(app.effective_terminal_sidebar(), TerminalSidebar::Compact);
         assert_eq!(app.config.terminal_sidebar, TerminalSidebar::Compact);
 
-        let (initial, expanded, compact) = server.join().unwrap();
+        let (
+            initial,
+            prefix_expanded,
+            prefix_compact,
+            command_prefix_expanded,
+            toggled_expanded,
+            toggled_compact,
+        ) = server.join().unwrap();
         app.terminal_stream = None;
-        assert_eq!(
-            expanded,
-            runtime::TerminalClientMessage::Resize {
-                rows: initial.0,
-                cols: initial.1.saturating_sub(30),
-            }
+        let expanded_resize = runtime::TerminalClientMessage::Resize {
+            rows: initial.0,
+            cols: initial.1.saturating_sub(30),
+        };
+        let compact_resize = runtime::TerminalClientMessage::Resize {
+            rows: initial.0,
+            cols: initial.1,
+        };
+        assert_eq!(prefix_expanded, expanded_resize);
+        assert_eq!(prefix_compact, compact_resize);
+        assert_eq!(command_prefix_expanded, expanded_resize);
+        assert_eq!(toggled_expanded, expanded_resize);
+        assert_eq!(toggled_compact, compact_resize);
+    }
+
+    #[test]
+    fn prefix_sidebar_projection_respects_config_baseline_and_mobile_mode() {
+        let prefix = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('a'),
+            crossterm::event::KeyModifiers::CONTROL,
         );
-        assert_eq!(
-            compact,
-            runtime::TerminalClientMessage::Resize {
-                rows: initial.0,
-                cols: initial.1,
-            }
-        );
+
+        for (enabled, baseline, mobile, expected) in [
+            (
+                true,
+                TerminalSidebar::Compact,
+                false,
+                TerminalSidebar::Expanded,
+            ),
+            (
+                false,
+                TerminalSidebar::Compact,
+                false,
+                TerminalSidebar::Compact,
+            ),
+            (
+                true,
+                TerminalSidebar::Expanded,
+                false,
+                TerminalSidebar::Expanded,
+            ),
+            (
+                true,
+                TerminalSidebar::Compact,
+                true,
+                TerminalSidebar::Compact,
+            ),
+        ] {
+            let mut app = make_test_app(
+                GlobalConfig {
+                    terminal_prefix_shows_sidebar: enabled,
+                    terminal_sidebar: baseline,
+                    ..GlobalConfig::default()
+                },
+                WorkspaceState::empty(),
+                None,
+            );
+            app.mode = Mode::Terminal {
+                pane_id: runtime::PaneId(1),
+            };
+            app.is_mobile = mobile;
+
+            assert_eq!(
+                app.terminal_escape_chord.terminal_key(prefix),
+                crate::event::TerminalEscapeAction::Pending
+            );
+            assert!(matches!(app.mode, Mode::Terminal { .. }));
+            assert_eq!(app.effective_terminal_sidebar(), expected);
+
+            assert_eq!(
+                app.terminal_escape_chord
+                    .terminal_key(crossterm::event::KeyEvent::new(
+                        crossterm::event::KeyCode::Esc,
+                        crossterm::event::KeyModifiers::NONE,
+                    )),
+                crate::event::TerminalEscapeAction::Cancel
+            );
+            assert_eq!(app.effective_terminal_sidebar(), baseline);
+        }
     }
 
     #[test]
@@ -8787,6 +8963,7 @@ mod tests {
             crate::ui::theme::TEXT_MUTED
         );
 
+        app.config.terminal_sidebar = TerminalSidebar::Compact;
         let _ = app
             .terminal_escape_chord
             .terminal_key(crossterm::event::KeyEvent::new(
@@ -8813,6 +8990,8 @@ mod tests {
         terminal
             .draw(|frame| crate::ui::render(frame, &mut app))
             .unwrap();
+        assert_eq!(app.tree_area.width, 32);
+        assert_eq!(app.preview_area.x, 32);
         let prefix_footer = (0..100)
             .map(|x| terminal.backend().buffer()[(x, 15)].symbol())
             .collect::<String>();
@@ -8827,6 +9006,21 @@ mod tests {
             terminal.backend().buffer()[(11, 15)].fg,
             crate::ui::theme::ACCENT
         );
+
+        assert_eq!(
+            app.terminal_escape_chord
+                .terminal_key(crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Esc,
+                    crossterm::event::KeyModifiers::NONE,
+                )),
+            crate::event::TerminalEscapeAction::Cancel
+        );
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.tree_area.width, 2);
+        assert_eq!(app.preview_area.x, 2);
+        assert!(matches!(app.mode, Mode::Terminal { .. }));
     }
 
     #[test]
