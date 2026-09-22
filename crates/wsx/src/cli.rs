@@ -114,6 +114,8 @@ pub enum AgentCmd {
         #[arg(value_parser = parse_integration_target)]
         integration: wsx_core::integration::IntegrationTarget,
     },
+    /// Mark the current managed pane's retained agent as detached
+    Detach,
     /// Submit an authoritative provider report for one pane
     Report {
         pane: String,
@@ -562,6 +564,7 @@ pub fn run(cmd: Command) -> Result<()> {
         },
         Command::Agent { subcommand } => match subcommand {
             AgentCmd::Install { integration } => cmd_agent_install(integration),
+            AgentCmd::Detach => cmd_agent_detach(),
             AgentCmd::Report {
                 pane,
                 provider,
@@ -1374,6 +1377,18 @@ mod agent_command_tests {
     }
 
     #[test]
+    fn detach_targets_only_the_current_managed_pane() {
+        let args = Args::try_parse_from(["wsx", "agent", "detach"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Agent {
+                subcommand: AgentCmd::Detach
+            })
+        ));
+        assert!(Args::try_parse_from(["wsx", "agent", "detach", "7"]).is_err());
+    }
+
+    #[test]
     fn report_accepts_explicit_detach_and_defaults_to_attached() {
         for (extra, expected) in [(&[][..], false), (&["--detached"][..], true)] {
             let argv = [
@@ -1898,6 +1913,58 @@ fn cmd_agent_install(integration: wsx_core::integration::IntegrationTarget) -> R
         println!("  {}", path.display());
     }
     Ok(())
+}
+
+fn cmd_agent_detach() -> Result<()> {
+    let pane_id = std::env::var(runtime::WSX_PANE_ID_ENV)
+        .context("agent detach must run inside the managed pane that should be detached")?
+        .parse::<u64>()
+        .context("managed pane ID is invalid")?;
+    let runtime_generation = std::env::var(runtime::WSX_RUNTIME_GENERATION_ENV)
+        .context("agent detach requires the current managed runtime generation")?;
+    let pane_id = runtime::PaneId(pane_id);
+    let client = runtime::Client::local();
+    let snapshot = match client.call(&runtime::Request::Snapshot)? {
+        runtime::Response::Snapshot(snapshot) => snapshot,
+        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
+        _ => bail!("wsxd returned an unexpected snapshot response"),
+    };
+    let pane = snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.id == pane_id)
+        .ok_or_else(|| anyhow::anyhow!("managed pane {pane_id} is not present"))?;
+    let agent = pane
+        .agent
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("managed pane {pane_id} has no retained agent identity"))?;
+    if !agent.attached {
+        println!(
+            "{} agent on pane {pane_id} is already detached",
+            agent.provider
+        );
+        return Ok(());
+    }
+
+    println!("detaching {} agent from pane {pane_id}", agent.provider);
+    match client.call(&runtime::Request::AgentReport {
+        pane_id,
+        runtime_generation: Some(runtime_generation),
+        provider: agent.provider.clone(),
+        state: runtime::AgentState::Unknown,
+        attached: false,
+        conversation_id: None,
+        session_ref: None,
+        wake_token: None,
+        capabilities: runtime::AgentCapabilities::default(),
+    })? {
+        runtime::Response::Ack { revision } => {
+            println!("detached agent at revision {revision}");
+            Ok(())
+        }
+        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
+        _ => bail!("wsxd returned an unexpected agent response"),
+    }
 }
 
 struct AgentReportOptions {

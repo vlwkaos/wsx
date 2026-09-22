@@ -23,7 +23,7 @@ pub const ROUTINE_DAEMON_ARG: &str = "__wsx_routine_daemon";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ^ Exited-pane restart and prompt-bound wake renewal are daemon-owned runtime behavior.
 // Bump only when daemon-owned runtime behavior changes. UI-only releases reuse wsxd.
-pub const DAEMON_REVISION: u32 = 13;
+pub const DAEMON_REVISION: u32 = 14;
 
 fn default_attached() -> bool {
     true

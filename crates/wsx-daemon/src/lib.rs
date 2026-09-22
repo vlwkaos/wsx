@@ -5092,6 +5092,10 @@ fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
     state.revision = state.revision.saturating_add(1);
     let revision = state.revision;
     pane.exited = true;
+    if let Some(agent) = pane.agent.as_mut() {
+        agent.attached = false;
+        agent.state = AgentState::Unknown;
+    }
     pane.revision = revision;
     terminate_agent_exchanges(
         &mut state.persisted,
@@ -7685,9 +7689,30 @@ mod tests {
         fs::create_dir(&path).unwrap();
         {
             let mut state = lock(&daemon.state);
+            state.persisted.next_id = 7;
             state.persisted.panes[0].exited = false;
+            state.persisted.panes[0].agent = Some(AgentInfo {
+                id: AgentInstanceId(6),
+                provider: "claude".into(),
+                state: AgentState::Working,
+                attached: true,
+                conversation_id: Some("/absolute/retained-conversation".into()),
+                session_ref: Some(
+                    AgentSessionRef::path("/absolute/retained-conversation").unwrap(),
+                ),
+                capabilities: claude_capabilities(),
+                source: "test".into(),
+            });
             record_terminal_exit(&daemon, &mut state, PaneId(4));
-            assert!(state.persisted.panes[0].exited);
+            let pane = &state.persisted.panes[0];
+            assert!(pane.exited);
+            let agent = pane.agent.as_ref().unwrap();
+            assert!(!agent.attached);
+            assert_eq!(agent.state, AgentState::Unknown);
+            assert_eq!(
+                agent.conversation_id.as_deref(),
+                Some("/absolute/retained-conversation")
+            );
             assert!(state.persistence_dirty);
         }
         fs::remove_dir(&path).unwrap();
