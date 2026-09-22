@@ -75,7 +75,7 @@ Installer는 관련 없는 hook을 보존하고 표준 config-directory override
 | Group | `T` 관리, `{`/`}` 전환, `g` 지정 |
 | Global | `/` 검색, `,` settings, `R` 새로고침, `?` 도움말, `q` TUI 종료, `Q` wsxd 종료 후 나가기 |
 
-Terminal mode는 기본 `Ctrl+A` prefix를 사용합니다. 이어서 `j/k`는 인접 session, `{`/`}`는 이전 또는 다음 group, `i/I`는 idle, `a/A`는 active, `n/N`은 attention session으로 이동합니다. Attention 이동은 기본적으로 다른 attention 상태보다 Blocked session을 먼저 선택하며 Global Settings에서 Workspace 순서로 되돌릴 수 있습니다. Group 이동은 Workspace 순서를 유지하며 먼저 확인이 필요한 session을 선택하고, 없으면 첫 idle agent session을 선택합니다. 둘 다 없으면 현재 terminal을 유지합니다. `B`는 desktop sidebar 전환, `W`는 Workspace, `Q`는 TUI만 종료합니다. `Ctrl+A Ctrl+A`는 literal prefix를 보냅니다.
+Terminal mode는 기본 `Ctrl+A` prefix를 사용합니다. 이어서 `j/k`는 인접 session, `{`/`}`는 이전 또는 다음 group, `i/I`는 idle, `a/A`는 active, `n/N`은 attention session으로 이동합니다. wsx가 prefix 다음 key를 기다리는 동안에는 Terminal mode를 유지한 채 expanded sidebar를 임시로 표시할 수 있습니다. Attention 이동은 기본적으로 다른 attention 상태보다 Blocked session을 먼저 선택하며 Global Settings에서 Workspace 순서로 되돌릴 수 있습니다. Group 이동은 Workspace 순서를 유지하며 먼저 확인이 필요한 session을 선택하고, 없으면 첫 idle agent session을 선택합니다. 둘 다 없으면 현재 terminal을 유지합니다. `B`는 desktop sidebar 전환, `W`는 Workspace, `Q`는 TUI만 종료합니다. `Ctrl+A Ctrl+A`는 literal prefix를 보냅니다.
 
 Group은 순서가 있는 project filter입니다. 기본 **ungrouped** anti-group은 membership이 없는 project를 표시합니다. Trusted agent 작업, terminal 활동, session 진입, expand 또는 collapse 변경은 project의 비활성 window를 갱신합니다. 기본 adaptive policy는 24시간으로 시작하고, 새로운 UTC 날짜의 첫 trusted activity마다 12시간을 더해 최대 28일까지 늘어납니다. 활동이 확보한 window를 넘게 중단되면 다음 active period는 설정된 base부터 다시 시작합니다. Timer가 열린 project를 자동으로 접으면 wsx는 마지막 collapse 원인을 나타내기 위해 project를 `stale`로 표시합니다. 이 표시는 재시작 뒤에도 유지되지만 project와 직접 상호작용하면 즉시 사라집니다. wsx는 process tree로 agent identity나 상태를 추론하지 않습니다. Adapter가 Claude session임을 확인한 경우에만 제한된 live terminal evidence로 누락된 lifecycle event를 보정할 수 있습니다.
 
@@ -85,6 +85,7 @@ Group은 순서가 있는 project filter입니다. 기본 **ungrouped** anti-gro
 
 ```toml
 terminal_escape_chord = "ctrl+a w"
+terminal_prefix_shows_sidebar = true
 resume_agents_on_restore = true
 wake_mode = true
 auto_collapse = { mode = "adaptive", base_hours = 24 }
@@ -132,6 +133,7 @@ wsx session create|delete|restart|list|send-keys|send-text|prompt|peek|rename
 wsx group ls|create|rename|add|remove
 wsx routine ...
 wsx agent install <target>
+wsx agent detach
 wsx agent request|inspect|wait|continue|cancel|exchanges
 wsx agent report <pane> --provider <name> --state <state> [--session-id <id>|--session-path <path>]
 wsx plugin list|reload
@@ -152,7 +154,9 @@ wsx session restart <session|pane|label> [--json]
 
 Session input, prompt, peek, rename, restart 명령에도 `-p`와 `-w` scope를 선택적으로 지정할 수 있습니다. 정확한 session ID와 pane ID는 project scope 없이 바로 사용할 수 있습니다. Project와 worktree 안에서 유일한 label을 지정하면 사전에 목록을 조회하지 않아도 되며, 대상이 모호하면 실행하지 않고 오류를 반환합니다. `--command`는 새 shell이 시작된 뒤 입력할 text이며 direct argv 실행이 아닙니다.
 
-Ctrl+C나 agent crash로 pane process가 종료되어도 session은 저장된 명령과 함께 남습니다. `wsx session restart`는 정확히 그 종료된 pane 하나를 저장된 명령 또는 보존된 native agent session으로 다시 시작하며, 새 runtime generation으로 session이 다시 사용 가능해집니다. 아직 실행 중인 pane, 오래된 revision, 종료 또는 runtime 교체 중인 daemon, session 복원이 진행 중인 daemon, 사라진 worktree는 거부합니다. 시작에 실패하면 pane은 종료 상태로 남고 상태는 바뀌지 않습니다.
+Ctrl+C나 agent crash로 pane process가 종료되어도 session은 저장된 명령과 함께 남습니다. `wsx session restart`는 정확히 그 종료된 pane 하나를 저장된 명령 또는 보존된 native agent session으로 다시 시작하며, 새 runtime generation으로 session이 다시 사용 가능해집니다. 아직 실행 중인 pane, 오래된 revision, 종료 또는 runtime 교체 중인 daemon, session 복원이 진행 중인 daemon, 사라진 worktree는 거부합니다. 시작에 실패하면 pane은 종료 상태로 남고 상태는 바뀌지 않습니다. Pane이 종료되면 보존된 agent identity도 즉시 detached 상태가 되므로 Workspace에서 live provider처럼 표시되지 않습니다.
+
+Agent가 shutdown event를 전달하지 못한 채 managed shell로 돌아온 경우에는 해당 pane 안에서 `wsx agent detach`를 실행합니다. 이 명령은 pane의 runtime generation을 사용하고 resume 가능한 identity는 보존하면서 live provider 표시만 제거합니다. Process 또는 terminal heuristic으로 추측하지 않으며 대상 managed pane 밖에서는 실행을 거부합니다.
 
 `wsx agent request <session> <prompt>`는 명시한 prompt-capable agent에 provider-neutral하고 runtime generation에 묶인 exchange를 시작합니다. 반환된 exchange ID로 `inspect`, `wait`, `continue`, `cancel`을 실행하고 `exchanges`로 보존된 receipt를 조회합니다. 저장된 intent와 실패한 delivery는 `intent_persisted`, 성공한 universal delivery는 `pty_delivery`, lifecycle 전이는 `pane_lifecycle`로 표시합니다. `--frame`은 structured assistant output이라고 주장하지 않고 bounded `terminal_frame` fallback을 반환합니다. Read-only exchange는 서로 다른 pane에서 병렬 실행할 수 있습니다. `--writer`는 기본으로 대상 worktree 전체를 claim하고, 반복 가능한 `--write-claim <absolute-path>`로 범위를 좁힙니다. 겹치는 active writer claim은 거부합니다. 이 claim은 협력 scheduling만 조정하며 repository permission을 부여하거나 회수하지 않습니다. Exchange는 live Terminal lease를 빼앗지 않습니다. Native adapter는 `exchange_receipts` capability를 알리고 generation과 round에 묶인 `accepted` 또는 `completed` receipt를 `request_bound` evidence로 제출할 수 있습니다. Pygmalion은 이후 Pi에서 이를 최적화할 수 있지만 이 contract의 필수 조건은 아닙니다.
 

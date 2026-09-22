@@ -75,7 +75,7 @@ Installers preserve unrelated hooks and honor standard config-directory override
 | Groups | `T` manage, `{`/`}` switch, `g` assign |
 | Global | `/` search, `,` settings, `R` refresh, `?` help, `q` quit TUI, `Q` stop wsxd and quit |
 
-Terminal mode uses the configured prefix, `Ctrl+A` by default. Follow it with `j/k` for adjacent sessions, `{`/`}` for the previous or next group, `i/I` for idle, `a/A` for active, `n/N` for attention, `B` to toggle the desktop sidebar, `W` for Workspace, or `Q` to quit only the TUI. Attention navigation defaults to Blocked sessions before other attention states and can restore Workspace order in Global Settings. Group navigation keeps Workspace order, selecting the first session needing attention and then the first idle agent session; if neither exists, the current terminal stays active. `Ctrl+A Ctrl+A` sends a literal prefix.
+Terminal mode uses the configured prefix, `Ctrl+A` by default. Follow it with `j/k` for adjacent sessions, `{`/`}` for the previous or next group, `i/I` for idle, `a/A` for active, `n/N` for attention, `B` to toggle the desktop sidebar, `W` for Workspace, or `Q` to quit only the TUI. While wsx waits for the next key after the prefix, it can temporarily show the expanded sidebar without leaving Terminal mode. Attention navigation defaults to Blocked sessions before other attention states and can restore Workspace order in Global Settings. Group navigation keeps Workspace order, selecting the first session needing attention and then the first idle agent session; if neither exists, the current terminal stays active. `Ctrl+A Ctrl+A` sends a literal prefix.
 
 Groups are ordered project filters. The default **ungrouped** anti-group matches projects with no memberships. Trusted agent work, terminal activity, session entry, and expansion changes update each project's inactivity window. The default adaptive policy starts at 24 hours, adds 12 hours on the first trusted activity of each new UTC day, and stops growing at 28 days. If inactivity exceeds the earned window, the next active period starts again at the configured base. When the timer auto-collapses an open project, wsx marks the project `stale` as the cause of its last collapse. The marker survives restart but clears as soon as you interact with the project. wsx never infers agent identity or state from process trees. For an adapter-identified Claude session only, bounded live terminal evidence may reconcile incomplete lifecycle events.
 
@@ -85,6 +85,7 @@ Open typed Global Settings with `,`. The platform configuration file is `~/.conf
 
 ```toml
 terminal_escape_chord = "ctrl+a w"
+terminal_prefix_shows_sidebar = true
 resume_agents_on_restore = true
 wake_mode = true
 auto_collapse = { mode = "adaptive", base_hours = 24 }
@@ -132,6 +133,7 @@ wsx session create|delete|restart|list|send-keys|send-text|prompt|peek|rename
 wsx group ls|create|rename|add|remove
 wsx routine ...
 wsx agent install <target>
+wsx agent detach
 wsx agent report <pane> --provider <name> --state <state> [--session-id <id>|--session-path <path>]
 wsx agent request|inspect|wait|continue|cancel|exchanges
 wsx plugin list|reload
@@ -152,7 +154,9 @@ wsx session restart <session|pane|label> [--json]
 
 Session input, prompt, peek, rename, and restart commands accept the same optional `-p` and `-w` scope. Exact session or pane IDs remain globally addressable. Scoped unique labels avoid a preliminary list; ambiguous targets fail with an actionable error. `--command` is text entered into the new shell after startup, not a direct argv execution.
 
-A pane whose process exits, for example after Ctrl+C or an agent crash, stays listed with its saved command. `wsx session restart` restarts that exact exited pane using the saved command or the persisted native agent session so the session is usable again with a new runtime generation. It refuses a pane that is still running, a stale revision, a daemon that is stopping or replacing its runtime owner, a daemon that is still restoring saved sessions, and a worktree that is gone; a failed start leaves the pane exited and unchanged.
+A pane whose process exits, for example after Ctrl+C or an agent crash, stays listed with its saved command. `wsx session restart` restarts that exact exited pane using the saved command or the persisted native agent session so the session is usable again with a new runtime generation. It refuses a pane that is still running, a stale revision, a daemon that is stopping or replacing its runtime owner, a daemon that is still restoring saved sessions, and a worktree that is gone; a failed start leaves the pane exited and unchanged. Exiting detaches retained agent identity immediately, so Workspace no longer presents it as a live provider.
+
+If an agent exits without delivering its shutdown event but leaves the managed shell running, run `wsx agent detach` inside that pane. The command uses the pane's runtime generation, preserves resumable identity, and removes the live provider indication. It refuses execution outside the target managed pane rather than guessing from process or terminal heuristics.
 
 `wsx agent request <session> <prompt>` starts a provider-neutral, generation-bound exchange with an explicit prompt-capable agent. `inspect`, `wait`, `continue`, and `cancel` use the returned exchange ID; `exchanges` lists retained receipts. Persisted intent and failed delivery remain labeled `intent_persisted`; successful universal delivery is labeled `pty_delivery`, lifecycle transitions are labeled `pane_lifecycle`, and `--frame` returns a bounded `terminal_frame` fallback rather than claiming structured assistant output. Read-only exchanges may run concurrently on separate panes. `--writer` claims the target worktree by default, while repeated `--write-claim <absolute-path>` narrows ownership; overlapping active writer claims fail closed. These claims coordinate cooperative scheduling and never grant or revoke repository permissions. Exchanges never steal a live Terminal lease. Native adapters may advertise `exchange_receipts` and submit generation- and round-bound `accepted` or `completed` receipts with `request_bound` evidence. Pygmalion may provide this optimization for Pi later, but is not required by the contract.
 

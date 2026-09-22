@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Features
+
+- Temporarily expand a compact desktop sidebar while Terminal waits for the key after its prefix, without leaving Terminal mode. The behavior defaults on, can be disabled in Global Settings or with `terminal_prefix_shows_sidebar = false`, and preserves the existing persistent Prefix+B sidebar toggle.
+
+### Bug Fixes
+
+- Stop unrelated Pi post-answer maintenance from leaving completed sessions marked Working. Pi integration version 16 binds delayed completion to the exact agent run, lets a real continuation supersede it, and retries transient lifecycle-report failures instead of silently retaining stale state.
+- Stop exited or explicitly detached agents from retaining a live provider indication. Runtime exit now detaches preserved resume identity, while `wsx agent detach` provides an exact generation-bound repair when an agent misses its shutdown event but leaves the managed shell running.
+- Keep Korean, CJK, emoji, and other width-2 terminal glyphs inside the terminal viewport when a sidebar or resize crops away their spacer cell, instead of allowing the orphaned glyph to wrap into the next screen row.
+
 ## [0.27.0] - 2026-09-21
 
 ### Features
