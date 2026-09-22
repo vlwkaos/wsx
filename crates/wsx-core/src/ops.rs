@@ -226,12 +226,20 @@ fn refresh_workspace_with_discovery(
                 )
             })
             .collect();
-        let aliases = config
+        let project_config = config
             .projects
             .iter()
-            .find(|entry| entry.path == project.path)
-            .map(|entry| &entry.aliases);
-        let entries = worktrees_map.remove(&project.path).unwrap_or_default();
+            .find(|entry| entry.path == project.path);
+        let aliases = project_config.map(|entry| &entry.aliases);
+        let mut entries = worktrees_map.remove(&project.path).unwrap_or_default();
+        if let Some(order) = project_config.map(|entry| entry.worktree_order.as_slice()) {
+            let rank = order
+                .iter()
+                .enumerate()
+                .map(|(index, path)| (path, index))
+                .collect::<HashMap<_, _>>();
+            entries.sort_by_key(|entry| rank.get(&entry.path).copied().unwrap_or(usize::MAX));
+        }
         project.worktrees = entries
             .into_iter()
             .filter(|entry| !config.is_worktree_excluded(&entry.path))
@@ -846,6 +854,7 @@ mod tests {
                 path: root.clone(),
                 groups: Vec::new(),
                 aliases: HashMap::new(),
+                worktree_order: Vec::new(),
             }],
             ..GlobalConfig::default()
         };
@@ -924,6 +933,60 @@ mod tests {
     }
 
     #[test]
+    fn discovery_refresh_applies_saved_worktree_order_and_appends_unknown_paths() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".work")
+            .join(format!("worktree-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let one = root.with_file_name("worktree-order-one");
+        let two = root.with_file_name("worktree-order-two");
+        let new = root.with_file_name("worktree-order-new");
+        let config = GlobalConfig {
+            projects: vec![crate::config::global::ProjectEntry {
+                name: "ordered".into(),
+                path: root.clone(),
+                groups: Vec::new(),
+                aliases: HashMap::new(),
+                worktree_order: vec![two.clone(), root.clone()],
+            }],
+            ..GlobalConfig::default()
+        };
+        let mut workspace = workspace_from_config(&config);
+        let entry = |name: &str, path: PathBuf, is_main| git_worktree::WorktreeEntry {
+            name: name.into(),
+            branch: name.into(),
+            path,
+            is_main,
+        };
+
+        refresh_workspace_discovery_only(
+            &mut workspace,
+            &config,
+            vec![(
+                root.clone(),
+                vec![
+                    entry("main", root.clone(), true),
+                    entry("one", one.clone(), false),
+                    entry("two", two.clone(), false),
+                    entry("new", new.clone(), false),
+                ],
+            )],
+        )
+        .unwrap();
+
+        assert_eq!(
+            workspace.projects[0]
+                .worktrees
+                .iter()
+                .map(|worktree| worktree.path.as_path())
+                .collect::<Vec<_>>(),
+            [two.as_path(), root.as_path(), one.as_path(), new.as_path()]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn discovery_lists_each_registered_project_once() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join(".work")
@@ -941,6 +1004,7 @@ mod tests {
                     path: path.clone(),
                     groups: Vec::new(),
                     aliases: HashMap::new(),
+                    worktree_order: Vec::new(),
                 })
                 .collect(),
             ..GlobalConfig::default()

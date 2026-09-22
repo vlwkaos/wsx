@@ -2817,6 +2817,7 @@ mod session_resolution_tests {
             path: "/repos/api".into(),
             groups: Vec::new(),
             aliases: [("feature".into(), "review".into())].into(),
+            worktree_order: Vec::new(),
         });
         let requested = SessionScope {
             project: Some("api".into()),

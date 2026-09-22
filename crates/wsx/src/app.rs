@@ -466,6 +466,10 @@ pub enum Mode {
     Move {
         project_idx: usize,
     },
+    MoveWorktree {
+        project_idx: usize,
+        worktree_idx: usize,
+    },
     MoveSession {
         project_idx: usize,
         worktree_idx: usize,
@@ -3319,6 +3323,25 @@ impl App {
             return Ok(());
         }
 
+        if let Mode::MoveWorktree {
+            project_idx,
+            worktree_idx,
+        } = &self.mode
+        {
+            let (pi, wi) = (*project_idx, *worktree_idx);
+            match action {
+                Action::NavigateDown => self.move_worktree(pi, wi, 1),
+                Action::NavigateUp => self.move_worktree(pi, wi, -1),
+                Action::Select | Action::InputEscape | Action::Quit | Action::EnterMove => {
+                    self.sync_config_worktree_order(pi);
+                    self.config.save()?;
+                    self.mode = Mode::Workspace;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         if let Mode::GroupManager {
             selected,
             scroll,
@@ -3402,6 +3425,7 @@ impl App {
             | Mode::GlobalSettings { .. }
             | Mode::IntegrationManager { .. }
             | Mode::Move { .. }
+            | Mode::MoveWorktree { .. }
             | Mode::MoveSession { .. }
             | Mode::GroupManager { .. } => unreachable!(),
             Mode::RoutinePresetPicker { .. }
@@ -5685,6 +5709,12 @@ impl App {
             Selection::Project(pi) => {
                 self.mode = Mode::Move { project_idx: pi };
             }
+            Selection::Worktree(pi, wi) => {
+                self.mode = Mode::MoveWorktree {
+                    project_idx: pi,
+                    worktree_idx: wi,
+                };
+            }
             Selection::Session(pi, wi, si) => {
                 self.mode = Mode::MoveSession {
                     project_idx: pi,
@@ -5692,7 +5722,7 @@ impl App {
                     session_idx: si,
                 };
             }
-            _ => self.set_status("Select a project or session to move"),
+            _ => self.set_status("Select a project, worktree, or session to move"),
         }
     }
 
@@ -5723,6 +5753,34 @@ impl App {
 
     fn move_project_up(&mut self, pi: usize) {
         self.move_project(pi, -1);
+    }
+
+    fn move_worktree(&mut self, pi: usize, wi: usize, delta: isize) {
+        let new_wi = wi as isize + delta;
+        if new_wi < 0 {
+            return;
+        }
+        let new_wi = new_wi as usize;
+        let Some(project) = self.workspace.projects.get_mut(pi) else {
+            return;
+        };
+        if wi >= project.worktrees.len() || new_wi >= project.worktrees.len() {
+            return;
+        }
+        project.worktrees.swap(wi, new_wi);
+        self.sync_config_worktree_order(pi);
+        self.mode = Mode::MoveWorktree {
+            project_idx: pi,
+            worktree_idx: new_wi,
+        };
+        self.rebuild_flat();
+        if let Some(pos) = self.flat().iter().position(|entry| {
+            matches!(entry, FlatEntry::Worktree { project_idx, worktree_idx }
+                if *project_idx == pi && *worktree_idx == new_wi)
+        }) {
+            self.tree_selected = pos;
+            self.update_scroll();
+        }
     }
 
     fn move_session(&mut self, pi: usize, wi: usize, si: usize, delta: isize) -> Result<()> {
@@ -5774,6 +5832,20 @@ impl App {
             self.update_scroll();
         }
         Ok(())
+    }
+
+    fn sync_config_worktree_order(&mut self, project_idx: usize) {
+        let Some(project) = self.workspace.projects.get(project_idx) else {
+            return;
+        };
+        self.config.set_worktree_order(
+            &project.path,
+            project
+                .worktrees
+                .iter()
+                .map(|worktree| worktree.path.clone())
+                .collect(),
+        );
     }
 
     fn sync_config_project_order(&mut self) {
@@ -6607,6 +6679,7 @@ mod tests {
             path: std::path::PathBuf::from(format!("/tmp/{name}")),
             groups: group.into_iter().map(str::to_string).collect(),
             aliases: Default::default(),
+            worktree_order: Vec::new(),
         }
     }
 
@@ -8777,6 +8850,7 @@ mod tests {
                 path: project.path.clone(),
                 groups: vec!["work".into()],
                 aliases: HashMap::new(),
+                worktree_order: Vec::new(),
             }],
             ..GlobalConfig::default()
         };
@@ -9246,6 +9320,34 @@ mod tests {
     }
 
     #[test]
+    fn workspace_footer_advertises_move_for_worktrees_and_sessions() {
+        let mut project = make_project("move-hints");
+        let mut worktree = make_worktree("/tmp/move-hints");
+        worktree.sessions = vec![make_sess(false, runtime::AgentState::Idle)];
+        project.worktrees = vec![worktree];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        let backend = ratatui::backend::TestBackend::new(160, 8);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        for selection in [Selection::Worktree(0, 0), Selection::Session(0, 0, 0)] {
+            select_rendered_navigation_entry(&mut app, selection);
+            terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap();
+            let footer = (0..160)
+                .map(|x| terminal.backend().buffer()[(x, 7)].symbol())
+                .collect::<String>();
+            assert!(footer.contains("(m)ove"), "{footer:?}");
+        }
+    }
+
+    #[test]
     fn workspace_footer_shows_compact_capability_aware_routine_hints() {
         let mut project = make_project("routines");
         project.routines = vec![routine_view("build")];
@@ -9357,6 +9459,7 @@ mod tests {
                 path: project.path.clone(),
                 groups: vec!["group-9".into()],
                 aliases: HashMap::new(),
+                worktree_order: Vec::new(),
             }],
             ..GlobalConfig::default()
         };
@@ -10756,6 +10859,70 @@ mod tests {
         assert_eq!(&row[port_start..=port_end], [":", "3", "0", "0", "0"]);
         assert!(!row.contains(&"·"));
         assert!(row[..port_start].contains(&"…"));
+    }
+
+    #[test]
+    fn worktree_move_reorders_siblings_and_records_stable_paths() {
+        let mut project = make_project("ordering");
+        project.worktrees = vec![
+            make_worktree("/tmp/ordering-main"),
+            make_worktree("/tmp/ordering-one"),
+            make_worktree("/tmp/ordering-two"),
+        ];
+        let config = GlobalConfig {
+            projects: vec![wsx_core::config::global::ProjectEntry {
+                name: project.name.clone(),
+                path: project.path.clone(),
+                groups: Vec::new(),
+                aliases: HashMap::new(),
+                worktree_order: Vec::new(),
+            }],
+            ..GlobalConfig::default()
+        };
+        let mut app = make_test_app(
+            config,
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        select_rendered_navigation_entry(&mut app, Selection::Worktree(0, 1));
+
+        app.action_enter_move();
+        assert!(matches!(
+            app.mode,
+            Mode::MoveWorktree {
+                project_idx: 0,
+                worktree_idx: 1
+            }
+        ));
+        let mut terminal = workspace_terminal();
+        app.dispatch(Action::NavigateUp, &mut terminal).unwrap();
+
+        assert_eq!(
+            app.workspace.projects[0]
+                .worktrees
+                .iter()
+                .map(|worktree| worktree.path.as_path())
+                .collect::<Vec<_>>(),
+            [
+                Path::new("/tmp/ordering-one"),
+                Path::new("/tmp/ordering-main"),
+                Path::new("/tmp/ordering-two"),
+            ]
+        );
+        assert_eq!(app.current_selection(), Selection::Worktree(0, 0));
+        assert_eq!(
+            app.config.projects[0].worktree_order,
+            [
+                PathBuf::from("/tmp/ordering-one"),
+                PathBuf::from("/tmp/ordering-main"),
+                PathBuf::from("/tmp/ordering-two"),
+            ]
+        );
+
+        app.dispatch(Action::NavigateUp, &mut terminal).unwrap();
+        assert_eq!(app.current_selection(), Selection::Worktree(0, 0));
     }
 
     #[test]
