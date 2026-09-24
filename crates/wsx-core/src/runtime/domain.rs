@@ -225,6 +225,9 @@ pub struct AgentInfo {
     pub state: AgentState,
     #[serde(default = "default_attached")]
     pub attached: bool,
+    /// Opt-in resident adapter identity; absent for event-only integrations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_id: Option<String>,
     #[serde(default)]
     pub conversation_id: Option<String>,
     #[serde(default)]

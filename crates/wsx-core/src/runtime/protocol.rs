@@ -21,9 +21,9 @@ pub const WSX_RUNTIME_GENERATION_ENV: &str = "WSX_RUNTIME_GENERATION";
 pub const WSX_PLUGIN_VIEW_ENV: &str = "WSX_PLUGIN_VIEW_JSON";
 pub const ROUTINE_DAEMON_ARG: &str = "__wsx_routine_daemon";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
-// ^ Exited-pane restart and prompt-bound wake renewal are daemon-owned runtime behavior.
-// Bump only when daemon-owned runtime behavior changes. UI-only releases reuse wsxd.
-pub const DAEMON_REVISION: u32 = 14;
+// ^ Agent presence expiry is daemon-owned runtime behavior. Bump only for daemon
+// behavior changes; UI-only releases continue to reuse wsxd.
+pub const DAEMON_REVISION: u32 = 15;
 
 fn default_attached() -> bool {
     true
@@ -312,12 +312,19 @@ pub enum Request {
         #[serde(default = "default_attached")]
         attached: bool,
         #[serde(default)]
+        presence_id: Option<String>,
+        #[serde(default)]
         conversation_id: Option<String>,
         #[serde(default)]
         session_ref: Option<AgentSessionRef>,
         #[serde(default)]
         wake_token: Option<String>,
         capabilities: AgentCapabilities,
+    },
+    AgentPresenceRenew {
+        pane_id: PaneId,
+        runtime_generation: String,
+        presence_id: String,
     },
     AgentWakeRenew {
         pane_id: PaneId,
@@ -849,6 +856,7 @@ mod tests {
 
         let Request::AgentReport {
             attached,
+            presence_id,
             session_ref,
             runtime_generation,
             wake_token,
@@ -859,6 +867,7 @@ mod tests {
             panic!("expected agent report request");
         };
         assert!(attached);
+        assert_eq!(presence_id, None);
         assert_eq!(session_ref, None);
         assert_eq!(runtime_generation, None);
         assert_eq!(wake_token, None);

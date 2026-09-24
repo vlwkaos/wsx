@@ -48,6 +48,8 @@ const MAX_AGENT_EXCHANGES: usize = 256;
 const LEASE_TTL: Duration = Duration::from_secs(3);
 const TUI_PRESENCE_TTL: Duration = Duration::from_secs(3);
 const AGENT_WAKE_LEASE_TTL: Duration = Duration::from_secs(30 * 60);
+const AGENT_PRESENCE_TTL: Duration = Duration::from_secs(30);
+const AGENT_PRESENCE_POLL: Duration = Duration::from_secs(1);
 const CLAUDE_RECONCILE_INTERVAL: Duration = Duration::from_millis(100);
 #[cfg(target_os = "macos")]
 const WAKE_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -246,6 +248,7 @@ struct State {
     runtimes: HashMap<PaneId, Arc<TerminalRuntime>>,
     runtime_generations: HashMap<PaneId, String>,
     agent_wake_leases: HashMap<PaneId, Instant>,
+    agent_presence_leases: HashMap<PaneId, Instant>,
     agent_wake_tokens: HashMap<PaneId, String>,
     claude_reconciliations: HashMap<PaneId, ClaudeReconciliation>,
     terminal_operation_locks: HashMap<PaneId, Arc<Mutex<()>>>,
@@ -436,6 +439,7 @@ fn prepare_recovery_attempts(
             if let Some(agent) = pane.agent.as_mut() {
                 agent.attached = false;
                 agent.state = AgentState::Unknown;
+                agent.presence_id = None;
             }
         } else {
             pane.agent = None;
@@ -909,6 +913,7 @@ fn new_state(persisted: Persisted) -> State {
         runtimes: HashMap::new(),
         runtime_generations: HashMap::new(),
         agent_wake_leases: HashMap::new(),
+        agent_presence_leases: HashMap::new(),
         agent_wake_tokens: HashMap::new(),
         claude_reconciliations: HashMap::new(),
         terminal_operation_locks: HashMap::new(),
@@ -1031,12 +1036,17 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     // the canonical socket. Agent resumes are queued by recover_runtimes.
     let mut cold_recovery =
         cold_start.then(|| spawn_cold_recovery(&daemon, resume_agents_on_restore()));
+    let mut next_presence_poll = Instant::now() + AGENT_PRESENCE_POLL;
     let port_scanner = spawn_port_scanner(&daemon);
     let claude_reconciler = spawn_claude_reconciler(&daemon);
     let wake_controller = spawn_wake_controller(&daemon);
 
     while !advance_replacement(&daemon) {
         retry_dirty_persistence(&daemon);
+        if Instant::now() >= next_presence_poll {
+            expire_agent_presence(&daemon, Instant::now());
+            next_presence_poll = Instant::now() + AGENT_PRESENCE_POLL;
+        }
         if let Some(target) = take_ready_handoff(&daemon) {
             match perform_live_handoff(&daemon, &socket, &singleton_lock, &mut listener, target) {
                 Ok(()) => break,
@@ -1372,6 +1382,16 @@ fn restore_handoff_runtimes(
     for (pane_id, generation, runtime) in restored {
         if let Some(generation) = generation {
             state.runtime_generations.insert(pane_id, generation);
+            if state
+                .persisted
+                .panes
+                .iter()
+                .find(|pane| pane.id == pane_id)
+                .and_then(|pane| pane.agent.as_ref())
+                .is_some_and(|agent| agent.attached && agent.presence_id.is_some())
+            {
+                state.agent_presence_leases.insert(pane_id, Instant::now());
+            }
         }
         state.runtimes.insert(pane_id, runtime);
     }
@@ -1398,6 +1418,68 @@ fn install_shutdown_signals() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+// ^ A missing resident-adapter renewal revokes only its verified attachment.
+// Event-only adapters never enter this map; a reported shutdown remains immediate.
+fn expire_agent_presence(daemon: &Daemon, now: Instant) {
+    let mut state = lock(&daemon.state);
+    let expired = state
+        .agent_presence_leases
+        .iter()
+        .filter(|(_, renewed_at)| now.saturating_duration_since(**renewed_at) >= AGENT_PRESENCE_TTL)
+        .map(|(pane_id, _)| *pane_id)
+        .collect::<Vec<_>>();
+    let mut changed = Vec::new();
+    for pane_id in expired {
+        state.agent_presence_leases.remove(&pane_id);
+        let revision = state.revision.saturating_add(changed.len() as u64 + 1);
+        let Some(pane) = state
+            .persisted
+            .panes
+            .iter_mut()
+            .find(|pane| pane.id == pane_id)
+        else {
+            continue;
+        };
+        let Some(agent) = pane
+            .agent
+            .as_mut()
+            .filter(|agent| agent.attached && agent.presence_id.is_some())
+        else {
+            continue;
+        };
+        agent.attached = false;
+        agent.state = AgentState::Unknown;
+        agent.presence_id = None;
+        pane.revision = revision;
+        observe_agent_exchange(
+            &mut state.persisted,
+            pane_id,
+            AgentState::Unknown,
+            false,
+            revision,
+            unix_time_millis(),
+        );
+        clear_agent_wake(&mut state, pane_id);
+        state.claude_reconciliations.remove(&pane_id);
+        changed.push((pane_id, revision));
+    }
+    if changed.is_empty() {
+        return;
+    }
+    if save_state(&daemon.state_path, &state.persisted).is_err() {
+        state.persistence_dirty = true;
+    }
+    for (pane_id, revision) in changed {
+        publish(
+            daemon,
+            &mut state,
+            revision,
+            "agent.presence_expired",
+            pane_id.0,
+        );
+    }
 }
 
 fn retry_dirty_persistence(daemon: &Daemon) {
@@ -1477,6 +1559,7 @@ fn cleanup(daemon: &Daemon, socket: &Path) {
         state.leases.clear();
         state.transferred_streams.clear();
         state.agent_wake_leases.clear();
+        state.agent_presence_leases.clear();
         state.agent_wake_tokens.clear();
         state.claude_reconciliations.clear();
         state.plugin_events.clear();
@@ -2311,6 +2394,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             provider,
             state: agent_state,
             attached,
+            presence_id,
             conversation_id,
             session_ref,
             wake_token,
@@ -2322,12 +2406,18 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
                 provider,
                 state: agent_state,
                 attached,
+                presence_id,
                 conversation_id,
                 session_ref,
                 wake_token,
                 capabilities,
             },
         ),
+        Request::AgentPresenceRenew {
+            pane_id,
+            runtime_generation,
+            presence_id,
+        } => renew_agent_presence(daemon, pane_id, runtime_generation, presence_id),
         Request::AgentWakeRenew {
             pane_id,
             runtime_generation,
@@ -3520,6 +3610,7 @@ fn restart_session(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Re
             agent.map(|mut agent| {
                 agent.attached = false;
                 agent.state = AgentState::Unknown;
+                agent.presence_id = None;
                 agent
             })
         } else {
@@ -3828,6 +3919,7 @@ struct AgentReportInput {
     provider: String,
     state: AgentState,
     attached: bool,
+    presence_id: Option<String>,
     conversation_id: Option<String>,
     session_ref: Option<AgentSessionRef>,
     wake_token: Option<String>,
@@ -3851,6 +3943,7 @@ fn agent_report(
             provider,
             state,
             attached: true,
+            presence_id: None,
             conversation_id,
             session_ref,
             wake_token: None,
@@ -3868,6 +3961,7 @@ fn agent_report_with_attachment(
         provider,
         state: agent_state,
         attached,
+        presence_id,
         conversation_id,
         session_ref,
         wake_token,
@@ -3878,6 +3972,13 @@ fn agent_report_with_attachment(
         generation: runtime_generation,
     } = runtime;
     let provider = bounded_provider(provider)?;
+    let presence_id = presence_id.map(validate_presence_id).transpose()?;
+    if !attached && presence_id.is_some() {
+        return Err(api(
+            "invalid_presence",
+            "detached reports cannot claim presence",
+        ));
+    }
     let wake_token = match wake_token {
         Some(wake_token)
             if attached && agent_state == AgentState::Working && provider == "claude" =>
@@ -3969,6 +4070,7 @@ fn agent_report_with_attachment(
         provider,
         state: reported_state,
         attached,
+        presence_id: presence_id.clone(),
         conversation_id,
         session_ref,
         capabilities,
@@ -3989,6 +4091,11 @@ fn agent_report_with_attachment(
     );
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
     state.persisted = persisted;
+    if presence_id.is_some() {
+        state.agent_presence_leases.insert(pane_id, now);
+    } else {
+        state.agent_presence_leases.remove(&pane_id);
+    }
     if let Some(reconciliation) = claude_reconciliation {
         state.claude_reconciliations.insert(pane_id, reconciliation);
     } else {
@@ -4011,6 +4118,44 @@ fn agent_report_with_attachment(
 fn clear_agent_wake(state: &mut State, pane_id: PaneId) {
     state.agent_wake_leases.remove(&pane_id);
     state.agent_wake_tokens.remove(&pane_id);
+}
+
+// ^ crates/wsx-core/src/runtime/protocol.rs owns the opt-in identity; the
+// resident assets in crates/wsx-core/integrations renew without disk writes.
+fn renew_agent_presence(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    runtime_generation: String,
+    presence_id: String,
+) -> Result<Response, ApiError> {
+    let runtime_generation = bounded_runtime_generation(runtime_generation)?;
+    let presence_id = validate_presence_id(presence_id)?;
+    let mut state = lock(&daemon.state);
+    expect_runtime_generation(&state, pane_id, Some(&runtime_generation))?;
+    let matches = state
+        .persisted
+        .panes
+        .iter()
+        .find(|pane| pane.id == pane_id && !pane.exited)
+        .and_then(|pane| pane.agent.as_ref())
+        .is_some_and(|agent| agent.attached && agent.presence_id.as_deref() == Some(&presence_id));
+    if !matches {
+        return Err(api(
+            "stale_presence",
+            "agent attachment no longer owns the pane",
+        ));
+    }
+    let renewed_at = state
+        .agent_presence_leases
+        .get_mut(&pane_id)
+        .ok_or_else(|| api("stale_presence", "agent presence lease is no longer active"))?;
+    if Instant::now().saturating_duration_since(*renewed_at) >= AGENT_PRESENCE_TTL {
+        return Err(api("stale_presence", "agent presence lease expired"));
+    }
+    *renewed_at = Instant::now();
+    Ok(Response::Ack {
+        revision: state.revision,
+    })
 }
 
 // ^ [[Wake Mode and Report Lease]] Renewal is ephemeral and cannot mutate agent state.
@@ -4091,6 +4236,7 @@ fn agent_clear(
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
     state.persisted = persisted;
     clear_agent_wake(&mut state, pane_id);
+    state.agent_presence_leases.remove(&pane_id);
     state.claude_reconciliations.remove(&pane_id);
     state
         .runtime_generations
@@ -5040,6 +5186,7 @@ fn spawn_runtime(
     {
         let mut state = lock(&daemon.state);
         clear_agent_wake(&mut state, pane_id);
+        state.agent_presence_leases.remove(&pane_id);
         state.claude_reconciliations.remove(&pane_id);
         state
             .runtime_generations
@@ -5076,6 +5223,7 @@ fn next_runtime_generation(daemon: &Daemon) -> String {
 fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
     state.runtime_generations.remove(&pane_id);
     clear_agent_wake(state, pane_id);
+    state.agent_presence_leases.remove(&pane_id);
     state.claude_reconciliations.remove(&pane_id);
     // ^ A dead pane must stop reporting a live foreground job or listener; the periodic
     // scan can never re-attribute them because it skips exited runtimes.
@@ -5095,6 +5243,7 @@ fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
     if let Some(agent) = pane.agent.as_mut() {
         agent.attached = false;
         agent.state = AgentState::Unknown;
+        agent.presence_id = None;
     }
     pane.revision = revision;
     terminate_agent_exchanges(
@@ -5767,6 +5916,22 @@ fn bounded_wake_token(value: String) -> Result<String, ApiError> {
         Ok(value)
     }
 }
+fn validate_presence_id(value: String) -> Result<String, ApiError> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36
+        || bytes.iter().enumerate().any(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                *byte != b'-'
+            } else {
+                !byte.is_ascii_hexdigit()
+            }
+        })
+    {
+        Err(api("invalid_presence", "presence ID must be a UUID"))
+    } else {
+        Ok(value)
+    }
+}
 fn bounded_runtime_generation(value: String) -> Result<String, ApiError> {
     if value.is_empty()
         || value.len() > 128
@@ -6131,6 +6296,7 @@ mod tests {
                     "0000000000000001:0000000000000001".into(),
                 )]),
                 agent_wake_leases: HashMap::new(),
+                agent_presence_leases: HashMap::new(),
                 agent_wake_tokens: HashMap::new(),
                 claude_reconciliations: HashMap::new(),
                 terminal_operation_locks: HashMap::new(),
@@ -7396,6 +7562,263 @@ mod tests {
     }
 
     #[test]
+    fn resident_presence_expires_without_erasing_resume_identity_or_event_only_agents() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let id = "9ef119f4-c114-4786-b58b-63ea29f96359";
+        {
+            let mut state = lock(&daemon.state);
+            state.persisted.panes[0].exited = false;
+        }
+        let invalid = agent_report_with_attachment(
+            &daemon,
+            current_agent_authority(&daemon),
+            AgentReportInput {
+                provider: "pi".into(),
+                state: AgentState::Working,
+                attached: true,
+                presence_id: Some("unbounded".into()),
+                conversation_id: None,
+                session_ref: None,
+                wake_token: None,
+                capabilities: AgentCapabilities::default(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(invalid.code, "invalid_presence");
+        assert!(lock(&daemon.state).persisted.panes[0].agent.is_none());
+        agent_report_with_attachment(
+            &daemon,
+            current_agent_authority(&daemon),
+            AgentReportInput {
+                provider: "pi".into(),
+                state: AgentState::Working,
+                attached: true,
+                presence_id: Some(id.into()),
+                conversation_id: Some("resumable".into()),
+                session_ref: None,
+                wake_token: None,
+                capabilities: AgentCapabilities::default(),
+            },
+        )
+        .unwrap();
+        let generation = lock(&daemon.state).runtime_generations[&pane_id].clone();
+        let revision = lock(&daemon.state).revision;
+        let persisted_bytes = fs::read(&path).unwrap();
+        assert!(
+            matches!(renew_agent_presence(&daemon, pane_id, generation.clone(), id.into()),
+            Ok(Response::Ack { revision: renewed }) if renewed == revision)
+        );
+        assert_eq!(fs::read(&path).unwrap(), persisted_bytes);
+        assert_eq!(lock(&daemon.state).revision, revision);
+        let renewed_at = lock(&daemon.state).agent_presence_leases[&pane_id];
+        expire_agent_presence(
+            &daemon,
+            renewed_at + AGENT_PRESENCE_TTL - Duration::from_millis(1),
+        );
+        assert!(
+            lock(&daemon.state).persisted.panes[0]
+                .agent
+                .as_ref()
+                .unwrap()
+                .attached
+        );
+        assert_eq!(
+            renew_agent_presence(&daemon, pane_id, "bad:0001".into(), id.into())
+                .unwrap_err()
+                .code,
+            "stale_runtime"
+        );
+        assert_eq!(
+            renew_agent_presence(
+                &daemon,
+                pane_id,
+                generation.clone(),
+                "00000000-0000-0000-0000-000000000000".into()
+            )
+            .unwrap_err()
+            .code,
+            "stale_presence"
+        );
+        expire_agent_presence(&daemon, renewed_at + AGENT_PRESENCE_TTL);
+        let state = lock(&daemon.state);
+        let agent = state.persisted.panes[0].agent.as_ref().unwrap();
+        assert!(!agent.attached);
+        assert_eq!(agent.state, AgentState::Unknown);
+        assert_eq!(agent.presence_id, None);
+        assert_eq!(agent.conversation_id.as_deref(), Some("resumable"));
+        assert!(!state.agent_wake_leases.contains_key(&pane_id));
+        assert!(state.revision > revision);
+        drop(state);
+        assert!(
+            !load_state(&path).unwrap().panes[0]
+                .agent
+                .as_ref()
+                .unwrap()
+                .attached
+        );
+        assert_eq!(
+            renew_agent_presence(&daemon, pane_id, generation.clone(), id.into())
+                .unwrap_err()
+                .code,
+            "stale_presence"
+        );
+        let replacement_id = "2126bf38-610e-42d6-8a8c-1c233bb0a152";
+        agent_report_with_attachment(
+            &daemon,
+            current_agent_authority(&daemon),
+            AgentReportInput {
+                provider: "pi".into(),
+                state: AgentState::Idle,
+                attached: true,
+                presence_id: Some(replacement_id.into()),
+                conversation_id: None,
+                session_ref: None,
+                wake_token: None,
+                capabilities: AgentCapabilities::default(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            renew_agent_presence(&daemon, pane_id, generation.clone(), id.into())
+                .unwrap_err()
+                .code,
+            "stale_presence"
+        );
+        assert!(matches!(
+            renew_agent_presence(&daemon, pane_id, generation, replacement_id.into()),
+            Ok(Response::Ack { .. })
+        ));
+        agent_report(
+            &daemon,
+            current_agent_authority(&daemon),
+            "claude".into(),
+            AgentState::Idle,
+            None,
+            None,
+            AgentCapabilities::default(),
+        )
+        .unwrap();
+        expire_agent_presence(&daemon, Instant::now() + Duration::from_secs(3600));
+        assert!(
+            lock(&daemon.state).persisted.panes[0]
+                .agent
+                .as_ref()
+                .unwrap()
+                .attached
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn simultaneous_presence_expiry_detaches_each_pane_in_saved_snapshot() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let first = PaneId(4);
+        let second = PaneId(6);
+        let generation = "0000000000000001:0000000000000002";
+        {
+            let mut state = lock(&daemon.state);
+            let mut pane = state.persisted.panes[0].clone();
+            pane.id = second;
+            pane.terminal_id = TerminalId(7);
+            state.persisted.panes.push(pane);
+            state.persisted.sessions[0].panes.push(second);
+            assert!(state.persisted.sessions[0]
+                .layout
+                .split(first, second, SplitAxis::Vertical));
+            state.persisted.next_id = 8;
+            state.runtime_generations.insert(second, generation.into());
+        }
+        for (pane_id, presence_id) in [
+            (first, "f3d17df9-7ce4-4921-9572-ff5fd6189003"),
+            (second, "b40262be-6a45-43f2-a171-6ced0a3eb62a"),
+        ] {
+            let generation = lock(&daemon.state).runtime_generations[&pane_id].clone();
+            agent_report_with_attachment(
+                &daemon,
+                RuntimeAgentAuthority::new(pane_id, Some(generation)),
+                AgentReportInput {
+                    provider: "pi".into(),
+                    state: AgentState::Working,
+                    attached: true,
+                    presence_id: Some(presence_id.into()),
+                    conversation_id: None,
+                    session_ref: None,
+                    wake_token: None,
+                    capabilities: AgentCapabilities::default(),
+                },
+            )
+            .unwrap();
+        }
+        let expired_at = lock(&daemon.state)
+            .agent_presence_leases
+            .values()
+            .copied()
+            .max()
+            .unwrap()
+            + AGENT_PRESENCE_TTL;
+        let before = lock(&daemon.state).revision;
+        expire_agent_presence(&daemon, expired_at);
+        let state = lock(&daemon.state);
+        assert_eq!(state.revision, before + 2);
+        assert!(state
+            .persisted
+            .panes
+            .iter()
+            .all(|pane| !pane.agent.as_ref().unwrap().attached));
+        drop(state);
+        assert!(load_state(&path).unwrap().panes.iter().all(|pane| !pane
+            .agent
+            .as_ref()
+            .unwrap()
+            .attached));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn expired_presence_retries_failed_persistence_without_restoring_working() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let id = "c4773b42-8707-476d-a702-7a7c3e9bc67d";
+        agent_report_with_attachment(
+            &daemon,
+            current_agent_authority(&daemon),
+            AgentReportInput {
+                provider: "pi".into(),
+                state: AgentState::Working,
+                attached: true,
+                presence_id: Some(id.into()),
+                conversation_id: Some("saved".into()),
+                session_ref: None,
+                wake_token: None,
+                capabilities: AgentCapabilities::default(),
+            },
+        )
+        .unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let renewed_at = lock(&daemon.state).agent_presence_leases[&pane_id];
+        expire_agent_presence(&daemon, renewed_at + AGENT_PRESENCE_TTL);
+        {
+            let state = lock(&daemon.state);
+            assert!(state.persistence_dirty);
+            let agent = state.persisted.panes[0].agent.as_ref().unwrap();
+            assert!(!agent.attached);
+            assert_eq!(agent.state, AgentState::Unknown);
+            assert_eq!(agent.conversation_id.as_deref(), Some("saved"));
+        }
+        fs::remove_dir(&path).unwrap();
+        retry_dirty_persistence(&daemon);
+        assert!(!lock(&daemon.state).persistence_dirty);
+        let persisted = load_state(&path).unwrap();
+        let agent = persisted.panes[0].agent.as_ref().unwrap();
+        assert!(!agent.attached);
+        assert_eq!(agent.conversation_id.as_deref(), Some("saved"));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("json.backup"));
+    }
+
+    #[test]
     fn detached_report_preserves_resume_metadata_and_releases_live_authority() {
         let (daemon, path) = agent_test_daemon(agent_test_persisted());
         let authority = current_agent_authority(&daemon);
@@ -7420,6 +7843,7 @@ mod tests {
                 provider: "codex".into(),
                 state: AgentState::Done,
                 attached: false,
+                presence_id: None,
                 conversation_id: None,
                 session_ref: None,
                 wake_token: None,
@@ -7696,6 +8120,7 @@ mod tests {
                 provider: "claude".into(),
                 state: AgentState::Working,
                 attached: true,
+                presence_id: None,
                 conversation_id: Some("/absolute/retained-conversation".into()),
                 session_ref: Some(
                     AgentSessionRef::path("/absolute/retained-conversation").unwrap(),
@@ -7820,6 +8245,7 @@ mod tests {
                 provider: "claude".into(),
                 state,
                 attached: true,
+                presence_id: None,
                 conversation_id: None,
                 session_ref: None,
                 wake_token: wake_token.map(str::to_string),
@@ -7921,6 +8347,7 @@ mod tests {
                 provider: "claude".into(),
                 state: AgentState::Done,
                 attached: false,
+                presence_id: None,
                 conversation_id: None,
                 session_ref: None,
                 wake_token: None,
@@ -9702,6 +10129,7 @@ mod tests {
                 provider: "pi".into(),
                 state: AgentState::Blocked,
                 attached: true,
+                presence_id: None,
                 conversation_id: None,
                 session_ref: None,
                 wake_token: None,

@@ -1,10 +1,13 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=16
+// WSX_INTEGRATION_VERSION=17
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 const REPORT_TIMEOUT_MS = 1_000;
+const PRESENCE_INTERVAL_MS = 10_000;
+const presenceId = randomUUID();
 const REPORT_RETRY_DELAYS_MS = [100, 500, 2_000] as const;
 // ^ A later agent_settled handler may start an automatic continuation. Give its
 // agent_start event one turn to invalidate this adapter's stale final report.
@@ -35,6 +38,9 @@ let currentSessionRef: SessionRef | undefined;
 let agentRunGeneration = 0;
 let pendingSettlement: ReturnType<typeof setTimeout> | undefined;
 let heartbeat: ReturnType<typeof setInterval> | undefined;
+let presenceHeartbeat: ReturnType<typeof setInterval> | undefined;
+let presenceActive = false;
+let presenceInFlight = false;
 
 function clearReportRetry(): void {
   if (retryTimer !== undefined) clearTimeout(retryTimer);
@@ -73,6 +79,7 @@ function drain(): void {
   sendInFlight = true;
   const args = ["agent", "report", paneId, "--provider", "pi", "--state", next.state, "--lifecycle"];
   if (!next.attached) args.push("--detached");
+  else args.push("--presence-id", presenceId);
   if (next.sessionRef?.path) args.push("--session-path", next.sessionRef.path);
   else if (next.sessionRef?.id) args.push("--session-id", next.sessionRef.id);
   execFile(reportBin, args, { timeout: REPORT_TIMEOUT_MS, windowsHide: true }, (error) => {
@@ -114,7 +121,22 @@ function clearPendingSettlement(): void {
   pendingSettlement = undefined;
 }
 
+// ^ crates/wsx-daemon/src/lib.rs owns expiry; keep renewal independent of
+// persisted state reports so idle agents do not write snapshots every ten seconds.
+function renewPresence(): void {
+  if (!presenceActive || presenceInFlight || !paneId) return;
+  presenceInFlight = true;
+  execFile(reportBin, ["agent", "presence-renew", paneId, "--presence-id", presenceId],
+    { timeout: REPORT_TIMEOUT_MS, windowsHide: true }, () => {
+      presenceInFlight = false;
+    });
+}
+
 function startHeartbeat(): void {
+  if (presenceHeartbeat === undefined) {
+    presenceHeartbeat = setInterval(renewPresence, PRESENCE_INTERVAL_MS);
+    presenceHeartbeat.unref?.();
+  }
   if (heartbeat !== undefined) return;
   heartbeat = setInterval(() => {
     if (agentActive && blockedCount === 0) report("working");
@@ -125,6 +147,9 @@ function startHeartbeat(): void {
 function stopHeartbeat(): void {
   if (heartbeat !== undefined) clearInterval(heartbeat);
   heartbeat = undefined;
+  if (presenceHeartbeat !== undefined) clearInterval(presenceHeartbeat);
+  presenceHeartbeat = undefined;
+  presenceActive = false;
 }
 
 type AsyncUiMethod = (...args: unknown[]) => Promise<unknown>;
@@ -191,6 +216,7 @@ export default function wsxAgentStatus(pi: ExtensionAPI): void {
     publish();
   });
   pi.on("session_start", (_event, ctx) => {
+    presenceActive = true;
     restoreBlockingUi?.();
     restoreBlockingUi = undefined;
     blockedCount = 0;

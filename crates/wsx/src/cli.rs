@@ -141,9 +141,17 @@ pub enum AgentCmd {
         #[arg(long)]
         detached: bool,
         #[arg(long, hide = true)]
+        presence_id: Option<String>,
+        #[arg(long, hide = true)]
         escape_interrupts: bool,
         #[arg(long, hide = true)]
         exchange_receipts: bool,
+    },
+    #[command(hide = true)]
+    PresenceRenew {
+        pane: String,
+        #[arg(long)]
+        presence_id: String,
     },
     #[command(hide = true)]
     WakeHeartbeat {
@@ -577,6 +585,7 @@ pub fn run(cmd: Command) -> Result<()> {
                 resume,
                 lifecycle,
                 detached,
+                presence_id,
                 escape_interrupts,
                 exchange_receipts,
             } => cmd_agent_report(
@@ -585,6 +594,7 @@ pub fn run(cmd: Command) -> Result<()> {
                     provider,
                     state: state.into(),
                     attached: !detached,
+                    presence_id,
                     conversation_id,
                     session_id,
                     session_path,
@@ -598,6 +608,9 @@ pub fn run(cmd: Command) -> Result<()> {
                     },
                 },
             ),
+            AgentCmd::PresenceRenew { pane, presence_id } => {
+                cmd_agent_presence_renew(&pane, &presence_id)
+            }
             AgentCmd::WakeHeartbeat { pane, prompt_id } => {
                 cmd_agent_wake_heartbeat(&pane, &prompt_id)
             }
@@ -1553,7 +1566,10 @@ mod agent_command_tests {
 
 #[cfg(test)]
 mod daemon_command_tests {
-    use super::{runtime_status_state, Args, Command, DaemonCmd};
+    use super::{
+        incompatible_runtime_status_json, runtime_lifecycle_lines, runtime_status_state, Args,
+        Command, DaemonCmd,
+    };
     use clap::Parser;
     use wsx_core::runtime::{self, DaemonLifecycle, DaemonPhase};
 
@@ -1622,6 +1638,46 @@ mod daemon_command_tests {
             ))),
             "replacement_deferred"
         );
+    }
+
+    #[test]
+    fn incompatible_runtime_status_exposes_legacy_lifecycle_details() {
+        let mut status = lifecycle(
+            DaemonPhase::ReplacementPending,
+            runtime::DAEMON_REVISION - 1,
+        );
+        status.live_runtimes = 3;
+        status.active_clients = 2;
+        status.active_tuis = 1;
+        status.replacement_target = Some("0.28.1:1:2:3:4".into());
+        status.replacement_target_version = "0.28.1".into();
+        status.replacement_blockers = vec![runtime::ReplacementBlocker::WorkingAgent];
+
+        let json = incompatible_runtime_status_json(
+            std::path::Path::new("/test/wsx.sock"),
+            Some(15),
+            Some(&status),
+            None,
+        );
+        assert_eq!(json["state"], "incompatible");
+        assert_eq!(json["daemon_protocol"], 15);
+        assert_eq!(json["lifecycle"]["phase"], "replacement_pending");
+        assert_eq!(json["lifecycle"]["live_runtimes"], 3);
+        assert_eq!(json["lifecycle"]["active_clients"], 2);
+        assert_eq!(json["lifecycle"]["active_tuis"], 1);
+        assert_eq!(json["lifecycle"]["replacement_target"], "0.28.1:1:2:3:4");
+        assert_eq!(
+            json["lifecycle"]["replacement_blockers"],
+            serde_json::json!(["working_agent"])
+        );
+
+        let lines = runtime_lifecycle_lines(&status);
+        assert!(lines.iter().any(|line| line.contains("3 live runtimes")));
+        assert!(lines.iter().any(|line| line.contains("2 clients, 1 TUIs")));
+        assert!(lines
+            .iter()
+            .any(|line| line == "Target: 0.28.1:1:2:3:4 (version 0.28.1)"));
+        assert!(lines.iter().any(|line| line == "Blockers: WorkingAgent"));
     }
 }
 
@@ -2009,6 +2065,7 @@ fn cmd_agent_detach() -> Result<()> {
         provider: agent.provider.clone(),
         state: runtime::AgentState::Unknown,
         attached: false,
+        presence_id: None,
         conversation_id: None,
         session_ref: None,
         wake_token: None,
@@ -2027,6 +2084,7 @@ struct AgentReportOptions {
     provider: String,
     state: runtime::AgentState,
     attached: bool,
+    presence_id: Option<String>,
     conversation_id: Option<String>,
     session_id: Option<String>,
     session_path: Option<String>,
@@ -2039,6 +2097,7 @@ fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
         provider,
         state,
         attached,
+        presence_id,
         conversation_id,
         session_id,
         session_path,
@@ -2071,6 +2130,7 @@ fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
         provider,
         state,
         attached,
+        presence_id,
         conversation_id,
         session_ref,
         wake_token,
@@ -2082,6 +2142,28 @@ fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
         }
         runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
         _ => bail!("wsxd returned an unexpected agent response"),
+    }
+}
+
+// ^ crates/wsx-daemon/src/lib.rs validates the live generation and attachment
+// before renewing. Do not resolve a session label or read a snapshot on this path.
+fn cmd_agent_presence_renew(selector: &str, presence_id: &str) -> Result<()> {
+    let pane = std::env::var(runtime::WSX_PANE_ID_ENV)
+        .context("presence renewal requires a managed pane")?;
+    if selector != pane {
+        bail!("presence renewal must target its own managed pane");
+    }
+    let pane_id = runtime::PaneId(pane.parse().context("invalid managed pane ID")?);
+    let runtime_generation = std::env::var(runtime::WSX_RUNTIME_GENERATION_ENV)
+        .context("presence renewal requires a managed runtime generation")?;
+    match runtime::Client::local().call(&runtime::Request::AgentPresenceRenew {
+        pane_id,
+        runtime_generation,
+        presence_id: presence_id.into(),
+    })? {
+        runtime::Response::Ack { .. } => Ok(()),
+        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
+        _ => bail!("wsxd returned an unexpected presence response"),
     }
 }
 
@@ -2405,6 +2487,70 @@ fn runtime_status_state(lifecycle: Option<&runtime::DaemonLifecycle>) -> &'stati
     }
 }
 
+fn incompatible_runtime_status_json(
+    socket: &std::path::Path,
+    daemon_protocol: Option<u32>,
+    lifecycle: Option<&runtime::DaemonLifecycle>,
+    lifecycle_error: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "running": true,
+        "compatible": false,
+        "state": "incompatible",
+        "socket": socket,
+        "daemon_protocol": daemon_protocol,
+        "lifecycle": lifecycle,
+        "lifecycle_error": lifecycle_error,
+        "client": {
+            "version": runtime::WSX_VERSION,
+            "protocol": runtime::PROTOCOL_VERSION,
+            "daemon_revision": runtime::DAEMON_REVISION,
+        },
+    })
+}
+
+fn runtime_lifecycle_lines(lifecycle: &runtime::DaemonLifecycle) -> Vec<String> {
+    let mut lines = vec![
+        format!(
+            "Lifecycle: {:?}, version {}, daemon revision {}, {} live runtimes, {} clients, {} TUIs",
+            lifecycle.phase,
+            if lifecycle.version.is_empty() {
+                "unknown"
+            } else {
+                &lifecycle.version
+            },
+            lifecycle.daemon_revision,
+            lifecycle.live_runtimes,
+            lifecycle.active_clients,
+            lifecycle.active_tuis,
+        ),
+        format!("Binary: {}", lifecycle.binary_id),
+    ];
+    if let Some(target) = lifecycle.replacement_target.as_deref() {
+        lines.push(format!(
+            "Target: {} (version {})",
+            target,
+            if lifecycle.replacement_target_version.is_empty() {
+                "unknown"
+            } else {
+                &lifecycle.replacement_target_version
+            }
+        ));
+    }
+    if !lifecycle.replacement_blockers.is_empty() {
+        lines.push(format!(
+            "Blockers: {}",
+            lifecycle
+                .replacement_blockers
+                .iter()
+                .map(|blocker| format!("{blocker:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    lines
+}
+
 fn cmd_runtime_status(json: bool) -> Result<()> {
     let client = runtime::Client::local();
     match client.status() {
@@ -2425,22 +2571,20 @@ fn cmd_runtime_status(json: bool) -> Result<()> {
             }
             return Ok(());
         }
-        Ok(runtime::DaemonStatus::Incompatible { daemon_protocol }) => {
+        Ok(runtime::DaemonStatus::Incompatible {
+            daemon_protocol,
+            lifecycle,
+            lifecycle_error,
+        }) => {
             if json {
                 println!(
                     "{}",
-                    serde_json::json!({
-                        "running": true,
-                        "compatible": false,
-                        "state": "incompatible",
-                        "socket": client.socket(),
-                        "daemon_protocol": daemon_protocol,
-                        "client": {
-                            "version": runtime::WSX_VERSION,
-                            "protocol": runtime::PROTOCOL_VERSION,
-                            "daemon_revision": runtime::DAEMON_REVISION,
-                        },
-                    })
+                    serde_json::to_string_pretty(&incompatible_runtime_status_json(
+                        client.socket(),
+                        daemon_protocol,
+                        lifecycle.as_deref(),
+                        lifecycle_error.as_deref(),
+                    ))?
                 );
             } else {
                 println!("Runtime: running (incompatible)");
@@ -2452,6 +2596,14 @@ fn cmd_runtime_status(json: bool) -> Result<()> {
                         .unwrap_or_else(|| "unknown".into()),
                     runtime::PROTOCOL_VERSION
                 );
+                if let Some(lifecycle) = lifecycle.as_deref() {
+                    for line in runtime_lifecycle_lines(lifecycle) {
+                        println!("{line}");
+                    }
+                }
+                if let Some(error) = lifecycle_error {
+                    println!("Lifecycle: unavailable ({error})");
+                }
                 println!("Open the matching wsx version or launch wsx to request an upgrade.");
             }
             return Ok(());
@@ -2524,19 +2676,9 @@ fn cmd_runtime_status(json: bool) -> Result<()> {
         );
         println!("Socket: {}", client.socket().display());
         if let Some(lifecycle) = lifecycle {
-            println!(
-                "Lifecycle: {:?}, version {}, daemon revision {}, {} live runtimes, {} clients",
-                lifecycle.phase,
-                if lifecycle.version.is_empty() {
-                    "unknown"
-                } else {
-                    &lifecycle.version
-                },
-                lifecycle.daemon_revision,
-                lifecycle.live_runtimes,
-                lifecycle.active_clients,
-            );
-            println!("Binary: {}", lifecycle.binary_id);
+            for line in runtime_lifecycle_lines(&lifecycle) {
+                println!("{line}");
+            }
         }
         println!(
             "Resources: {} projects, {} worktrees, {} sessions, {} panes",

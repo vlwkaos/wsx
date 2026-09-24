@@ -64,6 +64,7 @@ fn agent(id: u64, state: AgentState) -> AgentInfo {
         provider: "test-agent".into(),
         state,
         attached: true,
+        presence_id: None,
         conversation_id: None,
         session_ref: None,
         capabilities: AgentCapabilities::default(),
