@@ -2,10 +2,16 @@
 
 ## [Unreleased]
 
+## [0.28.2] - 2026-09-24
+
 ### Bug Fixes
 
 - Complete deferred live daemon upgrades from protocol 11 through 15 without replacing live PTYs. Same-target retries remain idempotent, and a newer release can convert an older pending cold replacement into a live handoff; same-version different builds and newer pending targets remain protected. `wsx runtime status` now shows legacy lifecycle details for incompatible daemons.
 - Clear stale agent labels and Working indicators when a resident Pi or OMP adapter stops renewing its pane-bound presence for 30 seconds. Renewals do not write persisted state; expiry retains resume metadata. Hook-only and server-global integrations continue using lifecycle events and `wsx agent detach` rather than an unsafe idle timeout.
+
+### Maintenance
+
+- Prepare exact 0.28.2 workspace version pins and document path-sensitive rebuilds and binary overrides for isolated release checks.
 
 ## [0.28.1] - 2026-09-22
 
