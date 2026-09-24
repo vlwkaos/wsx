@@ -69,11 +69,15 @@ pub enum Availability {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonStatus {
     Missing,
     Compatible,
-    Incompatible { daemon_protocol: Option<u32> },
+    Incompatible {
+        daemon_protocol: Option<u32>,
+        lifecycle: Option<Box<super::domain::DaemonLifecycle>>,
+        lifecycle_error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -104,11 +108,43 @@ impl Client {
             ExistingDaemon::Missing => DaemonStatus::Missing,
             ExistingDaemon::Ready { .. } => DaemonStatus::Compatible,
             ExistingDaemon::Incompatible {
+                mut stream,
                 advertised_protocol,
+                lifecycle_coordination,
                 ..
-            } => DaemonStatus::Incompatible {
-                daemon_protocol: advertised_protocol,
-            },
+            } => {
+                let observation = if lifecycle_coordination
+                    && advertised_protocol.is_some_and(|protocol| {
+                        (LEGACY_BASELINE_PROTOCOL..PROTOCOL_VERSION).contains(&protocol)
+                    }) {
+                    Some(
+                        match stream
+                            .as_mut()
+                            .ok_or_else(|| io::Error::other("legacy wsxd stream is unavailable"))
+                            .and_then(|stream| round_trip(stream, &Request::LifecycleStatus))
+                        {
+                            Ok(Response::Lifecycle(status)) => Ok(status),
+                            Ok(response) => Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("unexpected wsxd lifecycle response: {response:?}"),
+                            )),
+                            Err(error) => Err(error),
+                        },
+                    )
+                } else {
+                    None
+                };
+                let (lifecycle, lifecycle_error) = match observation {
+                    Some(Ok(status)) => (Some(Box::new(status)), None),
+                    Some(Err(error)) => (None, Some(error.to_string())),
+                    None => (None, None),
+                };
+                DaemonStatus::Incompatible {
+                    daemon_protocol: advertised_protocol,
+                    lifecycle,
+                    lifecycle_error,
+                }
+            }
         })
     }
 
@@ -658,6 +694,13 @@ fn ensure_available_with_binary(
                     live_handoff: true,
                     ..
                 }
+            ) || matches!(
+                &existing,
+                ExistingDaemon::Incompatible {
+                    live_handoff: true,
+                    advertised_protocol: Some(protocol),
+                    ..
+                } if (LEGACY_BASELINE_PROTOCOL..PROTOCOL_VERSION).contains(protocol)
             );
             if compatible && !version_coordination && legacy_daemon_has_other_clients(&status) {
                 return Ok(Availability::ReplacementDeferred {
@@ -668,9 +711,24 @@ fn ensure_available_with_binary(
                 });
             }
             let replacement_request = if live_handoff {
+                let Some((handoff_binary_id, handoff_version)) = pending_handoff_target(
+                    &status,
+                    binary,
+                    &daemon_version,
+                    &target_binary_id,
+                    &target_version,
+                )?
+                else {
+                    return Ok(Availability::ReplacementDeferred {
+                        daemon_version,
+                        target_version: lifecycle_target_version(&status, &target_version),
+                        live_runtimes: status.live_runtimes,
+                        blockers: status.replacement_blockers,
+                    });
+                };
                 Request::PrepareHandoff {
-                    target_binary_id: target_binary_id.clone(),
-                    target_version: target_version.clone(),
+                    target_binary_id: handoff_binary_id,
+                    target_version: handoff_version,
                     target_protocol: PROTOCOL_VERSION,
                     target_daemon_revision: super::protocol::DAEMON_REVISION,
                     executable: binary.to_path_buf(),
@@ -763,9 +821,9 @@ fn ensure_available_with_binary(
                 Response::Error(error) if compatible && error.code == "replacement_conflict" => {
                     Ok(Availability::ReplacementDeferred {
                         daemon_version,
-                        target_version,
+                        target_version: lifecycle_target_version(&status, &target_version),
                         live_runtimes: status.live_runtimes,
-                        blockers: vec![super::domain::ReplacementBlocker::PendingTarget],
+                        blockers: status.replacement_blockers,
                     })
                 }
                 response => Err(io::Error::new(
@@ -783,6 +841,50 @@ fn ensure_available_with_binary(
             Ok(Availability::LegacyCompatible)
         }
     }
+}
+
+fn pending_handoff_target(
+    status: &super::domain::DaemonLifecycle,
+    binary: &Path,
+    daemon_version: &str,
+    target_binary_id: &str,
+    target_version: &str,
+) -> io::Result<Option<(String, String)>> {
+    if status.phase != super::domain::DaemonPhase::ReplacementPending {
+        return Ok(Some((
+            target_binary_id.to_string(),
+            target_version.to_string(),
+        )));
+    }
+    if status.replacement_target.as_deref() == Some(target_binary_id) {
+        return Ok(Some((
+            target_binary_id.to_string(),
+            target_version.to_string(),
+        )));
+    }
+    let legacy_id = binary_identity_with_version(binary, daemon_version)?;
+    if status.replacement_target.as_deref() == Some(legacy_id.as_str()) {
+        return Ok(Some((legacy_id, daemon_version.to_string())));
+    }
+    // ^ A newer installed binary may convert an older pending cold replacement
+    // into live handoff. The daemon still validates the executable and fences a
+    // pending higher daemon revision; equal-version different builds stay protected.
+    let pending_version = status
+        .replacement_target
+        .as_deref()
+        .and_then(super::protocol::binary_identity_version);
+    if pending_version.is_some_and(|version| {
+        (status.replacement_target_version.is_empty()
+            || status.replacement_target_version == version)
+            && super::protocol::compare_wsx_versions(version, target_version)
+                == Some(std::cmp::Ordering::Less)
+    }) {
+        return Ok(Some((
+            target_binary_id.to_string(),
+            target_version.to_string(),
+        )));
+    }
+    Ok(None)
 }
 
 fn legacy_handoff_retry_request(
@@ -851,6 +953,18 @@ fn nonempty_or(value: String, fallback: String) -> String {
     }
 }
 
+fn lifecycle_target_version(status: &super::domain::DaemonLifecycle, fallback: &str) -> String {
+    if !status.replacement_target_version.is_empty() {
+        return status.replacement_target_version.clone();
+    }
+    status
+        .replacement_target
+        .as_deref()
+        .and_then(super::protocol::binary_identity_version)
+        .unwrap_or(fallback)
+        .to_string()
+}
+
 fn ready_without_transition(
     client: &Client,
     existing: &ExistingDaemon,
@@ -886,10 +1000,7 @@ fn ready_without_transition(
             if status.phase == super::domain::DaemonPhase::ReplacementPending {
                 Availability::ReplacementDeferred {
                     daemon_version,
-                    target_version: nonempty_or(
-                        status.replacement_target_version,
-                        super::protocol::WSX_VERSION.to_string(),
-                    ),
+                    target_version: lifecycle_target_version(&status, super::protocol::WSX_VERSION),
                     live_runtimes: status.live_runtimes,
                     blockers: status.replacement_blockers,
                 }
@@ -1336,6 +1447,7 @@ enum ExistingDaemon {
         advertised_protocol: Option<u32>,
         lifecycle_coordination: bool,
         version_coordination: bool,
+        live_handoff: bool,
     },
 }
 
@@ -1426,6 +1538,7 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
             advertised_protocol: Some(protocol),
             lifecycle_coordination: capabilities.lifecycle_coordination,
             version_coordination: capabilities.version_coordination,
+            live_handoff: capabilities.live_handoff,
         }),
         Response::Error(error) if error.code == "protocol_mismatch" => {
             Ok(ExistingDaemon::Incompatible {
@@ -1433,6 +1546,7 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
                 advertised_protocol: None,
                 lifecycle_coordination: false,
                 version_coordination: false,
+                live_handoff: false,
             })
         }
         Response::Error(error) => Err(io::Error::other(format!(
@@ -1787,6 +1901,106 @@ mod tests {
     }
 
     #[test]
+    fn pending_handoff_target_does_not_supersede_a_different_target() {
+        let executable = std::env::current_exe().unwrap();
+        let current_id = binary_identity(&executable).unwrap();
+        let status = super::super::domain::DaemonLifecycle {
+            protocol: 15,
+            epoch: 7,
+            binary_id: "0.28.0:1:2:3:1".into(),
+            version: "0.28.0".into(),
+            daemon_revision: 13,
+            started_unix_ms: 1,
+            phase: super::super::domain::DaemonPhase::ReplacementPending,
+            live_runtimes: 1,
+            active_clients: 1,
+            active_tuis: 0,
+            recovered_from_backup: false,
+            replacement_target: Some("99.0.0:1:2:3:9".into()),
+            replacement_target_version: "99.0.0".into(),
+            replacement_blockers: vec![super::super::domain::ReplacementBlocker::ForegroundJob],
+        };
+
+        assert_eq!(
+            pending_handoff_target(
+                &status,
+                &executable,
+                "0.28.0",
+                &current_id,
+                super::super::protocol::WSX_VERSION,
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn older_pending_cold_target_can_be_converted_but_equal_or_newer_cannot() {
+        let executable = std::env::current_exe().unwrap();
+        let current_id = binary_identity(&executable).unwrap();
+        let mut status = super::super::domain::DaemonLifecycle {
+            protocol: 15,
+            epoch: 7,
+            binary_id: "0.26.2:1:2:3:1".into(),
+            version: "0.26.2".into(),
+            daemon_revision: 8,
+            started_unix_ms: 1,
+            phase: super::super::domain::DaemonPhase::ReplacementPending,
+            live_runtimes: 11,
+            active_clients: 1,
+            active_tuis: 0,
+            recovered_from_backup: false,
+            replacement_target: Some("0.28.0:1:2:3:2".into()),
+            replacement_target_version: "0.28.0".into(),
+            replacement_blockers: vec![super::super::domain::ReplacementBlocker::WorkingAgent],
+        };
+        let candidate = |status: &super::super::domain::DaemonLifecycle| {
+            pending_handoff_target(
+                status,
+                &executable,
+                "0.26.2",
+                &current_id,
+                super::super::protocol::WSX_VERSION,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            candidate(&status),
+            Some((
+                current_id.clone(),
+                super::super::protocol::WSX_VERSION.into()
+            ))
+        );
+        status.replacement_target_version = "0.28.1".into();
+        assert_eq!(
+            candidate(&status),
+            None,
+            "inconsistent lifecycle target fails closed"
+        );
+        status.replacement_target =
+            Some(format!("{}:1:2:3:2", super::super::protocol::WSX_VERSION));
+        assert_eq!(
+            candidate(&status),
+            None,
+            "same-version different build remains protected"
+        );
+        status.replacement_target_version = "99.0.0".into();
+        status.replacement_target = Some("99.0.0:1:2:3:2".into());
+        assert_eq!(
+            candidate(&status),
+            None,
+            "newer pending target remains protected"
+        );
+        status.replacement_target_version.clear();
+        status.replacement_target = Some("malformed".into());
+        assert_eq!(
+            candidate(&status),
+            None,
+            "unknown target version remains protected"
+        );
+    }
+
+    #[test]
     fn rejected_cross_version_handoff_retries_with_the_legacy_daemon_prefix() {
         let executable = std::env::current_exe().unwrap();
         let status = super::super::domain::DaemonLifecycle {
@@ -2048,7 +2262,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_pending_target_keeps_the_new_client_healthy() {
+    fn different_pending_target_keeps_its_authoritative_blockers() {
         let directory = std::env::current_dir().unwrap().join(".work").join(format!(
             "{:x}-{:x}",
             std::process::id(),
@@ -2114,7 +2328,9 @@ mod tests {
                                 recovered_from_backup: false,
                                 replacement_target: Some("0.20.0:1:2:3:20".into()),
                                 replacement_target_version: String::new(),
-                                replacement_blockers: vec![],
+                                replacement_blockers: vec![
+                                    super::super::domain::ReplacementBlocker::WorkingAgent,
+                                ],
                             }),
                         );
                     }
@@ -2145,9 +2361,9 @@ mod tests {
             availability,
             Availability::ReplacementDeferred {
                 daemon_version: "0.20.0".into(),
-                target_version: super::super::protocol::WSX_VERSION.into(),
+                target_version: "0.20.0".into(),
                 live_runtimes: 4,
-                blockers: vec![super::super::domain::ReplacementBlocker::PendingTarget],
+                blockers: vec![super::super::domain::ReplacementBlocker::WorkingAgent],
             }
         );
         server.join().unwrap();
@@ -2341,6 +2557,207 @@ mod tests {
     }
 
     #[test]
+    fn protocol_15_pending_handoff_retries_the_same_legacy_target() {
+        let (path, listener) = test_listener("protocol-15-pending-handoff");
+        let server_path = path.clone();
+        let executable = std::env::current_exe().unwrap();
+        let expected_target = binary_identity_with_version(&executable, "0.28.0").unwrap();
+        let server_target = expected_target.clone();
+        let server_executable = executable.clone();
+        let server = thread::spawn(move || {
+            for step in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                assert_eq!(
+                    read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+                    Request::Hello {
+                        protocol: PROTOCOL_VERSION
+                    }
+                );
+                stream
+                    .write_all(
+                        b"{\"type\":\"hello\",\"data\":{\"protocol\":15,\"epoch\":7,\"capabilities\":{\"lifecycle_coordination\":true,\"version_coordination\":true,\"daemon_revision_coordination\":true,\"live_handoff\":true}}}\n",
+                    )
+                    .unwrap();
+                if step < 2 {
+                    continue;
+                }
+                let request = read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap();
+                if step == 2 {
+                    assert_eq!(request, Request::LifecycleStatus);
+                    send_response(
+                        &mut stream,
+                        &Response::Lifecycle(super::super::domain::DaemonLifecycle {
+                            protocol: 15,
+                            epoch: 7,
+                            binary_id: "0.28.0:1:2:3:1".into(),
+                            version: "0.28.0".into(),
+                            daemon_revision: 13,
+                            started_unix_ms: 1,
+                            phase: super::super::domain::DaemonPhase::ReplacementPending,
+                            live_runtimes: 2,
+                            active_clients: 1,
+                            active_tuis: 0,
+                            recovered_from_backup: false,
+                            replacement_target: Some(server_target.clone()),
+                            replacement_target_version: "0.28.0".into(),
+                            replacement_blockers: vec![
+                                super::super::domain::ReplacementBlocker::WorkingAgent,
+                            ],
+                        }),
+                    );
+                } else {
+                    assert_eq!(
+                        request,
+                        Request::PrepareHandoff {
+                            target_binary_id: server_target.clone(),
+                            target_version: "0.28.0".into(),
+                            target_protocol: PROTOCOL_VERSION,
+                            target_daemon_revision: super::super::protocol::DAEMON_REVISION,
+                            executable: server_executable.clone(),
+                        }
+                    );
+                    send_response(
+                        &mut stream,
+                        &Response::Replacement {
+                            disposition: super::super::domain::ReplacementDisposition::Deferred,
+                            live_runtimes: 2,
+                            daemon_version: "0.28.0".into(),
+                            target_version: "0.28.0".into(),
+                            blockers: vec![super::super::domain::ReplacementBlocker::WorkingAgent],
+                            use_current_daemon: false,
+                        },
+                    );
+                }
+            }
+            drop(listener);
+            std::fs::remove_file(server_path).unwrap();
+        });
+
+        let availability =
+            ensure_available_with_binary(&Client::new(path.clone()), false, &executable).unwrap();
+        assert_eq!(
+            availability,
+            Availability::ReplacementDeferred {
+                daemon_version: "0.28.0".into(),
+                target_version: "0.28.0".into(),
+                live_runtimes: 2,
+                blockers: vec![super::super::domain::ReplacementBlocker::WorkingAgent],
+            }
+        );
+        server.join().unwrap();
+        let _ = std::fs::remove_file(path.with_extension("bootstrap.lock"));
+    }
+
+    #[test]
+    fn protocol_15_older_pending_cold_target_is_replaced_by_live_handoff_request() {
+        let (path, listener) = test_listener("protocol-15-older-pending-target");
+        let server_path = path.clone();
+        let executable = std::env::current_exe().unwrap();
+        let target_id = binary_identity(&executable).unwrap();
+        let legacy_id = binary_identity_with_version(&executable, "0.26.2").unwrap();
+        let expected_binary = executable.clone();
+        let server = thread::spawn(move || {
+            for step in 0..5 {
+                let (mut stream, _) = listener.accept().unwrap();
+                assert_eq!(
+                    read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+                    Request::Hello {
+                        protocol: PROTOCOL_VERSION
+                    }
+                );
+                stream.write_all(b"{\"type\":\"hello\",\"data\":{\"protocol\":15,\"epoch\":7,\"capabilities\":{\"lifecycle_coordination\":true,\"version_coordination\":true,\"daemon_revision_coordination\":true,\"live_handoff\":true}}}\n").unwrap();
+                if step < 2 {
+                    continue;
+                }
+                let request = read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap();
+                match step {
+                    2 => {
+                        assert_eq!(request, Request::LifecycleStatus);
+                        send_response(
+                            &mut stream,
+                            &Response::Lifecycle(super::super::domain::DaemonLifecycle {
+                                protocol: 15,
+                                epoch: 7,
+                                binary_id: "0.26.2:1:2:3:1".into(),
+                                version: "0.26.2".into(),
+                                daemon_revision: 8,
+                                started_unix_ms: 1,
+                                phase: super::super::domain::DaemonPhase::ReplacementPending,
+                                live_runtimes: 11,
+                                active_clients: 1,
+                                active_tuis: 0,
+                                recovered_from_backup: false,
+                                replacement_target: Some("0.28.0:1:2:3:2".into()),
+                                replacement_target_version: "0.28.0".into(),
+                                replacement_blockers: vec![
+                                    super::super::domain::ReplacementBlocker::WorkingAgent,
+                                ],
+                            }),
+                        );
+                    }
+                    3 | 4 => {
+                        assert_eq!(
+                            request,
+                            Request::PrepareHandoff {
+                                target_binary_id: if step == 3 {
+                                    target_id.clone()
+                                } else {
+                                    legacy_id.clone()
+                                },
+                                target_version: if step == 3 {
+                                    super::super::protocol::WSX_VERSION.into()
+                                } else {
+                                    "0.26.2".into()
+                                },
+                                target_protocol: PROTOCOL_VERSION,
+                                target_daemon_revision: super::super::protocol::DAEMON_REVISION,
+                                executable: expected_binary.clone(),
+                            }
+                        );
+                        send_response(
+                            &mut stream,
+                            &if step == 3 {
+                                Response::Error(super::super::protocol::ApiError::new(
+                                    "invalid_handoff_target",
+                                    "legacy executable version prefix",
+                                ))
+                            } else {
+                                Response::Replacement {
+                                    disposition:
+                                        super::super::domain::ReplacementDisposition::Deferred,
+                                    live_runtimes: 11,
+                                    daemon_version: "0.26.2".into(),
+                                    target_version: "0.26.2".into(),
+                                    blockers: vec![
+                                        super::super::domain::ReplacementBlocker::OtherTui,
+                                    ],
+                                    use_current_daemon: false,
+                                }
+                            },
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            drop(listener);
+            std::fs::remove_file(server_path).unwrap();
+        });
+        let availability =
+            ensure_available_with_binary(&Client::new(path.clone()), false, &executable).unwrap();
+        assert_eq!(
+            availability,
+            Availability::ReplacementDeferred {
+                daemon_version: "0.26.2".into(),
+                target_version: "0.26.2".into(),
+                live_runtimes: 11,
+                blockers: vec![super::super::domain::ReplacementBlocker::OtherTui],
+            }
+        );
+        server.join().unwrap();
+        let _ = std::fs::remove_file(path.with_extension("bootstrap.lock"));
+    }
+
+    #[test]
     fn custom_client_never_spawns_a_default_daemon() {
         let (path, listener) = test_listener("custom-no-recovery");
         drop(listener);
@@ -2474,30 +2891,60 @@ mod tests {
                     protocol: PROTOCOL_VERSION
                 }
             );
+            let capabilities = super::super::domain::Capabilities {
+                lifecycle_coordination: true,
+                ..Default::default()
+            };
             send_response(
                 &mut stream,
                 &Response::Hello {
-                    protocol: PROTOCOL_VERSION - 1,
+                    protocol: 15,
                     epoch: 1,
-                    capabilities: super::super::domain::Capabilities::default(),
+                    capabilities,
                 },
             );
             assert_eq!(
-                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES)
-                    .unwrap_err()
-                    .kind(),
-                io::ErrorKind::UnexpectedEof
+                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+                Request::LifecycleStatus
+            );
+            send_response(
+                &mut stream,
+                &Response::Lifecycle(super::super::domain::DaemonLifecycle {
+                    protocol: 15,
+                    epoch: 1,
+                    binary_id: "0.28.0:1:2:3:4".into(),
+                    version: "0.28.0".into(),
+                    daemon_revision: 13,
+                    started_unix_ms: 1,
+                    phase: super::super::domain::DaemonPhase::ReplacementPending,
+                    live_runtimes: 3,
+                    active_clients: 2,
+                    active_tuis: 1,
+                    recovered_from_backup: false,
+                    replacement_target: Some("0.28.1:1:2:3:5".into()),
+                    replacement_target_version: "0.28.1".into(),
+                    replacement_blockers: vec![
+                        super::super::domain::ReplacementBlocker::WorkingAgent,
+                    ],
+                }),
             );
             drop(listener);
             std::fs::remove_file(server_path).unwrap();
         });
 
-        assert_eq!(
+        assert!(matches!(
             Client::new(path).status().unwrap(),
             DaemonStatus::Incompatible {
-                daemon_protocol: Some(PROTOCOL_VERSION - 1),
-            }
-        );
+                daemon_protocol: Some(15),
+                lifecycle: Some(lifecycle),
+                lifecycle_error: None,
+            } if lifecycle.phase == super::super::domain::DaemonPhase::ReplacementPending
+                && lifecycle.live_runtimes == 3
+                && lifecycle.active_clients == 2
+                && lifecycle.active_tuis == 1
+                && lifecycle.replacement_blockers
+                    == [super::super::domain::ReplacementBlocker::WorkingAgent]
+        ));
         server.join().unwrap();
     }
 

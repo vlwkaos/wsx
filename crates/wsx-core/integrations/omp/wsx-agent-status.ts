@@ -1,10 +1,15 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=12
+// WSX_INTEGRATION_VERSION=13
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 const pane = process.env.WSX_PANE_ID;
 const reportBin = process.env.WSX_AGENT_REPORT_BIN || "wsx";
+const presenceId = randomUUID();
+let presenceActive = false;
+let presenceInFlight = false;
+let presenceHeartbeat: ReturnType<typeof setInterval> | undefined;
 let blocked = 0;
 let active = false;
 let currentContext: any;
@@ -36,6 +41,7 @@ function report(
     "agent", "report", pane, "--provider", "omp", "--state", state, "--lifecycle",
   ];
   if (!attached) args.push("--detached");
+  else args.push("--presence-id", presenceId);
   if (sessionPath) args.push("--session-path", sessionPath);
   else if (sessionId) args.push("--session-id", sessionId);
   pendingArgs = args;
@@ -66,18 +72,37 @@ function drain(): void {
   });
 }
 
+// ^ crates/wsx-daemon/src/lib.rs expires this ephemeral presence lease without
+// changing the separately reported lifecycle state on each renewal.
+function renewPresence(): void {
+  if (!presenceActive || presenceInFlight || !pane) return;
+  presenceInFlight = true;
+  execFile(reportBin, ["agent", "presence-renew", pane, "--presence-id", presenceId],
+    { timeout: 1000, windowsHide: true }, () => { presenceInFlight = false; });
+}
+
 export default function wsxOmpAgentStatus(pi: any): void {
   const current = (ctx: any) => {
     currentContext = ctx;
     report(blocked > 0 ? "blocked" : active ? "working" : "idle", ctx);
   };
-  pi.on("session_start", (_event: any, ctx: any) => current(ctx));
+  pi.on("session_start", (_event: any, ctx: any) => {
+    presenceActive = true;
+    if (presenceHeartbeat === undefined) {
+      presenceHeartbeat = setInterval(renewPresence, 10_000);
+      presenceHeartbeat.unref?.();
+    }
+    current(ctx);
+  });
   pi.on("session_switch", (_event: any, ctx: any) => {
     blocked = 0;
     active = false;
     current(ctx);
   });
   pi.on("session_shutdown", async (_event: any, ctx: any) => {
+    presenceActive = false;
+    if (presenceHeartbeat !== undefined) clearInterval(presenceHeartbeat);
+    presenceHeartbeat = undefined;
     blocked = 0;
     active = false;
     report("idle", ctx, false);

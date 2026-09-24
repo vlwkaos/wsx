@@ -741,6 +741,7 @@ fn report_claude_ready(daemon: &DaemonGuard, invocation: &ClaudeInvocation) {
                 provider: "claude".into(),
                 state: AgentState::Idle,
                 attached: true,
+                presence_id: None,
                 conversation_id: invocation.args.get(1).cloned(),
                 session_ref: invocation
                     .args

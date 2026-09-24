@@ -199,6 +199,7 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
     let pid = reported_pid(&initial_output);
     let runtime_generation = reported_value(&initial_output, "gen=[");
     let old_epoch = stream.epoch();
+    let presence_id = "924fe57b-48e4-416c-b4a7-f451c028dc58";
     assert!(matches!(
         client
             .call(&Request::AgentReport {
@@ -207,6 +208,7 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
                 provider: "pi".into(),
                 state: AgentState::Working,
                 attached: true,
+                presence_id: Some(presence_id.into()),
                 conversation_id: None,
                 session_ref: None,
                 wake_token: None,
@@ -309,6 +311,25 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
     assert_eq!(after.panes.len(), 1);
     assert_eq!(after.panes[0].id, pane);
     assert_eq!(after.panes[0].terminal_id, terminal_id);
+    assert_eq!(
+        after.panes[0]
+            .agent
+            .as_ref()
+            .unwrap()
+            .presence_id
+            .as_deref(),
+        Some(presence_id)
+    );
+    assert!(matches!(
+        client
+            .call(&Request::AgentPresenceRenew {
+                pane_id: pane,
+                runtime_generation: runtime_generation.clone(),
+                presence_id: presence_id.into(),
+            })
+            .unwrap(),
+        Response::Ack { .. }
+    ));
 
     assert!(matches!(
         client
@@ -318,6 +339,7 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
                 provider: "pi".into(),
                 state: AgentState::Done,
                 attached: true,
+                presence_id: Some(presence_id.into()),
                 conversation_id: None,
                 session_ref: None,
                 wake_token: None,
@@ -337,6 +359,29 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
         projected.panes[0].agent.as_ref().unwrap().state,
         AgentState::Done
     );
+
+    // The shell survives an adapter crash; no further presence renewal arrives.
+    // The successor must detach the provider without terminating its PTY.
+    let expiry_deadline = Instant::now() + Duration::from_secs(35);
+    loop {
+        let current = match client.call(&Request::Snapshot).unwrap() {
+            Response::Snapshot(snapshot) => snapshot,
+            response => panic!("unexpected snapshot response: {response:?}"),
+        };
+        assert!(!current.panes[0].exited);
+        if !current.panes[0].agent.as_ref().unwrap().attached {
+            assert_eq!(
+                current.panes[0].agent.as_ref().unwrap().state,
+                AgentState::Unknown
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < expiry_deadline,
+            "stale agent remained attached"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
 
     let stream = TerminalStream::connect(&client, pane, 101, true, 12, 60).unwrap();
     stream

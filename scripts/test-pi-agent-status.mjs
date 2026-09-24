@@ -100,18 +100,16 @@ const pi = {
 const emit = async (name, ...args) => {
   for (const handler of handlers.get(name) ?? []) await handler(...args);
 };
-const states = () => {
-  let lines;
+const commands = () => {
   try {
-    lines = fs.readFileSync(reportLog, "utf8").trim().split("\n").filter(Boolean);
+    return fs.readFileSync(reportLog, "utf8").trim().split("\n")
+      .filter(Boolean).map((line) => JSON.parse(line));
   } catch {
     return [];
   }
-  return lines.map((line) => {
-    const args = JSON.parse(line);
-    return args[args.indexOf("--state") + 1];
-  });
 };
+const states = () => commands().filter((args) => args[1] === "report")
+  .map((args) => args[args.indexOf("--state") + 1]);
 const waitFor = async (predicate, message, timeoutMs = 2_000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -139,6 +137,13 @@ let shutdownComplete = false;
 try {
   await emit("session_start", {}, ctx);
   await waitFor(() => states().at(-1) === "idle", "session start should report idle");
+  const initial = commands().at(-1);
+  const presenceId = initial[initial.indexOf("--presence-id") + 1];
+  assert.match(presenceId, /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i);
+  await waitFor(() => commands().some((args) =>
+    args[1] === "presence-renew" && args.at(-1) === presenceId),
+  "idle agent must renew presence", 12_000);
+  assert.equal(states().at(-1), "idle", "renewal must not publish a state report");
 
   await emit("agent_start", {}, ctx);
   await waitFor(() => states().at(-1) === "working", "agent start should report working");
@@ -180,6 +185,8 @@ try {
   await emit("session_shutdown", {}, ctx);
   shutdownComplete = true;
   assert.equal(states().at(-1), "idle");
+  assert.equal(commands().at(-1).includes("--presence-id"), false,
+    "shutdown must not claim live presence");
 } finally {
   if (!shutdownComplete) {
     fs.writeFileSync(failureCount, "0");
