@@ -895,8 +895,11 @@ pub struct App {
     fetch_tx: mpsc::Sender<(PathBuf, FetchOutcome)>,
     fetch_rx: mpsc::Receiver<(PathBuf, FetchOutcome)>,
     fetch_pending: HashSet<PathBuf>,
-    /// true when workspace state has changed since the last cache write.
+    /// Retry pending commands without publishing the surrounding presentation snapshot.
     cache_dirty: bool,
+    cache_changes: wsx_core::cache::WorkspaceCacheChanges,
+    cache_cursor: (usize, Option<wsx_core::cache::CursorIdentity>),
+    cached_worktree_expansion: HashMap<String, bool>,
     /// Limits concurrent git-info threads to available CPU count.
     git_semaphore: GitSemaphore,
     /// path → (project_idx, worktree_idx) for O(1) async-result application.
@@ -964,6 +967,10 @@ pub struct App {
 }
 
 impl App {
+    pub fn muted_terminals(&self) -> &HashSet<String> {
+        &self.muted_terminal_ids
+    }
+
     pub fn new(mobile: bool) -> Result<Self> {
         let (config, config_warn) = GlobalConfig::load()?;
         let mut workspace = ops::workspace_from_config(&config);
@@ -983,6 +990,7 @@ impl App {
             cached_muted,
             acknowledged_outcomes,
             dismissed_integration_prompts,
+            cached_worktree_expansion,
         ) = wsx_core::cache::apply_cache(&mut workspace)?;
         let stored_group = match wsx_core::cache::load_group_selection() {
             Ok(group) => group,
@@ -1092,6 +1100,9 @@ impl App {
             fetch_rx,
             fetch_pending: HashSet::new(),
             cache_dirty: false,
+            cache_changes: Default::default(),
+            cache_cursor: (raw_selected, cursor_identity.clone()),
+            cached_worktree_expansion,
             worktree_index,
             git_semaphore: GitSemaphore::new(
                 std::thread::available_parallelism()
@@ -1349,6 +1360,9 @@ impl App {
                     .collect::<Vec<_>>();
                 for target in &installed {
                     self.dismissed_integration_prompts.remove(target);
+                    self.cache_changes
+                        .dismissed_integration_prompts
+                        .insert(*target, false);
                     if let Ok(metadata) = wsx_core::integration::metadata(*target) {
                         if let Some(current) = self
                             .integration_metadata
@@ -1409,12 +1423,21 @@ impl App {
         if !matches!(policy, AutoCollapsePolicy::Adaptive { .. })
             && !self.adaptive_collapse.is_empty()
         {
-            self.adaptive_collapse.clear();
+            for (path, _) in std::mem::take(&mut self.adaptive_collapse) {
+                let change = self.cache_changes.projects.entry(path.clone()).or_default();
+                change.observed_touch_unix_ms = self
+                    .project_touched_unix_ms
+                    .get(&path)
+                    .copied()
+                    .unwrap_or(0);
+                change.adaptive = Some(None);
+            }
             self.mark_dirty();
         }
         let now_unix_ms = unix_time_millis();
         let mut changed = false;
         for project in &mut self.workspace.projects {
+            let previous_adaptive = self.adaptive_collapse.get(&project.path).copied();
             let window_ms = match policy {
                 AutoCollapsePolicy::Disabled => continue,
                 AutoCollapsePolicy::Flat { hours } => hours.saturating_mul(MILLIS_PER_HOUR),
@@ -1435,6 +1458,24 @@ impl App {
                     state.window_ms()
                 }
             };
+            if self.adaptive_collapse.get(&project.path).copied() != previous_adaptive {
+                let change = self
+                    .cache_changes
+                    .projects
+                    .entry(project.path.clone())
+                    .or_default();
+                change.observed_touch_unix_ms = self
+                    .project_touched_unix_ms
+                    .get(&project.path)
+                    .copied()
+                    .unwrap_or(0);
+                change.adaptive = Some(
+                    self.adaptive_collapse
+                        .get(&project.path)
+                        .copied()
+                        .map(Into::into),
+                );
+            }
             if !project.expanded {
                 continue;
             }
@@ -1451,6 +1492,24 @@ impl App {
                         state.reset_after_expiry(base_hours);
                     }
                 }
+                let change = self
+                    .cache_changes
+                    .projects
+                    .entry(project.path.clone())
+                    .or_default();
+                change.observed_touch_unix_ms = self
+                    .project_touched_unix_ms
+                    .get(&project.path)
+                    .copied()
+                    .unwrap_or(0);
+                change.expanded = Some(false);
+                change.stale = Some(true);
+                change.adaptive = Some(
+                    self.adaptive_collapse
+                        .get(&project.path)
+                        .copied()
+                        .map(Into::into),
+                );
                 changed = true;
             }
         }
@@ -1549,11 +1608,14 @@ impl App {
         *generation
     }
 
-    pub fn run(&mut self, terminal: &mut Tui) -> Result<()> {
+    pub fn run(&mut self, terminal: &mut Tui, session: &tui::TerminalSession) -> Result<()> {
         // Kick off async git_info for all worktrees; render immediately with cached data.
         // Results arrive via drain_async_results() in the main loop without blocking.
         self.spawn_git_local_for_all();
         loop {
+            if let Some(failure) = session.take_worker_failure() {
+                self.set_error(failure);
+            }
             if self.suspend_detector.resumed() {
                 self.begin_resume_boundary();
             }
@@ -1628,6 +1690,9 @@ impl App {
                 }
                 terminal_sidebar_action = action == Action::ToggleTerminalSidebar;
                 if let Err(e) = self.dispatch(action, terminal) {
+                    if e.is::<tui::TerminalModeError>() {
+                        return Err(e);
+                    }
                     self.set_error(format!("Action failed: {e}"));
                 }
             }
@@ -2506,29 +2571,69 @@ impl App {
         }
     }
 
-    pub fn flush_cache(&mut self) {
-        self.persist_state(true);
+    pub fn flush_cache(&mut self) -> Result<()> {
+        self.persist_state(true)
     }
 
-    /// Single write point — both cache and session snapshot always written together.
-    /// `sync=true` on quit (fsync), `sync=false` on periodic writes.
-    fn persist_state(&mut self, sync: bool) {
+    // ^ docs/ui-state-ownership.md: observations cannot overwrite another client's intent.
+    fn persist_state(&mut self, sync: bool) -> Result<()> {
         self.ensure_flat();
-        let snapshot = wsx_core::cache::WorkspaceCacheSnapshot {
-            workspace: &self.workspace,
-            tree_selected: self.tree_selected,
-            flat: &self.cached_flat,
-            project_touched_unix_ms: &self.project_touched_unix_ms,
-            stale_collapsed_projects: &self.stale_collapsed_projects,
-            adaptive_collapse: &self.adaptive_collapse,
-            dismissed_integration_prompts: &self.dismissed_integration_prompts,
-        };
-        if let Some(error) = wsx_core::cache::save_cache(snapshot, sync) {
-            self.set_error(error);
-            self.cache_dirty = true;
-        } else {
-            self.cache_dirty = false;
+        let cursor = (
+            self.tree_selected,
+            wsx_core::cache::resolve_cursor_identity(
+                &self.workspace,
+                &self.cached_flat,
+                self.tree_selected,
+            ),
+        );
+        if cursor != self.cache_cursor {
+            self.cache_changes.cursor = Some(cursor.clone());
         }
+        let committed = match self.cache_changes.save(sync) {
+            Ok(committed) => committed,
+            Err(error) => {
+                self.set_error(format!("Cache save failed: {error}"));
+                self.cache_dirty = true;
+                return Err(error.context("could not persist UI intent"));
+            }
+        };
+        let projects_changed = !committed.is_empty();
+        for (path, state) in committed {
+            if let Some(touched) = state.touched_unix_ms {
+                self.project_touched_unix_ms.insert(path.clone(), touched);
+            }
+            if state.stale {
+                self.stale_collapsed_projects.insert(path.clone());
+            } else {
+                self.stale_collapsed_projects.remove(&path);
+            }
+            if let Some(adaptive) = state.adaptive {
+                self.adaptive_collapse.insert(path.clone(), adaptive);
+            } else {
+                self.adaptive_collapse.remove(&path);
+            }
+            if let Some(project) = self
+                .workspace
+                .projects
+                .iter_mut()
+                .find(|project| project.path == path)
+            {
+                if let Some(expanded) = state.expanded {
+                    project.expanded = expanded;
+                }
+                if let Some(expanded) = state.routines_expanded {
+                    project.routines_expanded = expanded;
+                }
+            }
+        }
+        if projects_changed {
+            self.recompute_visible();
+            self.needs_redraw = true;
+        }
+        self.cache_changes = Default::default();
+        self.cache_cursor = cursor;
+        self.cache_dirty = false;
+        Ok(())
     }
 
     fn mark_dirty(&mut self) {
@@ -2543,7 +2648,7 @@ impl App {
 
     fn write_cache_if_dirty(&mut self) {
         if self.cache_dirty {
-            self.persist_state(false);
+            let _ = self.persist_state(false);
         }
     }
 
@@ -2754,6 +2859,26 @@ impl App {
         if let Err(error) = refresh {
             self.set_error(format!("Runtime snapshot rejected: {error}"));
             return;
+        }
+        for worktree in self
+            .workspace
+            .projects
+            .iter_mut()
+            .flat_map(|project| &mut project.worktrees)
+        {
+            if let Some(expanded) = self
+                .cached_worktree_expansion
+                .remove(&worktree.path.to_string_lossy().into_owned())
+            {
+                // Apply saved presentation once when asynchronous discovery first creates this row.
+                if !self
+                    .cache_changes
+                    .worktree_expanded
+                    .contains_key(&worktree.path)
+                {
+                    worktree.expanded = expanded;
+                }
+            }
         }
         self.reconcile_pending_session_orders();
         self.collapse_stale_projects();
@@ -3196,18 +3321,49 @@ impl App {
             .insert(path.clone(), now_unix_ms);
         if let AutoCollapsePolicy::Adaptive { base_hours } = self.config.auto_collapse {
             self.adaptive_collapse
-                .entry(path)
+                .entry(path.clone())
                 .and_modify(|state| {
                     state.observe(base_hours, now_unix_ms);
                 })
                 .or_insert_with(|| AdaptiveCollapseState::new(base_hours, now_unix_ms));
         }
+        let change = self.cache_changes.projects.entry(path.clone()).or_default();
+        change.observed_touch_unix_ms = now_unix_ms;
+        change.touched_unix_ms = Some(now_unix_ms);
+        change.stale = Some(false);
+        change.adaptive = Some(self.adaptive_collapse.get(&path).copied().map(Into::into));
         self.mark_dirty();
+    }
+
+    fn set_worktree_expanded(&mut self, pi: usize, wi: usize, expanded: bool) {
+        if let Some(worktree) = self.workspace.worktree_mut(pi, wi) {
+            worktree.expanded = expanded;
+            self.cache_changes
+                .worktree_expanded
+                .insert(worktree.path.clone(), expanded);
+            self.mark_dirty();
+        }
+    }
+
+    fn set_routines_expanded(&mut self, pi: usize, expanded: bool) {
+        let project = &mut self.workspace.projects[pi];
+        project.routines_expanded = expanded;
+        self.cache_changes
+            .projects
+            .entry(project.path.clone())
+            .or_default()
+            .routines_expanded = Some(expanded);
+        self.touch_project(pi);
     }
 
     fn manually_expand_project(&mut self, project_idx: usize) {
         if let Some(project) = self.workspace.projects.get_mut(project_idx) {
             project.expanded = true;
+            self.cache_changes
+                .projects
+                .entry(project.path.clone())
+                .or_default()
+                .expanded = Some(true);
             self.touch_project(project_idx);
         }
     }
@@ -3215,6 +3371,11 @@ impl App {
     fn manually_collapse_project(&mut self, project_idx: usize) {
         if let Some(project) = self.workspace.projects.get_mut(project_idx) {
             project.expanded = false;
+            self.cache_changes
+                .projects
+                .entry(project.path.clone())
+                .or_default()
+                .expanded = Some(false);
             self.touch_project(project_idx);
         }
     }
@@ -3246,7 +3407,7 @@ impl App {
             }
             Some(FlatEntry::Worktree { project_idx: pi, worktree_idx: wi }) => {
                 if self.workspace.projects[pi].worktrees[wi].expanded {
-                    self.workspace.projects[pi].worktrees[wi].expanded = false;
+                    self.set_worktree_expanded(pi, wi, false);
                     self.touch_project(pi);
                     self.rebuild_flat();
                     self.clamp_selected();
@@ -3281,8 +3442,7 @@ impl App {
             }
             Some(FlatEntry::RoutinesHeader { project_idx: pi }) => {
                 if self.workspace.projects[pi].routines_expanded {
-                    self.workspace.projects[pi].routines_expanded = false;
-                    self.touch_project(pi);
+                    self.set_routines_expanded(pi, false);
                     self.rebuild_flat();
                     self.clamp_selected();
                 } else if let Some(pos) = self.flat().iter().position(|entry| matches!(entry, FlatEntry::Project { idx } if *idx == pi)) {
@@ -3316,7 +3476,7 @@ impl App {
                 worktree_idx: wi,
             }) => {
                 if !self.workspace.projects[pi].worktrees[wi].expanded {
-                    self.workspace.projects[pi].worktrees[wi].expanded = true;
+                    self.set_worktree_expanded(pi, wi, true);
                     self.touch_project(pi);
                     self.rebuild_flat();
                 } else if !self.workspace.projects[pi].worktrees[wi]
@@ -3329,8 +3489,7 @@ impl App {
             }
             Some(FlatEntry::RoutinesHeader { project_idx: pi }) => {
                 if !self.workspace.projects[pi].routines_expanded {
-                    self.workspace.projects[pi].routines_expanded = true;
-                    self.touch_project(pi);
+                    self.set_routines_expanded(pi, true);
                     self.rebuild_flat();
                 } else if !self.workspace.projects[pi].routines.is_empty() {
                     self.tree_selected += 1;
@@ -3591,6 +3750,8 @@ impl App {
                     | Action::PrevAttention
                     | Action::NextSession
                     | Action::PrevSession
+                    | Action::NextContextSession
+                    | Action::PrevContextSession
                     | Action::GroupNext
                     | Action::GroupPrev
             )
@@ -3617,6 +3778,8 @@ impl App {
             Action::PrevAttention => self.action_switch_attention(-1, terminal)?,
             Action::NextSession => self.action_switch_sibling_session(1, terminal)?,
             Action::PrevSession => self.action_switch_sibling_session(-1, terminal)?,
+            Action::NextContextSession => self.action_switch_context_session(1, terminal)?,
+            Action::PrevContextSession => self.action_switch_context_session(-1, terminal)?,
             Action::GroupNext => self.action_switch_group(1, terminal)?,
             Action::GroupPrev => self.action_switch_group(-1, terminal)?,
             Action::TerminalKey(key) => self.send_terminal_keys([key]),
@@ -4036,7 +4199,12 @@ impl App {
                         purpose: GroupManagerPurpose::Switch,
                     });
                 if let Some(targets) = dismissed_integrations {
-                    self.dismissed_integration_prompts.extend(targets);
+                    for target in targets {
+                        self.dismissed_integration_prompts.insert(target);
+                        self.cache_changes
+                            .dismissed_integration_prompts
+                            .insert(target, true);
+                    }
                     self.mark_dirty();
                     self.write_cache_if_dirty();
                 }
@@ -4297,16 +4465,15 @@ impl App {
                 self.clamp_selected();
             }
             Selection::Worktree(pi, wi) => {
-                self.workspace.projects[pi].worktrees[wi].expanded =
-                    !self.workspace.projects[pi].worktrees[wi].expanded;
+                let expanded = !self.workspace.projects[pi].worktrees[wi].expanded;
+                self.set_worktree_expanded(pi, wi, expanded);
                 self.touch_project(pi);
                 self.rebuild_flat();
                 self.clamp_selected();
             }
             Selection::RoutinesHeader(pi) => {
-                self.workspace.projects[pi].routines_expanded =
-                    !self.workspace.projects[pi].routines_expanded;
-                self.touch_project(pi);
+                let expanded = !self.workspace.projects[pi].routines_expanded;
+                self.set_routines_expanded(pi, expanded);
                 self.rebuild_flat();
                 self.clamp_selected();
             }
@@ -4368,10 +4535,16 @@ impl App {
         if was_muted {
             for terminal_id in muted_ids {
                 self.muted_terminal_ids.remove(&terminal_id);
+                self.cache_changes
+                    .muted_terminals
+                    .insert(terminal_id, false);
             }
         }
         if let Some((terminal_id, revision)) = acknowledged.as_ref() {
             self.acknowledged_outcomes
+                .insert(terminal_id.clone(), *revision);
+            self.cache_changes
+                .acknowledged_outcomes
                 .insert(terminal_id.clone(), *revision);
         }
         if was_muted || acknowledged.is_some() {
@@ -5282,28 +5455,7 @@ impl App {
         };
 
         self.set_active_group(group);
-        self.manually_expand_project(project_idx);
-        if let Some(worktree) = self
-            .workspace
-            .projects
-            .get_mut(project_idx)
-            .and_then(|project| project.worktrees.get_mut(worktree_idx))
-        {
-            worktree.expanded = true;
-        }
-        self.mark_dirty();
-        self.rebuild_flat();
-        let target = self.flat().iter().position(|entry| {
-            matches!(
-                entry,
-                FlatEntry::Session {
-                    project_idx: pi,
-                    worktree_idx: wi,
-                    session_idx: si,
-                } if *pi == project_idx && *wi == worktree_idx && *si == session_idx
-            )
-        });
-        let Some(target) = target else {
+        let Some(target) = self.reveal_session(project_idx, worktree_idx, session_idx) else {
             self.set_error("Group session could not be selected");
             return Ok(());
         };
@@ -5344,6 +5496,58 @@ impl App {
             return Ok(());
         };
         self.switch_to_flat_session(target, terminal)
+    }
+
+    // ^ docs/terminal-context.md: cycle the shared ranked ring, not flat tree rows
+    // or the first visible peer; both would miss collapsed worktrees or starve peers.
+    fn context_session_target(&self, dir: isize) -> Option<(usize, usize, usize)> {
+        let (pi, wi, si) = match self.current_selection() {
+            Selection::Session(pi, wi, si) | Selection::Pane(pi, wi, si, _) => (pi, wi, si),
+            _ => return None,
+        };
+        let project = self.workspace.projects.get(pi)?;
+        let order: Vec<_> = session_state::context_sessions(project)
+            .map(|(wi, si, _)| (pi, wi, si))
+            .collect();
+        if order.len() <= 1 {
+            return None;
+        }
+        let current = order
+            .iter()
+            .position(|&position| position == (pi, wi, si))?;
+        let next = cyclic_sibling_index(current, order.len(), dir)?;
+        Some(order[next])
+    }
+
+    fn action_switch_context_session(&mut self, dir: isize, terminal: &mut Tui) -> Result<()> {
+        let Some((pi, wi, si)) = self.context_session_target(dir) else {
+            self.set_status("No other sessions in this project");
+            return Ok(());
+        };
+        let Some(target) = self.reveal_session(pi, wi, si) else {
+            self.set_status("Project session could not be selected");
+            return Ok(());
+        };
+        self.switch_to_flat_session(target, terminal)
+    }
+
+    fn reveal_session(
+        &mut self,
+        project_idx: usize,
+        worktree_idx: usize,
+        session_idx: usize,
+    ) -> Option<usize> {
+        self.workspace
+            .session(project_idx, worktree_idx, session_idx)?;
+        self.manually_expand_project(project_idx);
+        self.set_worktree_expanded(project_idx, worktree_idx, true);
+        self.rebuild_flat();
+        self.flat().iter().position(|entry| {
+            matches!(entry,
+                FlatEntry::Session { project_idx: pi, worktree_idx: wi, session_idx: si }
+                if *pi == project_idx && *wi == worktree_idx && *si == session_idx
+            )
+        })
     }
 
     fn switch_to_flat_session(&mut self, target: usize, terminal: &mut Tui) -> Result<()> {
@@ -5402,10 +5606,13 @@ impl App {
                 let muted = sess.muted;
                 let terminal_id = sess.terminal_id.to_string();
                 if muted {
-                    self.muted_terminal_ids.insert(terminal_id);
+                    self.muted_terminal_ids.insert(terminal_id.clone());
                 } else {
                     self.muted_terminal_ids.remove(&terminal_id);
                 }
+                self.cache_changes
+                    .muted_terminals
+                    .insert(terminal_id, muted);
                 self.mark_dirty();
                 return;
             }
@@ -5668,7 +5875,7 @@ impl App {
                     self.set_status(format!("Deleted group '{}'", group_name));
                 }
                 PendingAction::ShutdownDaemon => {
-                    self.persist_state(true);
+                    self.persist_state(true)?;
                     self.runtime_client.shutdown()?;
                     self.should_quit = true;
                 }
@@ -5766,9 +5973,7 @@ impl App {
         )?;
         self.set_status(format!("Session '{}' created", display_name));
         // Expand before the authoritative Runtime refresh reveals the new pane.
-        if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
-            wt.expanded = true;
-        }
+        self.set_worktree_expanded(pi, wi, true);
         self.spawn_runtime_refresh();
         Ok(())
     }
@@ -6667,6 +6872,9 @@ mod tests {
             fetch_rx,
             fetch_pending: HashSet::new(),
             cache_dirty: false,
+            cache_changes: Default::default(),
+            cache_cursor: (0, None),
+            cached_worktree_expansion: HashMap::new(),
             git_semaphore: GitSemaphore::new(1),
             worktree_index,
             runtime_client: test_runtime_client(),
@@ -9327,6 +9535,124 @@ mod tests {
     }
 
     #[test]
+    fn contextual_titlebar_tracks_the_current_session_without_changing_terminal_geometry() {
+        use wsx_core::config::global::{TerminalSidebar, TerminalTitlePosition};
+        let mut project = make_project("demo");
+        let mut main = make_worktree("/demo/main");
+        main.sessions = vec![
+            make_sess_with_id(1, runtime::AgentState::Working),
+            make_sess_with_id(2, runtime::AgentState::Idle),
+            make_sess_with_id(3, runtime::AgentState::Done),
+        ];
+        let mut fix = make_worktree("/demo/fix");
+        fix.name = "fix".into();
+        fix.expanded = false;
+        fix.sessions = vec![make_sess_with_id(4, runtime::AgentState::Blocked)];
+        project.worktrees = vec![main, fix];
+        let mut other = make_project("other");
+        let mut other_worktree = make_worktree("/other/main");
+        let mut outsider = make_sess_with_id(5, runtime::AgentState::Blocked);
+        outsider.display_name = "outside-project".into();
+        other_worktree.sessions = vec![outsider];
+        other.worktrees = vec![other_worktree];
+        let mut app = make_test_app(
+            GlobalConfig::default(),
+            WorkspaceState {
+                projects: vec![project, other],
+            },
+            None,
+        );
+        app.tree_selected = 2;
+        app.runtime_health = RuntimeHealth::Healthy {
+            last_success: Instant::now(),
+        };
+        for width in [120, 80, 56] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 18)).unwrap();
+            for sidebar in [TerminalSidebar::Compact, TerminalSidebar::Expanded] {
+                app.config.terminal_sidebar = sidebar;
+                for position in [TerminalTitlePosition::Bottom, TerminalTitlePosition::Top] {
+                    app.config.terminal_title_position = position;
+                    for interactive in [true, false] {
+                        app.mode = if interactive {
+                            Mode::Terminal {
+                                pane_id: runtime::PaneId(1),
+                            }
+                        } else {
+                            Mode::Workspace
+                        };
+                        terminal
+                            .draw(|frame| crate::ui::render(frame, &mut app))
+                            .unwrap();
+                        if width < 60 && !interactive {
+                            assert_eq!(app.preview_area, Rect::default());
+                            continue;
+                        }
+                        let left = if width < 60 {
+                            0
+                        } else if interactive && sidebar == TerminalSidebar::Compact {
+                            2
+                        } else {
+                            32
+                        };
+                        let title_y = if position == TerminalTitlePosition::Top {
+                            1
+                        } else {
+                            16
+                        };
+                        let viewport_y = if position == TerminalTitlePosition::Top {
+                            2
+                        } else {
+                            1
+                        };
+                        assert_eq!(
+                            app.terminal_area,
+                            Rect::new(left, viewport_y, width - left, 15)
+                        );
+                        let row: String = (left..width)
+                            .map(|x| terminal.backend().buffer()[(x, title_y)].symbol())
+                            .collect();
+                        assert!(row.starts_with(" ◎ session-1"), "{row}");
+                        assert!(!row.contains("outside-project"), "{row}");
+                        assert!(!row.contains(':'));
+                        if width == 120 {
+                            assert!(
+                                row.find("session-4@fix").unwrap() < row.find("session-3").unwrap(),
+                                "{row}"
+                            );
+                        }
+                        for x in left..width {
+                            assert_ne!(
+                                terminal.backend().buffer()[(x, title_y)].bg,
+                                ratatui::style::Color::Reset
+                            );
+                            assert_eq!(
+                                terminal.backend().buffer()[(x, viewport_y)].bg,
+                                ratatui::style::Color::Reset
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Selection, not cached title state, decides which identity is primary.
+        app.tree_selected = session_position(&app, 1);
+        app.mode = Mode::Terminal {
+            pane_id: runtime::PaneId(2),
+        };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 18)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        let row: String = (32..120)
+            .map(|x| terminal.backend().buffer()[(x, 1)].symbol())
+            .collect();
+        assert!(row.starts_with(" ○ session-2"), "{row}");
+        assert_eq!(app.current_selection(), Selection::Session(0, 0, 1));
+    }
+
+    #[test]
     fn compact_terminal_sidebar_tiny_height_degrades_without_panicking() {
         let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
         app.mode = Mode::Terminal {
@@ -9713,7 +10039,7 @@ mod tests {
             .map(|x| terminal.backend().buffer()[(x, 14)].symbol())
             .collect::<String>();
         assert!(
-            bottom_title.contains("mobile-terminal ›"),
+            bottom_title.contains("mobile-terminal/main"),
             "{bottom_title:?}"
         );
         let rendered = terminal
@@ -9724,7 +10050,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("workspace"), "{rendered:?}");
-        assert!(rendered.contains("mobile-terminal ›"), "{rendered:?}");
+        assert!(rendered.contains("mobile-terminal/main"), "{rendered:?}");
         assert!(rendered.contains("hello"), "{rendered:?}");
         assert!(!rendered.contains(")sidebar"), "{rendered:?}");
 
@@ -9736,7 +10062,7 @@ mod tests {
         let top_title = (0..56)
             .map(|x| terminal.backend().buffer()[(x, 1)].symbol())
             .collect::<String>();
-        assert!(top_title.contains("mobile-terminal ›"), "{top_title:?}");
+        assert!(top_title.contains("mobile-terminal/main"), "{top_title:?}");
     }
 
     #[test]
@@ -9787,6 +10113,87 @@ mod tests {
         assert_eq!(app.attention_target(-1), Some(session_position(&app, 5)));
         app.tree_selected = session_position(&app, 5);
         assert_eq!(app.attention_target(1), Some(session_position(&app, 4)));
+    }
+
+    #[test]
+    fn project_context_cycle_shares_title_order_and_reveals_collapsed_targets() {
+        let mut project = make_project("context");
+        let mut main = make_worktree("/context/main");
+        main.sessions = vec![
+            make_sess_with_id(1, runtime::AgentState::Done),
+            make_sess_with_id(2, runtime::AgentState::Working),
+            make_sess_with_id(3, runtime::AgentState::Idle),
+            make_sess_with_id(4, runtime::AgentState::Blocked),
+            make_sess_with_id(5, runtime::AgentState::Error),
+            make_sess_with_id(6, runtime::AgentState::Blocked),
+            make_sess_with_id(7, runtime::AgentState::Unknown),
+        ];
+        main.sessions[5].muted = true;
+        main.sessions[6].agent = None;
+        main.sessions[6].panes[0].agent = None;
+        main.sessions[6].panes[0].foreground_job = true;
+        let mut fix = make_worktree("/context/fix");
+        fix.expanded = false;
+        fix.sessions = vec![
+            make_sess_with_id(8, runtime::AgentState::Blocked),
+            make_sess_with_id(9, runtime::AgentState::Done),
+        ];
+        fix.sessions[1].outcome_acknowledged = true;
+        project.worktrees = vec![main, fix];
+        let mut outsider = make_project("outside");
+        let mut wt = make_worktree("/outside/main");
+        wt.sessions = vec![make_sess_with_id(10, runtime::AgentState::Blocked)];
+        outsider.worktrees = vec![wt];
+        let mut app = make_test_app(
+            GlobalConfig {
+                attention_priority: AttentionPriority::WorkspaceOrder,
+                ..GlobalConfig::default()
+            },
+            WorkspaceState {
+                projects: vec![project, outsider],
+            },
+            None,
+        );
+        let order = [
+            (0, 0, 3),
+            (0, 0, 4),
+            (0, 1, 0),
+            (0, 0, 0),
+            (0, 0, 1),
+            (0, 0, 6),
+            (0, 0, 2),
+            (0, 0, 5),
+            (0, 1, 1),
+        ];
+        assert!(!app.workspace.projects[0].worktrees[1].expanded);
+        app.tree_selected = app.reveal_session(0, 0, 4).unwrap();
+        assert_eq!(app.context_session_target(1), Some((0, 1, 0)));
+        app.tree_selected = app.reveal_session(0, 1, 0).unwrap();
+        assert!(app.workspace.projects[0].worktrees[1].expanded);
+        for (index, &(pi, wi, si)) in order.iter().enumerate() {
+            app.tree_selected = app.reveal_session(pi, wi, si).unwrap();
+            assert_eq!(
+                app.context_session_target(1),
+                Some(order[(index + 1) % order.len()])
+            );
+            assert_eq!(
+                app.context_session_target(-1),
+                Some(order[(index + order.len() - 1) % order.len()])
+            );
+        }
+        // Recompute from normalized live state rather than storing a stale queue.
+        app.workspace.projects[0].worktrees[1].sessions[0].outcome_acknowledged = false;
+        app.workspace.projects[0].worktrees[1].sessions[0].agent_status = runtime::AgentState::Done;
+        app.tree_selected = app.reveal_session(0, 0, 4).unwrap();
+        assert_eq!(app.context_session_target(1), Some((0, 0, 0)));
+        app.workspace.projects[0].worktrees[1].sessions[0].outcome_acknowledged = true;
+        app.tree_selected = app.reveal_session(0, 0, 0).unwrap();
+        assert_eq!(app.context_session_target(1), Some((0, 0, 1)));
+        app.workspace.projects[0].worktrees[0].sessions.clear();
+        app.workspace.projects[0].worktrees[1].sessions.truncate(1);
+        app.tree_selected = app.reveal_session(0, 1, 0).unwrap();
+        assert_eq!(app.context_session_target(1), None);
+        assert_eq!(app.context_session_target(-1), None);
     }
 
     #[test]

@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-10-03
+
+### Breaking Changes
+
+- Replace `WorkspaceCacheSnapshot`/`save_cache` with `WorkspaceCacheChanges`; `AppliedCache` gains saved worktree expansion. Rust callers must update cache APIs and tuple destructuring. `AgentSessionRef` gains optional `transcript_path`; use constructors or initialize that field. Legacy JSON still decodes.
+- Reserve `h` and `l` as Terminal prefix suffixes. Custom Workspace escape bindings using those keys must change.
+
+### Features
+
+- Add a colored terminal context bar with the current session, attention-ranked same-project peers, cross-worktree attribution and overflow. Prefix+h/l and Prefix+Left/Right cycle the full ranked ring, including folded worktrees. Existing attention and sibling navigation stay unchanged. Worktree preview ports appear on their owning session rows rather than in terminal titles.
+- Add `wsx agent context [target] --json` for exact target discovery, project/worktree metadata, advisory readiness, and bounded provider-native Claude, Pi/OMP and Codex history. Missing, unreadable, unsupported and ambiguous history is explicit; tools and reasoning stay excluded.
+- Add opt-in `--stash-draft` to Claude request/continuation. Preserve an idle multiline draft with the documented stash binding and require fresh empty editor evidence before delivery. Intent stays persisted when preparation or PTY delivery fails; protocol 16 is unchanged and separate request variants fail closed on older daemons.
+- Show dominant descendant status and an active-session count on folded project/worktree rows, including unfocused panes, without changing runtime authority or stale provenance.
+
+### Bug Fixes
+
+- Publish an upgrade-stable daemon-owned reporter link after ownership commits. Recover removed legacy reporter paths in updated adapters without replaying rejected reports. Accept integration updates and restart agents to load the recovery; live shells and PTYs stay running.
+- Release daemon state while waiting for a draft-stash ACK so fragmented PTY frames can finish in both initial and continued exchanges. Keep mutation and pane-operation fences.
+- Pin `anyhow` to `1.0.103`, which fixes the `Error::downcast_mut` unsoundness reported by RUSTSEC-2026-0190.
+- Observe foreground jobs promptly without inferring provider identity. Reject stale runtime scans, preserve event-reported Working until an interrupt has fresh terminal evidence, remove inherited Claude child-session markers from fresh panes, and report bounded shell-hook failures.
+- Keep exact pane lifecycle callbacks and context reads from starting or replacing a missing daemon. Preserve same-session transcript paths and refuse stale-generation updates.
+- Persist per-key UI intent under a bounded lock instead of complete window snapshots. Fence stale collapse, merge adaptive activity against durable state, preserve removals and revision acknowledgements, and load asynchronous worktree expansion once. Import the v2 cache into v3 without rewriting predecessors or allowing old writers to overwrite v3.
+- Keep terminal modes owned by the TUI thread. Restore them after startup/partial-init failures, owner panics and failed external editors; worker panics return bounded notices instead of changing terminal modes. Retain a private bounded metadata journal, never terminal contents.
+
+### Maintenance
+
+- Prepare the isolated non-web 0.29.0 workspace/pins/lock metadata, update integration version markers, add reporter and fragmented-PTY regressions, and repair isolated fixture setup. Preserve web, bridge and structured-conversation work for 0.30.0.
+
 ## [0.28.2] - 2026-09-24
 
 ### Bug Fixes

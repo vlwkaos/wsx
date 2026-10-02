@@ -6,13 +6,14 @@ const PI: &str = include_str!("../../integrations/pi/wsx-agent-status.ts");
 const OMP: &str = include_str!("../../integrations/omp/wsx-agent-status.ts");
 pub(crate) const OPENCODE_TUI: &str =
     include_str!("../../integrations/opencode/wsx-tui-session.js");
+pub(crate) const REPORTER: &str = include_str!("../../integrations/common/wsx-reporter.mjs");
 const HERMES: &str = include_str!("../../integrations/hermes/__init__.py");
 pub(crate) const HERMES_MANIFEST: &str = include_str!("../../integrations/hermes/plugin.yaml");
 
 pub(crate) fn primary(target: IntegrationTarget) -> String {
     match target {
-        IntegrationTarget::Pi => PI.to_string(),
-        IntegrationTarget::Omp => OMP.to_string(),
+        IntegrationTarget::Pi => PI.replace("../common/wsx-reporter.mjs", "./wsx-reporter.mjs"),
+        IntegrationTarget::Omp => OMP.replace("../common/wsx-reporter.mjs", "./wsx-reporter.mjs"),
         IntegrationTarget::Opencode | IntegrationTarget::Kilo => PLUGIN
             .replace("@VERSION@", &target.expected_version().to_string())
             .replace("@PROVIDER@", target.cli_value()),

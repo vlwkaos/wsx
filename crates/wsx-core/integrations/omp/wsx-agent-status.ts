@@ -1,6 +1,6 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=13
-import { execFile } from "node:child_process";
+// WSX_INTEGRATION_VERSION=14
+import { execReporter } from "../common/wsx-reporter.mjs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -66,7 +66,7 @@ function drain(): void {
   const args = pendingArgs;
   pendingArgs = undefined;
   sendInFlight = true;
-  execFile(reportBin, args, { timeout: 1000, windowsHide: true }, () => {
+  execReporter(reportBin, args, { timeout: 1000, windowsHide: true }, () => {
     sendInFlight = false;
     drain();
   });
@@ -77,7 +77,7 @@ function drain(): void {
 function renewPresence(): void {
   if (!presenceActive || presenceInFlight || !pane) return;
   presenceInFlight = true;
-  execFile(reportBin, ["agent", "presence-renew", pane, "--presence-id", presenceId],
+  execReporter(reportBin, ["agent", "presence-renew", pane, "--presence-id", presenceId],
     { timeout: 1000, windowsHide: true }, () => { presenceInFlight = false; });
 }
 

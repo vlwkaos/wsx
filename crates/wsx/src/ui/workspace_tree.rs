@@ -26,22 +26,26 @@ fn routine_tree_label(name: &str, status: &str) -> String {
     format!("  ◇ {name}{status}")
 }
 
-fn truncate_to_width(value: &str, max_width: usize) -> String {
+pub(super) fn truncate_to_width(value: &str, max_width: usize) -> String {
     if Line::from(value).width() <= max_width {
         return value.to_string();
     }
     if max_width == 0 {
         return String::new();
     }
-    let mut value = value.to_string();
-    while !value.is_empty() && Line::from(format!("{value}…")).width() > max_width {
-        value.pop();
+    let span = Span::raw(value);
+    let mut truncated = String::new();
+    let mut used = 0;
+    for grapheme in span.styled_graphemes(Style::default()) {
+        let width = Line::from(grapheme.symbol).width();
+        if used + width > max_width - 1 {
+            break;
+        }
+        truncated.push_str(grapheme.symbol);
+        used += width;
     }
-    if value.is_empty() {
-        "…".into()
-    } else {
-        format!("{value}…")
-    }
+    truncated.push('…');
+    truncated
 }
 
 fn stale_project_label(icon: &str, name: &str, count: &str, width: usize) -> String {
@@ -54,6 +58,64 @@ fn stale_project_label(icon: &str, name: &str, count: &str, width: usize) -> Str
     let identity = truncate_to_width(&format!("{icon} {name}{count}"), identity_width);
     let gap = width.saturating_sub(Line::from(identity.as_str()).width() + suffix_width);
     format!("{identity}{}{SUFFIX}", " ".repeat(gap))
+}
+
+fn folded_badge(summary: session_state::FoldedStatus, width: usize, frame: usize) -> Line<'static> {
+    let Some(state) = summary.dominant else {
+        return Line::default();
+    };
+    let (icon, color) = heuristic_icon(state, frame);
+    let status_style = Style::default().fg(color).remove_modifier(Modifier::DIM);
+    let active_style = Style::default()
+        .fg(theme::WORKING)
+        .remove_modifier(Modifier::DIM);
+    let mut badge = Line::from(vec![Span::styled(format!(" {icon}"), status_style)]);
+    if summary.active_sessions > 0 {
+        badge.spans.push(Span::styled(
+            format!(" {} active", summary.active_sessions),
+            active_style,
+        ));
+    }
+    if badge.width() > width {
+        badge = Line::from(Span::styled(truncate_to_width(icon, width), status_style));
+        if width >= 2
+            && summary.active_sessions > 0
+            && !matches!(
+                state,
+                session_state::SessionHeuristic::Working | session_state::SessionHeuristic::Running
+            )
+        {
+            badge.spans.push(Span::styled("●", active_style));
+        }
+    }
+    badge
+}
+
+fn folded_item<'a>(
+    label: Line<'a>,
+    style: Style,
+    badge: Line<'static>,
+    width: usize,
+) -> ListItem<'a> {
+    if badge.spans.is_empty() {
+        return ListItem::new(label).style(style);
+    }
+    let mut remaining = width.saturating_sub(badge.width());
+    let mut spans = Vec::new();
+    for span in label.spans {
+        if span.width() <= remaining {
+            remaining -= span.width();
+            spans.push(span);
+        } else {
+            spans.push(Span::styled(
+                truncate_to_width(&span.content, remaining),
+                span.style,
+            ));
+            break;
+        }
+    }
+    spans.extend(badge.spans);
+    ListItem::new(Line::from(spans)).style(style)
 }
 
 fn session_line(
@@ -104,6 +166,7 @@ fn session_line(
 }
 
 pub struct TreeView<'a> {
+    pub muted_terminals: &'a HashSet<String>,
     pub workspace: &'a WorkspaceState,
     pub flat: &'a [FlatEntry],
     pub stale_projects: &'a HashSet<usize>,
@@ -115,6 +178,7 @@ pub struct TreeView<'a> {
 }
 
 pub struct CompactTreeView<'a> {
+    pub muted_terminals: &'a HashSet<String>,
     pub workspace: &'a WorkspaceState,
     pub flat: &'a [FlatEntry],
     pub stale_projects: &'a HashSet<usize>,
@@ -127,11 +191,23 @@ fn compact_tree_cell(
     workspace: &WorkspaceState,
     entry: &FlatEntry,
     stale_projects: &HashSet<usize>,
+    muted_terminals: &HashSet<String>,
     animation_frame: usize,
 ) -> (&'static str, Style) {
     match entry {
         FlatEntry::Project { idx } => {
             let project = &workspace.projects[*idx];
+            if !project.expanded {
+                if let Some(state) = session_state::folded_status(
+                    project.worktrees.iter().flat_map(|wt| &wt.sessions),
+                    muted_terminals,
+                )
+                .dominant
+                {
+                    let (icon, color) = heuristic_icon(state, animation_frame);
+                    return (icon, Style::default().fg(color));
+                }
+            }
             if project.missing {
                 ("!", Style::default().fg(theme::BLOCKED))
             } else if stale_projects.contains(idx) {
@@ -147,6 +223,14 @@ fn compact_tree_cell(
             worktree_idx,
         } => {
             let worktree = &workspace.projects[*project_idx].worktrees[*worktree_idx];
+            if !worktree.expanded {
+                if let Some(state) =
+                    session_state::folded_status(&worktree.sessions, muted_terminals).dominant
+                {
+                    let (icon, color) = heuristic_icon(state, animation_frame);
+                    return (icon, Style::default().fg(color));
+                }
+            }
             let dirty = worktree
                 .git_info
                 .as_ref()
@@ -212,6 +296,7 @@ pub fn render_compact_tree(frame: &mut Frame, layout: SidebarLayout, view: Compa
                 view.workspace,
                 entry,
                 view.stale_projects,
+                view.muted_terminals,
                 view.animation_frame,
             );
             ListItem::new(Span::styled(symbol, style))
@@ -229,6 +314,7 @@ pub fn render_compact_tree(frame: &mut Frame, layout: SidebarLayout, view: Compa
 
 pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>) {
     let TreeView {
+        muted_terminals,
         workspace,
         flat,
         stale_projects,
@@ -243,6 +329,17 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
         .map(|entry| match entry {
             FlatEntry::Project { idx } => {
                 let p = &workspace.projects[*idx];
+                let width = usize::from(layout.list.width);
+                let summary = if p.expanded {
+                    session_state::FoldedStatus::default()
+                } else {
+                    session_state::folded_status(
+                        p.worktrees.iter().flat_map(|wt| &wt.sessions),
+                        muted_terminals,
+                    )
+                };
+                let badge = folded_badge(summary, width, animation_frame);
+                let label_width = width.saturating_sub(badge.width());
                 let icon = if p.expanded { "▼" } else { "▶" };
                 let count = if p.expanded {
                     String::new()
@@ -256,7 +353,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                     )
                 } else if stale_projects.contains(idx) {
                     (
-                        stale_project_label(icon, &p.name, &count, usize::from(layout.list.width)),
+                        stale_project_label(icon, &p.name, &count, label_width),
                         theme::stale_project(),
                     )
                 } else {
@@ -265,7 +362,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                         Style::default().fg(theme::ACCENT).bold(),
                     )
                 };
-                ListItem::new(label).style(style)
+                folded_item(Line::from(label), style, badge, width)
             }
             FlatEntry::Worktree {
                 project_idx,
@@ -336,7 +433,18 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                     spans.push(Span::raw(sess_badge));
                 }
 
-                ListItem::new(Line::from(spans)).style(Style::default().fg(theme::TEXT))
+                let width = usize::from(layout.list.width);
+                let summary = if wt.expanded {
+                    session_state::FoldedStatus::default()
+                } else {
+                    session_state::folded_status(&wt.sessions, muted_terminals)
+                };
+                folded_item(
+                    Line::from(spans),
+                    Style::default().fg(theme::TEXT),
+                    folded_badge(summary, width, animation_frame),
+                    width,
+                )
             }
             FlatEntry::Session {
                 project_idx,
@@ -432,7 +540,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
 
 const AGENT_WORKING_FRAMES: [&str; 4] = ["◎", "◉", "●", "◉"];
 
-fn session_icon(
+pub(super) fn session_icon(
     sess: &wsx_core::model::workspace::SessionInfo,
     animation_frame: usize,
 ) -> (&'static str, Color) {
@@ -452,26 +560,29 @@ pub(super) fn agent_state_icon(
     foreground_job: bool,
     animation_frame: usize,
 ) -> (&'static str, Color) {
-    use wsx_core::runtime::AgentState;
-    if muted {
-        return ("⊘", theme::TEXT_SUBTLE);
-    }
-    if foreground_job {
-        return ("●", theme::WORKING);
-    }
-    if state == AgentState::Done && outcome_acknowledged {
-        return ("○", theme::IDLE);
-    }
+    heuristic_icon(
+        session_state::derive_status(state, muted, outcome_acknowledged, foreground_job),
+        animation_frame,
+    )
+}
+
+fn heuristic_icon(
+    state: session_state::SessionHeuristic,
+    animation_frame: usize,
+) -> (&'static str, Color) {
+    use session_state::SessionHeuristic;
     match state {
-        AgentState::Blocked => ("◐", theme::BLOCKED),
-        AgentState::Done => ("✓", theme::SUCCESS),
-        AgentState::Working => (
+        SessionHeuristic::Muted => ("⊘", theme::TEXT_SUBTLE),
+        SessionHeuristic::Running => ("●", theme::WORKING),
+        SessionHeuristic::Blocked => ("◐", theme::BLOCKED),
+        SessionHeuristic::Done => ("✓", theme::SUCCESS),
+        SessionHeuristic::Working => (
             AGENT_WORKING_FRAMES[animation_frame % AGENT_WORKING_FRAMES.len()],
             theme::WORKING,
         ),
-        AgentState::Idle => ("○", theme::IDLE),
-        AgentState::Unknown => ("·", theme::UNKNOWN),
-        AgentState::Error => ("!", theme::BLOCKED),
+        SessionHeuristic::Idle => ("○", theme::IDLE),
+        SessionHeuristic::Unknown => ("·", theme::UNKNOWN),
+        SessionHeuristic::Error => ("!", theme::BLOCKED),
     }
 }
 
@@ -510,10 +621,13 @@ pub fn compute_scroll(selected: usize, visible_height: usize, current_offset: us
 #[cfg(test)]
 mod tests {
     use super::{
-        render_tree, routine_tree_label, sched_header_label, session_icon, session_line, TreeView,
+        compact_tree_cell, render_tree, routine_tree_label, sched_header_label, session_icon,
+        session_line, truncate_to_width, TreeView,
     };
     use crate::ui::{theme, workspace_nav::SidebarLayout};
-    use ratatui::{backend::TestBackend, widgets::Paragraph, Terminal};
+    use ratatui::{
+        backend::TestBackend, style::Modifier, text::Line, widgets::Paragraph, Terminal,
+    };
     use std::{collections::HashSet, path::PathBuf};
     use wsx_core::{
         config::global::PortVisibility,
@@ -600,6 +714,7 @@ mod tests {
                         workspace: &workspace,
                         flat: &flat,
                         stale_projects: &stale_projects,
+                        muted_terminals: &HashSet::new(),
                         selected: 2,
                         scroll_offset: 0,
                         is_move_mode: false,
@@ -637,6 +752,7 @@ mod tests {
                         workspace: &workspace,
                         flat: &flat,
                         stale_projects: &stale_projects,
+                        muted_terminals: &HashSet::new(),
                         selected: 0,
                         scroll_offset: 0,
                         is_move_mode: false,
@@ -659,6 +775,107 @@ mod tests {
         let selected_cell = &narrow.backend().buffer()[(1, 0)];
         assert_eq!(selected_cell.fg, theme::TEXT);
         assert_eq!(selected_cell.bg, theme::selected_row(false).bg.unwrap());
+    }
+
+    #[test]
+    fn folded_project_and_worktree_render_attention_active_count_and_stale_provenance() {
+        use wsx_core::model::workspace::{flatten_tree, WorktreeInfo};
+        let project = Project {
+            name: "project界e\u{301}👩‍💻long-name".into(),
+            path: "/project".into(),
+            default_branch: "main".into(),
+            last_agent_active_unix_ms: None,
+            last_terminal_active_unix_ms: None,
+            routines: vec![],
+            routine_revision: 0,
+            routines_expanded: false,
+            config: None,
+            expanded: false,
+            missing: false,
+            worktrees: vec![WorktreeInfo {
+                name: "project-main".into(),
+                branch: "main".into(),
+                path: "/project/main".into(),
+                is_main: true,
+                alias: None,
+                expanded: false,
+                git_info: None,
+                fetch_failed: false,
+                fetch_fail_count: 0,
+                fetch_fail_reason: None,
+                last_fetched: None,
+                git_info_fetched_at: None,
+                sessions: vec![
+                    session(false, AgentState::Blocked),
+                    session(false, AgentState::Working),
+                ],
+            }],
+        };
+        let mut other = project.clone();
+        other.name = "other".into();
+        other.worktrees.clear();
+        let mut workspace = WorkspaceState {
+            projects: vec![project, other],
+        };
+        for expanded in [false, true] {
+            workspace.projects[0].expanded = expanded;
+            let flat = flatten_tree(&workspace);
+            let row = usize::from(expanded) as u16;
+            for width in [1, 2, 4, 8, 18, 26, 60] {
+                let mut terminal =
+                    Terminal::new(TestBackend::new(width, flat.len() as u16)).unwrap();
+                let stale_projects = HashSet::from([0]);
+                terminal
+                    .draw(|frame| {
+                        render_tree(
+                            frame,
+                            SidebarLayout::new(frame.area()),
+                            TreeView {
+                                workspace: &workspace,
+                                flat: &flat,
+                                stale_projects: &stale_projects,
+                                muted_terminals: &HashSet::new(),
+                                selected: flat.len() - 1,
+                                scroll_offset: 0,
+                                is_move_mode: false,
+                                port_visibility: PortVisibility::default(),
+                                animation_frame: 0,
+                            },
+                        )
+                    })
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let text = (0..width)
+                    .map(|x| buffer[(x, row)].symbol())
+                    .collect::<String>();
+                if width >= 18 {
+                    assert!(
+                        text.contains("◐") && text.contains("1 active"),
+                        "{width}: {text:?}"
+                    );
+                    let cell = buffer
+                        .content
+                        .iter()
+                        .find(|cell| cell.symbol() == "◐")
+                        .unwrap();
+                    assert_eq!(cell.fg, theme::BLOCKED);
+                    assert!(!cell.modifier.contains(Modifier::DIM));
+                }
+                if width >= 26 && !expanded {
+                    assert!(text.contains("stale"), "{text:?}");
+                }
+            }
+            let entry = &flat[usize::from(expanded)];
+            assert_eq!(
+                compact_tree_cell(&workspace, entry, &HashSet::from([0]), &HashSet::new(), 0).0,
+                "◐"
+            );
+        }
+        assert_eq!(
+            workspace.projects[0].worktrees[0].sessions[1].agent_status,
+            AgentState::Working
+        );
+        assert!(!workspace.projects[0].worktrees[0].expanded);
     }
 
     #[test]
@@ -717,6 +934,18 @@ mod tests {
         assert!(!session_line(&sess, 40, PortVisibility::Hidden, 0)
             .to_string()
             .contains(":5173"));
+    }
+
+    #[test]
+    fn truncation_keeps_complete_graphemes_with_linear_prefix_selection() {
+        assert_eq!(truncate_to_width("👩‍💻abcd", 3), "👩‍💻…");
+        assert_eq!(truncate_to_width("e\u{301}abcd", 2), "e\u{301}…");
+        assert_eq!(truncate_to_width("中文abcd", 3), "中…");
+        for width in 0..32 {
+            let text = truncate_to_width(&"👩‍💻e\u{301}中文".repeat(100), width);
+            assert!(Line::from(text.as_str()).width() <= width);
+            assert!(!text.ends_with("\u{200d}…"));
+        }
     }
 
     #[test]

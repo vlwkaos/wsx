@@ -4,8 +4,10 @@
 //! in older TOML files are ignored by serde and are never imported.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::io;
+use std::os::unix::{fs::MetadataExt, fs::OpenOptionsExt, io::AsRawFd};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::{
     config::global::{
@@ -15,6 +17,10 @@ use crate::{
     model::workspace::{FlatEntry, WorkspaceState},
 };
 use serde::{Deserialize, Deserializer, Serialize};
+
+#[cfg(test)]
+#[path = "cache_intent_tests.rs"]
+mod intent_tests;
 
 /// Stable cursor identity for projects, worktrees, terminal panes, and routines.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -103,7 +109,7 @@ impl AdaptiveCollapseState {
     }
 }
 
-#[derive(Serialize, Default, Clone)]
+#[derive(Serialize, Default, Clone, PartialEq, Eq)]
 pub struct WorkspaceCache {
     #[serde(default)]
     pub written_at_unix_ms: Option<u64>,
@@ -195,22 +201,19 @@ impl<'de> Deserialize<'de> for WorkspaceCache {
 
 impl WorkspaceCache {
     pub fn load() -> anyhow::Result<Self> {
-        Self::load_from_paths(&cache_path(), &legacy_cache_path())
+        let path = cache_path();
+        let _lock = CacheLock::acquire(&path)?;
+        Self::load_from_paths(&path, &legacy_cache_path())
     }
 
     fn load_from_paths(
         canonical: &std::path::Path,
         legacy: &std::path::Path,
     ) -> anyhow::Result<Self> {
-        let (content, imported_legacy) = match std::fs::read_to_string(canonical) {
-            Ok(content) => (content, false),
-            Err(_) if !canonical.exists() => match std::fs::read_to_string(legacy) {
-                Ok(content) => (content, true),
-                Err(_) => return Ok(Self::default()),
-            },
-            Err(_) => return Ok(Self::default()),
+        let Some((content, imported_legacy)) = read_cache_files(canonical, legacy)? else {
+            return Ok(Self::default());
         };
-        let mut cache: Self = toml::from_str(&content).unwrap_or_default();
+        let mut cache: Self = toml::from_str(&content)?;
         if imported_legacy || cache.migration_needed {
             cache.save_to(canonical, false)?;
             cache.migration_needed = false;
@@ -218,8 +221,11 @@ impl WorkspaceCache {
         Ok(cache)
     }
 
+    /// Explicit whole-cache replacement. Interactive clients use `WorkspaceCacheChanges`.
     pub fn save(&self, sync: bool) -> anyhow::Result<()> {
-        self.save_to(&cache_path(), sync)
+        let path = cache_path();
+        let _lock = CacheLock::acquire(&path)?;
+        self.save_to(&path, sync)
     }
 
     fn save_to(&self, path: &std::path::Path, sync: bool) -> anyhow::Result<()> {
@@ -229,6 +235,18 @@ impl WorkspaceCache {
         atomic_write_private(path, text.as_bytes(), sync)?;
         Ok(())
     }
+}
+
+fn read_cache_files(canonical: &Path, legacy: &Path) -> io::Result<Option<(String, bool)>> {
+    let oldest = legacy.with_file_name("workspace.toml");
+    for (path, imported) in [(canonical, false), (legacy, true), (oldest.as_path(), true)] {
+        match std::fs::read_to_string(path) {
+            Ok(content) => return Ok(Some((content, imported))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(None)
 }
 
 fn now_unix_ms() -> u64 {
@@ -275,14 +293,14 @@ fn cache_path() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("wsx")
-        .join("workspace-v2.toml")
+        .join("workspace-v3.toml")
 }
 
 fn legacy_cache_path() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("wsx")
-        .join("workspace.toml")
+        .join("workspace-v2.toml")
 }
 
 #[derive(Serialize, Deserialize)]
@@ -333,12 +351,15 @@ pub type AppliedCache = (
     HashSet<String>,
     HashMap<String, u64>,
     HashSet<crate::integration::IntegrationTarget>,
+    HashMap<String, bool>,
 );
 
 /// Apply only cached UI and local mute state. Sessions always come from wsxd.
 pub fn apply_cache(workspace: &mut WorkspaceState) -> anyhow::Result<AppliedCache> {
-    let cache = WorkspaceCache::load()?;
-    apply_workspace_cache(workspace, cache, |cache| cache.save(false))
+    let path = cache_path();
+    let _lock = CacheLock::acquire(&path)?;
+    let cache = WorkspaceCache::load_from_paths(&path, &legacy_cache_path())?;
+    apply_workspace_cache(workspace, cache, |cache| cache.save_to(&path, false))
 }
 
 fn apply_workspace_cache(
@@ -352,10 +373,17 @@ fn apply_workspace_cache(
     let mut adaptive_collapse = HashMap::new();
     let loaded_at_unix_ms = now_unix_ms();
     let legacy_seeded_touch = legacy_seeded_touch_cohort(&cache);
+    let mut seeded_touches = false;
     for project in &mut workspace.projects {
         let project_key = project.path.to_string_lossy().to_string();
         let touched_unix_ms = cached_project_touch_unix_ms(&cache, &project_key, loaded_at_unix_ms);
         project_touched_unix_ms.insert(project.path.clone(), touched_unix_ms);
+        if !cache.project_touched_unix_ms.contains_key(&project_key) {
+            cache
+                .project_touched_unix_ms
+                .insert(project_key.clone(), touched_unix_ms);
+            seeded_touches = true;
+        }
         if let Some(expanded) = cache.project_expanded.get(&project_key) {
             project.expanded = *expanded;
         }
@@ -409,8 +437,12 @@ fn apply_workspace_cache(
             .map(|path| path.to_string_lossy().into_owned())
             .collect();
         cache.stale_provenance_missing = false;
+        seeded_touches = true;
+    }
+    if seeded_touches {
         persist_migration(&cache)?;
     }
+    migrated_muted_terminals.extend(cache.muted_terminals);
     Ok((
         cache.tree_selected,
         cache.cursor_identity,
@@ -420,6 +452,7 @@ fn apply_workspace_cache(
         migrated_muted_terminals,
         cache.acknowledged_outcomes,
         cache.dismissed_integration_prompts,
+        cache.worktree_expanded,
     ))
 }
 
@@ -470,79 +503,287 @@ pub fn find_cursor_index(
     }
 }
 
-pub struct WorkspaceCacheSnapshot<'a> {
-    pub workspace: &'a WorkspaceState,
-    pub tree_selected: usize,
-    pub flat: &'a [FlatEntry],
-    pub project_touched_unix_ms: &'a HashMap<PathBuf, u64>,
-    pub stale_collapsed_projects: &'a HashSet<PathBuf>,
-    pub adaptive_collapse: &'a HashMap<PathBuf, AdaptiveCollapseState>,
-    pub dismissed_integration_prompts: &'a HashSet<crate::integration::IntegrationTarget>,
+/// Adaptive activity input, never a caller's derived credit/window snapshot.
+#[derive(Clone, Copy, Debug)]
+pub struct AdaptiveCacheActivity {
+    pub base_hours: u64,
+    pub activity_unix_ms: u64,
 }
 
-pub fn save_cache(snapshot: WorkspaceCacheSnapshot<'_>, sync: bool) -> Option<String> {
-    let WorkspaceCacheSnapshot {
-        workspace,
-        tree_selected,
-        flat,
-        project_touched_unix_ms,
-        stale_collapsed_projects,
-        adaptive_collapse,
-        dismissed_integration_prompts,
-    } = snapshot;
-    let mut cache = WorkspaceCache {
-        written_at_unix_ms: Some(now_unix_ms()),
-        tree_selected,
-        cursor_identity: resolve_cursor_identity(workspace, flat, tree_selected),
-        dismissed_integration_prompts: dismissed_integration_prompts.clone(),
-        ..Default::default()
-    };
-    for project in &workspace.projects {
-        let project_path = project.path.to_string_lossy().into_owned();
-        cache
-            .project_expanded
-            .insert(project_path.clone(), project.expanded);
-        if let Some(touched_unix_ms) = project_touched_unix_ms.get(&project.path) {
-            cache
+impl From<AdaptiveCollapseState> for AdaptiveCacheActivity {
+    fn from(state: AdaptiveCollapseState) -> Self {
+        Self {
+            base_hours: state.base_hours,
+            activity_unix_ms: state.last_activity_unix_ms,
+        }
+    }
+}
+
+/// One project's pending intent. Automatic decisions carry their observed interaction
+/// time so an old window cannot undo a newer interaction. See docs/ui-state-ownership.md.
+#[derive(Default, Debug)]
+pub struct ProjectCacheChange {
+    pub observed_touch_unix_ms: u64,
+    pub touched_unix_ms: Option<u64>,
+    pub expanded: Option<bool>,
+    pub routines_expanded: Option<bool>,
+    pub stale: Option<bool>,
+    pub adaptive: Option<Option<AdaptiveCacheActivity>>,
+}
+
+/// Committed state for one submitted project, including rejected automatic decisions.
+#[derive(Debug)]
+pub struct ProjectCacheState {
+    pub touched_unix_ms: Option<u64>,
+    pub expanded: Option<bool>,
+    pub routines_expanded: Option<bool>,
+    pub stale: bool,
+    pub adaptive: Option<AdaptiveCollapseState>,
+}
+
+/// Only commands, never a complete presentation snapshot, may update shared UI intent.
+#[derive(Default, Debug)]
+pub struct WorkspaceCacheChanges {
+    pub projects: HashMap<PathBuf, ProjectCacheChange>,
+    pub worktree_expanded: HashMap<PathBuf, bool>,
+    pub muted_terminals: HashMap<String, bool>,
+    pub acknowledged_outcomes: HashMap<String, u64>,
+    pub dismissed_integration_prompts: HashMap<crate::integration::IntegrationTarget, bool>,
+    pub cursor: Option<(usize, Option<CursorIdentity>)>,
+}
+
+impl WorkspaceCacheChanges {
+    pub fn is_empty(&self) -> bool {
+        self.projects.is_empty()
+            && self.worktree_expanded.is_empty()
+            && self.muted_terminals.is_empty()
+            && self.acknowledged_outcomes.is_empty()
+            && self.dismissed_integration_prompts.is_empty()
+            && self.cursor.is_none()
+    }
+
+    pub fn save(&self, sync: bool) -> anyhow::Result<HashMap<PathBuf, ProjectCacheState>> {
+        self.save_to(&cache_path(), &legacy_cache_path(), sync)
+    }
+
+    fn save_to(
+        &self,
+        path: &Path,
+        legacy: &Path,
+        sync: bool,
+    ) -> anyhow::Result<HashMap<PathBuf, ProjectCacheState>> {
+        if self.is_empty() && !sync {
+            return Ok(HashMap::new());
+        }
+        let _lock = CacheLock::acquire(path)?;
+        if self.is_empty() {
+            sync_cache(path)?;
+            return Ok(HashMap::new());
+        }
+        // A failed read/parse must retain pending commands, not replace the file with defaults.
+        let (mut cache, imported) = match read_cache_files(path, legacy)? {
+            Some((content, imported)) => (toml::from_str::<WorkspaceCache>(&content)?, imported),
+            None => (WorkspaceCache::default(), false),
+        };
+        let previous = cache.clone();
+        self.apply_to(&mut cache);
+        if cache == previous && !imported && !cache.migration_needed {
+            if sync {
+                sync_cache(path)?;
+            }
+        } else {
+            cache.save_to(path, sync)?;
+        }
+        Ok(self
+            .projects
+            .keys()
+            .map(|path| {
+                let key = path.to_string_lossy();
+                (
+                    path.clone(),
+                    ProjectCacheState {
+                        touched_unix_ms: cache.project_touched_unix_ms.get(key.as_ref()).copied(),
+                        expanded: cache.project_expanded.get(key.as_ref()).copied(),
+                        routines_expanded: cache.routines_expanded.get(key.as_ref()).copied(),
+                        stale: cache.stale_collapsed_projects.contains(key.as_ref()),
+                        adaptive: cache.adaptive_collapse.get(key.as_ref()).copied(),
+                    },
+                )
+            })
+            .collect())
+    }
+
+    fn apply_to(&self, cache: &mut WorkspaceCache) {
+        for (path, change) in &self.projects {
+            let key = path.to_string_lossy().into_owned();
+            let current_touch = cache
                 .project_touched_unix_ms
-                .insert(project_path.clone(), *touched_unix_ms);
-        }
-        if stale_collapsed_projects.contains(&project.path) {
-            cache.stale_collapsed_projects.insert(project_path.clone());
-        }
-        if let Some(state) = adaptive_collapse.get(&project.path) {
-            cache.adaptive_collapse.insert(project_path.clone(), *state);
-        }
-        cache
-            .routines_expanded
-            .insert(project_path, project.routines_expanded);
-        for worktree in &project.worktrees {
-            cache.worktree_expanded.insert(
-                worktree.path.to_string_lossy().into_owned(),
-                worktree.expanded,
-            );
-            cache.muted_terminals.extend(
-                worktree
-                    .sessions
-                    .iter()
-                    .filter(|s| s.muted)
-                    .map(|s| s.terminal_id.to_string()),
-            );
-            for session in &worktree.sessions {
-                for pane in &session.panes {
-                    if pane.outcome_acknowledged {
+                .get(&key)
+                .copied()
+                .unwrap_or(0);
+            let proposed_touch = change
+                .touched_unix_ms
+                .unwrap_or(change.observed_touch_unix_ms);
+            if current_touch > proposed_touch {
+                continue;
+            }
+            // ^ Adaptive credit and expiry use the latest durable state, not a caller's window snapshot.
+            let adaptive = match change.adaptive {
+                Some(Some(proposed)) => {
+                    let activity = proposed
+                        .activity_unix_ms
+                        .max(current_touch)
+                        .max(proposed_touch);
+                    let mut state =
                         cache
-                            .acknowledged_outcomes
-                            .insert(pane.terminal_id.to_string(), pane.revision);
+                            .adaptive_collapse
+                            .get(&key)
+                            .copied()
+                            .unwrap_or_else(|| {
+                                AdaptiveCollapseState::new(proposed.base_hours, activity)
+                            });
+                    state.observe(proposed.base_hours, activity);
+                    if change.stale == Some(true) {
+                        if now_unix_ms().saturating_sub(activity.max(state.last_activity_unix_ms))
+                            <= state.window_ms()
+                        {
+                            continue;
+                        }
+                        state.reset_after_expiry(proposed.base_hours);
+                    }
+                    Some(Some(state))
+                }
+                Some(None) => Some(None),
+                None => None,
+            };
+            if let Some(touched) = change.touched_unix_ms {
+                cache.project_touched_unix_ms.insert(key.clone(), touched);
+            }
+            if let Some(expanded) = change.expanded {
+                cache.project_expanded.insert(key.clone(), expanded);
+            }
+            if let Some(expanded) = change.routines_expanded {
+                cache.routines_expanded.insert(key.clone(), expanded);
+            }
+            if let Some(stale) = change.stale {
+                set_membership(&mut cache.stale_collapsed_projects, key.clone(), stale);
+            }
+            if let Some(adaptive) = adaptive {
+                match adaptive {
+                    Some(state) => {
+                        cache.adaptive_collapse.insert(key, state);
+                    }
+                    None => {
+                        cache.adaptive_collapse.remove(&key);
                     }
                 }
             }
         }
+        for (path, expanded) in &self.worktree_expanded {
+            cache
+                .worktree_expanded
+                .insert(path.to_string_lossy().into_owned(), *expanded);
+        }
+        for (terminal, muted) in &self.muted_terminals {
+            set_membership(&mut cache.muted_terminals, terminal.clone(), *muted);
+        }
+        for (terminal, revision) in &self.acknowledged_outcomes {
+            let acknowledged = cache
+                .acknowledged_outcomes
+                .entry(terminal.clone())
+                .or_default();
+            *acknowledged = (*acknowledged).max(*revision);
+        }
+        for (target, dismissed) in &self.dismissed_integration_prompts {
+            set_membership(
+                &mut cache.dismissed_integration_prompts,
+                *target,
+                *dismissed,
+            );
+        }
+        if let Some((selected, identity)) = &self.cursor {
+            cache.tree_selected = *selected;
+            cache.cursor_identity = identity.clone();
+        }
     }
-    cache
-        .save(sync)
-        .err()
-        .map(|e| format!("cache save failed: {e}"))
+}
+
+fn sync_cache(path: &Path) -> io::Result<()> {
+    match std::fs::File::open(path) {
+        Ok(file) => {
+            file.sync_all()?;
+            std::fs::File::open(
+                path.parent()
+                    .ok_or_else(|| io::Error::other("cache has no parent"))?,
+            )?
+            .sync_all()
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn set_membership<T: Eq + std::hash::Hash>(set: &mut HashSet<T>, key: T, present: bool) {
+    if present {
+        set.insert(key);
+    } else {
+        set.remove(&key);
+    }
+}
+
+struct CacheLock(std::fs::File);
+
+impl CacheLock {
+    fn acquire(path: &Path) -> io::Result<Self> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("cache has no parent"))?;
+        std::fs::create_dir_all(parent)?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path.with_extension("lock"))?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file()
+            || metadata.nlink() != 1
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unsafe workspace cache lock",
+            ));
+        }
+        let deadline = Instant::now() + Duration::from_millis(100);
+        loop {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Self(file));
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::WouldBlock
+                && error.kind() != io::ErrorKind::Interrupted
+            {
+                return Err(error);
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "workspace cache is busy; retry pending intent",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+impl Drop for CacheLock {
+    fn drop(&mut self) {
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
 }
 
 pub fn resolve_cursor_identity(
@@ -941,7 +1182,7 @@ pane_id = "pane-1"
     }
 
     #[test]
-    fn malformed_v2_cache_wins_without_falling_back_to_legacy() {
+    fn malformed_canonical_cache_is_rejected_without_fallback_or_replacement() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -956,9 +1197,11 @@ pane_id = "pane-1"
         std::fs::write(&canonical, "active_group = [\n").unwrap();
         std::fs::write(&legacy, "active_tab = \"personal\"\n").unwrap();
 
-        let cache = WorkspaceCache::load_from_paths(&canonical, &legacy).unwrap();
-
-        assert_eq!(cache.tree_selected, 0);
+        assert!(WorkspaceCache::load_from_paths(&canonical, &legacy).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&legacy).unwrap(),
+            "active_tab = \"personal\"\n"
+        );
         assert_eq!(
             std::fs::read_to_string(&canonical).unwrap(),
             "active_group = [\n"
@@ -1016,7 +1259,7 @@ pane_id = "pane-1"
             projects: vec![project("/closed"), project("/closed-two"), project("/open")],
         };
 
-        let (_, _, touches, stale, _, _, _, _) =
+        let (_, _, touches, stale, _, _, _, _, _) =
             apply_workspace_cache(&mut workspace, cache, |cache| {
                 cache.save_to(&canonical, false)
             })

@@ -21,9 +21,9 @@ pub const WSX_RUNTIME_GENERATION_ENV: &str = "WSX_RUNTIME_GENERATION";
 pub const WSX_PLUGIN_VIEW_ENV: &str = "WSX_PLUGIN_VIEW_JSON";
 pub const ROUTINE_DAEMON_ARG: &str = "__wsx_routine_daemon";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
-// ^ Agent presence expiry is daemon-owned runtime behavior. Bump only for daemon
-// behavior changes; UI-only releases continue to reuse wsxd.
-pub const DAEMON_REVISION: u32 = 15;
+// ^ Draft delivery and stable reporters are daemon-owned runtime behavior.
+// UI-only releases continue to reuse wsxd. See docs/agent-reporting.md.
+pub const DAEMON_REVISION: u32 = 17;
 
 fn default_attached() -> bool {
     true
@@ -344,6 +344,23 @@ pub enum Request {
         access: AgentExchangeAccess,
         #[serde(default)]
         write_claims: Vec<PathBuf>,
+    },
+    /// Separate variants fail closed on older daemons instead of silently
+    /// ignoring a destructive editor policy. See docs/agent-orchestration.md.
+    AgentExchangeCreateStashingDraft {
+        pane_id: PaneId,
+        prompt: String,
+        timeout_ms: u64,
+        #[serde(default)]
+        access: AgentExchangeAccess,
+        #[serde(default)]
+        write_claims: Vec<PathBuf>,
+    },
+    AgentExchangeContinueStashingDraft {
+        exchange_id: AgentExchangeId,
+        expected_revision: u64,
+        prompt: String,
+        timeout_ms: u64,
     },
     AgentExchangeContinue {
         exchange_id: AgentExchangeId,

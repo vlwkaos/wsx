@@ -13,6 +13,7 @@ pub mod plugin_sidecar;
 pub mod preview;
 pub mod review;
 pub mod routine_editor;
+pub mod terminal_title;
 pub mod theme;
 pub mod workspace_nav;
 pub mod workspace_tree;
@@ -26,9 +27,10 @@ use crate::ui::{
     input::render_input,
     layout::{terminal_sidebar_width, FrameLayout, TerminalLayout, EXPANDED_SIDEBAR_WIDTH},
     preview::{
-        render_empty_preview, render_project_preview, render_terminal_breadcrumb,
-        render_terminal_preview, render_worktree_preview, TerminalBreadcrumbView,
+        render_empty_preview, render_project_preview, render_terminal_preview,
+        render_worktree_preview,
     },
+    terminal_title::TerminalTitleView,
     workspace_nav::{fit_group_strip, SidebarLayout, WORKSPACE_HEADER_TITLE},
     workspace_tree::{compute_scroll, render_compact_tree, render_tree, CompactTreeView, TreeView},
 };
@@ -271,6 +273,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     frame,
                     sidebar_layout,
                     CompactTreeView {
+                        muted_terminals: app.muted_terminals(),
                         workspace: &app.workspace,
                         flat: app.flat(),
                         stale_projects: &stale_projects,
@@ -284,6 +287,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     frame,
                     sidebar_layout,
                     TreeView {
+                        muted_terminals: app.muted_terminals(),
                         workspace: &app.workspace,
                         flat: app.flat(),
                         stale_projects: &stale_projects,
@@ -319,15 +323,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         })
                     })
                 {
-                    render_terminal_breadcrumb(
+                    terminal_title::render(
                         frame,
                         terminal_breadcrumb_area,
-                        TerminalBreadcrumbView {
-                            project: &project.name,
-                            worktree: worktree.display_name(),
+                        TerminalTitleView {
+                            project,
+                            worktree,
                             session,
                             pane: None,
-                            port_visibility: app.config.port_visibility,
                             animation_frame: app.spinner_frame,
                         },
                     );
@@ -354,15 +357,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         })
                     })
                 {
-                    render_terminal_breadcrumb(
+                    terminal_title::render(
                         frame,
                         terminal_breadcrumb_area,
-                        TerminalBreadcrumbView {
-                            project: &project.name,
-                            worktree: worktree.display_name(),
+                        TerminalTitleView {
+                            project,
+                            worktree,
                             session,
                             pane: Some(pane),
-                            port_visibility: app.config.port_visibility,
                             animation_frame: app.spinner_frame,
                         },
                     );
@@ -929,6 +931,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "$terminal_escape",
         "$terminal_quit",
         "$terminal_session",
+        "$terminal_context",
         "$terminal_group",
         "$terminal_idle",
         "$terminal_active",
@@ -969,6 +972,9 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
                 "$terminal_session" => app
                     .terminal_quit_label()
                     .map(|_| "  Prefix+k/j or ↑/↓  Previous / next sibling session".into()),
+                "$terminal_context" => app
+                    .terminal_quit_label()
+                    .map(|_| "  Prefix+h/l or ←/→  Previous / next ranked project session".into()),
                 "$terminal_group" => app
                     .terminal_quit_label()
                     .map(|_| "  Prefix+{ / }  Previous / next group target".into()),

@@ -1,6 +1,9 @@
 // Direct projection of the provider-neutral wsx agent state.
 
-use wsx_core::{model::workspace::SessionInfo, runtime::AgentState};
+use wsx_core::{
+    model::workspace::{Project, SessionInfo},
+    runtime::AgentState,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppSessionState {
@@ -23,6 +26,15 @@ pub enum SessionHeuristic {
 }
 
 impl SessionHeuristic {
+    pub fn priority(self) -> u8 {
+        match self {
+            Self::Blocked | Self::Error => 0,
+            Self::Done => 1,
+            Self::Working | Self::Running => 2,
+            Self::Idle | Self::Unknown | Self::Muted => 3,
+        }
+    }
+
     pub fn app_state(self) -> AppSessionState {
         match self {
             Self::Muted | Self::Idle | Self::Unknown => AppSessionState::Idle,
@@ -34,21 +46,109 @@ impl SessionHeuristic {
 }
 
 pub fn derive(session: &SessionInfo) -> SessionHeuristic {
-    if session.muted {
+    derive_status(
+        session.agent_status,
+        session.muted,
+        session.outcome_acknowledged,
+        !session.is_agentic() && session.has_foreground_job(),
+    )
+}
+
+pub fn derive_status(
+    state: AgentState,
+    muted: bool,
+    acknowledged: bool,
+    foreground_job: bool,
+) -> SessionHeuristic {
+    if muted {
         return SessionHeuristic::Muted;
     }
-    if !session.is_agentic() && session.has_foreground_job() {
+    if foreground_job {
         return SessionHeuristic::Running;
     }
-    match session.agent_status {
+    match state {
         AgentState::Idle => SessionHeuristic::Idle,
         AgentState::Working => SessionHeuristic::Working,
         AgentState::Blocked => SessionHeuristic::Blocked,
-        AgentState::Done if session.outcome_acknowledged => SessionHeuristic::Idle,
+        AgentState::Done if acknowledged => SessionHeuristic::Idle,
         AgentState::Done => SessionHeuristic::Done,
         AgentState::Unknown => SessionHeuristic::Unknown,
         AgentState::Error => SessionHeuristic::Error,
     }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FoldedStatus {
+    pub dominant: Option<SessionHeuristic>,
+    pub active_sessions: usize,
+}
+
+// ^ docs/ui-state-ownership.md: folding/stale provenance never change runtime authority.
+pub fn folded_status<'a>(
+    sessions: impl IntoIterator<Item = &'a SessionInfo>,
+    muted_terminals: &std::collections::HashSet<String>,
+) -> FoldedStatus {
+    let mut summary = FoldedStatus::default();
+    for session in sessions {
+        let mut active = false;
+        let mut include = |state: AgentState, acknowledged: bool, foreground: bool, muted: bool| {
+            let raw = derive_status(state, false, acknowledged, foreground);
+            active |= matches!(raw, SessionHeuristic::Working | SessionHeuristic::Running);
+            let visible = derive_status(state, muted, acknowledged, foreground);
+            if summary
+                .dominant
+                .is_none_or(|current| visible.priority() < current.priority())
+            {
+                summary.dominant = Some(visible);
+            }
+        };
+        if session.panes.is_empty() {
+            include(
+                session.agent_status,
+                session.outcome_acknowledged,
+                false,
+                session.muted || muted_terminals.contains(&session.terminal_id.to_string()),
+            );
+        } else {
+            for pane in &session.panes {
+                let state = if pane.exited && pane.agent_status == AgentState::Working {
+                    AgentState::Unknown
+                } else {
+                    pane.agent_status
+                };
+                include(
+                    state,
+                    pane.outcome_acknowledged,
+                    !pane.exited && pane.agent.is_none() && pane.foreground_job,
+                    muted_terminals.contains(&pane.terminal_id.to_string())
+                        || (session.muted && pane.terminal_id == session.terminal_id),
+                );
+            }
+        }
+        summary.active_sessions += usize::from(active);
+    }
+    summary
+}
+
+// ^ docs/terminal-context.md: title projection and project-local navigation use
+// the same live normalized order; expansion never filters this collection.
+pub fn context_sessions(project: &Project) -> impl Iterator<Item = (usize, usize, &SessionInfo)> {
+    (0..4).flat_map(move |tier| {
+        project
+            .worktrees
+            .iter()
+            .enumerate()
+            .flat_map(move |(wi, worktree)| {
+                worktree
+                    .sessions
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(si, session)| {
+                        let priority = derive(session).priority();
+                        (priority == tier).then_some((wi, si, session))
+                    })
+            })
+    })
 }
 
 pub fn agent_label(agent: Option<&str>) -> Option<String> {
@@ -75,6 +175,10 @@ mod tests {
         model::workspace::PaneInfo,
         runtime::{PaneId, SessionId, TerminalId},
     };
+
+    fn folded_status<'a>(sessions: impl IntoIterator<Item = &'a SessionInfo>) -> FoldedStatus {
+        super::folded_status(sessions, &std::collections::HashSet::new())
+    }
 
     fn session(status: AgentState, muted: bool) -> SessionInfo {
         SessionInfo {
@@ -182,6 +286,92 @@ mod tests {
         assert_eq!(derive(&session).app_state(), AppSessionState::Idle);
         assert_eq!(status_label(&session), "idle");
         assert_eq!(session.agent_status, AgentState::Done);
+    }
+
+    #[test]
+    fn folded_status_retains_attention_and_active_sessions_independent_of_order() {
+        let working = session(AgentState::Working, false);
+        let blocked = session(AgentState::Blocked, false);
+        let done = session(AgentState::Done, false);
+        let idle = session(AgentState::Idle, false);
+        for entries in [
+            [&working, &blocked, &done, &idle],
+            [&idle, &done, &blocked, &working],
+        ] {
+            assert_eq!(
+                folded_status(entries),
+                FoldedStatus {
+                    dominant: Some(SessionHeuristic::Blocked),
+                    active_sessions: 1,
+                }
+            );
+        }
+        let mut muted = working.clone();
+        muted.muted = true;
+        assert_eq!(
+            folded_status([&muted]),
+            FoldedStatus {
+                dominant: Some(SessionHeuristic::Muted),
+                active_sessions: 1,
+            }
+        );
+        let mut acknowledged = done.clone();
+        acknowledged.outcome_acknowledged = true;
+        assert_eq!(
+            folded_status([&acknowledged, &working]).dominant,
+            Some(SessionHeuristic::Working)
+        );
+        assert_eq!(folded_status([]), FoldedStatus::default());
+        assert_eq!(working.agent_status, AgentState::Working);
+    }
+
+    #[test]
+    fn folded_status_includes_unfocused_panes_counts_sessions_once_and_fences_exit() {
+        let mut entry = session(AgentState::Idle, false);
+        let pane = |id, state, exited, agent, foreground_job| PaneInfo {
+            pane_id: PaneId(id),
+            terminal_id: TerminalId(id),
+            label: "pane".into(),
+            agent,
+            agent_status: state,
+            revision: 1,
+            exited,
+            listening_ports: vec![],
+            foreground_job,
+            outcome_acknowledged: false,
+        };
+        entry.panes = vec![
+            pane(1, AgentState::Idle, false, Some("pi".into()), false),
+            pane(2, AgentState::Working, false, Some("pi".into()), false),
+            pane(3, AgentState::Unknown, false, None, true),
+        ];
+        assert_eq!(
+            folded_status([&entry]),
+            FoldedStatus {
+                dominant: Some(SessionHeuristic::Working),
+                active_sessions: 1,
+            }
+        );
+        entry.panes[1].exited = true;
+        entry.panes[2].exited = true;
+        assert_eq!(folded_status([&entry]).active_sessions, 0);
+        entry.panes[2].exited = false;
+        assert_eq!(
+            folded_status([&entry]).dominant,
+            Some(SessionHeuristic::Running)
+        );
+        entry.panes[1].exited = false;
+        entry.panes[1].agent_status = AgentState::Error;
+        let muted = std::collections::HashSet::from(["2".to_string()]);
+        let summary = super::folded_status([&entry], &muted);
+        assert_eq!(summary.dominant, Some(SessionHeuristic::Running));
+        assert_eq!(summary.active_sessions, 1);
+        assert_eq!(muted, std::collections::HashSet::from(["2".to_string()]));
+        assert_eq!(entry.panes[1].agent_status, AgentState::Error);
+        assert_eq!(
+            folded_status([&entry]).dominant,
+            Some(SessionHeuristic::Error)
+        );
     }
 
     #[test]

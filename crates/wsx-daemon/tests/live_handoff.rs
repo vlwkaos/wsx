@@ -29,13 +29,22 @@ impl Fixture {
             .unwrap()
             .as_nanos();
         let sequence = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::current_dir()
-            .unwrap()
-            .join(".work/s")
+        // ^ Keep both canonical and handoff socket names below macOS SUN_LEN,
+        // including when the repository itself is an isolated candidate worktree.
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.work/s")
             .join(format!("h{:x}{nonce:x}{sequence:x}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        // Handoff binaries have their own namespace: XDG_STATE_HOME/wsx is a directory.
+        fs::create_dir(root.join("bin")).unwrap();
+        fs::copy(
+            PathBuf::from(env!("CARGO_BIN_EXE_wsxd")).with_file_name("wsx"),
+            root.join("bin/wsx"),
+        )
+        .expect("build adjacent wsx/wsxd before running daemon lifecycle scenarios");
         let socket = root.join("d.sock");
         Self {
             root,
@@ -52,7 +61,13 @@ impl Fixture {
             .env("HOME", &self.root)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::from(
+                fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(self.root.join("daemon.log"))
+                    .unwrap(),
+            ));
         command
     }
 }
@@ -80,7 +95,11 @@ fn wait_for_socket(path: &Path) {
         }
         thread::sleep(Duration::from_millis(20));
     }
-    panic!("wsxd socket did not appear: {}", path.display());
+    panic!(
+        "wsxd socket did not appear: {}: {}",
+        path.display(),
+        fs::read_to_string(path.with_file_name("daemon.log")).unwrap_or_default()
+    );
 }
 
 fn wait_for_socket_removal(path: &Path) {
@@ -171,7 +190,7 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
             command: vec![
                 "/bin/sh".into(),
                 "-c".into(),
-                "printf 'pid=[%s] gen=[%s]\\n' $$ \"$WSX_RUNTIME_GENERATION\"; while IFS= read -r line; do printf 'echo:%s:pid=[%s]\\n' \"$line\" $$; done".into(),
+                "test \"$WSX_AGENT_REPORT_BIN\" = \"${WSX_SOCKET%.sock}.reporter\" || exit 23; printf 'pid=[%s] gen=[%s]\\n' $$ \"$WSX_RUNTIME_GENERATION\"; while IFS= read -r line; do printf 'echo:%s:pid=[%s]\\n' \"$line\" $$; done".into(),
             ],
             initial_input: None,
             rows: 12,
@@ -264,7 +283,7 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
         pid
     );
 
-    let target_binary = fixture.root.join("wsxd-next");
+    let target_binary = fixture.root.join("bin/wsxd-next");
     fs::write(&target_binary, fs::read(&source_binary).unwrap()).unwrap();
     let mut permissions = fs::metadata(&target_binary).unwrap().permissions();
     permissions.set_mode(0o700);
@@ -295,7 +314,8 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
         }
         assert!(
             Instant::now() < deadline,
-            "handoff successor did not become ready"
+            "handoff successor did not become ready: {}",
+            fs::read_to_string(fixture.root.join("daemon.log")).unwrap_or_default()
         );
         thread::sleep(Duration::from_millis(25));
     };
@@ -331,26 +351,59 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
         Response::Ack { .. }
     ));
 
-    assert!(matches!(
-        client
-            .call(&Request::AgentReport {
-                pane_id: pane,
-                runtime_generation: Some(runtime_generation),
-                provider: "pi".into(),
-                state: AgentState::Done,
-                attached: true,
-                presence_id: Some(presence_id.into()),
-                conversation_id: None,
-                session_ref: None,
-                wake_token: None,
-                capabilities: AgentCapabilities {
-                    lifecycle: true,
-                    ..Default::default()
-                },
-            })
-            .unwrap(),
-        Response::Ack { .. }
-    ));
+    let reporter = fixture.socket.with_extension("reporter");
+    assert_eq!(
+        fs::read_link(&reporter).unwrap(),
+        fixture.root.join("bin/wsx").canonicalize().unwrap()
+    );
+    let pane_selector = pane.0.to_string();
+    let rejected = fixture
+        .command(&reporter)
+        .env("WSX_PANE_ID", &pane_selector)
+        .env("WSX_RUNTIME_GENERATION", "stale-generation")
+        .args([
+            "agent",
+            "report",
+            &pane_selector,
+            "--provider",
+            "pi",
+            "--state",
+            "done",
+            "--lifecycle",
+        ])
+        .status()
+        .unwrap();
+    assert!(
+        !rejected.success(),
+        "stable reporter must retain generation fencing"
+    );
+    let unchanged = match client.call(&Request::Snapshot).unwrap() {
+        Response::Snapshot(snapshot) => snapshot,
+        response => panic!("unexpected snapshot response: {response:?}"),
+    };
+    assert_eq!(
+        unchanged.panes[0].agent.as_ref().unwrap().state,
+        AgentState::Working
+    );
+    let report = fixture
+        .command(&reporter)
+        .env("WSX_PANE_ID", &pane_selector)
+        .env("WSX_RUNTIME_GENERATION", &runtime_generation)
+        .args([
+            "agent",
+            "report",
+            &pane_selector,
+            "--provider",
+            "pi",
+            "--state",
+            "done",
+            "--lifecycle",
+            "--presence-id",
+            presence_id,
+        ])
+        .status()
+        .unwrap();
+    assert!(report.success(), "stable reporter failed after handoff");
     let projected = match client.call(&Request::Snapshot).unwrap() {
         Response::Snapshot(snapshot) => snapshot,
         response => panic!("unexpected snapshot response: {response:?}"),
@@ -460,7 +513,7 @@ fn daemon_handoff_restores_a_legacy_sized_history_cohort() {
         response => panic!("unexpected lifecycle response: {response:?}"),
     };
 
-    let target_binary = fixture.root.join("wsxd-next");
+    let target_binary = fixture.root.join("bin/wsxd-next");
     fs::write(&target_binary, fs::read(&source_binary).unwrap()).unwrap();
     let mut permissions = fs::metadata(&target_binary).unwrap().permissions();
     use std::os::unix::fs::PermissionsExt;
@@ -486,7 +539,8 @@ fn daemon_handoff_restores_a_legacy_sized_history_cohort() {
         }
         assert!(
             Instant::now() < deadline,
-            "history-cohort handoff successor did not become ready"
+            "history-cohort handoff successor did not become ready: {}",
+            fs::read_to_string(fixture.root.join("daemon.log")).unwrap_or_default()
         );
         thread::sleep(Duration::from_millis(25));
     };

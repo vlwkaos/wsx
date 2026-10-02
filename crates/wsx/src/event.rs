@@ -105,6 +105,8 @@ pub(crate) enum TerminalEscapeAction {
     PrevAttention,
     NextSession,
     PrevSession,
+    NextContextSession,
+    PrevContextSession,
     NextGroup,
     PrevGroup,
     Cancel,
@@ -131,7 +133,7 @@ impl EscapeSequence {
                 let suffix = KeyChord::parse(part, false)?;
                 if matches!(
                     suffix.code,
-                    KeyCode::Char('a' | 'b' | 'i' | 'j' | 'k' | 'n' | 'q' | '{' | '}')
+                    KeyCode::Char('a' | 'b' | 'h' | 'i' | 'j' | 'k' | 'l' | 'n' | 'q' | '{' | '}')
                 ) {
                     return None;
                 }
@@ -192,6 +194,14 @@ impl EscapeSequence {
                 || self.matches_prefixed_code(key, KeyCode::Up)
             {
                 TerminalEscapeAction::PrevSession
+            } else if self.matches_prefixed_char(key, 'l')
+                || self.matches_prefixed_code(key, KeyCode::Right)
+            {
+                TerminalEscapeAction::NextContextSession
+            } else if self.matches_prefixed_char(key, 'h')
+                || self.matches_prefixed_code(key, KeyCode::Left)
+            {
+                TerminalEscapeAction::PrevContextSession
             } else if self.matches_prefixed_shifted_char(key, '}') {
                 TerminalEscapeAction::NextGroup
             } else if self.matches_prefixed_shifted_char(key, '{') {
@@ -263,12 +273,15 @@ impl EscapeSequence {
     }
 
     fn matches_prefixed_terminal_command(&self, key: KeyEvent) -> bool {
-        ['a', 'b', 'i', 'n']
+        ['a', 'b', 'h', 'i', 'l', 'n']
             .into_iter()
             .any(|value| self.matches_prefixed_char(key, value))
             || ['A', 'I', 'N', '{', '}']
                 .into_iter()
                 .any(|value| self.matches_prefixed_shifted_char(key, value))
+            || [KeyCode::Left, KeyCode::Right]
+                .into_iter()
+                .any(|code| self.matches_prefixed_code(key, code))
     }
 
     fn take_pending_prefix(&mut self) -> Option<KeyEvent> {
@@ -344,6 +357,8 @@ pub fn poll_event(
                 TerminalEscapeAction::PrevAttention => Action::PrevAttention,
                 TerminalEscapeAction::NextSession => Action::NextSession,
                 TerminalEscapeAction::PrevSession => Action::PrevSession,
+                TerminalEscapeAction::NextContextSession => Action::NextContextSession,
+                TerminalEscapeAction::PrevContextSession => Action::PrevContextSession,
                 TerminalEscapeAction::NextGroup => Action::GroupNext,
                 TerminalEscapeAction::PrevGroup => Action::GroupPrev,
                 TerminalEscapeAction::Cancel => Action::None,
@@ -519,6 +534,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn project_context_keys_require_a_prefix_and_do_not_capture_bare_input() {
+        for (code, expected) in [
+            (KeyCode::Char('l'), TerminalEscapeAction::NextContextSession),
+            (KeyCode::Right, TerminalEscapeAction::NextContextSession),
+            (KeyCode::Char('h'), TerminalEscapeAction::PrevContextSession),
+            (KeyCode::Left, TerminalEscapeAction::PrevContextSession),
+        ] {
+            for modifiers in [KeyModifiers::NONE, KeyModifiers::CONTROL] {
+                let mut sequence = EscapeSequence::parse("ctrl+a w").unwrap();
+                let bare = KeyEvent::new(code, modifiers);
+                assert_eq!(
+                    sequence.terminal_key(bare),
+                    TerminalEscapeAction::Forward(vec![bare])
+                );
+                assert_eq!(
+                    sequence.terminal_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+                    TerminalEscapeAction::Pending
+                );
+                assert_eq!(sequence.terminal_key(bare), expected);
+                assert!(!sequence.is_pending());
+            }
+            let mut sequence = EscapeSequence::parse("ctrl+a w").unwrap();
+            sequence.workspace_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+            assert_eq!(
+                sequence.workspace_key(KeyEvent::new(code, KeyModifiers::NONE)),
+                WorkspaceEscapeAction::Pending
+            );
+            assert!(!sequence.is_pending());
+        }
+    }
+
+    #[test]
     fn escape_sequence_requires_a_modified_prefix_and_normalizes_its_label() {
         assert!(EscapeSequence::parse("space w").is_none());
         let sequence = EscapeSequence::parse("control+a w").unwrap();
@@ -529,7 +576,8 @@ mod tests {
     fn escape_sequence_reserves_terminal_command_suffixes() {
         for suffix in [
             "a", "shift+a", "b", "shift+b", "i", "shift+i", "j", "shift+j", "k", "shift+k", "n",
-            "shift+n", "q", "shift+q", "{", "shift+{", "}", "shift+}",
+            "shift+n", "h", "shift+h", "l", "shift+l", "q", "shift+q", "{", "shift+{", "}",
+            "shift+}",
         ] {
             assert!(
                 EscapeSequence::parse(&format!("ctrl+a {suffix}")).is_none(),
