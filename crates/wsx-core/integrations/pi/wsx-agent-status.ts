@@ -1,7 +1,7 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=17
+// WSX_INTEGRATION_VERSION=18
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execFile } from "node:child_process";
+import { execReporter } from "../common/wsx-reporter.mjs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -82,7 +82,7 @@ function drain(): void {
   else args.push("--presence-id", presenceId);
   if (next.sessionRef?.path) args.push("--session-path", next.sessionRef.path);
   else if (next.sessionRef?.id) args.push("--session-id", next.sessionRef.id);
-  execFile(reportBin, args, { timeout: REPORT_TIMEOUT_MS, windowsHide: true }, (error) => {
+  execReporter(reportBin, args, { timeout: REPORT_TIMEOUT_MS, windowsHide: true }, (error) => {
     sendInFlight = false;
     if (error && !pending && next.retry < REPORT_RETRY_DELAYS_MS.length) {
       const delay = REPORT_RETRY_DELAYS_MS[next.retry];
@@ -126,7 +126,7 @@ function clearPendingSettlement(): void {
 function renewPresence(): void {
   if (!presenceActive || presenceInFlight || !paneId) return;
   presenceInFlight = true;
-  execFile(reportBin, ["agent", "presence-renew", paneId, "--presence-id", presenceId],
+  execReporter(reportBin, ["agent", "presence-renew", paneId, "--presence-id", presenceId],
     { timeout: REPORT_TIMEOUT_MS, windowsHide: true }, () => {
       presenceInFlight = false;
     });

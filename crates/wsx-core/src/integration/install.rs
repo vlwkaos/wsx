@@ -197,6 +197,22 @@ fn install_in(target: IntegrationTarget, root: &Path) -> io::Result<InstallResul
     );
     let mut prepared = Vec::<(PathBuf, String, bool)>::new();
 
+    if matches!(
+        target,
+        IntegrationTarget::Pi
+            | IntegrationTarget::Omp
+            | IntegrationTarget::Opencode
+            | IntegrationTarget::Kilo
+    ) {
+        prepared.push((
+            asset
+                .parent()
+                .expect("adapter asset has a parent")
+                .join("wsx-reporter.mjs"),
+            assets::REPORTER.into(),
+            false,
+        ));
+    }
     if target == IntegrationTarget::Hermes {
         let directory = asset.parent().expect("Hermes asset has a parent");
         prepared.push((
@@ -208,7 +224,8 @@ fn install_in(target: IntegrationTarget, root: &Path) -> io::Result<InstallResul
     if target == IntegrationTarget::Opencode {
         prepared.push((
             root.join("wsx-tui-session.js"),
-            assets::OPENCODE_TUI.into(),
+            assets::OPENCODE_TUI
+                .replace("../common/wsx-reporter.mjs", "./plugins/wsx-reporter.mjs"),
             false,
         ));
         let tui_config = root.join("tui.jsonc");

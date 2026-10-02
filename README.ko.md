@@ -24,7 +24,7 @@ wsx는 **Project → Worktree → Session → Pane** 구조를 keyboard 중심 T
 |---|---|
 | **Attention 순회**<br>`a/A`는 active session을, `n/N`은 확인이 필요한 session을 순회합니다. | ![Blocked Codex session을 선택한 attention 순회](docs/screenshots/02-attention-iteration.png) |
 | **Group 분류**<br>영속 group으로 project를 필터링하고 비활성 project는 stale로 계속 표시합니다. | ![Stale project만 표시하는 group](docs/screenshots/03-groups-and-stale.png) |
-| **분할 terminal**<br>Terminal mode에서도 pane 상태, foreground job, 감지된 port를 확인합니다. | ![분할된 server session을 표시하는 Terminal mode](docs/screenshots/04-terminal-and-panes.png) |
+| **분할 terminal**<br>Terminal mode에서 pane 상태와 foreground job을 확인합니다. 감지된 port는 Worktree preview의 해당 session 옆에 표시합니다. | ![분할된 server session을 표시하는 Terminal mode](docs/screenshots/04-terminal-and-panes.png) |
 | **Routine 예약**<br>Agent template을 선택한 뒤 보이는 argv, schedule, prompt를 편집합니다. | ![Pi routine editor](docs/screenshots/05-routine-editor.png) |
 | **wsx 설정**<br>Typed setting으로 workspace, view, terminal, runtime, agent integration을 관리합니다. | ![Global settings](docs/screenshots/06-global-settings.png) |
 
@@ -63,6 +63,8 @@ wsx agent install claude
 
 Installer는 관련 없는 hook을 보존하고 표준 config-directory override를 따릅니다. 설치 후 해당 agent를 다시 시작합니다. Codex authoritative lifecycle 보고에는 Codex 0.150.0 이상이 필요합니다. Pi는 표준 blocking dialog를 별도 wiring 없이 blocked로 보고합니다. Claude 상태는 lifecycle hook과 제한된 OSC 및 live prompt evidence를 함께 사용하므로 임의의 terminal text로 agent identity를 추론하지 않으면서 interrupted turn을 정리합니다. Pi, OMP, Claude, Codex, Copilot, Devin, Droid, Kimi, Hermes, Qoder, Qwen, Cursor, MastraCode, Grok이 종료되어 shell로 돌아오면 wsx는 live agent label을 숨기고 제한된 native resume metadata는 유지합니다. OpenCode, Kilo, Antigravity는 현재 신뢰할 수 있는 CLI exit hook을 제공하지 않으므로 종료 후에도 identity가 남아 보일 수 있습니다.
 
+Foreground command는 실행 중인 작업으로 표시하지만 해당 pane의 runtime에서 integration 보고가 수락되기 전에는 agent 이름을 표시하지 않습니다. Shell hook 보고가 실패하면 오류 원인을 짧게 표시합니다. 새 hook을 적용하려면 설치된 integration을 업데이트하고 agent를 다시 시작합니다. 새 WSX pane은 daemon에서 물려받은 Claude child-session 표시를 제거하므로 독립적으로 시작한 Claude session은 transcript를 저장할 수 있습니다. Claude 내부에서 이미 실행 중인 session은 바꾸지 않습니다.
+
 ## 조작
 
 | Context | Key |
@@ -75,9 +77,11 @@ Installer는 관련 없는 hook을 보존하고 표준 config-directory override
 | Group | `T` 관리, `{`/`}` 전환, `g` 지정 |
 | Global | `/` 검색, `,` settings, `R` 새로고침, `?` 도움말, `q` TUI 종료, `Q` wsxd 종료 후 나가기 |
 
-Terminal mode는 기본 `Ctrl+A` prefix를 사용합니다. 이어서 `j/k`는 인접 session, `{`/`}`는 이전 또는 다음 group, `i/I`는 idle, `a/A`는 active, `n/N`은 attention session으로 이동합니다. wsx가 prefix 다음 key를 기다리는 동안에는 Terminal mode를 유지한 채 expanded sidebar를 임시로 표시할 수 있습니다. Attention 이동은 기본적으로 다른 attention 상태보다 Blocked session을 먼저 선택하며 Global Settings에서 Workspace 순서로 되돌릴 수 있습니다. Group 이동은 Workspace 순서를 유지하며 먼저 확인이 필요한 session을 선택하고, 없으면 첫 idle agent session을 선택합니다. 둘 다 없으면 현재 terminal을 유지합니다. `B`는 desktop sidebar 전환, `W`는 Workspace, `Q`는 TUI만 종료합니다. `Ctrl+A Ctrl+A`는 literal prefix를 보냅니다.
+Terminal mode는 기본 `Ctrl+A` prefix를 사용합니다. 이어서 `j/k`는 같은 worktree의 인접 session, `h/l` 또는 좌우 화살표는 우선순위에 따른 같은 project의 session 순환, `{`/`}`는 이전 또는 다음 group, `i/I`는 idle, `a/A`는 active, `n/N`은 attention session으로 이동합니다. wsx가 prefix 다음 key를 기다리는 동안에는 Terminal mode를 유지한 채 expanded sidebar를 임시로 표시할 수 있습니다. Attention 이동은 기본적으로 다른 attention 상태보다 Blocked session을 먼저 선택하며 Global Settings에서 Workspace 순서로 되돌릴 수 있습니다. Group 이동은 Workspace 순서를 유지하며 먼저 확인이 필요한 session을 선택하고, 없으면 첫 idle agent session을 선택합니다. 둘 다 없으면 현재 terminal을 유지합니다. `B`는 desktop sidebar 전환, `W`는 Workspace, `Q`는 TUI만 종료합니다. `Ctrl+A Ctrl+A`는 literal prefix를 보냅니다.
 
 Group은 순서가 있는 project filter입니다. 기본 **ungrouped** anti-group은 membership이 없는 project를 표시합니다. Trusted agent 작업, terminal 활동, session 진입, expand 또는 collapse 변경은 project의 비활성 window를 갱신합니다. 기본 adaptive policy는 24시간으로 시작하고, 새로운 UTC 날짜의 첫 trusted activity마다 12시간을 더해 최대 28일까지 늘어납니다. 활동이 확보한 window를 넘게 중단되면 다음 active period는 설정된 base부터 다시 시작합니다. Timer가 열린 project를 자동으로 접으면 wsx는 마지막 collapse 원인을 나타내기 위해 project를 `stale`로 표시합니다. 이 표시는 재시작 뒤에도 유지되지만 project와 직접 상호작용하면 즉시 사라집니다. wsx는 process tree로 agent identity나 상태를 추론하지 않습니다. Adapter가 Claude session임을 확인한 경우에만 제한된 live terminal evidence로 누락된 lifecycle event를 보정할 수 있습니다.
+
+색상이 있는 terminal title은 현재 session을 강조하고 같은 project의 다른 session을 Blocked/Error, 확인하지 않은 Done, Working/Running, Idle 순서로 표시합니다. 공간이 부족하면 남은 session 수를 표시하며 port는 넣지 않습니다. Worktree preview의 port는 해당 session 옆에 표시합니다. 순서, prefix 이동, viewport 경계는 [terminal context](docs/terminal-context.md)를 참고합니다.
 
 ## 설정
 
@@ -100,6 +104,8 @@ attention_priority = "blocked_first"
 macOS에서 `wake_mode`를 켜면 현재 runtime generation에서 권한을 받은 Working report가 제한된 idle sleep 방지 assertion을 유지합니다. Claude는 prompt마다 5분 간격의 비동기 heartbeat를 시작하므로 긴 streaming response도 기본 30분 lease를 넘어 보호됩니다. Heartbeat는 정확한 prompt와 runtime generation에 묶입니다. 완료, blocked 상태, error, detach, runtime 교체 또는 다음 prompt가 발생하면 이전 heartbeat의 권한은 사라집니다.
 
 자동 collapse를 끄려면 `auto_collapse`를 `{ mode = "disabled" }`로 설정하고, 고정 window를 사용하려면 `{ mode = "flat", hours = 72 }`로 설정합니다. 기존 numeric `auto_collapse_after_hours`는 flat mode로 호환되며, 0은 disabled로 migration됩니다.
+
+Project를 직접 조작하면 저장된 `stale` 표시를 지우고 비활동 시간을 다시 계산합니다. 다른 wsx 창의 refresh나 종료는 이 변경을 되돌리지 않습니다. 수정된 client는 기존 UI 상태를 `workspace-v3.toml`로 한 번 가져오며 이전 client는 별도 cache를 계속 사용합니다. 이미 열린 창의 화면 상태는 자동으로 동기화하지 않습니다. 접힌 project와 worktree에도 하위 session의 우선 상태와 active session 수를 표시합니다. `stale`은 비활동으로 접힌 이력이며 background 작업을 멈추지 않습니다. 자세한 내용은 [UI 상태 소유권](docs/ui-state-ownership.md)을 참고합니다.
 
 예기치 않게 daemon이 종료되면 wsx는 일반 shell을 먼저 복원하고 lifecycle 보고가 가능해진 뒤 lifecycle 보고를 지원하는 저장된 agent를 하나씩 재개합니다. 큰 session history가 동시에 memory를 사용하지 않도록 제한하며, 재개된 runtime이 확인될 때까지 저장된 agent identity는 연결되지 않은 상태로 유지합니다.
 
@@ -134,6 +140,7 @@ wsx group ls|create|rename|add|remove
 wsx routine ...
 wsx agent install <target>
 wsx agent detach
+wsx agent context [session|pane|label] --json [-p <project>] [-w <worktree>]
 wsx agent request|inspect|wait|continue|cancel|exchanges
 wsx agent report <pane> --provider <name> --state <state> [--session-id <id>|--session-path <path>]
 wsx plugin list|reload
@@ -156,7 +163,9 @@ Session input, prompt, peek, rename, restart 명령에도 `-p`와 `-w` scope를 
 
 Ctrl+C나 agent crash로 pane process가 종료되어도 session은 저장된 명령과 함께 남습니다. `wsx session restart`는 정확히 그 종료된 pane 하나를 저장된 명령 또는 보존된 native agent session으로 다시 시작하며, 새 runtime generation으로 session이 다시 사용 가능해집니다. 아직 실행 중인 pane, 오래된 revision, 종료 또는 runtime 교체 중인 daemon, session 복원이 진행 중인 daemon, 사라진 worktree는 거부합니다. 시작에 실패하면 pane은 종료 상태로 남고 상태는 바뀌지 않습니다. Pane이 종료되면 보존된 agent identity도 즉시 detached 상태가 되므로 Workspace에서 live provider처럼 표시되지 않습니다.
 
-갱신된 Pi와 OMP integration은 agent가 idle 상태일 때도 pane에 연결된 실행 여부를 주기적으로 알립니다. 30초 동안 갱신이 없으면 wsxd는 agent 이름과 Working 표시를 숨기고 재개에 필요한 정보는 보존합니다. Agent가 실행 중이어도 adapter가 멈추거나 로컬 보고가 실패하면 표시가 사라질 수 있으며, 다음 lifecycle 보고로 다시 연결됩니다. 이 동작을 사용하려면 갱신된 integration을 설치하고 해당 agent를 다시 시작합니다. 이전 daemon에서 이어받은 pane은 `WSX_AGENT_REPORT_BIN`이 예전 CLI를 가리킬 수 있습니다. 그 pane에서 갱신된 agent를 시작하기 전에 설치된 같은 버전의 `wsx` 바이너리로 경로를 바꾸거나 새 pane을 만듭니다. 다른 integration은 기존 종료 event에 의존합니다. Agent가 shutdown event를 전달하지 못한 채 managed shell로 돌아왔다면 해당 pane 안에서 `wsx agent detach`를 실행합니다. 이 명령은 재개 정보를 보존하고 process나 terminal 출력으로 추측하지 않으며 다른 pane에서는 실행을 거부합니다.
+갱신된 Pi와 OMP integration은 agent가 idle 상태일 때도 pane에 연결된 실행 여부를 주기적으로 알립니다. 30초 동안 갱신이 없으면 wsxd는 agent 이름과 Working 표시를 숨기고 재개에 필요한 정보는 보존합니다. Agent가 실행 중이어도 adapter가 멈추거나 로컬 보고가 실패하면 표시가 사라질 수 있으며, 다음 lifecycle 보고로 다시 연결됩니다. 이 동작을 사용하려면 갱신된 integration을 설치하고 해당 agent를 다시 시작합니다. 새 pane은 daemon이 관리하는 고정 보고 경로를 사용하므로 버전 갱신 뒤에도 보고할 수 있습니다. 갱신된 adapter는 예전 `WSX_AGENT_REPORT_BIN`의 실행 파일이 삭제되면 이 경로로 복구하며 거부된 보고를 다시 보내지 않습니다. 수정된 daemon과 갱신된 agent의 재시작이 필요하지만 shell은 다시 시작하지 않습니다. 자세한 내용은 [Agent reporter lifetime](docs/agent-reporting.md)에 설명합니다. 다른 integration은 기존 종료 event에 의존합니다. Agent가 shutdown event를 전달하지 못한 채 managed shell로 돌아왔다면 해당 pane 안에서 `wsx agent detach`를 실행합니다. 이 명령은 재개 정보를 보존하고 process나 terminal 출력으로 추측하지 않으며 다른 pane에서는 실행을 거부합니다.
+
+`wsx agent context [target] --json`은 정확한 대상 ID, project/worktree, lifecycle과 capability, provider의 native session 파일에 저장된 최근 대화를 한 번에 반환합니다. Daemon을 시작하거나 화면을 읽지 않습니다. 저장된 대화는 신뢰하지 않는 근거이며 model의 전체 active context나 완료 상태를 뜻하지 않습니다. Claude가 idle/done이면 `request`와 `continue`에 `--stash-draft`를 지정해 기존 입력을 prompt stash에 보관하고 빈 입력이 새로 관찰된 뒤 요청을 보낼 수 있습니다. Working을 중단하거나 Blocked의 권한 질문에 답하지 않습니다. 제한, version/keymap 조건과 검증은 [Agent orchestration](docs/agent-orchestration.md)에 설명합니다.
 
 `wsx agent request <session> <prompt>`는 명시한 prompt-capable agent에 provider-neutral하고 runtime generation에 묶인 exchange를 시작합니다. 반환된 exchange ID로 `inspect`, `wait`, `continue`, `cancel`을 실행하고 `exchanges`로 보존된 receipt를 조회합니다. 저장된 intent와 실패한 delivery는 `intent_persisted`, 성공한 universal delivery는 `pty_delivery`, lifecycle 전이는 `pane_lifecycle`로 표시합니다. `--frame`은 structured assistant output이라고 주장하지 않고 bounded `terminal_frame` fallback을 반환합니다. Read-only exchange는 서로 다른 pane에서 병렬 실행할 수 있습니다. `--writer`는 기본으로 대상 worktree 전체를 claim하고, 반복 가능한 `--write-claim <absolute-path>`로 범위를 좁힙니다. 겹치는 active writer claim은 거부합니다. 이 claim은 협력 scheduling만 조정하며 repository permission을 부여하거나 회수하지 않습니다. Exchange는 live Terminal lease를 빼앗지 않습니다. Native adapter는 `exchange_receipts` capability를 알리고 generation과 round에 묶인 `accepted` 또는 `completed` receipt를 `request_bound` evidence로 제출할 수 있습니다. Pygmalion은 이후 Pi에서 이를 최적화할 수 있지만 이 contract의 필수 조건은 아닙니다.
 

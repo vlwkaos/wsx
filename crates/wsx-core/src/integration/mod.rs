@@ -10,6 +10,7 @@ mod availability;
 pub mod claude_status;
 mod config_edit;
 mod install;
+pub mod memory;
 mod model;
 mod opencode_config;
 mod paths;
@@ -239,6 +240,7 @@ mod tests {
                 "working",
                 "--lifecycle",
                 "--escape-interrupts",
+                "--prompt",
                 "--wake-token",
                 "prompt-123",
                 "--session-id",
@@ -249,6 +251,58 @@ mod tests {
             run("heartbeat", br#"{"prompt_id":"prompt-123"}"#),
             ["agent", "wake-heartbeat", "42", "--prompt-id", "prompt-123",]
         );
+        let native = run(
+            "idle",
+            br#"{"session_id":"session-abc","transcript_path":"/native store/session-abc.jsonl"}"#,
+        );
+        assert!(native.iter().any(|value| value == "--prompt"));
+        assert_eq!(
+            &native[native.len() - 4..],
+            [
+                "--session-id",
+                "session-abc",
+                "--transcript-path",
+                "/native store/session-abc.jsonl"
+            ]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_adapters_expose_bounded_report_failure_without_vendor_input() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::{Command, Stdio};
+
+        let root = test_root("failed-status-hook");
+        fs::create_dir_all(&root).unwrap();
+        let hook = root.join("wsx-agent-status.sh");
+        let reporter = root.join("wsx");
+        fs::write(
+            &reporter,
+            "#!/bin/sh\nprintf 'stale_runtime: sensitive reporter output\\n' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&reporter, fs::Permissions::from_mode(0o700)).unwrap();
+        for target in [IntegrationTarget::Claude, IntegrationTarget::Codex] {
+            fs::write(&hook, assets::primary(target)).unwrap();
+            let result = Command::new("/bin/sh")
+                .arg(&hook)
+                .arg("session")
+                .env("WSX_PANE_ID", "42")
+                .env("WSX_AGENT_REPORT_BIN", &reporter)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(
+                !result.status.success(),
+                "{target} must not hide a rejected report"
+            );
+            let stderr = String::from_utf8(result.stderr).unwrap();
+            assert!(stderr.contains("report failed (stale_runtime)"));
+            assert!(!stderr.contains("sensitive"));
+            assert!(stderr.len() < 160);
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -541,7 +595,8 @@ mod tests {
     #[test]
     fn opencode_assets_use_tui_routing_and_argv_reporting() {
         assert!(assets::OPENCODE_TUI.contains("api.route.current"));
-        assert!(assets::OPENCODE_TUI.contains("execFile"));
+        assert!(assets::OPENCODE_TUI.contains("execReporter"));
+        assert!(assets::REPORTER.contains("execFile"));
         assert!(!assets::OPENCODE_TUI.contains("createConnection"));
         let updated = opencode_config::register_tui("{\n  // keep\n  \"plugin\": []\n}\n").unwrap();
         assert!(updated.contains("// keep"));

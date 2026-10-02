@@ -177,15 +177,29 @@ pub enum AgentSessionRefKind {
 pub struct AgentSessionRef {
     pub kind: AgentSessionRefKind,
     pub value: String,
+    /// Adapter-reported history, not a resume argument. See docs/agent-orchestration.md.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<PathBuf>,
 }
 
 impl AgentSessionRef {
+    pub fn with_transcript_path(mut self, path: String) -> Option<Self> {
+        if !valid_agent_session_value(&path, MAX_AGENT_SESSION_PATH_BYTES)
+            || !PathBuf::from(&path).is_absolute()
+        {
+            return None;
+        }
+        self.transcript_path = Some(PathBuf::from(path));
+        Some(self)
+    }
+
     pub fn id(value: impl Into<String>) -> Option<Self> {
         let value = value.into();
         (valid_agent_session_value(&value, MAX_AGENT_SESSION_ID_BYTES) && !value.starts_with('-'))
             .then_some(Self {
                 kind: AgentSessionRefKind::Id,
                 value,
+                transcript_path: None,
             })
     }
 
@@ -196,6 +210,7 @@ impl AgentSessionRef {
         .then_some(Self {
             kind: AgentSessionRefKind::Path,
             value,
+            transcript_path: None,
         })
     }
 }

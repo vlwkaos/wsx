@@ -1,6 +1,6 @@
 // managed by wsx
 // WSX_INTEGRATION_VERSION=@VERSION@
-import { execFile } from "node:child_process";
+import { execReporter } from "./wsx-reporter.mjs";
 
 const provider = "@PROVIDER@";
 const reportBin = process.env.WSX_AGENT_REPORT_BIN || "wsx";
@@ -28,7 +28,7 @@ function drain() {
   const args = pendingArgs;
   pendingArgs = undefined;
   sendInFlight = true;
-  execFile(reportBin, args, { timeout: 1000, windowsHide: true }, () => {
+  execReporter(reportBin, args, { timeout: 1000, windowsHide: true }, () => {
     sendInFlight = false;
     drain();
   });

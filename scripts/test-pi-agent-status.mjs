@@ -6,7 +6,7 @@ const workDir = path.resolve(`.work/pi-agent-status-test-${process.pid}`);
 const reportBin = path.join(workDir, "fake-wsx.mjs");
 const reportLog = path.join(workDir, "reports.jsonl");
 const failureCount = path.join(workDir, "failures");
-fs.mkdirSync(workDir, { recursive: true });
+fs.mkdirSync(workDir, { recursive: true, mode: 0o700 });
 fs.writeFileSync(
   reportBin,
   `#!/usr/bin/env node
@@ -24,7 +24,10 @@ fs.appendFileSync(log, JSON.stringify(process.argv.slice(2)) + "\\n");
 );
 fs.chmodSync(reportBin, 0o755);
 process.env.WSX_PANE_ID = "982";
-process.env.WSX_AGENT_REPORT_BIN = reportBin;
+// Reopening Pi in a preserved pre-upgrade shell inherits a removed Cellar path.
+process.env.WSX_AGENT_REPORT_BIN = path.join(workDir, "removed-0.26.2", "wsx");
+process.env.WSX_SOCKET = path.join(workDir, "wsx.sock");
+fs.symlinkSync(reportBin, path.join(workDir, "wsx.reporter"));
 process.env.WSX_TEST_REPORT_LOG = reportLog;
 process.env.WSX_TEST_FAILURE_COUNT = failureCount;
 

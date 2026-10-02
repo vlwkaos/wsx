@@ -25,6 +25,8 @@ fn main() -> Result<()> {
         args.command.as_ref(),
         std::env::var_os(wsx_core::runtime::WSX_PANE_ID_ENV).as_deref(),
     )?;
+    // ^ Observation/report handlers must bypass this eager bootstrap AND use
+    // a non-starting Client. See scripts/test-agent-context.py for the lifecycle oracle.
     if matches!(
         args.command,
         Some(
@@ -32,7 +34,9 @@ fn main() -> Result<()> {
                 | cli::Command::Runtime { .. }
                 | cli::Command::Daemon { .. }
                 | cli::Command::Agent {
-                    subcommand: cli::AgentCmd::Install { .. },
+                    subcommand: cli::AgentCmd::Install { .. }
+                        | cli::AgentCmd::Context { .. }
+                        | cli::AgentCmd::Report { .. },
                 }
         )
     ) {
@@ -68,26 +72,28 @@ fn reject_nested_tui(
 }
 
 fn run_tui(mobile: bool) -> Result<()> {
-    // Restore terminal on panic so the shell isn't left in raw mode.
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let _ = crossterm::execute!(
-            std::io::stderr(),
-            crossterm::event::DisableBracketedPaste,
-            crossterm::event::DisableMouseCapture,
-            crossterm::terminal::LeaveAlternateScreen,
-        );
-        let _ = crossterm::terminal::disable_raw_mode();
-        default_hook(info);
-    }));
-
-    let mut terminal = tui::init().context("terminal init failed")?;
-    let mut app = App::new(mobile)?;
-    let result = app.run(&mut terminal);
-    // Restore terminal before flush_cache so any eprintln is visible.
-    let _ = tui::restore(&mut terminal);
-    app.flush_cache();
-    result
+    let (mut session, mut terminal) = tui::init().context("terminal init failed")?;
+    let mut app = match App::new(mobile) {
+        Ok(app) => app,
+        Err(error) => {
+            let _ = session.restore();
+            session.record_failure("app_start_failed", &error);
+            return Err(error);
+        }
+    };
+    let result = app.run(&mut terminal, &session);
+    // Restore before diagnostic I/O and cache flush; Drop retries a failed restoration.
+    let restored = session.restore();
+    if let Err(error) = &result {
+        session.record_failure("app_run_failed", error);
+    }
+    let persisted = app.flush_cache();
+    if let Err(error) = &persisted {
+        session.record_failure("cache_flush_failed", error);
+    }
+    result?;
+    restored?;
+    persisted
 }
 
 #[cfg(test)]

@@ -74,6 +74,23 @@ fn metadata_in(
         Some(version) if version >= target.expected_version() => InstallStatus::Current,
         Some(_) => InstallStatus::Outdated,
     };
+    if install_status == InstallStatus::Current
+        && matches!(
+            target,
+            IntegrationTarget::Pi
+                | IntegrationTarget::Omp
+                | IntegrationTarget::Opencode
+                | IntegrationTarget::Kilo
+        )
+        && !paths::asset_path_in(root, target)
+            .parent()
+            .is_some_and(|directory| {
+                fs::read_to_string(directory.join("wsx-reporter.mjs"))
+                    .is_ok_and(|content| content == super::assets::REPORTER)
+            })
+    {
+        install_status = InstallStatus::Outdated;
+    }
     if target == IntegrationTarget::Opencode && install_status == InstallStatus::Current {
         let tui_current = fs::read_to_string(root.join("wsx-tui-session.js"))
             .ok()

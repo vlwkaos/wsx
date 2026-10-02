@@ -15,7 +15,8 @@ import weakref
 
 ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL = 16
-WORK = Path(os.environ.get("WSX_SMOKE_WORK", ROOT / ".work" / "runtime-smoke"))
+# ^ Plugin manifest commands must be absolute even when the scratch root is relative.
+WORK = Path(os.environ.get("WSX_SMOKE_WORK", ROOT / ".work" / "runtime-smoke")).resolve()
 if WORK.exists():
     shutil.rmtree(WORK)
 HOME = WORK / "home"
@@ -87,6 +88,8 @@ env.update({
     "XDG_CONFIG_HOME": str(WORK / "config"),
     "XDG_CACHE_HOME": str(WORK / "cache"),
     "SHELL": "/bin/sh",
+    # A fresh pane must not inherit a Claude nesting marker from wsxd's parent.
+    "CLAUDE_CODE_CHILD_SESSION": "parent-only-marker",
 })
 subprocess.run(["git", "init", "-q", "-b", "main", str(PROJECT)], check=True, env=env)
 SOCKET = STATE / "wsx" / "wsx.sock"
@@ -348,9 +351,10 @@ activity_session = call("session_create", {
     "worktree_id": worktree_id,
     "label": "foreground-job-smoke",
     "command": [],
-    "initial_input": "sleep 30",
-    "rows": 4,
-    "cols": 20,
+    # The isolated HOME has no user-installed xterm-ghostty terminfo for ncurses watch.
+    "initial_input": "TERM=xterm-256color watch -n 1 date" if shutil.which("watch") else "sleep 30",
+    "rows": 12,
+    "cols": 80,
 })
 assert activity_session["type"] == "created", activity_session
 activity_session_id = activity_session["data"]["id"]
@@ -370,10 +374,81 @@ while time.monotonic() < deadline:
     ):
         break
     time.sleep(0.1)
-assert activity_snapshot is not None and any(
+if activity_snapshot is None or not any(
     item["pane_id"] == activity_pane_id and item["foreground_job"]
     for item in activity_snapshot.get("pane_activity", [])
-), activity_snapshot
+):
+    activity_frame = call("view", {"pane_ids": [activity_pane_id]})
+    activity_text = "".join(cell[0] for cell in activity_frame["data"]["frames"][0]["cells"])
+    raise AssertionError(f"foreground job was not observed: {activity_text!r}")
+activity_pane = next(item for item in activity_snapshot["panes"] if item["id"] == activity_pane_id)
+assert activity_pane["agent"] is None, "foreground work must not imply agent identity"
+activity_project = next(item for item in activity_snapshot["projects"] if item["id"] == project_id)
+assert activity_project["last_agent_active_unix_ms"] is None, activity_project
+assert time.monotonic() < deadline - 5, "foreground scan must not wait for the port poll"
+# Interrupt the foreground job without closing the shell.
+assert call("terminal_acquire", {
+    "pane_id": activity_pane_id, "client_id": 81, "takeover": False,
+})["type"] == "ack"
+assert call("terminal_input", {
+    "pane_id": activity_pane_id, "client_id": 81, "bytes": [3],
+})["type"] == "ack"
+assert call("terminal_release", {
+    "pane_id": activity_pane_id, "client_id": 81,
+})["type"] == "ack"
+interrupted = time.monotonic()
+while time.monotonic() - interrupted < 1:
+    activity_snapshot = call("snapshot")["data"]
+    if not any(item["pane_id"] == activity_pane_id and item["foreground_job"]
+               for item in activity_snapshot.get("pane_activity", [])):
+        break
+    time.sleep(0.03)
+assert not any(item["pane_id"] == activity_pane_id and item["foreground_job"]
+               for item in activity_snapshot.get("pane_activity", [])), activity_snapshot
+# This child is a separate top-level shell, not a Claude subprocess.
+send_shell_command(activity_pane_id, "printf 'marker:%s\\n' \"${CLAUDE_CODE_CHILD_SESSION-unset}\"", 82)
+marker_deadline = time.monotonic() + 2
+while time.monotonic() < marker_deadline:
+    frame = call("view", {"pane_ids": [activity_pane_id]})
+    assert frame["type"] == "view", frame
+    text = "".join(cell[0] for cell in frame["data"]["frames"][0]["cells"])
+    if "marker:unset" in text:
+        break
+    time.sleep(0.03)
+assert "marker:unset" in text, text
+# Missing runtime authority is rejected; it cannot attach a guessed provider.
+rejected = call("agent_report", {
+    "pane_id": activity_pane_id, "provider": "codex", "state": "working",
+    "capabilities": {"lifecycle": True},
+})
+assert rejected["type"] == "error" and rejected["data"]["code"] == "stale_runtime", rejected
+send_shell_command(activity_pane_id,
+    '\"$WSX_AGENT_REPORT_BIN\" agent report \"$WSX_PANE_ID\" --provider codex '
+    '--state working --lifecycle && sleep 1 && '
+    '\"$WSX_AGENT_REPORT_BIN\" agent report \"$WSX_PANE_ID\" --provider codex '
+    '--state done --lifecycle', 83)
+working_seen = False
+report_deadline = time.monotonic() + 4
+while time.monotonic() < report_deadline:
+    activity_snapshot = call("snapshot")["data"]
+    activity_pane = next(item for item in activity_snapshot["panes"] if item["id"] == activity_pane_id)
+    agent = activity_pane["agent"]
+    if agent is not None and agent["state"] == "working":
+        working_seen = True
+    if working_seen and agent is not None and agent["state"] == "done":
+        break
+    time.sleep(0.03)
+assert working_seen and agent is not None and agent["state"] == "done", activity_snapshot
+send_shell_command(activity_pane_id, "exit", 84)
+exit_deadline = time.monotonic() + 3
+while time.monotonic() < exit_deadline:
+    activity_snapshot = call("snapshot")["data"]
+    activity_pane = next(item for item in activity_snapshot["panes"] if item["id"] == activity_pane_id)
+    if activity_pane["exited"]:
+        break
+    time.sleep(0.03)
+assert activity_pane["exited"] and activity_pane["agent"]["state"] == "unknown", activity_pane
+activity_record = next(item for item in activity_snapshot["sessions"] if item["id"] == activity_session_id)
 assert call("session_close", {
     "session_id": activity_session_id,
     "expected_revision": activity_record["revision"],
@@ -465,7 +540,7 @@ assert PLUGIN_MARKER.exists() and "session.created" in PLUGIN_MARKER.read_text()
 snapshot = call("snapshot")["data"]
 project = next(item for item in snapshot["projects"] if item["id"] == project_id)
 assert isinstance(project["last_terminal_active_unix_ms"], int), project
-assert project["last_agent_active_unix_ms"] is None, project
+assert isinstance(project["last_agent_active_unix_ms"], int), project
 session = next(item for item in snapshot["sessions"] if item["id"] == session_id)
 pane_id = session["focused_pane"]
 reorder_peer = call("session_create", {

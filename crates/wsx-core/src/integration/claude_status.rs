@@ -56,12 +56,17 @@ pub fn reconcile(
     event_state: AgentState,
     event_age: Duration,
     terminal: Option<TerminalEvidence>,
+    interrupt_requested: bool,
 ) -> AgentState {
     match event_state {
         AgentState::Done | AgentState::Error | AgentState::Blocked => event_state,
         AgentState::Working => match terminal {
             Some(TerminalEvidence::Blocked) => AgentState::Blocked,
-            Some(TerminalEvidence::Idle) if event_age >= WORKING_EVENT_LEAD => AgentState::Idle,
+            Some(TerminalEvidence::Idle)
+                if interrupt_requested && event_age >= WORKING_EVENT_LEAD =>
+            {
+                AgentState::Idle
+            }
             _ => AgentState::Working,
         },
         AgentState::Idle | AgentState::Unknown => match terminal {
@@ -126,40 +131,61 @@ mod tests {
     }
 
     #[test]
-    fn reconciliation_preserves_outcomes_and_corrects_stale_working() {
+    fn reconciliation_preserves_outcomes_and_requires_interrupt_for_idle() {
         let settled = WORKING_EVENT_LEAD + Duration::from_millis(1);
         assert_eq!(
             reconcile(
                 AgentState::Working,
-                Duration::ZERO,
-                Some(TerminalEvidence::Idle)
+                settled,
+                Some(TerminalEvidence::Idle),
+                false
             ),
             AgentState::Working
         );
         assert_eq!(
-            reconcile(AgentState::Working, settled, Some(TerminalEvidence::Idle)),
+            reconcile(
+                AgentState::Working,
+                Duration::ZERO,
+                Some(TerminalEvidence::Idle),
+                true
+            ),
+            AgentState::Working
+        );
+        assert_eq!(
+            reconcile(
+                AgentState::Working,
+                settled,
+                Some(TerminalEvidence::Idle),
+                true
+            ),
             AgentState::Idle
         );
         assert_eq!(
             reconcile(
                 AgentState::Working,
                 settled,
-                Some(TerminalEvidence::Blocked)
+                Some(TerminalEvidence::Blocked),
+                false
             ),
             AgentState::Blocked
         );
         assert_eq!(
-            reconcile(AgentState::Idle, settled, Some(TerminalEvidence::Working)),
+            reconcile(
+                AgentState::Idle,
+                settled,
+                Some(TerminalEvidence::Working),
+                false
+            ),
             AgentState::Working
         );
         for state in [AgentState::Done, AgentState::Error, AgentState::Blocked] {
             assert_eq!(
-                reconcile(state, settled, Some(TerminalEvidence::Idle)),
+                reconcile(state, settled, Some(TerminalEvidence::Idle), true),
                 state
             );
         }
         assert_eq!(
-            reconcile(AgentState::Working, settled, None),
+            reconcile(AgentState::Working, settled, None, true),
             AgentState::Working
         );
     }

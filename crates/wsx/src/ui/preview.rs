@@ -6,102 +6,12 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
-use wsx_core::{
-    config::global::PortVisibility,
-    model::workspace::{
-        FetchFailReason, PaneInfo, Project, SessionInfo, SubmoduleCommitState, WorktreeInfo,
-    },
+use wsx_core::model::workspace::{FetchFailReason, Project, SubmoduleCommitState, WorktreeInfo};
+
+use super::{
+    compact_port_label, git_remote_status_color, theme,
+    workspace_tree::{session_icon, truncate_to_width},
 };
-
-use super::{compact_port_label, git_remote_status_color, theme, workspace_tree::agent_state_icon};
-
-pub struct TerminalBreadcrumbView<'a> {
-    pub project: &'a str,
-    pub worktree: &'a str,
-    pub session: &'a SessionInfo,
-    pub pane: Option<&'a PaneInfo>,
-    pub port_visibility: PortVisibility,
-    pub animation_frame: usize,
-}
-
-pub fn render_terminal_breadcrumb(frame: &mut Frame, area: Rect, view: TerminalBreadcrumbView<'_>) {
-    let TerminalBreadcrumbView {
-        project,
-        worktree,
-        session,
-        pane,
-        port_visibility,
-        animation_frame,
-    } = view;
-    let (agent, state, ports, outcome_acknowledged, foreground_job) = pane.map_or_else(
-        || {
-            (
-                session.agent.as_deref(),
-                session.agent_status,
-                session.listening_ports(),
-                session.outcome_acknowledged,
-                !session.is_agentic() && session.has_foreground_job(),
-            )
-        },
-        |pane| {
-            (
-                pane.agent.as_deref(),
-                pane.agent_status,
-                pane.listening_ports.clone(),
-                pane.outcome_acknowledged,
-                pane.agent.is_none() && pane.foreground_job,
-            )
-        },
-    );
-    let (icon, icon_color) = agent_state_icon(
-        state,
-        session.muted,
-        outcome_acknowledged,
-        foreground_job,
-        animation_frame,
-    );
-    let mut spans = vec![
-        Span::styled(
-            format!(" {project}"),
-            Style::default().fg(theme::TEXT).bold(),
-        ),
-        Span::styled(" › ", Style::default().fg(theme::TEXT_SUBTLE)),
-        Span::styled(worktree.to_string(), Style::default().fg(theme::ACCENT)),
-        Span::styled(" › ", Style::default().fg(theme::TEXT_SUBTLE)),
-        Span::styled(
-            session.display_name.clone(),
-            Style::default().fg(theme::TEXT),
-        ),
-    ];
-    if let Some(pane) = pane {
-        spans.push(Span::styled(" › ", Style::default().fg(theme::TEXT_SUBTLE)));
-        spans.push(Span::styled(
-            pane.label.clone(),
-            Style::default().fg(theme::TEXT_MUTED),
-        ));
-    }
-    spans.push(Span::styled(
-        format!("  {icon}"),
-        Style::default().fg(icon_color),
-    ));
-    if let Some(agent_label) = session_state::agent_label(agent) {
-        spans.push(Span::styled(agent_label, theme::agent_label()));
-    }
-    let port_width =
-        usize::from(area.width).saturating_sub(Line::from(spans.clone()).width().saturating_add(2));
-    let is_agentic = session.is_agentic();
-    if let Some(label) = port_visibility
-        .shows_session(is_agentic)
-        .then(|| compact_port_label(&ports, port_width))
-        .flatten()
-    {
-        spans.push(Span::styled(
-            format!("  {label}"),
-            Style::default().fg(theme::ACCENT),
-        ));
-    }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
-}
 
 pub fn render_worktree_preview(
     frame: &mut Frame,
@@ -153,30 +63,30 @@ pub(super) fn worktree_preview_lines(
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("Sessions:", label_style)));
         for session in &worktree.sessions {
-            let dot =
-                if session_state::derive(session).app_state() == AppSessionState::NeedsAttention {
-                    " ●"
-                } else {
-                    ""
-                };
-            lines.push(Line::from(Span::styled(
-                format!("  {}{}", session.display_name, dot),
-                Style::default().fg(theme::SUCCESS),
-            )));
-        }
-        let ports = worktree.listening_ports();
-        if !ports.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled("  Ports: ", label_style),
-                Span::styled(
-                    ports
-                        .iter()
-                        .map(|port| format!(":{port}"))
-                        .collect::<Vec<_>>()
-                        .join("  "),
-                    Style::default().fg(theme::ACCENT),
-                ),
-            ]));
+            let width = usize::from(inner.width);
+            let ports = session.listening_ports();
+            let port_label = compact_port_label(&ports, width.saturating_sub(12))
+                .or_else(|| (!ports.is_empty()).then(|| format!("+{} ports", ports.len())));
+            let port_width = port_label
+                .as_deref()
+                .map_or(0, |label| Line::from(label).width() + 2);
+            let name =
+                truncate_to_width(&session.display_name, width.saturating_sub(4 + port_width));
+            let (icon, color) = session_icon(session, 0);
+            let mut spans = vec![
+                Span::raw("  "),
+                Span::styled(icon, Style::default().fg(color)),
+                Span::styled(format!(" {name}"), Style::default().fg(theme::TEXT)),
+            ];
+            if let Some(label) = port_label {
+                if Line::from(spans.clone()).width() + port_width <= width {
+                    spans.push(Span::styled(
+                        format!("  {label}"),
+                        Style::default().fg(theme::ACCENT),
+                    ));
+                }
+            }
+            lines.push(Line::from(spans));
         }
     }
 
@@ -824,7 +734,9 @@ mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
     use wsx_core::{
-        model::workspace::{CommitSummary, GitInfo, SubmoduleInfo, SubtreeInfo},
+        model::workspace::{
+            CommitSummary, GitInfo, PaneInfo, SessionInfo, SubmoduleInfo, SubtreeInfo,
+        },
         runtime::{
             AgentState, Cell, CellWidth, Cursor, PaneId, PaneLayout, SessionId, TerminalFrame,
             TerminalId, TerminalSelectionRange,
@@ -912,7 +824,7 @@ mod tests {
                     hash: "abc1234".into(),
                     message: "preview order".into(),
                 }],
-                modified_files: (1..=8)
+                modified_files: (1..=12)
                     .map(|index| format!("ordinary-{index}.txt"))
                     .collect(),
                 submodules: Some(vec![SubmoduleInfo {
@@ -947,12 +859,17 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(text.contains("Ports:"), "{text:?}");
-        assert!(text.contains(":5173"), "{text:?}");
-        assert!(text.contains("8 files modified"), "{text:?}");
+        assert!(!text.contains("Ports:"), "{text:?}");
+        let session_row = (0..30)
+            .map(|row| buffer_row(terminal.backend().buffer(), Rect::new(0, 0, 100, 30), row))
+            .find(|row| row.contains("agent"))
+            .unwrap();
+        assert!(session_row.contains(":5173"), "{session_row:?}");
+        assert!(text.contains("12 files modified"), "{text:?}");
         assert!(text.contains("ordinary-6.txt"), "{text:?}");
-        assert!(!text.contains("ordinary-7.txt"), "{text:?}");
-        assert!(text.contains("+2 more"), "{text:?}");
+        assert!(text.contains("ordinary-7.txt"), "{text:?}");
+        assert!(!text.contains("ordinary-8.txt"), "{text:?}");
+        assert!(text.contains("+5 more"), "{text:?}");
         assert!(text.contains("vendor/module"), "{text:?}");
         assert!(text.contains("modified content"), "{text:?}");
         assert!(text.contains("vendor/asched"), "{text:?}");
@@ -961,7 +878,6 @@ mod tests {
             "Branch:",
             "Path:",
             "Sessions:",
-            "Ports:",
             "Remote:",
             "Commits:",
             "Submodules:",
@@ -973,6 +889,105 @@ mod tests {
             positions.windows(2).all(|pair| pair[0] < pair[1]),
             "{text:?}"
         );
+    }
+
+    #[test]
+    fn session_port_rows_follow_pane_ownership_without_worktree_aggregation() {
+        let pane = |id, ports| PaneInfo {
+            pane_id: PaneId(id),
+            terminal_id: TerminalId(id),
+            label: "terminal".into(),
+            agent: None,
+            agent_status: AgentState::Unknown,
+            revision: 1,
+            exited: false,
+            listening_ports: ports,
+            foreground_job: false,
+            outcome_acknowledged: false,
+        };
+        let session = |id, name: &str, ports| SessionInfo {
+            session_id: SessionId(id),
+            pane_id: PaneId(id),
+            terminal_id: TerminalId(id),
+            display_name: name.into(),
+            agent: None,
+            agent_status: AgentState::Unknown,
+            revision: 1,
+            layout: PaneLayout::Leaf {
+                pane_id: PaneId(id),
+            },
+            panes: vec![pane(id, ports)],
+            muted: false,
+            outcome_acknowledged: false,
+        };
+        let mut worktree = WorktreeInfo {
+            name: "main".into(),
+            branch: "main".into(),
+            path: "/demo/main".into(),
+            is_main: true,
+            alias: None,
+            expanded: true,
+            sessions: vec![
+                session(1, "frontend", vec![5173, 5173]),
+                session(2, "api", vec![3000]),
+            ],
+            git_info: None,
+            fetch_failed: false,
+            fetch_fail_count: 0,
+            fetch_fail_reason: None,
+            last_fetched: None,
+            git_info_fetched_at: None,
+        };
+        assert!(worktree.sessions[0].layout.split(
+            PaneId(1),
+            PaneId(3),
+            wsx_core::runtime::SplitAxis::Horizontal
+        ));
+        worktree.sessions[0].panes.push(pane(3, vec![8080, 5173]));
+        let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
+        for moved in [false, true, false] {
+            worktree.sessions[0].panes[0].listening_ports =
+                if moved { vec![] } else { vec![5173, 5173] };
+            worktree.sessions[0].panes[1].listening_ports =
+                if moved { vec![] } else { vec![8080, 5173] };
+            worktree.sessions[1].panes[0].listening_ports =
+                if moved { vec![3000, 5173] } else { vec![3000] };
+            terminal
+                .draw(|frame| render_worktree_preview(frame, frame.area(), &worktree, "demo"))
+                .unwrap();
+            let rows: Vec<_> = (0..16)
+                .map(|row| buffer_row(terminal.backend().buffer(), Rect::new(0, 0, 60, 16), row))
+                .collect();
+            let frontend = rows.iter().find(|row| row.contains("frontend")).unwrap();
+            let api = rows.iter().find(|row| row.contains("api")).unwrap();
+            assert_eq!(frontend.matches(":5173").count(), usize::from(!moved));
+            assert!(!frontend.contains(":3000"));
+            assert_eq!(frontend.contains(":8080"), !moved);
+            assert!(api.contains(":3000"));
+            assert_eq!(api.contains(":5173"), moved);
+            assert!(!api.contains(":8080"));
+            if moved {
+                assert!(api.find(":3000").unwrap() < api.find(":5173").unwrap());
+            } else {
+                assert!(frontend.find(":5173").unwrap() < frontend.find(":8080").unwrap());
+            }
+            assert!(!rows.iter().any(|row| row.contains("Ports:")));
+        }
+        worktree.sessions[1].display_name = "长会话名称".repeat(10);
+        worktree.sessions[1].panes[0].listening_ports = vec![3000, 5173, 8000, 8080, 9000, 9090];
+        let mut narrow = Terminal::new(TestBackend::new(30, 16)).unwrap();
+        narrow
+            .draw(|frame| render_worktree_preview(frame, frame.area(), &worktree, "demo"))
+            .unwrap();
+        let text: String = narrow
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains(":3000"), "{text}");
+        assert!(text.contains('+') && text.contains('…'), "{text}");
     }
 
     #[test]
@@ -999,136 +1014,6 @@ mod tests {
         assert!(text.contains("file-2.txt"), "{text}");
         assert!(!text.contains("file-3.txt"), "{text}");
         assert!(text.contains("+6 more"), "{text}");
-    }
-
-    #[test]
-    fn terminal_breadcrumb_shows_agent_and_ports_without_state_words() {
-        let backend = TestBackend::new(64, 3);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let session = SessionInfo {
-            session_id: SessionId(1),
-            pane_id: PaneId(1),
-            terminal_id: TerminalId(1),
-            agent: Some("codex".into()),
-            display_name: "review".into(),
-            agent_status: AgentState::Idle,
-            revision: 1,
-            layout: PaneLayout::Leaf { pane_id: PaneId(1) },
-            panes: vec![PaneInfo {
-                pane_id: PaneId(1),
-                terminal_id: TerminalId(1),
-                label: "terminal".into(),
-                agent: Some("codex".into()),
-                agent_status: AgentState::Idle,
-                revision: 1,
-                exited: false,
-                listening_ports: vec![3000, 5173],
-                foreground_job: false,
-                outcome_acknowledged: false,
-            }],
-            muted: false,
-            outcome_acknowledged: false,
-        };
-
-        terminal
-            .draw(|frame| {
-                render_terminal_breadcrumb(
-                    frame,
-                    frame.area(),
-                    TerminalBreadcrumbView {
-                        project: "wsx",
-                        worktree: "main",
-                        session: &session,
-                        pane: None,
-                        port_visibility: PortVisibility::All,
-                        animation_frame: 0,
-                    },
-                )
-            })
-            .unwrap();
-
-        let text = terminal.backend().buffer().content()[..64]
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(text.contains("wsx › main › review"));
-        assert!(text.contains("(codex)"));
-        assert!(text.contains(":3000 :5173"));
-        assert!(!text.contains("idle"));
-
-        let backend = TestBackend::new(64, 1);
-        let mut default_policy = Terminal::new(backend).unwrap();
-        default_policy
-            .draw(|frame| {
-                render_terminal_breadcrumb(
-                    frame,
-                    frame.area(),
-                    TerminalBreadcrumbView {
-                        project: "wsx",
-                        worktree: "main",
-                        session: &session,
-                        pane: None,
-                        port_visibility: PortVisibility::NonAgentic,
-                        animation_frame: 0,
-                    },
-                )
-            })
-            .unwrap();
-        let text = default_policy
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(!text.contains(":3000"));
-    }
-
-    #[test]
-    fn terminal_breadcrumb_omits_identity_for_an_ordinary_shell() {
-        let backend = TestBackend::new(48, 2);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let session = SessionInfo {
-            session_id: SessionId(1),
-            pane_id: PaneId(1),
-            terminal_id: TerminalId(1),
-            agent: None,
-            display_name: "shell-session".into(),
-            agent_status: AgentState::Unknown,
-            revision: 1,
-            layout: PaneLayout::Leaf { pane_id: PaneId(1) },
-            panes: vec![],
-            muted: false,
-            outcome_acknowledged: false,
-        };
-
-        terminal
-            .draw(|frame| {
-                render_terminal_breadcrumb(
-                    frame,
-                    frame.area(),
-                    TerminalBreadcrumbView {
-                        project: "wsx",
-                        worktree: "main",
-                        session: &session,
-                        pane: None,
-                        port_visibility: PortVisibility::All,
-                        animation_frame: 0,
-                    },
-                )
-            })
-            .unwrap();
-
-        let text = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(text.contains("shell-session"));
-        assert!(!text.contains("unknown"));
-        assert!(!text.contains(" · shell"));
     }
 
     #[test]

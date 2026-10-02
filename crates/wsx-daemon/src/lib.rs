@@ -4,6 +4,7 @@
 #[cfg(unix)]
 mod handoff;
 mod plugins;
+mod reporter;
 mod state_store;
 #[cfg(any(target_os = "macos", test))]
 mod wake;
@@ -57,6 +58,7 @@ const PRESENTATION_CADENCE: Duration = Duration::from_millis(4);
 static NEXT_LEASE_GENERATION: AtomicU64 = AtomicU64::new(1);
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 const PORT_SCAN_INTERVAL: Duration = Duration::from_secs(2);
+const FOREGROUND_SCAN_INTERVAL: Duration = Duration::from_millis(150);
 const PORT_SCAN_TIMEOUT: Duration = Duration::from_millis(750);
 const MAX_PORT_SCAN_BYTES: u64 = 256 * 1024;
 const RESUME_CLEAR_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -230,6 +232,8 @@ struct ClaudeReconciliation {
     event_at: Instant,
     terminal_revision: Option<u64>,
     terminal: Option<claude_status::TerminalEvidence>,
+    interrupt_requested: bool,
+    interrupt_revision: Option<u64>,
 }
 
 impl ClaudeReconciliation {
@@ -238,6 +242,7 @@ impl ClaudeReconciliation {
             self.event_state,
             now.saturating_duration_since(self.event_at),
             self.terminal,
+            self.interrupt_requested,
         )
     }
 }
@@ -1002,6 +1007,11 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
         import_stream = Some(stream);
     }
 
+    // ^ docs/agent-reporting.md: stage before readiness, publish only under ownership.
+    let mut reporter = Some(reporter::Publication::prepare(
+        &socket,
+        &std::env::current_exe()?,
+    )?);
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
@@ -1018,6 +1028,10 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
         write_lifecycle_marker(&daemon.lifecycle_path, "ready")?;
         handoff::report_ready(&mut stream)?;
         handoff::wait_commit(&mut stream)?;
+        // Commit is irreversible. A publication failure must not kill imported PTYs.
+        if let Err(error) = reporter::publish_pending(&mut reporter) {
+            eprintln!("wsxd reporter publication after handoff commit: {error}; retrying under successor ownership");
+        }
         let runtimes = lock(&daemon.state)
             .runtimes
             .values()
@@ -1029,6 +1043,7 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
         }
         let _ = handoff::report_owned(&mut stream);
     } else {
+        reporter::publish_pending(&mut reporter)?;
         write_lifecycle_marker(&daemon.lifecycle_path, "ready")?;
     }
 
@@ -1036,13 +1051,23 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     // the canonical socket. Agent resumes are queued by recover_runtimes.
     let mut cold_recovery =
         cold_start.then(|| spawn_cold_recovery(&daemon, resume_agents_on_restore()));
+    let mut reporter_retry_at = Instant::now() + Duration::from_secs(1);
     let mut next_presence_poll = Instant::now() + AGENT_PRESENCE_POLL;
     let port_scanner = spawn_port_scanner(&daemon);
+    let foreground_scanner = spawn_foreground_scanner(&daemon);
     let claude_reconciler = spawn_claude_reconciler(&daemon);
     let wake_controller = spawn_wake_controller(&daemon);
 
     while !advance_replacement(&daemon) {
         retry_dirty_persistence(&daemon);
+        // ^ docs/agent-reporting.md: retain staged publication after an
+        // irreversible commit and retry only while this daemon owns the runtime.
+        if reporter.is_some() && Instant::now() >= reporter_retry_at {
+            if reporter::publish_pending(&mut reporter).is_ok() {
+                eprintln!("wsxd reporter publication recovered");
+            }
+            reporter_retry_at = Instant::now() + Duration::from_secs(1);
+        }
         if Instant::now() >= next_presence_poll {
             expire_agent_presence(&daemon, Instant::now());
             next_presence_poll = Instant::now() + AGENT_PRESENCE_POLL;
@@ -1087,6 +1112,7 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
                 cleanup(&daemon, &socket);
                 let _ = plugin_dispatcher.join();
                 let _ = port_scanner.join();
+                let _ = foreground_scanner.join();
                 let _ = claude_reconciler.join();
                 let _ = wake_controller.join();
                 return Err(error);
@@ -1099,6 +1125,7 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     cleanup(&daemon, &socket);
     let _ = plugin_dispatcher.join();
     let _ = port_scanner.join();
+    let _ = foreground_scanner.join();
     let _ = claude_reconciler.join();
     let _ = wake_controller.join();
     Ok(())
@@ -2058,10 +2085,18 @@ fn request_claude_reconcile(daemon: &Daemon, pane_id: PaneId, interrupted: bool)
         return;
     };
     let event_state = agent.state;
+    let interrupt_revision = state
+        .runtimes
+        .get(&pane_id)
+        .map(|runtime| runtime.revision());
     state
         .claude_reconciliations
         .entry(pane_id)
-        .and_modify(|reconciliation| reconciliation.terminal_revision = None)
+        .and_modify(|reconciliation| {
+            reconciliation.terminal_revision = None;
+            reconciliation.interrupt_requested = true;
+            reconciliation.interrupt_revision = interrupt_revision;
+        })
         .or_insert(ClaudeReconciliation {
             event_state,
             event_at: now
@@ -2069,6 +2104,8 @@ fn request_claude_reconcile(daemon: &Daemon, pane_id: PaneId, interrupted: bool)
                 .unwrap_or(now),
             terminal_revision: None,
             terminal: None,
+            interrupt_requested: true,
+            interrupt_revision,
         });
 }
 
@@ -2435,6 +2472,34 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             access,
             write_claims,
         } => create_agent_exchange(daemon, pane_id, prompt, timeout_ms, access, write_claims),
+        Request::AgentExchangeCreateStashingDraft {
+            pane_id,
+            prompt,
+            timeout_ms,
+            access,
+            write_claims,
+        } => create_agent_exchange_with_draft(
+            daemon,
+            pane_id,
+            prompt,
+            timeout_ms,
+            access,
+            write_claims,
+            true,
+        ),
+        Request::AgentExchangeContinueStashingDraft {
+            exchange_id,
+            expected_revision,
+            prompt,
+            timeout_ms,
+        } => continue_agent_exchange_with_draft(
+            daemon,
+            exchange_id,
+            expected_revision,
+            prompt,
+            timeout_ms,
+            true,
+        ),
         Request::AgentExchangeContinue {
             exchange_id,
             expected_revision,
@@ -4029,6 +4094,24 @@ fn agent_report_with_attachment(
         Some(id) => id,
         None => AgentInstanceId(next_id(&mut persisted)?),
     };
+    // ^ Preserve native metadata only for the same attached provider/session.
+    if attached {
+        if let (Some(current), Some(previous)) = (
+            &mut session_ref,
+            previous_agent
+                .as_ref()
+                .filter(|previous| previous.attached && previous.provider == provider),
+        ) {
+            if let Some(old) = &previous.session_ref {
+                if current.kind == old.kind
+                    && current.value == old.value
+                    && current.transcript_path.is_none()
+                {
+                    current.transcript_path = old.transcript_path.clone();
+                }
+            }
+        }
+    }
     if !attached {
         if let Some(previous) = previous_agent
             .as_ref()
@@ -4052,8 +4135,12 @@ fn agent_report_with_attachment(
                 event_at: now,
                 terminal_revision: None,
                 terminal: None,
+                interrupt_requested: false,
+                interrupt_revision: None,
             });
         reconciliation.event_state = agent_state;
+        reconciliation.interrupt_requested = false;
+        reconciliation.interrupt_revision = None;
         reconciliation.event_at = now;
         reconciliation.terminal_revision = None;
         reconciliation.terminal = None;
@@ -4396,6 +4483,98 @@ fn exchange_terminal_input(
     format!("[wsx exchange {id}, round {round}, {access}]\n{prompt}")
 }
 
+// ^ Provider-specific editor protocol, never agent identity or completion.
+// Documented Ctrl+S stashes idle Claude input; fresh empty chrome is the ACK.
+// See docs/agent-orchestration.md and Claude's interactive-mode documentation.
+fn claude_editor(observation: &AgentTerminalObservation) -> Option<&str> {
+    if claude_status::classify(&observation.title, &observation.text)
+        != Some(claude_status::TerminalEvidence::Idle)
+    {
+        return None;
+    }
+    let lines: Vec<_> = observation.text.lines().collect();
+    let (index, input) = lines
+        .iter()
+        .enumerate()
+        .rev()
+        .take(8)
+        .find_map(|(index, line)| {
+            line.trim_start()
+                .strip_prefix('❯')
+                .map(|input| (index, input.trim()))
+        })?;
+    // ^ A blank first line is not an empty multiline editor. Stop at Claude's
+    // horizontal input border, not its footer. Ambiguous placeholder UI is refused.
+    if input.starts_with("Try ") {
+        return None;
+    }
+    if !input.is_empty() {
+        return Some(input);
+    }
+    for line in &lines[index + 1..] {
+        let line = line.trim();
+        if !line.is_empty() && line.chars().all(|character| matches!(character, '─' | '━')) {
+            break;
+        }
+        if !line.is_empty() {
+            return Some(line);
+        }
+    }
+    Some("")
+}
+
+fn validate_draft_target(agent: &AgentInfo, runtime: &TerminalRuntime) -> Result<(), ApiError> {
+    if agent.provider != "claude" {
+        return Err(api(
+            "draft_policy_unsupported",
+            "draft stashing is supported only for Claude",
+        ));
+    }
+    if !agent.attached || !matches!(agent.state, AgentState::Idle | AgentState::Done) {
+        return Err(api(
+            "agent_busy",
+            "draft stashing requires an idle or done Claude agent",
+        ));
+    }
+    let observation = runtime
+        .agent_observation()
+        .map_err(|_| api("editor_unavailable", "cannot read current Claude editor"))?;
+    if claude_editor(&observation).is_none() {
+        return Err(api(
+            "editor_unavailable",
+            "Claude input editor is not visibly idle",
+        ));
+    }
+    Ok(())
+}
+
+fn stash_claude_draft(runtime: &TerminalRuntime) -> Result<(), ApiError> {
+    let before = runtime
+        .agent_observation()
+        .map_err(|_| api("editor_unavailable", "cannot observe Claude editor"))?;
+    // An empty editor needs no key: Ctrl+S would restore the existing stash.
+    if claude_editor(&before) == Some("") {
+        return Ok(());
+    }
+    runtime
+        .write(b"\x13")
+        .map_err(|_| api("editor_unavailable", "cannot stash Claude editor"))?;
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        let after = runtime
+            .agent_observation()
+            .map_err(|_| api("editor_unavailable", "cannot observe stashed Claude editor"))?;
+        if after.revision > before.revision && claude_editor(&after) == Some("") {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Err(api(
+        "editor_stash_unconfirmed",
+        "prompt was not sent because fresh empty input was not observed",
+    ))
+}
+
 fn deliver_agent_exchange(
     runtime: &TerminalRuntime,
     input: &str,
@@ -4436,6 +4615,26 @@ fn create_agent_exchange(
     timeout_ms: u64,
     access: AgentExchangeAccess,
     write_claims: Vec<PathBuf>,
+) -> Result<Response, ApiError> {
+    create_agent_exchange_with_draft(
+        daemon,
+        pane_id,
+        prompt,
+        timeout_ms,
+        access,
+        write_claims,
+        false,
+    )
+}
+
+fn create_agent_exchange_with_draft(
+    daemon: &Arc<Daemon>,
+    pane_id: PaneId,
+    prompt: String,
+    timeout_ms: u64,
+    access: AgentExchangeAccess,
+    write_claims: Vec<PathBuf>,
+    stash_draft: bool,
 ) -> Result<Response, ApiError> {
     validate_exchange_prompt(&prompt)?;
     let timeout_ms = validate_exchange_timeout(timeout_ms)?;
@@ -4529,6 +4728,9 @@ fn create_agent_exchange(
         .filter(|runtime| !runtime.exited())
         .cloned()
         .ok_or_else(|| api("terminal_unavailable", "pane has no live terminal"))?;
+    if stash_draft {
+        validate_draft_target(agent, &runtime)?;
+    }
     let revision = state.revision.saturating_add(1);
     let now = unix_time_millis();
     let mut persisted = state.persisted.clone();
@@ -4575,7 +4777,12 @@ fn create_agent_exchange(
     );
 
     let input = exchange_terminal_input(id, 1, access, &prompt);
-    let delivery = deliver_agent_exchange(&runtime, &input);
+    // ^ PTY readers notify through daemon.state between reads. Keep the mutation
+    // and pane-operation fences, but release state while waiting for editor ACK.
+    drop(state);
+    let stashed = !stash_draft || stash_claude_draft(&runtime).is_ok();
+    let mut state = lock(&daemon.state);
+    let delivered = stashed && deliver_agent_exchange(&runtime, &input).is_ok();
     let revision = state.revision.saturating_add(1);
     let mut persisted = state.persisted.clone();
     let exchange = persisted
@@ -4583,7 +4790,7 @@ fn create_agent_exchange(
         .iter_mut()
         .find(|exchange| exchange.id == id)
         .expect("new exchange remains persisted");
-    exchange.state = if delivery.is_ok() {
+    exchange.state = if delivered {
         exchange.evidence = AgentExchangeEvidence::PtyDelivery;
         AgentExchangeState::Delivered
     } else {
@@ -4613,6 +4820,17 @@ fn continue_agent_exchange(
     expected_revision: u64,
     prompt: String,
     timeout_ms: u64,
+) -> Result<Response, ApiError> {
+    continue_agent_exchange_with_draft(daemon, id, expected_revision, prompt, timeout_ms, false)
+}
+
+fn continue_agent_exchange_with_draft(
+    daemon: &Arc<Daemon>,
+    id: AgentExchangeId,
+    expected_revision: u64,
+    prompt: String,
+    timeout_ms: u64,
+    stash_draft: bool,
 ) -> Result<Response, ApiError> {
     validate_exchange_prompt(&prompt)?;
     let timeout_ms = validate_exchange_timeout(timeout_ms)?;
@@ -4661,6 +4879,23 @@ fn continue_agent_exchange(
         .filter(|runtime| !runtime.exited())
         .cloned()
         .ok_or_else(|| api("terminal_unavailable", "pane has no live terminal"))?;
+    if stash_draft {
+        if state.stopping || state.handoff_in_progress {
+            return Err(api(
+                "daemon_unavailable",
+                "daemon cannot stash a draft during shutdown or handoff",
+            ));
+        }
+        let agent = state
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .and_then(|pane| pane.agent.as_ref())
+            .filter(|agent| agent.id == previous.agent_id && agent.attached)
+            .ok_or_else(|| api("agent_unavailable", "exchange agent is no longer attached"))?;
+        validate_draft_target(agent, &runtime)?;
+    }
     let next_round = previous
         .round
         .checked_add(1)
@@ -4690,7 +4925,11 @@ fn continue_agent_exchange(
         id.0,
     );
     let input = exchange_terminal_input(id, next_round, previous.access, &prompt);
-    let delivery = deliver_agent_exchange(&runtime, &input);
+    // ^ Match initial delivery: a fragmented PTY frame must complete its callbacks.
+    drop(state);
+    let stashed = !stash_draft || stash_claude_draft(&runtime).is_ok();
+    let mut state = lock(&daemon.state);
+    let delivered = stashed && deliver_agent_exchange(&runtime, &input).is_ok();
     let revision = state.revision.saturating_add(1);
     let mut persisted = state.persisted.clone();
     let exchange = persisted
@@ -4698,7 +4937,7 @@ fn continue_agent_exchange(
         .iter_mut()
         .find(|exchange| exchange.id == id)
         .unwrap();
-    exchange.state = if delivery.is_ok() {
+    exchange.state = if delivered {
         exchange.evidence = AgentExchangeEvidence::PtyDelivery;
         AgentExchangeState::Delivered
     } else {
@@ -5126,16 +5365,13 @@ fn terminal_agent_environment(pane_id: PaneId, runtime_generation: &str) -> Vec<
             runtime_generation.to_string(),
         ),
     ];
-    if let Some(binary) = std::env::current_exe()
-        .ok()
-        .and_then(|daemon| daemon.parent().map(|parent| parent.join("wsx")))
-        .filter(|binary| binary.is_file())
-    {
-        environment.push((
-            "WSX_AGENT_REPORT_BIN".into(),
-            binary.to_string_lossy().into_owned(),
-        ));
-    }
+    environment.push((
+        "WSX_AGENT_REPORT_BIN".into(),
+        default_socket_path()
+            .with_extension("reporter")
+            .to_string_lossy()
+            .into_owned(),
+    ));
     environment
 }
 
@@ -5309,7 +5545,19 @@ fn apply_claude_terminal_observation(
             event_at,
             terminal_revision: None,
             terminal: None,
+            interrupt_requested: false,
+            interrupt_revision: None,
         });
+    // An old prompt cannot confirm that Ctrl+C settled the current turn.
+    let terminal = if terminal == Some(claude_status::TerminalEvidence::Idle)
+        && reconciliation
+            .interrupt_revision
+            .is_some_and(|revision| observation.revision <= revision)
+    {
+        None
+    } else {
+        terminal
+    };
     reconciliation.terminal_revision = Some(observation.revision);
     reconciliation.terminal = terminal;
     if terminal.is_none() {
@@ -5478,32 +5726,70 @@ fn spawn_wake_controller(_daemon: &Arc<Daemon>) -> thread::JoinHandle<()> {
     thread::spawn(|| {})
 }
 
+fn live_runtimes(daemon: &Daemon) -> Option<Vec<(PaneId, Arc<TerminalRuntime>)>> {
+    let state = lock(&daemon.state);
+    (!state.stopping).then(|| {
+        state
+            .runtimes
+            .iter()
+            .filter(|(_, runtime)| !runtime.exited())
+            .map(|(pane_id, runtime)| (*pane_id, Arc::clone(runtime)))
+            .collect()
+    })
+}
+
+fn scan_runtimes_current(state: &State, sampled: &[(PaneId, Arc<TerminalRuntime>)]) -> bool {
+    !state.stopping
+        && state
+            .runtimes
+            .iter()
+            .filter(|(_, runtime)| !runtime.exited())
+            .count()
+            == sampled.len()
+        && sampled.iter().all(|(pane_id, runtime)| {
+            state
+                .runtimes
+                .get(pane_id)
+                .is_some_and(|current| Arc::ptr_eq(current, runtime))
+                && !runtime.exited()
+        })
+}
+
+// ^ A foreground group is cheap kernel PTY metadata. Keep its live indicator
+// independent of the two-second lsof/ps listener scan and never infer provider identity.
+fn spawn_foreground_scanner(daemon: &Arc<Daemon>) -> thread::JoinHandle<()> {
+    let daemon = Arc::clone(daemon);
+    thread::spawn(move || loop {
+        let Some(runtimes) = live_runtimes(&daemon) else {
+            return;
+        };
+        let foreground_jobs = runtimes
+            .iter()
+            .filter_map(|(pane_id, runtime)| runtime.has_foreground_job().then_some(*pane_id))
+            .collect();
+        let mut state = lock(&daemon.state);
+        if scan_runtimes_current(&state, &runtimes)
+            && apply_foreground_scan(&mut state, foreground_jobs)
+        {
+            bump(&daemon, &mut state, "pane_activity.changed", 0);
+        }
+        drop(state);
+        thread::sleep(FOREGROUND_SCAN_INTERVAL);
+    })
+}
+
 fn spawn_port_scanner(daemon: &Arc<Daemon>) -> thread::JoinHandle<()> {
     let daemon = Arc::clone(daemon);
     thread::spawn(move || loop {
-        let runtimes = {
-            let state = lock(&daemon.state);
-            if state.stopping {
-                return;
-            }
-            state
-                .runtimes
-                .iter()
-                .filter(|(_, runtime)| !runtime.exited())
-                .map(|(pane_id, runtime)| (*pane_id, Arc::clone(runtime)))
-                .collect::<Vec<_>>()
+        let Some(runtimes) = live_runtimes(&daemon) else {
+            return;
         };
-        let mut process_groups = HashMap::new();
-        let mut foreground_jobs = HashSet::new();
-        for (pane_id, runtime) in runtimes {
-            if let Some(group) = runtime.process_group_id() {
-                process_groups.insert(pane_id, group);
-            }
-            if runtime.has_foreground_job() {
-                foreground_jobs.insert(pane_id);
-            }
-        }
-
+        let process_groups = runtimes
+            .iter()
+            .filter_map(|(pane_id, runtime)| {
+                runtime.process_group_id().map(|group| (*pane_id, group))
+            })
+            .collect::<HashMap<_, _>>();
         let detected = if process_groups.is_empty() {
             Some(HashMap::new())
         } else {
@@ -5513,7 +5799,7 @@ fn spawn_port_scanner(daemon: &Arc<Daemon>) -> thread::JoinHandle<()> {
             })
         };
         let mut state = lock(&daemon.state);
-        if apply_process_scan(&mut state, detected, foreground_jobs) {
+        if scan_runtimes_current(&state, &runtimes) && apply_port_scan(&mut state, detected) {
             bump(&daemon, &mut state, "pane_activity.changed", 0);
         }
         drop(state);
@@ -5541,25 +5827,22 @@ struct ProcessTerminal {
     tty: String,
 }
 
-fn apply_process_scan(
-    state: &mut State,
-    detected: Option<HashMap<PaneId, Vec<u16>>>,
-    foreground_jobs: HashSet<PaneId>,
-) -> bool {
-    let ports_changed = detected
-        .as_ref()
-        .is_some_and(|next| state.listening_ports != *next);
-    let activity_changed = state.foreground_jobs != foreground_jobs;
-    if let Some(next) = detected {
-        state.listener_scan_complete = true;
-        if ports_changed {
-            state.listening_ports = next;
-        }
+fn apply_foreground_scan(state: &mut State, foreground_jobs: HashSet<PaneId>) -> bool {
+    if state.foreground_jobs == foreground_jobs {
+        return false;
     }
-    if activity_changed {
-        state.foreground_jobs = foreground_jobs;
+    state.foreground_jobs = foreground_jobs;
+    true
+}
+
+fn apply_port_scan(state: &mut State, detected: Option<HashMap<PaneId, Vec<u16>>>) -> bool {
+    let Some(next) = detected else { return false };
+    state.listener_scan_complete = true;
+    if state.listening_ports == next {
+        return false;
     }
-    ports_changed || activity_changed
+    state.listening_ports = next;
+    true
 }
 
 fn scan_listening_ports() -> Option<Vec<ListenerProcess>> {
@@ -5954,11 +6237,23 @@ fn validated_session_ref(
     let Some(session_ref) = session_ref else {
         return Ok(None);
     };
+    let transcript_path = session_ref.transcript_path;
     let validated = match session_ref.kind {
         AgentSessionRefKind::Id => AgentSessionRef::id(session_ref.value),
         AgentSessionRefKind::Path => AgentSessionRef::path(session_ref.value),
     }
     .ok_or_else(|| api("invalid_agent_session", "invalid agent session reference"))?;
+    let validated = if let Some(path) = transcript_path {
+        validated
+            .with_transcript_path(
+                path.to_str()
+                    .ok_or_else(|| api("invalid_agent_session", "invalid transcript path"))?
+                    .to_owned(),
+            )
+            .ok_or_else(|| api("invalid_agent_session", "invalid transcript path"))?
+    } else {
+        validated
+    };
     Ok(Some(validated))
 }
 
@@ -7920,6 +8215,7 @@ mod tests {
             Some(AgentSessionRef {
                 kind: AgentSessionRefKind::Id,
                 value: "invalid\nid".into(),
+                transcript_path: None,
             }),
             AgentCapabilities::default(),
         )
@@ -7985,6 +8281,8 @@ mod tests {
                 event_at: Instant::now(),
                 terminal_revision: Some(1),
                 terminal: Some(claude_status::TerminalEvidence::Working),
+                interrupt_requested: false,
+                interrupt_revision: None,
             },
         );
 
@@ -8466,7 +8764,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_terminal_evidence_corrects_delayed_claude_working_after_grace() {
+    fn idle_terminal_evidence_cannot_override_working_without_interrupt() {
         let (daemon, path) = agent_test_daemon(agent_test_persisted());
         let pane_id = PaneId(4);
         agent_report(
@@ -8504,8 +8802,25 @@ mod tests {
             &daemon,
             pane_id,
             &generation,
-            idle,
+            idle.clone(),
             event_at + claude_status::WORKING_EVENT_LEAD + Duration::from_millis(1),
+        )
+        .unwrap();
+        {
+            let state = lock(&daemon.state);
+            assert_eq!(
+                state.persisted.panes[0].agent.as_ref().unwrap().state,
+                AgentState::Working
+            );
+            assert!(state.agent_wake_leases.contains_key(&pane_id));
+        }
+        request_claude_reconcile(&daemon, pane_id, true);
+        apply_claude_terminal_observation(
+            &daemon,
+            pane_id,
+            &generation,
+            idle,
+            Instant::now() + claude_status::WORKING_EVENT_LEAD,
         )
         .unwrap();
         {
@@ -8538,7 +8853,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_reconciler_observes_real_pty_idle_after_delayed_working_hook() {
+    fn claude_reconciler_requires_interrupt_for_real_pty_idle() {
         let (daemon, path) = agent_test_daemon(agent_test_persisted());
         let pane_id = PaneId(4);
         let runtime = Arc::new(
@@ -8572,6 +8887,27 @@ mod tests {
         let reconciler = spawn_claude_reconciler(&daemon);
 
         runtime.write("\x1b]2;✳ task\x07\r\n❯ ".as_bytes()).unwrap();
+        thread::sleep(claude_status::WORKING_EVENT_LEAD + Duration::from_millis(150));
+        assert_eq!(
+            lock(&daemon.state).persisted.panes[0]
+                .agent
+                .as_ref()
+                .unwrap()
+                .state,
+            AgentState::Working
+        );
+        request_claude_reconcile(&daemon, pane_id, true);
+        thread::sleep(CLAUDE_RECONCILE_INTERVAL + Duration::from_millis(50));
+        assert_eq!(
+            lock(&daemon.state).persisted.panes[0]
+                .agent
+                .as_ref()
+                .unwrap()
+                .state,
+            AgentState::Working,
+            "the pre-interrupt frame cannot settle an interrupted turn"
+        );
+        runtime.write(b"\r\n\xe2\x9d\xaf ").unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             if lock(&daemon.state).persisted.panes[0]
@@ -8748,6 +9084,7 @@ mod tests {
         .unwrap();
         let event_at = lock(&daemon.state).claude_reconciliations[&pane_id].event_at;
         let generation = current_agent_authority(&daemon).generation.unwrap();
+        request_claude_reconcile(&daemon, pane_id, true);
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
 
@@ -10777,6 +11114,55 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn foreground_job_changes_without_waiting_for_listener_scan() {
+        let (daemon, path) = agent_test_daemon(agent_test_persisted());
+        let pane_id = PaneId(4);
+        let runtime = Arc::new(
+            spawn_runtime(
+                &daemon,
+                pane_id,
+                TerminalId(5),
+                Path::new("/"),
+                &LaunchRecipe {
+                    command: vec!["/bin/sh".into()],
+                    initial_input: None,
+                    rows: 8,
+                    cols: 40,
+                },
+            )
+            .unwrap(),
+        );
+        lock(&daemon.state)
+            .runtimes
+            .insert(pane_id, Arc::clone(&runtime));
+        let scanner = spawn_foreground_scanner(&daemon);
+        runtime.write(b"sleep 4\r").unwrap();
+        let started = Instant::now();
+        while !lock(&daemon.state).foreground_jobs.contains(&pane_id) {
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "foreground job was not observed live"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        runtime.write(b"\x03").unwrap();
+        let interrupted = Instant::now();
+        while lock(&daemon.state).foreground_jobs.contains(&pane_id) {
+            assert!(
+                interrupted.elapsed() < Duration::from_secs(1),
+                "interrupted job stayed active"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!lock(&daemon.state).listener_scan_complete);
+        lock(&daemon.state).stopping = true;
+        scanner.join().unwrap();
+        runtime.terminate();
+        let _ = fs::remove_file(path);
+    }
+
     #[test]
     fn failed_listener_scan_preserves_prior_server_fence() {
         let (daemon, path) = agent_test_daemon(agent_test_persisted());
@@ -10784,7 +11170,7 @@ mod tests {
         state.listener_scan_complete = true;
         state.listening_ports.insert(PaneId(4), vec![3000]);
 
-        assert!(!apply_process_scan(&mut state, None, HashSet::new()));
+        assert!(!apply_port_scan(&mut state, None));
         assert!(state.listener_scan_complete);
         assert_eq!(state.listening_ports[&PaneId(4)], vec![3000]);
         assert!(replacement_blockers(&mut state, "0.23.0:1:2:3:20")

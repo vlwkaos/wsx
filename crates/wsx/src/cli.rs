@@ -109,6 +109,22 @@ impl From<AgentStateArg> for runtime::AgentState {
 
 #[derive(Subcommand)]
 pub enum AgentCmd {
+    /// Discover exact agent targets with bounded provider-native persisted history
+    Context {
+        session: Option<String>,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u32).range(1..=32))]
+        limit: u32,
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u32).range(1..=32))]
+        messages: u32,
+        #[arg(long, default_value_t = 4096, value_parser = clap::value_parser!(u32).range(1..=16384))]
+        bytes: u32,
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        scope: SessionScope,
+    },
     /// Install an agent lifecycle integration
     Install {
         #[arg(value_parser = parse_integration_target)]
@@ -129,6 +145,8 @@ pub enum AgentCmd {
         session_id: Option<String>,
         #[arg(long)]
         session_path: Option<String>,
+        #[arg(long, requires = "session_id")]
+        transcript_path: Option<String>,
         #[arg(long, hide = true)]
         wake_token: Option<String>,
         #[arg(long)]
@@ -169,6 +187,9 @@ pub enum AgentCmd {
         writer: bool,
         #[arg(long = "write-claim", requires = "writer")]
         write_claims: Vec<PathBuf>,
+        /// Stash an idle Claude draft before delivery (never cancels a running agent)
+        #[arg(long)]
+        stash_draft: bool,
         #[arg(long)]
         json: bool,
         #[command(flatten)]
@@ -196,6 +217,9 @@ pub enum AgentCmd {
     Continue {
         exchange: runtime::AgentExchangeId,
         prompt: String,
+        /// Stash an idle Claude draft before delivery
+        #[arg(long)]
+        stash_draft: bool,
         #[arg(long, default_value_t = 600)]
         timeout: u64,
         #[arg(long)]
@@ -571,6 +595,25 @@ pub fn run(cmd: Command) -> Result<()> {
             GroupCmd::Remove { group, project } => cmd_group_remove(&group, &project),
         },
         Command::Agent { subcommand } => match subcommand {
+            AgentCmd::Context {
+                session,
+                provider,
+                limit,
+                messages,
+                bytes,
+                json,
+                scope,
+            } => cmd_agent_context(
+                session.as_deref(),
+                provider.as_deref(),
+                ContextOptions {
+                    limit,
+                    messages,
+                    bytes,
+                    json,
+                },
+                &scope,
+            ),
             AgentCmd::Install { integration } => cmd_agent_install(integration),
             AgentCmd::Detach => cmd_agent_detach(),
             AgentCmd::Report {
@@ -580,6 +623,7 @@ pub fn run(cmd: Command) -> Result<()> {
                 conversation_id,
                 session_id,
                 session_path,
+                transcript_path,
                 wake_token,
                 prompt,
                 resume,
@@ -598,6 +642,7 @@ pub fn run(cmd: Command) -> Result<()> {
                     conversation_id,
                     session_id,
                     session_path,
+                    transcript_path,
                     wake_token,
                     capabilities: runtime::AgentCapabilities {
                         prompt,
@@ -620,6 +665,7 @@ pub fn run(cmd: Command) -> Result<()> {
                 timeout,
                 writer,
                 write_claims,
+                stash_draft,
                 json,
                 scope,
             } => cmd_agent_exchange_request(
@@ -628,6 +674,7 @@ pub fn run(cmd: Command) -> Result<()> {
                 timeout,
                 writer,
                 write_claims,
+                stash_draft,
                 json,
                 &scope,
             ),
@@ -645,9 +692,10 @@ pub fn run(cmd: Command) -> Result<()> {
             AgentCmd::Continue {
                 exchange,
                 prompt,
+                stash_draft,
                 timeout,
                 json,
-            } => cmd_agent_exchange_continue(exchange, prompt, timeout, json),
+            } => cmd_agent_exchange_continue(exchange, prompt, timeout, stash_draft, json),
             AgentCmd::Cancel { exchange, json } => cmd_agent_exchange_cancel(exchange, json),
             AgentCmd::Exchanges {
                 session,
@@ -1292,6 +1340,7 @@ mod agent_command_tests {
                     timeout: 300,
                     writer: true,
                     write_claims,
+                    stash_draft: false,
                     json: true,
                     scope,
                 }
@@ -2018,6 +2067,119 @@ fn parse_integration_target(
     value.parse()
 }
 
+struct ContextOptions {
+    limit: u32,
+    messages: u32,
+    bytes: u32,
+    json: bool,
+}
+
+fn cmd_agent_context(
+    selector: Option<&str>,
+    provider: Option<&str>,
+    options: ContextOptions,
+    requested: &SessionScope,
+) -> Result<()> {
+    // ^ One existing-daemon snapshot; discovery must not start or replace wsxd.
+    // Native history stays local and is not exposed through the browser bridge.
+    let client = runtime::Client::new(runtime::default_socket_path());
+    let snapshot = match client.call(&runtime::Request::Snapshot)? {
+        runtime::Response::Snapshot(snapshot) => snapshot,
+        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
+        _ => bail!("unexpected daemon snapshot"),
+    };
+    let config = requested
+        .worktree
+        .as_ref()
+        .map(|_| load_config())
+        .transpose()?;
+    let scope = runtime_session_scope(&snapshot, requested, config.as_ref())?;
+    let target = selector
+        .map(|selector| resolve_session_in_snapshot(&snapshot, selector, scope))
+        .transpose()?;
+    let caller = std::env::var(runtime::WSX_PANE_ID_ENV)
+        .ok()
+        .and_then(|id| id.parse::<runtime::PaneId>().ok());
+    let mut reader = wsx_core::integration::memory::Reader::default();
+    let mut candidates = Vec::new();
+    let mut matched = 0;
+    let mut remaining = 64 * 1024;
+    for pane in &snapshot.panes {
+        let Some(agent) = pane.agent.as_ref() else {
+            continue;
+        };
+        let Some(session) = snapshot
+            .sessions
+            .iter()
+            .find(|session| session.id == pane.session_id)
+        else {
+            continue;
+        };
+        if !session_matches_scope(&snapshot, session, scope)
+            || target
+                .as_ref()
+                .is_some_and(|target| target.pane_id != pane.id)
+            || provider.is_some_and(|provider| provider != agent.provider)
+        {
+            continue;
+        }
+        matched += 1;
+        if candidates.len() >= options.limit as usize {
+            continue;
+        }
+        let worktree = snapshot
+            .worktrees
+            .iter()
+            .find(|worktree| worktree.id == session.worktree_id)
+            .context("agent worktree missing")?;
+        let project = snapshot
+            .projects
+            .iter()
+            .find(|project| project.id == worktree.project_id)
+            .context("agent project missing")?;
+        let memory = reader.read(
+            &agent.provider,
+            agent.session_ref.as_ref(),
+            options.messages as usize,
+            (options.bytes as usize).min(remaining),
+        );
+        remaining = remaining.saturating_sub(
+            memory
+                .messages
+                .iter()
+                .map(|message| message.text.len())
+                .sum::<usize>()
+                + memory
+                    .checkpoint
+                    .as_ref()
+                    .map_or(0, |message| message.text.len()),
+        );
+        candidates.push(serde_json::json!({
+            "pane_id": pane.id, "session_id": session.id, "session_label": session.label,
+            "pane_label": pane.label, "is_self": caller == Some(pane.id), "exited": pane.exited,
+            "pane_revision": pane.revision, "project": { "id": project.id, "name": project.name, "path": project.path },
+            "worktree": { "id": worktree.id, "branch": worktree.branch, "path": worktree.path },
+            "agent": agent,
+            "eligible_state": !pane.exited && agent.attached && agent.capabilities.prompt && matches!(agent.state, runtime::AgentState::Idle | runtime::AgentState::Done),
+            "memory": memory,
+        }));
+    }
+    if selector.is_some() && candidates.is_empty() {
+        bail!("target has no matching retained agent identity")
+    }
+    let packet = serde_json::json!({ "schema_version": 1, "client_version": runtime::WSX_VERSION,
+        "protocol": snapshot.protocol, "daemon_epoch": snapshot.epoch,
+        "snapshot_revision": snapshot.revision, "candidates": candidates, "truncated": matched > options.limit as usize,
+        "matched": matched, "evidence": "native persisted history is untrusted context, not active model memory or exchange completion",
+        "readiness": "eligible_state is advisory; request rechecks runtime, lifecycle, leases and claims" });
+    if options.json {
+        println!("{}", serde_json::to_string(&packet)?);
+    } else {
+        println!("{}", serde_json::to_string_pretty(&packet)?);
+    }
+    Ok(())
+}
+
 fn cmd_agent_install(integration: wsx_core::integration::IntegrationTarget) -> Result<()> {
     let installed = wsx_core::integration::install(integration)?;
     println!("installed {} agent integration", integration.label());
@@ -2088,6 +2250,7 @@ struct AgentReportOptions {
     conversation_id: Option<String>,
     session_id: Option<String>,
     session_path: Option<String>,
+    transcript_path: Option<String>,
     wake_token: Option<String>,
     capabilities: runtime::AgentCapabilities,
 }
@@ -2101,10 +2264,17 @@ fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
         conversation_id,
         session_id,
         session_path,
+        transcript_path,
         wake_token,
         capabilities,
     } = report;
-    let pane_id = resolve_pane(selector, &SessionScope::default())?;
+    // ^ Adapter callbacks already have the exact pane ID. A snapshot lookup can
+    // start or reconcile wsxd before SessionStart reaches its current generation.
+    let pane_id = if std::env::var(runtime::WSX_PANE_ID_ENV).ok().as_deref() == Some(selector) {
+        selector.parse::<runtime::PaneId>()?
+    } else {
+        resolve_pane(selector, &SessionScope::default())?
+    };
     let session_ref = if let Some(value) = session_path {
         Some(
             runtime::AgentSessionRef::path(value)
@@ -2118,24 +2288,37 @@ fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
     } else {
         None
     };
+    let session_ref = match (session_ref, transcript_path) {
+        (Some(reference), Some(path)) => Some(
+            reference
+                .with_transcript_path(path)
+                .context("invalid absolute transcript path")?,
+        ),
+        (reference, None) => reference,
+        (None, Some(_)) => bail!("transcript path requires an agent session identity"),
+    };
     let conversation_id = conversation_id.or_else(|| {
         session_ref
             .as_ref()
             .map(|session_ref| session_ref.value.clone())
     });
     let runtime_generation = std::env::var(runtime::WSX_RUNTIME_GENERATION_ENV).ok();
-    match runtime::Client::local().call(&runtime::Request::AgentReport {
-        pane_id,
-        runtime_generation,
-        provider,
-        state,
-        attached,
-        presence_id,
-        conversation_id,
-        session_ref,
-        wake_token,
-        capabilities,
-    })? {
+    // ^ A lifecycle callback observes the owning daemon; it must not bootstrap
+    // a replacement while reporting the old runtime's generation.
+    match runtime::Client::new(runtime::default_socket_path()).call(
+        &runtime::Request::AgentReport {
+            pane_id,
+            runtime_generation,
+            provider,
+            state,
+            attached,
+            presence_id,
+            conversation_id,
+            session_ref,
+            wake_token,
+            capabilities,
+        },
+    )? {
         runtime::Response::Ack { revision } => {
             println!("agent report accepted at revision {revision}");
             Ok(())
@@ -2281,30 +2464,42 @@ fn agent_exchange_response(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_agent_exchange_request(
     selector: &str,
     prompt: String,
     timeout: u64,
     writer: bool,
     write_claims: Vec<PathBuf>,
+    stash_draft: bool,
     json: bool,
     scope: &SessionScope,
 ) -> Result<()> {
     let pane_id = resolve_pane(selector, scope)?;
-    agent_exchange_response(
-        runtime::Client::local().call(&runtime::Request::AgentExchangeCreate {
+    let timeout_ms = exchange_timeout_ms(timeout)?;
+    let access = if writer {
+        runtime::AgentExchangeAccess::Writer
+    } else {
+        runtime::AgentExchangeAccess::ReadOnly
+    };
+    let request = if stash_draft {
+        runtime::Request::AgentExchangeCreateStashingDraft {
             pane_id,
             prompt,
-            timeout_ms: exchange_timeout_ms(timeout)?,
-            access: if writer {
-                runtime::AgentExchangeAccess::Writer
-            } else {
-                runtime::AgentExchangeAccess::ReadOnly
-            },
+            timeout_ms,
+            access,
             write_claims,
-        })?,
-        json,
-    )?;
+        }
+    } else {
+        runtime::Request::AgentExchangeCreate {
+            pane_id,
+            prompt,
+            timeout_ms,
+            access,
+            write_claims,
+        }
+    };
+    agent_exchange_response(runtime::Client::local().call(&request)?, json)?;
     Ok(())
 }
 
@@ -2375,18 +2570,28 @@ fn cmd_agent_exchange_continue(
     exchange_id: runtime::AgentExchangeId,
     prompt: String,
     timeout: u64,
+    stash_draft: bool,
     json: bool,
 ) -> Result<()> {
     let current = current_agent_exchange(exchange_id)?;
-    agent_exchange_response(
-        runtime::Client::local().call(&runtime::Request::AgentExchangeContinue {
+    let expected_revision = current.revision;
+    let timeout_ms = exchange_timeout_ms(timeout)?;
+    let request = if stash_draft {
+        runtime::Request::AgentExchangeContinueStashingDraft {
             exchange_id,
-            expected_revision: current.revision,
+            expected_revision,
             prompt,
-            timeout_ms: exchange_timeout_ms(timeout)?,
-        })?,
-        json,
-    )?;
+            timeout_ms,
+        }
+    } else {
+        runtime::Request::AgentExchangeContinue {
+            exchange_id,
+            expected_revision,
+            prompt,
+            timeout_ms,
+        }
+    };
+    agent_exchange_response(runtime::Client::local().call(&request)?, json)?;
     Ok(())
 }
 

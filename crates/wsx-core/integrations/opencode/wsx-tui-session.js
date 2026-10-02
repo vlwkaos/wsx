@@ -1,6 +1,6 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=13
-import { execFile } from "node:child_process";
+// WSX_INTEGRATION_VERSION=14
+import { execReporter } from "../common/wsx-reporter.mjs";
 
 function report(sessionID) {
   const pane = process.env.WSX_PANE_ID;
@@ -10,7 +10,7 @@ function report(sessionID) {
     "--session-id", sessionID,
   ];
   return new Promise((resolve) => {
-    execFile(process.env.WSX_AGENT_REPORT_BIN || "wsx", args,
+    execReporter(process.env.WSX_AGENT_REPORT_BIN || "wsx", args,
       { timeout: 1000, windowsHide: true }, resolve);
   });
 }

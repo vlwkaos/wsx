@@ -48,6 +48,18 @@ pub fn group_chip(active: bool) -> Style {
     }
 }
 
+pub fn terminal_titlebar() -> Style {
+    Style::default().fg(TEXT).bg(PANEL_ACTIVE)
+}
+
+pub fn terminal_current() -> Style {
+    Style::default().fg(TEXT).bg(ROW_SELECTED).bold()
+}
+
+pub fn terminal_context() -> Style {
+    Style::default().fg(TEXT_MUTED)
+}
+
 pub fn stale_project() -> Style {
     Style::default().fg(TEXT_MUTED)
 }

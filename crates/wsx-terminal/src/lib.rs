@@ -247,6 +247,10 @@ impl TerminalRuntime {
         builder.args(&command[1..]);
         builder.cwd(cwd);
         builder.env("TERM", "xterm-ghostty");
+        // ^ A fresh wsxd-owned PTY is not a Claude child session, even when
+        // wsxd inherited this marker at bootstrap. An explicit pane override
+        // can still pass it for a deliberately nested agent launch.
+        builder.env_remove("CLAUDE_CODE_CHILD_SESSION");
         for (name, value) in environment {
             builder.env(name, value);
         }
@@ -1819,6 +1823,53 @@ fn blank(fg: ghostty::RgbColor) -> Cell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ^ docs/ui-state-ownership.md: observe final VT cells, not contiguous output bytes.
+    #[test]
+    #[ignore = "replays private PTY output supplied by scripts/test-ui-state.py"]
+    fn rendered_output_probe() {
+        let path = std::path::PathBuf::from(std::env::var_os("WSX_RENDER_REPLAY").unwrap());
+        let expected = std::env::var("WSX_RENDER_EXPECTED").unwrap();
+        // One guard row prevents bottom-right painting from scrolling the app's 24 rows.
+        let runtime = TerminalRuntime::spawn(
+            PaneId(1),
+            TerminalId(1),
+            path.parent().unwrap(),
+            &["/bin/cat".into(), path.to_string_lossy().into_owned()],
+            &[],
+            None,
+            25,
+            100,
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let frame = runtime.frame().unwrap();
+            let text = frame
+                .cells
+                .chunks(usize::from(frame.cols))
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| cell.symbol.as_str())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.contains(&expected) {
+                std::fs::write(path.with_extension("screen.txt"), text).unwrap();
+                std::fs::write(path.with_extension("frame.txt"), format!("{frame:#?}")).unwrap();
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "rendered marker missing: {text:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        drop(runtime);
+    }
+
     #[test]
     fn rejects_unbounded_dimensions_and_commands() {
         assert!(validate_launch(0, 80, &["sh".into()], None).is_err());
@@ -2105,14 +2156,17 @@ mod tests {
         let command = vec![
             "/bin/sh".into(),
             "-c".into(),
-            "printf %s \"$WSX_TEST_MARKER\"; sleep 1".into(),
+            "printf '%s:%s' \"$WSX_TEST_MARKER\" \"$CLAUDE_CODE_CHILD_SESSION\"; sleep 1".into(),
         ];
         let runtime = TerminalRuntime::spawn(
             PaneId(1),
             TerminalId(2),
             &std::env::current_dir().unwrap(),
             &command,
-            &[("WSX_TEST_MARKER".into(), "pane-42".into())],
+            &[
+                ("WSX_TEST_MARKER".into(), "pane-42".into()),
+                ("CLAUDE_CODE_CHILD_SESSION".into(), "nested-child".into()),
+            ],
             None,
             2,
             40,
@@ -2128,7 +2182,7 @@ mod tests {
                 .iter()
                 .map(|cell| cell.symbol.as_str())
                 .collect::<String>();
-            if text.contains("pane-42") {
+            if text.contains("pane-42:nested-child") {
                 observed = true;
                 break;
             }
