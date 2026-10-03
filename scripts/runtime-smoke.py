@@ -865,12 +865,19 @@ assert call("snapshot")["type"] == "snapshot"
 process.kill()
 process.wait(timeout=5)
 bootstrap_env = env | {"WSX_DAEMON_BIN": str(DAEMON)}
+# ^ Preserve captured bootstrap diagnostics instead of an opaque CalledProcessError.
 recovered = subprocess.run(
     [str(WSX), "status", "--json"],
     env=bootstrap_env,
-    check=True,
+    check=False,
     capture_output=True,
     text=True,
+)
+assert recovered.returncode == 0, (
+    "CLI cold recovery failed",
+    recovered.returncode,
+    recovered.stdout[-8192:],
+    recovered.stderr[-8192:],
 )
 assert recovered.stdout, recovered
 snapshot = call("snapshot")["data"]
