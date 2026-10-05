@@ -182,9 +182,12 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         # ^ The compact rail owns the first two cells even on the title row.
         title = rows[-2][2:]
         assert title.startswith(' demo | ') and 'main > build (codex)' in title, title
+        assert '[' not in title and ']' not in title, title
         assert title.index('build') < title.index('api') < title.index('finished') < title.index('approval'), title
         assert not any(":" + (work / (name + ".port")).read_text() in title for name in ("build", "api"))
-        assert "48;2;" in (work / "captures/bottom-compact.ansi").read_text(), "RGB chrome not captured"
+        title_ansi = (work / "captures/bottom-compact.ansi").read_text().splitlines()[-2]
+        assert "48;2;36;43;55" in title_ansi, "current chip background not captured"
+        assert "48;2;14;16;20" in title_ansi, "peer chip background not captured"
         for key, name in [("j", "api"), ("k", "build"), ("Down", "api"), ("Up", "build")]:
             keys("C-a", key)
             wait(lambda: primary_name() == name, "project prefix " + key)

@@ -60,6 +60,10 @@ pub fn terminal_context() -> Style {
     Style::default().fg(TEXT_MUTED)
 }
 
+pub fn terminal_peer() -> Style {
+    terminal_context().bg(PANEL)
+}
+
 pub fn stale_project() -> Style {
     Style::default().fg(TEXT_MUTED)
 }

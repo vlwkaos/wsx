@@ -62,7 +62,7 @@ fn chip(
     let style = if current {
         theme::terminal_current()
     } else {
-        theme::terminal_context()
+        theme::terminal_peer()
     };
     if width < 4 {
         return vec![Span::styled(icon, style.fg(color))];
@@ -96,14 +96,14 @@ fn chip(
     let context_width = Line::from(context.as_str()).width();
     let name = truncate_to_width(&name, identity_width.saturating_sub(context_width));
     let mut spans = vec![
-        Span::styled("[", style),
+        Span::styled(" ", style),
         Span::styled(icon, style.fg(color)),
         Span::styled(format!(" {context}{name}"), style),
     ];
     if show_agent {
         spans.push(Span::styled(label, style.fg(theme::TEXT_MUTED)));
     }
-    spans.push(Span::styled("]", style));
+    spans.push(Span::styled(" ", style));
     spans
 }
 
@@ -332,7 +332,7 @@ mod tests {
             project.worktrees[0].sessions[3].outcome_acknowledged = acknowledged;
             let text = line(&project, 160).to_string();
             assert!(
-                text.starts_with(" demo | [● main > current (codex)]"),
+                text.starts_with(" demo |  ● main > current (codex) "),
                 "{text}"
             );
             let order = ["current", "shell", "worker", "finished", "fix > approval"]
@@ -341,6 +341,25 @@ mod tests {
             assert_eq!(text.matches("current").count(), 1);
         }
     }
+    #[test]
+    fn chip_padding_keeps_user_supplied_brackets_in_names() {
+        let mut project = project();
+        project.worktrees[0].sessions[0].display_name = "[build]".into();
+        let view = TerminalTitleView {
+            project: &project,
+            worktree: &project.worktrees[0],
+            session: &project.worktrees[0].sessions[0],
+            pane: None,
+            animation_frame: 0,
+        };
+        for current in [false, true] {
+            let spans = chip(&view, view.worktree, view.session, current, 72);
+            assert_eq!(spans.first().unwrap().content, " ");
+            assert_eq!(spans.last().unwrap().content, " ");
+            assert!(Line::from(spans).to_string().contains("[build]"));
+        }
+    }
+
     #[test]
     fn cross_worktree_attribution_survives_long_unicode_labels() {
         let mut project = project();
@@ -429,6 +448,11 @@ mod tests {
         let text: String = (3..87).map(|x| buffer[(x, 2)].symbol()).collect();
         assert!(text.contains("current / logs"), "{text}");
         assert!(!text.contains("(codex)") && !text.contains(":3000"));
+        assert!(!text.contains(['[', ']']), "{text}");
+        for background in [theme::terminal_current().bg, theme::terminal_peer().bg] {
+            assert_ne!(background, theme::terminal_titlebar().bg);
+            assert!((3..87).any(|x| Some(buffer[(x, 2)].bg) == background));
+        }
         for x in 3..87 {
             assert_ne!(buffer[(x, 2)].bg, Color::Reset);
             assert_eq!(buffer[(x, 1)].bg, Color::Reset);

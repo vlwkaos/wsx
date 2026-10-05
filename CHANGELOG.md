@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.29.2] - 2026-10-05
+
+### Fixes
+
+- Use padded backgrounds instead of literal brackets around terminal title session chips. Keep the current session brighter and bold, with quiet backgrounds for neighbors. Preserve provider labels, Unicode truncation, overflow counts, navigation and terminal dimensions.
+
+### Release verification
+
+- Pour generated bottles through trusted formula metadata and checksum-verified Homebrew cache bytes, retaining the existing native receipt/test/version/architecture gates without bypassing package-path policy.
+- Make the synthetic legacy scheduler retire explicitly after a read-only status probe, with bounded fixture I/O. This removes its connection-reset race during CI without changing runtime behavior or claiming abrupt production shutdown resilience.
+
+### Documentation
+
+- Clarify the background-only chip contract and retain candidate verification, viewport/navigation checks and release-boundary limitations.
+
+### Known limitations
+
+- Existing Codex identity and already-loaded integration recovery still need provider-specific verification or a supported reload. This presentation-only patch does not change daemon revision or force a live daemon restart.
+
 ## [0.29.1] - 2026-10-05
 
 ### Fixes
