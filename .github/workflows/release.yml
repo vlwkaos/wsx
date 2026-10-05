@@ -298,9 +298,27 @@ jobs:
           BOTTLES=(bottle-output/wsx--*.bottle.tar.gz)
           test "${#BOTTLES[@]}" -eq 1
           test -f "${BOTTLES[0]}"
-          # ^ https://docs.brew.sh/Bottles: verify the package, not the source-built keg.
+          METADATA=(bottle-output/wsx--*.bottle.json)
+          test "${#METADATA[@]}" -eq 1
+          test -f "${METADATA[0]}"
+          brew --version
+          brew config
+          # ^ https://docs.brew.sh/Bottles: use the trusted formula, not forbidden package paths.
+          BOTTLE_SHA=$(jq -er 'select(length == 1) | .[].bottle.tags | select(length == 1) | .[].sha256 | select(test("^[0-9a-f]{64}$"))' "${METADATA[0]}")
+          printf '%s  %s\n' "$BOTTLE_SHA" "${BOTTLES[0]}" | shasum -a 256 -c -
+          TAP_DIR="$(brew --repository)/Library/Taps/vlwkaos/homebrew-tap"
+          (cd "$TAP_DIR" && brew bottle --merge --write --no-commit "$GITHUB_WORKSPACE/${METADATA[0]}")
+          CACHE=$(brew --cache --force-bottle vlwkaos/homebrew-tap/wsx)
+          case "$CACHE" in
+            "$(brew --cache)"/downloads/*) ;;
+            *) echo "Unexpected bottle cache path"; exit 1 ;;
+          esac
+          test ! -L "$CACHE"
+          mkdir -p "$(dirname "$CACHE")"
+          cp "${BOTTLES[0]}" "$CACHE"
+          printf '%s  %s\n' "$BOTTLE_SHA" "$CACHE" | shasum -a 256 -c -
           brew uninstall --formula vlwkaos/homebrew-tap/wsx
-          brew install --force-bottle "${BOTTLES[0]}"
+          brew install --force-bottle vlwkaos/homebrew-tap/wsx
           PREFIX=$(brew --prefix wsx)
           jq -e '.poured_from_bottle == true' "$PREFIX/INSTALL_RECEIPT.json"
           brew test vlwkaos/homebrew-tap/wsx
