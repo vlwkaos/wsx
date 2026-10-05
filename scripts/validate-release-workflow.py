@@ -31,6 +31,14 @@ assert "needs: [publish-core, recovery-assets]" in bottles
 assert "needs.recovery-assets.result == 'success'" in bottles
 require_before(prepare, "brew trust vlwkaos/tap", "render-homebrew-formula.py")
 require_before(bottles, "brew trust vlwkaos/tap", "brew install --build-bottle")
+pour = section("      - name: Pour and verify generated bottle", "      - name: Upload bottle artifact")
+require_before(bottles, "brew bottle --json", "      - name: Pour and verify generated bottle")
+require_before(pour, "brew uninstall --formula", 'brew install --force-bottle "${BOTTLES[0]}"')
+require_before(pour, "brew install --force-bottle", ".poured_from_bottle == true")
+require_before(pour, ".poured_from_bottle == true", "brew test vlwkaos/homebrew-tap/wsx")
+assert '"$PREFIX/bin/wsx" --version' in pour
+for binary in ("wsx", "wsxd"):
+    assert f'lipo "$PREFIX/bin/{binary}" -verify_arch arm64 x86_64' in pour
 assert "needs.build-bottles.result == 'success'" in final
 for command in ("brew bottle --merge", "brew style", "brew audit --strict"):
     require_before(final, "brew trust vlwkaos/tap", command)
@@ -40,4 +48,4 @@ assert "cat release-assets/SHA256SUMS" not in final
 assert "(cd release-assets && shasum -a 256 wsx-*-darwin-universal.tar.gz)" in final
 assert "(cd bottle-assets && shasum -a 256 *.bottle.tar.gz)" in final
 
-print("release recovery workflow: PASS")
+print("release recovery and native bottle-pour workflow: PASS")
