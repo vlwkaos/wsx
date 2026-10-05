@@ -1830,7 +1830,13 @@ mod tests {
     fn rendered_output_probe() {
         let path = std::path::PathBuf::from(std::env::var_os("WSX_RENDER_REPLAY").unwrap());
         let expected = std::env::var("WSX_RENDER_EXPECTED").unwrap();
-        // One guard row prevents bottom-right painting from scrolling the app's 24 rows.
+        let rows = std::env::var("WSX_RENDER_ROWS")
+            .map(|value| value.parse::<u16>().unwrap())
+            .unwrap_or(24);
+        let cols = std::env::var("WSX_RENDER_COLS")
+            .map(|value| value.parse::<u16>().unwrap())
+            .unwrap_or(100);
+        // One guard row prevents bottom-right painting from scrolling the captured app.
         let runtime = TerminalRuntime::spawn(
             PaneId(1),
             TerminalId(1),
@@ -1838,8 +1844,8 @@ mod tests {
             &["/bin/cat".into(), path.to_string_lossy().into_owned()],
             &[],
             None,
-            25,
-            100,
+            rows.checked_add(1).unwrap(),
+            cols,
             Arc::new(|| {}),
         )
         .unwrap();

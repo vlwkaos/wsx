@@ -20,10 +20,11 @@ try:
     missing = work / 'removed-0.26.2/wsx'
     env = dict(os.environ, WSX_PANE_ID='42', WSX_RUNTIME_GENERATION='fixture-generation',
                WSX_SOCKET=str(work / 'wsx.sock'), WSX_AGENT_REPORT_BIN=str(missing),
-               WSX_TEST_REPORT_LOG=str(log))
+               WSX_TEST_REPORT_LOG=str(log), PATH='/usr/bin:/bin', PYTHONDONTWRITEBYTECODE='1')
     source = (ROOT / 'crates/wsx-core/integrations/common/wsx-agent-status.sh').read_text()
     shell = work / 'hook.sh'
-    shell.write_text(source.replace('@PROVIDER@','claude').replace('@LIFECYCLE@','yes').replace('@VERSION@','18'))
+    shell.write_text(source.replace('@PROVIDER@','claude').replace('@LIFECYCLE@','yes').replace('@VERSION@','19'))
+    shutil.copyfile(ROOT / 'crates/wsx-core/integrations/common/wsx-reporter.py', work / 'wsx-reporter.py')
     module_path = ROOT / 'crates/wsx-core/integrations/hermes/__init__.py'
     def invoke(actor, extra=None):
         selected = dict(env, **(extra or {}))
@@ -58,8 +59,30 @@ try:
         before = len(calls())
         invoke(actor)
         assert len(calls()) == before, actor + ' invented a reporter when unavailable'
+    installed = work / 'installed'
+    installed.mkdir(mode=0o755)
+    (installed / 'wsx').symlink_to(binary)
+    selected_path = str(installed) + ':/usr/bin:/bin'
+    for actor in ('shell', 'hermes'):
+        before = len(calls())
+        assert invoke(actor, {'PATH': selected_path}).returncode == 0
+        assert len(calls()) == before + 1, actor + ' did not recover before daemon handoff'
+        assert invoke(actor, {'PATH': selected_path, 'WSX_AGENT_REPORT_BIN': str(stable)}).returncode == 0
+        assert len(calls()) == before + 2, actor + ' did not recover a removed stable entry'
+        stable.symlink_to(work / 'removed-keg/wsx')
+        invoke(actor, {'PATH': selected_path})
+        assert len(calls()) == before + 3, actor + ' did not recover a dangling stable entry'
+        stable.unlink()
+        stable.write_text('invalid entry')
+        invoke(actor, {'PATH': selected_path})
+        assert len(calls()) == before + 3, actor + ' bypassed an invalid stable entry'
+        stable.unlink()
+        binary.chmod(0o777)
+        invoke(actor, {'PATH': selected_path})
+        assert len(calls()) == before + 3, actor + ' executed a writable installed reporter'
+        binary.chmod(0o755)
     success = True
-    print('shell/Hermes reporter: removed path recovery, no rejection replay, unsafe-path refusal, bounded absence PASS')
+    print('shell/Hermes reporter: pre-handoff and dangling-entry recovery, no rejection replay, unsafe-path refusal, bounded absence PASS')
 finally:
     if success:
         shutil.rmtree(work)

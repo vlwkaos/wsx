@@ -41,6 +41,10 @@ This assumes a Claude version, editor layout and keymap supporting the documente
 
 Separate `agent_exchange_*_stashing_draft` request variants make old daemons reject the option instead of silently ignoring a destructive input policy. Protocol 16 remains unchanged; daemon revision 17 fences draft delivery and stable reporter publication in the non-web 0.29.0 candidate. Claude adapter version 18 adds prompt capability, native path reports and removed-reporter recovery. Update the integration and restart that agent to load it; live panes are not rewritten.
 
+## Task-owned session cleanup
+
+Record the exact session, pane and exchange IDs when creating orchestration work. Reusing a user's existing agent does not transfer session ownership to the caller. Save the result and verification evidence before cleanup. Close a task-created session with `wsx session delete <exact-session-id> --json` only after its work has settled and no continuation remains; verify that its session and panes are absent from `wsx session list --json` afterward. Cancellation requests and pane `done` state alone do not prove completion or ownership. Retain blocked or failed sessions only for a named investigation, and report their IDs and pending cleanup. Never close the caller, a user's agent, or an unrelated shell by label or provider state.
+
 ## Verification
 
 ```sh

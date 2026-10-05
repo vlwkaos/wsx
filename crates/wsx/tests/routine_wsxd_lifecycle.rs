@@ -43,10 +43,6 @@ impl IsolatedInstall {
         let project = root.join("project");
         let scheduler_root = root.join("a");
         let empty_path = root.join("no-asched-on-path");
-        fs::create_dir_all(&project).expect("create isolated project directory");
-        fs::create_dir_all(&empty_path).expect("create isolated PATH directory");
-        fs::create_dir_all(root.join("home")).expect("create isolated HOME");
-
         let wsx = PathBuf::from(env!("CARGO_BIN_EXE_wsx"));
         // Cargo exposes sibling package binaries in configurations that build them
         // as test artifacts. A normal installed layout has wsxd beside wsx, which
@@ -65,9 +61,13 @@ impl IsolatedInstall {
         );
         assert!(
             wsxd.is_file(),
-            "the wsx installation must ship an adjacent wsxd binary: {}",
+            "missing adjacent wsxd binary: {}; build both companions with cargo build --locked -p wsx -p wsx-daemon before filtered package tests",
             wsxd.display()
         );
+        // ^ Validate companions before allocating a fixture that cannot be cleaned by Drop.
+        fs::create_dir_all(&project).expect("create isolated project directory");
+        fs::create_dir_all(&empty_path).expect("create isolated PATH directory");
+        fs::create_dir_all(root.join("home")).expect("create isolated HOME");
 
         RegistryStore::new(scheduler_root.clone())
             .add(

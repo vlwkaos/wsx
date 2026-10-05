@@ -197,22 +197,15 @@ fn install_in(target: IntegrationTarget, root: &Path) -> io::Result<InstallResul
     );
     let mut prepared = Vec::<(PathBuf, String, bool)>::new();
 
-    if matches!(
-        target,
-        IntegrationTarget::Pi
-            | IntegrationTarget::Omp
-            | IntegrationTarget::Opencode
-            | IntegrationTarget::Kilo
-    ) {
-        prepared.push((
-            asset
-                .parent()
-                .expect("adapter asset has a parent")
-                .join("wsx-reporter.mjs"),
-            assets::REPORTER.into(),
-            false,
-        ));
-    }
+    let (reporter_name, reporter_content) = assets::reporter(target);
+    prepared.push((
+        asset
+            .parent()
+            .expect("adapter asset has a parent")
+            .join(reporter_name),
+        reporter_content.into(),
+        false,
+    ));
     if target == IntegrationTarget::Hermes {
         let directory = asset.parent().expect("Hermes asset has a parent");
         prepared.push((

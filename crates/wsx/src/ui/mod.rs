@@ -931,7 +931,6 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "$terminal_escape",
         "$terminal_quit",
         "$terminal_session",
-        "$terminal_context",
         "$terminal_group",
         "$terminal_idle",
         "$terminal_active",
@@ -971,10 +970,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
                     .map(|label| format!("  {label:<14} Quit TUI")),
                 "$terminal_session" => app
                     .terminal_quit_label()
-                    .map(|_| "  Prefix+k/j or ↑/↓  Previous / next sibling session".into()),
-                "$terminal_context" => app
-                    .terminal_quit_label()
-                    .map(|_| "  Prefix+h/l or ←/→  Previous / next ranked project session".into()),
+                    .map(|_| "  Prefix+k/j or ↑/↓  Previous / next project session".into()),
                 "$terminal_group" => app
                     .terminal_quit_label()
                     .map(|_| "  Prefix+{ / }  Previous / next group target".into()),

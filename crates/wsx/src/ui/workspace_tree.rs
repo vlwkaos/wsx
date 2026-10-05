@@ -72,7 +72,7 @@ fn folded_badge(summary: session_state::FoldedStatus, width: usize, frame: usize
     let mut badge = Line::from(vec![Span::styled(format!(" {icon}"), status_style)]);
     if summary.active_sessions > 0 {
         badge.spans.push(Span::styled(
-            format!(" {} active", summary.active_sessions),
+            format!(" {}", summary.active_sessions),
             active_style,
         ));
     }
@@ -126,9 +126,18 @@ fn session_line(
 ) -> Line<'static> {
     let (icon, icon_color) = session_icon(sess, animation_frame);
     let agent_label = session_state::agent_label(sess.agent.as_deref());
+    let agent_width = agent_label
+        .as_deref()
+        .map_or(0, |label| Line::from(label).width());
+    // ^ docs/ui-state-ownership.md: provider identity outranks name/port detail.
     let port_label = port_visibility
         .shows_session(sess.is_agentic())
-        .then(|| compact_port_label(&sess.listening_ports(), width.saturating_sub(12)))
+        .then(|| {
+            compact_port_label(
+                &sess.listening_ports(),
+                width.saturating_sub(12 + agent_width),
+            )
+        })
         .flatten();
     let port_width = port_label
         .as_deref()
@@ -136,16 +145,11 @@ fn session_line(
     let prefix_width = 4;
     let identity_width =
         width.saturating_sub(prefix_width + port_width + usize::from(port_label.is_some()));
-    let full_identity_width = Line::from(sess.display_name.as_str()).width()
-        + agent_label
-            .as_deref()
-            .map_or(0, |label| Line::from(label).width());
-    let show_agent = full_identity_width <= identity_width;
-    let display_name = if show_agent {
-        sess.display_name.clone()
-    } else {
-        truncate_to_width(&sess.display_name, identity_width)
-    };
+    let show_agent = agent_width <= identity_width;
+    let display_name = truncate_to_width(
+        &sess.display_name,
+        identity_width.saturating_sub(if show_agent { agent_width } else { 0 }),
+    );
     let mut spans = vec![
         Span::raw("  "),
         Span::styled(icon, Style::default().fg(icon_color)),
@@ -351,7 +355,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                         format!("{} {} (missing)", icon, p.name),
                         Style::default().fg(theme::TEXT_SUBTLE),
                     )
-                } else if stale_projects.contains(idx) {
+                } else if stale_projects.contains(idx) && summary.active_sessions == 0 {
                     (
                         stale_project_label(icon, &p.name, &count, label_width),
                         theme::stale_project(),
@@ -848,9 +852,9 @@ mod tests {
                 let text = (0..width)
                     .map(|x| buffer[(x, row)].symbol())
                     .collect::<String>();
-                if width >= 18 {
+                if width >= 8 {
                     assert!(
-                        text.contains("◐") && text.contains("1 active"),
+                        text.contains("◐ 1") && !text.contains("active"),
                         "{width}: {text:?}"
                     );
                     let cell = buffer
@@ -862,7 +866,10 @@ mod tests {
                     assert!(!cell.modifier.contains(Modifier::DIM));
                 }
                 if width >= 26 && !expanded {
-                    assert!(text.contains("stale"), "{text:?}");
+                    assert!(
+                        !text.contains("stale"),
+                        "active and stale must not coexist: {text:?}"
+                    );
                 }
             }
             let entry = &flat[usize::from(expanded)];
@@ -902,6 +909,21 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert_eq!(rendered.trim_end(), "  ○ plain-session (codex)");
+    }
+
+    #[test]
+    fn long_session_names_reserve_known_provider_identity() {
+        for provider in ["pi", "codex"] {
+            let mut sess = session(false, AgentState::Idle);
+            sess.agent = Some(provider.into());
+            sess.display_name = "very long 中文 session name".repeat(8);
+            let label = format!(" ({provider})");
+            for width in (4 + Line::from(label.as_str()).width())..40 {
+                let line = session_line(&sess, width, PortVisibility::All, 0);
+                assert!(line.to_string().contains(&label), "{width}: {line}");
+                assert!(line.width() <= width, "{width}: {line}");
+            }
+        }
     }
 
     #[test]

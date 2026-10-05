@@ -1,45 +1,46 @@
-# Terminal session context
+# Terminal session preview
 
-The colored terminal title is one row of presentation chrome, not a clickable session switcher. The current session and its authoritative state stay on the left. Project/worktree context is secondary. Same-project peers appear beside it, including sessions in collapsed worktrees.
+The terminal title is one row of presentation chrome, not a clickable switcher or another input mode. It shows the project once, then a sliding window of session chips. The current chip is highlighted with existing theme roles.
 
-## Shared order
+```text
+project | +2 [○ build] [◉ main > audit (pi)] [◐ fix > tests] +5
+```
 
-`session_state::context_sessions` derives the order from current normalized session state:
+Current identity includes worktree, session and the selected pane label when applicable. Known provider identity reserves space before extra name detail. Same-worktree peers omit redundant worktree names; other-worktree peers retain attribution. Only authoritative lifecycle or ordinary foreground-job state supplies indicators.
 
-1. Blocked and Error.
-2. Unacknowledged Done.
-3. Working agents and ordinary Running jobs.
-4. Idle, Unknown, muted, and acknowledged Done.
+## Shared order and overflow
 
-Workspace order breaks ties within a tier. Rendering omits the current `SessionId`; a peer in another worktree includes its worktree label. Names use complete graphemes and display-cell widths. Peers that do not fit become an explicit `+N` count. Ports and key controls do not appear in the title.
+`session_state::context_sessions` supplies stable Workspace order within the current project, including sessions in collapsed worktrees. Lifecycle changes, mute and Done acknowledgement update indicators but do not reshuffle this order. Other projects are excluded.
+
+The visible window stays contiguous and grows around the current session. Counts at either end report off-screen sessions. At narrow sizes, current identity wins; tiny views replace the window with the current chip and its position, such as `4/12`. Zero-width views paint nothing. Names truncate on complete graphemes using display-cell widths. Ports and key hints do not appear in the title.
 
 ## Project-local navigation
 
-In Terminal mode, use the configured prefix followed by `h/l` or Left/Right to visit the previous/next session in the shared ranked project ring. The ring includes the current session, overflow peers, and collapsed worktrees. It wraps and recomputes from live state, not a cached navigation queue. The command reveals a collapsed target through existing expansion persistence and uses the normal dimension-first stream attach gate. With no other session, it keeps the current terminal and reports that fact.
+In Terminal mode, use the configured prefix followed by `j/k` or Down/Up to visit the next/previous session across the current project. The ring wraps and includes off-screen sessions and collapsed worktrees. Switching reveals the exact typed target through existing expansion persistence and dimension-first stream attachment. With no other session, keep the terminal and report that fact.
 
-The title always keeps its current identity on the left and displays the remaining peers attention-first. Navigation follows the complete ranked ring, not repeatedly the first displayed peer. For example, a Working current session followed by an Idle peer advances to Idle, then wraps to Blocked. Entering Done acknowledges its exact revision, so its normalized rank changes to Idle.
+The duplicate `Prefix+h/l` and Left/Right session-cycle bindings are removed. Those unassigned prefixed combinations follow normal terminal forwarding; bare keys always reach the terminal application. `h/l` are no longer reserved Workspace escape suffixes. Previously migrated configuration is not guessed or rewritten back.
 
-Existing `Prefix+n/N` attention navigation and its preference remain unchanged. `Prefix+j/k` still visits worktree siblings. Bare `h/l` and arrows reach the terminal application. Workspace `h/l`, Enter, group navigation, and file/diff review retain their existing behavior. `h/l` are now reserved prefix command suffixes, like `j/k`. If a custom Workspace escape uses either suffix, choose another suffix.
+`Prefix+n/N` attention navigation and its preference remain separate and unchanged. Workspace `j/k`, `h/l`, Enter, group navigation and file/diff review keep their existing behavior.
 
 ## Ports and viewport ownership
 
-Worktree previews show each session's sorted, deduplicated pane listener ports on its session row. Narrow rows compact the port list with overflow instead of recreating a detached worktree-wide Ports row. This detail view always shows ports independently of the Workspace session-row visibility setting.
+Worktree previews show each session's sorted, deduplicated pane listener ports on its session row. Narrow rows compact the port list with overflow. The preview detail always shows ports independently of the Workspace session-row visibility setting.
 
-`TerminalLayout` remains the sole title/viewport geometry owner. Top/bottom placement, compact/expanded sidebars, mobile layout, cursor projection, and mouse coordinates retain the existing contract. The title's background never paints the terminal content. No daemon revision, wire field, or lease behavior changes.
+`TerminalLayout` still owns title/content rectangles. Top/bottom title placement, compact/expanded sidebars, mobile layout, cursor projection and mouse coordinates retain the existing contract. The title background never paints terminal content. Session and pane previews share this projection. No daemon revision, wire field or lease behavior changes.
 
 ## Verification
-
-Build adjacent binaries before installation or real-TUI tests:
 
 ```sh
 cargo build --locked -p wsx -p wsx-daemon
 cargo nextest run -p wsx --locked
 python3 -B scripts/test-terminal-context-harness.py
-python3 scripts/test-terminal-context.py
+python3 -B scripts/test-terminal-context.py --keep
 ```
 
-The tmux scenario creates an owner-only repository-local fixture with isolated HOME/config/state and synthetic generation-authorized sessions. It checks actual rendered rows, kernel-observed listener ownership, stream dimensions, prefix navigation, live peer updates, and both title positions. It keeps the first TUI alive across captures and shuts down only its private tmux server and daemon. `--wsx` and `--daemon` accept adjacent isolated builds. Default scratch cleanup covers failed preparation as well as the runtime scenario; `--keep` explicitly retains diagnostics. A pre-existing fixture is refused without deleting its data. No model calls or installed agents are required.
+The tmux journey creates owner-only repository-local HOME/config/state, a real Git-owned second worktree and synthetic generation-authorized agents. It observes the active PTY's actor marker independently of title formatting. It verifies normal/mobile captures, every overflow target, cross-worktree navigation, wrap, state changes without reorder, attention jumps, bare input, viewport dimensions, sidebar peek and both title positions. The first TUI stays alive across captures. Only its private tmux server, daemon and actors are stopped. No model calls or installed agents are required.
+
+Default scratch cleanup covers failed preparation and runtime exits; `--keep` retains review captures. Existing fixtures are refused without deletion.
 
 ## Human Verify
 
-Pass if the current session is immediately identifiable, peer state colors remain legible, and the bounded background does not distract from terminal content at narrow and wide sizes. Fail if labels or colors obscure current identity, peers suggest a false state, or chrome spills into terminal content.
+Pass if current identity is easy to find, the strip reads in switching order, and overflow counts do not resemble dead controls. Fail if highlighting is hard to distinguish, peers look clickable, or the title competes with terminal content. Inspect matching narrow/wide captures; automated geometry checks do not prove visual comfort.

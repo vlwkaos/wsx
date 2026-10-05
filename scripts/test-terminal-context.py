@@ -7,6 +7,7 @@ change user configuration, or use the user's daemon. See docs/terminal-context.m
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -62,6 +63,10 @@ def run_scenario(args, tmux, wsx, wsxd, work):
                 "SHELL": "/bin/sh", "TERM": "xterm-256color",
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"})
     subprocess.run(["git", "init", "-q", "-b", "main", str(project)], check=True, env=env)
+    fix_project = work / 'fix'
+    # A real Git-owned second worktree needs no fixture commit or identity override.
+    subprocess.run(['git','worktree','add','--orphan','-b','fix',str(fix_project)],
+                   cwd=project,env=env,check=True,capture_output=True)
     daemon_socket, tmux_socket = state / "wsx/wsx.sock", work / "t.sock"
     helper = work / "agent.py"
     helper.write_text(
@@ -71,10 +76,10 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         "os.environ['WSX_PANE_ID'],'--provider','codex','--state',state,'--lifecycle'],"
         "check=True,stdout=subprocess.DEVNULL)\n"
         "report(sys.argv[1])\n"
-        "if len(sys.argv)>2:\n"
+        "if len(sys.argv)>3:\n"
         " listener=socket.socket(); listener.bind(('127.0.0.1',0)); listener.listen()\n"
-        " pathlib.Path(sys.argv[2]).write_text(str(listener.getsockname()[1]))\n"
-        "print('fixture terminal body',flush=True)\n"
+        " pathlib.Path(sys.argv[3]).write_text(str(listener.getsockname()[1]))\n"
+        "print('CURRENT_SESSION:'+sys.argv[2],flush=True)\n"
         "for line in sys.stdin:\n"
         " if line.strip(): report(line.strip())\n"
     )
@@ -100,8 +105,9 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         return tm("capture-pane", "-p", "-t", target).splitlines()
 
     def primary_name(target="view", row=-2, left=2):
-        words = screen(target)[row][left:].split()
-        return words[1] if len(words) > 1 else ""
+        # Independent switching oracle: the active PTY's actor marker, not title placement.
+        match = re.search(r'CURRENT_SESSION:([a-z0-9_-]+)', '\n'.join(screen(target)))
+        return match.group(1) if match else ""
 
     def wait(test, label, timeout=8):
         deadline = time.monotonic() + timeout
@@ -133,18 +139,27 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         daemon = subprocess.Popen([str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait(lambda: daemon_socket.exists(), "daemon socket")
         assert call("synchronize_projects", {"projects": [{"name": "demo", "path": str(project),
-                    "worktrees": [{"path": str(project), "branch": "main"}]}]})["type"] == "ack"
-        worktree_id = call("snapshot")["data"]["worktrees"][0]["id"]
+                    "worktrees": [{"path": str(project), "branch": "main"},
+                                  {"path": str(fix_project), "branch": "fix"}]}]})["type"] == "ack"
+        worktrees = call('snapshot')['data']['worktrees']
+        worktree_id = next(w['id'] for w in worktrees if w['path'] == str(project))
+        fix_id = next(w['id'] for w in worktrees if w['path'] == str(fix_project))
         sessions = {}
         for name, status, port in [("build", "working", True), ("api", "idle", True),
                                    ("finished", "done", False), ("approval", "blocked", False)]:
-            command = [sys.executable, str(helper), status]
+            command = [sys.executable, str(helper), status, name]
             if port:
                 command.append(str(work / (name + ".port")))
             created = call("session_create", {"worktree_id": worktree_id, "label": name,
                            "command": command, "rows": 21, "cols": 118})
             assert created["type"] == "created", created
             sessions[name] = created["data"]["id"]
+        for index in range(8):
+            name = 'fix-' + str(index)
+            created = call('session_create',{'worktree_id':fix_id,'label':name,
+                'command':[sys.executable,str(helper),'idle',name],'rows':21,'cols':118})
+            assert created['type'] == 'created', created
+            sessions[name] = created['data']['id']
         wait(lambda: all(pane["agent"] is not None for pane in call("snapshot")["data"]["panes"]),
              "generation-bound fixture reports")
         wait(lambda: len(call("snapshot")["data"].get("listening_ports", [])) >= 2, "port attribution")
@@ -166,22 +181,39 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         rows = capture("bottom-compact")
         # ^ The compact rail owns the first two cells even on the title row.
         title = rows[-2][2:]
-        assert title.lstrip().startswith("◎ build") or title.lstrip().startswith("◉ build") or title.lstrip().startswith("● build"), title
-        assert title.index("approval") < title.index("finished") < title.index("api"), title
+        assert title.startswith(' demo | ') and 'main > build (codex)' in title, title
+        assert title.index('build') < title.index('api') < title.index('finished') < title.index('approval'), title
         assert not any(":" + (work / (name + ".port")).read_text() in title for name in ("build", "api"))
         assert "48;2;" in (work / "captures/bottom-compact.ansi").read_text(), "RGB chrome not captured"
-        for key, name in [("l", "api"), ("h", "build"), ("Right", "api"), ("Left", "build")]:
+        for key, name in [("j", "api"), ("k", "build"), ("Down", "api"), ("Up", "build")]:
             keys("C-a", key)
             wait(lambda: primary_name() == name, "project prefix " + key)
         # Existing n keeps its broader attention behavior; the new cycle is separate.
         keys("C-a", "n")
         wait(lambda: primary_name() == "approval", "existing attention command")
-        for name in ["api", "build"]:
-            keys("C-a", "h")
-            wait(lambda: primary_name() == name, "ranked reverse cycle")
+        for name in ['finished','api','build']:
+            keys('C-a','k')
+            wait(lambda: primary_name() == name, 'stable reverse cycle')
+        # Visit every hidden target across both worktrees, then wrap to build.
+        for name in ['api','finished','approval'] + ['fix-'+str(i) for i in range(8)] + ['build']:
+            keys('C-a','j')
+            wait(lambda: primary_name() == name, 'project traversal '+name)
+            if name == 'fix-3':
+                overflow = capture('cross-worktree-overflow')[-2]
+                assert 'fix > fix-3 (codex)' in overflow and re.search(r'\+\d', overflow), overflow
+                long_name = '审计👩‍💻-' * 4 + 'e\u0301'
+                renamed = subprocess.run([str(wsx),'session','rename',str(sessions[name]),long_name],
+                    cwd=fix_project,env=env,capture_output=True,text=True,timeout=5)
+                assert renamed.returncode == 0, renamed.stderr[-4096:]
+                wait(lambda: '审计' in screen()[-2] and '(codex)' in screen()[-2], 'Unicode title update')
+                capture('long-unicode-current')
         keys("h", "l", "Left", "Right")
         time.sleep(0.2)
         assert primary_name() == "build", "bare keys switched sessions"
+        for removed in ['h','l','Left','Right']:
+            keys('C-a',removed)
+            time.sleep(.1)
+            assert primary_name() == 'build', 'removed alias switched sessions: '+removed
         capture("project-prefix-cycle")
         keys("C-a", "b")
         wait(lambda: pane_dimensions(build_pane) == (88, 21), "expanded sidebar dimensions")
@@ -192,8 +224,8 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         wait(lambda: pane_dimensions(build_pane) == (56, 15), "mobile dimensions")
         rows = capture("mobile")
         assert "build" in rows[-2] and "+" in rows[-2], rows[-2]
-        assert "◐ approval" in rows[-2], rows[-2]
-        # A real generation-authorized report changes the peer order without a UI remount.
+        assert 'main > build (codex)' in rows[-2], rows[-2]
+        # A live generation-authorized report changes state without reshuffling the cycle.
         approval = next(s["focused_pane"] for s in snapshot["sessions"] if s["id"] == sessions["approval"])
         assert call("terminal_acquire", {"pane_id": approval, "client_id": 991, "takeover": False})["type"] == "ack"
         assert call("terminal_input", {"pane_id": approval, "client_id": 991, "bytes": list(b"idle\r")})["type"] == "ack"
@@ -202,10 +234,16 @@ def run_scenario(args, tmux, wsx, wsxd, work):
              "accepted generation-bound idle report")
         def peers_reflect_idle():
             title = screen()[-2]
-            peers = title.partition("demo/main")[2].strip()
-            return peers.startswith("✓ finished") and "◐ approval" not in title
-        wait(peers_reflect_idle, "updated attention projection")
+            return '○ main > approval (codex)' in title and '◐' not in title
+        assert primary_name() == 'build'
+        for name in ['api','finished','approval']:
+            keys('C-a','j')
+            wait(lambda: primary_name() == name, 'unchanged order after state update')
+        wait(peers_reflect_idle, "updated current state")
         capture("mobile-updated")
+        for name in ['finished','api','build']:
+            keys('C-a','k')
+            wait(lambda: primary_name() == name, 'mobile reverse cycle')
         keys("C-a", "w")
         wait(lambda: "WORKSPACE" in "\n".join(screen()), "leave Terminal")
         # Keep the first TUI alive so the fixture daemon and live generations remain owned.
@@ -223,12 +261,12 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         wait(lambda: "TERMINAL" in "\n".join(screen("top")), "top Terminal")
         wait(lambda: primary_name("top", row=1) == "build", "top title")
         capture("top-compact", "top")
-        keys("C-a", "l", target="top")
-        wait(lambda: primary_name("top", row=1) == "api", "top ranked cycle")
+        keys("C-a", "j", target="top")
+        wait(lambda: primary_name("top", row=1) == "api", "top project cycle")
         api_pane = next(s["focused_pane"] for s in snapshot["sessions"] if s["id"] == sessions["api"])
         keys("C-a", target="top")
         wait(lambda: pane_dimensions(api_pane) == (88, 21), "prefix sidebar peek")
-        keys("h", target="top")
+        keys("k", target="top")
         wait(lambda: primary_name("top", row=1) == "build" and pane_dimensions(build_pane) == (118, 21),
              "project cycle restores baseline after peek")
         capture("top-prefix-peek-restored", "top")

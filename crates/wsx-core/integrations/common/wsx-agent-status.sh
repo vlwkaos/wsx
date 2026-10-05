@@ -8,20 +8,9 @@ action="${1:-unknown}"
 report_bin="${WSX_AGENT_REPORT_BIN:-wsx}"
 case "$report_bin" in
   /*) if [ ! -e "$report_bin" ]; then
-    socket="${WSX_SOCKET:-${XDG_STATE_HOME:-${HOME:-}/.local/state}/wsx/wsx.sock}"
-    # Refuse an untrusted fallback directory instead of executing an arbitrary file.
+    # Refuse untrusted entries; resolve the installed CLI before daemon handoff.
     if command -v python3 >/dev/null 2>&1; then
-      stable="$(python3 -c 'import os,stat,sys
-try:
- socket=sys.argv[1]
- if not os.path.isabs(socket): raise ValueError()
- parent=os.path.dirname(socket); path=os.path.splitext(socket)[0]+".reporter"
- directory=os.lstat(parent); entry=os.lstat(path); target=os.stat(path); uid=os.geteuid()
- if not stat.S_ISDIR(directory.st_mode) or directory.st_uid!=uid or directory.st_mode&0o077: raise ValueError()
- if not stat.S_ISLNK(entry.st_mode) or entry.st_uid!=uid: raise ValueError()
- if not stat.S_ISREG(target.st_mode) or target.st_uid not in (0,uid) or target.st_mode&0o022 or not target.st_mode&0o111: raise ValueError()
- print(path)
-except (OSError,ValueError): pass' "$socket")"
+      stable="$(python3 "$(dirname "$0")/wsx-reporter.py" "$report_bin" 2>/dev/null || true)"
       [ -z "$stable" ] || report_bin="$stable"
     fi
   fi ;;

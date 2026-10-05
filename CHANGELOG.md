@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-10-05
+
+### Fixes
+
+- Recover removed versioned agent reporters through a validated current CLI when an older daemon cannot publish its stable entry or that entry points to a removed keg. Retain generation checks, reject unsafe entries, and never retry a delivered or rejected report. Already-loaded older integrations still require their provider's reload or restart mechanism.
+- Reserve session-row width for reported provider identity before truncating long names or showing ports.
+- Prevent live Working agents and ordinary foreground jobs from causing inactivity collapse or displaying `stale`. Preserve manual folding, stored collapse provenance, and trusted activity-credit rules.
+- Compact folded project/worktree activity badges to the state indicator and active-session count, without repeating the word `active`.
+
+### Navigation
+
+- Use one `Prefix+j/k` (or Down/Up) cycle across the current project's sessions in stable Workspace order. Remove duplicate `Prefix+h/l` and Left/Right cycle bindings and release `h/l` as custom Workspace escape suffixes. Attention jumps and bare terminal input are unchanged.
+- Replace the spread-out title with a project prefix and highlighted current worktree/session chip in a sliding session preview. Preserve provider identity, cross-worktree attribution, hidden counts and tiny-view position without changing the terminal rectangle.
+
+### Known limitations
+
+- The missing identity of one already-running Codex session remains under separate investigation. Current hook discovery reports trusted handlers, but does not expose that session's cached authorization. This release fixes removed-reporter ENOENT recovery, not every cause of missing agent identity. See [Codex reporting follow-up](docs/codex-reporting-followup.md).
+
+### Documentation
+
+- Require exact ownership records, retained results and verified removal when cleaning up task-created orchestration sessions. User-owned sessions are never removed based on `done` state alone.
+
 ## [0.29.0] - 2026-10-03
 
 ### Breaking Changes

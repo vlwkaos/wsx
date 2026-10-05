@@ -105,8 +105,6 @@ pub(crate) enum TerminalEscapeAction {
     PrevAttention,
     NextSession,
     PrevSession,
-    NextContextSession,
-    PrevContextSession,
     NextGroup,
     PrevGroup,
     Cancel,
@@ -133,7 +131,7 @@ impl EscapeSequence {
                 let suffix = KeyChord::parse(part, false)?;
                 if matches!(
                     suffix.code,
-                    KeyCode::Char('a' | 'b' | 'h' | 'i' | 'j' | 'k' | 'l' | 'n' | 'q' | '{' | '}')
+                    KeyCode::Char('a' | 'b' | 'i' | 'j' | 'k' | 'n' | 'q' | '{' | '}')
                 ) {
                     return None;
                 }
@@ -194,14 +192,6 @@ impl EscapeSequence {
                 || self.matches_prefixed_code(key, KeyCode::Up)
             {
                 TerminalEscapeAction::PrevSession
-            } else if self.matches_prefixed_char(key, 'l')
-                || self.matches_prefixed_code(key, KeyCode::Right)
-            {
-                TerminalEscapeAction::NextContextSession
-            } else if self.matches_prefixed_char(key, 'h')
-                || self.matches_prefixed_code(key, KeyCode::Left)
-            {
-                TerminalEscapeAction::PrevContextSession
             } else if self.matches_prefixed_shifted_char(key, '}') {
                 TerminalEscapeAction::NextGroup
             } else if self.matches_prefixed_shifted_char(key, '{') {
@@ -357,8 +347,6 @@ pub fn poll_event(
                 TerminalEscapeAction::PrevAttention => Action::PrevAttention,
                 TerminalEscapeAction::NextSession => Action::NextSession,
                 TerminalEscapeAction::PrevSession => Action::PrevSession,
-                TerminalEscapeAction::NextContextSession => Action::NextContextSession,
-                TerminalEscapeAction::PrevContextSession => Action::PrevContextSession,
                 TerminalEscapeAction::NextGroup => Action::GroupNext,
                 TerminalEscapeAction::PrevGroup => Action::GroupPrev,
                 TerminalEscapeAction::Cancel => Action::None,
@@ -534,12 +522,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn project_context_keys_require_a_prefix_and_do_not_capture_bare_input() {
-        for (code, expected) in [
-            (KeyCode::Char('l'), TerminalEscapeAction::NextContextSession),
-            (KeyCode::Right, TerminalEscapeAction::NextContextSession),
-            (KeyCode::Char('h'), TerminalEscapeAction::PrevContextSession),
-            (KeyCode::Left, TerminalEscapeAction::PrevContextSession),
+    fn removed_horizontal_cycle_keys_forward_without_capturing_input() {
+        for code in [
+            KeyCode::Char('l'),
+            KeyCode::Right,
+            KeyCode::Char('h'),
+            KeyCode::Left,
         ] {
             for modifiers in [KeyModifiers::NONE, KeyModifiers::CONTROL] {
                 let mut sequence = EscapeSequence::parse("ctrl+a w").unwrap();
@@ -552,7 +540,13 @@ mod tests {
                     sequence.terminal_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
                     TerminalEscapeAction::Pending
                 );
-                assert_eq!(sequence.terminal_key(bare), expected);
+                assert_eq!(
+                    sequence.terminal_key(bare),
+                    TerminalEscapeAction::Forward(vec![
+                        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+                        bare
+                    ])
+                );
                 assert!(!sequence.is_pending());
             }
             let mut sequence = EscapeSequence::parse("ctrl+a w").unwrap();
@@ -576,8 +570,7 @@ mod tests {
     fn escape_sequence_reserves_terminal_command_suffixes() {
         for suffix in [
             "a", "shift+a", "b", "shift+b", "i", "shift+i", "j", "shift+j", "k", "shift+k", "n",
-            "shift+n", "h", "shift+h", "l", "shift+l", "q", "shift+q", "{", "shift+{", "}",
-            "shift+}",
+            "shift+n", "q", "shift+q", "{", "shift+{", "}", "shift+}",
         ] {
             assert!(
                 EscapeSequence::parse(&format!("ctrl+a {suffix}")).is_none(),

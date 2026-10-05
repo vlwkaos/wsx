@@ -31,8 +31,6 @@ pub enum Action {
     PrevIdle,
     NextSession,
     PrevSession,
-    NextContextSession,
-    PrevContextSession,
     SendCtrlC,
     AssignGroup,
     EnterMove,
