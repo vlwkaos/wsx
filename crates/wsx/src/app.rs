@@ -9589,7 +9589,8 @@ mod tests {
                         let row: String = (left..width)
                             .map(|x| terminal.backend().buffer()[(x, title_y)].symbol())
                             .collect();
-                        assert!(row.contains("session-1") && row.contains("[◎"), "{row}");
+                        assert!(row.contains("session-1") && row.contains('◎'), "{row}");
+                        assert!(!row.contains(['[', ']']), "{row}");
                         assert!(!row.contains("outside-project"), "{row}");
                         assert!(!row.contains(':'));
                         if width == 120 {
@@ -9625,7 +9626,8 @@ mod tests {
         let row: String = (32..120)
             .map(|x| terminal.backend().buffer()[(x, 1)].symbol())
             .collect();
-        assert!(row.contains("session-2") && row.contains("[○"), "{row}");
+        assert!(row.contains("session-2") && row.contains('○'), "{row}");
+        assert!(!row.contains(['[', ']']), "{row}");
         assert_eq!(app.current_selection(), Selection::Session(0, 0, 1));
     }
 

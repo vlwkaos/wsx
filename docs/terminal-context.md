@@ -3,8 +3,10 @@
 The terminal title is one row of presentation chrome, not a clickable switcher or another input mode. It shows the project once, then a sliding window of session chips. The current chip is highlighted with existing theme roles.
 
 ```text
-project | +2 [○ build] [◉ main > audit (pi)] [◐ fix > tests] +5
+project | +2  ○ build   ◉ main > audit (pi)   ◐ fix > tests  +5
 ```
+
+Chips use padded background regions, not literal brackets. The current chip is brighter and bold; neighboring chips use the existing quiet panel background. Project context and overflow counts stay outside chip backgrounds.
 
 Current identity includes worktree, session and the selected pane label when applicable. Known provider identity reserves space before extra name detail. Same-worktree peers omit redundant worktree names; other-worktree peers retain attribution. Only authoritative lifecycle or ordinary foreground-job state supplies indicators.
 
