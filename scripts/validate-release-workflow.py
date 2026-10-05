@@ -33,8 +33,16 @@ require_before(prepare, "brew trust vlwkaos/tap", "render-homebrew-formula.py")
 require_before(bottles, "brew trust vlwkaos/tap", "brew install --build-bottle")
 pour = section("      - name: Pour and verify generated bottle", "      - name: Upload bottle artifact")
 require_before(bottles, "brew bottle --json", "      - name: Pour and verify generated bottle")
-require_before(pour, "brew uninstall --formula", 'brew install --force-bottle "${BOTTLES[0]}"')
-require_before(pour, "brew install --force-bottle", ".poured_from_bottle == true")
+require_before(pour, "brew bottle --merge --write --no-commit", "brew --cache --force-bottle")
+require_before(pour, "brew --cache --force-bottle", 'cp "${BOTTLES[0]}" "$CACHE"')
+require_before(pour, 'cp "${BOTTLES[0]}" "$CACHE"', "brew uninstall --formula")
+require_before(pour, "brew uninstall --formula", "brew install --force-bottle vlwkaos/homebrew-tap/wsx")
+require_before(pour, "brew install --force-bottle vlwkaos/homebrew-tap/wsx", ".poured_from_bottle == true")
+assert 'brew install --force-bottle "${BOTTLES[0]}"' not in pour
+assert pour.count('shasum -a 256 -c -') == 2
+assert 'test ! -L "$CACHE"' in pour
+for bypass in ("HOMEBREW_DEVELOPER=", "HOMEBREW_INTERNAL_ALLOW_PACKAGES_FROM_PATHS="):
+    assert bypass not in pour
 require_before(pour, ".poured_from_bottle == true", "brew test vlwkaos/homebrew-tap/wsx")
 assert '"$PREFIX/bin/wsx" --version' in pour
 for binary in ("wsx", "wsxd"):
