@@ -155,6 +155,51 @@ def main():
         exact = json.loads(cli('agent','context',panes['claude'],'--json').stdout)
         assert len(exact['candidates']) == 1
         assert 'ambiguous' not in cli('agent','context',panes['claude'],'-p','wrong','--json',ok=False).stderr
+        # Exercise installed reporters against the real private generation owner.
+        # Removing only this fixture's entry represents the pre-handoff/removed-keg boundary.
+        codex = panes['codex']
+        codex_generation = (work / 'codex.generation').read_text()
+        installed = work / 'bin'; installed.mkdir(mode=0o755)
+        (installed / 'wsx').symlink_to(wsx)
+        version_stub = installed / 'codex'
+        version_stub.write_text('#!/bin/sh\nprintf "codex-cli 0.160.0\\n"\n')
+        version_stub.chmod(0o755)
+        (work / 'home/.codex').mkdir(mode=0o700)
+        report_env = dict(env, PATH=str(installed)+':'+env['PATH'],
+            WSX_PANE_ID=str(codex), WSX_RUNTIME_GENERATION=codex_generation,
+            WSX_AGENT_REPORT_BIN=str(work / 'removed-keg/wsx'))
+        subprocess.run([str(wsx),'agent','install','codex'],env=report_env,
+            capture_output=True,text=True,check=True,timeout=5)
+        path.with_suffix('.reporter').unlink()
+        hook = work / 'home/.codex/wsx-agent-status.sh'
+        def hook_report(state, generation):
+            return subprocess.run(['/bin/sh',str(hook),state],
+                input=json.dumps({'session_id':'fixture'}),
+                env=dict(report_env,WSX_RUNTIME_GENERATION=generation),
+                capture_output=True,text=True,timeout=5)
+        assert hook_report('working',codex_generation).returncode == 0
+        def codex_agent():
+            return next(pane for pane in call('snapshot')['data']['panes'] if pane['id'] == codex)['agent']
+        assert codex_agent()['state'] == 'working'
+        before_rejected = codex_agent()
+        rejected = hook_report('blocked','stale-generation')
+        assert rejected.returncode != 0 and 'stale_runtime' in rejected.stderr, (rejected.returncode, rejected.stderr)
+        assert codex_agent() == before_rejected, 'stale-generation recovery changed the authoritative agent'
+        node = shutil.which('node')
+        assert node, 'Node is required for shared JavaScript reporter verification'
+        runner = work / 'reporter.mjs'
+        runner.write_text('import {execReporter} from '+json.dumps((ROOT / 'crates/wsx-core/integrations/common/wsx-reporter.mjs').as_uri())+';\n'
+            'execReporter(process.env.WSX_AGENT_REPORT_BIN,["agent","report",process.env.WSX_PANE_ID,"--provider","codex","--state","idle","--session-id","fixture"],{env:process.env,timeout:3000},error=>{process.exitCode=error?1:0});\n')
+        subprocess.run([node,str(runner)],env=report_env,check=True,capture_output=True,text=True,timeout=5)
+        assert codex_agent()['state'] == 'idle'
+        assert not path.with_suffix('.reporter').exists(), 'scenario did not preserve the missing-entry boundary'
+        assert (work / 'codex.generation').read_text() == codex_generation
+        os.kill(int((work / 'codex.pid').read_text()),0)
+        # Installed Codex reports lifecycle only. Restore the actor's deliberate
+        # prompt capability for the unsupported draft-policy scenario below.
+        assert call('agent_report',{'pane_id':codex,'runtime_generation':codex_generation,
+            'provider':'codex','state':'idle','session_ref':{'kind':'id','value':'fixture'},
+            'capabilities':{'prompt':True,'lifecycle':True}})['type'] == 'ack'
         claude = panes['claude']
         # A lease or blocked agent must preserve both the draft and persisted intent.
         assert call('terminal_acquire',{'pane_id':claude,'client_id':987,'takeover':False})['type'] == 'ack'
@@ -234,6 +279,6 @@ def main():
         if success: shutil.rmtree(work)
         else: print('diagnostics retained at '+str(work),file=sys.stderr)
     print(json.dumps({'result':'PASS','seconds':round(time.monotonic()-started,2),'model_calls':0,
-        'journey':'one-call context, native-only history, bounds, exact scope, lease/provider refusal, preserved draft, empty-editor continuation, no bootstrap, private cleanup'}))
+        'journey':'pre-handoff installed shell/JS reporting, accepted/current and rejected/stale generation, unchanged actor PID/generation, one-call context, native-only history, bounds, exact scope, lease/provider refusal, preserved draft, empty-editor continuation, no bootstrap, private cleanup'}))
 
 if __name__ == '__main__': main()

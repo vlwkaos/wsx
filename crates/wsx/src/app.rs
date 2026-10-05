@@ -315,12 +315,29 @@ fn project_latest_activity_unix_ms(
         .max()
 }
 
+fn project_has_active_sessions(project: &Project) -> bool {
+    session_state::folded_status(
+        project
+            .worktrees
+            .iter()
+            .flat_map(|worktree| &worktree.sessions),
+        &HashSet::new(),
+    )
+    .active_sessions
+        > 0
+}
+
 fn project_is_stale(
     project: &Project,
     project_touched_unix_ms: &HashMap<PathBuf, u64>,
     now_unix_ms: u64,
     window_ms: u64,
 ) -> bool {
+    // ^ docs/ui-state-ownership.md: live activity fences automatic collapse,
+    // without inventing trusted activity timestamps or changing manual folding.
+    if project_has_active_sessions(project) {
+        return false;
+    }
     let latest = project_latest_activity_unix_ms(project, project_touched_unix_ms);
     latest.is_some() && !project_has_activity_within(latest, None, now_unix_ms, window_ms)
 }
@@ -1524,9 +1541,9 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(index, project)| {
-                self.stale_collapsed_projects
-                    .contains(&project.path)
-                    .then_some(index)
+                (self.stale_collapsed_projects.contains(&project.path)
+                    && !project_has_active_sessions(project))
+                .then_some(index)
             })
             .collect()
     }
@@ -3750,8 +3767,6 @@ impl App {
                     | Action::PrevAttention
                     | Action::NextSession
                     | Action::PrevSession
-                    | Action::NextContextSession
-                    | Action::PrevContextSession
                     | Action::GroupNext
                     | Action::GroupPrev
             )
@@ -3776,10 +3791,8 @@ impl App {
             Action::PrevActive => self.action_switch_active(-1, terminal)?,
             Action::NextAttention => self.action_switch_attention(1, terminal)?,
             Action::PrevAttention => self.action_switch_attention(-1, terminal)?,
-            Action::NextSession => self.action_switch_sibling_session(1, terminal)?,
-            Action::PrevSession => self.action_switch_sibling_session(-1, terminal)?,
-            Action::NextContextSession => self.action_switch_context_session(1, terminal)?,
-            Action::PrevContextSession => self.action_switch_context_session(-1, terminal)?,
+            Action::NextSession => self.action_switch_context_session(1, terminal)?,
+            Action::PrevSession => self.action_switch_context_session(-1, terminal)?,
             Action::GroupNext => self.action_switch_group(1, terminal)?,
             Action::GroupPrev => self.action_switch_group(-1, terminal)?,
             Action::TerminalKey(key) => self.send_terminal_keys([key]),
@@ -5462,43 +5475,7 @@ impl App {
         self.switch_to_flat_session(target, terminal)
     }
 
-    fn action_switch_sibling_session(&mut self, dir: isize, terminal: &mut Tui) -> Result<()> {
-        let (project_idx, worktree_idx, session_idx) = match self.current_selection() {
-            Selection::Session(pi, wi, si) | Selection::Pane(pi, wi, si, _) => (pi, wi, si),
-            _ => {
-                self.set_status("No session selected");
-                return Ok(());
-            }
-        };
-        let count = self.workspace.projects[project_idx].worktrees[worktree_idx]
-            .sessions
-            .len();
-        if count <= 1 {
-            self.set_status("No other sessions in this worktree");
-            return Ok(());
-        }
-        let Some(target_session) = cyclic_sibling_index(session_idx, count, dir) else {
-            self.set_status("No other sessions in this worktree");
-            return Ok(());
-        };
-        let target = self.flat().iter().position(|entry| {
-            matches!(
-                entry,
-                FlatEntry::Session {
-                    project_idx: pi,
-                    worktree_idx: wi,
-                    session_idx: si,
-                } if *pi == project_idx && *wi == worktree_idx && *si == target_session
-            )
-        });
-        let Some(target) = target else {
-            self.set_status("Sibling session is not visible");
-            return Ok(());
-        };
-        self.switch_to_flat_session(target, terminal)
-    }
-
-    // ^ docs/terminal-context.md: cycle the shared ranked ring, not flat tree rows
+    // ^ docs/terminal-context.md: cycle the shared project ring, not flat tree rows
     // or the first visible peer; both would miss collapsed worktrees or starve peers.
     fn context_session_target(&self, dir: isize) -> Option<(usize, usize, usize)> {
         let (pi, wi, si) = match self.current_selection() {
@@ -9612,12 +9589,12 @@ mod tests {
                         let row: String = (left..width)
                             .map(|x| terminal.backend().buffer()[(x, title_y)].symbol())
                             .collect();
-                        assert!(row.starts_with(" ◎ session-1"), "{row}");
+                        assert!(row.contains("session-1") && row.contains("[◎"), "{row}");
                         assert!(!row.contains("outside-project"), "{row}");
                         assert!(!row.contains(':'));
                         if width == 120 {
                             assert!(
-                                row.find("session-4@fix").unwrap() < row.find("session-3").unwrap(),
+                                row.find("session-2").unwrap() < row.find("session-3").unwrap(),
                                 "{row}"
                             );
                         }
@@ -9648,7 +9625,7 @@ mod tests {
         let row: String = (32..120)
             .map(|x| terminal.backend().buffer()[(x, 1)].symbol())
             .collect();
-        assert!(row.starts_with(" ○ session-2"), "{row}");
+        assert!(row.contains("session-2") && row.contains("[○"), "{row}");
         assert_eq!(app.current_selection(), Selection::Session(0, 0, 1));
     }
 
@@ -10039,7 +10016,7 @@ mod tests {
             .map(|x| terminal.backend().buffer()[(x, 14)].symbol())
             .collect::<String>();
         assert!(
-            bottom_title.contains("mobile-terminal/main"),
+            bottom_title.contains("mobile-terminal |") && bottom_title.contains("main >"),
             "{bottom_title:?}"
         );
         let rendered = terminal
@@ -10050,7 +10027,10 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("workspace"), "{rendered:?}");
-        assert!(rendered.contains("mobile-terminal/main"), "{rendered:?}");
+        assert!(
+            rendered.contains("mobile-terminal |") && rendered.contains("main >"),
+            "{rendered:?}"
+        );
         assert!(rendered.contains("hello"), "{rendered:?}");
         assert!(!rendered.contains(")sidebar"), "{rendered:?}");
 
@@ -10062,7 +10042,10 @@ mod tests {
         let top_title = (0..56)
             .map(|x| terminal.backend().buffer()[(x, 1)].symbol())
             .collect::<String>();
-        assert!(top_title.contains("mobile-terminal/main"), "{top_title:?}");
+        assert!(
+            top_title.contains("mobile-terminal |") && top_title.contains("main >"),
+            "{top_title:?}"
+        );
     }
 
     #[test]
@@ -10155,18 +10138,18 @@ mod tests {
             None,
         );
         let order = [
-            (0, 0, 3),
-            (0, 0, 4),
-            (0, 1, 0),
             (0, 0, 0),
             (0, 0, 1),
-            (0, 0, 6),
             (0, 0, 2),
+            (0, 0, 3),
+            (0, 0, 4),
             (0, 0, 5),
+            (0, 0, 6),
+            (0, 1, 0),
             (0, 1, 1),
         ];
         assert!(!app.workspace.projects[0].worktrees[1].expanded);
-        app.tree_selected = app.reveal_session(0, 0, 4).unwrap();
+        app.tree_selected = app.reveal_session(0, 0, 6).unwrap();
         assert_eq!(app.context_session_target(1), Some((0, 1, 0)));
         app.tree_selected = app.reveal_session(0, 1, 0).unwrap();
         assert!(app.workspace.projects[0].worktrees[1].expanded);
@@ -10181,11 +10164,11 @@ mod tests {
                 Some(order[(index + order.len() - 1) % order.len()])
             );
         }
-        // Recompute from normalized live state rather than storing a stale queue.
+        // Live lifecycle/acknowledgement changes do not reshuffle spatial navigation.
         app.workspace.projects[0].worktrees[1].sessions[0].outcome_acknowledged = false;
         app.workspace.projects[0].worktrees[1].sessions[0].agent_status = runtime::AgentState::Done;
         app.tree_selected = app.reveal_session(0, 0, 4).unwrap();
-        assert_eq!(app.context_session_target(1), Some((0, 0, 0)));
+        assert_eq!(app.context_session_target(1), Some((0, 0, 5)));
         app.workspace.projects[0].worktrees[1].sessions[0].outcome_acknowledged = true;
         app.tree_selected = app.reveal_session(0, 0, 0).unwrap();
         assert_eq!(app.context_session_target(1), Some((0, 0, 1)));
@@ -11101,6 +11084,41 @@ mod tests {
 
         assert!(app.workspace.projects[0].expanded);
         assert!(!app.stale_project_indices().contains(&0));
+    }
+
+    #[test]
+    fn active_project_does_not_auto_collapse_or_project_stale_provenance() {
+        let mut project = make_project("active");
+        let mut worktree = make_worktree("/tmp/active");
+        worktree.sessions = vec![make_sess(false, runtime::AgentState::Working)];
+        project.worktrees = vec![worktree];
+        project.last_agent_active_unix_ms = Some(0);
+        project.last_terminal_active_unix_ms = Some(0);
+        let mut app = make_test_app(
+            GlobalConfig {
+                auto_collapse: AutoCollapsePolicy::Flat { hours: 1 },
+                ..GlobalConfig::default()
+            },
+            WorkspaceState {
+                projects: vec![project],
+            },
+            None,
+        );
+        app.collapse_stale_projects();
+        assert!(app.workspace.projects[0].expanded);
+        let path = app.workspace.projects[0].path.clone();
+        app.workspace.projects[0].expanded = false;
+        app.stale_collapsed_projects.insert(path.clone());
+        app.collapse_stale_projects();
+        assert!(
+            !app.workspace.projects[0].expanded,
+            "manual fold must remain"
+        );
+        assert!(app.stale_project_indices().is_empty());
+        assert!(
+            app.stale_collapsed_projects.contains(&path),
+            "projection must not rewrite intent"
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=14
+// WSX_INTEGRATION_VERSION=15
 import { execReporter } from "../common/wsx-reporter.mjs";
 
 function report(sessionID) {

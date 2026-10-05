@@ -1,11 +1,8 @@
-//! One-row terminal context, not a second session navigator.
-//! ^ docs/terminal-context.md documents the shared project order and prefix cycle.
+//! One-row session preview, not another input mode.
+//! ^ docs/terminal-context.md: preview and Prefix+j/k share stable project order.
 use crate::session_state;
 use ratatui::{prelude::*, widgets::Paragraph};
-use wsx_core::{
-    model::workspace::{PaneInfo, Project, SessionInfo, WorktreeInfo},
-    runtime::SessionId,
-};
+use wsx_core::model::workspace::{PaneInfo, Project, SessionInfo, WorktreeInfo};
 
 use super::{
     theme,
@@ -32,11 +29,8 @@ fn spans_width(spans: &[Span<'_>]) -> usize {
     spans.iter().map(Span::width).sum()
 }
 
-fn title_line(view: &TerminalTitleView<'_>, width: usize) -> Line<'static> {
-    if width == 0 {
-        return Line::default();
-    }
-    let (icon, color) = view.pane.map_or_else(
+fn current_state(view: &TerminalTitleView<'_>) -> (&'static str, Color) {
+    view.pane.map_or_else(
         || session_icon(view.session, view.animation_frame),
         |pane| {
             agent_state_icon(
@@ -47,143 +41,210 @@ fn title_line(view: &TerminalTitleView<'_>, width: usize) -> Line<'static> {
                 view.animation_frame,
             )
         },
-    );
+    )
+}
+
+fn chip(
+    view: &TerminalTitleView<'_>,
+    worktree: &WorktreeInfo,
+    session: &SessionInfo,
+    current: bool,
+    width: usize,
+) -> Vec<Span<'static>> {
+    if width == 0 {
+        return vec![];
+    }
+    let (icon, color) = if current {
+        current_state(view)
+    } else {
+        session_icon(session, view.animation_frame)
+    };
+    let style = if current {
+        theme::terminal_current()
+    } else {
+        theme::terminal_context()
+    };
+    if width < 4 {
+        return vec![Span::styled(icon, style.fg(color))];
+    }
+    let name = if current {
+        view.pane.map_or_else(
+            || session.display_name.clone(),
+            |pane| format!("{} / {}", session.display_name, pane.label),
+        )
+    } else {
+        session.display_name.clone()
+    };
+    let agent = if current {
+        view.pane
+            .map_or(session.agent.as_deref(), |pane| pane.agent.as_deref())
+    } else {
+        None
+    };
+    let label = session_state::agent_label(agent).unwrap_or_default();
+    let label_width = Line::from(label.as_str()).width();
+    let body = width - 4;
+    // Known provider identity wins over extra name detail, but not the entire name.
+    let show_agent = !label.is_empty() && body >= label_width + 3;
+    let identity_width = body.saturating_sub(if show_agent { label_width } else { 0 });
+    let context = if identity_width >= 12 && (current || worktree.path != view.worktree.path) {
+        let wt = truncate_to_width(worktree.display_name(), (identity_width / 3).min(16));
+        format!("{wt} > ")
+    } else {
+        String::new()
+    };
+    let context_width = Line::from(context.as_str()).width();
+    let name = truncate_to_width(&name, identity_width.saturating_sub(context_width));
+    let mut spans = vec![
+        Span::styled("[", style),
+        Span::styled(icon, style.fg(color)),
+        Span::styled(format!(" {context}{name}"), style),
+    ];
+    if show_agent {
+        spans.push(Span::styled(label, style.fg(theme::TEXT_MUTED)));
+    }
+    spans.push(Span::styled("]", style));
+    spans
+}
+
+fn overflow_width(start: usize, end: usize, total: usize) -> usize {
+    let left = if start > 0 {
+        format!("+{start} ").len()
+    } else {
+        0
+    };
+    let right = if end + 1 < total {
+        format!(" +{}", total - end - 1).len()
+    } else {
+        0
+    };
+    left + right
+}
+
+fn title_line(view: &TerminalTitleView<'_>, width: usize) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
     if width <= 3 {
+        let (icon, color) = current_state(view);
         return Line::from(Span::styled(icon, theme::terminal_current().fg(color)));
     }
-    let peer_count = view
-        .project
-        .worktrees
-        .iter()
-        .flat_map(|worktree| &worktree.sessions)
-        .filter(|session| session.session_id != view.session.session_id)
-        .count();
-    let usable = width - 2;
-    // Reserve only a count on narrow screens. The active identity always wins.
-    let count_reserve = if peer_count > 0 && usable >= 24 {
-        format!(" +{peer_count}").len()
-    } else {
-        0
-    };
-    let current_limit = if usable >= 60 && peer_count > 0 {
-        (usable * 3 / 5).min(usable.saturating_sub(count_reserve))
-    } else {
-        usable.saturating_sub(count_reserve)
-    };
-    let name = if let Some(pane) = view.pane {
-        format!("{} / {}", view.session.display_name, pane.label)
-    } else {
-        view.session.display_name.clone()
-    };
-    let name = truncate_to_width(&name, current_limit.saturating_sub(2));
-    let mut current = vec![
-        Span::styled(icon, theme::terminal_current().fg(color)),
-        Span::styled(format!(" {name}"), theme::terminal_current()),
-    ];
-    let agent = view
-        .pane
-        .map_or(view.session.agent.as_deref(), |pane| pane.agent.as_deref());
-    if let Some(label) = session_state::agent_label(agent) {
-        if spans_width(&current) + Line::from(label.as_str()).width() <= current_limit {
-            current.push(Span::styled(
-                label,
-                theme::terminal_current().fg(theme::TEXT_MUTED),
-            ));
-        }
-    }
+    let order: Vec<_> = session_state::context_sessions(view.project).collect();
     let mut spans = vec![Span::raw(" ")];
-    spans.extend(current);
-    let mut used = spans_width(&spans);
-    let remaining = width.saturating_sub(used + 1);
-    // Context is secondary to both active identity and room for peer state.
-    let context = format!("{}/{}", view.project.name, view.worktree.display_name());
-    let context_limit = if peer_count == 0 {
-        remaining.saturating_sub(2)
-    } else if remaining >= 30 {
-        (remaining / 3).min(28)
-    } else {
-        0
-    };
-    if context_limit > 0 {
-        let context = truncate_to_width(&context, context_limit);
+    let usable = width - 2;
+    if usable >= 36 {
+        // With no peers, spend spare space on project identity instead of
+        // applying the multi-session strip's compact context allocation.
+        let project_limit = if order.len() <= 1 {
+            usable.saturating_sub(28).min(20)
+        } else {
+            (usable / 5).min(20)
+        };
+        let project = truncate_to_width(&view.project.name, project_limit);
         spans.push(Span::styled(
-            format!("  {context}"),
+            format!("{project} | "),
             theme::terminal_context(),
         ));
-        used = spans_width(&spans);
     }
-    let peer_width = width.saturating_sub(used + 2);
-    let peer_spans = peer_line(view, peer_count, peer_width);
-    let peer_used = spans_width(&peer_spans);
-    if peer_used > 0 {
-        spans.push(Span::raw(
-            " ".repeat(width.saturating_sub(used + peer_used + 1)),
-        ));
-        spans.extend(peer_spans);
-    }
-    Line::from(spans)
-}
-
-fn peer_sessions(
-    project: &Project,
-    current: SessionId,
-) -> impl Iterator<Item = (&WorktreeInfo, &SessionInfo)> {
-    session_state::context_sessions(project)
-        .filter(move |(_, _, session)| session.session_id != current)
-        .map(|(wi, _, session)| (&project.worktrees[wi], session))
-}
-
-fn peer_line(view: &TerminalTitleView<'_>, count: usize, width: usize) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let mut used = 0;
-    let mut shown = 0;
-    // The shared iterator preserves Workspace order within tiers; only visible
-    // identities are formatted and no navigation list is retained by rendering.
-    for (worktree, session) in peer_sessions(view.project, view.session.session_id) {
-        let (icon, color) = session_icon(session, view.animation_frame);
-        let remaining = count - shown - 1;
-        let suffix_width = if remaining > 0 {
-            format!("  +{remaining}").len()
+    let available = width.saturating_sub(spans_width(&spans) + 1);
+    let index = order
+        .iter()
+        .position(|(_, _, session)| session.session_id == view.session.session_id);
+    if available < 36 || order.len() <= 1 || index.is_none() {
+        let position = index
+            .filter(|_| order.len() > 1)
+            .map(|index| format!(" {}/{}", index + 1, order.len()))
+            .unwrap_or_default();
+        let position = if position.len() + 8 <= available {
+            position
         } else {
-            0
+            String::new()
         };
-        let gap = if shown == 0 { 0 } else { 2 };
-        let identity_width = width.saturating_sub(used + gap + 2 + suffix_width).min(22);
-        if identity_width < 6 {
+        spans.extend(chip(
+            view,
+            view.worktree,
+            view.session,
+            true,
+            available.saturating_sub(position.len()),
+        ));
+        spans.push(Span::styled(position, theme::terminal_context()));
+        return Line::from(spans);
+    }
+    let index = index.unwrap();
+    let current = chip(
+        view,
+        view.worktree,
+        view.session,
+        true,
+        (available / 2)
+            .clamp(28, 48)
+            .min(available.saturating_sub(overflow_width(index, index, order.len()))),
+    );
+    let mut used = spans_width(&current);
+    let peer_limit = (available.saturating_sub(used + 12) / 2).clamp(16, 26);
+    let mut visible = std::collections::VecDeque::from([current]);
+    let (mut start, mut end) = (index, index);
+    // Grow a contiguous window, alternating directions. Format only candidates
+    // beside the visible window, not every resident session's display label.
+    loop {
+        let mut grew = false;
+        if start > 0 {
+            let (wi, _, session) = order[start - 1];
+            let next = chip(
+                view,
+                &view.project.worktrees[wi],
+                session,
+                false,
+                peer_limit,
+            );
+            let cost = spans_width(&next) + 1;
+            if used + cost + overflow_width(start - 1, end, order.len()) <= available {
+                visible.push_front(next);
+                start -= 1;
+                used += cost;
+                grew = true;
+            }
+        }
+        if end + 1 < order.len() {
+            let (wi, _, session) = order[end + 1];
+            let next = chip(
+                view,
+                &view.project.worktrees[wi],
+                session,
+                false,
+                peer_limit,
+            );
+            let cost = spans_width(&next) + 1;
+            if used + cost + overflow_width(start, end + 1, order.len()) <= available {
+                visible.push_back(next);
+                end += 1;
+                used += cost;
+                grew = true;
+            }
+        }
+        if !grew {
             break;
         }
-        let identity = if worktree.path == view.worktree.path {
-            truncate_to_width(&session.display_name, identity_width)
-        } else {
-            // Preserve attribution even when identical long session names truncate.
-            let worktree_name =
-                truncate_to_width(worktree.display_name(), (identity_width / 2).min(10));
-            let name_width =
-                identity_width.saturating_sub(Line::from(worktree_name.as_str()).width() + 1);
-            format!(
-                "{}@{worktree_name}",
-                truncate_to_width(&session.display_name, name_width)
-            )
-        };
-        let label_width = 2 + Line::from(identity.as_str()).width();
-        if gap > 0 {
-            spans.push(Span::raw("  "));
-        }
-        spans.push(Span::styled(icon, theme::terminal_context().fg(color)));
+    }
+    if start > 0 {
         spans.push(Span::styled(
-            format!(" {identity}"),
+            format!("+{start} "),
             theme::terminal_context(),
         ));
-        used += gap + label_width;
-        shown += 1;
     }
-    if shown < count {
-        let suffix = format!("{}+{}", if shown > 0 { "  " } else { "" }, count - shown);
-        if used + suffix.len() <= width {
-            spans.push(Span::styled(suffix, theme::terminal_context()));
+    for (i, item) in visible.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" "));
         }
+        spans.extend(item);
     }
-    spans
+    if end + 1 < order.len() {
+        spans.push(Span::styled(
+            format!(" +{}", order.len() - end - 1),
+            theme::terminal_context(),
+        ));
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -208,7 +269,6 @@ mod tests {
             outcome_acknowledged: false,
         }
     }
-
     fn worktree(name: &str, sessions: Vec<SessionInfo>) -> WorktreeInfo {
         WorktreeInfo {
             name: name.into(),
@@ -226,7 +286,6 @@ mod tests {
             git_info_fetched_at: None,
         }
     }
-
     fn project() -> Project {
         Project {
             name: "demo".into(),
@@ -254,7 +313,6 @@ mod tests {
             missing: false,
         }
     }
-
     fn line(project: &Project, width: usize) -> Line<'static> {
         title_line(
             &TerminalTitleView {
@@ -267,78 +325,76 @@ mod tests {
             width,
         )
     }
-
     #[test]
-    fn attention_peers_cross_collapsed_worktrees_and_follow_live_acknowledgement() {
+    fn preview_keeps_workspace_order_across_live_state_changes() {
         let mut project = project();
-        let text = line(&project, 140).to_string();
-        assert!(text.starts_with(" ● current (codex)"), "{text}");
-        assert_eq!(text.matches("current").count(), 1);
-        let order =
-            ["approval@fix", "finished", "worker", "shell"].map(|name| text.find(name).unwrap());
-        assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
-        // Acknowledgement moves Done out of attention without remounting a view.
-        project.worktrees[0].sessions[3].outcome_acknowledged = true;
-        let acknowledged = line(&project, 140).to_string();
-        assert!(acknowledged.find("worker").unwrap() < acknowledged.find("finished").unwrap());
-        project.worktrees[1].sessions[0].muted = true;
-        let muted = line(&project, 140).to_string();
-        assert!(muted.find("worker").unwrap() < muted.find("approval@fix").unwrap());
-        project.worktrees[1].sessions[0].muted = false;
-        assert_eq!(line(&project, 140).to_string(), acknowledged);
+        for acknowledged in [false, true, false] {
+            project.worktrees[0].sessions[3].outcome_acknowledged = acknowledged;
+            let text = line(&project, 160).to_string();
+            assert!(
+                text.starts_with(" demo | [● main > current (codex)]"),
+                "{text}"
+            );
+            let order = ["current", "shell", "worker", "finished", "fix > approval"]
+                .map(|name| text.find(name).unwrap());
+            assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
+            assert_eq!(text.matches("current").count(), 1);
+        }
     }
-
     #[test]
-    fn long_peer_names_keep_their_cross_worktree_attribution() {
+    fn cross_worktree_attribution_survives_long_unicode_labels() {
         let mut project = project();
+        project.worktrees[0].sessions.truncate(1);
         project.worktrees[1].sessions[0].display_name = "开发👩‍💻e\u{301}".repeat(10);
-        for width in 70..=160 {
+        for width in 90..=160 {
             let title = line(&project, width);
-            assert!(title.to_string().contains("@fix"), "width {width}: {title}");
-            assert!(title.width() <= width);
-        }
-        project.worktrees[1].alias = Some("长工作区名称".repeat(10));
-        for width in 70..=160 {
-            let title = line(&project, width);
-            assert!(title.to_string().contains("@长"), "width {width}: {title}");
+            assert!(
+                title.to_string().contains("fix >"),
+                "width {width}: {title}"
+            );
             assert!(title.width() <= width);
         }
     }
-
     #[test]
-    fn narrow_titles_keep_current_identity_and_count_without_ports_or_controls() {
+    fn tiny_and_long_titles_preserve_width_identity_and_position() {
         let mut project = project();
-        project.worktrees[0].sessions[0].panes.push(PaneInfo {
-            pane_id: PaneId(1),
-            terminal_id: TerminalId(1),
-            label: "terminal".into(),
-            agent: Some("codex".into()),
-            agent_status: AgentState::Working,
-            revision: 1,
-            exited: false,
-            listening_ports: vec![5173],
-            foreground_job: false,
-            outcome_acknowledged: false,
-        });
-        let narrow = line(&project, 28).to_string();
-        assert!(narrow.contains("current"), "{narrow}");
-        assert!(narrow.contains("+4"), "{narrow}");
-        for width in 0..=160 {
-            let title = line(&project, width);
-            assert!(title.width() <= width, "width {width}: {title}");
-            let text = title.to_string();
-            assert!(!text.contains(":5173"));
-            assert!(!text.contains('‹') && !text.contains('›'));
+        assert!(line(&project, 28).to_string().contains("current"));
+        assert!(line(&project, 28).to_string().contains("1/5"));
+        for name in ["current".into(), "开发👩‍💻e\u{301}".repeat(12)] {
+            project.worktrees[0].sessions[0].display_name = name;
+            for width in 0..=160 {
+                let title = line(&project, width);
+                assert!(title.width() <= width, "width {width}: {title}");
+                if width >= 70 {
+                    assert!(title.to_string().contains("(codex)"), "{title}");
+                }
+            }
         }
-        project.worktrees[0].sessions[0].display_name = "开发👩‍💻e\u{301}".repeat(12);
+    }
+    #[test]
+    fn large_project_reserves_both_hidden_counts_before_current_identity() {
+        let mut project = project();
+        project.worktrees.truncate(1);
+        project.worktrees[0].sessions = (0..2000)
+            .map(|i| session(i + 1, &"x".repeat(120), AgentState::Idle))
+            .collect();
         for width in 0..=160 {
-            let title = line(&project, width);
+            let title = title_line(
+                &TerminalTitleView {
+                    project: &project,
+                    worktree: &project.worktrees[0],
+                    session: &project.worktrees[0].sessions[1000],
+                    pane: None,
+                    animation_frame: 0,
+                },
+                width,
+            );
             assert!(title.width() <= width, "width {width}: {title}");
         }
     }
 
     #[test]
-    fn pane_state_is_local_and_title_background_does_not_touch_terminal_content() {
+    fn pane_state_and_chrome_remain_local_to_title_rectangle() {
         use ratatui::{backend::TestBackend, Terminal};
         let project = project();
         let pane = PaneInfo {
@@ -371,9 +427,8 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer();
         let text: String = (3..87).map(|x| buffer[(x, 2)].symbol()).collect();
-        assert!(text.contains("● current / logs"));
-        assert!(!text.contains("(codex)"));
-        assert!(!text.contains(":3000"));
+        assert!(text.contains("current / logs"), "{text}");
+        assert!(!text.contains("(codex)") && !text.contains(":3000"));
         for x in 3..87 {
             assert_ne!(buffer[(x, 2)].bg, Color::Reset);
             assert_eq!(buffer[(x, 1)].bg, Color::Reset);

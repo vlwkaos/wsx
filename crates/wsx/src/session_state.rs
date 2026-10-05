@@ -131,24 +131,19 @@ pub fn folded_status<'a>(
 }
 
 // ^ docs/terminal-context.md: title projection and project-local navigation use
-// the same live normalized order; expansion never filters this collection.
+// the same stable Workspace order; state and expansion never reorder/filter it.
 pub fn context_sessions(project: &Project) -> impl Iterator<Item = (usize, usize, &SessionInfo)> {
-    (0..4).flat_map(move |tier| {
-        project
-            .worktrees
-            .iter()
-            .enumerate()
-            .flat_map(move |(wi, worktree)| {
-                worktree
-                    .sessions
-                    .iter()
-                    .enumerate()
-                    .filter_map(move |(si, session)| {
-                        let priority = derive(session).priority();
-                        (priority == tier).then_some((wi, si, session))
-                    })
-            })
-    })
+    project
+        .worktrees
+        .iter()
+        .enumerate()
+        .flat_map(|(wi, worktree)| {
+            worktree
+                .sessions
+                .iter()
+                .enumerate()
+                .map(move |(si, session)| (wi, si, session))
+        })
 }
 
 pub fn agent_label(agent: Option<&str>) -> Option<String> {

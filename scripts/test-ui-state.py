@@ -31,6 +31,7 @@ class View:
     def __init__(self, command, env, rows=24, cols=100, failed_stdout=False, stderr_file=None):
         self.master, self.slave = pty.openpty()
         self.output = bytearray()
+        self.rows, self.cols = rows, cols
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
         self.original_attributes = termios.tcgetattr(self.slave)
         broken = None
@@ -176,13 +177,26 @@ def main():
             item.drain()
             replay = work/(name+'.ansi')
             replay.write_bytes(item.output)
-            probe_env = dict(env, WSX_RENDER_REPLAY=str(replay), WSX_RENDER_EXPECTED=expected)
+            probe_env = dict(env, WSX_RENDER_REPLAY=str(replay), WSX_RENDER_EXPECTED=expected,
+                             WSX_RENDER_ROWS=str(item.rows), WSX_RENDER_COLS=str(item.cols))
             subprocess.run([str(render_binary),'tests::rendered_output_probe',
                             '--ignored','--exact','--nocapture'], env=probe_env, check=True, timeout=6)
             for suffix in ('screen.txt','frame.txt'):
                 shutil.copyfile(replay.with_suffix('.'+suffix),
                                 ROOT/'.work'/('ui-state-'+str(os.getpid())+'-'+name+'.'+suffix))
             return replay.with_suffix('.screen.txt').read_text()
+
+        def verify_activity(item, name):
+            # ^ Wait for runtime projection in decoded cells; raw PTY writes interleave escapes.
+            deadline = time.monotonic() + 8
+            while True:
+                screen = verify_render(item, name, 'WORKSPACE')
+                if re.search(r'[◎◉●] 1(?:\s|$)', screen):
+                    assert not re.search(r'\bactive\b', screen), 'redundant activity text remains'
+                    return screen
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('compact activity missing after runtime projection: ' + screen)
+                item.drain(.1)
 
         def close(item, key=b'\x01q', expected_clean=True):
             clean = item.close(key)
@@ -299,12 +313,19 @@ def main():
         assert call('agent_report', {'pane_id':pane['id'], 'runtime_generation':generation,
             'provider':'pi', 'state':'working', 'session_ref':{'kind':'id','value':'ui-state-fixture'},
             'capabilities':{'prompt':True,'lifecycle':True}})['type'] == 'ack'
+        seed()
         a = view()
+        active_screen = verify_activity(a, 'active-with-stale-provenance')
+        assert not re.search(r'probe[^\n]*stale', active_screen), 'active project retained visible stale label'
+        assert stale(), 'read-only activity projection rewrote stored provenance'
+        narrow = view(cols=56)
+        verify_activity(narrow, 'compact-activity-56')
+        close(narrow)
+        assert stale(), 'narrow read-only projection rewrote stored provenance'
         a.send(b'kkkh')
         wait(lambda: not expanded(), 'folded project', [a])
         try:
-            wait(lambda: b'active' in a.output, 'folded active update', [a])
-            verify_render(a, 'folded-project', '1 active')
+            verify_activity(a, 'folded-project')
         except RuntimeError:
             diagnostic = {'snapshot':call('snapshot')['data'], 'cache':cache_file.read_text(),
                           'output_tail':bytes(a.output[-12000:]).decode('utf-8','replace')}
@@ -315,13 +336,24 @@ def main():
         a.send(b'ljh')
         wait(lambda: expanded(), 'expanded parent with folded worktree', [a])
         a.drain(.2)
-        verify_render(a, 'folded-worktree', '1 active')
+        verify_activity(a, 'folded-worktree')
         before = int(heartbeat.read_text())
         wait(lambda: int(heartbeat.read_text()) >= before+5, 'work continues beneath folded worktree', [a])
         after = call('snapshot')['data']['panes'][0]
         assert not after['exited'] and generation_file.read_text() == generation
         assert after['agent']['state'] == 'working'
+        a.send(b'l')
+        # ^ Keep the fixture within the daemon's 128-byte label limit but wider than the 100-column view.
+        long_name = ('provider-label-long-name-' * 5)[:120]
+        # ^ CLI scope inference must use the private project, not the harness repository.
+        renamed = subprocess.run([str(wsx),'session','rename',str(created['data']['id']),long_name],
+                       cwd=project,env=env,capture_output=True,text=True,timeout=5)
+        assert renamed.returncode == 0, (renamed.returncode, renamed.stderr[-4096:])
+        wait(lambda: b'provider-label' in a.output, 'long session-name update', [a])
+        label_screen = verify_render(a, 'long-session-provider-label', '(pi)')
+        assert any('provider-label' in line and '(pi)' in line for line in label_screen.splitlines())
         close(a)
+        report['active_stale_exclusion_and_long_provider_identity'] = 'passed through real TUI frames with saved provenance unchanged'
         report['folded_status_and_background_execution'] = 'passed with unchanged runtime generation and advancing heartbeat'
 
         command = [str(test_binary), 'tui::tests::terminal_owner_probe', '--ignored', '--exact', '--nocapture']

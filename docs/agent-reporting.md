@@ -19,23 +19,29 @@ Publication failure after commit is reported without killing imported PTYs. The 
 retains the staged link and retries once per second while it owns the daemon. Retries
 refuse unrelated reserved-path content.
 
-The path is stable across upgrades. Its target remains the current daemon's adjacent
-reporter, so cleanup of an older Homebrew Cellar does not break surviving shells.
-No executable is copied and no global install path is assumed.
+The entry path is stable across upgrades; its target is the daemon's adjacent
+reporter at publication time. Package cleanup can remove that target before handoff,
+or while a compatible older daemon remains in use. Updated adapters recover this
+transition without copying an executable or assuming one global install prefix.
 
 ## Existing panes
 
 A live handoff cannot rewrite the environment of an existing shell. Updated adapters
 recover an absolute legacy reporter path that no longer exists by using the stable
 entry point derived from `WSX_SOCKET`, or the usual XDG/HOME wsx state directory.
+If the owner-controlled entry is absent or points to a removed keg, recovery checks
+at most 32 absolute inherited PATH directories for `wsx`. It executes a canonical
+regular executable owned by the caller or root, with no group/other write permission,
+in a similarly protected canonical parent. The socket directory must remain private
+and caller-owned. An invalid reserved entry is a refusal, not permission to bypass it.
 The arguments and runtime generation remain unchanged. Reports rejected by the CLI,
 including stale-generation reports, never trigger a fallback replay.
 
 Install the updated adapter through Global Settings or accept the integration update
-prompt, then restart the agent in its existing pane. This does not restart the shell
-or daemon. Already-loaded adapters cannot be repaired by changing their file alone.
-The stable entry point requires the repaired daemon; before that upgrade, a removed
-reporter path still fails explicitly.
+prompt, then use the provider's supported reload or restart when the agent is idle.
+Already-loaded adapter/helper code cannot be repaired by changing its file alone.
+Do not restart the shell or daemon to refresh an adapter. Current-CLI recovery does
+not require daemon handoff to finish; missing or unsafe candidates still fail explicitly.
 
 ## Verification
 

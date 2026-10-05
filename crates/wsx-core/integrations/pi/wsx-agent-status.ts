@@ -1,5 +1,5 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=18
+// WSX_INTEGRATION_VERSION=19
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execReporter } from "../common/wsx-reporter.mjs";
 import { randomUUID } from "node:crypto";

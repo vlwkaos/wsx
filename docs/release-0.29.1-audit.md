@@ -1,0 +1,63 @@
+# 0.29.1 candidate review
+
+Status: verified core/title candidate in release preparation, unpublished. User approved deferring live Codex diagnosis to [a separate follow-up](codex-reporting-followup.md).
+Recorded: 2026-10-04 12:07 KST. Scope: isolated `repair/0.29.1` from published `v0.29.0`; original dirty 0.30.0 tree preserved.
+
+| Outcome | Evidence | Remaining gate |
+| --- | --- | --- |
+| Pre-handoff reporter recovery | JS/shell/Hermes boundary fixtures; real private wsxd/PTY/installed shell and JS journey accepted current generation, rejected stale generation, retained actor PID/generation | Updated integrations must be installed and loaded before live agents benefit |
+| Provider labels | Unicode width regressions; real Ghostty-replayed TUI frame shows truncated 120-byte name beside `(pi)` | None for the candidate implementation |
+| Active/stale exclusion | Owner/renderer regressions; latest real TUI shows compact indicator/count without stale and preserves stored provenance | None for the candidate implementation |
+| Compact activity | Real 100x24 and 56x24 project captures plus folded worktree capture show indicator/count only; 8-column renderer regression passes | Subjective compactness/meaning check only |
+| Session cleanup | No proven task-created host sessions; private actors/TUIs/daemon reaped, sockets absent; three obsolete namespaces removed after process/PID/lock checks | Preserve user sessions; future orchestration follows exact ownership receipts |
+| Terminal title/navigation | 329/329 latest WSX tests; real 12-session/two-worktree journey in 8.12 s at 120x24 and 56x18; hidden targets, wrap, Unicode, live states, sidebar and top/bottom geometry passed | Subjective highlighting/comfort check only |
+| Live Codex identity | Last exact-target observation had an existing reporter and generation presence; fresh discovery had eight enabled/trusted hooks | Explicitly deferred, unresolved; see separate follow-up |
+| Publication | Version and internal pins are 0.29.1; external lock entries unchanged; Codex limitation disclosed | Final candidate commit, credentials, exact-commit CI and fresh push/tag/publication approvals |
+
+## Verification
+
+- Final pre-compact locked workspace build, 705/705 Nextest tests (three ignored probes), doctests and strict all-target Clippy passed. Nextest marked one unchanged asynchronous worktree-form test leaky in that run; the later complete 329-test WSX run passed without a leak marker. Preserve the warning, not a blanket leak-free claim.
+- After the compact refinement, 329/329 WSX tests and 48/48 terminal tests passed with strict affected-target Clippy. Real private 100x24 and 56x24 captures show indicator/count only; folded project/worktree captures preserve state, stale exclusion and advancing background work. Replay waits for decoded runtime projection and uses the captured dimensions with one guard row, not raw output substrings.
+- Installed reporter boundary fixtures and private generation-fenced reporting/context journey passed with no model calls.
+- Real private TUI journey passed provider-label visibility, active/stale exclusion, unchanged runtime generation, advancing heartbeat beneath manual folds, two-window cache isolation, selection/clipboard, worker/owner failure and initialization cleanup.
+- Runtime smoke passed. Latest title/navigation runs had maximum added p95 of 6.990 ms and 6.833 ms, below the 16.7 ms budget; earlier core-repair runs were also below budget.
+- The first title gate exposed unnecessary single-session project-name clipping. Width allocation now uses spare space when no peers exist. The existing full-identity assertion and all 329 WSX tests pass; one remaining obsolete slash-format assertion was updated to the accepted project/chip format. Multi-session consumer inputs did not change, so their passing captures remain valid.
+- Initial UI rename failed because its 192-byte label exceeded the valid 1..128-byte contract. The fixture now uses 120 bytes, still exceeding the 100-column view. No product limit was relaxed.
+- Touched Rust formatting, Python AST parsing, shell syntax and Git diff whitespace passed after the fixture corrections.
+- Test executable paths come from retained Cargo artifact JSON. An incorrect manual filename attempt stopped at the prerequisite check before fixture allocation.
+
+## Review
+
+Architecture: wsxd remains runtime and generation authority. Recovery belongs in loaded integration helpers, not process-environment mutation or forced daemon replacement. CLI/App owns presentation; shared raw folded status suppresses stale and auto-collapse without granting activity credit or unfolding manual intent. No protocol or daemon-revision change is required.
+
+Simplify: one asset selector now serves installation and exact-content status checks. Shell and Hermes reuse the Python resolver; JS-based integrations reuse the existing JS resolver. Provider labels reserve width before optional name/port details. Active classification reuses existing session-state projection.
+
+Backpressure: absent-executable recovery only; unsafe reserved entries and targets fail closed, and rejected/uncertain reports are not replayed. Generation rejection and unchanged PID/PTY ownership were observed through real private consumers. No live installation, daemon restart, hook-trust modification, inferred provider identity, push or publication occurred. Existing lru/paste security warnings remain; no dependency migration or clean-security claim is made.
+
+## Retained local evidence
+
+Repository-local `.work` evidence is intentionally retained for the unresolved diagnosis and candidate review:
+
+- `.work/qa-53459/`: build/Nextest/Clippy/doctest/artifact and reporter logs.
+- `.work/qr-13688/`: final UI/runtime logs and receipt. Earlier task-owned `qr-*` logs and `ui-state-*` captures remain as input-validation and diagnostic evidence.
+- `.work/ui-state-13708.json` and corresponding frame/screen captures: real TUI and cleanup evidence.
+- `.work/th-80336/reviewed-results.json` and `captures/`: reviewed title journey, runtime, latest correction gate and cleanup evidence. Original failed gate logs are retained, not relabeled as passing.
+- Parent repository `.work/probes/r291-diagnosis-20261004/resource-ledger.json`: exact private namespace removal and protected host-session ownership record.
+- Parent `release-gates-89934/receipt.json` under that probe directory: final frozen workspace gates, classified security references and verified short-scratch cleanup. Original `release-gates-40678/` failure remains evidence of the too-deep macOS socket fixture path.
+- `.work/cb-9147/receipt.json`, `.work/cb-51217/receipt.json`, and `.work/ui-state-11187*`: final compact-badge checks and matching normal/narrow captures. Failed `cc-96340` and earlier logs remain honestly failed; private `us-54031`, `us-96394`, `us-11187` namespaces are absent and their cleanup receipts confirm reaped TUIs/daemon and removed socket.
+
+Deleted only completed private namespaces `ac-26388`, `ac-88612`, `runtime-smoke`, `tc-83347` and `rs-80336`. Results were retained; process references were absent, singleton locks free and sockets absent or positively refused connections. Removal was verified. The tmux socket left behind after shutdown was proven stale before removal. User and unrelated sessions were not deleted.
+
+## Remaining Codex evidence gap
+
+Fresh discovery and exact-target-cwd `codex features list` both permit hooks. Pinned `rust-v0.160.0` command execution clears then replays its session environment, excluding five restricted names, none prefixed `WSX_`. The last live target observation showed native PID 99496 with generation presence and an existing `/opt/homebrew/bin/wsx`; the Pi target inherited a missing 0.28.2 executable. Live wsxd was 0.28.2 with upgrade deferred by another TUI and 12 protected runtimes. These live observations were not repeated during the public-source trace. An exact live hook-execution receipt or cached-session observation is still required; current disk readiness is not that receipt.
+
+Public-source trace completed 2026-10-05:
+
+- `hooks/src/registry.rs:79` captures `std::env::vars_os()` directly at hook construction. `registry.rs:94` and `engine/command_runner.rs:102` retain that same environment during reconfiguration. The shell-environment-policy capture hypothesis is not supported by this version's hook constructor.
+- `core/src/session/mod.rs:2049,2118` refreshes the user config layer and rebuilds handlers with a current-config fence, not a new environment. Derived feature gates and legacy notify settings remain session-static (`mod.rs:2205`). `thread_manager.rs:839` can rebuild hooks without reloading session config.
+- Native app-server config batch writes with `reload_user_config` invoke `request_processors/config_processor.rs:356`, which refreshes threads owned by that server's existing ThreadManager. A new diagnostic app-server is not the protected live session's owner. This is a source-level reload mechanism, not a verified or authorized live recovery path.
+- Authorization follow-up: `hooks/src/engine/discovery.rs:714` admits only enabled trusted/managed handlers without bypass. `engine/mod.rs:249,262,360` captures the admitted vector and uses it for event previews. Later approval on disk therefore does not establish the live session's admission state before a refresh. An untrusted/modified startup snapshot remains plausible, not identified as the exact cause.
+- `engine/discovery.rs:763,775,794` hashes normalized hook configuration; it does not hash the referenced script's contents. Adapter-file modification time alone cannot prove a revoked trust hash. Missing trusted hash yields Untrusted; a different hash yields Modified.
+- Read-only API follow-up: `request_processors/catalog_processor.rs:618,630,663` destructures `HooksListParams { cwds }`, loads config for each cwd, then runs fresh `codex_hooks::list_hooks`. It does not select a live thread or expose its admitted handlers. Repeating a fresh hooks-list probe cannot settle cached authorization. Protected-session evidence or an authorized supported live recovery action remains required; ENOENT recovery does not depend on this diagnosis.
+- Retained twelve exact public source files, hashes and excerpts in parent `.work/probes/r291-diagnosis-20261004/codex-hook-refresh-source.json` and `codex-hook-source/`; tracer is `trace-codex-hook-refresh.py`. No private config reads, RPCs, trust writes, live hook execution, identity injection, process signals, restarts, installation or publication occurred in this trace.

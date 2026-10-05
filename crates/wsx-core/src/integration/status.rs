@@ -74,19 +74,13 @@ fn metadata_in(
         Some(version) if version >= target.expected_version() => InstallStatus::Current,
         Some(_) => InstallStatus::Outdated,
     };
+    let (reporter_name, reporter_content) = super::assets::reporter(target);
     if install_status == InstallStatus::Current
-        && matches!(
-            target,
-            IntegrationTarget::Pi
-                | IntegrationTarget::Omp
-                | IntegrationTarget::Opencode
-                | IntegrationTarget::Kilo
-        )
         && !paths::asset_path_in(root, target)
             .parent()
             .is_some_and(|directory| {
-                fs::read_to_string(directory.join("wsx-reporter.mjs"))
-                    .is_ok_and(|content| content == super::assets::REPORTER)
+                fs::read_to_string(directory.join(reporter_name))
+                    .is_ok_and(|content| content == reporter_content)
             })
     {
         install_status = InstallStatus::Outdated;

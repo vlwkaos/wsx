@@ -7,8 +7,19 @@ const OMP: &str = include_str!("../../integrations/omp/wsx-agent-status.ts");
 pub(crate) const OPENCODE_TUI: &str =
     include_str!("../../integrations/opencode/wsx-tui-session.js");
 pub(crate) const REPORTER: &str = include_str!("../../integrations/common/wsx-reporter.mjs");
+pub(crate) const PYTHON_REPORTER: &str = include_str!("../../integrations/common/wsx-reporter.py");
 const HERMES: &str = include_str!("../../integrations/hermes/__init__.py");
 pub(crate) const HERMES_MANIFEST: &str = include_str!("../../integrations/hermes/plugin.yaml");
+
+pub(crate) fn reporter(target: IntegrationTarget) -> (&'static str, &'static str) {
+    match target {
+        IntegrationTarget::Pi
+        | IntegrationTarget::Omp
+        | IntegrationTarget::Opencode
+        | IntegrationTarget::Kilo => ("wsx-reporter.mjs", REPORTER),
+        _ => ("wsx-reporter.py", PYTHON_REPORTER),
+    }
+}
 
 pub(crate) fn primary(target: IntegrationTarget) -> String {
     match target {
@@ -17,7 +28,9 @@ pub(crate) fn primary(target: IntegrationTarget) -> String {
         IntegrationTarget::Opencode | IntegrationTarget::Kilo => PLUGIN
             .replace("@VERSION@", &target.expected_version().to_string())
             .replace("@PROVIDER@", target.cli_value()),
-        IntegrationTarget::Hermes => HERMES.to_string(),
+        IntegrationTarget::Hermes => {
+            HERMES.replace("../common/wsx-reporter.py", "./wsx-reporter.py")
+        }
         _ => SHELL
             .replace("@VERSION@", &target.expected_version().to_string())
             .replace("@PROVIDER@", target.cli_value())

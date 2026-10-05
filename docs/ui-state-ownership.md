@@ -28,13 +28,13 @@ The old core snapshot-write API is replaced by explicit changes. `WorkspaceCache
 
 ## Folded status
 
-Folded project and worktree rows summarize every descendant pane using normalized lifecycle, acknowledged outcomes, and reported foreground-job metadata. The existing context priority remains blocked/error, done, active, then idle/unknown/muted, with workspace order breaking ties. Active counts count sessions, not panes, and remain visible beside a higher-priority outcome. Exited panes do not count as active. `stale` remains separate inactivity provenance; it does not suppress the status badge or pause background execution.
+Folded project and worktree rows summarize every descendant pane using normalized lifecycle, acknowledged outcomes, and reported foreground-job metadata. The existing context priority remains blocked/error, done, active, then idle/unknown/muted, with workspace order breaking ties. Active counts count sessions, not panes, and remain visible beside a higher-priority outcome. Folded badges use only the dominant indicator and active count, such as `◐ 1`, without the word `active`; the count keeps its Working color. Exited panes do not count as active. `stale` remains separate stored inactivity provenance, but its visible projection excludes projects with raw active sessions. Those projects also reject automatic inactivity collapse even when their last activity timestamp has expired. Neither guard expands manually folded projects, rewrites stored provenance, or grants activity credits from foreground-job metadata. Inactive projects retain their existing provenance behavior.
 
-The projection reads the existing terminal-keyed local mute set, including unfocused panes. A muted pane does not incorrectly dominate attention; raw active counts remain independently visible. The projection performs no I/O or mutations. Folding only changes presentation. Narrow rows reserve space for status before truncating identity; tiny rows retain the dominant symbol and an active marker when space permits. The one-cell compact rail retains the dominant symbol.
+The projection reads the existing terminal-keyed local mute set, including unfocused panes. A muted pane does not incorrectly dominate attention; raw active counts remain independently visible. The projection performs no I/O or mutations. Folding only changes presentation. Narrow rows reserve space for status before truncating identity; tiny rows retain the dominant symbol and an active marker when space permits. The one-cell compact rail retains the dominant symbol. Session rows reserve width for the reported provider label before truncating a long name or adding ports. Missing provider identity stays missing; rendering never infers it.
 
 ## Human Verify
 
-Pass: folded rows remain scannable at your usual sidebar width, and activity is distinguishable from the stale label. Fail: identity or status feels unclear despite the tested narrow-width projection. Visual feel remains a human check.
+Pass: folded rows remain scannable, active projects have no visible stale label, and reported providers remain readable when their labels fit. Fail: identity or status feels unclear despite the tested narrow-width projection. Visual feel remains a human check.
 
 ## Verification
 
