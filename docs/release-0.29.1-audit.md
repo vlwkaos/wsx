@@ -1,6 +1,6 @@
 # 0.29.1 candidate review
 
-Status: verified core/title candidate in release preparation, unpublished. User approved deferring live Codex diagnosis to [a separate follow-up](codex-reporting-followup.md).
+Status: core/title candidate committed and pushed, unpublished. User approved a CI-only native bottle-pour verification repair before tagging and deferring live Codex diagnosis to [a separate follow-up](codex-reporting-followup.md).
 Recorded: 2026-10-04 12:07 KST. Scope: isolated `repair/0.29.1` from published `v0.29.0`; original dirty 0.30.0 tree preserved.
 
 | Outcome | Evidence | Remaining gate |
@@ -12,10 +12,12 @@ Recorded: 2026-10-04 12:07 KST. Scope: isolated `repair/0.29.1` from published `
 | Session cleanup | No proven task-created host sessions; private actors/TUIs/daemon reaped, sockets absent; three obsolete namespaces removed after process/PID/lock checks | Preserve user sessions; future orchestration follows exact ownership receipts |
 | Terminal title/navigation | 329/329 latest WSX tests; real 12-session/two-worktree journey in 8.12 s at 120x24 and 56x18; hidden targets, wrap, Unicode, live states, sidebar and top/bottom geometry passed | Subjective highlighting/comfort check only |
 | Live Codex identity | Last exact-target observation had an existing reporter and generation presence; fresh discovery had eight enabled/trusted hooks | Explicitly deferred, unresolved; see separate follow-up |
-| Publication | Version and internal pins are 0.29.1; external lock entries unchanged; Codex limitation disclosed | Final candidate commit, credentials, exact-commit CI and fresh push/tag/publication approvals |
+| Publication | Candidate `b345238` passed both exact-commit branch-CI jobs in run `37273001142`; version/internal pins are 0.29.1 and external lock entries unchanged | CI-only repair commit must pass exact-commit CI; final tag confirmation and Actions credential/publication gates remain |
+| Native Homebrew bottles | New CI step removes the source-built keg, installs the generated local bottle, requires `poured_from_bottle`, tests version/companions/architectures before upload on both native runners | Actual pours occur in the tag-triggered release; no native pour success claimed yet |
 
 ## Verification
 
+- CI-only pour repair passed the existing ordering validator, YAML parsing and all 15 embedded shell syntax checks. Counterexamples without the pour step, without the receipt oracle, and with receipt checking before installation were rejected. These local checks do not prove actual native pours; that gate runs on both release runners. Parent evidence: `.work/probes/release-r291-20261005/pour-workflow-receipt.json`.
 - Final pre-compact locked workspace build, 705/705 Nextest tests (three ignored probes), doctests and strict all-target Clippy passed. Nextest marked one unchanged asynchronous worktree-form test leaky in that run; the later complete 329-test WSX run passed without a leak marker. Preserve the warning, not a blanket leak-free claim.
 - After the compact refinement, 329/329 WSX tests and 48/48 terminal tests passed with strict affected-target Clippy. Real private 100x24 and 56x24 captures show indicator/count only; folded project/worktree captures preserve state, stale exclusion and advancing background work. Replay waits for decoded runtime projection and uses the captured dimensions with one guard row, not raw output substrings.
 - Installed reporter boundary fixtures and private generation-fenced reporting/context journey passed with no model calls.
@@ -32,7 +34,9 @@ Architecture: wsxd remains runtime and generation authority. Recovery belongs in
 
 Simplify: one asset selector now serves installation and exact-content status checks. Shell and Hermes reuse the Python resolver; JS-based integrations reuse the existing JS resolver. Provider labels reserve width before optional name/port details. Active classification reuses existing session-state projection.
 
-Backpressure: absent-executable recovery only; unsafe reserved entries and targets fail closed, and rejected/uncertain reports are not replayed. Generation rejection and unchanged PID/PTY ownership were observed through real private consumers. No live installation, daemon restart, hook-trust modification, inferred provider identity, push or publication occurred. Existing lru/paste security warnings remain; no dependency migration or clean-security claim is made.
+Release CI review: source installation with `--build-bottle` did not prove a generated bottle could be poured. The new step reads Homebrew's actual installed receipt after a local-bottle installation; build/receipt/test/version/architecture failure prevents artifact upload and final tap publication. The existing workflow validator checks ordering. No app source, versions, lockfile, credentials or recovery ordering changes; valid app/runtime evidence is reused. Only ephemeral CI runners uninstall/reinstall wsx, never the user's machine. Actual native pours remain a release-time gate.
+
+Backpressure (candidate preparation, before the approved branch push): absent-executable recovery only; unsafe reserved entries and targets fail closed, and rejected/uncertain reports are not replayed. Generation rejection and unchanged PID/PTY ownership were observed through real private consumers. No live installation, daemon restart, hook-trust modification, inferred provider identity, push or publication occurred. Existing lru/paste security warnings remain; no dependency migration or clean-security claim is made.
 
 ## Retained local evidence
 

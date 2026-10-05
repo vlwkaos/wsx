@@ -292,6 +292,24 @@ jobs:
           lipo "$(brew --prefix wsx)/bin/wsxd" -verify_arch arm64 x86_64
           test "$(wsx --version)" = "wsx ${VERSION}"
 
+      - name: Pour and verify generated bottle
+        run: |
+          VERSION=${RELEASE_TAG#v}
+          BOTTLES=(bottle-output/wsx--*.bottle.tar.gz)
+          test "${#BOTTLES[@]}" -eq 1
+          test -f "${BOTTLES[0]}"
+          # ^ https://docs.brew.sh/Bottles: verify the package, not the source-built keg.
+          brew uninstall --formula vlwkaos/homebrew-tap/wsx
+          brew install --force-bottle "${BOTTLES[0]}"
+          PREFIX=$(brew --prefix wsx)
+          jq -e '.poured_from_bottle == true' "$PREFIX/INSTALL_RECEIPT.json"
+          brew test vlwkaos/homebrew-tap/wsx
+          test "$PREFIX/bin/wsx" -ef "$(command -v wsx)"
+          test -x "$PREFIX/bin/wsxd"
+          lipo "$PREFIX/bin/wsx" -verify_arch arm64 x86_64
+          lipo "$PREFIX/bin/wsxd" -verify_arch arm64 x86_64
+          test "$("$PREFIX/bin/wsx" --version)" = "wsx ${VERSION}"
+
       - name: Upload bottle artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

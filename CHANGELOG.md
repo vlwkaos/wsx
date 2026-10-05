@@ -16,6 +16,10 @@
 - Use one `Prefix+j/k` (or Down/Up) cycle across the current project's sessions in stable Workspace order. Remove duplicate `Prefix+h/l` and Left/Right cycle bindings and release `h/l` as custom Workspace escape suffixes. Attention jumps and bare terminal input are unchanged.
 - Replace the spread-out title with a project prefix and highlighted current worktree/session chip in a sliding session preview. Preserve provider identity, cross-worktree attribution, hidden counts and tiny-view position without changing the terminal rectangle.
 
+### Release verification
+
+- Pour each generated Homebrew bottle on its native CI runner before uploading it. Require Homebrew's poured receipt, formula tests, the exact CLI version and both universal companion architectures.
+
 ### Known limitations
 
 - The missing identity of one already-running Codex session remains under separate investigation. Current hook discovery reports trusted handlers, but does not expose that session's cached authorization. This release fixes removed-reporter ENOENT recovery, not every cause of missing agent identity. See [Codex reporting follow-up](docs/codex-reporting-followup.md).
