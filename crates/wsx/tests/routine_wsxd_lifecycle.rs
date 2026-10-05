@@ -13,7 +13,7 @@ use asched_core::{
 use std::{
     env, fs,
     io::{BufRead, BufReader, Write},
-    os::unix::net::UnixListener,
+    os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
     process::{Command, Output},
     sync::atomic::{AtomicU64, Ordering},
@@ -285,14 +285,43 @@ fn routine_cli_starts_adjacent_wsxd_without_asched_and_cleans_up() {
     wait_for_pid_exit(pid);
 }
 
+fn accept_legacy_probe(listener: &UnixListener, phase: &str) -> UnixStream {
+    let deadline = Instant::now() + POLL_TIMEOUT;
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("use blocking probe I/O");
+                stream
+                    .set_read_timeout(Some(POLL_TIMEOUT))
+                    .expect("bound legacy probe reads");
+                stream
+                    .set_write_timeout(Some(POLL_TIMEOUT))
+                    .expect("bound legacy probe writes");
+                return stream;
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                thread::sleep(POLL_INTERVAL);
+            }
+            Err(error) => panic!("accept {phase}: {error}"),
+        }
+    }
+}
+
 #[test]
 fn routine_cli_replaces_legacy_same_schema_scheduler_with_adjacent_wsxd() {
     let install = IsolatedInstall::new();
     let socket = install.socket();
     let listener = UnixListener::bind(&socket).expect("bind legacy routine daemon socket");
+    listener
+        .set_nonblocking(true)
+        .expect("bound legacy fixture accepts");
     let server_socket = socket.clone();
     let legacy = thread::spawn(move || {
-        let (mut current_probe, _) = listener.accept().expect("accept current protocol probe");
+        let mut current_probe = accept_legacy_probe(&listener, "current protocol probe");
         let mut line = String::new();
         BufReader::new(current_probe.try_clone().unwrap())
             .read_line(&mut line)
@@ -306,7 +335,7 @@ fn routine_cli_replaces_legacy_same_schema_scheduler_with_adjacent_wsxd() {
             )
             .unwrap();
 
-        let (mut legacy_probe, _) = listener.accept().expect("accept legacy protocol probe");
+        let mut legacy_probe = accept_legacy_probe(&listener, "legacy protocol probe");
         line.clear();
         BufReader::new(legacy_probe.try_clone().unwrap())
             .read_line(&mut line)
@@ -321,7 +350,7 @@ fn routine_cli_replaces_legacy_same_schema_scheduler_with_adjacent_wsxd() {
         )
         .unwrap();
 
-        let (mut shutdown, _) = listener.accept().expect("accept legacy shutdown");
+        let mut shutdown = accept_legacy_probe(&listener, "legacy shutdown");
         line.clear();
         BufReader::new(shutdown.try_clone().unwrap())
             .read_line(&mut line)
@@ -333,8 +362,24 @@ fn routine_cli_replaces_legacy_same_schema_scheduler_with_adjacent_wsxd() {
             .write_all(b"{\"result\":\"ok\",\"revision\":null}\n")
             .unwrap();
         drop(shutdown);
+
+        // ^ Model graceful retirement, not a queued connection reset: the client
+        // observes shutdown with a read-only status probe before starting wsxd.
+        let mut retiring_probe = accept_legacy_probe(&listener, "retirement status probe");
+        line.clear();
+        BufReader::new(retiring_probe.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let request: Request = serde_json::from_str(&line).unwrap();
+        assert_eq!(request.protocol, asched_core::routine::PROTOCOL_VERSION);
+        assert!(matches!(request.action, Action::Status));
+        fs::remove_file(server_socket).expect("unpublish legacy routine daemon socket");
         drop(listener);
-        fs::remove_file(server_socket).expect("remove legacy routine daemon socket");
+        retiring_probe
+            .write_all(
+                b"{\"result\":\"error\",\"kind\":\"protocol_mismatch\",\"message\":\"legacy scheduler retiring\"}\n",
+            )
+            .unwrap();
     });
 
     let output = install.wsx(&[
