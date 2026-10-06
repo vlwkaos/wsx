@@ -3,10 +3,10 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MAX_RESPONSE_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
@@ -129,7 +129,7 @@ impl Response {
 }
 
 pub fn send(socket: &Path, request: &Request) -> Result<Response, RoutineError> {
-    send_inner(socket, request, Duration::from_secs(30), false)
+    send_inner(socket, request, Duration::from_secs(30), false, false)
 }
 
 pub(crate) fn send_with_timeout(
@@ -137,7 +137,22 @@ pub(crate) fn send_with_timeout(
     request: &Request,
     timeout: Duration,
 ) -> Result<Response, RoutineError> {
-    send_inner(socket, request, timeout, true)
+    send_inner(socket, request, timeout, true, false)
+}
+
+/// An observation during acknowledged retirement may disconnect without a response.
+/// Mutations and the shutdown request itself never use this policy.
+pub(crate) fn send_retirement_probe(
+    socket: &Path,
+    request: &Request,
+    timeout: Duration,
+) -> Result<Response, RoutineError> {
+    if !matches!(request.action, Action::Status) {
+        return Err(RoutineError::Validation(
+            "retirement probes must be status requests".into(),
+        ));
+    }
+    send_inner(socket, request, timeout, true, true)
 }
 
 fn send_inner(
@@ -145,29 +160,67 @@ fn send_inner(
     request: &Request,
     timeout: Duration,
     timeout_is_unavailable: bool,
+    retiring: bool,
 ) -> Result<Response, RoutineError> {
-    let mut stream = UnixStream::connect(socket)
-        .map_err(|e| RoutineError::Unavailable(format!("{}: {e}", socket.display())))?;
+    let deadline = Instant::now() + timeout;
+    let map_io = |error: std::io::Error| match error.kind() {
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock if timeout_is_unavailable => {
+            RoutineError::Unavailable("daemon response timed out".into())
+        }
+        std::io::ErrorKind::ConnectionReset
+        | std::io::ErrorKind::ConnectionAborted
+        | std::io::ErrorKind::BrokenPipe
+        | std::io::ErrorKind::NotConnected
+        | std::io::ErrorKind::UnexpectedEof
+            if retiring =>
+        {
+            RoutineError::Unavailable(format!("retiring daemon disconnected: {error}"))
+        }
+        _ => error.into(),
+    };
+    let mut stream = UnixStream::connect(socket).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
+            RoutineError::Unavailable(format!("{}: {error}", socket.display()))
+        }
+        _ => error.into(),
+    })?;
     stream.set_read_timeout(Some(timeout))?;
     let mut data = serde_json::to_vec(request).map_err(|e| RoutineError::Corrupt(e.to_string()))?;
     data.push(b'\n');
-    stream.write_all(&data)?;
-    stream.shutdown(std::net::Shutdown::Write)?;
-    let frame =
+    stream.write_all(&data).map_err(map_io)?;
+    stream.shutdown(std::net::Shutdown::Write).map_err(map_io)?;
+    let frame = if timeout_is_unavailable {
         read_response_frame(
-            BufReader::new(stream),
+            BufReader::new(DeadlineReader { stream, deadline }),
             MAX_RESPONSE_FRAME_BYTES,
-            |error| match error.kind() {
-                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                    if timeout_is_unavailable =>
-                {
-                    RoutineError::Unavailable("daemon response timed out".into())
-                }
-                _ => error.into(),
-            },
-        )?;
+            map_io,
+        )?
+    } else {
+        read_response_frame(BufReader::new(stream), MAX_RESPONSE_FRAME_BYTES, map_io)?
+    };
     serde_json::from_slice(&frame)
         .map_err(|e| RoutineError::Corrupt(format!("invalid daemon response: {e}")))
+}
+
+// ^ Timed startup/retirement probes share one response budget. A trickled frame
+// must not renew it; ordinary mutation response semantics remain unchanged.
+struct DeadlineReader {
+    stream: UnixStream,
+    deadline: Instant,
+}
+
+impl Read for DeadlineReader {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "daemon response deadline elapsed",
+            ));
+        }
+        self.stream.set_read_timeout(Some(remaining))?;
+        self.stream.read(bytes)
+    }
 }
 
 fn read_response_frame(

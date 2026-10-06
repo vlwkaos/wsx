@@ -76,5 +76,8 @@ jobs:
       - name: Build runtime smoke binaries
         run: cargo build --locked -p wsx -p wsx-daemon
 
+      - name: Verify routine retirement and mutation delivery
+        run: python3 -B scripts/test-routine-retirement.py
+
       - name: Run runtime smoke test
         run: python3 scripts/runtime-smoke.py
