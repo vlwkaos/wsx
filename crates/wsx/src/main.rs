@@ -6,13 +6,14 @@ mod app;
 mod cli;
 mod event;
 mod repo_scan;
+mod review;
+mod search;
 mod session_state;
 mod terminal_surface;
 #[cfg(test)]
 mod terminal_surface_tests;
 mod tui;
 mod ui;
-mod review;
 mod update;
 
 use anyhow::{bail, Context, Result};
