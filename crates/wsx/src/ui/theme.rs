@@ -56,6 +56,16 @@ pub fn terminal_current() -> Style {
     Style::default().fg(TEXT).bg(ROW_SELECTED).bold()
 }
 
+pub fn terminal_project() -> Style {
+    Style::default().fg(ACCENT).bg(ROW_SELECTED).bold()
+}
+
+pub fn terminal_worktree(current: bool) -> Style {
+    Style::default()
+        .fg(TEXT_MUTED)
+        .bg(if current { PANEL } else { BACKGROUND })
+}
+
 pub fn terminal_context() -> Style {
     Style::default().fg(TEXT_MUTED)
 }

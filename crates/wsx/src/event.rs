@@ -184,11 +184,22 @@ impl EscapeSequence {
                 TerminalEscapeAction::NextAttention
             } else if self.matches_prefixed_uppercase(key, 'N') {
                 TerminalEscapeAction::PrevAttention
-            } else if self.matches_prefixed_char(key, 'j')
+            } else if matches!(
+                suffix.code,
+                KeyCode::Char('h' | 'l') | KeyCode::Left | KeyCode::Right
+            ) && suffix.matches_after_prefix(key, &self.prefix)
+            {
+                // Preserve an explicitly configured escape chord over newly restored aliases.
+                TerminalEscapeAction::Escape
+            } else if self.matches_prefixed_char(key, 'l')
+                || self.matches_prefixed_code(key, KeyCode::Right)
+                || self.matches_prefixed_char(key, 'j')
                 || self.matches_prefixed_code(key, KeyCode::Down)
             {
                 TerminalEscapeAction::NextSession
-            } else if self.matches_prefixed_char(key, 'k')
+            } else if self.matches_prefixed_char(key, 'h')
+                || self.matches_prefixed_code(key, KeyCode::Left)
+                || self.matches_prefixed_char(key, 'k')
                 || self.matches_prefixed_code(key, KeyCode::Up)
             {
                 TerminalEscapeAction::PrevSession
@@ -307,6 +318,14 @@ impl EscapeSequence {
 
     pub fn prefix_label(&self) -> &str {
         &self.prefix.label
+    }
+
+    pub fn session_navigation_label(&self) -> &'static str {
+        match self.suffix.as_ref().map(|suffix| suffix.code) {
+            Some(KeyCode::Char('h')) => "k/l",
+            Some(KeyCode::Char('l')) => "h/j",
+            _ => "h/l",
+        }
     }
 
     pub fn suffix_label(&self) -> Option<&str> {
@@ -522,12 +541,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn removed_horizontal_cycle_keys_forward_without_capturing_input() {
-        for code in [
-            KeyCode::Char('l'),
-            KeyCode::Right,
-            KeyCode::Char('h'),
-            KeyCode::Left,
+    fn horizontal_navigation_requires_prefix_and_keeps_workspace_input_unchanged() {
+        for (code, expected) in [
+            (KeyCode::Char('l'), TerminalEscapeAction::NextSession),
+            (KeyCode::Right, TerminalEscapeAction::NextSession),
+            (KeyCode::Char('h'), TerminalEscapeAction::PrevSession),
+            (KeyCode::Left, TerminalEscapeAction::PrevSession),
         ] {
             for modifiers in [KeyModifiers::NONE, KeyModifiers::CONTROL] {
                 let mut sequence = EscapeSequence::parse("ctrl+a w").unwrap();
@@ -540,14 +559,18 @@ mod tests {
                     sequence.terminal_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
                     TerminalEscapeAction::Pending
                 );
-                assert_eq!(
-                    sequence.terminal_key(bare),
-                    TerminalEscapeAction::Forward(vec![
-                        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
-                        bare
-                    ])
-                );
+                assert_eq!(sequence.terminal_key(bare), expected);
                 assert!(!sequence.is_pending());
+            }
+            for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
+                let mut sequence = EscapeSequence::parse("ctrl+a w").unwrap();
+                let prefix = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+                let key = KeyEvent::new(code, modifiers);
+                assert_eq!(sequence.terminal_key(prefix), TerminalEscapeAction::Pending);
+                assert_eq!(
+                    sequence.terminal_key(key),
+                    TerminalEscapeAction::Forward(vec![prefix, key])
+                );
             }
             let mut sequence = EscapeSequence::parse("ctrl+a w").unwrap();
             sequence.workspace_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
@@ -724,6 +747,26 @@ mod tests {
                 KeyCode::Char('N'),
                 KeyModifiers::CONTROL | KeyModifiers::SHIFT,
                 TerminalEscapeAction::PrevAttention,
+            ),
+            (
+                KeyCode::Char('l'),
+                KeyModifiers::NONE,
+                TerminalEscapeAction::NextSession,
+            ),
+            (
+                KeyCode::Right,
+                KeyModifiers::CONTROL,
+                TerminalEscapeAction::NextSession,
+            ),
+            (
+                KeyCode::Char('h'),
+                KeyModifiers::CONTROL,
+                TerminalEscapeAction::PrevSession,
+            ),
+            (
+                KeyCode::Left,
+                KeyModifiers::NONE,
+                TerminalEscapeAction::PrevSession,
             ),
             (
                 KeyCode::Char('j'),
@@ -929,9 +972,31 @@ mod tests {
     }
 
     #[test]
+    fn configured_horizontal_escape_suffix_wins_and_hint_advertises_a_working_alias() {
+        for (suffix, label) in [('h', "k/l"), ('l', "h/j")] {
+            let mut sequence = EscapeSequence::parse(&format!("ctrl+a {suffix}")).unwrap();
+            assert_eq!(sequence.session_navigation_label(), label);
+            for modifiers in [KeyModifiers::NONE, KeyModifiers::CONTROL] {
+                assert_eq!(
+                    sequence.terminal_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+                    TerminalEscapeAction::Pending
+                );
+                assert_eq!(
+                    sequence.terminal_key(KeyEvent::new(KeyCode::Char(suffix), modifiers)),
+                    TerminalEscapeAction::Escape
+                );
+            }
+        }
+    }
+
+    #[test]
     fn unprefixed_iteration_letters_are_forwarded_to_the_terminal() {
         let mut terminal_escape = EscapeSequence::parse("ctrl+a w").unwrap();
         for (value, modifiers) in [
+            ('h', KeyModifiers::NONE),
+            ('l', KeyModifiers::NONE),
+            ('j', KeyModifiers::NONE),
+            ('k', KeyModifiers::NONE),
             ('i', KeyModifiers::NONE),
             ('I', KeyModifiers::SHIFT),
             ('a', KeyModifiers::NONE),
