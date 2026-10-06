@@ -6,6 +6,7 @@
 
 ### Fixes
 
+- Preserve final Unix PTY output and clipboard effects before announcing natural pane exit. Let the reader publish exit after draining; the child waiter still reaps and cleans up the process group. Daemon revision 18 records this runtime repair.
 - Wait through routine scheduler retirement replies and read-only probe disconnects before starting the adjacent replacement. Observe the existing singleton lock without creating or removing it, refuse replacement when its path disappears, and bound polling and trickled response reads by the startup deadline. Never replay a mutation or shutdown after uncertain delivery. Validation, malformed responses and unsupported protocols still fail closed.
 - Show terminal context as project and worktree background groups with `›`, stable session order and a brighter current session. Preserve provider identity, Unicode width, overflow counts and the complete terminal viewport.
 - Count Workspace search matches inside folded projects, worktrees and routine headers without unfolding them. Highlight visible text matches, underline folded ancestors and show logical counts. Respect the selected group and clear feedback when search ends.
