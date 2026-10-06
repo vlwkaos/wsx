@@ -227,7 +227,7 @@ impl RoutineClient {
 
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            match ipc::send_with_timeout(&self.socket_path(), status, remaining)
+            match ipc::send_retirement_probe(&self.socket_path(), status, remaining)
                 .and_then(Response::into_result)
             {
                 Ok(Response::Daemon { protocol, .. }) if protocol == PROTOCOL_VERSION => {
@@ -240,16 +240,64 @@ impl RoutineClient {
                     validate_status_response(response)?;
                     return Ok(true);
                 }
-                Err(RoutineError::Unavailable(_)) => return Ok(false),
+                Err(RoutineError::Unavailable(_)) => {
+                    // ^ A vanished endpoint or reset is not proof that its owner released the singleton.
+                    if self.retirement_lock_released()? {
+                        return Ok(false);
+                    }
+                }
+                // ^ After acknowledged legacy shutdown, unavailable is a transient retirement report.
+                // It never authorizes replacement without the separate singleton observation.
                 Err(RoutineError::RemoteDaemon {
-                    kind: super::RoutineErrorKind::ProtocolMismatch,
+                    kind:
+                        super::RoutineErrorKind::ProtocolMismatch | super::RoutineErrorKind::Unavailable,
                     ..
                 }) => {}
                 Err(error) => return Err(error),
             }
-            std::thread::sleep(POLL_INTERVAL);
+            sleep_until_next_probe(deadline);
         }
         Err(self.startup_timeout_error())
+    }
+
+    fn retirement_lock_released(&self) -> Result<bool, RoutineError> {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let file = match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(self.root.join("daemon-v1.lock"))
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // ^ An unlinked inode may remain locked. Missing paths are not ownership release.
+                return Err(RoutineError::Validation(
+                    "routine daemon singleton lock disappeared during retirement".into(),
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let metadata = file.metadata()?;
+        if !metadata.is_file()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o022 != 0
+            || metadata.nlink() != 1
+        {
+            return Err(RoutineError::Validation(
+                "unsafe routine daemon singleton lock".into(),
+            ));
+        }
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            // File drop immediately releases this observation; the spawned daemon remains the final fence.
+            return Ok(true);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            Ok(false)
+        } else {
+            Err(error.into())
+        }
     }
 
     fn spawn_and_await(
@@ -339,7 +387,7 @@ impl RoutineClient {
                     "routine daemon exited during startup: {exit}"
                 )));
             }
-            std::thread::sleep(POLL_INTERVAL);
+            sleep_until_next_probe(deadline);
         }
         Err(self.startup_timeout_error())
     }
@@ -360,7 +408,7 @@ impl RoutineClient {
                 Err(RoutineError::Unavailable(_)) => {}
                 Err(error) => return Err(error),
             }
-            std::thread::sleep(POLL_INTERVAL);
+            sleep_until_next_probe(deadline);
         }
         Ok(false)
     }
@@ -370,6 +418,13 @@ impl RoutineClient {
             "routine daemon did not become ready within {} ms",
             self.startup_timeout.as_millis()
         ))
+    }
+}
+
+fn sleep_until_next_probe(deadline: Instant) {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if !remaining.is_zero() {
+        std::thread::sleep(POLL_INTERVAL.min(remaining));
     }
 }
 
