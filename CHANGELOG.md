@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.29.3] - 2026-10-06
+
+### Fixes
+
+- Wait through routine scheduler retirement replies and read-only probe disconnects before starting the adjacent replacement. Observe the existing singleton lock without creating or removing it, refuse replacement when its path disappears, and bound polling and trickled response reads by the startup deadline. Never replay a mutation or shutdown after uncertain delivery. Validation, malformed responses and unsupported protocols still fail closed.
+- Show terminal context as project and worktree background groups with `›`, stable session order and a brighter current session. Preserve provider identity, Unicode width, overflow counts and the complete terminal viewport.
+- Count Workspace search matches inside folded projects, worktrees and routine headers without unfolding them. Highlight visible text matches, underline folded ancestors and show logical counts. Respect the selected group and clear feedback when search ends.
+
+### Navigation
+
+- Make `Prefix+h/l` the primary previous/next session keys. Keep `j/k` and arrow aliases, bare terminal input and attention navigation. An explicitly configured h/l Workspace escape suffix takes precedence.
+
+### Verification
+
+- Run native routine retirement, held-lock and trickled-response timeouts, missing-lock refusal, genuine-error and no-replay CLI scenarios on both CI platforms. Local macOS scenarios and the real wide/mobile TUI journey passed. Publication requires passing branch CI on Linux and macOS for the exact release commit.
+
 ## [0.29.2] - 2026-10-05
 
 ### Fixes
