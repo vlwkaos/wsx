@@ -276,10 +276,16 @@ def main():
         assert exchange['delivery_sha256'] == initial_digest
         assert exchange['delivery_sha256'] != hashlib.sha256(b'forged envelope body').hexdigest()
         wait(lambda: call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'working_observed','native turn pending')
-        def receipt(kind, round=1, generation=generation, ok=True):
-            result = subprocess.run([str(wsx),'agent','exchange-receipt',str(exchange['id']),
-                '--round',str(round),'--receipt',kind,'--json'],
-                env=dict(env,WSX_RUNTIME_GENERATION=generation),capture_output=True,text=True,timeout=5)
+        def receipt(kind, round=1, generation=generation, ok=True, bound=False,
+                    digest=None, input_id='fixture-input-1', pane=claude):
+            args = [str(wsx),'agent','exchange-receipt',str(exchange['id']),
+                '--round',str(round),'--receipt',kind,'--json']
+            if bound:
+                args += ['--delivery-sha256',digest or exchange['delivery_sha256'],
+                         '--input-id',input_id]
+            result = subprocess.run(args,
+                env=dict(env,WSX_RUNTIME_GENERATION=generation,WSX_PANE_ID=str(pane)),
+                capture_output=True,text=True,timeout=5)
             assert (result.returncode == 0) == ok, (result.stdout,result.stderr)
             return result
         assert 'unsupported_exchange_receipt' in receipt('accepted',ok=False).stderr
@@ -292,18 +298,27 @@ def main():
         receipt('done',ok=False)
         receipt('accepted',round=0,ok=False)
         assert call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange'] == before_receipt
-        accepted = json.loads(receipt('accepted').stdout)['exchange']
+        assert 'invalid_delivery_binding' in receipt('accepted',bound=True,digest='0'*64,ok=False).stderr
+        assert 'invalid_delivery_binding' in receipt('accepted',bound=True,pane=panes['codex'],ok=False).stderr
+        assert 'native_input_unaccepted' in receipt('completed',bound=True,ok=False).stderr
+        assert call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange'] == before_receipt
+        accepted = json.loads(receipt('accepted',bound=True).stdout)['exchange']
+        assert accepted['native_input_id'] == 'fixture-input-1'
         assert accepted['evidence'] == 'request_bound' and accepted['state'] != 'completed'
+        assert json.loads(receipt('accepted',bound=True).stdout)['exchange']['revision'] == accepted['revision']
+        assert 'invalid_delivery_binding' in receipt('completed',bound=True,input_id='other-input',ok=False).stderr
+        assert 'bound_receipt_required' in receipt('completed',ok=False).stderr
         cli('session','send-text',claude,'\x12','--no-enter')
         wait(lambda: call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'done_observed','done lifecycle')
-        completed = json.loads(receipt('completed').stdout)['exchange']
+        completed = json.loads(receipt('completed',bound=True).stdout)['exchange']
         assert completed['state'] == 'completed' and completed['evidence'] == 'request_bound'
-        assert json.loads(receipt('completed').stdout)['exchange']['revision'] == completed['revision']
+        assert json.loads(receipt('completed',bound=True).stdout)['exchange']['revision'] == completed['revision']
         cli('session','send-text',claude,'\x13','--no-enter')
         wait(lambda: 'unsent draft' in cli('session','peek',claude,'--trim').stdout,'restore draft before continuation')
         continued = json.loads(cli('agent','continue',exchange['id'],'follow up','--stash-draft','--json').stdout)['exchange']
         wait(lambda: len(traces('claude')) == 2,'fragmented follow-up delivery')
-        assert continued['round'] == 2
+        assert continued['round'] == 2 and continued.get('native_input_id') is None
+        assert 'stale_exchange_round' in receipt('completed',bound=True,ok=False).stderr
         assert continued['delivery_sha256'] == hashlib.sha256(traces('claude')[1]['received'].encode()).hexdigest()
         assert continued['delivery_sha256'] != initial_digest
         assert traces('claude')[1]['received'].endswith('\nfollow up')
@@ -326,13 +341,25 @@ def main():
         assert call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'expired'
         cli('session','send-text',claude,'\x12','--no-enter')
         wait(lambda: next(pane for pane in call('snapshot')['data']['panes'] if pane['id'] == claude)['agent']['state'] == 'done','late actor settled')
+        # A DoneObserved pane is not native completion and must not bypass the bound deadline.
+        cli('session','send-text',claude,'\x12','--no-enter')
+        exchange = json.loads(cli('agent','request',claude,'late DoneObserved native completion',
+            '--timeout','1','--json').stdout)['exchange']
+        wait(lambda: len(traces('claude')) == 5,'second late native input')
+        receipt('accepted',bound=True)
+        cli('session','send-text',claude,'\x12','--no-enter')
+        wait(lambda: call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'done_observed','late done observation')
+        time.sleep(max(0,exchange['deadline_unix_ms']/1000-time.time())+0.1)
+        assert 'receipt_deadline_exceeded' in receipt('completed',bound=True,ok=False).stderr
+        assert call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'done_observed'
         cli('session','send-text',claude,'\x13\x11','--no-enter')
         wait(lambda: 'unsent draft' in cli('session','peek',claude,'--trim').stdout,'restored draft with unsupported binding')
         failed = json.loads(cli('agent','continue',exchange['id'],'must not arrive','--stash-draft','--json').stdout)['exchange']
         assert failed['round'] == 2, 'failed continuation did not invalidate the previous round'
         assert failed['state'] == 'delivery_failed' and failed['evidence'] == 'intent_persisted'
         assert failed.get('delivery_sha256') is None, 'failed delivery retained input-binding authority'
-        assert len(traces('claude')) == 4, 'unconfirmed stash delivered a prompt'
+        assert failed.get('native_input_id') is None, 'failed continuation retained native acceptance'
+        assert len(traces('claude')) == 5, 'unconfirmed stash delivered a prompt'
         assert call('shutdown')['type'] == 'ack'
         daemon.wait(timeout=5)
         assert not path.exists() and daemon.returncode == 0

@@ -206,6 +206,10 @@ pub enum AgentCmd {
         round: u32,
         #[arg(long, value_parser = parse_exchange_receipt)]
         receipt: runtime::AgentExchangeReceipt,
+        #[arg(long, requires = "input_id")]
+        delivery_sha256: Option<String>,
+        #[arg(long, requires = "delivery_sha256")]
+        input_id: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -698,8 +702,17 @@ pub fn run(cmd: Command) -> Result<()> {
                 exchange,
                 round,
                 receipt,
+                delivery_sha256,
+                input_id,
                 json,
-            } => cmd_agent_exchange_receipt(exchange, round, receipt, json),
+            } => cmd_agent_exchange_receipt(
+                exchange,
+                round,
+                receipt,
+                delivery_sha256,
+                input_id,
+                json,
+            ),
             AgentCmd::Inspect {
                 exchange,
                 frame,
@@ -2553,21 +2566,40 @@ fn cmd_agent_exchange_receipt(
     exchange_id: runtime::AgentExchangeId,
     round: u32,
     receipt: runtime::AgentExchangeReceipt,
+    delivery_sha256: Option<String>,
+    input_id: Option<String>,
     json: bool,
 ) -> Result<()> {
     let runtime_generation = std::env::var(runtime::WSX_RUNTIME_GENERATION_ENV)
         .ok()
         .filter(|value| !value.trim().is_empty())
         .context("exchange receipt requires a managed wsx runtime generation")?;
-    agent_exchange_response(
-        runtime::Client::new(runtime::default_socket_path()).call(
-            &runtime::Request::AgentExchangeReceipt {
+    let request = match (delivery_sha256, input_id) {
+        (Some(delivery_sha256), Some(input_id)) => {
+            let pane_id = std::env::var(runtime::WSX_PANE_ID_ENV)
+                .ok()
+                .and_then(|value| value.parse::<runtime::PaneId>().ok())
+                .context("bound exchange receipt requires a managed wsx pane")?;
+            runtime::Request::AgentExchangeBoundReceipt {
                 exchange_id,
+                pane_id,
                 round,
                 runtime_generation,
+                delivery_sha256,
+                input_id,
                 receipt,
-            },
-        )?,
+            }
+        }
+        (None, None) => runtime::Request::AgentExchangeReceipt {
+            exchange_id,
+            round,
+            runtime_generation,
+            receipt,
+        },
+        _ => bail!("bound receipt requires both delivery digest and native input ID"),
+    };
+    agent_exchange_response(
+        runtime::Client::new(runtime::default_socket_path()).call(&request)?,
         json,
     )?;
     Ok(())

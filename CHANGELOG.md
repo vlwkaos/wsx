@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-- Rust callers that construct `AgentExchange` must provide its new optional `delivery_sha256` field. Older JSON without the field still decodes as no native input binding.
+- Rust callers that construct `AgentExchange` must provide its new optional `delivery_sha256` and `native_input_id` fields. Older JSON without the field still decodes as no native input binding.
 
 ### Fixes
 
@@ -12,6 +12,7 @@
 
 ### Improvements
 
+- Add guarded native receipt submission with exact pane, live runtime, round and delivery digest checks. Bind completion to a prior accepted native input ID; reject overdue DoneObserved completion and legacy receipt bypass after binding. Older daemons refuse the distinct request instead of silently dropping its guards.
 - Bind each successful exchange delivery round to the SHA-256 of its exact terminal input without persisting prompt text in receipts. Clear the binding before continuation and on failed delivery; legacy responses remain unbound. Native adapter correlation and completion remain separate requirements.
 - Add machine-facing `agent exchange-receipt` submission through the existing generation/round/capability-bound daemon contract. Require the injected generation and an existing daemon; do not bootstrap, retry, infer completion from lifecycle or enable an unconnected provider adapter.
 - Add scoped `wsx agent context --metadata-only` discovery with bounded identities and advisory readiness, without reading native transcripts. Default native-history projection remains available.
