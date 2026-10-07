@@ -21,6 +21,7 @@ trace.with_suffix('.generation').write_text(generation)
 tty.setraw(0)
 draft, stash, pending = '\nunsent draft', '', b''
 broken_stash_binding = False
+pause_completion, pending_completion, receipt_capable = False, False, False
 leaf, sequence, idle_chrome = 'answer', 0, True
 def report(state):
  with socket.socket(socket.AF_UNIX) as client:
@@ -28,7 +29,7 @@ def report(state):
   client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
   params = {'pane_id':pane,'runtime_generation':generation,'provider':provider,'state':state,
     'session_ref':{'kind':'id','value':'fixture','transcript_path':str(history)},
-    'capabilities':{'prompt':True,'lifecycle':True}}
+    'capabilities':{'prompt':True,'lifecycle':True,'exchange_receipts':receipt_capable}}
   client.sendall(json.dumps({'method':'agent_report','params':params}).encode()+b'\n')
   assert json.loads(stream.readline())['type'] == 'ack'
 def paint(fragmented=False):
@@ -51,7 +52,13 @@ while True:
    draft += pending[6:end].decode(); pending = pending[end+6:]; paint(); continue
   if pending.startswith(b'\x1b') and len(pending) < 6: break
   char, pending = pending[:1], pending[1:]
-  if char == b'\x1e':
+  if char == b'\x12':
+   pause_completion = not pause_completion
+   if pending_completion and not pause_completion:
+    pending_completion = False; report('done')
+  elif char == b'\x14':
+   receipt_capable = True; report('working' if pending_completion else 'idle')
+  elif char == b'\x1e':
    idle_chrome = not idle_chrome; paint()
   elif char == b'\x11':
    broken_stash_binding = not broken_stash_binding
@@ -72,7 +79,10 @@ while True:
      out.write(json.dumps({'type':'user','uuid':entry,'parentUuid':leaf,'sessionId':'fixture',
        'message':{'content':draft}})+'\n')
     leaf = entry
-   draft = ''; paint(); report('done')
+   draft = ''; paint()
+   if pause_completion:
+    pending_completion = True; report('working')
+   else: report('done')
   else:
    draft += char.decode(errors='replace'); paint()
 '''
@@ -87,8 +97,9 @@ def main():
     if not wsx.is_file() or not wsxd.is_file() or wsx.parent != wsxd.parent:
         raise RuntimeError('build adjacent wsx/wsxd first')
     work = ROOT / '.work' / ('ac-' + str(os.getpid()))
+    work.parent.mkdir(exist_ok=True)
     work.mkdir(mode=0o700, exist_ok=False)
-    daemon, success, started = None, False, time.monotonic()
+    daemon, success, started, path = None, False, time.monotonic(), None
     try:
         for name in ('home','state','project'):
             (work / name).mkdir(mode=0o700)
@@ -145,6 +156,17 @@ def main():
         # Native-only text never appears on the fake terminal. One CLI packet proves the source.
         packet = json.loads(cli('agent','context','--json').stdout)
         assert len(packet['candidates']) == 2 and packet['matched'] == 2 and not packet['truncated']
+        # Discover scoped identities before requesting any native conversation text.
+        metadata = json.loads(cli('agent','context','--metadata-only','-p','fixture','--provider','claude','--json').stdout)
+        assert metadata['projection'] == 'metadata_only' and metadata['matched'] == 1
+        assert metadata['candidates'][0]['pane_id'] == panes['claude']
+        assert all(item['memory'] is None for item in metadata['candidates'])
+        assert 'native-only decision' not in json.dumps(metadata)
+        selected = json.loads(cli('agent','context',panes['codex'],'--metadata-only','--json').stdout)
+        assert len(selected['candidates']) == 1 and selected['candidates'][0]['pane_id'] == panes['codex']
+        capped = json.loads(cli('agent','context','--metadata-only','--limit','1','--json').stdout)
+        assert capped['truncated'] and capped['matched'] == 2 and len(capped['candidates']) == 1
+        cli('agent','context','--metadata-only','-p','wrong','--json',ok=False)
         candidate = next(item for item in packet['candidates'] if item['pane_id'] == panes['claude'])
         assert candidate['eligible_state'] and candidate['project']['name'] == 'fixture'
         assert [message['text'] for message in candidate['memory']['messages']] == ['native-only decision request','native-only decision: keep port 4321']
@@ -172,10 +194,23 @@ def main():
             capture_output=True,text=True,check=True,timeout=5)
         path.with_suffix('.reporter').unlink()
         hook = work / 'home/.codex/wsx-agent-status.sh'
+        # Consume the installed configuration, not a direct script invocation.
+        # Copy this fixture's assets/config to a second device root. Literal paths
+        # would still reach device A, so remove A's entry to make the oracle discriminate.
+        second_home = work / "device-b space ' home"
+        second_home.mkdir(mode=0o700)
+        shutil.copytree(work / 'home/.codex', second_home / '.codex')
+        hook.unlink()
+        hook_config = json.loads((second_home / '.codex/hooks.json').read_text())
+        hook_commands = {state: hook_config['hooks'][event][0]['hooks'][0]['command']
+                         for state, event in [('working','PreToolUse'),('blocked','PermissionRequest')]}
+        assert all('CODEX_HOME' in command and 'HOME' in command
+                   for command in hook_commands.values())
+        assert all(str(work) not in command for command in hook_commands.values())
         def hook_report(state, generation):
-            return subprocess.run(['/bin/sh',str(hook),state],
+            return subprocess.run(['/bin/sh','-c',hook_commands[state]],
                 input=json.dumps({'session_id':'fixture'}),
-                env=dict(report_env,WSX_RUNTIME_GENERATION=generation),
+                env=dict(report_env,HOME=str(second_home),WSX_RUNTIME_GENERATION=generation),
                 capture_output=True,text=True,timeout=5)
         assert hook_report('working',codex_generation).returncode == 0
         def codex_agent():
@@ -229,12 +264,36 @@ def main():
         assert next(pane for pane in call('snapshot')['data']['panes'] if pane['id'] == claude)['agent']['session_ref'] == old
         assert 'draft_policy_unsupported' in cli('agent','request',panes['codex'],'denied','--stash-draft','--json',ok=False).stderr
         # Actual PTY producer records what was submitted and what remains in the stash.
+        cli('session','send-text',claude,'\x12','--no-enter')
         exchange = json.loads(cli('agent','request',claude,'inspect native decision','--stash-draft','--json').stdout)['exchange']
         wait(lambda: len(traces('claude')) == 1,'delivered prompt')
         received = traces('claude')[0]
         assert received['received'] == '[wsx exchange '+str(exchange['id'])+', round 1, read-only]\ninspect native decision'
         assert received['stash'] == '\nunsent draft'
+        wait(lambda: call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'working_observed','native turn pending')
+        def receipt(kind, round=1, generation=generation, ok=True):
+            result = subprocess.run([str(wsx),'agent','exchange-receipt',str(exchange['id']),
+                '--round',str(round),'--receipt',kind,'--json'],
+                env=dict(env,WSX_RUNTIME_GENERATION=generation),capture_output=True,text=True,timeout=5)
+            assert (result.returncode == 0) == ok, (result.stdout,result.stderr)
+            return result
+        assert 'unsupported_exchange_receipt' in receipt('accepted',ok=False).stderr
+        cli('session','send-text',claude,'\x14','--no-enter')
+        wait(lambda: next(pane for pane in call('snapshot')['data']['panes'] if pane['id'] == claude)['agent']['capabilities']['exchange_receipts'],'native receipt capability')
+        before_receipt = call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']
+        assert 'managed wsx runtime generation' in receipt('accepted',generation='',ok=False).stderr
+        assert 'stale_runtime' in receipt('accepted',generation='stale',ok=False).stderr
+        assert 'stale_exchange_round' in receipt('accepted',round=2,ok=False).stderr
+        receipt('done',ok=False)
+        receipt('accepted',round=0,ok=False)
+        assert call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange'] == before_receipt
+        accepted = json.loads(receipt('accepted').stdout)['exchange']
+        assert accepted['evidence'] == 'request_bound' and accepted['state'] != 'completed'
+        cli('session','send-text',claude,'\x12','--no-enter')
         wait(lambda: call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'done_observed','done lifecycle')
+        completed = json.loads(receipt('completed').stdout)['exchange']
+        assert completed['state'] == 'completed' and completed['evidence'] == 'request_bound'
+        assert json.loads(receipt('completed').stdout)['exchange']['revision'] == completed['revision']
         cli('session','send-text',claude,'\x13','--no-enter')
         wait(lambda: 'unsent draft' in cli('session','peek',claude,'--trim').stdout,'restore draft before continuation')
         cli('agent','continue',exchange['id'],'follow up','--stash-draft','--json')
@@ -249,17 +308,29 @@ def main():
         context = json.loads(cli('agent','context',claude,'--json').stdout)['candidates'][0]
         assert context['memory']['messages'][-1]['text'].endswith('\nempty editor follow up')
         wait(lambda: call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'done_observed','empty-editor done')
+        # Receipts must enforce their deadline without a preceding get/list probe.
+        cli('session','send-text',claude,'\x12','--no-enter')
+        exchange = json.loads(cli('agent','request',claude,'late receipt must not complete',
+            '--timeout','1','--json').stdout)['exchange']
+        wait(lambda: len(traces('claude')) == 4,'late native turn pending')
+        time.sleep(max(0,exchange['deadline_unix_ms']/1000-time.time())+0.1)
+        assert 'invalid_exchange_state' in receipt('completed',ok=False).stderr
+        assert call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'expired'
+        cli('session','send-text',claude,'\x12','--no-enter')
+        wait(lambda: next(pane for pane in call('snapshot')['data']['panes'] if pane['id'] == claude)['agent']['state'] == 'done','late actor settled')
         cli('session','send-text',claude,'\x13\x11','--no-enter')
         wait(lambda: 'unsent draft' in cli('session','peek',claude,'--trim').stdout,'restored draft with unsupported binding')
         failed = json.loads(cli('agent','request',claude,'must not arrive','--stash-draft','--json').stdout)['exchange']
         assert failed['state'] == 'delivery_failed' and failed['evidence'] == 'intent_persisted'
-        assert len(traces('claude')) == 3, 'unconfirmed stash delivered a prompt'
+        assert len(traces('claude')) == 4, 'unconfirmed stash delivered a prompt'
         assert call('shutdown')['type'] == 'ack'
         daemon.wait(timeout=5)
         assert not path.exists() and daemon.returncode == 0
         # Context must not bootstrap a daemon or silently fall back to a screen.
         cli('agent','context','--json',ok=False)
         assert not path.exists()
+        receipt('completed',round=3,ok=False)
+        assert not path.exists(), 'receipt bootstrapped a missing daemon'
         callback = subprocess.run([str(wsx),'agent','report',str(claude),'--provider','claude','--state','idle'],
             env=dict(env,WSX_PANE_ID=str(claude),WSX_RUNTIME_GENERATION='old'),capture_output=True,text=True,timeout=5)
         assert callback.returncode != 0 and not path.exists(), 'callback bootstrapped an obsolete runtime'
@@ -269,6 +340,12 @@ def main():
             daemon.terminate()
             try: daemon.wait(timeout=5)
             except subprocess.TimeoutExpired: daemon.kill(); daemon.wait(timeout=3)
+        # A failed no-bootstrap assertion may have spawned a replacement outside
+        # the original Popen handle. Stop only this private fixture's socket.
+        if path is not None and path.exists():
+            assert path.lstat().st_uid == os.getuid(), 'private socket changed owner'
+            assert call('shutdown')['type'] == 'ack'
+            wait(lambda: not path.exists(), 'private replacement cleanup')
         for record in work.glob('*.pid'):
             deadline = time.monotonic()+3
             while time.monotonic() < deadline:
@@ -279,6 +356,6 @@ def main():
         if success: shutil.rmtree(work)
         else: print('diagnostics retained at '+str(work),file=sys.stderr)
     print(json.dumps({'result':'PASS','seconds':round(time.monotonic()-started,2),'model_calls':0,
-        'journey':'pre-handoff installed shell/JS reporting, accepted/current and rejected/stale generation, unchanged actor PID/generation, one-call context, native-only history, bounds, exact scope, lease/provider refusal, preserved draft, empty-editor continuation, no bootstrap, private cleanup'}))
+        'journey':'installed shell/JS reporting, current/stale generation, unchanged actor, metadata/native history, scoped bounds, lease/provider refusal, preserved draft/continuation, capability/generation/round-fenced request-bound receipts, lifecycle distinct from completion, duplicate receipt idempotence, no bootstrap, private cleanup'}))
 
 if __name__ == '__main__': main()

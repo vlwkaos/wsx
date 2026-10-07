@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixes
+
+- Enforce an active exchange's deadline when a native receipt arrives, even without a preceding read probe. Daemon revision 18 records expiry before refusing the late receipt.
+
+### Improvements
+
+- Add machine-facing `agent exchange-receipt` submission through the existing generation/round/capability-bound daemon contract. Require the injected generation and an existing daemon; do not bootstrap, retry, infer completion from lifecycle or enable an unconnected provider adapter.
+- Add scoped `wsx agent context --metadata-only` discovery with bounded identities and advisory readiness, without reading native transcripts. Default native-history projection remains available.
+- Generate portable shell-hook configuration from provider root environment variables and `HOME`, using the same root declaration as installation. Migrate owned legacy bindings from another device while retaining unrelated hooks and compound commands. Preserve quoted paths, stdin and repeated-install behavior. Install integration assets separately on each device; already-running agent environments are unchanged.
+
 ## [0.29.2] - 2026-10-05
 
 ### Fixes

@@ -5097,6 +5097,8 @@ fn report_agent_exchange_receipt(
     receipt: AgentExchangeReceipt,
 ) -> Result<Response, ApiError> {
     let mut state = lock(&daemon.state);
+    // ^ docs/agent-orchestration.md: receipts cannot outlive an active request deadline.
+    expire_agent_exchange(daemon, &mut state, id)?;
     let previous = state
         .persisted
         .agent_exchanges
