@@ -13,7 +13,13 @@ use asched_core::{
 use std::{
     env, fs,
     io::{BufRead, BufReader, Write},
-    os::unix::net::{UnixListener, UnixStream},
+    os::{
+        fd::AsRawFd,
+        unix::{
+            fs::OpenOptionsExt,
+            net::{UnixListener, UnixStream},
+        },
+    },
     path::{Path, PathBuf},
     process::{Command, Output},
     sync::atomic::{AtomicU64, Ordering},
@@ -315,6 +321,18 @@ fn accept_legacy_probe(listener: &UnixListener, phase: &str) -> UnixStream {
 fn routine_cli_replaces_legacy_same_schema_scheduler_with_adjacent_wsxd() {
     let install = IsolatedInstall::new();
     let socket = install.socket();
+    // ^ routine/daemon.rs retains daemon-v1.lock and releases its flock after unpublishing.
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(install.scheduler_root.join("daemon-v1.lock"))
+        .expect("create legacy singleton lock");
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
     let listener = UnixListener::bind(&socket).expect("bind legacy routine daemon socket");
     listener
         .set_nonblocking(true)
@@ -380,6 +398,7 @@ fn routine_cli_replaces_legacy_same_schema_scheduler_with_adjacent_wsxd() {
                 b"{\"result\":\"error\",\"kind\":\"protocol_mismatch\",\"message\":\"legacy scheduler retiring\"}\n",
             )
             .unwrap();
+        drop(lock);
     });
 
     let output = install.wsx(&[

@@ -181,14 +181,18 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         rows = capture("bottom-compact")
         # ^ The compact rail owns the first two cells even on the title row.
         title = rows[-2][2:]
-        assert title.startswith(' demo | ') and 'main > build (codex)' in title, title
+        assert title.startswith(' demo ') and 'main ›' in title and 'build (codex)' in title, title
+        assert ' | ' not in title and ' > ' not in title, title
+        assert title.count('main ›') == 1, title
+        assert 'h/l' in rows[-1], rows[-1]
         assert '[' not in title and ']' not in title, title
         assert title.index('build') < title.index('api') < title.index('finished') < title.index('approval'), title
         assert not any(":" + (work / (name + ".port")).read_text() in title for name in ("build", "api"))
         title_ansi = (work / "captures/bottom-compact.ansi").read_text().splitlines()[-2]
         assert "48;2;36;43;55" in title_ansi, "current chip background not captured"
         assert "48;2;14;16;20" in title_ansi, "peer chip background not captured"
-        for key, name in [("j", "api"), ("k", "build"), ("Down", "api"), ("Up", "build")]:
+        for key, name in [("l", "api"), ("h", "build"), ("Right", "api"), ("Left", "build"),
+                          ("j", "api"), ("k", "build"), ("Down", "api"), ("Up", "build")]:
             keys("C-a", key)
             wait(lambda: primary_name() == name, "project prefix " + key)
         # Existing n keeps its broader attention behavior; the new cycle is separate.
@@ -203,7 +207,8 @@ def run_scenario(args, tmux, wsx, wsxd, work):
             wait(lambda: primary_name() == name, 'project traversal '+name)
             if name == 'fix-3':
                 overflow = capture('cross-worktree-overflow')[-2]
-                assert 'fix > fix-3 (codex)' in overflow and re.search(r'\+\d', overflow), overflow
+                assert 'fix ›' in overflow and 'fix-3 (codex)' in overflow and re.search(r'\+\d', overflow), overflow
+                assert overflow.index('fix ›') < overflow.index('fix-3 (codex)'), overflow
                 long_name = '审计👩‍💻-' * 4 + 'e\u0301'
                 renamed = subprocess.run([str(wsx),'session','rename',str(sessions[name]),long_name],
                     cwd=fix_project,env=env,capture_output=True,text=True,timeout=5)
@@ -213,10 +218,6 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         keys("h", "l", "Left", "Right")
         time.sleep(0.2)
         assert primary_name() == "build", "bare keys switched sessions"
-        for removed in ['h','l','Left','Right']:
-            keys('C-a',removed)
-            time.sleep(.1)
-            assert primary_name() == 'build', 'removed alias switched sessions: '+removed
         capture("project-prefix-cycle")
         keys("C-a", "b")
         wait(lambda: pane_dimensions(build_pane) == (88, 21), "expanded sidebar dimensions")
@@ -227,7 +228,7 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         wait(lambda: pane_dimensions(build_pane) == (56, 15), "mobile dimensions")
         rows = capture("mobile")
         assert "build" in rows[-2] and "+" in rows[-2], rows[-2]
-        assert 'main > build (codex)' in rows[-2], rows[-2]
+        assert 'main ›' in rows[-2] and 'build (codex)' in rows[-2], rows[-2]
         # A live generation-authorized report changes state without reshuffling the cycle.
         approval = next(s["focused_pane"] for s in snapshot["sessions"] if s["id"] == sessions["approval"])
         assert call("terminal_acquire", {"pane_id": approval, "client_id": 991, "takeover": False})["type"] == "ack"
@@ -237,7 +238,7 @@ def run_scenario(args, tmux, wsx, wsxd, work):
              "accepted generation-bound idle report")
         def peers_reflect_idle():
             title = screen()[-2]
-            return '○ main > approval (codex)' in title and '◐' not in title
+            return 'main ›' in title and '○ approval (codex)' in title and '◐' not in title
         assert primary_name() == 'build'
         for name in ['api','finished','approval']:
             keys('C-a','j')
@@ -273,6 +274,24 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         wait(lambda: primary_name("top", row=1) == "build" and pane_dimensions(build_pane) == (118, 21),
              "project cycle restores baseline after peek")
         capture("top-prefix-peek-restored", "top")
+        # Search hidden logical entries without unfolding the project. One fix session was renamed.
+        keys('C-a', 'w', target='top')
+        wait(lambda: 'WORKSPACE' in '\n'.join(screen('top')), 'Workspace for search')
+        keys('k', 'k', 'h', target='top')
+        capture('search-folded-before', 'top')
+        keys('/', 'fix', target='top')
+        wait(lambda: '/fix_ (8)' in screen('top')[-1], 'folded logical search count')
+        capture('search-folded-ancestor', 'top')
+        keys('BSpace', 'BSpace', 'BSpace', target='top')
+        wait(lambda: '/_ (0)' in screen('top')[-1], 'cleared search count')
+        capture('search-cleared', 'top')
+        keys('Escape', target='top')
+        wait(lambda: 'WORKSPACE' in screen('top')[-1], 'search exit')
+        capture('search-folded-after', 'top')
+        keys('/', '__absent__', target='top')
+        wait(lambda: '/__absent___ (0)' in screen('top')[-1], 'absent search result')
+        capture('search-empty', 'top')
+        keys('Escape', target='top')
         succeeded = True
     except Exception:
         if tmux_socket.exists():
@@ -314,7 +333,7 @@ def run_scenario(args, tmux, wsx, wsxd, work):
     return {"result": "PASS", "elapsed_seconds": round(time.monotonic()-started, 2),
                       "captures": str(work / "captures") if args.keep else None, "model_calls": 0,
                       "cleanup": "private tmux, wsxd, PTYs and listeners stopped",
-                      "journey": "preview ports, local cycle, bare keys, unchanged n, sidebar toggle and peek, mobile, live peer update, top title"}
+                      "journey": "preview ports, h/l and j/k cycle, bare keys, unchanged n, sidebar toggle and peek, mobile, live peer update, hierarchy, folded search counts and clearing, top title"}
 
 
 if __name__ == "__main__":

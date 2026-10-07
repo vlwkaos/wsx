@@ -16,6 +16,7 @@ use ratatui::{
 use crate::{
     action::Action,
     event::{poll_event, EscapeSequence, EventMode},
+    search::SearchIndex,
     session_state::{self, AppSessionState},
     terminal_surface::{SurfaceUpdate, TerminalSurfaces},
     tui::{self, Tui},
@@ -904,8 +905,8 @@ pub struct App {
     slow_timer: Timer,
     cached_flat: Vec<FlatEntry>,
     flat_dirty: bool,
-    /// Lowercase searchable text parallel to cached_flat; rebuilt with the flat cache.
-    search_cache: Vec<String>,
+    /// Logical hits projected onto visible ancestors; rebuilt with the flat cache.
+    search_index: SearchIndex,
     git_local_tx: mpsc::Sender<(PathBuf, Option<GitInfo>)>,
     git_local_rx: mpsc::Receiver<(PathBuf, Option<GitInfo>)>,
     git_local_pending: HashSet<PathBuf>,
@@ -1057,7 +1058,7 @@ impl App {
             }
         });
         let worktree_index = build_worktree_index(&workspace);
-        let search_cache = build_search_cache(&workspace, &cached_flat);
+        let search_index = SearchIndex::new(&workspace, &cached_flat);
         let terminal_controller_id = runtime::new_client_id();
         let terminal_escape_chord = EscapeSequence::parse(&config.terminal_escape_chord)
             .ok_or_else(|| {
@@ -1109,7 +1110,7 @@ impl App {
             slow_timer: Timer::new(SLOW_INTERVAL_MS + (std::process::id() % 500) as u64),
             cached_flat,
             flat_dirty: false,
-            search_cache,
+            search_index,
             git_local_tx,
             git_local_rx,
             git_local_pending: HashSet::new(),
@@ -1417,7 +1418,10 @@ impl App {
     fn ensure_flat(&mut self) {
         if self.flat_dirty {
             self.cached_flat = flatten_tree_filtered(&self.workspace, &self.visible_projects);
-            self.search_cache = build_search_cache(&self.workspace, &self.cached_flat);
+            self.search_index = SearchIndex::new(&self.workspace, &self.cached_flat);
+            if let Mode::Search { query, .. } = &self.mode {
+                self.search_index.update(query);
+            }
             self.flat_dirty = false;
         }
     }
@@ -3204,6 +3208,10 @@ impl App {
         self.terminal_escape_chord.literal_label()
     }
 
+    pub fn terminal_session_navigation_label(&self) -> &'static str {
+        self.terminal_escape_chord.session_navigation_label()
+    }
+
     pub fn terminal_workspace_hint(&self) -> String {
         format!("({})workspace", self.terminal_escape_chord.label)
     }
@@ -3227,7 +3235,7 @@ impl App {
         }
         hints.extend([
             hint(&workspace.to_ascii_lowercase(), "workspace"),
-            hint("j/k/↑↓", "session"),
+            hint(self.terminal_session_navigation_label(), "session"),
             hint("{/}", "group"),
             crate::ui::IDLE_ITERATION_HINT.to_string(),
             crate::ui::ACTIVE_ITERATION_HINT.to_string(),
@@ -4420,7 +4428,15 @@ impl App {
     }
 
     fn search_matches(&self, query: &str) -> Vec<usize> {
-        search_matches_in(&self.search_cache, query)
+        self.search_index.matches(query)
+    }
+
+    pub(crate) fn search_counts(&self) -> Option<&[usize]> {
+        matches!(self.mode, Mode::Search { .. }).then_some(self.search_index.counts.as_slice())
+    }
+
+    pub(crate) fn search_total(&self) -> usize {
+        self.search_index.total
     }
 
     fn search_apply(&mut self) {
@@ -4428,6 +4444,7 @@ impl App {
             Mode::Search { query, .. } => query.clone(),
             _ => return,
         };
+        self.search_index.update(&query);
         let matches = self.search_matches(&query);
         if matches.is_empty() {
             return;
@@ -6491,79 +6508,9 @@ fn adjacent_visible_project_index(
     ordered_visible.get(target as usize).copied()
 }
 
-fn search_text_for(workspace: &WorkspaceState, entry: &FlatEntry) -> String {
-    match entry {
-        FlatEntry::Project { idx } => workspace.projects[*idx].name.to_lowercase(),
-        FlatEntry::Worktree {
-            project_idx: pi,
-            worktree_idx: wi,
-        } => {
-            let wt = &workspace.projects[*pi].worktrees[*wi];
-            let alias = wt.alias.as_deref().unwrap_or("");
-            format!("{} {} {}", wt.branch, alias, wt.name).to_lowercase()
-        }
-        FlatEntry::Session {
-            project_idx: pi,
-            worktree_idx: wi,
-            session_idx: si,
-        } => workspace.projects[*pi].worktrees[*wi].sessions[*si]
-            .display_name
-            .to_lowercase(),
-        FlatEntry::Pane {
-            project_idx: pi,
-            worktree_idx: wi,
-            session_idx: si,
-            pane_idx,
-        } => {
-            let pane = &workspace.projects[*pi].worktrees[*wi].sessions[*si].panes[*pane_idx];
-            format!(
-                "{} {}",
-                pane.label,
-                pane.agent.as_deref().unwrap_or("terminal")
-            )
-            .to_lowercase()
-        }
-        FlatEntry::RoutinesHeader { project_idx } => {
-            format!("{} routines", workspace.projects[*project_idx].name).to_lowercase()
-        }
-        FlatEntry::Routine {
-            project_idx,
-            routine_idx,
-        } => {
-            let routine = &workspace.projects[*project_idx].routines[*routine_idx].routine;
-            let trigger = format!("{:?}", routine.trigger);
-            format!(
-                "{} {} {} {}",
-                routine.name,
-                trigger,
-                routine.command.join(" "),
-                routine.prompt
-            )
-            .to_lowercase()
-        }
-    }
-}
-
 #[cfg(test)]
 fn session_needs_attention(sess: &wsx_core::model::workspace::SessionInfo) -> bool {
     session_state::derive(sess).app_state() == AppSessionState::NeedsAttention
-}
-
-fn search_matches_in(cache: &[String], query: &str) -> Vec<usize> {
-    if query.is_empty() {
-        return vec![];
-    }
-    let q = query.to_lowercase();
-    cache
-        .iter()
-        .enumerate()
-        .filter(|(_, text)| text.contains(&q))
-        .map(|(i, _)| i)
-        .collect()
-}
-
-fn build_search_cache(workspace: &WorkspaceState, flat: &[FlatEntry]) -> Vec<String> {
-    flat.iter().map(|e| search_text_for(workspace, e)).collect()
 }
 
 fn build_worktree_index(
@@ -6595,34 +6542,68 @@ mod tests {
     }
 
     #[test]
-    fn search_matches_empty_query_returns_nothing() {
-        let cache = vec!["main".to_string(), "feat/foo".to_string()];
-        assert!(search_matches_in(&cache, "").is_empty());
+    fn search_feedback_tracks_case_insensitive_empty_and_absent_queries() {
+        let workspace = WorkspaceState {
+            projects: vec![
+                make_project("feature-a"),
+                make_project("other"),
+                make_project("feature-b"),
+            ],
+        };
+        let mut app = make_test_app(GlobalConfig::default(), workspace, None);
+        for (query, expected) in [("FEAT", vec![0, 2]), ("", vec![]), ("xyz", vec![])] {
+            app.mode = Mode::Search {
+                query: query.into(),
+                match_idx: 0,
+            };
+            app.search_apply();
+            assert_eq!(app.search_matches(query), expected);
+            assert_eq!(app.search_total(), expected.len());
+            assert_eq!(
+                app.search_counts().unwrap().iter().sum::<usize>(),
+                expected.len()
+            );
+        }
+        app.mode = Mode::Workspace;
+        assert!(app.search_counts().is_none());
     }
 
     #[test]
-    fn search_matches_case_insensitive() {
-        // cache is always pre-lowercased by build_search_cache; query is lowercased at match time
-        let cache = vec!["main".to_string(), "feature".to_string(), "fix".to_string()];
-        let hits = search_matches_in(&cache, "FEAT");
-        assert_eq!(hits, vec![1]);
-    }
-
-    #[test]
-    fn search_matches_multiple_hits() {
-        let cache = vec![
-            "feat/a".to_string(),
-            "other".to_string(),
-            "feat/b".to_string(),
+    fn search_counts_hidden_descendants_at_visible_ancestors_and_excludes_other_groups() {
+        let mut project = make_project("alpha");
+        let mut worktree = make_worktree("/fixture/alpha");
+        worktree.branch = "needle-main".into();
+        worktree.expanded = false;
+        worktree.sessions = (1..=2)
+            .map(|id| {
+                let mut session = make_sess_with_id(id, runtime::AgentState::Idle);
+                session.display_name = format!("needle-{id}");
+                session
+            })
+            .collect();
+        project.worktrees.push(worktree);
+        let workspace = WorkspaceState {
+            projects: vec![project, make_project("needle-unrelated")],
+        };
+        let filtered = vec![
+            FlatEntry::Project { idx: 0 },
+            FlatEntry::Worktree {
+                project_idx: 0,
+                worktree_idx: 0,
+            },
         ];
-        let hits = search_matches_in(&cache, "feat");
-        assert_eq!(hits, vec![0, 2]);
-    }
-
-    #[test]
-    fn search_matches_no_match_returns_empty() {
-        let cache = vec!["main".to_string(), "fix".to_string()];
-        assert!(search_matches_in(&cache, "xyz").is_empty());
+        let mut index = SearchIndex::new(&workspace, &filtered);
+        index.update("NEEDLE");
+        assert_eq!(index.total, 3);
+        assert_eq!(index.counts, vec![0, 3]);
+        assert_eq!(index.matches("NEEDLE"), vec![1]);
+        assert!(!workspace.projects[0].worktrees[0].expanded);
+        let mut folded = SearchIndex::new(&workspace, &[FlatEntry::Project { idx: 0 }]);
+        folded.update("needle");
+        assert_eq!(folded.counts, vec![3]);
+        folded.update("");
+        assert_eq!(folded.total, 0);
+        assert_eq!(folded.counts, vec![0]);
     }
 
     #[test]
@@ -6791,7 +6772,7 @@ mod tests {
             .position(|candidate| candidate == &active_group)
             .unwrap_or(0);
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
-        let search_cache = build_search_cache(&workspace, &cached_flat);
+        let search_index = SearchIndex::new(&workspace, &cached_flat);
         let worktree_index = build_worktree_index(&workspace);
         let (bg_tx, bg_rx) = std::sync::mpsc::channel();
         let (git_local_tx, git_local_rx) = std::sync::mpsc::channel();
@@ -6841,7 +6822,7 @@ mod tests {
             slow_timer: Timer::new(SLOW_INTERVAL_MS),
             cached_flat,
             flat_dirty: false,
-            search_cache,
+            search_index,
             git_local_tx,
             git_local_rx,
             git_local_pending: HashSet::new(),
@@ -9340,7 +9321,7 @@ mod tests {
             vec![
                 "(alt+g)commands",
                 "(z)workspace",
-                "(j/k/↑↓)session",
+                "(h/l)session",
                 "({/})group",
                 crate::ui::IDLE_ITERATION_HINT,
                 crate::ui::ACTIVE_ITERATION_HINT,
@@ -9349,7 +9330,7 @@ mod tests {
                 concat!("(q)", "quit"),
             ]
         );
-        for hint in ["(alt+g)commands", "(z)workspace", "(j/k/↑↓)session"] {
+        for hint in ["(alt+g)commands", "(z)workspace", "(h/l)session"] {
             assert!(
                 terminal_footer.contains(hint),
                 "missing {hint}: {terminal_footer:?}"
@@ -9378,7 +9359,7 @@ mod tests {
                 "(alt+g)commands",
                 "(esc)cancel",
                 "(z)workspace",
-                "(j/k/↑↓)session",
+                "(h/l)session",
                 "({/})group",
                 crate::ui::IDLE_ITERATION_HINT,
                 crate::ui::ACTIVE_ITERATION_HINT,
@@ -10018,7 +9999,7 @@ mod tests {
             .map(|x| terminal.backend().buffer()[(x, 14)].symbol())
             .collect::<String>();
         assert!(
-            bottom_title.contains("mobile-terminal |") && bottom_title.contains("main >"),
+            bottom_title.contains("mobile-terminal") && bottom_title.contains("main ›"),
             "{bottom_title:?}"
         );
         let rendered = terminal
@@ -10030,7 +10011,7 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("workspace"), "{rendered:?}");
         assert!(
-            rendered.contains("mobile-terminal |") && rendered.contains("main >"),
+            rendered.contains("mobile-terminal") && rendered.contains("main ›"),
             "{rendered:?}"
         );
         assert!(rendered.contains("hello"), "{rendered:?}");
@@ -10045,7 +10026,7 @@ mod tests {
             .map(|x| terminal.backend().buffer()[(x, 1)].symbol())
             .collect::<String>();
         assert!(
-            top_title.contains("mobile-terminal |") && top_title.contains("main >"),
+            top_title.contains("mobile-terminal") && top_title.contains("main ›"),
             "{top_title:?}"
         );
     }

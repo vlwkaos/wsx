@@ -7,6 +7,7 @@ mod cli;
 mod event;
 mod repo_scan;
 mod review;
+mod search;
 mod session_state;
 mod terminal_surface;
 #[cfg(test)]

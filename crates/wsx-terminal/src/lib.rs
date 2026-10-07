@@ -1397,18 +1397,21 @@ fn spawn_waiter(
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
     shared: Arc<Shared>,
     #[cfg(unix)] process_group: Arc<std::sync::atomic::AtomicI32>,
-) -> Result<(), TerminalError> {
+) -> Result<thread::JoinHandle<()>, TerminalError> {
     thread::Builder::new()
         .name("wsx-child-waiter".into())
         .spawn(move || {
             if let Err(error) = child.wait() {
                 set_error(&shared.error, format!("child wait failed: {error}"));
+                (shared.notify)();
             }
             #[cfg(unix)]
             terminate_group(take_process_group(&process_group));
+            // ^ docs/terminal-exit-ordering.md: Unix reader EOF owns natural exit so
+            // final PTY output and clipboard effects precede stream Exited.
+            #[cfg(not(unix))]
             mark_exited(&shared);
         })
-        .map(|_| ())
         .map_err(TerminalError::Io)
 }
 
@@ -1874,6 +1877,38 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         drop(runtime);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn natural_exit_waits_for_final_pty_effects_to_drain() {
+        // Join the production waiter to establish reaping without relying on
+        // platform-specific PTY close behavior or scheduling delays.
+        let runtime = TerminalRuntime::new_for_test(2, 12).unwrap();
+        let child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        spawn_waiter(
+            Box::new(child),
+            Arc::clone(&runtime.shared),
+            Arc::new(std::sync::atomic::AtomicI32::new(0)),
+        )
+        .unwrap()
+        .join()
+        .unwrap();
+        assert!(!runtime.exited(), "child exit bypassed final PTY drain");
+        {
+            let mut emulator = lock(&runtime.shared.emulator);
+            emulator.terminal.write(b"\x1b]52;c;ZXhpdA==\x07");
+        }
+        // Reader EOF publishes exit after consuming its last output batch.
+        mark_exited(&runtime.shared);
+        assert!(runtime.exited());
+        assert_eq!(
+            runtime.presentation_sample(None, true).clipboard_writes,
+            vec![b"exit".to_vec()]
+        );
     }
 
     #[test]

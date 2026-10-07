@@ -12,7 +12,9 @@ use wsx_core::{
 };
 
 use super::{
-    compact_port_label, git_remote_status_color, theme,
+    compact_port_label, git_remote_status_color,
+    search_feedback::SearchFeedback,
+    theme,
     workspace_nav::{render_scrollbar, SidebarLayout},
 };
 // ref: ratatui Block title — title() accepts &str or String
@@ -179,6 +181,7 @@ pub struct TreeView<'a> {
     pub is_move_mode: bool,
     pub port_visibility: PortVisibility,
     pub animation_frame: usize,
+    pub search: Option<SearchFeedback<'a>>,
 }
 
 pub struct CompactTreeView<'a> {
@@ -189,6 +192,7 @@ pub struct CompactTreeView<'a> {
     pub selected: usize,
     pub scroll_offset: usize,
     pub animation_frame: usize,
+    pub search: Option<SearchFeedback<'a>>,
 }
 
 fn compact_tree_cell(
@@ -314,6 +318,9 @@ pub fn render_compact_tree(frame: &mut Frame, layout: SidebarLayout, view: Compa
         .highlight_style(theme::selected_row(false))
         .highlight_symbol("");
     frame.render_stateful_widget(list, layout.list, &mut state);
+    if let Some(search) = view.search {
+        search.render(frame, layout.list, layout.list, state.offset());
+    }
 }
 
 pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>) {
@@ -327,7 +334,13 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
         is_move_mode,
         port_visibility,
         animation_frame,
+        search,
     } = view;
+    let search_area = layout.list;
+    let layout = SidebarLayout {
+        list: search.map_or(layout.list, |feedback| feedback.content_area(layout.list)),
+        ..layout
+    };
     let items: Vec<ListItem> = flat
         .iter()
         .map(|entry| match entry {
@@ -533,6 +546,9 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
         .highlight_symbol("");
 
     frame.render_stateful_widget(list, layout.list, &mut list_state);
+    if let Some(search) = search {
+        search.render(frame, search_area, layout.list, list_state.offset());
+    }
     render_scrollbar(
         frame,
         layout.scrollbar,
@@ -724,6 +740,7 @@ mod tests {
                         is_move_mode: false,
                         port_visibility: PortVisibility::default(),
                         animation_frame: 0,
+                        search: None,
                     },
                 );
             })
@@ -762,6 +779,7 @@ mod tests {
                         is_move_mode: false,
                         port_visibility: PortVisibility::default(),
                         animation_frame: 0,
+                        search: None,
                     },
                 );
             })
@@ -844,6 +862,7 @@ mod tests {
                                 is_move_mode: false,
                                 port_visibility: PortVisibility::default(),
                                 animation_frame: 0,
+                                search: None,
                             },
                         )
                     })

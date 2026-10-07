@@ -1,5 +1,5 @@
 //! One-row session preview, not another input mode.
-//! ^ docs/terminal-context.md: preview and Prefix+j/k share stable project order.
+//! ^ docs/terminal-context.md: hierarchy and Prefix+h/l (j/k aliases) share stable project order.
 use crate::session_state;
 use ratatui::{prelude::*, widgets::Paragraph};
 use wsx_core::model::workspace::{PaneInfo, Project, SessionInfo, WorktreeInfo};
@@ -62,7 +62,9 @@ fn chip(
     let style = if current {
         theme::terminal_current()
     } else {
-        theme::terminal_peer()
+        theme::terminal_peer().patch(theme::terminal_worktree(
+            worktree.path == view.worktree.path,
+        ))
     };
     if width < 4 {
         return vec![Span::styled(icon, style.fg(color))];
@@ -87,18 +89,11 @@ fn chip(
     // Known provider identity wins over extra name detail, but not the entire name.
     let show_agent = !label.is_empty() && body >= label_width + 3;
     let identity_width = body.saturating_sub(if show_agent { label_width } else { 0 });
-    let context = if identity_width >= 12 && (current || worktree.path != view.worktree.path) {
-        let wt = truncate_to_width(worktree.display_name(), (identity_width / 3).min(16));
-        format!("{wt} > ")
-    } else {
-        String::new()
-    };
-    let context_width = Line::from(context.as_str()).width();
-    let name = truncate_to_width(&name, identity_width.saturating_sub(context_width));
+    let name = truncate_to_width(&name, identity_width);
     let mut spans = vec![
         Span::styled(" ", style),
         Span::styled(icon, style.fg(color)),
-        Span::styled(format!(" {context}{name}"), style),
+        Span::styled(format!(" {name}"), style),
     ];
     if show_agent {
         spans.push(Span::styled(label, style.fg(theme::TEXT_MUTED)));
@@ -121,6 +116,52 @@ fn overflow_width(start: usize, end: usize, total: usize) -> usize {
     left + right
 }
 
+struct TitleWindow {
+    current: usize,
+    current_width: usize,
+    peer_width: usize,
+    worktree_width: usize,
+}
+
+impl TitleWindow {
+    fn spans(
+        &self,
+        view: &TerminalTitleView<'_>,
+        order: &[(usize, usize, &SessionInfo)],
+        start: usize,
+        end: usize,
+    ) -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        let mut previous = None;
+        for (index, (wi, _, session)) in order.iter().enumerate().take(end + 1).skip(start) {
+            let worktree = &view.project.worktrees[*wi];
+            if previous != Some(*wi) {
+                if previous.is_some() {
+                    spans.push(Span::raw(" "));
+                }
+                let name = truncate_to_width(worktree.display_name(), self.worktree_width);
+                spans.push(Span::styled(
+                    format!(" {name} ›"),
+                    theme::terminal_worktree(worktree.path == view.worktree.path),
+                ));
+                previous = Some(*wi);
+            }
+            spans.extend(chip(
+                view,
+                worktree,
+                session,
+                index == self.current,
+                if index == self.current {
+                    self.current_width
+                } else {
+                    self.peer_width
+                },
+            ));
+        }
+        spans
+    }
+}
+
 fn title_line(view: &TerminalTitleView<'_>, width: usize) -> Line<'static> {
     if width == 0 {
         return Line::default();
@@ -130,22 +171,20 @@ fn title_line(view: &TerminalTitleView<'_>, width: usize) -> Line<'static> {
         return Line::from(Span::styled(icon, theme::terminal_current().fg(color)));
     }
     let order: Vec<_> = session_state::context_sessions(view.project).collect();
-    let mut spans = vec![Span::raw(" ")];
-    let usable = width - 2;
-    if usable >= 36 {
-        // With no peers, spend spare space on project identity instead of
-        // applying the multi-session strip's compact context allocation.
-        let project_limit = if order.len() <= 1 {
-            usable.saturating_sub(28).min(20)
+    let mut spans = Vec::new();
+    if width >= 38 {
+        let limit = if order.len() <= 1 {
+            width.saturating_sub(28).min(20)
         } else {
-            (usable / 5).min(20)
+            (width / 5).min(20)
         };
-        let project = truncate_to_width(&view.project.name, project_limit);
+        let project = truncate_to_width(&view.project.name, limit);
         spans.push(Span::styled(
-            format!("{project} | "),
-            theme::terminal_context(),
+            format!(" {project} "),
+            theme::terminal_project(),
         ));
     }
+    spans.push(Span::raw(" "));
     let available = width.saturating_sub(spans_width(&spans) + 1);
     let index = order
         .iter()
@@ -154,73 +193,55 @@ fn title_line(view: &TerminalTitleView<'_>, width: usize) -> Line<'static> {
         let position = index
             .filter(|_| order.len() > 1)
             .map(|index| format!(" {}/{}", index + 1, order.len()))
+            .filter(|position| position.len() + 12 <= available)
             .unwrap_or_default();
-        let position = if position.len() + 8 <= available {
-            position
-        } else {
-            String::new()
-        };
-        spans.extend(chip(
-            view,
-            view.worktree,
-            view.session,
-            true,
-            available.saturating_sub(position.len()),
-        ));
+        let mut budget = available.saturating_sub(position.len());
+        // At tiny widths, current identity and position outrank parent context.
+        if budget >= 32 {
+            let wt = truncate_to_width(view.worktree.display_name(), (budget / 5).min(16));
+            let label = format!(" {wt} ›");
+            budget = budget.saturating_sub(Line::from(label.as_str()).width());
+            spans.push(Span::styled(label, theme::terminal_worktree(true)));
+        }
+        spans.extend(chip(view, view.worktree, view.session, true, budget));
         spans.push(Span::styled(position, theme::terminal_context()));
         return Line::from(spans);
     }
     let index = index.unwrap();
-    let current = chip(
-        view,
-        view.worktree,
-        view.session,
-        true,
-        (available / 2)
-            .clamp(28, 48)
-            .min(available.saturating_sub(overflow_width(index, index, order.len()))),
-    );
-    let mut used = spans_width(&current);
-    let peer_limit = (available.saturating_sub(used + 12) / 2).clamp(16, 26);
-    let mut visible = std::collections::VecDeque::from([current]);
+    let worktree_width = (available / 5).min(16);
+    let parent_width = Line::from(truncate_to_width(
+        view.worktree.display_name(),
+        worktree_width,
+    ))
+    .width()
+        + 3;
+    let window = TitleWindow {
+        current: index,
+        current_width: (available / 2).clamp(24, 48).min(
+            available.saturating_sub(parent_width + overflow_width(index, index, order.len())),
+        ),
+        peer_width: (available / 5).clamp(12, 24),
+        worktree_width,
+    };
     let (mut start, mut end) = (index, index);
-    // Grow a contiguous window, alternating directions. Format only candidates
-    // beside the visible window, not every resident session's display label.
+    // ^ Candidate and final windows use identical labels and width allocations.
     loop {
         let mut grew = false;
-        if start > 0 {
-            let (wi, _, session) = order[start - 1];
-            let next = chip(
-                view,
-                &view.project.worktrees[wi],
-                session,
-                false,
-                peer_limit,
-            );
-            let cost = spans_width(&next) + 1;
-            if used + cost + overflow_width(start - 1, end, order.len()) <= available {
-                visible.push_front(next);
-                start -= 1;
-                used += cost;
-                grew = true;
-            }
+        if start > 0
+            && spans_width(&window.spans(view, &order, start - 1, end))
+                + overflow_width(start - 1, end, order.len())
+                <= available
+        {
+            start -= 1;
+            grew = true;
         }
-        if end + 1 < order.len() {
-            let (wi, _, session) = order[end + 1];
-            let next = chip(
-                view,
-                &view.project.worktrees[wi],
-                session,
-                false,
-                peer_limit,
-            );
-            let cost = spans_width(&next) + 1;
-            if used + cost + overflow_width(start, end + 1, order.len()) <= available {
-                visible.push_back(next);
-                end += 1;
-                used += cost;
-                grew = true;
-            }
+        if end + 1 < order.len()
+            && spans_width(&window.spans(view, &order, start, end + 1))
+                + overflow_width(start, end + 1, order.len())
+                <= available
+        {
+            end += 1;
+            grew = true;
         }
         if !grew {
             break;
@@ -232,12 +253,7 @@ fn title_line(view: &TerminalTitleView<'_>, width: usize) -> Line<'static> {
             theme::terminal_context(),
         ));
     }
-    for (i, item) in visible.into_iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::raw(" "));
-        }
-        spans.extend(item);
-    }
+    spans.extend(window.spans(view, &order, start, end));
     if end + 1 < order.len() {
         spans.push(Span::styled(
             format!(" +{}", order.len() - end - 1),
@@ -332,10 +348,10 @@ mod tests {
             project.worktrees[0].sessions[3].outcome_acknowledged = acknowledged;
             let text = line(&project, 160).to_string();
             assert!(
-                text.starts_with(" demo |  ● main > current (codex) "),
+                text.starts_with(" demo   main › ● current (codex) "),
                 "{text}"
             );
-            let order = ["current", "shell", "worker", "finished", "fix > approval"]
+            let order = ["current", "shell", "worker", "finished", "fix › ◐ approval"]
                 .map(|name| text.find(name).unwrap());
             assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
             assert_eq!(text.matches("current").count(), 1);
@@ -368,7 +384,7 @@ mod tests {
         for width in 90..=160 {
             let title = line(&project, width);
             assert!(
-                title.to_string().contains("fix >"),
+                title.to_string().contains("fix ›"),
                 "width {width}: {title}"
             );
             assert!(title.width() <= width);
