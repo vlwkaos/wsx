@@ -10,6 +10,7 @@ mod state_store;
 mod wake;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ffi::OsString,
@@ -4764,6 +4765,7 @@ fn create_agent_exchange_with_draft(
         updated_unix_ms: now,
         deadline_unix_ms: deadline,
         delivery_revision: revision,
+        delivery_sha256: None,
         revision,
     });
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
@@ -4777,6 +4779,7 @@ fn create_agent_exchange_with_draft(
     );
 
     let input = exchange_terminal_input(id, 1, access, &prompt);
+    let delivery_sha256 = format!("{:x}", Sha256::digest(input.as_bytes()));
     // ^ PTY readers notify through daemon.state between reads. Keep the mutation
     // and pane-operation fences, but release state while waiting for editor ACK.
     drop(state);
@@ -4790,6 +4793,8 @@ fn create_agent_exchange_with_draft(
         .iter_mut()
         .find(|exchange| exchange.id == id)
         .expect("new exchange remains persisted");
+    // ^ docs/agent-orchestration.md: only successful PTY delivery publishes this round's input digest.
+    exchange.delivery_sha256 = delivered.then_some(delivery_sha256);
     exchange.state = if delivered {
         exchange.evidence = AgentExchangeEvidence::PtyDelivery;
         AgentExchangeState::Delivered
@@ -4911,6 +4916,8 @@ fn continue_agent_exchange_with_draft(
     exchange.round = next_round;
     exchange.state = AgentExchangeState::Submitted;
     exchange.evidence = AgentExchangeEvidence::IntentPersisted;
+    // ^ A continuation cannot reuse the prior round's native input binding.
+    exchange.delivery_sha256 = None;
     exchange.updated_unix_ms = now;
     exchange.deadline_unix_ms = now.saturating_add(timeout_ms);
     exchange.delivery_revision = revision;
@@ -4925,6 +4932,7 @@ fn continue_agent_exchange_with_draft(
         id.0,
     );
     let input = exchange_terminal_input(id, next_round, previous.access, &prompt);
+    let delivery_sha256 = format!("{:x}", Sha256::digest(input.as_bytes()));
     // ^ Match initial delivery: a fragmented PTY frame must complete its callbacks.
     drop(state);
     let stashed = !stash_draft || stash_claude_draft(&runtime).is_ok();
@@ -4937,6 +4945,7 @@ fn continue_agent_exchange_with_draft(
         .iter_mut()
         .find(|exchange| exchange.id == id)
         .unwrap();
+    exchange.delivery_sha256 = delivered.then_some(delivery_sha256);
     exchange.state = if delivered {
         exchange.evidence = AgentExchangeEvidence::PtyDelivery;
         AgentExchangeState::Delivered
@@ -10616,6 +10625,7 @@ mod tests {
             updated_unix_ms: 1,
             deadline_unix_ms: 2,
             delivery_revision: 8,
+            delivery_sha256: None,
             revision: 9,
         };
         assert!(has_writer_claim_conflict(
@@ -10676,6 +10686,7 @@ mod tests {
             updated_unix_ms: 1,
             deadline_unix_ms: 2,
             delivery_revision: 8,
+            delivery_sha256: None,
             revision: 9,
         };
 
