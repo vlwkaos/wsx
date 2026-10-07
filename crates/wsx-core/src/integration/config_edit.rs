@@ -1,14 +1,81 @@
-use super::IntegrationTarget;
+use super::{paths, IntegrationTarget};
 use serde_json::{json, Map, Value};
 use std::io;
 use std::path::Path;
 
-pub(crate) fn command(path: &Path, action: &str) -> String {
+fn legacy_command(path: &Path, action: &str) -> String {
     format!(
         "'{}' {action}",
         path.display().to_string().replace('\'', "'\\''")
     )
 }
+pub(crate) fn command(target: IntegrationTarget, action: &str) -> String {
+    let relative = paths::asset_path_in(Path::new(""), target);
+    format!(
+        "{}\"$wsx_hook_root/{}\" {action}",
+        paths::shell_root_assignment(target),
+        relative.display()
+    )
+}
+
+// ^ Migrate only the managed hook command, preserving matchers, unrelated hooks and extra fields.
+fn migrate_commands(value: &mut Value, target: IntegrationTarget, path: &Path) {
+    const ACTIONS: &[&str] = &[
+        "session",
+        "detached",
+        "idle",
+        "working",
+        "blocked",
+        "done",
+        "error",
+        "heartbeat",
+    ];
+    match value {
+        Value::Array(values) => values
+            .iter_mut()
+            .for_each(|value| migrate_commands(value, target, path)),
+        Value::Object(values) => {
+            for (key, value) in values {
+                if matches!(key.as_str(), "command" | "bash" | "powershell") {
+                    if let Some(text) = value.as_str() {
+                        let action = ACTIONS.iter().find(|action| {
+                            text == legacy_command(path, action)
+                                || text
+                                    .strip_prefix('\'')
+                                    .and_then(|text| text.rsplit_once("' "))
+                                    .is_some_and(|(name, suffix)| {
+                                        name.ends_with("/wsx-agent-status.sh")
+                                            && suffix == **action
+                                            && name.split("'\\''").all(|part| !part.contains('\''))
+                                    })
+                        });
+                        if let Some(action) = action {
+                            *value = Value::String(command(target, action));
+                        }
+                    }
+                } else {
+                    migrate_commands(value, target, path);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn contains_command(value: &Value, command: &str) -> bool {
+    match value {
+        Value::Array(values) => values.iter().any(|value| contains_command(value, command)),
+        Value::Object(values) => values.iter().any(|(key, value)| {
+            if matches!(key.as_str(), "command" | "bash" | "powershell") {
+                value.as_str() == Some(command)
+            } else {
+                contains_command(value, command)
+            }
+        }),
+        _ => false,
+    }
+}
+
 fn object(content: &str, path: &Path) -> io::Result<Value> {
     if content.trim().is_empty() {
         return Ok(json!({}));
@@ -43,15 +110,20 @@ fn push_unique(
         .or_insert_with(|| json!([]))
         .as_array_mut()
         .ok_or_else(|| io::Error::other(format!("hook {event} must be an array")))?;
-    if !list.iter().any(|v| v.to_string().contains(command)) {
+    if !list.iter().any(|v| contains_command(v, command)) {
         list.push(entry);
     }
     Ok(())
 }
-fn remove_nested_actions(map: &mut Map<String, Value>, event: &str, path: &Path, actions: &[&str]) {
+fn remove_nested_actions(
+    map: &mut Map<String, Value>,
+    event: &str,
+    target: IntegrationTarget,
+    actions: &[&str],
+) {
     let commands = actions
         .iter()
-        .map(|action| command(path, action))
+        .map(|action| command(target, action))
         .collect::<Vec<_>>();
     let Some(entries) = map.get_mut(event).and_then(Value::as_array_mut) else {
         return;
@@ -76,32 +148,32 @@ fn remove_nested_actions(map: &mut Map<String, Value>, event: &str, path: &Path,
 fn nested(
     map: &mut Map<String, Value>,
     event: &str,
-    path: &Path,
+    target: IntegrationTarget,
     action: &str,
     matcher: Option<&str>,
 ) -> io::Result<()> {
-    nested_command(map, event, path, action, matcher, false)
+    nested_command(map, event, target, action, matcher, false)
 }
 
 fn nested_async(
     map: &mut Map<String, Value>,
     event: &str,
-    path: &Path,
+    target: IntegrationTarget,
     action: &str,
     matcher: Option<&str>,
 ) -> io::Result<()> {
-    nested_command(map, event, path, action, matcher, true)
+    nested_command(map, event, target, action, matcher, true)
 }
 
 fn nested_command(
     map: &mut Map<String, Value>,
     event: &str,
-    path: &Path,
+    target: IntegrationTarget,
     action: &str,
     matcher: Option<&str>,
     asynchronous: bool,
 ) -> io::Result<()> {
-    let cmd = command(path, action);
+    let cmd = command(target, action);
     let mut hook = json!({"type":"command","command":cmd,"timeout":10});
     if asynchronous {
         hook.as_object_mut()
@@ -125,6 +197,12 @@ pub(crate) fn json_config(
     hook: &Path,
 ) -> io::Result<String> {
     let mut root = object(content, config)?;
+    if target == IntegrationTarget::Omp {
+        return Err(io::Error::other("target has no editable JSON config"));
+    }
+    if let Some(hooks) = root.get_mut("hooks") {
+        migrate_commands(hooks, target, hook);
+    }
     match target {
         IntegrationTarget::Claude => {
             let hooks = hooks(&mut root)?;
@@ -142,7 +220,7 @@ pub(crate) fn json_config(
             // so PermissionRequest cannot authoritatively publish a bounded blocked state.
             // StopFailure matchers receive the documented terminal API error name.
             // ^ https://code.claude.com/docs/en/hooks
-            remove_nested_actions(hooks, "PermissionRequest", hook, actions);
+            remove_nested_actions(hooks, "PermissionRequest", target, actions);
             let events = [
                 ("SessionStart", "idle"),
                 ("SessionEnd", "detached"),
@@ -153,18 +231,18 @@ pub(crate) fn json_config(
                 ("Stop", "done"),
             ];
             for (event, _) in events {
-                remove_nested_actions(hooks, event, hook, actions);
+                remove_nested_actions(hooks, event, target, actions);
             }
-            remove_nested_actions(hooks, "StopFailure", hook, actions);
+            remove_nested_actions(hooks, "StopFailure", target, actions);
             for (event, action) in events {
-                nested(hooks, event, hook, action, Some("*"))?;
+                nested(hooks, event, target, action, Some("*"))?;
             }
-            nested_async(hooks, "UserPromptSubmit", hook, "heartbeat", Some("*"))?;
-            nested(hooks, "StopFailure", hook, "blocked", Some("rate_limit"))?;
+            nested_async(hooks, "UserPromptSubmit", target, "heartbeat", Some("*"))?;
+            nested(hooks, "StopFailure", target, "blocked", Some("rate_limit"))?;
             nested(
                 hooks,
                 "StopFailure",
-                hook,
+                target,
                 "error",
                 Some("overloaded|authentication_failed|oauth_org_not_allowed|account_on_hold|billing_error|invalid_request|model_not_found|server_error|max_output_tokens|unknown"),
             )?;
@@ -185,17 +263,17 @@ pub(crate) fn json_config(
                 remove_nested_actions(
                     hooks,
                     event,
-                    hook,
+                    target,
                     &["session", "detached", "idle", "working", "blocked", "done"],
                 );
             }
             for (event, action) in events {
-                nested(hooks, event, hook, action, Some("*"))?;
+                nested(hooks, event, target, action, Some("*"))?;
             }
         }
         IntegrationTarget::Droid | IntegrationTarget::Qodercli | IntegrationTarget::Qwen => {
             for (event, action) in [("SessionStart", "session"), ("SessionEnd", "detached")] {
-                nested(hooks(&mut root)?, event, hook, action, Some("*"))?;
+                nested(hooks(&mut root)?, event, target, action, Some("*"))?;
             }
         }
         IntegrationTarget::Devin => {
@@ -208,13 +286,13 @@ pub(crate) fn json_config(
                 ("Stop", "session"),
                 ("SessionEnd", "detached"),
             ] {
-                nested(hooks(&mut root)?, event, hook, action, None)?;
+                nested(hooks(&mut root)?, event, target, action, None)?;
             }
         }
         IntegrationTarget::Copilot => {
             let field = if cfg!(windows) { "powershell" } else { "bash" };
             for (event, action) in [("SessionStart", "session"), ("SessionEnd", "detached")] {
-                let cmd = command(hook, action);
+                let cmd = command(target, action);
                 let mut entry = Map::new();
                 entry.insert("type".into(), json!("command"));
                 entry.insert(field.into(), json!(cmd.clone()));
@@ -224,7 +302,7 @@ pub(crate) fn json_config(
         }
         IntegrationTarget::Cursor => {
             for (event, action) in [("sessionStart", "session"), ("sessionEnd", "detached")] {
-                let cmd = command(hook, action);
+                let cmd = command(target, action);
                 push_unique(hooks(&mut root)?, event, json!({"command":cmd}), &cmd)?;
             }
         }
@@ -243,7 +321,10 @@ pub(crate) fn json_config(
                 ("Stop", "done"),
                 ("SessionEnd", "detached"),
             ] {
-                let cmd = command(hook, action);
+                if let Some(entries) = root.get_mut(event) {
+                    migrate_commands(entries, target, hook);
+                }
+                let cmd = command(target, action);
                 push_unique(
                     root.as_object_mut().unwrap(),
                     event,
@@ -253,7 +334,7 @@ pub(crate) fn json_config(
             }
         }
         IntegrationTarget::AntigravityCli => {
-            let cmd = command(hook, "session");
+            let cmd = command(target, "session");
             root.as_object_mut().unwrap().insert(
                 "wsx".into(),
                 json!({"PreInvocation":[{"type":"command","command":cmd,"timeout":10}]}),
@@ -296,7 +377,7 @@ pub(crate) fn codex_toml(content: &str) -> String {
     out
 }
 
-pub(crate) fn kimi_toml(content: &str, hook: &Path) -> String {
+pub(crate) fn kimi_toml(content: &str, _hook: &Path) -> String {
     const B: &str = "# >>> wsx kimi integration";
     const E: &str = "# <<< wsx kimi integration";
     let mut out = String::new();
@@ -341,7 +422,7 @@ pub(crate) fn kimi_toml(content: &str, hook: &Path) -> String {
         }
         out.push_str(&format!(
             "command = {:?}\ntimeout = 10\n\n",
-            command(hook, action)
+            command(IntegrationTarget::Kimi, action)
         ));
     }
     out.push_str(E);

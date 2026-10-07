@@ -241,8 +241,8 @@ fn install_in(target: IntegrationTarget, root: &Path) -> io::Result<InstallResul
     }
     if target == IntegrationTarget::Grok {
         let config = root.join("hooks/wsx.json");
-        let start = config_edit::command(&asset, "session");
-        let end = config_edit::command(&asset, "detached");
+        let start = config_edit::command(target, "session");
+        let end = config_edit::command(target, "detached");
         let body = serde_json::to_string_pretty(&serde_json::json!({
             "hooks": {
                 "SessionStart": [{"hooks": [{
