@@ -390,6 +390,15 @@ pub enum Request {
         runtime_generation: String,
         receipt: AgentExchangeReceipt,
     },
+    AgentExchangeBoundReceipt {
+        exchange_id: AgentExchangeId,
+        pane_id: PaneId,
+        round: u32,
+        runtime_generation: String,
+        delivery_sha256: String,
+        input_id: String,
+        receipt: AgentExchangeReceipt,
+    },
     AgentExchangeCancel {
         exchange_id: AgentExchangeId,
         expected_revision: u64,
@@ -629,6 +638,7 @@ mod tests {
             deadline_unix_ms: 60_010,
             delivery_revision: 8,
             delivery_sha256: None,
+            native_input_id: None,
             revision: 9,
         };
         let response = Response::AgentExchange {
@@ -695,6 +705,7 @@ mod tests {
         assert_eq!(exchange.evidence, AgentExchangeEvidence::IntentPersisted);
         assert_eq!(exchange.state, AgentExchangeState::Submitted);
         assert!(exchange.delivery_sha256.is_none());
+        assert!(exchange.native_input_id.is_none());
     }
 
     #[test]

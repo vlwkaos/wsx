@@ -346,6 +346,9 @@ pub struct AgentExchange {
     /// SHA-256 of exact delivered UTF-8 input, never proof of native acceptance alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_sha256: Option<String>,
+    /// Adapter-observed native input identity accepted for this exact delivery round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_input_id: Option<String>,
     pub revision: u64,
 }
 

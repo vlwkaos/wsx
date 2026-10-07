@@ -2532,6 +2532,22 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
         } => {
             report_agent_exchange_receipt(daemon, exchange_id, round, &runtime_generation, receipt)
         }
+        Request::AgentExchangeBoundReceipt {
+            exchange_id,
+            pane_id,
+            round,
+            runtime_generation,
+            delivery_sha256,
+            input_id,
+            receipt,
+        } => report_agent_exchange_receipt_with_binding(
+            daemon,
+            exchange_id,
+            round,
+            &runtime_generation,
+            receipt,
+            Some((pane_id, &delivery_sha256, &input_id)),
+        ),
         Request::AgentExchangeCancel {
             exchange_id,
             expected_revision,
@@ -4766,6 +4782,7 @@ fn create_agent_exchange_with_draft(
         deadline_unix_ms: deadline,
         delivery_revision: revision,
         delivery_sha256: None,
+        native_input_id: None,
         revision,
     });
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
@@ -4918,6 +4935,7 @@ fn continue_agent_exchange_with_draft(
     exchange.evidence = AgentExchangeEvidence::IntentPersisted;
     // ^ A continuation cannot reuse the prior round's native input binding.
     exchange.delivery_sha256 = None;
+    exchange.native_input_id = None;
     exchange.updated_unix_ms = now;
     exchange.deadline_unix_ms = now.saturating_add(timeout_ms);
     exchange.delivery_revision = revision;
@@ -5105,6 +5123,17 @@ fn report_agent_exchange_receipt(
     runtime_generation: &str,
     receipt: AgentExchangeReceipt,
 ) -> Result<Response, ApiError> {
+    report_agent_exchange_receipt_with_binding(daemon, id, round, runtime_generation, receipt, None)
+}
+
+fn report_agent_exchange_receipt_with_binding(
+    daemon: &Arc<Daemon>,
+    id: AgentExchangeId,
+    round: u32,
+    runtime_generation: &str,
+    receipt: AgentExchangeReceipt,
+    binding: Option<(PaneId, &str, &str)>,
+) -> Result<Response, ApiError> {
     let mut state = lock(&daemon.state);
     // ^ docs/agent-orchestration.md: receipts cannot outlive an active request deadline.
     expire_agent_exchange(daemon, &mut state, id)?;
@@ -5140,6 +5169,48 @@ fn report_agent_exchange_receipt(
         return Err(api(
             "unsupported_exchange_receipt",
             "bound agent did not advertise request-bound exchange receipts",
+        ));
+    }
+    // ^ docs/agent-orchestration.md: only an exact delivered round may bind native input.
+    if let Some((pane_id, digest, input_id)) = binding {
+        expect_runtime_generation(&state, previous.pane_id, Some(runtime_generation))?;
+        if pane_id != previous.pane_id
+            || digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || previous.delivery_sha256.as_deref() != Some(digest)
+            || input_id.is_empty()
+            || input_id.len() > 128
+            || !input_id.bytes().all(|byte| byte.is_ascii_graphic())
+            || previous
+                .native_input_id
+                .as_deref()
+                .is_some_and(|id| id != input_id)
+        {
+            return Err(api(
+                "invalid_delivery_binding",
+                "receipt does not match the exact delivered native input",
+            ));
+        }
+        if previous.state != AgentExchangeState::Completed
+            && previous.deadline_unix_ms <= unix_time_millis()
+        {
+            return Err(api(
+                "receipt_deadline_exceeded",
+                "native receipt arrived after its request deadline",
+            ));
+        }
+        if receipt == AgentExchangeReceipt::Completed && previous.native_input_id.is_none() {
+            return Err(api(
+                "native_input_unaccepted",
+                "native completion requires a prior bound acceptance",
+            ));
+        }
+    } else if previous.native_input_id.is_some() {
+        return Err(api(
+            "bound_receipt_required",
+            "native-bound input requires a bound receipt",
         ));
     }
     let next_state = match receipt {
@@ -5184,7 +5255,11 @@ fn report_agent_exchange_receipt(
             ))
         }
     };
-    if previous.state == next_state && previous.evidence == AgentExchangeEvidence::RequestBound {
+    if previous.state == next_state
+        && previous.evidence == AgentExchangeEvidence::RequestBound
+        && binding
+            .is_none_or(|(_, _, input_id)| previous.native_input_id.as_deref() == Some(input_id))
+    {
         return Ok(Response::AgentExchange {
             exchange: previous,
             frame: None,
@@ -5199,6 +5274,9 @@ fn report_agent_exchange_receipt(
         .expect("validated exchange remains present");
     exchange.state = next_state;
     exchange.evidence = AgentExchangeEvidence::RequestBound;
+    if let Some((_, _, input_id)) = binding {
+        exchange.native_input_id = Some(input_id.to_owned());
+    }
     exchange.updated_unix_ms = unix_time_millis();
     exchange.revision = revision;
     let response = exchange.clone();
@@ -10626,6 +10704,7 @@ mod tests {
             deadline_unix_ms: 2,
             delivery_revision: 8,
             delivery_sha256: None,
+            native_input_id: None,
             revision: 9,
         };
         assert!(has_writer_claim_conflict(
@@ -10687,6 +10766,7 @@ mod tests {
             deadline_unix_ms: 2,
             delivery_revision: 8,
             delivery_sha256: None,
+            native_input_id: None,
             revision: 9,
         };
 
