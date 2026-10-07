@@ -24,6 +24,14 @@ reporter at publication time. Package cleanup can remove that target before hand
 or while a compatible older daemon remains in use. Updated adapters recover this
 transition without copying an executable or assuming one global install prefix.
 
+## Multi-device hook configuration
+
+Shared provider configuration stores environment references, not the installing machine's absolute hook path. For example, Claude hooks resolve `CLAUDE_CONFIG_DIR` at execution time, or use `$HOME/.claude` when it is unset or empty. Codex uses `CODEX_HOME`; other supported shell-hook providers use their existing root variables or `HOME`. Installation and hook generation share one root declaration, including `~/` expansion and provider subdirectories.
+
+Install the integration on each device. A copied configuration does not copy the executable assets. Quoted expansion treats spaces, quotes and shell-looking directory names as path data; it does not use `eval`. Missing roots or assets fail rather than selecting a development checkout. Each hook keeps its provider input on stdin and its existing report-generation fences.
+
+Refresh migrates only managed WSX command bindings, including bindings copied from another device. It preserves unrelated hooks, their matchers and unrelated configuration fields. Repeated refresh does not add duplicate commands. This does not modify the environment of an already-running agent or tmux server. The private installed-config journey verifies macOS shell execution. Candidate Linux execution and Windows shell execution are not established by that receipt.
+
 ## Existing panes
 
 A live handoff cannot rewrite the environment of an existing shell. Updated adapters

@@ -15,6 +15,7 @@ mod model;
 mod opencode_config;
 mod paths;
 pub mod resume;
+mod root_location;
 mod status;
 
 pub use availability::is_available;
@@ -306,6 +307,110 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn portable_hook_reference_runs_on_devices_with_tilde_and_quotes_environment_data() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::{Command, Stdio};
+        let root = test_root("portable-hook");
+        let command = config_edit::command(IntegrationTarget::Claude, "idle");
+        assert!(command.contains("CLAUDE_CONFIG_DIR") && command.contains("HOME"));
+        assert!(!command.contains(root.to_str().unwrap()));
+        for (index, directory) in [
+            "device-a/.claude",
+            "device-b/custom ' $(touch injected)",
+            "device-c/profile spaced",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let hook_root = root.join(directory);
+            fs::create_dir_all(hook_root.join("hooks")).unwrap();
+            let hook = hook_root.join("hooks/wsx-agent-status.sh");
+            fs::write(&hook, "#!/bin/sh\nprintf '%s|' \"$1\"\ncat\n").unwrap();
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+            let mut child = Command::new("/bin/sh");
+            child
+                .args(["-c", &command])
+                .current_dir(&root)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin");
+            if index == 0 {
+                child.env("HOME", root.join("device-a"));
+            } else if index == 1 {
+                child
+                    .env("HOME", root.join("device-b"))
+                    .env("CLAUDE_CONFIG_DIR", &hook_root);
+            } else {
+                child
+                    .env("HOME", root.join("device-c"))
+                    .env("CLAUDE_CONFIG_DIR", "~/profile spaced");
+            }
+            let mut child = child
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(b"provider-input")
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout, b"idle|provider-input");
+            assert!(!root.join("injected").exists());
+        }
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &command])
+            .env_clear()
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "unset roots must not choose a checkout path"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn portable_hook_migration_preserves_unrelated_bindings_and_is_idempotent_across_devices() {
+        let path = PathBuf::from("/device-b/.cursor/wsx-agent-status.sh");
+        let config = PathBuf::from("hooks.json");
+        let original = r#"{"keep":1,"metadata":{"command":"'/device-a/.cursor/wsx-agent-status.sh' session"},"hooks":{"sessionStart":[{"command":"'/device-a/.cursor/wsx-agent-status.sh' session","extra":"keep-extra"},{"command":"keep-user-hook"},{"command":"'/bin/echo'; '/device-a/.cursor/wsx-agent-status.sh' session"}]}}"#;
+        let result =
+            config_edit::json_config(IntegrationTarget::Cursor, original, &config, &path).unwrap();
+        assert!(!result.contains("/device-b"));
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(
+            parsed["metadata"]["command"],
+            "'/device-a/.cursor/wsx-agent-status.sh' session"
+        );
+        let start = parsed["hooks"]["sessionStart"].as_array().unwrap();
+        assert_eq!(start.len(), 3);
+        assert_eq!(start[0]["extra"], "keep-extra");
+        assert_eq!(
+            start[0]["command"],
+            config_edit::command(IntegrationTarget::Cursor, "session")
+        );
+        assert_eq!(start[1]["command"], "keep-user-hook");
+        assert_eq!(
+            start[2]["command"],
+            "'/bin/echo'; '/device-a/.cursor/wsx-agent-status.sh' session"
+        );
+        assert_eq!(
+            config_edit::json_config(IntegrationTarget::Cursor, &result, &config, &path).unwrap(),
+            result
+        );
+    }
+
     #[test]
     fn representative_config_shapes() {
         let p = PathBuf::from("target/wsx hook.sh");
@@ -334,16 +439,16 @@ mod tests {
                 entry["matcher"] == matcher
                     && entry["hooks"].as_array().is_some_and(|hooks| {
                         hooks.iter().any(|hook| {
-                            hook["command"] == config_edit::command(&p, action)
+                            hook["command"] == config_edit::command(IntegrationTarget::Claude, action)
                         })
                     })
             }));
         }
         assert!(!stop_failures.iter().any(|entry| {
             entry["hooks"].as_array().is_some_and(|hooks| {
-                hooks
-                    .iter()
-                    .any(|hook| hook["command"] == config_edit::command(&p, "working"))
+                hooks.iter().any(|hook| {
+                    hook["command"] == config_edit::command(IntegrationTarget::Claude, "working")
+                })
             })
         }));
         for (event, action) in [
@@ -354,7 +459,13 @@ mod tests {
         ] {
             assert!(nested.contains(event), "missing Claude event {event}");
             assert!(
-                nested.contains(&config_edit::command(&p, action)),
+                nested.contains(
+                    &serde_json::to_string(&config_edit::command(
+                        IntegrationTarget::Claude,
+                        action
+                    ))
+                    .unwrap()
+                ),
                 "missing Claude action {action}"
             );
         }
@@ -362,7 +473,7 @@ mod tests {
         assert!(prompt_hooks.iter().any(|entry| {
             entry["hooks"].as_array().is_some_and(|hooks| {
                 hooks.iter().any(|hook| {
-                    hook["command"] == config_edit::command(&p, "heartbeat")
+                    hook["command"] == config_edit::command(IntegrationTarget::Claude, "heartbeat")
                         && hook["async"] == true
                 })
             })
@@ -389,7 +500,10 @@ mod tests {
             ("Interrupt", "idle"),
         ] {
             assert!(codex_hooks.contains(event), "missing Codex event {event}");
-            assert!(codex_hooks.contains(&config_edit::command(&p, action)));
+            assert!(codex_hooks.contains(
+                &serde_json::to_string(&config_edit::command(IntegrationTarget::Codex, action))
+                    .unwrap()
+            ));
         }
         assert!(codex_hooks.contains("keep-me"));
         assert!(!codex_hooks.contains("'target/wsx hook.sh' session"));
