@@ -52,7 +52,7 @@ wsx agent exchange-receipt <exchange-id> --round <round> --receipt accepted --js
 wsx agent exchange-receipt <exchange-id> --round <round> --receipt completed --json
 ```
 
-The command requires the injected `WSX_RUNTIME_GENERATION` and uses an existing daemon only. wsxd validates the exact generation, round, current state and attached agent's advertised `exchange_receipts` capability. A duplicate receipt is idempotent. Daemon revision 18 expires a still-active overdue exchange at receipt handling, without requiring an earlier read probe. Invalid kinds or zero rounds fail parsing; missing generation fails before IPC. No receipt is retried.
+The command requires the injected `WSX_RUNTIME_GENERATION` and uses an existing daemon only. wsxd validates the exact generation, round, current state and attached agent's advertised `exchange_receipts` capability. A duplicate receipt is idempotent. Daemon revision 19 expires a still-active overdue exchange at receipt handling, without requiring an earlier read probe. Invalid kinds or zero rounds fail parsing; missing generation fails before IPC. No receipt is retried.
 
 Only an adapter that correlates a native turn with this exact exchange and round may send these receipts. A prompt envelope, PTY delivery, pane lifecycle or discovered metadata does not establish that correlation. `accepted` never proves completion; `completed` must come from the correlated native completion. This command alone does not enable Pi/Pygmalion receipt support or prove real-model orchestration.
 

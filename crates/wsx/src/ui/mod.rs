@@ -13,6 +13,7 @@ pub mod plugin_sidecar;
 pub mod preview;
 pub mod review;
 pub mod routine_editor;
+pub mod search_feedback;
 pub mod terminal_title;
 pub mod theme;
 pub mod workspace_nav;
@@ -30,6 +31,7 @@ use crate::ui::{
         render_empty_preview, render_project_preview, render_terminal_preview,
         render_worktree_preview,
     },
+    search_feedback::{search_status, SearchFeedback},
     terminal_title::TerminalTitleView,
     workspace_nav::{fit_group_strip, SidebarLayout, WORKSPACE_HEADER_TITLE},
     workspace_tree::{compute_scroll, render_compact_tree, render_tree, CompactTreeView, TreeView},
@@ -268,6 +270,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             );
         } else {
             let stale_projects = app.stale_project_indices();
+            let search = if let Mode::Search { query, .. } = &app.mode {
+                Some(SearchFeedback {
+                    query,
+                    counts: app.search_counts().unwrap_or_default(),
+                })
+            } else {
+                None
+            };
             if compact_terminal {
                 render_compact_tree(
                     frame,
@@ -280,6 +290,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         selected: app.tree_selected,
                         scroll_offset: app.tree_scroll,
                         animation_frame: app.spinner_frame,
+                        search,
                     },
                 );
             } else {
@@ -296,6 +307,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         is_move_mode,
                         port_visibility: app.config.port_visibility,
                         animation_frame: app.spinner_frame,
+                        search,
                     },
                 );
             }
@@ -791,7 +803,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
     let mode_text = format!(" {} ", view.mode);
     let badge_width = Line::from(mode_text.as_str()).width();
     let context_min_width = if let Mode::Search { query, .. } = &app.mode {
-        Line::from(format!(" /{query}_")).width()
+        Line::from(format!(" /{query}_ ({})", app.search_total())).width()
     } else {
         view.hints
             .first()
@@ -840,7 +852,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
     let global_width = Line::from(global_text.as_str()).width();
     let available = content_width.saturating_sub(badge_width + global_width + activity_width + 1);
     let hint_text = if let Mode::Search { query, .. } = &app.mode {
-        format!(" /{query}_")
+        search_status(query, app.search_total(), available)
     } else {
         let fitted = fit_hints(&view.hints, available.saturating_sub(1));
         if fitted.is_empty() {
@@ -968,9 +980,12 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
                 "$terminal_quit" => app
                     .terminal_quit_label()
                     .map(|label| format!("  {label:<14} Quit TUI")),
-                "$terminal_session" => app
-                    .terminal_quit_label()
-                    .map(|_| "  Prefix+k/j or ↑/↓  Previous / next project session".into()),
+                "$terminal_session" => app.terminal_quit_label().map(|_| {
+                    format!(
+                        "  Prefix+{} or ←/→  Previous / next project session",
+                        app.terminal_session_navigation_label()
+                    )
+                }),
                 "$terminal_group" => app
                     .terminal_quit_label()
                     .map(|_| "  Prefix+{ / }  Previous / next group target".into()),

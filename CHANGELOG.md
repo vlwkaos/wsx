@@ -4,13 +4,30 @@
 
 ### Fixes
 
-- Enforce an active exchange's deadline when a native receipt arrives, even without a preceding read probe. Daemon revision 18 records expiry before refusing the late receipt.
+- Enforce an active exchange's deadline when a native receipt arrives, even without a preceding read probe. Daemon revision 19 records expiry before refusing the late receipt.
 
 ### Improvements
 
 - Add machine-facing `agent exchange-receipt` submission through the existing generation/round/capability-bound daemon contract. Require the injected generation and an existing daemon; do not bootstrap, retry, infer completion from lifecycle or enable an unconnected provider adapter.
 - Add scoped `wsx agent context --metadata-only` discovery with bounded identities and advisory readiness, without reading native transcripts. Default native-history projection remains available.
 - Generate portable shell-hook configuration from provider root environment variables and `HOME`, using the same root declaration as installation. Migrate owned legacy bindings from another device while retaining unrelated hooks and compound commands. Preserve quoted paths, stdin and repeated-install behavior. Install integration assets separately on each device; already-running agent environments are unchanged.
+
+## [0.29.3] - 2026-10-06
+
+### Fixes
+
+- Preserve final Unix PTY output and clipboard effects before announcing natural pane exit. Let the reader publish exit after draining; the child waiter still reaps and cleans up the process group. Daemon revision 18 records this runtime repair.
+- Wait through routine scheduler retirement replies and read-only probe disconnects before starting the adjacent replacement. Observe the existing singleton lock without creating or removing it, refuse replacement when its path disappears, and bound polling and trickled response reads by the startup deadline. Never replay a mutation or shutdown after uncertain delivery. Validation, malformed responses and unsupported protocols still fail closed.
+- Show terminal context as project and worktree background groups with `›`, stable session order and a brighter current session. Preserve provider identity, Unicode width, overflow counts and the complete terminal viewport.
+- Count Workspace search matches inside folded projects, worktrees and routine headers without unfolding them. Highlight visible text matches, underline folded ancestors and show logical counts. Respect the selected group and clear feedback when search ends.
+
+### Navigation
+
+- Make `Prefix+h/l` the primary previous/next session keys. Keep `j/k` and arrow aliases, bare terminal input and attention navigation. An explicitly configured h/l Workspace escape suffix takes precedence.
+
+### Verification
+
+- Run native routine retirement, held-lock and trickled-response timeouts, missing-lock refusal, genuine-error and no-replay CLI scenarios on both CI platforms. Local macOS scenarios and the real wide/mobile TUI journey passed. Publication requires passing branch CI on Linux and macOS for the exact release commit.
 
 ## [0.29.2] - 2026-10-05
 

@@ -1,14 +1,14 @@
 # Terminal session preview
 
-The terminal title is one row of presentation chrome, not a clickable switcher or another input mode. It shows the project once, then a sliding window of session chips. The current chip is highlighted with existing theme roles.
+The terminal title is one row of presentation chrome, not a clickable switcher or another input mode. It shows the project once, then a sliding window grouped by worktree.
 
 ```text
-project | +2  ○ build   ◉ main > audit (pi)   ◐ fix > tests  +5
+project  +2  main › ○ build  ◉ audit (pi)   fix › ◐ tests  +5
 ```
 
-Chips use padded background regions, not literal brackets. The current chip is brighter and bold; neighboring chips use the existing quiet panel background. Project context and overflow counts stay outside chip backgrounds.
+The project and worktree groups use padded background regions, not literal bars, brackets or borders. Each worktree name appears once before its visible sessions, with a typographic `›`. The current session is brighter and bold. Sessions in the same worktree share their parent's background; overflow counts stay outside groups. User-supplied punctuation remains unchanged.
 
-Current identity includes worktree, session and the selected pane label when applicable. Known provider identity reserves space before extra name detail. Same-worktree peers omit redundant worktree names; other-worktree peers retain attribution. Only authoritative lifecycle or ordinary foreground-job state supplies indicators.
+Current identity includes session and the selected pane label when applicable. Known provider identity reserves space before extra name detail. At tiny widths, current identity and position outrank parent context. Only authoritative lifecycle or ordinary foreground-job state supplies indicators.
 
 ## Shared order and overflow
 
@@ -18,11 +18,17 @@ The visible window stays contiguous and grows around the current session. Counts
 
 ## Project-local navigation
 
-In Terminal mode, use the configured prefix followed by `j/k` or Down/Up to visit the next/previous session across the current project. The ring wraps and includes off-screen sessions and collapsed worktrees. Switching reveals the exact typed target through existing expansion persistence and dimension-first stream attachment. With no other session, keep the terminal and report that fact.
+In Terminal mode, use the configured prefix followed by `h/l` for previous/next session across the current project. Left/Right, `k/j` and Up/Down remain aliases. The ring wraps and includes off-screen sessions and collapsed worktrees. Switching reveals the exact typed target through existing expansion persistence and dimension-first stream attachment. With no other session, keep the terminal and report that fact.
 
-The duplicate `Prefix+h/l` and Left/Right session-cycle bindings are removed. Those unassigned prefixed combinations follow normal terminal forwarding; bare keys always reach the terminal application. `h/l` are no longer reserved Workspace escape suffixes. Previously migrated configuration is not guessed or rewritten back.
+Bare keys always reach the terminal application. An explicitly configured `h` or `l` escape suffix wins over its navigation alias; hints advertise the remaining working keys. Existing configuration is not guessed or rewritten.
 
 `Prefix+n/N` attention navigation and its preference remain separate and unchanged. Workspace `j/k`, `h/l`, Enter, group navigation and file/diff review keep their existing behavior.
+
+## Workspace search
+
+`/` searches logical entries in the selected group, including folded worktrees, sessions, panes and routines. Search never unfolds a node or changes activity provenance. Hidden matches map to the highest visible ancestor, with a count on that row. The footer reports the total logical match count separately from visible navigation anchors.
+
+Matching visible text is highlighted on complete terminal cells. Matching ancestors are underlined even when the matching child is hidden. Unicode case conversion and wide-cell occupancy preserve the label and its geometry. Query edits update counts; clearing or leaving search removes feedback. At tiny widths, the footer count takes priority over query detail.
 
 ## Ports and viewport ownership
 
@@ -39,7 +45,7 @@ python3 -B scripts/test-terminal-context-harness.py
 python3 -B scripts/test-terminal-context.py --keep
 ```
 
-The tmux journey creates owner-only repository-local HOME/config/state, a real Git-owned second worktree and synthetic generation-authorized agents. It observes the active PTY's actor marker independently of title formatting. It verifies normal/mobile captures, every overflow target, cross-worktree navigation, wrap, state changes without reorder, attention jumps, bare input, viewport dimensions, sidebar peek and both title positions. The first TUI stays alive across captures. Only its private tmux server, daemon and actors are stopped. No model calls or installed agents are required.
+The tmux journey creates owner-only repository-local HOME/config/state, a real Git-owned second worktree and synthetic generation-authorized agents. It observes the active PTY's actor marker independently of title formatting. It verifies normal/mobile captures, every overflow target, cross-worktree navigation, h/l and j/k aliases, wrap, state changes without reorder, attention jumps, bare input, viewport dimensions, sidebar peek, both title positions, and folded search counts through query clearing and exit. The first TUI stays alive across captures. Only its private tmux server, daemon and actors are stopped. No model calls or installed agents are required.
 
 Default scratch cleanup covers failed preparation and runtime exits; `--keep` retains review captures. Existing fixtures are refused without deletion.
 
