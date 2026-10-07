@@ -628,6 +628,7 @@ mod tests {
             updated_unix_ms: 11,
             deadline_unix_ms: 60_010,
             delivery_revision: 8,
+            delivery_sha256: None,
             revision: 9,
         };
         let response = Response::AgentExchange {
@@ -693,6 +694,7 @@ mod tests {
         };
         assert_eq!(exchange.evidence, AgentExchangeEvidence::IntentPersisted);
         assert_eq!(exchange.state, AgentExchangeState::Submitted);
+        assert!(exchange.delivery_sha256.is_none());
     }
 
     #[test]

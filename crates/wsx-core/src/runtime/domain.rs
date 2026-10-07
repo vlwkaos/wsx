@@ -343,6 +343,9 @@ pub struct AgentExchange {
     pub updated_unix_ms: u64,
     pub deadline_unix_ms: u64,
     pub delivery_revision: u64,
+    /// SHA-256 of exact delivered UTF-8 input, never proof of native acceptance alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_sha256: Option<String>,
     pub revision: u64,
 }
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Model-free CLI/native-history and real-PTY draft-stash orchestration journey."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -270,6 +271,10 @@ def main():
         received = traces('claude')[0]
         assert received['received'] == '[wsx exchange '+str(exchange['id'])+', round 1, read-only]\ninspect native decision'
         assert received['stash'] == '\nunsent draft'
+        # The independent PTY actor records native input; do not hash a returned prompt.
+        initial_digest = hashlib.sha256(received['received'].encode()).hexdigest()
+        assert exchange['delivery_sha256'] == initial_digest
+        assert exchange['delivery_sha256'] != hashlib.sha256(b'forged envelope body').hexdigest()
         wait(lambda: call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'working_observed','native turn pending')
         def receipt(kind, round=1, generation=generation, ok=True):
             result = subprocess.run([str(wsx),'agent','exchange-receipt',str(exchange['id']),
@@ -296,8 +301,11 @@ def main():
         assert json.loads(receipt('completed').stdout)['exchange']['revision'] == completed['revision']
         cli('session','send-text',claude,'\x13','--no-enter')
         wait(lambda: 'unsent draft' in cli('session','peek',claude,'--trim').stdout,'restore draft before continuation')
-        cli('agent','continue',exchange['id'],'follow up','--stash-draft','--json')
+        continued = json.loads(cli('agent','continue',exchange['id'],'follow up','--stash-draft','--json').stdout)['exchange']
         wait(lambda: len(traces('claude')) == 2,'fragmented follow-up delivery')
+        assert continued['round'] == 2
+        assert continued['delivery_sha256'] == hashlib.sha256(traces('claude')[1]['received'].encode()).hexdigest()
+        assert continued['delivery_sha256'] != initial_digest
         assert traces('claude')[1]['received'].endswith('\nfollow up')
         assert traces('claude')[1]['stash'] == '\nunsent draft'
         wait(lambda: call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'done_observed','follow-up done')
@@ -320,8 +328,10 @@ def main():
         wait(lambda: next(pane for pane in call('snapshot')['data']['panes'] if pane['id'] == claude)['agent']['state'] == 'done','late actor settled')
         cli('session','send-text',claude,'\x13\x11','--no-enter')
         wait(lambda: 'unsent draft' in cli('session','peek',claude,'--trim').stdout,'restored draft with unsupported binding')
-        failed = json.loads(cli('agent','request',claude,'must not arrive','--stash-draft','--json').stdout)['exchange']
+        failed = json.loads(cli('agent','continue',exchange['id'],'must not arrive','--stash-draft','--json').stdout)['exchange']
+        assert failed['round'] == 2, 'failed continuation did not invalidate the previous round'
         assert failed['state'] == 'delivery_failed' and failed['evidence'] == 'intent_persisted'
+        assert failed.get('delivery_sha256') is None, 'failed delivery retained input-binding authority'
         assert len(traces('claude')) == 4, 'unconfirmed stash delivered a prompt'
         assert call('shutdown')['type'] == 'ack'
         daemon.wait(timeout=5)
