@@ -5,13 +5,15 @@ Use the local CLI on the machine that owns the WSX sessions. These commands do n
 ## One context call
 
 ```sh
-wsx agent context --json -p <project> [--provider claude]
+wsx agent context --metadata-only --json -p <project> [--provider claude]
 wsx agent context <session-or-pane-id> --json
 ```
 
 The packet combines exact target IDs, project/worktree paths, pane revision, attached provider, lifecycle state, capabilities, advisory request eligibility, and recent provider-native persisted history. It uses one existing-daemon snapshot and no model calls. Neither this read nor an exact injected-pane lifecycle report starts or replaces wsxd. A missing daemon returns an error.
 
-Defaults: eight candidates, four recent messages, the latest available persisted compaction checkpoint, and 4 KiB of text per candidate. A checkpoint receives at most half that same budget; it does not duplicate a tail message. `--limit` permits 1–32 candidates; `--messages` permits 1–32 messages; `--bytes` permits 1–16 KiB per candidate. Aggregate projected text, including checkpoints, is limited to 64 KiB. Discovery reports omitted candidates. Readiness is advisory: delivery rechecks runtime generation, agent state, leases, and writer claims.
+Use `--metadata-only` first when choosing a target. It returns the same bounded identities, scope, state, capabilities and advisory readiness from the daemon snapshot, with `projection: "metadata_only"` and `memory: null`. It does not construct a history reader or inventory provider stores. Select an exact returned target before reading history. This filter grants no authority to send work, mutate or close that target; approved project scope still applies.
+
+Without this flag, existing history behavior is unchanged. Defaults: eight candidates, four recent messages, the latest available persisted compaction checkpoint, and 4 KiB of text per candidate. A checkpoint receives at most half that same budget; it does not duplicate a tail message. `--limit` permits 1–32 candidates; `--messages` permits 1–32 messages; `--bytes` permits 1–16 KiB per candidate. Aggregate projected text, including checkpoints, is limited to 64 KiB. Discovery reports omitted candidates. Readiness is advisory: delivery rechecks runtime generation, agent state, leases, and writer claims.
 
 ## Native history, not a screen
 
@@ -41,6 +43,19 @@ This assumes a Claude version, editor layout and keymap supporting the documente
 
 Separate `agent_exchange_*_stashing_draft` request variants make old daemons reject the option instead of silently ignoring a destructive input policy. Protocol 16 remains unchanged; daemon revision 17 fences draft delivery and stable reporter publication in the non-web 0.29.0 candidate. Claude adapter version 18 adds prompt capability, native path reports and removed-reporter recovery. Update the integration and restart that agent to load it; live panes are not rewritten.
 
+## Native request-bound receipts
+
+Adapters can submit the existing daemon receipt through a machine-facing command:
+
+```sh
+wsx agent exchange-receipt <exchange-id> --round <round> --receipt accepted --json
+wsx agent exchange-receipt <exchange-id> --round <round> --receipt completed --json
+```
+
+The command requires the injected `WSX_RUNTIME_GENERATION` and uses an existing daemon only. wsxd validates the exact generation, round, current state and attached agent's advertised `exchange_receipts` capability. A duplicate receipt is idempotent. Daemon revision 18 expires a still-active overdue exchange at receipt handling, without requiring an earlier read probe. Invalid kinds or zero rounds fail parsing; missing generation fails before IPC. No receipt is retried.
+
+Only an adapter that correlates a native turn with this exact exchange and round may send these receipts. A prompt envelope, PTY delivery, pane lifecycle or discovered metadata does not establish that correlation. `accepted` never proves completion; `completed` must come from the correlated native completion. This command alone does not enable Pi/Pygmalion receipt support or prove real-model orchestration.
+
 ## Task-owned session cleanup
 
 Record the exact session, pane and exchange IDs when creating orchestration work. Reusing a user's existing agent does not transfer session ownership to the caller. Save the result and verification evidence before cleanup. Close a task-created session with `wsx session delete <exact-session-id> --json` only after its work has settled and no continuation remains; verify that its session and panes are absent from `wsx session list --json` afterward. Cancellation requests and pane `done` state alone do not prove completion or ownership. Retain blocked or failed sessions only for a named investigation, and report their IDs and pending cleanup. Never close the caller, a user's agent, or an unrelated shell by label or provider state.
@@ -53,7 +68,7 @@ python3 -B scripts/test-agent-context.py --wsx <target>/debug/wsx --daemon <targ
 cargo test --locked -p wsx-core --test agent_memory_contract
 ```
 
-The model-free journey uses an isolated daemon, real PTYs, independent provider-native files and a documented-keyboard actor. It checks native-only context absent from the screen, bounds, exact scope, refusal, the actual submitted request and preserved multiline stash, empty-editor continuation, an unconfirmed stash binding with no delivered prompt, shutdown, and no bootstrap. It does not prove an arbitrary remote Claude version or customized keymap. Verify that host's installed version and binding before relying on the option there.
+The model-free journey uses an isolated daemon, real PTYs, independent provider-native files and a documented-keyboard actor. It checks native-only context absent from the screen, bounds, exact scope, refusal, the actual submitted request and preserved multiline stash, empty-editor continuation, an unconfirmed stash binding with no delivered prompt, capability/generation/round-fenced native receipts, lifecycle separate from completion, duplicate receipt idempotence, shutdown, and no bootstrap. It does not prove an arbitrary remote Claude version or customized keymap. Verify that host's installed version and binding before relying on the option there.
 
 The scenario also splits stash acknowledgements across real PTY reads for both initial and continued requests. wsxd releases daemon state while waiting, retains mutation and pane-operation fences, then adopts current state before recording delivery. Pre-repair binaries fail the independent received-input assertion; the repaired path preserves the draft and observes completion. Current release-candidate verification is recorded separately from earlier whole-workspace receipts.
 

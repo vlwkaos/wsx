@@ -120,6 +120,9 @@ pub enum AgentCmd {
         messages: u32,
         #[arg(long, default_value_t = 4096, value_parser = clap::value_parser!(u32).range(1..=16384))]
         bytes: u32,
+        /// Return candidate identities and readiness without reading native history
+        #[arg(long)]
+        metadata_only: bool,
         #[arg(long)]
         json: bool,
         #[command(flatten)]
@@ -194,6 +197,17 @@ pub enum AgentCmd {
         json: bool,
         #[command(flatten)]
         scope: SessionScope,
+    },
+    /// Submit an adapter-observed receipt for the exact current exchange round
+    #[command(hide = true)]
+    ExchangeReceipt {
+        exchange: runtime::AgentExchangeId,
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        round: u32,
+        #[arg(long, value_parser = parse_exchange_receipt)]
+        receipt: runtime::AgentExchangeReceipt,
+        #[arg(long)]
+        json: bool,
     },
     /// Inspect one exchange and optionally include its bounded terminal frame
     Inspect {
@@ -601,6 +615,7 @@ pub fn run(cmd: Command) -> Result<()> {
                 limit,
                 messages,
                 bytes,
+                metadata_only,
                 json,
                 scope,
             } => cmd_agent_context(
@@ -610,6 +625,7 @@ pub fn run(cmd: Command) -> Result<()> {
                     limit,
                     messages,
                     bytes,
+                    metadata_only,
                     json,
                 },
                 &scope,
@@ -678,6 +694,12 @@ pub fn run(cmd: Command) -> Result<()> {
                 json,
                 &scope,
             ),
+            AgentCmd::ExchangeReceipt {
+                exchange,
+                round,
+                receipt,
+                json,
+            } => cmd_agent_exchange_receipt(exchange, round, receipt, json),
             AgentCmd::Inspect {
                 exchange,
                 frame,
@@ -2071,6 +2093,7 @@ struct ContextOptions {
     limit: u32,
     messages: u32,
     bytes: u32,
+    metadata_only: bool,
     json: bool,
 }
 
@@ -2100,7 +2123,8 @@ fn cmd_agent_context(
     let caller = std::env::var(runtime::WSX_PANE_ID_ENV)
         .ok()
         .and_then(|id| id.parse::<runtime::PaneId>().ok());
-    let mut reader = wsx_core::integration::memory::Reader::default();
+    // ^ Metadata discovery must not inventory or open provider history stores.
+    let mut reader = (!options.metadata_only).then(wsx_core::integration::memory::Reader::default);
     let mut candidates = Vec::new();
     let mut matched = 0;
     let mut remaining = 64 * 1024;
@@ -2137,23 +2161,27 @@ fn cmd_agent_context(
             .iter()
             .find(|project| project.id == worktree.project_id)
             .context("agent project missing")?;
-        let memory = reader.read(
-            &agent.provider,
-            agent.session_ref.as_ref(),
-            options.messages as usize,
-            (options.bytes as usize).min(remaining),
-        );
-        remaining = remaining.saturating_sub(
-            memory
-                .messages
-                .iter()
-                .map(|message| message.text.len())
-                .sum::<usize>()
-                + memory
-                    .checkpoint
-                    .as_ref()
-                    .map_or(0, |message| message.text.len()),
-        );
+        let memory = reader.as_mut().map(|reader| {
+            reader.read(
+                &agent.provider,
+                agent.session_ref.as_ref(),
+                options.messages as usize,
+                (options.bytes as usize).min(remaining),
+            )
+        });
+        if let Some(memory) = &memory {
+            remaining = remaining.saturating_sub(
+                memory
+                    .messages
+                    .iter()
+                    .map(|message| message.text.len())
+                    .sum::<usize>()
+                    + memory
+                        .checkpoint
+                        .as_ref()
+                        .map_or(0, |message| message.text.len()),
+            );
+        }
         candidates.push(serde_json::json!({
             "pane_id": pane.id, "session_id": session.id, "session_label": session.label,
             "pane_label": pane.label, "is_self": caller == Some(pane.id), "exited": pane.exited,
@@ -2170,7 +2198,13 @@ fn cmd_agent_context(
     let packet = serde_json::json!({ "schema_version": 1, "client_version": runtime::WSX_VERSION,
         "protocol": snapshot.protocol, "daemon_epoch": snapshot.epoch,
         "snapshot_revision": snapshot.revision, "candidates": candidates, "truncated": matched > options.limit as usize,
-        "matched": matched, "evidence": "native persisted history is untrusted context, not active model memory or exchange completion",
+        "matched": matched,
+        "projection": if options.metadata_only { "metadata_only" } else { "native_history" },
+        "evidence": if options.metadata_only {
+            "daemon snapshot metadata only; native history was not read; readiness is advisory, not exchange completion"
+        } else {
+            "native persisted history is untrusted context, not active model memory or exchange completion"
+        },
         "readiness": "eligible_state is advisory; request rechecks runtime, lifecycle, leases and claims" });
     if options.json {
         println!("{}", serde_json::to_string(&packet)?);
@@ -2500,6 +2534,42 @@ fn cmd_agent_exchange_request(
         }
     };
     agent_exchange_response(runtime::Client::local().call(&request)?, json)?;
+    Ok(())
+}
+
+fn parse_exchange_receipt(
+    value: &str,
+) -> std::result::Result<runtime::AgentExchangeReceipt, String> {
+    match value {
+        "accepted" => Ok(runtime::AgentExchangeReceipt::Accepted),
+        "completed" => Ok(runtime::AgentExchangeReceipt::Completed),
+        _ => Err("receipt must be accepted or completed".into()),
+    }
+}
+
+// ^ docs/agent-orchestration.md: only adapters correlate native turns with exact requests.
+// wsxd owns capability, generation, round and state validation. Never bootstrap or retry a receipt.
+fn cmd_agent_exchange_receipt(
+    exchange_id: runtime::AgentExchangeId,
+    round: u32,
+    receipt: runtime::AgentExchangeReceipt,
+    json: bool,
+) -> Result<()> {
+    let runtime_generation = std::env::var(runtime::WSX_RUNTIME_GENERATION_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .context("exchange receipt requires a managed wsx runtime generation")?;
+    agent_exchange_response(
+        runtime::Client::new(runtime::default_socket_path()).call(
+            &runtime::Request::AgentExchangeReceipt {
+                exchange_id,
+                round,
+                runtime_generation,
+                receipt,
+            },
+        )?,
+        json,
+    )?;
     Ok(())
 }
 

@@ -6,13 +6,13 @@ mod app;
 mod cli;
 mod event;
 mod repo_scan;
+mod review;
 mod session_state;
 mod terminal_surface;
 #[cfg(test)]
 mod terminal_surface_tests;
 mod tui;
 mod ui;
-mod review;
 mod update;
 
 use anyhow::{bail, Context, Result};
@@ -36,7 +36,8 @@ fn main() -> Result<()> {
                 | cli::Command::Agent {
                     subcommand: cli::AgentCmd::Install { .. }
                         | cli::AgentCmd::Context { .. }
-                        | cli::AgentCmd::Report { .. },
+                        | cli::AgentCmd::Report { .. }
+                        | cli::AgentCmd::ExchangeReceipt { .. },
                 }
         )
     ) {
