@@ -2212,6 +2212,7 @@ fn cmd_agent_context(
         "protocol": snapshot.protocol, "daemon_epoch": snapshot.epoch,
         "snapshot_revision": snapshot.revision, "candidates": candidates, "truncated": matched > options.limit as usize,
         "matched": matched,
+        "exchange_input_binding": snapshot.capabilities.agent_exchange_bound_receipts,
         "projection": if options.metadata_only { "metadata_only" } else { "native_history" },
         "evidence": if options.metadata_only {
             "daemon snapshot metadata only; native history was not read; readiness is advisory, not exchange completion"
@@ -2640,7 +2641,7 @@ fn cmd_agent_exchange_wait(
     let timeout_ms = exchange_timeout_ms(timeout)?;
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut exchange = current_agent_exchange(exchange_id)?;
-    while !exchange.state.is_wait_boundary() {
+    while !exchange.is_wait_boundary() {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             bail!(

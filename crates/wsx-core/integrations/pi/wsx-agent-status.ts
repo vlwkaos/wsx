@@ -1,8 +1,8 @@
 // managed by wsx
-// WSX_INTEGRATION_VERSION=19
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+// WSX_INTEGRATION_VERSION=20
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { execReporter } from "../common/wsx-reporter.mjs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 
 const REPORT_TIMEOUT_MS = 1_000;
@@ -25,6 +25,7 @@ type PendingReport = {
   sessionRef?: SessionRef;
   attached: boolean;
   retry: number;
+  inputBinding: boolean;
 };
 
 let sendInFlight = false;
@@ -41,6 +42,7 @@ let heartbeat: ReturnType<typeof setInterval> | undefined;
 let presenceHeartbeat: ReturnType<typeof setInterval> | undefined;
 let presenceActive = false;
 let presenceInFlight = false;
+let inputBindingReady: () => boolean = () => false;
 
 function clearReportRetry(): void {
   if (retryTimer !== undefined) clearTimeout(retryTimer);
@@ -54,7 +56,7 @@ function report(
 ): void {
   if (!enabled) return;
   clearReportRetry();
-  pending = { state, sessionRef, attached, retry: 0 };
+  pending = { state, sessionRef, attached, retry: 0, inputBinding: attached && inputBindingReady() };
   drain();
 }
 
@@ -80,9 +82,10 @@ function drain(): void {
   const args = ["agent", "report", paneId, "--provider", "pi", "--state", next.state, "--lifecycle"];
   if (!next.attached) args.push("--detached");
   else args.push("--presence-id", presenceId);
+  if (next.inputBinding) args.push("--prompt", "--exchange-receipts");
   if (next.sessionRef?.path) args.push("--session-path", next.sessionRef.path);
   else if (next.sessionRef?.id) args.push("--session-id", next.sessionRef.id);
-  execReporter(reportBin, args, { timeout: REPORT_TIMEOUT_MS, windowsHide: true }, (error) => {
+  execReporter(reportBin, args, { timeout: REPORT_TIMEOUT_MS, windowsHide: true }, (error: Error | null) => {
     sendInFlight = false;
     if (error && !pending && next.retry < REPORT_RETRY_DELAYS_MS.length) {
       const delay = REPORT_RETRY_DELAYS_MS[next.retry];
@@ -152,6 +155,177 @@ function stopHeartbeat(): void {
   presenceActive = false;
 }
 
+type GoalOwner = { get(): unknown };
+type GoalObservation = { owner: GoalOwner; active: boolean; key?: string; completed: boolean; aborted: boolean };
+type NativeInput = { exchange: string; round: number; digest: string; inputId: string; session: string; generation: string };
+type NativeBinding = NativeInput & { deadline: number; taskKey?: string; initialKey?: string; ctx: ExtensionContext; settled: boolean };
+
+// ^ docs/agent-orchestration.md: Goal Run owns Task completion, not title notifications or pane Done.
+function observeNativeExchanges(pi: ExtensionAPI, publish: () => void) {
+  let disposed = false;
+  let supported = false;
+  let owner: GoalOwner | undefined;
+  let pendingInput: NativeInput | undefined;
+  let binding: NativeBinding | undefined;
+  let epoch = 0;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const generation = process.env.WSX_RUNTIME_GENERATION;
+  const goal = (): GoalObservation | undefined => {
+    try {
+      if (typeof pi.events.emit !== "function") return undefined;
+      const request: { service?: GoalOwner } = {};
+      pi.events.emit("pygmalion:goal-run-service-request", request);
+      if (typeof request.service?.get !== "function") return undefined;
+      const value = request.service.get() as {
+        active?: unknown; taskId?: unknown; branchLineage?: unknown; criteria?: Array<{ status?: unknown }>;
+        pausedReason?: unknown; completionTransactionId?: unknown;
+      };
+      if (!value || typeof value.active !== "boolean" || !Array.isArray(value.criteria)
+          || value.criteria.length > 16 || value.criteria.some((item) => !item || !["pending", "passed", "blocked"].includes(String(item.status)))) return undefined;
+      const identity = (text: unknown): text is string => typeof text === "string" && text.length > 0 && text.length <= 128;
+      const key = identity(value.taskId) && identity(value.branchLineage)
+        ? JSON.stringify([value.taskId, value.branchLineage]) : undefined;
+      if (value.active && !key) return undefined;
+      return { owner: request.service, active: value.active, key,
+        aborted: value.pausedReason === "user-abort",
+        completed: !value.active && value.criteria.length > 0
+          && value.criteria.every((item) => item.status === "passed") && identity(value.completionTransactionId) };
+    } catch { return undefined; }
+  };
+  const sessionKey = (ctx: ExtensionContext): string => {
+    try { return ctx.sessionManager.getSessionId(); } catch { return ""; }
+  };
+  const ready = () => !disposed && supported && Boolean(generation)
+    && process.env.WSX_RUNTIME_GENERATION === generation && goal()?.owner === owner;
+  const clear = () => {
+    epoch += 1;
+    pendingInput = undefined;
+    binding = undefined;
+    if (timer !== undefined) clearInterval(timer);
+    timer = undefined;
+  };
+  const command = (args: string[]): Promise<any> => new Promise((resolve, reject) => {
+    execReporter(reportBin, args, { timeout: REPORT_TIMEOUT_MS, maxBuffer: 64 * 1024, windowsHide: true },
+      (error: Error | null, stdout: string) => {
+        if (error) { reject(error); return; }
+        try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
+      });
+  });
+  const receipt = (input: NativeInput, kind: "accepted" | "completed") => command([
+    "agent", "exchange-receipt", input.exchange, "--round", String(input.round), "--receipt", kind,
+    "--delivery-sha256", input.digest, "--input-id", input.inputId, "--json",
+  ]);
+  const rememberTask = (current: NativeBinding, observed: GoalObservation): boolean => {
+    if (observed.aborted || observed.owner !== owner) return false;
+    if (observed.active) {
+      current.taskKey ??= observed.key;
+      return current.taskKey === observed.key;
+    }
+    return current.taskKey ? current.taskKey === observed.key : current.initialKey === observed.key;
+  };
+  const checkCompletion = () => {
+    const current = binding;
+    if (!current) return;
+    const observed = goal();
+    if (!ready() || !observed || sessionKey(current.ctx) !== current.session
+        || Date.now() >= current.deadline || !rememberTask(current, observed)) { clear(); return; }
+    try {
+      if (!current.settled || !current.ctx.isIdle() || current.ctx.hasPendingMessages() || blockedCount > 0
+          || observed.active || (current.taskKey && !observed.completed)) return;
+    } catch { clear(); return; }
+    // Clear before dispatch: a rejected/uncertain native receipt is never replayed.
+    clear();
+    void receipt(current, "completed").catch((error) => {
+      console.warn(`wsx: native Pi completion was not recorded: ${error.message}`);
+    });
+  };
+  const unsubscribeGoal = pi.events.on("pygmalion:goal-run-changed", () => {
+    if (binding) {
+      const observed = goal();
+      if (!observed || !rememberTask(binding, observed)) clear();
+    }
+  });
+  return {
+    ready,
+    async initialize(ctx: ExtensionContext) {
+      clear();
+      const ticket = epoch;
+      const observed = goal();
+      supported = false;
+      owner = observed?.owner;
+      if (!enabled || !generation || !observed) return;
+      try {
+        await flushReports();
+        const packet = await command(["agent", "context", paneId!, "--metadata-only", "--json"]);
+        if (disposed || ticket !== epoch || sessionKey(ctx) === "") return;
+        supported = packet.exchange_input_binding === true && packet.projection === "metadata_only"
+          && Array.isArray(packet.candidates) && packet.candidates.length === 1
+          && String(packet.candidates[0].pane_id) === paneId
+          && packet.candidates[0].agent?.provider === "pi" && packet.candidates[0].agent?.attached === true
+          && packet.candidates[0].agent?.presence_id === presenceId;
+        if (supported) publish();
+      } catch { supported = false; }
+    },
+    input(text: string, source: string, ctx: ExtensionContext, hasImages: boolean) {
+      pendingInput = undefined;
+      if (source === "extension") return;
+      const match = /^\[wsx exchange ([1-9][0-9]{0,19}), round ([1-9][0-9]{0,9}), (?:read-only|writer)\]\n/.exec(text);
+      if (!match) {
+        const observed = goal();
+        // Same native Task retains compatible user steering; replacement/fork invalidates it.
+        if (!binding || !observed?.active || observed.key !== binding.taskKey || !rememberTask(binding, observed)) clear();
+        return;
+      }
+      clear();
+      if (!ready() || hasImages || Buffer.byteLength(text, "utf8") > 64 * 1024 + 256
+          || BigInt(match[1]) > 0xffffffffffffffffn || Number(match[2]) > 0xffffffff) return;
+      pendingInput = { exchange: match[1], round: Number(match[2]),
+        digest: createHash("sha256").update(text, "utf8").digest("hex"), inputId: randomUUID(),
+        session: sessionKey(ctx), generation: generation! };
+    },
+    async beforeStart(prompt: string, ctx: ExtensionContext, hasImages: boolean) {
+      const input = pendingInput;
+      pendingInput = undefined;
+      if (!input) return;
+      const observed = goal();
+      if (!ready() || !observed || hasImages || input.session !== sessionKey(ctx)
+          || createHash("sha256").update(prompt, "utf8").digest("hex") !== input.digest) { clear(); return; }
+      const ticket = epoch;
+      try {
+        await flushReports();
+        const reply = await receipt(input, "accepted");
+        const exchange = reply.exchange;
+        if (ticket !== epoch || !ready() || input.session !== sessionKey(ctx)) return;
+        if (!exchange || exchange.native_input_id !== input.inputId || exchange.delivery_sha256 !== input.digest
+            || exchange.round !== input.round || String(exchange.pane_id) !== paneId
+            || exchange.runtime_generation !== input.generation || !Number.isSafeInteger(exchange.deadline_unix_ms)) throw new Error("invalid native acceptance response");
+        binding = { ...input, deadline: exchange.deadline_unix_ms, ctx, settled: false,
+          initialKey: observed.key, taskKey: observed.active ? observed.key : undefined };
+        timer = setInterval(checkCompletion, 500);
+        timer.unref?.();
+      } catch (error) {
+        clear();
+        console.warn(`wsx: native Pi input was not bound: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+    reset: clear,
+    start() { if (binding) binding.settled = false; },
+    end(successful: boolean) { if (!successful) clear(); },
+    settled(ctx: ExtensionContext) {
+      if (!binding) return;
+      binding.ctx = ctx;
+      binding.settled = true;
+      // Let all native settlement observers run; Task ownership is checked again on the timer.
+    },
+    dispose() {
+      disposed = true;
+      supported = false;
+      clear();
+      if (typeof unsubscribeGoal === "function") unsubscribeGoal();
+    },
+  };
+}
+
 type AsyncUiMethod = (...args: unknown[]) => Promise<unknown>;
 
 // ^ Pi shares one mutable ExtensionUIContext across extension callbacks. Wrapping
@@ -204,6 +378,8 @@ export function observeBlockingUi(uiValue: unknown, onChange: (delta: number) =>
 // Pi owns lifecycle interpretation; wsx only accepts the normalized report.
 export default function wsxAgentStatus(pi: ExtensionAPI): void {
   const publish = () => report(blockedCount > 0 ? "blocked" : agentActive ? "working" : "idle");
+  const native = observeNativeExchanges(pi, publish);
+  inputBindingReady = native.ready;
   let restoreBlockingUi: (() => void) | undefined;
   const updateBlocked = (delta: number) => {
     blockedCount = Math.max(0, blockedCount + delta);
@@ -215,7 +391,17 @@ export default function wsxAgentStatus(pi: ExtensionAPI): void {
     blockedCount = blocked?.active ? blockedCount + 1 : Math.max(0, blockedCount - 1);
     publish();
   });
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_before_switch", () => { native.reset(); });
+  pi.on("session_before_fork", () => { native.reset(); });
+  pi.on("session_before_tree", () => { native.reset(); });
+  pi.on("input", (event, ctx) => {
+    native.input(event.text, event.source, ctx, Boolean(event.images?.length));
+    return { action: "continue" };
+  });
+  pi.on("before_agent_start", async (event, ctx) => {
+    await native.beforeStart(event.prompt, ctx, Boolean(event.images?.length));
+  });
+  pi.on("session_start", async (_event, ctx) => {
     presenceActive = true;
     restoreBlockingUi?.();
     restoreBlockingUi = undefined;
@@ -225,9 +411,11 @@ export default function wsxAgentStatus(pi: ExtensionAPI): void {
     if (ctx.hasUI) restoreBlockingUi = observeBlockingUi(ctx.ui, updateBlocked);
     startHeartbeat();
     publish();
+    await native.initialize(ctx);
   });
   pi.on("agent_start", (_event, ctx) => {
     clearPendingSettlement();
+    native.start();
     agentRunGeneration += 1;
     currentSessionRef = sessionRef(ctx);
     agentActive = true;
@@ -238,8 +426,10 @@ export default function wsxAgentStatus(pi: ExtensionAPI): void {
     currentSessionRef = sessionRef(ctx);
     const finalAssistant = event.messages.slice().reverse().find((message) => message.role === "assistant");
     lastRunAborted = finalAssistant?.stopReason === "aborted";
+    native.end(finalAssistant?.stopReason === "stop");
   });
   pi.on("agent_settled", (_event, ctx) => {
+    native.settled(ctx);
     currentSessionRef = sessionRef(ctx);
     const settledSessionRef = currentSessionRef;
     const settledRunGeneration = agentRunGeneration;
@@ -255,6 +445,7 @@ export default function wsxAgentStatus(pi: ExtensionAPI): void {
     pendingSettlement.unref?.();
   });
   pi.on("session_shutdown", async () => {
+    native.dispose();
     restoreBlockingUi?.();
     restoreBlockingUi = undefined;
     blockedCount = 0;

@@ -4,14 +4,16 @@
 
 ### Breaking Changes
 
-- Rust callers that construct `AgentExchange` must provide its new optional `delivery_sha256` and `native_input_id` fields. Older JSON without the field still decodes as no native input binding.
+- Rust callers that construct `AgentExchange` must provide its new optional `delivery_sha256` and `native_input_id` fields. `Capabilities` construction also needs `agent_exchange_bound_receipts`. Older JSON without these fields still decodes as no native input binding or support.
 
 ### Fixes
 
+- Keep an accepted native request active when the pane reports DoneObserved. Daemon revision 20 preserves its one-active-exchange fence, writer claims, expiry and cold-recovery interruption until a request-bound result or explicit terminal failure. Legacy unbound observations remain compatible.
 - Enforce an active exchange's deadline when a native receipt arrives, even without a preceding read probe. Daemon revision 19 records expiry before refusing the late receipt.
 
 ### Improvements
 
+- Connect Pi's native input and expanded prompt to guarded receipts when the loaded observer, Pygmalion Goal Run owner and daemon bound-receipt support are available. Hold completion through automatic Task continuations and compatible steering; withhold it after abort, error, Task/session/runtime replacement or disposal. Other installations stay lifecycle-only. Deterministic SDK fixtures are not a real-model orchestration trial.
 - Add guarded native receipt submission with exact pane, live runtime, round and delivery digest checks. Bind completion to a prior accepted native input ID; reject overdue DoneObserved completion and legacy receipt bypass after binding. Older daemons refuse the distinct request instead of silently dropping its guards.
 - Bind each successful exchange delivery round to the SHA-256 of its exact terminal input without persisting prompt text in receipts. Clear the binding before continuation and on failed delivery; legacy responses remain unbound. Native adapter correlation and completion remain separate requirements.
 - Add machine-facing `agent exchange-receipt` submission through the existing generation/round/capability-bound daemon contract. Require the injected generation and an existing daemon; do not bootstrap, retry, infer completion from lifecycle or enable an unconnected provider adapter.

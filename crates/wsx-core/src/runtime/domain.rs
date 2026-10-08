@@ -352,6 +352,22 @@ pub struct AgentExchange {
     pub revision: u64,
 }
 
+impl AgentExchange {
+    /// ^ docs/agent-orchestration.md: a bound native request retains ownership until its own result.
+    pub fn is_terminal(&self) -> bool {
+        self.state.is_terminal()
+            && (self.state != AgentExchangeState::DoneObserved || self.native_input_id.is_none())
+    }
+
+    pub fn is_wait_boundary(&self) -> bool {
+        self.is_terminal() || self.state == AgentExchangeState::BlockedObserved
+    }
+
+    pub fn can_continue(&self) -> bool {
+        self.is_wait_boundary()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pane {
     pub id: PaneId,
@@ -412,6 +428,7 @@ pub struct Capabilities {
     pub daemon_revision_coordination: bool,
     pub live_handoff: bool,
     pub agent_exchanges: bool,
+    pub agent_exchange_bound_receipts: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

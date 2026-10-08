@@ -23,7 +23,7 @@ pub const ROUTINE_DAEMON_ARG: &str = "__wsx_routine_daemon";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ^ Receipt expiry and final PTY drain are daemon-owned runtime behavior.
 // UI-only releases continue to reuse wsxd. See docs/agent-orchestration.md and docs/terminal-exit-ordering.md.
-pub const DAEMON_REVISION: u32 = 19;
+pub const DAEMON_REVISION: u32 = 20;
 
 fn default_attached() -> bool {
     true
@@ -601,6 +601,7 @@ mod tests {
         assert!(!capabilities.lifecycle_coordination);
         assert!(!capabilities.daemon_revision_coordination);
         assert!(!capabilities.agent_exchanges);
+        assert!(!capabilities.agent_exchange_bound_receipts);
     }
 
     #[test]

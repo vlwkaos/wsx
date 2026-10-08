@@ -51,6 +51,10 @@ Already-loaded adapter/helper code cannot be repaired by changing its file alone
 Do not restart the shell or daemon to refresh an adapter. Current-CLI recovery does
 not require daemon handoff to finish; missing or unsafe candidates still fail explicitly.
 
+## Pi native exchange observer
+
+Pi integration 20 keeps lifecycle-only behavior without Pygmalion's Goal Run owner or daemon bound-receipt support. With both present, the loaded observer advertises prompt/receipt support, binds exact delivered native input before a run, and holds completion through Task continuations. See [native request-bound receipts](agent-orchestration.md#native-request-bound-receipts). Update assets and load the new extension through the provider's normal lifecycle; never rewrite or restart an unrelated live pane. Updating files alone does not alter loaded code.
+
 ## Verification
 
 - `node scripts/test-agent-reporter.mjs` checks removed-path recovery and no rejection replay.
