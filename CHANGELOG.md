@@ -20,6 +20,10 @@
 - Add scoped `wsx agent context --metadata-only` discovery with bounded identities and advisory readiness, without reading native transcripts. Default native-history projection remains available.
 - Generate portable shell-hook configuration from provider root environment variables and `HOME`, using the same root declaration as installation. Migrate owned legacy bindings from another device while retaining unrelated hooks and compound commands. Preserve quoted paths, stdin and repeated-install behavior. Install integration assets separately on each device; already-running agent environments are unchanged.
 
+### Documentation
+
+- Update both READMEs for metadata-first discovery and conditional native Pi completion. State that arbitrary-provider submission, structured questions and the reported Claude handoff repair remain outside the verified increment.
+
 ## [0.29.3] - 2026-10-06
 
 ### Fixes
