@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-10-08
+
 ### Breaking Changes
 
 - Rust callers that construct `AgentExchange` must provide its new optional `delivery_sha256` and `native_input_id` fields. `Capabilities` construction also needs `agent_exchange_bound_receipts`. Older JSON without these fields still decodes as no native input binding or support.
