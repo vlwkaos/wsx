@@ -310,6 +310,8 @@ def main():
         assert 'bound_receipt_required' in receipt('completed',ok=False).stderr
         cli('session','send-text',claude,'\x12','--no-enter')
         wait(lambda: call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'done_observed','done lifecycle')
+        assert 'exchange_busy' in cli('agent','request',claude,'must wait for native completion','--json',ok=False).stderr
+        assert 'wait_timeout' in cli('agent','wait',exchange['id'],'--timeout','1','--json',ok=False).stderr
         completed = json.loads(receipt('completed',bound=True).stdout)['exchange']
         assert completed['state'] == 'completed' and completed['evidence'] == 'request_bound'
         assert json.loads(receipt('completed',bound=True).stdout)['exchange']['revision'] == completed['revision']
@@ -351,7 +353,7 @@ def main():
         wait(lambda: call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'done_observed','late done observation')
         time.sleep(max(0,exchange['deadline_unix_ms']/1000-time.time())+0.1)
         assert 'receipt_deadline_exceeded' in receipt('completed',bound=True,ok=False).stderr
-        assert call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'done_observed'
+        assert call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'expired'
         cli('session','send-text',claude,'\x13\x11','--no-enter')
         wait(lambda: 'unsent draft' in cli('session','peek',claude,'--trim').stdout,'restored draft with unsupported binding')
         failed = json.loads(cli('agent','continue',exchange['id'],'must not arrive','--stash-draft','--json').stdout)['exchange']

@@ -2750,6 +2750,7 @@ fn capabilities() -> Capabilities {
         daemon_revision_coordination: true,
         live_handoff: true,
         agent_exchanges: true,
+        agent_exchange_bound_receipts: true,
     }
 }
 
@@ -3947,7 +3948,7 @@ fn terminate_agent_exchanges(
 ) {
     let now = unix_time_millis();
     for exchange in &mut persisted.agent_exchanges {
-        if pane_ids.contains(&exchange.pane_id) && !exchange.state.is_terminal() {
+        if pane_ids.contains(&exchange.pane_id) && !exchange.is_terminal() {
             exchange.state = exchange_state;
             exchange.updated_unix_ms = now;
             exchange.revision = revision;
@@ -3967,7 +3968,7 @@ fn observe_agent_exchange(
         .agent_exchanges
         .iter_mut()
         .rev()
-        .find(|exchange| exchange.pane_id == pane_id && !exchange.state.is_terminal())
+        .find(|exchange| exchange.pane_id == pane_id && !exchange.is_terminal())
     else {
         return;
     };
@@ -4482,7 +4483,7 @@ fn claims_overlap(left: &[PathBuf], right: &[PathBuf]) -> bool {
 fn has_writer_claim_conflict(exchanges: &[AgentExchange], claims: &[PathBuf]) -> bool {
     exchanges.iter().any(|exchange| {
         exchange.access == AgentExchangeAccess::Writer
-            && !exchange.state.is_terminal()
+            && !exchange.is_terminal()
             && claims_overlap(claims, &exchange.write_claims)
     })
 }
@@ -4606,14 +4607,14 @@ fn expire_due_agent_exchanges(daemon: &Daemon, state: &mut State) -> Result<(), 
         .persisted
         .agent_exchanges
         .iter()
-        .any(|exchange| !exchange.state.is_terminal() && exchange.deadline_unix_ms <= now)
+        .any(|exchange| !exchange.is_terminal() && exchange.deadline_unix_ms <= now)
     {
         return Ok(());
     }
     let revision = state.revision.saturating_add(1);
     let mut persisted = state.persisted.clone();
     for exchange in &mut persisted.agent_exchanges {
-        if !exchange.state.is_terminal() && exchange.deadline_unix_ms <= now {
+        if !exchange.is_terminal() && exchange.deadline_unix_ms <= now {
             exchange.state = AgentExchangeState::Expired;
             exchange.updated_unix_ms = now;
             exchange.revision = revision;
@@ -4702,7 +4703,7 @@ fn create_agent_exchange_with_draft(
         .persisted
         .agent_exchanges
         .iter()
-        .any(|exchange| exchange.pane_id == pane_id && !exchange.state.is_terminal())
+        .any(|exchange| exchange.pane_id == pane_id && !exchange.is_terminal())
     {
         return Err(api("exchange_busy", "pane already has an active exchange"));
     }
@@ -4755,7 +4756,7 @@ fn create_agent_exchange_with_draft(
         let Some(index) = persisted
             .agent_exchanges
             .iter()
-            .position(|exchange| exchange.state.is_terminal())
+            .position(|exchange| exchange.is_terminal())
         else {
             return Err(api("exchange_limit", "too many active agent exchanges"));
         };
@@ -4874,7 +4875,7 @@ fn continue_agent_exchange_with_draft(
         .cloned()
         .ok_or_else(|| api("not_found", "agent exchange not found"))?;
     expect_revision(previous.revision, expected_revision)?;
-    if !previous.state.can_continue()
+    if !previous.can_continue()
         || matches!(
             previous.state,
             AgentExchangeState::Cancelled
@@ -4995,7 +4996,7 @@ fn expire_agent_exchange(
 ) -> Result<(), ApiError> {
     let now = unix_time_millis();
     let should_expire = state.persisted.agent_exchanges.iter().any(|exchange| {
-        exchange.id == id && !exchange.state.is_terminal() && exchange.deadline_unix_ms <= now
+        exchange.id == id && !exchange.is_terminal() && exchange.deadline_unix_ms <= now
     });
     if !should_expire {
         return Ok(());
@@ -5086,7 +5087,7 @@ fn wait_agent_exchange(
             .iter()
             .find(|exchange| exchange.id == id)
             .ok_or_else(|| api("not_found", "agent exchange not found"))?;
-        if current.revision > after_revision || current.state.is_wait_boundary() {
+        if current.revision > after_revision || current.is_wait_boundary() {
             break;
         }
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
@@ -5312,7 +5313,7 @@ fn cancel_agent_exchange(
         .cloned()
         .ok_or_else(|| api("not_found", "agent exchange not found"))?;
     expect_revision(exchange.revision, expected_revision)?;
-    if exchange.state.is_terminal() {
+    if exchange.is_terminal() {
         return Err(api(
             "invalid_exchange_state",
             "exchange is already terminal",
@@ -6484,7 +6485,7 @@ fn load_state_with_status(path: &Path) -> io::Result<(Persisted, bool)> {
     }
     let now = unix_time_millis();
     for exchange in &mut state.agent_exchanges {
-        if !exchange.state.is_terminal() {
+        if !exchange.is_terminal() {
             exchange.state = AgentExchangeState::Interrupted;
             exchange.updated_unix_ms = now;
             exchange.revision = exchange.revision.saturating_add(1);
@@ -6577,7 +6578,7 @@ fn validate_persisted(state: &Persisted) -> io::Result<()> {
         {
             return Err(invalid());
         }
-        if !exchange.state.is_terminal() {
+        if !exchange.is_terminal() {
             let Some(pane) = state.panes.iter().find(|pane| pane.id == exchange.pane_id) else {
                 return Err(invalid());
             };
