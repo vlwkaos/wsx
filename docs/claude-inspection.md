@@ -1,71 +1,69 @@
-# Source-only Claude inspection (0.30.1-inspect.1)
+# Source-only hook inspection (0.30.1-inspect.2)
 
-This branch is a diagnostic build based on v0.30.0, not a stable release or a confirmed Claude fix. It does not change daemon revision 20, prompt submission, transcript persistence, report authority, or default hook output. Do not launch the preview TUI or stop the daemon just to inspect an existing session.
+This branch diagnoses Claude and Codex reports. It is not a stable release or a confirmed hook, prompt-submission, or transcript-saving fix. It preserves daemon revision 20, report-once behavior, generation fences, default hook output, and transcript settings. Keep existing 0.29.3 TUI/daemon/agent sessions running. Do not launch the preview TUI or overwrite installed binaries.
 
-## Build on the affected machine
+## Run after pulling `feat/claude-inspection`
 
-Use a separate checkout. Keep installed binaries and running sessions intact. The existing Rust/Zig build requirements apply; no new dependency is added. Inspection supports macOS and Linux, not Windows.
-
-```sh
-git clone --branch feat/claude-inspection --single-branch https://github.com/vlwkaos/wsx.git wsx-inspection
-cd wsx-inspection
-cargo build --locked -p wsx -p wsx-daemon
-./target/debug/wsx --version
-./target/debug/wsx agent install claude
-```
-
-Expect `wsx 0.30.1-inspect.1`. Installation refreshes only the Claude assets and WSX-owned configuration bindings through the existing installer. Claude integration is 20. Do not run `cargo install`, overwrite Homebrew binaries, or create a release tag.
-
-## Existing session (without restart or prompt replay)
-
-An old session can retain an old reporter path, missing generation metadata, or loaded hook configuration. Installing files is not proof that the session loaded them. Do not inject `export` commands into an active Claude editor.
-
-Enable the empty, owner-only marker beside the installed hook. Use an absolute `CLAUDE_CONFIG_DIR` if configured:
+From the inspection repository root, paste:
 
 ```sh
-root="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-touch "$root/hooks/wsx-inspect-enabled"
-chmod 600 "$root/hooks/wsx-inspect-enabled"
+(
+  set -e
+  cargo build --locked -p wsx -p wsx-daemon
+  ./target/debug/wsx agent install claude
+  ./target/debug/wsx agent install codex
+  claude_root="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  codex_root="${CODEX_HOME:-$HOME/.codex}"
+  touch "$claude_root/hooks/wsx-inspect-enabled" "$codex_root/wsx-inspect-enabled"
+  chmod 600 "$claude_root/hooks/wsx-inspect-enabled" "$codex_root/wsx-inspect-enabled"
+  ./target/debug/wsx --version
+)
 ```
 
-The marker enables inspection for **all Claude sessions that invoke this hook directory**, including existing sessions without `WSX_INSPECT` in their environment. Symlink, nonempty, wrong-owner, or nonprivate markers do not enable it. It does not load or restart an old session's hook configuration. Let normal work produce the next lifecycle/Stop event; do not resend an uncertain prompt or send speculative Enter.
+Expect `wsx 0.30.1-inspect.2`. If inspecting only Claude, omit the Codex install and marker. Use the same absolute custom provider roots as the affected sessions. Existing Rust/Zig and Python 3 requirements apply; no new dependency is added. macOS/Linux only. Codex requires 0.150 or newer. Review changed WSX hook definitions through Codex's native trust flow; enabling a hook does not grant trust.
 
-A `wsx inspect {…}` line proves that invocation reached integration 20. No line can also mean no event, an old hook binding, absent Python, or failed inspection; it does not prove successful reporting. Use Claude's supported reload only when safe, or a separately created test session. Leave protected existing sessions intact.
+Let normal work produce a hook event. Do not restart an agent, replay a draft, run the hook manually, inject shell exports into an agent editor, or force persistence. Installing files does not prove that an old session loaded updated hook bindings. A marker enables all sessions invoking that hook directory without modifying their environment.
 
-## Fresh test session
+## Paste the records
 
-In a new managed pane, inspect marker presence **before** launching Claude. Do not print values or dump the environment:
+After Claude or Codex finishes, run:
 
 ```sh
-if [ "${CLAUDE_CODE_CHILD_SESSION+x}" = x ]; then printf 'launch child_session_marker=present\n'; else printf 'launch child_session_marker=absent\n'; fi
-if [ "${CLAUDE_CODE_FORCE_SESSION_PERSISTENCE+x}" = x ]; then printf 'launch force_persistence_marker=present\n'; else printf 'launch force_persistence_marker=absent\n'; fi
-WSX_INSPECT=1 claude
+python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/wsx-agent-inspect.py" --read
+python3 "${CODEX_HOME:-$HOME/.codex}/wsx-agent-inspect.py" --read
 ```
 
-The flag is launch-time only. Setting it on a wsx frontend cannot change an existing Claude environment. v0.30.0 already strips inherited `CLAUDE_CODE_CHILD_SESSION` at fresh PTY spawn, before explicit pane overrides. Hook-process marker presence is not evidence of Claude's startup environment or transcript saving. Do not force persistence as part of this inspection.
+The reader prints only validated `wsx inspect {...}` metadata from each private journal. Skip the other provider's command if it was not installed. Share this output, whether the session predated the update, and whether Claude still shows the transcript warning. No transcript, full debug log, environment dump, or screen capture is needed.
 
-## Read the result
+Claude can hide successful hooks' stderr. Unlike inspect.1, inspect.2 saves both successes and failures to `wsx-inspect.jsonl` beside the hook. The journal is mode 600, retains at most 32 records and 64 KiB, and each record is below 2 KiB. Nonblocking locks avoid concurrent record corruption; a busy/unsafe/unavailable journal can drop a record but never change reporting success or failure. The reader refuses symlinks, non-regular files, extra hardlinks, wrong ownership, and nonprivate permissions. Invalid records are not echoed. No log is created while inspection is disabled.
+
+A record proves that invocation reached Claude integration 21 or Codex integration 15. No record means the event/new binding/inspection did not produce a usable journal record; it does not prove that reporting succeeded. Journal failure can still emit bounded stderr metadata with `inspection_log_unavailable`. Stop and share the reader's fixed error rather than relaxing file permissions.
+
+## What records establish
 
 | Field | Meaning and limit |
 |---|---|
-| `hook_build`, `hook_integration` | Build embedded in the hook that actually ran. Not the agent's launch version. |
-| `reporter_version_observed` | Protected reporter's current `--version`, observed after the report. A stable symlink can change during handoff; this is not proof of the executable used by an earlier report. |
-| `daemon_version_observed`, `daemon_revision_observed` | Read-only `runtime status` observation after the report. Probed only through released 0.30.0 or this inspection build, whose non-starting dispatch is source-backed. Other reporters leave it unknown; no eager bootstrap is assumed safe. |
-| `runtime_generation` | Presence only. `stale_runtime` proves the report was rejected by its generation fence; presence alone does not prove validity. |
-| `report_attempted`, `report_exit`, `error_code` | Actual report attempt/CLI exit and bounded error code, or a skipped-input reason. Exit zero is a report ACK, not prompt acceptance or native completion. |
-| `warnings` | Older/different/unknown reporter or missing/rejected generation. Older does not automatically mean incompatible or a broken session. |
-| `agent_launch_version`, `agent_startup_environment` | Deliberately unknown. Current package or daemon versions do not establish how an existing agent launched. |
+| `provider`, `recorded_at_unix_ms`, `action`, `pane` | Correlation metadata for this invocation, not conversation content. |
+| `hook_build`, `hook_integration` | Version embedded in the hook that ran, not the agent's launch version. |
+| `reporter_version_observed` | Protected reporter's current version after reporting, not proof of the executable used before a handoff. |
+| `daemon_version_observed`, `daemon_revision_observed` | Read-only observation after reporting. Only source-verified 0.29.3, released 0.30.0, and this build may probe runtime status; other reporters leave it unknown. |
+| `runtime_generation` | Presence only. `stale_runtime` establishes rejection; presence alone is not validity. |
+| `report_attempted`, `report_exit`, `error_code` | CLI reporting result or skipped-input reason. Exit zero is a report ACK, not prompt acceptance or native completion. |
+| `warnings` | Older/different/unknown reporter, missing/rejected generation, or unavailable journal. Older does not imply incompatible. |
+| Child/persistence markers | Hook-process presence only, not startup environment or actual transcript saving. |
+| `agent_launch_version`, `agent_startup_environment` | Deliberately unknown. Existing processes do not inherit frontend environment changes. |
 
-Only safe metadata is emitted. No prompt, transcript contents, native session ID, generation value, credential, screen text, keystroke, or path is logged. Each line is below 2 KiB. At most two read-only CLI probes cap output/time (128/8192 bytes and 0.75 seconds each); failed inspection does not change the report result. The report itself is never replayed. Heartbeat behavior is unchanged.
+No prompt, transcript contents, native session ID, generation value, credential, screen text, keystroke, or path is recorded. At most two protected read-only probes cap output/time (128/8192 bytes and 0.75 seconds each). Reporter stderr contributes only a bounded error code; it is never echoed wholesale. Failed inspection never replays a report. Heartbeats are unchanged.
 
-For a remote receipt, share the version output, inspection lines, whether the session predated the update, and whether the transcript warning occurred in an existing or fresh session. Do not send a transcript or terminal dump. Actual Claude Stop-hook operation, prompt submission, and transcript saving remain separate remote verification outcomes.
+## Fresh sessions and disable
 
-## Disable
+For a separately created managed pane, `WSX_INSPECT=1 claude` or `WSX_INSPECT=1 codex` enables inspection at launch. Do not restart an existing session for this test. v0.30.0 strips inherited `CLAUDE_CODE_CHILD_SESSION` at fresh PTY spawn; an existing 0.29.3 daemon does not gain that repair by installing hooks. No transcript-saving claim follows from these diagnostics.
 
-If you created the marker above, remove only that marker:
+Remove only markers you created to stop marker-enabled recording:
 
 ```sh
-rm -- "$root/hooks/wsx-inspect-enabled"
+rm -- "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/wsx-inspect-enabled"
+rm -- "${CODEX_HOME:-$HOME/.codex}/wsx-inspect-enabled"
 ```
 
-For environment-enabled sessions, the flag remains in that process until it exits naturally. Disabling the marker cannot remove an inherited environment flag. To restore published hooks later, run the installed stable CLI's `wsx agent install claude` when safe; changing files alone still does not prove loaded configuration changed.
+An inherited `WSX_INSPECT=1` persists until that process naturally exits. Existing private journals remain for diagnosis; removing a marker does not delete them or clear environment flags. Restore published hooks later with the installed stable CLI's `wsx agent install <provider>` when safe. No stable tag, release publication, or live-session replacement belongs to this inspection flow.

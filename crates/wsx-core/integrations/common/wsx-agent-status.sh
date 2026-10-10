@@ -5,11 +5,11 @@ set -eu
 action="${1:-unknown}"
 # ^ docs/claude-inspection.md: inspection is opt-in and never changes report authority.
 inspect_report() {
-  [ "@PROVIDER@" = "claude" ] || return 0
+  case "@PROVIDER@" in claude|codex) ;; *) return 0 ;; esac
   [ "${WSX_INSPECT:-}" = "1" ] || [ -e "$(dirname "$0")/wsx-inspect-enabled" ] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
-  if diagnostic="$(printf '%s' "${result:-}" | python3 "$(dirname "$0")/wsx-claude-inspect.py" \
-      "@BUILD@" "@VERSION@" "$action" "${report_bin:-${WSX_AGENT_REPORT_BIN:-wsx}}" "$1" "$2" 2>/dev/null)"; then
+  if diagnostic="$(printf '%s' "${result:-}" | python3 "$(dirname "$0")/wsx-agent-inspect.py" \
+      "@PROVIDER@" "@BUILD@" "@VERSION@" "$action" "${report_bin:-${WSX_AGENT_REPORT_BIN:-wsx}}" "$1" "$2" 2>/dev/null)"; then
     [ -z "$diagnostic" ] || printf '%s\n' "$diagnostic" >&2
   fi
   return 0

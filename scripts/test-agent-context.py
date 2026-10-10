@@ -268,14 +268,24 @@ def main():
                 env=selected,capture_output=True,text=True,timeout=5)
         def claude_agent():
             return next(pane for pane in call('snapshot')['data']['panes'] if pane['id'] == claude)['agent']
+        inspector = work / 'home/.claude/hooks/wsx-agent-inspect.py'
+        journal = inspector.with_name('wsx-inspect.jsonl')
         def inspection(result):
             records = [line for line in result.stderr.splitlines() if line.startswith('wsx inspect ')]
             assert len(records) == 1 and len(records[0].encode()) < 2048, result.stderr
             assert private not in result.stderr and generation not in result.stderr
             assert str(work) not in result.stderr and 'native-only' not in result.stderr
-            return json.loads(records[0][len('wsx inspect '):])
+            observed = json.loads(records[0][len('wsx inspect '):])
+            saved = subprocess.run([sys.executable,str(inspector),'--read'],env=env,
+                                   capture_output=True,text=True,check=True,timeout=5)
+            assert saved.stdout.splitlines()[-1] == records[0]
+            assert journal.stat().st_mode & 0o777 == 0o600
+            assert private not in saved.stdout and generation not in saved.stdout and str(work) not in saved.stdout
+            assert journal.stat().st_size <= 65536
+            return observed
         quiet = claude_hook('done')
         assert quiet.returncode == 0 and quiet.stderr == '' and claude_agent()['state'] == 'done'
+        assert not journal.exists(), 'disabled inspection created a journal'
         marker = work / 'home/.claude/hooks/wsx-inspect-enabled'
         marker.touch(mode=0o600)
         acknowledged = claude_hook('idle')
@@ -311,7 +321,52 @@ def main():
         assert observed['reporter_version_observed'] == expected_reporter
         if args.inspection_legacy_wsx:
             assert 'older_reporter_observed' in observed['warnings']
-        inspector = work / 'home/.claude/hooks/wsx-claude-inspect.py'
+        # Journal refusal must not alter a real accepted/rejected report or follow a symlink.
+        saved_journal = journal.with_suffix('.saved')
+        journal.rename(saved_journal)
+        protected_target = work / 'untouched-journal-target'
+        protected_target.write_text(private)
+        journal.symlink_to(protected_target)
+        try:
+            result = claude_hook('done',{'WSX_INSPECT':'1'})
+            assert result.returncode == 0 and claude_agent()['state'] == 'done'
+            assert 'inspection_log_unavailable' in result.stderr
+            assert protected_target.read_text() == private
+            result = subprocess.run([sys.executable,str(inspector),'--read'],env=env,
+                                    capture_output=True,text=True,timeout=5)
+            assert result.returncode != 0 and private not in result.stdout + result.stderr
+        finally:
+            journal.unlink()
+            saved_journal.rename(journal)
+        # Repeated real callbacks exercise retention, not a copied journal implementation.
+        for _ in range(34):
+            result = claude_hook('idle',{'WSX_INSPECT':'1'})
+            assert result.returncode == 0 and claude_agent()['state'] == 'idle'
+        saved = subprocess.check_output([sys.executable,str(inspector),'--read'],env=env,text=True,timeout=5)
+        assert len(saved.splitlines()) == 32 and len(saved.encode()) < 65536
+        assert private not in saved and generation not in saved and str(work) not in saved
+        with journal.open('ab') as stream:
+            stream.write((json.dumps({'schema_version':2,'prompt':private})+'\n').encode())
+        filtered = subprocess.check_output([sys.executable,str(inspector),'--read'],env=env,text=True,timeout=5)
+        assert private not in filtered and len(filtered.splitlines()) == 32
+        codex_inspector = second_home / '.codex/wsx-agent-inspect.py'
+        codex_marker = codex_inspector.with_name('wsx-inspect-enabled')
+        codex_marker.touch(mode=0o600)
+        accepted_codex = hook_report('working',codex_generation)
+        assert accepted_codex.returncode == 0 and codex_agent()['state'] == 'working'
+        rejected_codex = hook_report('blocked','stale-generation')
+        assert rejected_codex.returncode == 1 and codex_agent()['state'] == 'working'
+        codex_records = subprocess.check_output([sys.executable,str(codex_inspector),'--read'],env=env,text=True,timeout=5)
+        entries = [json.loads(line[len('wsx inspect '):]) for line in codex_records.splitlines()]
+        assert entries[-2]['provider'] == 'codex' and entries[-2]['report_exit'] == 0
+        assert entries[-1]['error_code'] == 'stale_runtime' and entries[-1]['report_exit'] != 0
+        assert codex_generation not in codex_records and str(work) not in codex_records
+        codex_marker.unlink()
+        # Restore this private actor's deliberate prompt capability for the
+        # existing unsupported-provider draft-policy journey below.
+        assert call('agent_report',{'pane_id':codex,'runtime_generation':codex_generation,
+            'provider':'codex','state':'idle','session_ref':{'kind':'id','value':'fixture'},
+            'capabilities':{'prompt':True,'lifecycle':True}})['type'] == 'ack'
         backup = inspector.with_suffix('.saved')
         inspector.rename(backup)
         try:
