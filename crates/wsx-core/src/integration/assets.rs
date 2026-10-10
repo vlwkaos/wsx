@@ -1,6 +1,8 @@
 use super::{IntegrationTarget, LifecycleCapability};
 
 const SHELL: &str = include_str!("../../integrations/common/wsx-agent-status.sh");
+pub(crate) const CLAUDE_INSPECT: &str =
+    include_str!("../../integrations/common/wsx-claude-inspect.py");
 const PLUGIN: &str = include_str!("../../integrations/common/wsx-opencode-agent-status.js");
 const PI: &str = include_str!("../../integrations/pi/wsx-agent-status.ts");
 const OMP: &str = include_str!("../../integrations/omp/wsx-agent-status.ts");
@@ -32,6 +34,7 @@ pub(crate) fn primary(target: IntegrationTarget) -> String {
             HERMES.replace("../common/wsx-reporter.py", "./wsx-reporter.py")
         }
         _ => SHELL
+            .replace("@BUILD@", env!("CARGO_PKG_VERSION"))
             .replace("@VERSION@", &target.expected_version().to_string())
             .replace("@PROVIDER@", target.cli_value())
             .replace(

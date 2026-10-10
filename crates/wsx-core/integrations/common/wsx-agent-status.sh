@@ -3,7 +3,21 @@
 # WSX_INTEGRATION_VERSION=@VERSION@
 set -eu
 action="${1:-unknown}"
-[ -n "${WSX_PANE_ID:-}" ] || exit 0
+# ^ docs/claude-inspection.md: inspection is opt-in and never changes report authority.
+inspect_report() {
+  [ "@PROVIDER@" = "claude" ] || return 0
+  [ "${WSX_INSPECT:-}" = "1" ] || [ -e "$(dirname "$0")/wsx-inspect-enabled" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  if diagnostic="$(printf '%s' "${result:-}" | python3 "$(dirname "$0")/wsx-claude-inspect.py" \
+      "@BUILD@" "@VERSION@" "$action" "${report_bin:-${WSX_AGENT_REPORT_BIN:-wsx}}" "$1" "$2" 2>/dev/null)"; then
+    [ -z "$diagnostic" ] || printf '%s\n' "$diagnostic" >&2
+  fi
+  return 0
+}
+if [ -z "${WSX_PANE_ID:-}" ]; then
+  inspect_report 0 no_pane
+  exit 0
+fi
 # ^ docs/agent-reporting.md: recover only a removed absolute legacy reporter.
 report_bin="${WSX_AGENT_REPORT_BIN:-wsx}"
 case "$report_bin" in
@@ -33,6 +47,7 @@ try:
  if any("|" in value or any(ord(c)<32 for c in value) for value in values): raise SystemExit(1)
  print("|".join(values))
 except (TypeError, ValueError): pass' 2>/dev/null)"; then
+    inspect_report 0 metadata_skipped
     exit 0
   fi
   conversation="${metadata%%|*}"
@@ -54,7 +69,10 @@ set -- agent report "$WSX_PANE_ID" --provider "@PROVIDER@" --state "$state"
 # ^ A rejected lifecycle report must not look like a healthy hook. Keep the
 # diagnostic bounded and avoid echoing vendor input or terminal contents.
 if result=$("$report_bin" "$@" 2>&1); then
+  inspect_report 0 reported
   exit 0
+else
+  report_status=$?
 fi
 case "$result" in
   *stale_runtime*) reason=stale_runtime ;;
@@ -62,5 +80,6 @@ case "$result" in
   *'Connection refused'*|*'No such file or directory'*) reason=daemon_unreachable ;;
   *) reason=report_failed ;;
 esac
+inspect_report "$report_status" "$reason"
 printf 'wsx %s %s report failed (%s)\n' '@PROVIDER@' "$action" "$reason" >&2
 exit 1
