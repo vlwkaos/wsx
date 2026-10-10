@@ -206,6 +206,16 @@ fn install_in(target: IntegrationTarget, root: &Path) -> io::Result<InstallResul
         reporter_content.into(),
         false,
     ));
+    if target == IntegrationTarget::Claude {
+        prepared.push((
+            asset
+                .parent()
+                .expect("Claude asset has a parent")
+                .join("wsx-claude-inspect.py"),
+            assets::CLAUDE_INSPECT.into(),
+            false,
+        ));
+    }
     if target == IntegrationTarget::Hermes {
         let directory = asset.parent().expect("Hermes asset has a parent");
         prepared.push((

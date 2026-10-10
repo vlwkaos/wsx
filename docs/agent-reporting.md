@@ -51,6 +51,10 @@ Already-loaded adapter/helper code cannot be repaired by changing its file alone
 Do not restart the shell or daemon to refresh an adapter. Current-CLI recovery does
 not require daemon handoff to finish; missing or unsafe candidates still fail explicitly.
 
+## Claude opt-in inspection
+
+Claude integration 20 can emit bounded, opt-in metadata for report failures and version mismatches without changing report authority. See [source-only Claude inspection](claude-inspection.md), including the private-marker activation path for existing sessions and the limits of launch-version inference. Install with `wsx agent install claude`; installation does not rewrite a running agent environment or prove its loaded hook configuration changed.
+
 ## Pi native exchange observer
 
 Pi integration 20 keeps lifecycle-only behavior without Pygmalion's Goal Run owner or daemon bound-receipt support. With both present, the loaded observer advertises prompt/receipt support, binds exact delivered native input before a run, and holds completion through Task continuations. See [native request-bound receipts](agent-orchestration.md#native-request-bound-receipts). Update assets and load the new extension through the provider's normal lifecycle; never rewrite or restart an unrelated live pane. Updating files alone does not alter loaded code.

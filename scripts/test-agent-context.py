@@ -93,6 +93,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wsx', type=Path, default=ROOT / 'target/debug/wsx')
     parser.add_argument('--daemon', type=Path, default=ROOT / 'target/debug/wsxd')
+    parser.add_argument('--inspection-legacy-wsx', type=Path,
+                        help='optional real older wsx binary for reporter-version observation')
     args = parser.parse_args()
     wsx, wsxd = args.wsx.resolve(), args.daemon.resolve()
     if not wsx.is_file() or not wsxd.is_file() or wsx.parent != wsxd.parent:
@@ -244,6 +246,87 @@ def main():
         assert call('agent_exchange_list', {})['data'] == before and not traces('claude')
         assert call('terminal_release',{'pane_id':claude,'client_id':987})['type'] == 'ack'
         generation = (work / 'claude.generation').read_text()
+        # Refresh hooks after the actor opened. Observe the real reporter/daemon
+        # without changing its process, generation or terminal draft.
+        actor_pid = int((work / 'claude.pid').read_text())
+        (work / 'home/.claude').mkdir(mode=0o700)
+        subprocess.run([str(wsx),'agent','install','claude'],env=env,
+                       check=True,capture_output=True,text=True,timeout=5)
+        claude_config = json.loads((work / 'home/.claude/settings.json').read_text())
+        claude_commands = {state:claude_config['hooks'][event][0]['hooks'][0]['command']
+                           for state,event in [('idle','SessionStart'),('done','Stop')]}
+        private = 'private-inspection-sentinel'
+        claude_env = dict(env,WSX_PANE_ID=str(claude),WSX_RUNTIME_GENERATION=generation,
+                          WSX_AGENT_REPORT_BIN=str(wsx),CLAUDE_CODE_CHILD_SESSION=private,
+                          CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=private)
+        def claude_hook(state, extra=None, missing_generation=False):
+            selected = dict(claude_env,**(extra or {}))
+            if missing_generation: selected.pop('WSX_RUNTIME_GENERATION')
+            return subprocess.run(['/bin/sh','-c',claude_commands[state]],
+                input=json.dumps({'session_id':'fixture','transcript_path':str(work / 'claude.jsonl'),
+                                  'prompt':private*8192,'credential':private}),
+                env=selected,capture_output=True,text=True,timeout=5)
+        def claude_agent():
+            return next(pane for pane in call('snapshot')['data']['panes'] if pane['id'] == claude)['agent']
+        def inspection(result):
+            records = [line for line in result.stderr.splitlines() if line.startswith('wsx inspect ')]
+            assert len(records) == 1 and len(records[0].encode()) < 2048, result.stderr
+            assert private not in result.stderr and generation not in result.stderr
+            assert str(work) not in result.stderr and 'native-only' not in result.stderr
+            return json.loads(records[0][len('wsx inspect '):])
+        quiet = claude_hook('done')
+        assert quiet.returncode == 0 and quiet.stderr == '' and claude_agent()['state'] == 'done'
+        marker = work / 'home/.claude/hooks/wsx-inspect-enabled'
+        marker.touch(mode=0o600)
+        acknowledged = claude_hook('idle')
+        observed = inspection(acknowledged)
+        assert acknowledged.returncode == 0 and claude_agent()['state'] == 'idle'
+        assert observed['enabled_by'] == 'hook_marker' and observed['hook_integration'] >= 20
+        assert observed['hook_build'] == subprocess.check_output([str(wsx),'--version'],env=env,text=True).strip().split()[1]
+        assert observed['reporter_version_observed'] == observed['hook_build']
+        assert observed['daemon_version_observed'] == observed['hook_build']
+        assert observed['report_attempted'] and observed['report_exit'] == 0 and observed['error_code'] is None
+        assert observed['runtime_generation'] == 'present' and observed['child_session_marker'] == 'present'
+        assert observed['agent_launch_version'] == 'unknown' and observed['agent_startup_environment'] == 'unknown'
+        before_hook_rejection = claude_agent()
+        rejected_hook = claude_hook('done',{'WSX_RUNTIME_GENERATION':'stale-'+private})
+        observed = inspection(rejected_hook)
+        assert rejected_hook.returncode == 1 and observed['report_exit'] != 0
+        assert observed['error_code'] == 'stale_runtime' and 'runtime_generation_rejected' in observed['warnings']
+        assert claude_agent() == before_hook_rejection
+        missing = claude_hook('done',missing_generation=True)
+        observed = inspection(missing)
+        assert missing.returncode == 1 and 'missing_runtime_generation' in observed['warnings']
+        assert claude_agent() == before_hook_rejection
+        marker.chmod(0o644)
+        quiet = claude_hook('done')
+        assert quiet.returncode == 0 and quiet.stderr == '' and claude_agent()['state'] == 'done'
+        marker.unlink()
+        report_binary = args.inspection_legacy_wsx.resolve() if args.inspection_legacy_wsx else wsx
+        acknowledged = claude_hook('idle',{'WSX_INSPECT':'1','WSX_AGENT_REPORT_BIN':str(report_binary)})
+        observed = inspection(acknowledged)
+        assert acknowledged.returncode == 0 and observed['enabled_by'] == 'environment'
+        assert claude_agent()['state'] == 'idle' and observed['daemon_version_observed'] == observed['hook_build']
+        expected_reporter = subprocess.check_output([str(report_binary),'--version'],env=env,text=True).strip().split()[1]
+        assert observed['reporter_version_observed'] == expected_reporter
+        if args.inspection_legacy_wsx:
+            assert 'older_reporter_observed' in observed['warnings']
+        inspector = work / 'home/.claude/hooks/wsx-claude-inspect.py'
+        backup = inspector.with_suffix('.saved')
+        inspector.rename(backup)
+        try:
+            quiet = claude_hook('done',{'WSX_INSPECT':'1'})
+            assert quiet.returncode == 0 and quiet.stderr == '' and claude_agent()['state'] == 'done'
+            before_hook_rejection = claude_agent()
+            unavailable = claude_hook('idle',{'WSX_INSPECT':'1','WSX_RUNTIME_GENERATION':'stale'})
+            assert unavailable.returncode == 1 and 'stale_runtime' in unavailable.stderr
+            assert 'wsx inspect ' not in unavailable.stderr and claude_agent() == before_hook_rejection
+        finally:
+            backup.rename(inspector)
+        assert int((work / 'claude.pid').read_text()) == actor_pid
+        assert (work / 'claude.generation').read_text() == generation
+        os.kill(actor_pid,0)
+        assert 'unsent draft' in cli('session','peek',claude,'--trim').stdout and not traces('claude')
         for state in ('working','blocked','unknown','error'):
             if state == 'unknown':
                 cli('session','send-text',claude,'\x1e','--no-enter')

@@ -85,6 +85,18 @@ fn metadata_in(
     {
         install_status = InstallStatus::Outdated;
     }
+    if target == IntegrationTarget::Claude && install_status == InstallStatus::Current {
+        let inspector_current =
+            paths::asset_path_in(root, target)
+                .parent()
+                .is_some_and(|directory| {
+                    fs::read_to_string(directory.join("wsx-claude-inspect.py"))
+                        .is_ok_and(|content| content == super::assets::CLAUDE_INSPECT)
+                });
+        if !inspector_current {
+            install_status = InstallStatus::Outdated;
+        }
+    }
     if target == IntegrationTarget::Opencode && install_status == InstallStatus::Current {
         let tui_current = fs::read_to_string(root.join("wsx-tui-session.js"))
             .ok()
