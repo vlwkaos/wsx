@@ -1,4 +1,5 @@
 """Private opt-in hook metadata only. See docs/claude-inspection.md."""
+import fcntl
 import importlib.util
 import json
 import os
@@ -61,8 +62,117 @@ def core_version(value):
     return tuple(map(int, value.split("-")[0].split("+")[0].split(".")))
 
 
+# ^ docs/claude-inspection.md: one owner-only journal, bounded bytes and history.
+MAX_BYTES = 65536
+MAX_RECORDS = 32
+WARNINGS = {"runtime_probe_skipped_for_unverified_reporter", "reporter_version_unknown",
+            "older_reporter_observed", "different_reporter_observed",
+            "missing_runtime_generation", "runtime_generation_rejected",
+            "inspection_log_unavailable"}
+
+
+def valid_record(packet):
+    if not isinstance(packet, dict):
+        return False
+    choices = {
+        "schema_version": {2}, "phase": {"hook_process"}, "provider": {"claude", "codex"},
+        "enabled_by": {"environment", "hook_marker"}, "action": ACTIONS,
+        "runtime_generation": {"present", "missing"},
+        "child_session_marker": {"present", "absent"},
+        "force_persistence_marker": {"present", "absent"},
+        "agent_launch_version": {"unknown"}, "agent_startup_environment": {"unknown"},
+    }
+    versions = {"hook_build", "reporter_version_observed", "daemon_version_observed"}
+    integers = {"recorded_at_unix_ms": 2**63 - 1, "hook_integration": 4294967295,
+                "report_exit": 255}
+    remaining = {"pane", "report_attempted", "error_code", "daemon_revision_observed", "warnings"}
+    if set(packet) != set(choices) | versions | set(integers) | remaining:
+        return False
+    if any(not isinstance(packet[key], (str, int)) or packet[key] not in values
+           for key, values in choices.items()):
+        return False
+    if any(packet[key] != "unknown" and version(packet[key]) == "unknown" for key in versions):
+        return False
+    if any(type(packet[key]) is not int or not 0 <= packet[key] <= maximum
+           for key, maximum in integers.items()):
+        return False
+    revision, code, warnings = (packet[key] for key in ("daemon_revision_observed", "error_code", "warnings"))
+    return (isinstance(packet["pane"], str)
+            and (packet["pane"] == "unknown" or re.fullmatch(r"[0-9]{1,20}", packet["pane"]))
+            and type(packet["report_attempted"]) is bool
+            and (revision is None or type(revision) is int and 0 <= revision <= 4294967295)
+            and (code is None or isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code))
+            and isinstance(warnings, list) and len(warnings) <= len(WARNINGS)
+            and all(isinstance(item, str) and item in WARNINGS for item in warnings))
+
+
+def records(packet=None):
+    if not protected(ROOT, directory=True):
+        raise OSError("unsafe directory")
+    directory = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(directory)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise OSError("unsafe directory")
+        flags = os.O_RDWR | os.O_CREAT if packet is not None else os.O_RDONLY
+        fd = os.open("wsx-inspect.jsonl", flags | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     0o600, dir_fd=directory)
+    finally:
+        os.close(directory)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077 or info.st_nlink != 1):
+            raise OSError("unsafe journal")
+        with os.fdopen(fd, "r+b" if packet is not None else "rb") as journal:
+            fd = None
+            lock = fcntl.LOCK_EX if packet is not None else fcntl.LOCK_SH
+            fcntl.flock(journal.fileno(), lock | fcntl.LOCK_NB)
+            data = journal.read(MAX_BYTES + 1)
+            retained = []
+            for line in data.splitlines() if len(data) <= MAX_BYTES else []:
+                if len(line) >= 2048:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if valid_record(entry):
+                        retained.append(entry)
+                except (ValueError, TypeError):
+                    continue
+            if packet is not None:
+                if not valid_record(packet):
+                    raise OSError("invalid record")
+                retained = retained[-(MAX_RECORDS - 1):] + [packet]
+                payload = b"".join((json.dumps(entry, separators=(",", ":")) + "\n").encode()
+                                   for entry in retained)
+                if len(payload) > MAX_BYTES or any(len(line) >= 2048 for line in payload.splitlines()):
+                    raise OSError("journal bound exceeded")
+                journal.seek(0)
+                journal.write(payload)
+                journal.truncate()
+                journal.flush()
+                os.fsync(journal.fileno())
+            else:
+                if not retained:
+                    raise OSError("no valid records")
+                for entry in retained[-MAX_RECORDS:]:
+                    print("wsx inspect " + json.dumps(entry, separators=(",", ":")))
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def main():
-    build, integration, action, reporter, status, reason = sys.argv[1:]
+    if sys.argv[1:] == ["--read"]:
+        try:
+            records()
+        except OSError:
+            print("Inspection log unavailable (no records yet, unsafe file, or busy writer).", file=sys.stderr)
+            raise SystemExit(1)
+        return
+    provider, build, integration, action, reporter, status, reason = sys.argv[1:]
+    if provider not in {"claude", "codex"}:
+        return
     if (action not in ACTIONS or not status.isascii() or not status.isdigit()
             or len(status) > 3 or int(status) > 255 or not integration.isascii()
             or not integration.isdigit() or len(integration) > 10
@@ -79,7 +189,8 @@ def main():
         if not protected(marker, private=True) or marker.stat().st_size != 0:
             return
     packet = {
-        "schema_version": 1, "phase": "hook_process", "enabled_by": enabled_by,
+        "schema_version": 2, "phase": "hook_process", "provider": provider,
+        "recorded_at_unix_ms": int(time.time() * 1000), "enabled_by": enabled_by,
         "hook_build": version(build), "hook_integration": int(integration), "action": action,
         "pane": "unknown", "runtime_generation": "present" if os.environ.get("WSX_RUNTIME_GENERATION") else "missing",
         "child_session_marker": "present" if "CLAUDE_CODE_CHILD_SESSION" in os.environ else "absent",
@@ -115,7 +226,7 @@ def main():
                 packet["reporter_version_observed"] = version(observed[4:].decode("ascii").strip())
             # ^ Do not assume an old CLI bypasses eager daemon bootstrap.
             # Only these source-backed versions have verified read-only dispatch.
-            if packet["reporter_version_observed"] in ("0.30.0", build):
+            if packet["reporter_version_observed"] in ("0.29.3", "0.30.0", build):
                 observed = probe(binary, ["runtime", "status", "--json"], 8192)
                 runtime = json.loads(observed) if observed is not None else {}
                 lifecycle = runtime.get("lifecycle") or {}
@@ -138,6 +249,10 @@ def main():
         packet["warnings"].append("missing_runtime_generation")
     if packet["error_code"] == "stale_runtime":
         packet["warnings"].append("runtime_generation_rejected")
+    try:
+        records(packet)
+    except OSError:
+        packet["warnings"].append("inspection_log_unavailable")
     print("wsx inspect " + json.dumps(packet, separators=(",", ":")))
 
 

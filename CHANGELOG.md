@@ -2,9 +2,10 @@
 
 ## [Unreleased]
 
-### Inspection build (0.30.1-inspect.1, not a stable release)
+### Inspection build (0.30.1-inspect.2, not a stable release)
 
-- Add opt-in Claude integration 20 diagnostics with bounded hook, reporter and daemon version observations, report error codes and environment-marker presence. A private hook-directory marker also enables diagnostics for existing sessions that call the refreshed hook. Agent launch version and startup environment remain unknown; installing files alone does not prove that old sessions loaded them.
+- Retain successful and failed Claude and Codex inspection records in an owner-only bounded journal. The shared helper reads only validated metadata, refuses symlinks and unsafe files, retains at most 32 records/64 KiB, and never changes the original reporting result. Claude integration is 21; Codex is 15. Source-verified 0.29.3 reporter observations support existing sessions without restarting them.
+- Add opt-in Claude and Codex diagnostics with bounded hook, reporter and daemon version observations, report error codes and environment-marker presence. A private hook-directory marker also enables diagnostics for existing sessions that call the refreshed hook. Agent launch version and startup environment remain unknown; installing files alone does not prove that old sessions loaded them.
 - Preserve default hook output, report-once behavior, generation fences and transcript settings. These diagnostics do not fix or verify the reported Claude Stop-hook, prompt-submission or transcript-saving failures. See `docs/claude-inspection.md` for source-build and existing-session instructions.
 
 ## [0.30.0] - 2026-10-08

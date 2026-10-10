@@ -20,5 +20,5 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "=0.10.9"
 asched-core = { workspace = true }
-wsx-core = { path = "../wsx-core", version = "=0.30.1-inspect.1" }
-wsx-terminal = { path = "../wsx-terminal", version = "=0.30.1-inspect.1" }
+wsx-core = { path = "../wsx-core", version = "=0.30.1-inspect.2" }
+wsx-terminal = { path = "../wsx-terminal", version = "=0.30.1-inspect.2" }

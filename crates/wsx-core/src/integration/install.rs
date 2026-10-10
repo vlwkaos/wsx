@@ -206,13 +206,13 @@ fn install_in(target: IntegrationTarget, root: &Path) -> io::Result<InstallResul
         reporter_content.into(),
         false,
     ));
-    if target == IntegrationTarget::Claude {
+    if matches!(target, IntegrationTarget::Claude | IntegrationTarget::Codex) {
         prepared.push((
             asset
                 .parent()
-                .expect("Claude asset has a parent")
-                .join("wsx-claude-inspect.py"),
-            assets::CLAUDE_INSPECT.into(),
+                .expect("inspected asset has a parent")
+                .join("wsx-agent-inspect.py"),
+            assets::AGENT_INSPECT.into(),
             false,
         ));
     }

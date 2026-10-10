@@ -53,7 +53,7 @@ not require daemon handoff to finish; missing or unsafe candidates still fail ex
 
 ## Claude opt-in inspection
 
-Claude integration 20 can emit bounded, opt-in metadata for report failures and version mismatches without changing report authority. See [source-only Claude inspection](claude-inspection.md), including the private-marker activation path for existing sessions and the limits of launch-version inference. Install with `wsx agent install claude`; installation does not rewrite a running agent environment or prove its loaded hook configuration changed.
+Claude integration 21 and Codex integration 15 save bounded, opt-in metadata for successful and failed reports in a private journal without changing report authority. See [source-only Claude inspection](claude-inspection.md), including the private-marker activation path for existing sessions and the limits of launch-version inference. Install with `wsx agent install claude`; installation does not rewrite a running agent environment or prove its loaded hook configuration changed.
 
 ## Pi native exchange observer
 

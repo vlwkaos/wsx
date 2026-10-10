@@ -85,13 +85,15 @@ fn metadata_in(
     {
         install_status = InstallStatus::Outdated;
     }
-    if target == IntegrationTarget::Claude && install_status == InstallStatus::Current {
+    if matches!(target, IntegrationTarget::Claude | IntegrationTarget::Codex)
+        && install_status == InstallStatus::Current
+    {
         let inspector_current =
             paths::asset_path_in(root, target)
                 .parent()
                 .is_some_and(|directory| {
-                    fs::read_to_string(directory.join("wsx-claude-inspect.py"))
-                        .is_ok_and(|content| content == super::assets::CLAUDE_INSPECT)
+                    fs::read_to_string(directory.join("wsx-agent-inspect.py"))
+                        .is_ok_and(|content| content == super::assets::AGENT_INSPECT)
                 });
         if !inspector_current {
             install_status = InstallStatus::Outdated;
