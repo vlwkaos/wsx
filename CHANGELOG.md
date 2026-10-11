@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Bug Fixes
+
+- Stop a terminal session from staying blank after an interrupted program. A program that enables synchronized output (mode 2026) and is ended by Ctrl+C before it releases the mode no longer hides all later output: the mode now expires after one second, as in Ghostty. Daemon revision 21 records this runtime-owned repair; the fix reaches a session after its daemon upgrades. See `docs/terminal-synchronized-output.md`.
+- Keep a resumed agent pane alive when a repeated Ctrl+C arrives after the agent has ended and before its fallback shell starts. The resume supervisor now ignores interactive signals until the shell replaces it.
+
 ## [0.30.1] - 2026-10-11
 
 ### Improvements

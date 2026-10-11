@@ -757,6 +757,73 @@ assert call("session_close", {
     "expected_revision": exit_session["revision"],
 })["type"] == "ack"
 
+# ^ docs/terminal-synchronized-output.md: a program killed mid-frame never resets mode 2026.
+stuck_sync = call("session_create", {
+    "worktree_id": worktree_id,
+    "label": "stuck-sync",
+    "command": [
+        "/bin/sh",
+        "-c",
+        "read trigger; printf '\\033[?2026hsync-released'; read hold",
+    ],
+    "rows": 2,
+    "cols": 16,
+})
+assert stuck_sync["type"] == "created", stuck_sync
+stuck_session_id = stuck_sync["data"]["id"]
+stuck_session = next(
+    item for item in call("snapshot")["data"]["sessions"] if item["id"] == stuck_session_id
+)
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as terminal:
+    terminal.settimeout(3)
+    terminal.connect(str(SOCKET))
+    terminal.sendall(json.dumps({"method": "hello", "params": {"protocol": PROTOCOL}}).encode() + b"\n")
+    assert recv_line(terminal)["type"] == "hello"
+    terminal.sendall(json.dumps({
+        "method": "terminal_subscribe",
+        "params": {
+            "pane_id": stuck_session["focused_pane"],
+            "client_id": 32,
+            "takeover": False,
+            "rows": 2,
+            "cols": 16,
+        },
+    }).encode() + b"\n")
+    assert recv_line(terminal)["type"] == "ack"
+    initial = recv_line(terminal)
+    assert initial["type"] == "update" and initial["data"]["kind"] == "full", initial
+    frame = initial["data"]["data"]
+    terminal.sendall(json.dumps({"type": "input", "data": list(b"go\n")}).encode() + b"\n")
+    deadline = time.monotonic() + 3
+    stuck_text = ""
+    try:
+        while "sync-released" not in stuck_text and time.monotonic() < deadline:
+            update = recv_line(terminal)
+            assert update["type"] == "update", update
+            payload = update["data"]
+            if payload["kind"] == "full":
+                frame = payload["data"]
+            else:
+                patch = payload["data"]
+                for changed in patch["changed_rows"]:
+                    cell_start = changed["row"] * frame["cols"]
+                    frame["cells"][cell_start:cell_start + frame["cols"]] = changed["cells"]
+                frame["revision"] = patch["revision"]
+            stuck_text = "".join(cell[0] for cell in frame["cells"])
+    except socket.timeout:
+        pass
+    assert "sync-released" in stuck_text, (
+        "an unreleased synchronized-output mode must not hide later output", stuck_text
+    )
+    terminal.sendall(json.dumps({"type": "detach"}).encode() + b"\n")
+stuck_session = next(
+    item for item in call("snapshot")["data"]["sessions"] if item["id"] == stuck_session_id
+)
+assert call("session_close", {
+    "session_id": stuck_session_id,
+    "expected_revision": stuck_session["revision"],
+})["type"] == "ack"
+
 deadline = time.monotonic() + 3
 text = ""
 while time.monotonic() < deadline:

@@ -757,13 +757,17 @@ pub fn run_resume_supervisor(mut arguments: impl Iterator<Item = OsString>) -> i
     let signals = InteractiveSignalGuard::ignore()?;
     reset_child_interactive_signals(&mut command);
     let status = command.status()?;
-    drop(signals);
     if !status.success() {
         eprintln!("wsxd resumed agent exited with {status}; opening a shell");
     }
     transition_resumed_agent_to_shell()?;
     let shell = std::env::var_os("SHELL").unwrap_or_else(|| OsString::from("/bin/sh"));
-    let error = Command::new(shell).exec();
+    let mut shell = Command::new(shell);
+    // ^ A repeated Ctrl+C that ends the agent must not kill this supervisor before
+    // the shell exists, so the default dispositions return only at exec.
+    reset_child_interactive_signals(&mut shell);
+    let error = shell.exec();
+    drop(signals);
     Err(error)
 }
 
