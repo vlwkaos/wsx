@@ -12,6 +12,7 @@
 
 ### Packaging and verification
 
+- Resolve release-workflow validation against the validator's own checkout, so running it from another directory cannot inspect an unrelated workflow.
 - Promote the two source-only inspection increments to stable 0.30.1, with matching workspace versions and exact internal pins; registry dependency versions remain unchanged. Installed-hook reporting/journal integration coverage includes both providers, current and released reporters, successful and rejected reports, privacy bounds, malformed records, unsafe paths, generation fencing and private-runtime cleanup.
 
 ## [0.30.0] - 2026-10-08
