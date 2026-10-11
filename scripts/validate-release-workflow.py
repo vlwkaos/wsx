@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Optional
 
 
-workflow = Path(".github/workflows/release.yml").read_text()
+# ^ .github/workflows/release.yml belongs to this checkout, not the caller cwd.
+workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/release.yml").read_text()
 
 
 def section(start: str, end: Optional[str] = None) -> str:
