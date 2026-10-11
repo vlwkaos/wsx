@@ -67,6 +67,7 @@ enum SettingField {
     TerminalPrefixSidebar,
     TerminalSidebar,
     TerminalTitlePosition,
+    ViewAutoOpen,
     ResumeAgents,
     // ^ Linux hides this field through RUNTIME_FIELDS while shared form matches stay exhaustive.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -95,6 +96,7 @@ impl SettingField {
                 Self::TerminalPrefixSidebar,
                 Self::TerminalSidebar,
                 Self::TerminalTitlePosition,
+                Self::ViewAutoOpen,
             ],
             SettingsCategory::Runtime => RUNTIME_FIELDS,
         }
@@ -115,6 +117,7 @@ impl SettingField {
             Self::TerminalPrefixSidebar => "Prefix shows sidebar",
             Self::TerminalSidebar => "Terminal sidebar",
             Self::TerminalTitlePosition => "Terminal title",
+            Self::ViewAutoOpen => "View opens itself",
             Self::ResumeAgents => "Resume agents",
             Self::WakeMode => "Wake mode",
             Self::AgentIntegrations => "Agent integrations",
@@ -134,6 +137,7 @@ impl SettingField {
             Self::PrefixKey => "One key combined with the selected modifier, for example Ctrl+A.",
             Self::WorkspaceKey => "Key pressed after the prefix to focus Workspace. Reserved b, h, j, k, l, n, and q run Terminal commands.",
             Self::TerminalPrefixSidebar => "Show the full Workspace tree only while Terminal waits for the key after the prefix.",
+            Self::ViewAutoOpen => "Open the view band when the agent in the current terminal publishes a document. Off: only the prefix then v opens it.",
             Self::TerminalSidebar => "Use a two-column status rail or the full Workspace tree in Terminal mode.",
             Self::TerminalTitlePosition => "Place the session context bar above or below terminal content in Workspace and Terminal modes.",
             Self::ResumeAgents => "Resume saved agent commands when wsxd starts again.",
@@ -449,6 +453,10 @@ impl GlobalSettingsForm {
                 self.draft.terminal_prefix_shows_sidebar = editor.selected == 0;
                 Ok(())
             }
+            (SettingField::ViewAutoOpen, FieldEditor::Choice(editor)) => {
+                self.draft.view_auto_open = editor.selected == 0;
+                Ok(())
+            }
             (SettingField::AttentionPriority, FieldEditor::Choice(editor)) => {
                 self.draft.attention_priority = if editor.selected == 0 {
                     AttentionPriority::BlockedFirst
@@ -548,6 +556,10 @@ impl GlobalSettingsForm {
                 selected: usize::from(!self.draft.terminal_prefix_shows_sidebar),
                 labels: vec!["On", "Off"],
             }),
+            SettingField::ViewAutoOpen => FieldEditor::Choice(ChoiceEditor {
+                selected: usize::from(!self.draft.view_auto_open),
+                labels: vec!["On", "Off"],
+            }),
             SettingField::TerminalSidebar => FieldEditor::Choice(ChoiceEditor {
                 selected: usize::from(self.draft.terminal_sidebar == TerminalSidebar::Expanded),
                 labels: vec!["Compact", "Expanded"],
@@ -616,6 +628,9 @@ impl GlobalSettingsForm {
                 SettingField::TerminalPrefixSidebar => {
                     self.draft.terminal_prefix_shows_sidebar =
                         !self.draft.terminal_prefix_shows_sidebar
+                }
+                SettingField::ViewAutoOpen => {
+                    self.draft.view_auto_open = !self.draft.view_auto_open
                 }
                 SettingField::ResumeAgents => {
                     self.draft.resume_agents_on_restore = !self.draft.resume_agents_on_restore
@@ -838,6 +853,7 @@ fn setting_value(form: &GlobalSettingsForm, field: SettingField) -> String {
         SettingField::TerminalPrefixSidebar => {
             on_off(form.draft.terminal_prefix_shows_sidebar).into()
         }
+        SettingField::ViewAutoOpen => on_off(form.draft.view_auto_open).into(),
         SettingField::TerminalSidebar => match form.draft.terminal_sidebar {
             TerminalSidebar::Compact => "Compact".into(),
             TerminalSidebar::Expanded => "Expanded".into(),
@@ -1037,6 +1053,7 @@ fn settings_view(form: &GlobalSettingsForm, width: u16) -> SettingsViewModel {
             field,
             SettingField::ShowRelease
                 | SettingField::TerminalPrefixSidebar
+                | SettingField::ViewAutoOpen
                 | SettingField::ResumeAgents
                 | SettingField::WakeMode
         ) {

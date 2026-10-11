@@ -8,6 +8,7 @@ mod client;
 mod domain;
 mod protocol;
 mod review;
+mod view;
 
 pub use client::{
     ensure_available, ensure_background_available, new_client_id, recover_daemon,
@@ -17,3 +18,4 @@ pub use client::{
 pub use domain::*;
 pub use protocol::*;
 pub use review::*;
+pub use view::*;

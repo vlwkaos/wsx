@@ -45,6 +45,9 @@ pub(super) struct Manifest {
     expected_daemon_revision: u32,
     pub persisted: super::Persisted,
     pub panes: Vec<PaneHandoff>,
+    // ^ docs/terminal-view.md: ephemeral pane documents survive a live handoff.
+    #[serde(default)]
+    pub views: super::views::Store,
 }
 
 #[cfg(unix)]
@@ -59,6 +62,7 @@ pub(super) struct Received {
 pub(super) fn manifest(
     persisted: super::Persisted,
     panes: Vec<PaneHandoff>,
+    views: super::views::Store,
     expected_version: String,
     expected_protocol: u32,
     expected_daemon_revision: u32,
@@ -72,6 +76,7 @@ pub(super) fn manifest(
         expected_daemon_revision,
         persisted,
         panes,
+        views,
     }
 }
 
@@ -499,6 +504,7 @@ mod tests {
             expected_daemon_revision: super::super::DAEMON_REVISION,
             persisted: super::super::Persisted::default(),
             panes: Vec::new(),
+            views: super::super::views::Store::default(),
         }
     }
 

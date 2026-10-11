@@ -11,8 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 use wsx_core::runtime::{
-    PaneId, PluginManifest, PluginSidecarDescriptor, PluginSidecarView, PluginViewPayload,
-    WorktreeId, WSX_PLUGIN_VIEW_ENV,
+    fenced_blocks, PaneId, PluginManifest, PluginSidecarDescriptor, PluginSidecarView,
+    PluginSurface, PluginViewPayload, ViewBlock, ViewRenderRequest, ViewRenderResponse, WorktreeId,
+    MAX_VIEW_BLOCK_LINES, VIEW_RENDERER_API_VERSION, WSX_PLUGIN_VIEW_ENV,
 };
 
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
@@ -21,6 +22,11 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_VIEW_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_VIEW_ROWS: usize = 512;
 const MAX_VIEW_TEXT_BYTES: usize = 4096;
+// ^ docs/plugins.md: fenced-block renderers are bounded per block and per document.
+const RENDER_BLOCK_TIMEOUT: Duration = Duration::from_secs(2);
+const RENDER_DOCUMENT_TIMEOUT: Duration = Duration::from_secs(4);
+const MAX_RENDERED_BLOCKS: usize = 8;
+const MAX_RENDERED_BLOCK_BYTES: usize = 256 * 1024;
 pub fn discover() -> Vec<PluginManifest> {
     plugin_dir()
         .and_then(|dir| discover_in(&dir).ok())
@@ -141,8 +147,19 @@ pub fn validate(manifest: &PluginManifest) -> Result<(), &'static str> {
         })
         || manifest.events.len() > 32
         || manifest.events.iter().any(|event| !valid_token(event))
+        || manifest.renderer.as_ref().is_some_and(|renderer| {
+            renderer.api_version != VIEW_RENDERER_API_VERSION
+                || renderer.languages.is_empty()
+                || renderer.languages.len() > 8
+                || renderer
+                    .languages
+                    .iter()
+                    .any(|language| !valid_token(language) || language.len() > 32)
+        })
         || manifest.sidecar.as_ref().is_some_and(|sidecar| {
-            !(80..=500).contains(&sidecar.minimum_columns)
+            // The pulled-row sidecar exists only beside the terminal.
+            sidecar.surface != PluginSurface::TerminalRight
+                || !(80..=500).contains(&sidecar.minimum_columns)
                 || !(20..=120).contains(&sidecar.preferred_width)
                 || sidecar.minimum_columns < sidecar.preferred_width.saturating_add(61)
                 || !(500..=60_000).contains(&sidecar.refresh_ms)
@@ -186,6 +203,96 @@ pub fn sidecars(plugins: &[PluginManifest]) -> Vec<PluginSidecarDescriptor> {
     let mut seen = HashSet::new();
     sidecars.retain(|sidecar| seen.insert(sidecar.plugin_id.clone()));
     sidecars
+}
+
+/// Enabled renderer plugins in stable ID order; the first match for a language wins.
+pub fn renderers(plugins: &[PluginManifest]) -> Vec<PluginManifest> {
+    let mut renderers = plugins
+        .iter()
+        .filter(|plugin| plugin.enabled && plugin.renderer.is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    renderers.sort_by(|left, right| left.id.cmp(&right.id));
+    renderers
+}
+
+/// Render the fenced blocks a plugin claims. A block that fails, times out or returns
+/// invalid output is omitted, so the client shows its source.
+pub fn render_blocks(renderers: &[PluginManifest], markdown: &str, columns: u16) -> Vec<ViewBlock> {
+    if renderers.is_empty() {
+        return Vec::new();
+    }
+    let deadline = Instant::now() + RENDER_DOCUMENT_TIMEOUT;
+    let mut blocks = Vec::new();
+    for block in fenced_blocks(markdown) {
+        if blocks.len() >= MAX_RENDERED_BLOCKS {
+            break;
+        }
+        let Some(plugin) = renderers.iter().find(|plugin| {
+            plugin.renderer.as_ref().is_some_and(|renderer| {
+                renderer
+                    .languages
+                    .iter()
+                    .any(|language| language.eq_ignore_ascii_case(&block.language))
+            })
+        }) else {
+            continue;
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let request = ViewRenderRequest {
+            api_version: VIEW_RENDERER_API_VERSION,
+            language: block.language,
+            source: block.source,
+            columns,
+        };
+        if let Ok(response) = render_block(plugin, &request, remaining.min(RENDER_BLOCK_TIMEOUT)) {
+            blocks.push(ViewBlock {
+                index: block.index,
+                lines: response.lines,
+                note: response.note,
+            });
+        }
+    }
+    blocks
+}
+
+fn render_block(
+    plugin: &PluginManifest,
+    request: &ViewRenderRequest,
+    timeout: Duration,
+) -> io::Result<ViewRenderResponse> {
+    validate(plugin).map_err(io::Error::other)?;
+    let input = serde_json::to_vec(request).map_err(io::Error::other)?;
+    let output = review::exchange(
+        Command::new(&plugin.command[0]).args(&plugin.command[1..]),
+        &input,
+        &std::sync::atomic::AtomicBool::new(false),
+        timeout,
+    )?;
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "renderer output is invalid");
+    if output.len() > MAX_RENDERED_BLOCK_BYTES {
+        return Err(invalid());
+    }
+    let response: ViewRenderResponse = serde_json::from_slice(&output)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if response.lines.is_empty()
+        || response.lines.len() > MAX_VIEW_BLOCK_LINES
+        || response
+            .note
+            .as_deref()
+            .is_some_and(|note| !valid_text(note))
+        || response.lines.iter().any(|line| {
+            line.len() > 512
+                || line.iter().map(|span| span.text.len()).sum::<usize>() > MAX_VIEW_TEXT_BYTES
+                || line.iter().any(|span| !valid_text(&span.text))
+        })
+    {
+        return Err(invalid());
+    }
+    Ok(response)
 }
 
 #[derive(Serialize)]
@@ -333,6 +440,7 @@ mod tests {
             name: id.into(),
             command: vec!["/unused".into()],
             worktree_review: None,
+            renderer: None,
             events: Vec::new(),
             enabled: true,
             sidecar: Some(PluginSidecarSpec {

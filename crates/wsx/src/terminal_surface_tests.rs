@@ -26,6 +26,7 @@ fn snapshot(epoch: u64, pane: Pane, session_revision: u64) -> Snapshot {
         listening_ports: vec![],
         pane_activity: vec![],
         plugin_sidecars: Vec::new(),
+        pane_views: Vec::new(),
         capabilities: Default::default(),
     }
 }
@@ -42,6 +43,7 @@ fn empty_snapshot(epoch: u64) -> Snapshot {
         listening_ports: vec![],
         pane_activity: vec![],
         plugin_sidecars: Vec::new(),
+        pane_views: Vec::new(),
         capabilities: Default::default(),
     }
 }

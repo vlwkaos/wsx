@@ -347,8 +347,9 @@ pub fn render_terminal_preview(
     area: Rect,
     terminal: Option<&wsx_core::runtime::TerminalFrame>,
     interactive: bool,
+    covered_rows: u16,
 ) {
-    render_terminal_frame(frame, area, terminal, interactive);
+    render_terminal_frame(frame, area, terminal, interactive, covered_rows);
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -377,6 +378,8 @@ fn render_terminal_frame(
     area: Rect,
     terminal: Option<&wsx_core::runtime::TerminalFrame>,
     interactive: bool,
+    // ^ docs/terminal-view.md: top rows hidden by the view panel also hide the cursor.
+    covered_rows: u16,
 ) {
     frame.render_widget(Clear, area);
     let inner = area;
@@ -416,7 +419,10 @@ fn render_terminal_frame(
         }
     }
     if interactive && terminal.cursor.visible && terminal.cursor.x < visible_cols {
-        if let Some(cursor_y) = rows.target_row(terminal.cursor.y) {
+        if let Some(cursor_y) = rows
+            .target_row(terminal.cursor.y)
+            .filter(|cursor_y| *cursor_y >= covered_rows)
+        {
             frame.set_cursor_position((inner.x + terminal.cursor.x, inner.y + cursor_y));
         }
     }
@@ -1058,7 +1064,7 @@ mod tests {
         let area = Rect::new(1, 1, 3, 4);
 
         terminal
-            .draw(|frame| render_terminal_frame(frame, area, Some(&terminal_frame), false))
+            .draw(|frame| render_terminal_frame(frame, area, Some(&terminal_frame), false, 0))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -1075,7 +1081,9 @@ mod tests {
         let terminal_frame = terminal_frame_rows(&["abc", "def", "ghi", "jkl"]);
 
         terminal
-            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&terminal_frame), false))
+            .draw(|frame| {
+                render_terminal_frame(frame, frame.area(), Some(&terminal_frame), false, 0)
+            })
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -1090,7 +1098,9 @@ mod tests {
         let terminal_frame = terminal_frame_rows(&["abc", "def", "ghi", "jkl"]);
 
         terminal
-            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&terminal_frame), true))
+            .draw(|frame| {
+                render_terminal_frame(frame, frame.area(), Some(&terminal_frame), true, 0)
+            })
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -1105,7 +1115,9 @@ mod tests {
         let terminal_frame = terminal_frame_rows(&["abc", "def"]);
 
         terminal
-            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&terminal_frame), true))
+            .draw(|frame| {
+                render_terminal_frame(frame, frame.area(), Some(&terminal_frame), true, 0)
+            })
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -1127,7 +1139,9 @@ mod tests {
         };
 
         terminal
-            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&terminal_frame), true))
+            .draw(|frame| {
+                render_terminal_frame(frame, frame.area(), Some(&terminal_frame), true, 0)
+            })
             .unwrap();
 
         terminal
@@ -1150,7 +1164,9 @@ mod tests {
         }];
 
         terminal
-            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&terminal_frame), true))
+            .draw(|frame| {
+                render_terminal_frame(frame, frame.area(), Some(&terminal_frame), true, 0)
+            })
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -1181,7 +1197,9 @@ mod tests {
         ]);
 
         terminal
-            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&terminal_frame), true))
+            .draw(|frame| {
+                render_terminal_frame(frame, frame.area(), Some(&terminal_frame), true, 0)
+            })
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -1212,7 +1230,7 @@ mod tests {
 
         terminal
             .draw(|terminal| {
-                render_terminal_frame(terminal, Rect::new(2, 0, 2, 1), Some(&frame), true)
+                render_terminal_frame(terminal, Rect::new(2, 0, 2, 1), Some(&frame), true, 0)
             })
             .unwrap();
 
@@ -1242,7 +1260,7 @@ mod tests {
             },
         ]);
         terminal
-            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&wide), true))
+            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&wide), true, 0))
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(0, 0)].symbol(), "界");
@@ -1266,7 +1284,7 @@ mod tests {
             },
         ]);
         terminal
-            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&narrow), true))
+            .draw(|frame| render_terminal_frame(frame, frame.area(), Some(&narrow), true, 0))
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(0, 0)].symbol(), "a");

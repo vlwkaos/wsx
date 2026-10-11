@@ -15,14 +15,37 @@ pub struct TerminalTitleView<'a> {
     pub session: &'a SessionInfo,
     pub pane: Option<&'a PaneInfo>,
     pub animation_frame: usize,
+    /// `Some(unread)` when the pane has a view document. See docs/terminal-view.md.
+    pub view_chip: Option<bool>,
+}
+
+fn view_chip(unread: bool, width: usize) -> Option<Span<'static>> {
+    // The mark, not only the color, separates an unread document.
+    let label = match (width >= 40, unread) {
+        (true, true) => " ▤ view • ",
+        (true, false) => " ▤ view ",
+        (false, _) if width >= 12 => " ▤ ",
+        _ => return None,
+    };
+    Some(Span::styled(label, theme::view_chip(unread)))
 }
 
 pub fn render(frame: &mut Frame, area: Rect, view: TerminalTitleView<'_>) {
+    let chip = view
+        .view_chip
+        .and_then(|unread| view_chip(unread, usize::from(area.width)));
+    let chip_width = chip.as_ref().map_or(0, |chip| chip.width() as u16);
+    let title = Rect::new(area.x, area.y, area.width - chip_width, area.height);
     frame.render_widget(
-        Paragraph::new(title_line(&view, usize::from(area.width)))
+        Paragraph::new(title_line(&view, usize::from(title.width)))
             .style(theme::terminal_titlebar()),
-        area,
+        title,
     );
+    if let Some(chip) = chip {
+        frame
+            .buffer_mut()
+            .set_span(title.right(), area.y, &chip, chip_width);
+    }
 }
 
 fn spans_width(spans: &[Span<'_>]) -> usize {
@@ -337,6 +360,7 @@ mod tests {
                 session: &project.worktrees[0].sessions[0],
                 pane: None,
                 animation_frame: 2,
+                view_chip: None,
             },
             width,
         )
@@ -367,6 +391,7 @@ mod tests {
             session: &project.worktrees[0].sessions[0],
             pane: None,
             animation_frame: 0,
+            view_chip: None,
         };
         for current in [false, true] {
             let spans = chip(&view, view.worktree, view.session, current, 72);
@@ -421,6 +446,7 @@ mod tests {
                     session: &project.worktrees[0].sessions[1000],
                     pane: None,
                     animation_frame: 0,
+                    view_chip: None,
                 },
                 width,
             );
@@ -456,6 +482,7 @@ mod tests {
                         session: &project.worktrees[0].sessions[0],
                         pane: Some(&pane),
                         animation_frame: 0,
+                        view_chip: None,
                     },
                 )
             })

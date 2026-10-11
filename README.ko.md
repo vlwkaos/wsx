@@ -16,6 +16,7 @@ wsx는 **Project → Worktree → Session → Pane** 구조를 keyboard 중심 T
 - provider-neutral agent 상태, native conversation resume, project routine
 - typed, versioned, bounded 동일 사용자 local protocol
 - 제한된 passive Terminal sidecar를 제공하는 trusted executable plugin
+- agent가 게시한 view 문서(표, diagram)를 key 입력으로 terminal 위에 표시하며 terminal 크기는 바꾸지 않음
 - macOS와 Linux 지원
 
 ## 제품 둘러보기
@@ -77,7 +78,7 @@ Foreground command는 실행 중인 작업으로 표시하지만 해당 pane의 
 | Group | `T` 관리, `{`/`}` 전환, `g` 지정 |
 | Global | `/` 검색, `,` settings, `R` 새로고침, `?` 도움말, `q` TUI 종료, `Q` wsxd 종료 후 나가기 |
 
-Terminal mode는 기본 `Ctrl+A` prefix를 사용합니다. 이어서 `h/l`은 현재 project의 이전/다음 session으로 Workspace 순서에 따라 이동합니다. 좌우 화살표, `k/j`와 위아래 화살표도 같은 이동을 지원합니다. 나머지 prefix 명령에서 `{`/`}`는 이전 또는 다음 group, `i/I`는 idle, `a/A`는 active, `n/N`은 attention session으로 이동합니다. wsx가 prefix 다음 key를 기다리는 동안에는 Terminal mode를 유지한 채 expanded sidebar를 임시로 표시할 수 있습니다. Attention 이동은 기본적으로 다른 attention 상태보다 Blocked session을 먼저 선택하며 Global Settings에서 Workspace 순서로 되돌릴 수 있습니다. Group 이동은 Workspace 순서를 유지하며 먼저 확인이 필요한 session을 선택하고, 없으면 첫 idle agent session을 선택합니다. 둘 다 없으면 현재 terminal을 유지합니다. `B`는 desktop sidebar 전환, `W`는 Workspace, `Q`는 TUI만 종료합니다. `Ctrl+A Ctrl+A`는 literal prefix를 보냅니다. Title은 같은 순서를 미리 보여주고 현재 session, worktree와 화면 밖 session 수를 표시합니다. Prefix 없는 key는 terminal에 전달합니다. `h`나 `l`을 Workspace escape suffix로 직접 설정했다면 해당 설정이 session 이동보다 우선합니다.
+Terminal mode는 기본 `Ctrl+A` prefix를 사용합니다. 이어서 `h/l`은 현재 project의 이전/다음 session으로 Workspace 순서에 따라 이동합니다. 좌우 화살표, `k/j`와 위아래 화살표도 같은 이동을 지원합니다. 나머지 prefix 명령에서 `{`/`}`는 이전 또는 다음 group, `i/I`는 idle, `a/A`는 active, `n/N`은 attention session으로 이동합니다. wsx가 prefix 다음 key를 기다리는 동안에는 Terminal mode를 유지한 채 expanded sidebar를 임시로 표시할 수 있습니다. Attention 이동은 기본적으로 다른 attention 상태보다 Blocked session을 먼저 선택하며 Global Settings에서 Workspace 순서로 되돌릴 수 있습니다. Group 이동은 Workspace 순서를 유지하며 먼저 확인이 필요한 session을 선택하고, 없으면 첫 idle agent session을 선택합니다. 둘 다 없으면 현재 terminal을 유지합니다. `B`는 desktop sidebar 전환, `W`는 Workspace, `Q`는 TUI만 종료합니다. `Prefix v`는 agent가 그 session에 게시한 [view](docs/terminal-view.md)를 terminal 위쪽 band로 열고, 다시 누르면 전체 높이 reader를 엽니다(`q`로 돌아옴). `Prefix V`는 닫습니다. View가 있으면 title에 `▤ view`가 표시됩니다. `Ctrl+A Ctrl+A`는 literal prefix를 보냅니다. Title은 같은 순서를 미리 보여주고 현재 session, worktree와 화면 밖 session 수를 표시합니다. Prefix 없는 key는 terminal에 전달합니다. `h`나 `l`을 Workspace escape suffix로 직접 설정했다면 해당 설정이 session 이동보다 우선합니다.
 
 Group은 순서가 있는 project filter입니다. 기본 **ungrouped** anti-group은 membership이 없는 project를 표시합니다. Trusted agent 작업, terminal 활동, session 진입, expand 또는 collapse 변경은 project의 비활성 window를 갱신합니다. 기본 adaptive policy는 24시간으로 시작하고, 새로운 UTC 날짜의 첫 trusted activity마다 12시간을 더해 최대 28일까지 늘어납니다. 활동이 확보한 window를 넘게 중단되면 다음 active period는 설정된 base부터 다시 시작합니다. Timer가 열린 project를 자동으로 접으면 wsx는 마지막 collapse 원인을 나타내기 위해 project를 `stale`로 표시합니다. 이 표시는 재시작 뒤에도 유지되지만 project와 직접 상호작용하면 즉시 사라집니다. wsx는 process tree로 agent identity나 상태를 추론하지 않습니다. Adapter가 Claude session임을 확인한 경우에만 제한된 live terminal evidence로 누락된 lifecycle event를 보정할 수 있습니다.
 
@@ -90,6 +91,7 @@ Terminal title은 같은 project의 session을 worktree별로 묶고 Workspace �
 ```toml
 terminal_escape_chord = "ctrl+a w"
 terminal_prefix_shows_sidebar = true
+view_auto_open = false
 resume_agents_on_restore = true
 wake_mode = true
 auto_collapse = { mode = "adaptive", base_hours = 24 }
@@ -146,6 +148,8 @@ wsx agent context [session|pane|label] [--metadata-only] --json [-p <project>] [
 wsx agent request|inspect|wait|continue|cancel|exchanges
 wsx agent report <pane> --provider <name> --state <state> [--session-id <id>|--session-path <path>]
 wsx plugin list|reload
+wsx view set [--title <title>] [--page <name>] [--file <path>]
+wsx view clear [--page <name>]
 wsx runtime status [--json]
 wsx daemon stop|recover
 ```
@@ -177,7 +181,9 @@ Ctrl+C나 agent crash로 pane process가 종료되어도 session은 저장된 �
 
 Routine의 각 `--arg`는 direct argv item 하나입니다. wsx는 routine argv를 실행할 때 shell을 사용하지 않습니다. 신뢰하지 않는 routine은 enable 또는 run하기 전에 `wsx routine show <name>`으로 확인합니다.
 
-Versioned event, Terminal sidecar, worktree review contract는 [Executable plugins](docs/plugins.md)에서 확인할 수 있습니다. Review provider를 설치하면 worktree에서 Tab을 눌러 preview 안에서 파일과 diff를 키보드로 살펴볼 수 있습니다. [Git provider 설정](docs/worktree-review.md)은 agent terminal을 변경하지 않습니다.
+`wsx view set`은 managed pane 안에서 실행하며 stdin 또는 `--file`의 markdown을 그 pane의 view로 게시합니다. 제한, key, mermaid renderer plugin은 [Terminal view](docs/terminal-view.md)에서 확인할 수 있습니다.
+
+Versioned event, Terminal sidecar, fenced-block renderer, worktree review contract는 [Executable plugins](docs/plugins.md)에서 확인할 수 있습니다. Review provider를 설치하면 worktree에서 Tab을 눌러 preview 안에서 파일과 diff를 키보드로 살펴볼 수 있습니다. [Git provider 설정](docs/worktree-review.md)은 agent terminal을 변경하지 않습니다.
 
 wsx-managed terminal 안에서는 plain `wsx`와 `wsx --mobile`이 nested TUI startup을 거부합니다. 명시적인 subcommand는 계속 사용할 수 있습니다. `wsx runtime status`와 `wsx daemon stop`은 daemon을 시작하지 않습니다. Runtime status는 daemon이 중지된 상태와 실행 중이지만 호환되지 않는 상태, upgrade 대기 상태, 교체 지연 상태, 준비 상태를 구분합니다. Daemon이 lifecycle 정보를 지원하면 version과 revision도 함께 표시합니다.
 
@@ -189,7 +195,7 @@ Live handoff를 지원하는 wsxd update는 다른 wsx TUI generation이 종료�
 - Owner-only socket과 peer-UID 검사로 다른 사용자의 접근을 거부합니다.
 - Pane마다 writable lease는 하나입니다. 명시적으로 Terminal에 들어가면 가장 최근 wsx instance로 control이 이전되고, 이전 instance는 Workspace로 돌아갑니다. Lease generation은 이전 controller의 input, resize, heartbeat, selection, release를 거부합니다. Event는 revision을 invalidate하고 client는 authoritative snapshot으로 복구합니다.
 - Message, frame, agent exchange prompt, deadline, write claim, retained receipt, command, plugin manifest와 view output, listener, resource count는 bounded입니다.
-- UI-only wsx release는 compatible daemon을 계속 사용합니다. Protocol 16은 provider-neutral하고 runtime generation에 묶인 agent exchange, exited pane restart, prompt-bound Claude wake renewal을 추가하며 Protocol 15 live handoff를 유지합니다. Protocol 11–15 daemon은 안전한 최초 전환 전까지 계속 사용할 수 있고, 일반적인 지연과 재연결 중에도 wsx를 열면 기존 workspace가 그대로 표시됩니다.
+- UI-only wsx release는 compatible daemon을 계속 사용합니다. Protocol 17은 live handoff 뒤에도 유지되는 pane별 bounded view 문서를 추가합니다. Protocol 16은 provider-neutral하고 runtime generation에 묶인 agent exchange, exited pane restart, prompt-bound Claude wake renewal을 추가하며 Protocol 15 live handoff를 유지합니다. Protocol 11–16 daemon은 안전한 최초 전환 전까지 계속 사용할 수 있고, 일반적인 지연과 재연결 중에도 wsx를 열면 기존 workspace가 그대로 표시됩니다.
 - Native resume은 검증된 provider reference로 새 process, PTY, terminal buffer를 만듭니다. Unsupported reference는 clean shell을 엽니다.
 - Remote access, handoff 중 transient graphics 보존, marketplace, 예기치 않은 daemon crash 뒤 original-process 복원은 지원하지 않습니다.
 
@@ -201,6 +207,7 @@ cargo nextest run --workspace --locked
 cargo test --workspace --locked --doc
 cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 scripts/runtime-smoke.py
+python3 -B scripts/test-terminal-view.py
 ```
 
 Vendored terminal dependency는 `THIRD-PARTY-NOTICES.md`에서 확인할 수 있습니다.

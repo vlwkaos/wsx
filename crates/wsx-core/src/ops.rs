@@ -801,6 +801,7 @@ mod tests {
                 foreground_job: true,
             }],
             plugin_sidecars: Vec::new(),
+            pane_views: Vec::new(),
             capabilities: Capabilities::default(),
         };
         let sessions = sessions_for_worktree(&snapshot, Path::new("/repo"), &[]).unwrap();
@@ -1114,6 +1115,7 @@ mod tests {
             listening_ports: Vec::new(),
             pane_activity: Vec::new(),
             plugin_sidecars: Vec::new(),
+            pane_views: Vec::new(),
             capabilities: Capabilities::default(),
         }
     }

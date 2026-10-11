@@ -10,7 +10,7 @@ use std::{
 };
 
 // ^ [[Terminal Stream Protocol v3]] Wire-version history and compatibility boundaries.
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const MAX_AGENT_EXCHANGE_PROMPT_BYTES: usize = 64 * 1024;
 pub const MAX_AGENT_EXCHANGE_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1000;
@@ -23,7 +23,8 @@ pub const ROUTINE_DAEMON_ARG: &str = "__wsx_routine_daemon";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ^ Receipt expiry and final PTY drain are daemon-owned runtime behavior.
 // UI-only releases continue to reuse wsxd. See docs/agent-orchestration.md and docs/terminal-exit-ordering.md.
-pub const DAEMON_REVISION: u32 = 22;
+// Revision 23: wsxd owns pane view documents (docs/terminal-view.md).
+pub const DAEMON_REVISION: u32 = 23;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -425,6 +426,28 @@ pub enum Request {
         rows: u16,
         generation: u64,
     },
+    // ^ docs/terminal-view.md: an agent publishes a document for its own pane.
+    PaneViewSet {
+        pane_id: PaneId,
+        runtime_generation: String,
+        #[serde(default)]
+        page: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
+        markdown: String,
+    },
+    PaneViewClear {
+        pane_id: PaneId,
+        runtime_generation: String,
+        #[serde(default)]
+        page: Option<String>,
+    },
+    PaneViewGet {
+        pane_id: PaneId,
+        #[serde(default)]
+        page: Option<String>,
+        columns: u16,
+    },
     LifecycleStatus,
     PrepareReplacement {
         target_binary_id: String,
@@ -499,6 +522,7 @@ pub enum Response {
     },
     AgentExchanges(Vec<AgentExchange>),
     PluginView(PluginSidecarView),
+    PaneView(super::PaneViewDocument),
     PluginReview {
         epoch: u64,
         response: super::ReviewResponse,

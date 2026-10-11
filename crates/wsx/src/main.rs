@@ -15,6 +15,7 @@ mod terminal_surface_tests;
 mod tui;
 mod ui;
 mod update;
+mod view_panel;
 
 use anyhow::{bail, Context, Result};
 use app::App;
@@ -43,6 +44,7 @@ fn main() -> Result<()> {
                 | cli::Command::Session {
                     subcommand: cli::SessionCmd::Current { .. },
                 }
+                | cli::Command::View { .. }
         )
     ) {
         return cli::run(args.command.expect("matched Some"));

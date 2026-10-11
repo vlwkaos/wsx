@@ -128,7 +128,7 @@ fn drain(reader: &mut impl Read, output: &mut Vec<u8>, limit: usize) -> io::Resu
     Ok(false)
 }
 
-fn exchange(
+pub(super) fn exchange(
     command: &mut Command,
     input: &[u8],
     cancelled: &AtomicBool,
@@ -279,6 +279,7 @@ mod tests {
                 priority: 0,
                 comparisons: vec![ReviewComparison::WorkingAgainstHead],
             }),
+            renderer: None,
         };
         let mut request = ReviewRequest {
             api_version: 1,

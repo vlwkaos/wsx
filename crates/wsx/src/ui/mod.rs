@@ -16,6 +16,8 @@ pub mod routine_editor;
 pub mod search_feedback;
 pub mod terminal_title;
 pub mod theme;
+pub mod view_markdown;
+pub mod view_panel;
 pub mod workspace_nav;
 pub mod workspace_tree;
 
@@ -230,6 +232,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let terminal_breadcrumb_area =
         terminal_layout.map_or(Rect::default(), |layout| layout.breadcrumb);
 
+    // ^ docs/terminal-view.md: an overlay inside the terminal viewport, never a layout row.
+    let view_panel_area = app.layout_view_panel();
+    let view_chip = |pane_id| app.view_chip(pane_id);
+
     let is_move_mode = matches!(
         app.mode,
         Mode::Move { .. } | Mode::MoveWorktree { .. } | Mode::MoveSession { .. }
@@ -344,6 +350,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                             session,
                             pane: None,
                             animation_frame: app.spinner_frame,
+                            view_chip: view_chip(session.pane_id),
                         },
                     );
                     render_terminal_preview(
@@ -351,6 +358,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         app.terminal_area,
                         app.terminal_surface(session.pane_id, session.terminal_id),
                         matches!(app.mode, Mode::Terminal { .. }),
+                        view_panel_area.height,
                     );
                 } else {
                     render_empty_preview(frame, preview_area);
@@ -378,6 +386,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                             session,
                             pane: Some(pane),
                             animation_frame: app.spinner_frame,
+                            view_chip: view_chip(pane.pane_id),
                         },
                     );
                     render_terminal_preview(
@@ -385,6 +394,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         app.terminal_area,
                         app.terminal_surface(pane.pane_id, pane.terminal_id),
                         matches!(app.mode, Mode::Terminal { .. }),
+                        view_panel_area.height,
                     );
                 } else {
                     render_empty_preview(frame, preview_area);
@@ -448,6 +458,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             }
             Selection::None => render_empty_preview(frame, preview_area),
         }
+    }
+
+    if let Some(view) = app.view_panel_view() {
+        view_panel::render(frame, view_panel_area, view);
     }
 
     if let Some(descriptor) = sidecar.as_ref() {
@@ -712,7 +726,7 @@ fn status_bar_view(app: &App) -> StatusBarView {
     }
 }
 
-fn fit_hints(hints: &[String], available_width: usize) -> String {
+pub(super) fn fit_hints(hints: &[String], available_width: usize) -> String {
     let mut visible = String::new();
     for hint in hints {
         let candidate = if visible.is_empty() {

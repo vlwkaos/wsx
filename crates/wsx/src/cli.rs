@@ -67,6 +67,11 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: PluginCmd,
     },
+    /// Show a document above the terminal of the calling pane
+    View {
+        #[command(subcommand)]
+        subcommand: ViewCmd,
+    },
     /// Inspect the wsx terminal daemon without starting it
     Runtime {
         #[command(subcommand)]
@@ -301,6 +306,27 @@ pub enum PluginCmd {
     },
     /// Reload manifests from the owner-controlled plugin directory
     Reload,
+}
+
+#[derive(Subcommand)]
+pub enum ViewCmd {
+    /// Publish markdown from stdin or --file as one page of this pane's view
+    Set {
+        /// Shown in the view status row instead of the page name
+        #[arg(long)]
+        title: Option<String>,
+        /// Page to replace or add; the default page is `main`
+        #[arg(long)]
+        page: Option<String>,
+        /// Read the document from a file instead of stdin
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+    /// Remove one page, or every page of this pane's view
+    Clear {
+        #[arg(long)]
+        page: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -788,6 +814,10 @@ pub fn run(cmd: Command) -> Result<()> {
         Command::Plugin { subcommand } => match subcommand {
             PluginCmd::List { json } => cmd_plugin_list(json),
             PluginCmd::Reload => cmd_plugin_reload(),
+        },
+        Command::View { subcommand } => match subcommand {
+            ViewCmd::Set { title, page, file } => cmd_view_set(title, page, file),
+            ViewCmd::Clear { page } => cmd_view_clear(page),
         },
         Command::Runtime { subcommand } => match subcommand {
             RuntimeCmd::Status { json } => cmd_runtime_status(json),
@@ -2374,6 +2404,91 @@ fn cmd_agent_detach() -> Result<()> {
     }
 }
 
+// ^ docs/terminal-view.md: pane identity comes from the managed pane, as for agent reports.
+fn view_pane_authority() -> Result<(runtime::PaneId, String)> {
+    let pane_id = std::env::var(runtime::WSX_PANE_ID_ENV)
+        .context("wsx view must run inside a wsx-managed pane")?
+        .parse::<u64>()
+        .context("managed pane ID is invalid")?;
+    let runtime_generation = std::env::var(runtime::WSX_RUNTIME_GENERATION_ENV)
+        .context("wsx view requires the current managed runtime generation")?;
+    Ok((runtime::PaneId(pane_id), runtime_generation))
+}
+
+fn view_call(request: &runtime::Request) -> Result<()> {
+    // A view never starts or replaces wsxd: without the daemon the pane does not exist.
+    match runtime::Client::new(runtime::default_socket_path()).call(request)? {
+        runtime::Response::Ack { .. } => Ok(()),
+        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
+        _ => bail!("wsxd returned an unexpected view response"),
+    }
+}
+
+fn cmd_view_set(title: Option<String>, page: Option<String>, file: Option<PathBuf>) -> Result<()> {
+    use std::io::{IsTerminal, Read};
+    let (pane_id, runtime_generation) = view_pane_authority()?;
+    let limit = runtime::MAX_VIEW_BYTES as u64 + 1;
+    let mut bytes = Vec::new();
+    match &file {
+        Some(path) => {
+            std::fs::File::open(path)
+                .with_context(|| format!("cannot open {}", path.display()))?
+                .take(limit)
+                .read_to_end(&mut bytes)
+                .with_context(|| format!("cannot read {}", path.display()))?;
+        }
+        None => {
+            let stdin = std::io::stdin();
+            if stdin.is_terminal() {
+                bail!("pipe the markdown document on stdin or pass --file <path>");
+            }
+            stdin
+                .lock()
+                .take(limit)
+                .read_to_end(&mut bytes)
+                .context("cannot read the document from stdin")?;
+        }
+    }
+    if bytes.len() > runtime::MAX_VIEW_BYTES {
+        bail!(
+            "document is larger than {} bytes; publish a summary or split it into pages",
+            runtime::MAX_VIEW_BYTES
+        );
+    }
+    let markdown = String::from_utf8(bytes)
+        .context("document is not valid UTF-8")?
+        .replace("\r\n", "\n");
+    let name = page
+        .as_deref()
+        .unwrap_or(runtime::DEFAULT_VIEW_PAGE)
+        .to_string();
+    let lines = markdown.lines().count();
+    view_call(&runtime::Request::PaneViewSet {
+        pane_id,
+        runtime_generation,
+        page,
+        title,
+        markdown,
+    })?;
+    println!("published view page {name} ({lines} lines) for pane {pane_id}");
+    Ok(())
+}
+
+fn cmd_view_clear(page: Option<String>) -> Result<()> {
+    let (pane_id, runtime_generation) = view_pane_authority()?;
+    let target = page.as_deref().map_or_else(
+        || "every view page".to_string(),
+        |page| format!("view page {page}"),
+    );
+    view_call(&runtime::Request::PaneViewClear {
+        pane_id,
+        runtime_generation,
+        page,
+    })?;
+    println!("cleared {target} for pane {pane_id}");
+    Ok(())
+}
+
 struct AgentReportOptions {
     provider: String,
     state: runtime::AgentState,
@@ -3473,6 +3588,7 @@ mod session_resolution_tests {
             listening_ports: Vec::new(),
             pane_activity: Vec::new(),
             plugin_sidecars: Vec::new(),
+            pane_views: Vec::new(),
             capabilities: Capabilities::default(),
         }
     }
