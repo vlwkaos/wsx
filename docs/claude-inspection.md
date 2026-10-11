@@ -1,26 +1,25 @@
-# Source-only hook inspection (0.30.1-inspect.2)
+# Claude and Codex hook inspection (0.30.1)
 
-This branch diagnoses Claude and Codex reports. It is not a stable release or a confirmed hook, prompt-submission, or transcript-saving fix. It preserves daemon revision 20, report-once behavior, generation fences, default hook output, and transcript settings. Keep existing 0.29.3 TUI/daemon/agent sessions running. Do not launch the preview TUI or overwrite installed binaries.
+WSX 0.30.1 adds opt-in metadata diagnostics for Claude and Codex reports. It does not claim to fix hook-exit, prompt-submission, or transcript-saving failures. It preserves daemon revision 20, report-once behavior, generation fences, default hook output, and transcript settings. Keep existing TUI/daemon/agent sessions running; installing hook assets does not require restarting them.
 
-## Run after pulling `feat/claude-inspection`
+## Install and enable
 
-From the inspection repository root, paste:
+After installing WSX 0.30.1 through Homebrew or the release archive, paste:
 
 ```sh
 (
   set -e
-  cargo build --locked -p wsx -p wsx-daemon
-  ./target/debug/wsx agent install claude
-  ./target/debug/wsx agent install codex
+  wsx agent install claude
+  wsx agent install codex
   claude_root="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
   codex_root="${CODEX_HOME:-$HOME/.codex}"
   touch "$claude_root/hooks/wsx-inspect-enabled" "$codex_root/wsx-inspect-enabled"
   chmod 600 "$claude_root/hooks/wsx-inspect-enabled" "$codex_root/wsx-inspect-enabled"
-  ./target/debug/wsx --version
+  wsx --version
 )
 ```
 
-Expect `wsx 0.30.1-inspect.2`. If inspecting only Claude, omit the Codex install and marker. Use the same absolute custom provider roots as the affected sessions. Existing Rust/Zig and Python 3 requirements apply; no new dependency is added. macOS/Linux only. Codex requires 0.150 or newer. Review changed WSX hook definitions through Codex's native trust flow; enabling a hook does not grant trust.
+Expect `wsx 0.30.1`. If inspecting only Claude, omit the Codex install and marker. Use the same absolute custom provider roots as the affected sessions. The helper requires Python 3; Rust/Zig are needed only for source builds. No new dependency is added. For a source checkout, build adjacent binaries with `cargo build --locked -p wsx -p wsx-daemon` and use `./target/debug/wsx` for these install/version commands without replacing installed binaries. macOS/Linux only. Codex requires 0.150 or newer. Review changed WSX hook definitions through Codex's native trust flow; enabling a hook does not grant trust.
 
 Let normal work produce a hook event. Do not restart an agent, replay a draft, run the hook manually, inject shell exports into an agent editor, or force persistence. Installing files does not prove that an old session loaded updated hook bindings. A marker enables all sessions invoking that hook directory without modifying their environment.
 
@@ -35,7 +34,7 @@ python3 "${CODEX_HOME:-$HOME/.codex}/wsx-agent-inspect.py" --read
 
 The reader prints only validated `wsx inspect {...}` metadata from each private journal. Skip the other provider's command if it was not installed. Share this output, whether the session predated the update, and whether Claude still shows the transcript warning. No transcript, full debug log, environment dump, or screen capture is needed.
 
-Claude can hide successful hooks' stderr. Unlike inspect.1, inspect.2 saves both successes and failures to `wsx-inspect.jsonl` beside the hook. The journal is mode 600, retains at most 32 records and 64 KiB, and each record is below 2 KiB. Nonblocking locks avoid concurrent record corruption; a busy/unsafe/unavailable journal can drop a record but never change reporting success or failure. The reader refuses symlinks, non-regular files, extra hardlinks, wrong ownership, and nonprivate permissions. Invalid records are not echoed. No log is created while inspection is disabled.
+Claude can hide successful hooks' stderr. WSX saves both successes and failures to `wsx-inspect.jsonl` beside the hook. The journal is mode 600, retains at most 32 records and 64 KiB, and each record is below 2 KiB. Nonblocking locks avoid concurrent record corruption; a busy/unsafe/unavailable journal can drop a record but never change reporting success or failure. The reader refuses symlinks, non-regular files, extra hardlinks, wrong ownership, and nonprivate permissions. Invalid records are not echoed. No log is created while inspection is disabled.
 
 A record proves that invocation reached Claude integration 21 or Codex integration 15. No record means the event/new binding/inspection did not produce a usable journal record; it does not prove that reporting succeeded. Journal failure can still emit bounded stderr metadata with `inspection_log_unavailable`. Stop and share the reader's fixed error rather than relaxing file permissions.
 
@@ -66,4 +65,4 @@ rm -- "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/wsx-inspect-enabled"
 rm -- "${CODEX_HOME:-$HOME/.codex}/wsx-inspect-enabled"
 ```
 
-An inherited `WSX_INSPECT=1` persists until that process naturally exits. Existing private journals remain for diagnosis; removing a marker does not delete them or clear environment flags. Restore published hooks later with the installed stable CLI's `wsx agent install <provider>` when safe. No stable tag, release publication, or live-session replacement belongs to this inspection flow.
+An inherited `WSX_INSPECT=1` persists until that process naturally exits. Existing private journals remain for diagnosis; removing a marker does not delete them or clear environment flags. Refresh hooks later with the installed stable CLI's `wsx agent install <provider>` when safe. Diagnosing a report does not require live-session replacement or release publication.
