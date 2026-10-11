@@ -1,6 +1,7 @@
 // Settings: this device's notification consent and its pairing.
 import { api } from "./api.js";
 import { add, h } from "./dom.js";
+import { confirmDialog } from "./ui.js";
 
 const TOPICS = [
   ["blocked", "An agent needs my input"],
@@ -16,7 +17,7 @@ function keyBytes(base64url) {
 export function settingsView(app, main) {
   const status = h("p", { class: "small", role: "status" });
   const boxes = TOPICS.map(([topic, label]) => [topic, h("input", { type: "checkbox", value: topic }), label]);
-  const save = h("button", { class: "primary", type: "button", onclick: apply }, "Save notification choices");
+  const save = h("button", { class: "button-primary", type: "button", onclick: apply }, "Save notification choices");
   const fieldset = h(
     "fieldset",
     {},
@@ -76,9 +77,15 @@ export function settingsView(app, main) {
   }
 
   const unpair = h("button", {
-    class: "danger", type: "button",
+    class: "button-danger", type: "button",
     onclick: async () => {
-      if (!confirm("Unpair this device? You will need a new code to use this site again.")) return;
+      const sure = await confirmDialog({
+        title: "Unpair this device?",
+        text: "You will need a new code from the owner to use this site again.",
+        confirm: "Unpair",
+        danger: true,
+      });
+      if (!sure) return;
       try {
         await api("api/logout", { method: "POST", json: {} });
         location.reload();

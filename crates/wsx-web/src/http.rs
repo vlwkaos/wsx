@@ -38,7 +38,7 @@ use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use wsx_core::runtime::{self, Request as Daemon, Response as DaemonResponse};
 
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; \
-media-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'self'; \
+media-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'self'; \
 form-action 'none'; frame-ancestors 'none'";
 const MAX_STREAMS_PER_DEVICE: usize = 4;
 
@@ -50,9 +50,7 @@ pub fn router(app: Shared) -> Router {
             .route("/", get(index))
             .route("/manifest.webmanifest", get(manifest))
             .route("/sw.js", get(service_worker))
-            .route("/theme.css", get(theme))
-            .route("/icon-192.png", get(|app| icon(app, 192)))
-            .route("/icon-512.png", get(|app| icon(app, 512)))
+            .route("/theme/{file}", get(theme_file))
             .route("/assets/{name}", get(asset))
             .route("/media/{file}", get(media_get))
             .route("/api/pair", post(pair))
@@ -269,15 +267,20 @@ async fn service_worker(State(app): State<Shared>) -> Response {
         app.assets.service_worker.clone(),
     )
 }
-async fn theme(State(app): State<Shared>) -> Response {
-    typed("text/css; charset=utf-8", app.assets.theme.clone())
-}
-async fn icon(State(app): State<Shared>, size: u16) -> Response {
-    let (small, large) = match &app.site.icons {
-        Some((small, large)) => (small.clone(), large.clone()),
-        None => (assets::ICON_192.to_vec(), assets::ICON_512.to_vec()),
-    };
-    typed("image/png", if size == 192 { small } else { large })
+/// Theme stylesheet, fonts and icons. The name is the content hash, so the
+/// response never changes and may be cached for good.
+async fn theme_file(State(app): State<Shared>, UrlPath(file): UrlPath<String>) -> Response {
+    match app.site.theme.files.iter().find(|entry| entry.name == file) {
+        Some(entry) => (
+            [
+                (header::CONTENT_TYPE, entry.content_type),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            entry.bytes.clone(),
+        )
+            .into_response(),
+        None => Fault::not_found().into_response(),
+    }
 }
 async fn asset(UrlPath(name): UrlPath<String>) -> Response {
     match assets::find(&name) {

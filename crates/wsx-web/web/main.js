@@ -7,9 +7,9 @@ import { filesView } from "./files.js";
 import { terminalView } from "./terminal.js";
 import { activityView } from "./activity.js";
 import { settingsView } from "./settings.js";
+import { notice } from "./ui.js";
 
 const main = document.getElementById("main");
-const notice = document.getElementById("notice");
 const VIEWS = { chat: chatView, files: filesView, terminal: terminalView, activity: activityView, settings: settingsView };
 const LABELS = { chat: "Chat", files: "Files", terminal: "Terminal", activity: "Activity", settings: "Settings" };
 
@@ -25,11 +25,6 @@ const app = {
   },
 };
 let view = null;
-
-function setNotice(text) {
-  notice.textContent = text ?? "";
-  notice.hidden = !text;
-}
 
 function route() {
   const [, panel = "", argument] = location.hash.split("/");
@@ -59,14 +54,14 @@ function start(session) {
     workspace: (data) => {
       app.sessions = data.sessions;
       app.daemon = true;
-      setNotice(null);
+      notice("daemon", null);
       view?.onWorkspace?.();
     },
     history: (data) => view?.onHistory?.(data.session_id),
     exchange: (data) => view?.onExchange?.(data),
     daemon: (data) => {
       app.daemon = data.available;
-      setNotice(data.available ? null : "wsx is not running on the host. Sessions will return when it starts.");
+      notice("daemon", data.available ? null : "wsx is not running on the host. Sessions will return when it starts.");
       if (!data.available) {
         app.sessions = [];
         view?.onWorkspace?.();
@@ -74,8 +69,8 @@ function start(session) {
     },
     resync: () => route(),
     revoked: () => location.reload(),
-    down: () => setNotice("Connection lost. Reconnecting…"),
-    up: () => setNotice(app.daemon ? null : notice.textContent),
+    down: () => notice("link", "Connection lost. Reconnecting…"),
+    up: () => notice("link", null),
   });
   route();
   if ("serviceWorker" in navigator) {
