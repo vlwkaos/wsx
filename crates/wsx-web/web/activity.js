@@ -16,7 +16,7 @@ export function activityView(app, main) {
       fill(sessions,
         data.sessions.length
           ? h("ul", { class: "list" }, data.sessions.map((session) =>
-              h("li", { class: "line" },
+              h("li", { class: "list-row line" },
                 open ? h("a", { href: `#/chat/${session.id}` }, `${session.label} (${session.branch})`) : h("span", {}, `${session.label} (${session.branch})`),
                 stateLabel(session))))
           : h("p", { class: "muted" }, "No session is open in this project."),
@@ -25,7 +25,7 @@ export function activityView(app, main) {
       fill(exchanges,
         data.exchanges.length
           ? h("ul", { class: "list" }, data.exchanges.map((exchange) =>
-              h("li", { class: "line" },
+              h("li", { class: "list-row line" },
                 h("span", {}, `${label.get(exchange.session_id) ?? `session ${exchange.session_id}`}, message ${exchange.id} round ${exchange.round}`),
                 h("span", { class: "small muted" }, `${exchange.state.replaceAll("_", " ")}: ${exchange.delivery}`))))
           : h("p", { class: "muted" }, "No message was sent yet."),

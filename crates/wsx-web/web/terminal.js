@@ -10,7 +10,7 @@ export function terminalView(app, main, argument) {
   let closed = false;
   let generation = 0;
   const picker = h("div", { class: "row" });
-  const screen = h("pre", { class: "screen", tabIndex: 0, "aria-label": "Terminal screen" });
+  const screen = h("pre", { class: "terminal-frame", tabIndex: 0, "aria-label": "Terminal screen" });
   const error = h("p", { class: "error", role: "alert" });
   const text = h("input", {
     type: "text", class: "grow", "aria-label": "Text to type", autocapitalize: "off", autocomplete: "off", spellcheck: false,
@@ -19,7 +19,7 @@ export function terminalView(app, main, argument) {
   const controls = h(
     "div",
     {},
-    h("div", { class: "row" }, text, h("button", { class: "primary", type: "button", onclick: () => input({ text: text.value, key: "enter" }) }, "Send line")),
+    h("div", { class: "row" }, text, h("button", { class: "button-primary", type: "button", onclick: () => input({ text: text.value, key: "enter" }) }, "Send line")),
     h("div", { class: "row", role: "group", "aria-label": "Keys" },
       KEYS.map(([key, label]) => h("button", { type: "button", onclick: () => input({ key }) }, label))),
   );

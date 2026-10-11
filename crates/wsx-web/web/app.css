@@ -1,127 +1,155 @@
-/* Tokens. A site file may override the color tokens through theme.css. */
-:root {
-  --background: #f6f5f1;
-  --surface: #ffffff;
-  --text: #1c1b18;
-  --muted: #5f5c53;
-  --border: #d5d2c8;
-  --accent: #1f5f8b;
-  --accent-text: #ffffff;
-  --danger: #a3261d;
-  --ok: #24663a;
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 24px;
-  --radius: 6px;
-  --text-size: 1rem;
-  --small-size: 0.875rem;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #171715;
-    --surface: #21211e;
-    --text: #ecebe6;
-    --muted: #a9a69b;
-    --border: #3b3a35;
-    --accent: #7db8de;
-    --accent-text: #10202b;
-    --danger: #f08a80;
-    --ok: #86c99a;
-  }
-}
+/* Core component CSS. Contract: docs/web-themes.md.
+   Every design value comes from a theme token (var(--...)). This file holds
+   structure only: no color, font, length, radius, shadow or duration literal.
+   Themes restyle the hook classes named in each section heading. */
+
 * { box-sizing: border-box; }
-html { font: var(--text-size)/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+html {
+  font-family: var(--font-body); font-size: var(--font-size-md);
+  font-weight: var(--font-weight-normal); line-height: var(--line-height);
+}
 body {
   margin: 0; height: 100dvh; display: flex; flex-direction: column;
-  background: var(--background); color: var(--text);
+  background: var(--color-bg); color: var(--color-text);
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 [hidden] { display: none !important; }
-.skip { position: absolute; left: -999px; }
-.skip:focus { left: var(--space-2); top: var(--space-2); background: var(--surface); padding: var(--space-2); z-index: 2; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.muted { color: var(--muted); }
-a { color: var(--accent); }
-.small { font-size: var(--small-size); }
-
-#bar {
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4);
-  padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--border); background: var(--surface);
-}
-#bar h1 { font-size: 1rem; margin: 0; }
-#nav { display: flex; flex-wrap: wrap; gap: var(--space-1); }
-#nav a {
-  padding: var(--space-2) var(--space-3); border-radius: var(--radius);
-  color: var(--text); text-decoration: none; min-height: 40px; display: inline-flex; align-items: center;
-}
-#nav a[aria-current="page"] { background: var(--background); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
-#notice { margin: 0; padding: var(--space-2) var(--space-4); background: var(--surface); border-bottom: 1px solid var(--border); font-size: var(--small-size); }
-
-/* The page never scrolls as a whole: a panel scrolls inside main, and the chat log
-   scrolls inside the panel so the composer stays in view. */
-main { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; width: 100%; max-width: 60rem; margin: 0 auto; padding: var(--space-4); gap: var(--space-3); }
-main:focus { outline: none; }
-h2 { font-size: 1.125rem; margin: 0; }
-
-button, select, input, textarea { font: inherit; color: inherit; }
-button, .button {
-  min-height: 40px; padding: var(--space-2) var(--space-3); border-radius: var(--radius);
-  border: 1px solid var(--border); background: var(--surface); cursor: pointer;
-}
-button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
-button.danger { color: var(--danger); }
-button:disabled { opacity: 0.55; cursor: not-allowed; }
-select, input[type="text"], textarea {
-  min-height: 40px; padding: var(--space-2); border-radius: var(--radius);
-  border: 1px solid var(--border); background: var(--surface); max-width: 100%;
-}
-textarea { width: 100%; resize: vertical; }
-label { font-size: var(--small-size); color: var(--muted); display: block; }
+:focus-visible { outline: var(--focus-width) solid var(--color-focus); outline-offset: var(--focus-offset); }
+.skip { position: absolute; transform: translateY(-200%); background: var(--color-surface); padding: var(--space-2); z-index: 3; }
+.skip:focus { transform: none; }
+a { color: var(--color-accent); }
+h2 { font-family: var(--font-heading); font-size: var(--font-size-lg); font-weight: var(--font-weight-strong); margin: 0; }
+label { font-size: var(--font-size-sm); color: var(--color-muted); display: block; }
+.muted { color: var(--color-muted); }
+.small { font-size: var(--font-size-sm); }
+.error { color: var(--color-danger); margin: 0; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
-.row > .grow { flex: 1 1 10rem; min-width: 0; }
+.row > .grow { flex: 1 1 var(--size-field); min-width: 0; }
 .stack { display: contents; }
-.error { color: var(--danger); margin: 0; }
-.state { font-size: var(--small-size); white-space: nowrap; }
-.state[data-state="blocked"], .state[data-state="error"] { color: var(--danger); font-weight: 600; }
-.state[data-state="done"] { color: var(--ok); }
 
-/* Chat */
-.log { flex: 1 1 0; min-height: 6rem; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-1) 0; }
-.message { max-width: 46rem; }
-.message .who { font-size: var(--small-size); color: var(--muted); margin: 0; }
-.message .text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.message[data-role="user"] { align-self: flex-end; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-2) var(--space-3); }
-.message[data-pending] { border-style: dashed; }
-.attachments { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); padding: 0; list-style: none; }
-.attachments img { display: block; max-width: min(100%, 20rem); max-height: 20rem; border-radius: var(--radius); border: 1px solid var(--border); }
-.composer { border-top: 1px solid var(--border); padding-top: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
+/* Hook: .app-chrome, .app-title, .app-nav — the title bar and panel navigation. */
+.app-chrome {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-chrome-bg); color: var(--color-chrome-text);
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+.app-title { font-family: var(--font-heading); font-size: var(--font-size-md); font-weight: var(--font-weight-strong); margin: 0; }
+.app-nav { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.app-nav a {
+  min-height: var(--size-control); padding: var(--space-2) var(--space-3);
+  display: inline-flex; align-items: center;
+  color: inherit; text-decoration: none; border-radius: var(--radius-control);
+}
+.app-nav a[aria-current="page"] {
+  background: var(--color-bg); color: var(--color-text); font-weight: var(--font-weight-strong);
+  box-shadow: inset 0 calc(-1 * var(--focus-width)) 0 var(--color-accent);
+}
+
+/* Hook: .panel — the scrolling work area. The page itself never scrolls: a panel
+   scrolls inside main, and the chat log scrolls inside the panel so the composer stays in view. */
+.panel {
+  flex: 1; min-height: 0; overflow-y: auto; width: 100%; max-width: var(--size-content);
+  margin: 0 auto; padding: var(--space-4);
+  display: flex; flex-direction: column; gap: var(--space-3);
+}
+.panel:focus { outline: none; }
+
+/* Hook: .button, .button-primary, .button-danger */
+button, select, input, textarea { font: inherit; color: inherit; }
+.button {
+  min-height: var(--size-control); padding: var(--space-2) var(--space-3);
+  background: var(--color-surface); color: var(--color-text);
+  border: var(--border-width) solid var(--color-border); border-radius: var(--radius-control);
+  box-shadow: var(--shadow-raised); cursor: pointer;
+  transition: background-color var(--motion-duration) var(--motion-easing);
+}
+.button-primary { background: var(--color-accent); color: var(--color-accent-text); border-color: var(--color-accent); font-weight: var(--font-weight-strong); }
+.button-danger { color: var(--color-danger); }
+.button:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
+
+/* Hook: .input — text fields, selects and text areas. */
+.input {
+  min-height: var(--size-control); max-width: 100%; padding: var(--space-2);
+  background: var(--color-sunken); color: var(--color-text);
+  border: var(--border-width) solid var(--color-border); border-radius: var(--radius-control);
+  box-shadow: var(--shadow-sunken);
+}
+textarea.input { width: 100%; resize: vertical; }
+fieldset { border: var(--border-width) solid var(--color-border); border-radius: var(--radius-surface); padding: var(--space-3); margin: 0; }
+fieldset label { color: var(--color-text); font-size: var(--font-size-md); min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-2); }
+
+/* Hook: .badge — agent and session state. The text carries the state; color repeats it. */
+.badge { font-size: var(--font-size-sm); white-space: nowrap; }
+.badge[data-state="blocked"], .badge[data-state="error"] { color: var(--color-danger); font-weight: var(--font-weight-strong); }
+.badge[data-state="done"] { color: var(--color-ok); }
+
+/* Hook: .list, .list-row */
+.list {
+  list-style: none; margin: 0; padding: 0;
+  background: var(--color-surface); border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-surface); box-shadow: var(--shadow-raised);
+}
+.list-row + .list-row { border-top: var(--border-width) solid var(--color-border); }
+.list-row > .button { width: 100%; text-align: left; border: 0; border-radius: 0; background: none; box-shadow: none; overflow-wrap: anywhere; }
+.list-row.line { padding: var(--space-2) var(--space-3); display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-1) var(--space-3); }
+
+/* Hook: .bubble, .bubble-user, .bubble-agent — chat messages. */
+.log { flex: 1 1 0; min-height: var(--size-log); overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-1) 0; }
+.bubble { max-width: min(100%, var(--size-bubble)); padding: var(--space-2) var(--space-3); border-radius: var(--radius-surface); border: var(--border-width) solid transparent; }
+.bubble-user { align-self: flex-end; background: var(--color-bubble-user-bg); color: var(--color-bubble-user-text); border-color: var(--color-border); box-shadow: var(--shadow-raised); }
+.bubble-agent { align-self: flex-start; background: var(--color-bubble-agent-bg); color: var(--color-bubble-agent-text); }
+.bubble[data-pending] { border-style: dashed; }
+.bubble .who { font-size: var(--font-size-sm); opacity: var(--opacity-quiet); margin: 0; }
+.bubble .text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.attachments { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-2) 0 0; padding: 0; list-style: none; }
+.attachments img { display: block; max-width: min(100%, var(--size-media)); max-height: var(--size-media); border: var(--border-width) solid var(--color-border); border-radius: var(--radius-control); }
+.composer { border-top: var(--border-width) solid var(--color-border); padding-top: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
 /* Attach, Stop and Send stay on one line at 320 px so Send is never below the fold. */
 .composer .row { flex-wrap: nowrap; }
 .composer .row > .grow { flex: 1 1 0; }
-.chips { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: 0; margin: 0; list-style: none; font-size: var(--small-size); }
-.chips li { border: 1px solid var(--border); border-radius: var(--radius); padding: 0 0 0 var(--space-2); display: inline-flex; align-items: center; gap: var(--space-1); max-width: 100%; }
+.chips { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: 0; margin: 0; list-style: none; font-size: var(--font-size-sm); }
+.chips li { border: var(--border-width) solid var(--color-border); border-radius: var(--radius-control); padding-left: var(--space-2); display: inline-flex; align-items: center; gap: var(--space-1); max-width: 100%; }
 .chips li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chips button { border: 0; min-height: 32px; background: none; }
+.chips .button { border: 0; background: none; box-shadow: none; }
 
-/* Lists and tables */
-.list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
-.list li + li { border-top: 1px solid var(--border); }
-.list button { width: 100%; text-align: left; border: 0; border-radius: 0; background: none; overflow-wrap: anywhere; }
-.list .line { padding: var(--space-2) var(--space-3); display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-1) var(--space-3); }
-pre.screen, pre.file {
-  flex: 1; margin: 0; padding: var(--space-3); overflow: auto; min-height: 10rem;
-  font: 0.8125rem/1.35 var(--mono); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+/* Hook: .terminal-frame — terminal screen and file text. */
+.terminal-frame {
+  flex: 1; min-height: var(--size-log); margin: 0; padding: var(--space-3); overflow: auto;
+  font-family: var(--font-mono); font-size: var(--font-size-mono);
+  background: var(--color-terminal-bg); color: var(--color-terminal-text);
+  border: var(--border-width) solid var(--color-border); border-radius: var(--radius-surface);
+  box-shadow: var(--shadow-sunken);
 }
-textarea.file { flex: 1; min-height: 16rem; font: 0.8125rem/1.35 var(--mono); }
-fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-3); margin: 0; }
-fieldset label { color: var(--text); font-size: var(--text-size); min-height: 40px; display: flex; align-items: center; gap: var(--space-2); }
-.pair { max-width: 24rem; display: flex; flex-direction: column; gap: var(--space-3); }
-.pair input { width: 100%; }
-#pair-code { font: 1.25rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+textarea.terminal-frame { resize: vertical; }
 
+/* Hook: .dialog — modal confirmation. */
+.dialog {
+  width: min(100% - 2 * var(--space-4), var(--size-field) * 2); padding: var(--space-4);
+  background: var(--color-surface); color: var(--color-text);
+  border: var(--border-width) solid var(--color-border); border-radius: var(--radius-surface);
+  box-shadow: var(--shadow-overlay);
+}
+.dialog::backdrop { background: var(--color-overlay); }
+.dialog h2 { margin-bottom: var(--space-2); }
+.dialog .row { justify-content: flex-end; margin-top: var(--space-4); }
+
+/* Hook: .toast — connection and result notices, above the panel. */
+.toasts { display: flex; flex-direction: column; }
+.toast {
+  margin: 0; padding: var(--space-2) var(--space-4); font-size: var(--font-size-sm);
+  background: var(--color-surface); color: var(--color-text);
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+.toast[data-kind="error"] { color: var(--color-danger); }
+
+.pair { max-width: calc(var(--size-field) * 2); display: flex; flex-direction: column; gap: var(--space-3); }
+.pair .input { width: 100%; }
+#pair-code { font-family: var(--font-mono); font-size: var(--font-size-xl); text-transform: uppercase; }
+
+@media (prefers-reduced-motion: reduce) {
+  .button { transition: none; }
+}
 @media (prefers-reduced-motion: no-preference) {
   .log { scroll-behavior: smooth; }
 }

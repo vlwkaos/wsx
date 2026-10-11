@@ -44,7 +44,7 @@ self.addEventListener("push", (event) => {
     self.registration.showNotification(data.title ?? "wsx", {
       body: data.body ?? "An agent changed state.",
       tag: data.tag,
-      icon: "icon-192.png",
+      icon: "__WSX_ICON__",
       data: { session_id: data.session_id },
     }),
   );
