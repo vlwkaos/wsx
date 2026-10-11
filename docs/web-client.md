@@ -16,15 +16,13 @@ One site per process. The file must be a regular file owned by the user with mod
 ```toml
 id = "owner"                              # a-z, 0-9, '-'; names the state directory and cookie
 name = "wsx"                              # shown in the page and the installed app
-base_path = "/app/wsx"                    # omit or "" for an alt-port root site
 port = 7431                               # loopback port
-public_origin = "https://host.tailnet.ts.net"   # exact origin the browser uses; add :8443 for alt-port
+public_origin = "https://wsx.tailnet.ts.net"   # exact origin the browser uses
+base_path = ""                            # omit for a service or alt-port site; "/app/wsx" for a sub-path
 panels = ["chat", "files", "terminal", "activity"]
+theme = "default"                         # default, retro, or the absolute path of a theme (web-themes.md)
 
-[theme]                                   # optional; light scheme. Use [theme_dark] for the dark scheme.
-accent = "#1f5f8b"                        # tokens: background surface text muted border accent accent_text danger ok
-
-[icon]                                    # optional; both files are required together
+[icon]                                    # optional; replaces the theme's icons
 png_192 = "/abs/icon-192.png"
 png_512 = "/abs/icon-512.png"
 
@@ -61,14 +59,18 @@ A second site is the same binary with another file, fewer panels and fewer bits.
 - The server listens on `127.0.0.1` only. `Host` must equal the host of `public_origin`. `Origin` must equal `public_origin` when present, and is required on every state-changing request. API and media requests with a cross-site `Sec-Fetch-Site` are refused.
 - Pairing: `wsx web pair` stores the SHA-256 of a 10-character code. The device exchanges the code for a random 256-bit credential in an `HttpOnly; SameSite=Strict` cookie with `Path=<base>/` (`Secure` for an https origin). Only the credential's SHA-256 is stored. There is no shared token.
 - Limits: 240 requests, 20 messages and 6 session starts per minute per device, four open event streams per device, 16 devices. Pairing attempts are limited to five per minute for the whole site, because the proxy hides client addresses; a tailnet member who keeps guessing can therefore delay a real pairing.
-- Origin sharing: under a sub-path, every app on the same hostname and port is the same browser origin. Script from a sibling app can call this API with the device's cookie; the `Origin` check and `SameSite` cannot tell them apart. Host a site on its own HTTPS port (alt-port root) when another app on that hostname is not trusted.
+- Origin sharing: a service or alt-port site has its own browser origin. Under a sub-path, every app on the same hostname and port is the same browser origin. Script from a sibling app can call this API with the device's cookie; the `Origin` check and `SameSite` cannot tell them apart. Host a site on its own HTTPS port (alt-port root) when another app on that hostname is not trusted.
 - A revoke takes effect on the next request. An open event stream ends within 20 seconds, and the device's push subscription is removed.
-- CSP is `default-src 'none'` with `'self'` for scripts, styles, images, media, connections, the manifest and the worker. There is no inline script or style.
+- CSP is `default-src 'none'` with `'self'` for scripts, styles, fonts, images, media, connections, the manifest and the worker. There is no inline script or style, and a theme cannot add an origin.
 - State lives in `<wsx state dir>/web/<id>/` with owner-only modes: `devices.json`, `push.json`, `media/`.
 
-## Sub-path
+## Base path
 
-Every browser URL is relative to `<base href="<base>/">`, written at serve time. The manifest `id`, `scope` and `start_url`, the service worker scope and cache list, and the cookie `Path` use the same base. Each route answers with and without the prefix, because `tailscale serve --set-path` may strip it. An empty `base_path` gives an alt-port root site from the same build.
+The default is a site at the root of its own hostname (a Tailscale Service) or port, with `base_path` omitted. A sub-path remains supported as a secondary shape. Every browser URL is relative to `<base href="<base>/">`, written at serve time, so one build serves all shapes. The manifest `id`, `scope` and `start_url`, the service worker scope and cache list, and the cookie `Path` use the same base. With a base path, each route answers with and without the prefix, because `tailscale serve --set-path` may strip it.
+
+## Themes
+
+`theme` selects a built-in theme or a deployer-supplied theme directory: validated tokens, optional component CSS, fonts and icons, served under content-hash URLs. The manifest colors and icons follow the theme. See [web-themes.md](web-themes.md).
 
 ## Chat
 
