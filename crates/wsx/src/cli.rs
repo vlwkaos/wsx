@@ -82,6 +82,38 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: RoutineCmd,
     },
+    /// Host one paired web site for remote agent work (docs/web-client.md)
+    Web {
+        #[command(subcommand)]
+        subcommand: WebCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum WebCmd {
+    /// Serve one site on its loopback port until interrupted
+    Serve {
+        /// Owner-only site file
+        #[arg(long)]
+        site: PathBuf,
+    },
+    /// Print a one-time code that pairs one device with the site
+    Pair {
+        #[arg(long)]
+        site: PathBuf,
+    },
+    /// List paired devices, or revoke one
+    Devices {
+        #[arg(long)]
+        site: PathBuf,
+        /// Device ID to revoke
+        #[arg(long)]
+        revoke: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a new Web Push key pair for a site file
+    Vapid,
 }
 
 impl Command {
@@ -797,6 +829,14 @@ pub fn run(cmd: Command) -> Result<()> {
             DaemonCmd::Recover => cmd_daemon_recover(),
         },
         Command::Routine { subcommand } => cmd_routine(subcommand),
+        Command::Web { subcommand } => match subcommand {
+            WebCmd::Serve { site } => wsx_web::serve(&site),
+            WebCmd::Pair { site } => wsx_web::pair(&site),
+            WebCmd::Devices { site, revoke, json } => {
+                wsx_web::devices(&site, revoke.as_deref(), json)
+            }
+            WebCmd::Vapid => wsx_web::vapid(),
+        },
     }
 }
 
