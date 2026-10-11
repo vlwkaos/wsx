@@ -13,6 +13,23 @@ This is a Cargo workspace with separate branch CI and stable `v*` tag publicatio
 - **Binary releases are archive/Homebrew only.** `wsx-terminal`, `wsx-daemon`, and `wsx` remain unpublished because the pinned Ghostty source is workspace-vendored and runtime requires adjacent `wsx`/`wsxd`. Publish only `wsx-core`; never advertise `cargo install wsx`.
 - **Herdr provenance.** `vendor/herdr` is the squashed official `v0.8.2` subtree at commit `9eb521456ac0d19d3ab3d9d7cea3cca10baa8a4c`. It is reference-only: keep it excluded from the workspace, runtime, archives, and install instructions.
 
+## Working in this repo as an agent
+
+Start each task in its own worktree through wsx. Run these from a wsx-managed pane.
+
+```bash
+wsx session current --json                                   # your pane_id, session_id, project, worktree, agent_status
+wsx worktree create <branch> --from main --json -p <project> # prints worktree, branch, session_id, pane_id
+cd <worktree>                                                # work and commit only in the printed path
+wsx session send-text <session_id> '<command>'               # optional: run a command in the new worktree's session
+wsx worktree delete <branch> -p <project>                    # when the branch is merged: closes its sessions too
+```
+
+- `<project>` is the `project` value from `session current`. `--from` accepts a commit, tag or branch; omit it to start from the default branch.
+- An existing `<branch>` is checked out as it is; `--from` is then refused. A git failure prints git's own error.
+- `--json` calls keep stderr free of runtime notices. `session_id` and `pane_id` are `null` when the project disables the default session.
+- Never run `wsx daemon stop` or delete sessions you did not create. Test against an isolated wsxd as `scripts/runtime-smoke.py` does.
+
 ## good-to-go
 
 - **auwsx issue inspection**: use `"$AUWSX_BIN" issue get <issue_id>`; `issue show` and `issue --help` are unsupported.

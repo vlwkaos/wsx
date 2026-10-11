@@ -135,7 +135,9 @@ wsx validates files, rejects unknown fields, bounded worktree defaults, and unsa
 ```text
 wsx status [--json]
 wsx worktree list|create|delete
-wsx session create|delete|restart|list|send-keys|send-text|prompt|peek|rename
+wsx worktree create <branch> [--from <ref>] [--json] [-p <project>]
+wsx session create|current|delete|restart|list|send-keys|send-text|prompt|peek|rename
+wsx session current [--json]
 wsx group ls|create|rename|add|remove
 wsx routine ...
 wsx agent install <target>
@@ -147,6 +149,10 @@ wsx plugin list|reload
 wsx runtime status [--json]
 wsx daemon stop|recover
 ```
+
+`wsx worktree create` starts a new branch from the project's default branch, or from `--from <ref>`. A branch that already exists is checked out as it is, and `--from` is then refused. When git fails, wsx prints git's own error. `--json` prints `worktree`, `branch`, `project`, `session_id` and `pane_id`; the two IDs are `null` when no initial session was created.
+
+`wsx session current --json` reports the managed pane that runs the command, read from `WSX_PANE_ID`: `pane_id`, `session_id`, `label`, `project`, `worktree`, `branch`, `agent` and `agent_status`. It never starts wsxd and fails outside a managed pane. Commands called with `--json` print no runtime notice on stderr; other commands print it on one line.
 
 Create a session directly in the current worktree, the only known worktree, or an explicit target:
 
