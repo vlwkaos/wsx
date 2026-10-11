@@ -135,7 +135,9 @@ wsx는 file을 검증하고 unknown field, 크기 제한을 벗어난 worktree d
 ```text
 wsx status [--json]
 wsx worktree list|create|delete
-wsx session create|delete|restart|list|send-keys|send-text|prompt|peek|rename
+wsx worktree create <branch> [--from <ref>] [--json] [-p <project>]
+wsx session create|current|delete|restart|list|send-keys|send-text|prompt|peek|rename
+wsx session current [--json]
 wsx group ls|create|rename|add|remove
 wsx routine ...
 wsx agent install <target>
@@ -147,6 +149,10 @@ wsx plugin list|reload
 wsx runtime status [--json]
 wsx daemon stop|recover
 ```
+
+`wsx worktree create`는 project의 기본 branch에서 새 branch를 만들며, `--from <ref>`를 주면 그 지점에서 시작합니다. 이미 있는 branch는 그대로 checkout하고, 이때 `--from`은 거부합니다. git이 실패하면 git의 오류 메시지를 그대로 출력합니다. `--json`은 `worktree`, `branch`, `project`, `session_id`, `pane_id`를 출력하며, 초기 session을 만들지 않았다면 두 ID는 `null`입니다.
+
+`wsx session current --json`은 `WSX_PANE_ID`를 읽어 이 명령을 실행한 managed pane의 `pane_id`, `session_id`, `label`, `project`, `worktree`, `branch`, `agent`, `agent_status`를 알려 줍니다. wsxd를 시작하지 않으며, managed pane 밖에서는 오류로 끝납니다. `--json`으로 호출한 명령은 stderr에 runtime 안내를 출력하지 않고, 그 밖의 명령은 한 줄로 출력합니다.
 
 현재 worktree, 하나뿐인 worktree 또는 명시적으로 지정한 대상에 session을 바로 만들 수 있습니다.
 

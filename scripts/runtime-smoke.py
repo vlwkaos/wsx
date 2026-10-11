@@ -92,6 +92,19 @@ env.update({
     "CLAUDE_CODE_CHILD_SESSION": "parent-only-marker",
 })
 subprocess.run(["git", "init", "-q", "-b", "main", str(PROJECT)], check=True, env=env)
+
+
+def git(*args):
+    return subprocess.run(
+        ["git", "-C", str(PROJECT), "-c", "user.name=smoke", "-c", "user.email=smoke@example.invalid", *args],
+        check=True, env=env, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+# ^ `git worktree add` needs a commit; the second commit separates `--from` from HEAD.
+git("commit", "-q", "--allow-empty", "-m", "base")
+BASE_COMMIT = git("rev-parse", "HEAD")
+git("commit", "-q", "--allow-empty", "-m", "head")
 SOCKET = STATE / "wsx" / "wsx.sock"
 DAEMON = Path(os.environ.get("WSX_SMOKE_DAEMON", ROOT / "target" / "debug" / "wsxd"))
 WSX = Path(os.environ.get("WSX_SMOKE_WSX", ROOT / "target" / "debug" / "wsx"))
@@ -134,6 +147,17 @@ def call(method, params=None):
         assert hello["type"] == "hello", hello
         client.sendall(json.dumps(request).encode() + b"\n")
         return recv_line(client)
+
+
+def wsx(*args, extra_env=None, pane_id=None):
+    # ^ The caller's own WSX_PANE_ID must never leak into an isolated CLI call.
+    cli_env = {key: value for key, value in env.items() if key != "WSX_PANE_ID"}
+    if pane_id is not None:
+        cli_env["WSX_PANE_ID"] = str(pane_id)
+    return subprocess.run(
+        [str(WSX), *args], cwd=PROJECT, env=cli_env | (extra_env or {}),
+        check=False, capture_output=True, text=True,
+    )
 
 
 def send_shell_command(pane_id, command, client_id):
@@ -326,6 +350,64 @@ assert json.loads(cli_deleted.stdout) == {
 assert not any(
     item["id"] == cli_session_id for item in call("snapshot")["data"]["sessions"]
 )
+# Agent-facing worktree commands: start point, existing branch, JSON identity, git errors.
+created = wsx("worktree", "create", "feat/json", "--json")
+assert created.returncode == 0 and created.stderr == "", created
+created_worktree = json.loads(created.stdout)
+feat_path = WORK / "project-feat-json"
+assert created_worktree["worktree"] == str(feat_path), created_worktree
+assert created_worktree["branch"] == "feat/json", created_worktree
+assert git("-C", str(feat_path), "rev-parse", "HEAD") == git("rev-parse", "HEAD")
+created_session = next(
+    item for item in call("snapshot")["data"]["sessions"]
+    if item["id"] == created_worktree["session_id"]
+)
+assert created_session["focused_pane"] == created_worktree["pane_id"], created_worktree
+current = wsx("session", "current", "--json", pane_id=created_worktree["pane_id"])
+assert current.returncode == 0 and current.stderr == "", current
+assert json.loads(current.stdout) == {
+    "pane_id": created_worktree["pane_id"],
+    "session_id": created_worktree["session_id"],
+    "label": created_session["label"],
+    "project": "smoke",
+    "worktree": str(feat_path),
+    "branch": "feat/json",
+    "agent": None,
+    "agent_status": None,
+}, current.stdout
+outside = wsx("session", "current", "--json")
+assert outside.returncode != 0 and outside.stdout == "", outside
+assert "not inside a wsx-managed pane" in outside.stderr, outside.stderr
+absent = wsx("session", "current", "--json", pane_id=999999)
+assert absent.returncode != 0 and "is not present" in absent.stderr, absent
+from_base = wsx("worktree", "create", "feat/from", "--from", BASE_COMMIT, "--json")
+assert from_base.returncode == 0, from_base
+from_path = Path(json.loads(from_base.stdout)["worktree"])
+assert git("-C", str(from_path), "rev-parse", "HEAD") == BASE_COMMIT
+git("branch", "existing", BASE_COMMIT)
+existing = wsx("worktree", "create", "existing")
+assert existing.returncode == 0, existing
+existing_path = WORK / "project-existing"
+assert f"worktree: {existing_path}" in existing.stdout, existing.stdout
+assert git("-C", str(existing_path), "rev-parse", "--abbrev-ref", "HEAD") == "existing"
+assert git("-C", str(existing_path), "rev-parse", "HEAD") == BASE_COMMIT
+ignored_start = wsx("worktree", "create", "existing", "--from", "main")
+assert ignored_start.returncode != 0 and "already exists" in ignored_start.stderr, ignored_start
+checked_out = wsx("worktree", "create", "existing")
+assert checked_out.returncode != 0 and "fatal:" in checked_out.stderr, checked_out
+bad_start = wsx("worktree", "create", "feat/bad", "--from", "no-such-ref")
+assert bad_start.returncode != 0, bad_start
+assert "fatal:" in bad_start.stderr and "no-such-ref" in bad_start.stderr, bad_start.stderr
+assert not (WORK / "project-feat-bad").exists()
+for branch in ("feat/json", "feat/from", "existing"):
+    deleted = wsx("worktree", "delete", branch)
+    assert deleted.returncode == 0, deleted
+assert wsx("status", "--json").returncode == 0
+cli_snapshot = call("snapshot")["data"]
+assert len(cli_snapshot["worktrees"]) == 1, cli_snapshot
+assert not any(
+    item["id"] == created_worktree["session_id"] for item in cli_snapshot["sessions"]
+)
 quick = call("session_create", {
     "worktree_id": worktree_id,
     "label": "quick-exit",
@@ -439,6 +521,10 @@ while time.monotonic() < report_deadline:
         break
     time.sleep(0.03)
 assert working_seen and agent is not None and agent["state"] == "done", activity_snapshot
+current_agent = wsx("session", "current", "--json", pane_id=activity_pane_id)
+assert current_agent.returncode == 0, current_agent
+current_agent = json.loads(current_agent.stdout)
+assert current_agent["agent"] == "codex" and current_agent["agent_status"] == "done", current_agent
 send_shell_command(activity_pane_id, "exit", 84)
 exit_deadline = time.monotonic() + 3
 while time.monotonic() < exit_deadline:
@@ -1137,6 +1223,16 @@ state_file.chmod(0o600)
 recovered_from_backup = start()
 assert list(state_file.parent.glob("state.json.corrupt.*"))
 assert call("lifecycle_status")["data"]["recovered_from_backup"] is True
+# Availability notices stay off stderr for JSON callers and take one line otherwise.
+# ^ A same-revision daemon is always current, so the upgrade-deferred notice is not reachable here.
+notice_json = wsx("status", "--json")
+assert notice_json.returncode == 0 and notice_json.stderr == "", notice_json.stderr
+json.loads(notice_json.stdout)
+notice_text = wsx("status")
+assert notice_text.returncode == 0, notice_text
+assert notice_text.stderr == (
+    "wsx: wsxd recovered a corrupt primary state from its last-known-good backup\n"
+), notice_text.stderr
 shutdown(recovered_from_backup)
 
 latency_passes = 0
