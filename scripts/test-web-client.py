@@ -9,6 +9,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import socket
@@ -107,13 +108,17 @@ def free_port():
 class Site:
     """HTTP client for one served site. `shape` picks the inbound path form."""
 
-    def __init__(self, port, base):
+    def __init__(self, port, base, origin=None):
         self.port, self.base, self.cookie = port, base, None
-        self.origin = 'http://127.0.0.1:%d' % port
+        self.origin = origin or 'http://127.0.0.1:%d' % port
+        # A service-style site is reached through a proxy that keeps the public Host.
+        self.host = self.origin.split('://')[1] if origin else None
 
     def request(self, method, path, body=None, headers=None, shape='prefixed', cookie=True, raw=False):
         prefix = self.base if shape == 'prefixed' else ''
         sent = {'Origin': self.origin} if method not in ('GET', 'HEAD') else {}
+        if self.host:
+            sent['Host'] = self.host
         if cookie and self.cookie:
             sent['Cookie'] = self.cookie
         if isinstance(body, (dict, list)):
@@ -141,7 +146,8 @@ class Events(threading.Thread):
         self.seen, self.ready, self.closed = [], threading.Condition(), threading.Event()
         self.connection = http.client.HTTPConnection('127.0.0.1', site.port, timeout=60)
         self.connection.request('GET', (site.base if shape == 'prefixed' else '') + '/api/events',
-                                headers={'Cookie': site.cookie, 'Accept': 'text/event-stream'})
+                                headers=dict({'Cookie': site.cookie, 'Accept': 'text/event-stream'},
+                                             **({'Host': site.host} if site.host else {})))
         self.response = self.connection.getresponse()
         assert self.response.status == 200, self.response.status
         assert self.response.getheader('content-type').startswith('text/event-stream')
@@ -299,7 +305,8 @@ def main():
 
         vapid = cli('web', 'vapid').stdout
         private_key = next(line.split('"')[1] for line in vapid.splitlines() if line.startswith('private_key'))
-        ports = {name: free_port() for name in ('owner', 'family', 'root')}
+        ports = {name: free_port() for name in ('owner', 'family', 'root', 'retro')}
+        service_origin = 'https://wsx-fixture.example-tailnet.ts.net'
 
         def site_file(name, text, mode=0o600):
             file = work / (name + '.toml')
@@ -313,8 +320,7 @@ base_path = "/app/owner"
 port = {ports['owner']}
 public_origin = "http://127.0.0.1:{ports['owner']}"
 panels = ["chat", "files", "terminal", "activity"]
-[theme]
-accent = "#225577"
+theme = "default"
 [project]
 path = "{project}"
 capabilities = ["chat_send", "agent_write", "files_read", "files_write", "terminal_view", "terminal_input", "media_upload", "media_download", "push"]
@@ -327,6 +333,39 @@ subject = "mailto:owner@example.invalid"
 private_key = "{private_key}"
 service_origins = ["{push_origin}"]
 '''
+        def theme_dir(name, manifest, extra=None):
+            """Write a deployer-supplied theme directory and return its path."""
+            directory = work / ('theme-' + name)
+            (directory / 'fonts').mkdir(parents=True)
+            (directory / 'theme.toml').write_text(manifest)
+            for relative, data in (extra or {}).items():
+                (directory / relative).write_bytes(data)
+            return directory
+
+        fixture_font = b'wOF2' + bytes(range(256)) * 4
+        custom_icons = {'small.png': png(192, 9), 'large.png': png(512, 9)}
+        custom_manifest = '''name = "family-warm"
+extends = "default"
+components = "look.css"
+[tokens]
+color-accent = "#225577"
+color-chrome-bg = "#102030"
+color-chrome-text = "#ffffff"
+font-body = "Fixture Sans, system-ui, sans-serif"
+radius-control = "0"
+[tokens_dark]
+color-accent = "#88bbdd"
+[[fonts]]
+family = "Fixture Sans"
+file = "fonts/fixture.woff2"
+weight = "700"
+[icons]
+png_192 = "small.png"
+png_512 = "large.png"
+'''
+        custom_css = b'.button-primary { text-transform: uppercase; }\n'
+        custom_theme = theme_dir('family', custom_manifest,
+                                 dict(custom_icons, **{'look.css': custom_css, 'fonts/fixture.woff2': fixture_font}))
         files = {
             'owner': site_file('owner', owner_text),
             # Site B: same binary, fewer panels and capability bits, another project.
@@ -336,15 +375,17 @@ base_path = "/app/family"
 port = {ports['family']}
 public_origin = "http://127.0.0.1:{ports['family']}"
 panels = ["chat"]
+theme = "{custom_theme}"
 [project]
 path = "{(work / 'project2').resolve()}"
 capabilities = ["chat_send", "media_upload", "media_download"]
 '''),
-            # Alt-port root shape, with small media limits for TTL and quota.
+            # The primary shape: a Tailscale Service, one https hostname per site, at
+            # the root. Also carries small media limits for TTL and quota.
             'root': site_file('root', f'''id = "root"
 name = "Root"
 port = {ports['root']}
-public_origin = "http://127.0.0.1:{ports['root']}"
+public_origin = "{service_origin}"
 panels = ["chat"]
 [project]
 path = "{project}"
@@ -354,6 +395,17 @@ agent_command = ["/bin/sh"]
 max_file_bytes = 4096
 quota_bytes = 9000
 ttl_seconds = 4
+'''),
+            # Built-in retro theme with every panel, for the browser check.
+            'retro': site_file('retro', f'''id = "retro"
+name = "Retro"
+port = {ports['retro']}
+public_origin = "http://127.0.0.1:{ports['retro']}"
+panels = ["chat", "files", "terminal", "activity"]
+theme = "retro"
+[project]
+path = "{project}"
+capabilities = ["chat_send", "agent_write", "files_read", "files_write", "terminal_view", "terminal_input", "media_upload", "media_download"]
 '''),
         }
         # The site file is a trust boundary: wrong mode and unknown fields are refused.
@@ -365,12 +417,50 @@ ttl_seconds = 4
         assert 'needs the Files panel' in refused.stderr, refused.stderr
         ok('site file: mode, unknown field and panel/capability mismatch refused')
 
+        # A theme is deployer data that ends up in a page under a strict CSP, so
+        # every part of it is validated before the server starts.
+        def refuse_theme(label, spec, expected):
+            text = owner_text.replace('theme = "default"', 'theme = "%s"' % spec)
+            refused = cli('web', 'serve', '--site', site_file('bad-theme', text), expect=1)
+            assert expected in refused.stderr, (label, refused.stderr)
+
+        def broken(label, manifest, expected, extra=None):
+            refuse_theme(label, theme_dir(label, manifest, extra), expected)
+
+        refuse_theme('unknown name', 'neon', 'not a built-in theme')
+        refuse_theme('relative path', 'themes/mine', 'not a built-in theme')
+        refuse_theme('missing path', work / 'no-such-theme', 'does not exist')
+        base = 'name = "bad"\n'
+        broken('css-injection', base + '[tokens]\ncolor-accent = "red;}body{display:none"\n', 'invalid value')
+        broken('remote-font-stack', base + '[tokens]\nfont-body = "url(https://evil.example/a.woff2)"\n', 'invalid value')
+        broken('unknown-token', base + '[tokens]\ncolor-brand = "#ffffff"\n', 'not a theme token')
+        broken('dark-length', base + '[tokens_dark]\nspace-1 = "9px"\n', 'must be a color')
+        broken('bad-shadow', base + '[tokens]\nshadow-raised = "0 0 9px url(x)"\n', 'invalid value')
+        broken('unknown-field', base + 'script = "x.js"\n', 'unknown field')
+        broken('extends-unknown', base + 'extends = "neon"\n', 'not a built-in theme')
+        broken('bad-name', 'name = "Bad Name"\n', 'theme name')
+        for index, css in enumerate((b'.button{background:url(https://evil.example/x.png)}', b'@import "https://evil.example/x.css";',
+                                     b'@font-face{font-family:x;src:local(x)}', b'.button{background:image-set("x.png" 1x)}')):
+            broken('css-%d' % index, base + 'components = "c.css"\n', 'must not contain', {'c.css': css})
+        broken('css-oversized', base + 'components = "c.css"\n', 'larger than', {'c.css': b'.button{color:inherit}\n' * 8000})
+        font = '[[fonts]]\nfamily = "F"\nfile = "%s"\n'
+        broken('font-escape', base + font % '../outside.woff2', 'inside the theme directory')
+        broken('font-magic', base + font % 'fonts/f.woff2', 'not WOFF2', {'fonts/f.woff2': b'<html>' * 20})
+        broken('font-oversized', base + font % 'fonts/f.woff2', 'larger than', {'fonts/f.woff2': b'wOF2' + b'\0' * (2 * 1024 * 1024)})
+        broken('font-family', base + '[[fonts]]\nfamily = "F\\";}x{"\nfile = "fonts/f.woff2"\n', 'font family', {'fonts/f.woff2': fixture_font})
+        linked = theme_dir('font-symlink', base + font % 'fonts/f.woff2')
+        (linked / 'fonts/f.woff2').symlink_to(outside)
+        refuse_theme('font-symlink', linked, 'inside the theme directory')
+        broken('icon-size', base + '[icons]\npng_192 = "a.png"\npng_512 = "a.png"\n', '512x512', {'a.png': png(192, 1)})
+        ok('theme: unknown name, token injection, unknown token, URL in CSS, oversized CSS and font, path escape, symlink, wrong icon refused')
+
         sites = {}
         for name in files:
             process = subprocess.Popen([str(wsx), 'web', 'serve', '--site', str(files[name])], env=env,
                                        cwd=project, stdout=subprocess.DEVNULL, stderr=(work / (name + '.log')).open('w'))
             processes.append(process)
-            sites[name] = Site(ports[name], {'owner': '/app/owner', 'family': '/app/family', 'root': ''}[name])
+            sites[name] = Site(ports[name], {'owner': '/app/owner', 'family': '/app/family'}.get(name, ''),
+                               service_origin if name == 'root' else None)
 
         def up(site):
             try:
@@ -379,7 +469,7 @@ ttl_seconds = 4
                 return False
         for site in sites.values():
             wait(lambda: up(site), 'web server')
-        owner, family, root = sites['owner'], sites['family'], sites['root']
+        owner, family, root, retro = sites['owner'], sites['family'], sites['root'], sites['retro']
 
         # --- Sub-path first: both inbound shapes serve the same base-filled documents.
         for shape in ('prefixed', 'stripped'):
@@ -395,12 +485,11 @@ ttl_seconds = 4
             assert status == 200 and headers['content-type'].startswith('text/javascript')
             assert b'"assets/main.js"' in worker and b'__WSX_' not in worker
             for asset, kind in (('/assets/main.js', 'text/javascript'), ('/assets/app.css', 'text/css'),
-                                ('/theme.css', 'text/css'), ('/icon-192.png', 'image/png'), ('/icon-512.png', 'image/png')):
+                                ('/' + re.search(r'href="(theme/[0-9a-f]{16}\.css)"', html.decode()).group(1), 'text/css'),
+                                ('/' + manifest['icons'][0]['src'], 'image/png'), ('/' + manifest['icons'][1]['src'], 'image/png')):
                 status, headers, body = owner.request('GET', asset, shape=shape, raw=True)
                 assert status == 200 and headers['content-type'].startswith(kind), asset
             assert body[16:24] == struct.pack('>II', 512, 512)
-        status, body = owner.request('GET', '/theme.css')
-        assert b'--accent:#225577' in body
         # No file uses an absolute URL: the same bytes must work under any base.
         for file in (ROOT / 'crates/wsx-web/web').glob('*'):
             if file.suffix in ('.js', '.html', '.css'):
@@ -411,7 +500,62 @@ ttl_seconds = 4
         assert manifest['scope'] == manifest['start_url'] == '/'
         assert b'<base href="/">' in root.request('GET', '/')[1]
         assert root.request('GET', '/app/owner/')[0] == 404
-        ok('HTML, manifest, service worker, assets: prefixed, stripped and root shapes')
+        # Service-style hostname: only that exact https host is answered.
+        assert root.request('GET', '/', headers={'Host': '127.0.0.1:%d' % ports['root']})[0] == 421
+        assert root.request('GET', '/', headers={'Host': 'other.example-tailnet.ts.net'})[0] == 421
+        assert root.request('POST', '/api/pair', {'code': 'x'}, headers={'Origin': 'http://wsx-fixture.example-tailnet.ts.net'})[0] == 403
+        ok('HTML, manifest, service worker, assets: prefixed, stripped and service-hostname root shapes')
+
+        # --- Themes: selection, a deployer directory, content-hash URLs, strict CSP.
+        def themed(site):
+            status, headers, html = site.request('GET', '/', raw=True)
+            html = html.decode()
+            csp = headers['content-security-policy']
+            assert "default-src 'none'" in csp and "font-src 'self'" in csp and "style-src 'self'" in csp
+            assert 'unsafe' not in csp and 'http' not in csp and '*' not in csp, csp
+            assert 'style=' not in html and '<style' not in html
+            sheet = re.search(r'href="(theme/[0-9a-f]{16}\.css)"', html).group(1)
+            status, sheet_headers, css = site.request('GET', '/' + sheet, raw=True)
+            assert status == 200 and sheet_headers['cache-control'] == 'public, max-age=31536000, immutable'
+            assert sheet == 'theme/%s.css' % hashlib.sha256(css).hexdigest()[:16]
+            return html, css.decode(), site.request('GET', '/manifest.webmanifest')[1]
+
+        html, css, manifest = themed(owner)
+        assert 'data-theme="default"' in html and 'name="color-scheme" content="light dark"' in html
+        assert '--color-bg:#f6f5f1;' in css and 'prefers-color-scheme: dark' in css and '@font-face' not in css
+        assert (manifest['background_color'], manifest['theme_color']) == ('#f6f5f1', '#ffffff')
+        default_icon = owner.request('GET', '/' + manifest['icons'][0]['src'])[1]
+
+        html, css, manifest = themed(retro)
+        assert 'data-theme="retro"' in html and 'name="color-scheme" content="light"' in html
+        assert '--color-bg:#c0c0c0;' in css and '--radius-surface:0;' in css and '.app-title' in css
+        assert 'prefers-color-scheme: dark' not in css, 'retro defines the light scheme only'
+        assert (manifest['background_color'], manifest['theme_color']) == ('#c0c0c0', '#c0c0c0')
+        assert retro.request('GET', '/' + manifest['icons'][0]['src'])[1] != default_icon
+
+        html, css, manifest = themed(family)
+        assert 'data-theme="family-warm"' in html and 'content="#102030"' in html
+        # Its own tokens over the inherited default ones, light and dark.
+        assert '--color-accent:#225577;' in css and '--color-bg:#f6f5f1;' in css and '--radius-control:0;' in css
+        assert css.split('prefers-color-scheme: dark')[1].count('--color-accent:#88bbdd;') == 1
+        assert css.endswith(custom_css.decode())
+        font_name = hashlib.sha256(fixture_font).hexdigest()[:16] + '.woff2'
+        assert '@font-face{font-family:"Fixture Sans";src:url("%s");font-weight:700;' % font_name in css
+        status, headers, body = family.request('GET', '/theme/' + font_name, raw=True)
+        assert status == 200 and body == fixture_font and headers['content-type'] == 'font/woff2'
+        assert 'immutable' in headers['cache-control']
+        assert (manifest['background_color'], manifest['theme_color']) == ('#f6f5f1', '#102030')
+        assert [family.request('GET', '/' + icon['src'])[1] for icon in manifest['icons']] == [custom_icons['small.png'], custom_icons['large.png']]
+        assert '"theme/%s"' % font_name in family.request('GET', '/sw.js')[1].decode()  # offline shell has the font
+        assert family.request('GET', '/theme/theme.toml')[0] == 404 and family.request('GET', '/theme/..%2Ftheme.toml')[0] == 404
+        # Core component CSS holds no design value of its own: only tokens.
+        core = re.sub(r'/\*.*?\*/', '', (ROOT / 'crates/wsx-web/web/app.css').read_text(), flags=re.S)
+        literals = re.findall(r'#[0-9a-fA-F]{3,8}\b|\b\d*\.?\d+(?:px|rem|em|ms|s|pt)\b|\brgba?\(', core)
+        assert literals == [], literals
+        for hook in ('app-chrome', 'app-title', 'app-nav', 'panel', 'list', 'list-row', 'button', 'input',
+                     'bubble', 'badge', 'dialog', 'toast', 'terminal-frame'):
+            assert re.search(r'\.%s[\s,.:{\[]' % hook, core), hook
+        ok('themes: built-in default and retro, custom directory with font and icons, hash URLs, manifest follows theme, CSP strict, token-only core CSS')
 
         # --- Request checks.
         assert owner.request('GET', '/api/session')[0] == 401
@@ -461,7 +605,7 @@ ttl_seconds = 4
         assert 'Path=/app/family/;' in cookie
         family.cookie = cookie.split(';')[0]
         _, cookie = pair(root, 'root')
-        assert 'Path=/;' in cookie
+        assert 'Path=/;' in cookie and 'Secure' in cookie  # https service origin
         root.cookie = cookie.split(';')[0]
         listed = json.loads(cli('web', 'devices', '--site', files['owner'], '--json').stdout)
         assert [device['name'] for device in listed] == ['owner phone'] and 'secret_sha256' not in listed[0]
@@ -662,17 +806,20 @@ ttl_seconds = 4
         # --- Optional real browser, on both sites, before any device is revoked.
         if args.browser:
             args.captures.mkdir(parents=True, exist_ok=True)
-            for name, site, panels in (('owner', owner, 'Chat,Files,Terminal,Activity,Settings'),
-                                       ('family', family, 'Chat,Settings')):
-                settle(name)
+            for name, site, session, body_color in (('owner', owner, 'owner', 'rgb(246, 245, 241)'),
+                                                    ('retro', retro, 'owner', 'rgb(192, 192, 192)')):
+                settle(session)
                 code = cli('web', 'pair', '--site', files[name]).stdout.splitlines()[0].rsplit(' ', 1)[1]
                 result = subprocess.run([node, str(ROOT / 'scripts/web-browser-check.mjs'), site.origin + site.base + '/',
-                                         code, str(sessions[name]), str(args.captures), name, panels],
-                                        capture_output=True, text=True, timeout=150)
+                                         code, str(sessions[session]), str(args.captures), name,
+                                         'Chat,Files,Terminal,Activity,Settings', body_color],
+                                        capture_output=True, text=True, timeout=200)
                 assert result.returncode == 0, result.stdout + result.stderr
                 ok('real browser, ' + result.stdout.strip().splitlines()[-1])
-                wait(lambda: messages(site, sessions[name])['messages'][-1]['text'].startswith('echo: browser check'), 'browser turn')
-                settle(name)
+                wait(lambda: messages(owner, sessions[session])['messages'][-1]['text'].startswith('echo: browser check'), 'browser turn')
+                settle(session)
+                # The browser saved notes.txt through the files panel; put the fixture back.
+                (project / 'notes.txt').write_text('edited\n')
 
         # --- Web Push with explicit device consent, to the local receiver.
         status, info = owner.request('GET', '/api/push')
