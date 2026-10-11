@@ -12,6 +12,7 @@ mod media;
 mod push;
 mod sandbox;
 mod site;
+mod theme;
 
 use anyhow::{Context, Result};
 use std::{

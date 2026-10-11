@@ -1,0 +1,97 @@
+# Built-in theme "default". This file is also the complete token list:
+# a theme must define every token here, directly or through `extends`.
+# Contract and value rules: docs/web-themes.md.
+name = "default"
+
+[icons]
+png_192 = "icon-192.png"
+png_512 = "icon-512.png"
+
+[tokens]
+# Color roles
+color-bg = "#f6f5f1"
+color-surface = "#ffffff"
+color-sunken = "#ffffff"
+color-text = "#1c1b18"
+color-muted = "#5f5c53"
+color-border = "#d5d2c8"
+color-accent = "#1f5f8b"
+color-accent-text = "#ffffff"
+color-danger = "#a3261d"
+color-ok = "#24663a"
+color-focus = "#1f5f8b"
+color-chrome-bg = "#ffffff"
+color-chrome-text = "#1c1b18"
+color-bubble-user-bg = "#ffffff"
+color-bubble-user-text = "#1c1b18"
+color-bubble-agent-bg = "#f6f5f1"
+color-bubble-agent-text = "#1c1b18"
+color-terminal-bg = "#ffffff"
+color-terminal-text = "#1c1b18"
+color-overlay = "#00000066"
+# Type
+font-body = "system-ui, -apple-system, 'Segoe UI', sans-serif"
+font-heading = "system-ui, -apple-system, 'Segoe UI', sans-serif"
+font-mono = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+font-size-sm = "0.875rem"
+font-size-md = "1rem"
+font-size-lg = "1.125rem"
+font-size-xl = "1.25rem"
+font-size-mono = "0.8125rem"
+font-weight-normal = "400"
+font-weight-strong = "600"
+line-height = "1.5"
+# Spacing
+space-1 = "4px"
+space-2 = "8px"
+space-3 = "12px"
+space-4 = "16px"
+space-5 = "24px"
+# Sizes
+size-control = "40px"
+size-content = "60rem"
+size-bubble = "46rem"
+size-media = "20rem"
+size-field = "12rem"
+size-log = "6rem"
+# Radius and border
+radius-control = "6px"
+radius-surface = "6px"
+border-width = "1px"
+# Shadow
+shadow-raised = "none"
+shadow-sunken = "none"
+shadow-overlay = "0 8px 24px #00000033"
+# Motion
+motion-duration = "120ms"
+motion-easing = "ease-out"
+# Focus
+focus-width = "2px"
+focus-offset = "2px"
+# Opacity
+opacity-disabled = "0.55"
+opacity-quiet = "0.75"
+
+# Only color-*, shadow-* and opacity-* tokens may differ in the dark scheme.
+[tokens_dark]
+color-bg = "#171715"
+color-surface = "#21211e"
+color-sunken = "#1b1b19"
+color-text = "#ecebe6"
+color-muted = "#a9a69b"
+color-border = "#3b3a35"
+color-accent = "#7db8de"
+color-accent-text = "#10202b"
+color-danger = "#f08a80"
+color-ok = "#86c99a"
+color-focus = "#7db8de"
+color-chrome-bg = "#21211e"
+color-chrome-text = "#ecebe6"
+color-bubble-user-bg = "#2b2b27"
+color-bubble-user-text = "#ecebe6"
+color-bubble-agent-bg = "#171715"
+color-bubble-agent-text = "#ecebe6"
+color-terminal-bg = "#111110"
+color-terminal-text = "#ecebe6"
+color-overlay = "#000000aa"
+shadow-overlay = "0 8px 24px #00000099"

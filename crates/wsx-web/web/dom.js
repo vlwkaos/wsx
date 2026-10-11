@@ -1,10 +1,13 @@
 // Element builder. Text is always set as text, never parsed as HTML.
 export function h(tag, attributes = {}, ...children) {
   const element = document.createElement(tag);
+  // Theme hooks (docs/web-themes.md): every control carries its hook class.
+  const hook = tag === "button" ? "button" : tag === "select" || tag === "textarea" || (tag === "input" && attributes.type === "text") ? "input" : null;
+  if (hook) element.classList.add(hook);
   for (const [name, value] of Object.entries(attributes)) {
     if (value === false || value == null) continue;
     if (name.startsWith("on")) element.addEventListener(name.slice(2), value);
-    else if (name === "class") element.className = value;
+    else if (name === "class") element.classList.add(...value.split(" "));
     else if (name in element && name !== "list") element[name] = value;
     else element.setAttribute(name, value === true ? "" : value);
   }
@@ -33,10 +36,10 @@ const STATE_WORDS = {
 
 // State is text first; color only repeats it.
 export function stateLabel(session) {
-  if (session.exited) return h("span", { class: "state", "data-state": "error" }, "exited");
-  if (!session.agent) return h("span", { class: "state muted" }, "no agent");
+  if (session.exited) return h("span", { class: "badge", "data-state": "error" }, "exited");
+  if (!session.agent) return h("span", { class: "badge muted" }, "no agent");
   const state = session.agent.attached ? session.agent.state : "unknown";
-  return h("span", { class: "state", "data-state": state }, `${session.agent.provider}: ${STATE_WORDS[state] ?? state}`);
+  return h("span", { class: "badge", "data-state": state }, `${session.agent.provider}: ${STATE_WORDS[state] ?? state}`);
 }
 
 export function sessionSelect(sessions, current, onchange) {

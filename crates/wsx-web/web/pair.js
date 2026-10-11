@@ -9,7 +9,7 @@ export function pairView(main, onPaired) {
     autocapitalize: "characters", spellcheck: false, required: true, maxLength: 16,
   });
   const name = h("input", { type: "text", id: "pair-name", name: "name", maxLength: 40, placeholder: "for example: my phone" });
-  const submit = h("button", { class: "primary", type: "submit" }, "Pair this device");
+  const submit = h("button", { class: "button-primary", type: "submit" }, "Pair this device");
   const form = h(
     "form",
     {
