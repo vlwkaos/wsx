@@ -1,0 +1,14 @@
+{
+  "name": "wsx-mermaid",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reference wsx renderer plugin: mermaid fenced blocks as terminal box art",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "grok-mermaid": "0.2.2"
+  }
+}
