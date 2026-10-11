@@ -11,13 +11,14 @@
 ### Features
 
 - Add the hosted web client. `wsx web serve --site <site.toml>` hosts one web site for one project on a loopback port, for use behind `tailscale serve`. A paired phone or browser can chat with the project's agents, attach files to a prompt, download files the agent produced and see images inline. Optional panels show project files, the current terminal screen and recent activity.
-  - One site file per process sets the base path, public origin, name, icon, theme, panels, capability bits, media limits and push keys. The file must be owner-only, and unknown fields are refused. A second site, for example a simpler chat for a family member, is the same binary with fewer panels and capability bits.
+  - One site file per process sets the public origin, optional base path, name, icon, theme, panels, capability bits, media limits and push keys. The file must be owner-only, and unknown fields are refused. A second site, for example a simpler chat for a family member, is the same binary with fewer panels and capability bits.
   - `wsx web pair` prints a one-time code that pairs one device. The device keeps an `HttpOnly` credential; the server stores only its hash. `wsx web devices` lists and revokes devices. There is no shared token. The server checks the exact `Host` and `Origin`, sends a strict CSP and limits requests per device.
   - Chat sends through the agent exchange broker and shows the agent's own saved conversation, including Claude's. Terminal output is never read into chat. The page states delivery evidence as it is: a PTY delivery is shown as typed into the terminal, not as accepted by the agent.
   - A page receives updates over one server-sent event stream and has no polling timer.
   - Media is stored per site under its SHA-256, with a maximum file size, a total quota with oldest-first eviction, and a time limit. File types are detected from content against an allowlist.
   - The page is an installable PWA with an offline shell. Web Push is off until a device opts in, per topic: agent needs input, agent finished, agent error. Tapping a notification opens that session.
-  - Every browser URL is relative, so one build works under a sub-path such as `/app/wsx/` and at an alt-port root.
+  - Styling is a token and component contract. A theme supplies validated tokens and, optionally, component CSS, fonts and icons; the server serves them under content-hash URLs and the CSP stays strict. `default` (light and dark) and `retro` (a System 7 look, light only) are built in, and a deployer can supply a theme directory. The PWA manifest colors and icons follow the theme. See `docs/web-themes.md`.
+  - The default deployment is one Tailscale Service hostname per site, served at the root. Every browser URL is relative, so the same build also works at an alt-port root and under a sub-path such as `/app/wsx/`.
   - No daemon or protocol change. The web server never starts `wsxd`. See `docs/web-client.md` and `docs/web-deploy.md`. Verified with `scripts/test-web-client.py`; a real Claude turn, a real push service and a phone are not covered by that script.
 
 ### Improvements
