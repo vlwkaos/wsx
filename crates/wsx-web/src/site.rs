@@ -1,10 +1,10 @@
 //! One validated site per process. See docs/web-client.md for the file format.
 //! ^ The site file is the only source of panels and capability bits; the browser
 //! never selects them.
+use crate::theme::Theme;
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
     fs,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
@@ -56,10 +56,9 @@ struct SiteFile {
     port: u16,
     public_origin: String,
     panels: Vec<Panel>,
-    #[serde(default)]
-    theme: BTreeMap<String, String>,
-    #[serde(default)]
-    theme_dark: BTreeMap<String, String>,
+    /// A built-in theme name, or the absolute path of a theme directory or file.
+    #[serde(default = "default_theme")]
+    theme: String,
     #[serde(default)]
     icon: Option<IconFile>,
     project: ProjectFile,
@@ -67,6 +66,10 @@ struct SiteFile {
     media: MediaLimits,
     #[serde(default)]
     push: Option<PushFile>,
+}
+
+fn default_theme() -> String {
+    "default".into()
 }
 
 #[derive(Deserialize)]
@@ -138,7 +141,6 @@ pub struct Origin {
     pub secure: bool,
 }
 
-#[derive(Debug, Clone)]
 pub struct Site {
     pub id: String,
     pub name: String,
@@ -147,9 +149,7 @@ pub struct Site {
     pub port: u16,
     pub public: Origin,
     pub panels: Vec<Panel>,
-    pub theme: BTreeMap<String, String>,
-    pub theme_dark: BTreeMap<String, String>,
-    pub icons: Option<(Vec<u8>, Vec<u8>)>,
+    pub theme: Theme,
     pub project: PathBuf,
     pub capabilities: Vec<Capability>,
     pub agent_command: Vec<String>,
@@ -157,18 +157,6 @@ pub struct Site {
     pub push: Option<PushSettings>,
     pub state_dir: PathBuf,
 }
-
-pub const THEME_TOKENS: [&str; 9] = [
-    "background",
-    "surface",
-    "text",
-    "muted",
-    "border",
-    "accent",
-    "accent_text",
-    "danger",
-    "ok",
-];
 
 impl Site {
     pub fn load(path: &Path) -> Result<Self> {
@@ -249,15 +237,6 @@ impl Site {
         );
         let project = fs::canonicalize(&file.project.path).context("project path is missing")?;
         ensure!(project.is_dir(), "project path must be a directory");
-        for (name, tokens) in [("theme", &file.theme), ("theme_dark", &file.theme_dark)] {
-            for (token, value) in tokens {
-                ensure!(
-                    THEME_TOKENS.contains(&token.as_str()),
-                    "{name}.{token} is not a theme token"
-                );
-                ensure!(hex_color(value), "{name}.{token} must be #rgb or #rrggbb");
-            }
-        }
         let media = file.media;
         ensure!(
             (1..=512 * 1024 * 1024).contains(&media.max_file_bytes)
@@ -271,6 +250,7 @@ impl Site {
                 Ok((read_png(&icon.png_192, 192)?, read_png(&icon.png_512, 512)?))
             })
             .transpose()?;
+        let theme = Theme::load(&file.theme, icons)?;
         let push = file
             .push
             .map(|push| -> Result<_> {
@@ -313,9 +293,7 @@ impl Site {
             port: file.port,
             public,
             panels: file.panels,
-            theme: file.theme,
-            theme_dark: file.theme_dark,
-            icons,
+            theme,
             project,
             capabilities: file.project.capabilities,
             agent_command: file.project.agent_command,
@@ -356,12 +334,6 @@ fn slug(value: &str, max: usize) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-}
-
-fn hex_color(value: &str) -> bool {
-    value.strip_prefix('#').is_some_and(|digits| {
-        matches!(digits.len(), 3 | 6) && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
-    })
 }
 
 fn normalize_base(value: &str) -> Result<String> {
@@ -424,16 +396,6 @@ pub fn parse_origin(value: &str) -> Result<Origin> {
 
 fn read_png(path: &Path, size: u32) -> Result<Vec<u8>> {
     let bytes = fs::read(path).with_context(|| format!("cannot read icon {}", path.display()))?;
-    ensure!(bytes.len() <= 1024 * 1024, "icon is larger than 1 MiB");
-    // PNG signature, then IHDR width and height as big-endian u32.
-    ensure!(
-        bytes.len() > 24
-            && bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-            && &bytes[12..16] == b"IHDR"
-            && bytes[16..20] == size.to_be_bytes()
-            && bytes[20..24] == size.to_be_bytes(),
-        "icon {} must be a {size}x{size} PNG",
-        path.display()
-    );
+    crate::theme::check_png(&bytes, size).with_context(|| path.display().to_string())?;
     Ok(bytes)
 }

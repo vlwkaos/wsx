@@ -32,7 +32,7 @@ function messageNode(message, pending) {
   const who = message.role === "user" ? "You" : message.role === "assistant" ? "Agent" : message.role;
   return h(
     "article",
-    { class: "message", "data-role": message.role, "data-pending": pending ? "" : null },
+    { class: `bubble ${message.role === "user" ? "bubble-user" : "bubble-agent"}`, "data-role": message.role, "data-pending": pending ? "" : null },
     h("p", { class: "who" }, pending ? `${who} (not in the saved conversation yet)` : who),
     message.text ? h("p", { class: "text" }, message.text) : null,
     attachmentList(message.attachments),
@@ -68,7 +68,7 @@ export function chatView(app, main, argument) {
   });
   const file = h("input", { type: "file", multiple: true, hidden: true, onchange: () => upload([...file.files]) });
   const attach = h("button", { type: "button", onclick: () => file.click() }, "Attach");
-  const sendButton = h("button", { class: "primary", type: "button", onclick: () => send() }, "Send");
+  const sendButton = h("button", { class: "button-primary", type: "button", onclick: () => send() }, "Send");
   const cancelButton = h("button", { type: "button", hidden: true, onclick: () => cancel() }, "Stop");
   const composer = h(
     "div",

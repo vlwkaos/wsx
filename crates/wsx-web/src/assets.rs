@@ -5,9 +5,6 @@ use crate::{devices::hex, site::Site};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-pub const ICON_192: &[u8] = include_bytes!("../web/icon-192.png");
-pub const ICON_512: &[u8] = include_bytes!("../web/icon-512.png");
-
 const JS: &str = "text/javascript; charset=utf-8";
 const FILES: &[(&str, &str, &str)] = &[
     (
@@ -24,6 +21,7 @@ const FILES: &[(&str, &str, &str)] = &[
     ("terminal.js", JS, include_str!("../web/terminal.js")),
     ("activity.js", JS, include_str!("../web/activity.js")),
     ("settings.js", JS, include_str!("../web/settings.js")),
+    ("ui.js", JS, include_str!("../web/ui.js")),
 ];
 
 pub fn find(name: &str) -> Option<(&'static str, &'static str)> {
@@ -37,7 +35,6 @@ pub struct Assets {
     pub index: String,
     pub manifest: String,
     pub service_worker: String,
-    pub theme: String,
 }
 
 fn escape(text: &str) -> String {
@@ -49,57 +46,47 @@ fn escape(text: &str) -> String {
 
 impl Assets {
     pub fn build(site: &Site) -> Self {
+        let theme = &site.theme;
         let index = include_str!("../web/index.html")
             .replace("__WSX_BASE__", &site.base)
-            .replace("__WSX_NAME__", &escape(&site.name));
-        // Values were validated as #rgb or #rrggbb, so they are safe inside CSS.
-        let block = |tokens: &std::collections::BTreeMap<String, String>| {
-            tokens
-                .iter()
-                .map(|(token, value)| format!("--{}:{value};", token.replace('_', "-")))
-                .collect::<String>()
-        };
-        // `[theme]` restyles the light scheme only. A light accent applied to the dark
-        // scheme would pair with dark-scheme text tokens and lose contrast.
-        let mut theme = format!(
-            "@media (prefers-color-scheme: light){{:root{{{}}}}}",
-            block(&site.theme)
-        );
-        if !site.theme_dark.is_empty() {
-            theme.push_str(&format!(
-                "@media (prefers-color-scheme: dark){{:root{{{}}}}}",
-                block(&site.theme_dark)
-            ));
-        }
+            .replace("__WSX_NAME__", &escape(&site.name))
+            .replace("__WSX_THEME_CSS__", &format!("theme/{}", theme.stylesheet))
+            .replace("__WSX_ICON__", &format!("theme/{}", theme.icon_192))
+            .replace("__WSX_THEME_COLOR__", &theme.chrome_color)
+            .replace("__WSX_THEME__", &escape(&theme.name))
+            // A light-only theme must not get dark form controls from the browser.
+            .replace(
+                "__WSX_SCHEMES__",
+                if theme.dark { "light dark" } else { "light" },
+            );
         let scope = site.scope();
-        let color = |token: &str, fallback: &str| {
-            site.theme
-                .get(token)
-                .cloned()
-                .unwrap_or_else(|| fallback.to_owned())
-        };
         let manifest = json!({
             "id": scope, "scope": scope, "start_url": scope,
             "name": site.name, "short_name": site.name,
             "display": "standalone",
-            "background_color": color("background", "#f6f5f1"),
-            "theme_color": color("accent", "#1f5f8b"),
+            "background_color": theme.background_color,
+            "theme_color": theme.chrome_color,
             "icons": [
-                { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-                { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+                { "src": format!("theme/{}", theme.icon_192), "sizes": "192x192", "type": "image/png", "purpose": "any" },
+                { "src": format!("theme/{}", theme.icon_512), "sizes": "512x512", "type": "image/png", "purpose": "any" },
             ],
         })
         .to_string();
-        let mut shell = vec![
-            "./".to_owned(),
-            "theme.css".to_owned(),
-            "manifest.webmanifest".to_owned(),
-            "icon-192.png".to_owned(),
-        ];
+        // Offline shell: the page, the manifest, the scripts, and every theme file
+        // except the large icon.
+        let mut shell = vec!["./".to_owned(), "manifest.webmanifest".to_owned()];
+        shell.extend(
+            theme
+                .files
+                .iter()
+                .filter(|file| file.name != theme.icon_512)
+                .map(|file| format!("theme/{}", file.name)),
+        );
         shell.extend(FILES.iter().map(|(name, _, _)| format!("assets/{name}")));
         // The cache name changes whenever any shell byte changes, so an old cache is dropped.
+        // Theme files are named by their content hash, so the index covers them.
         let mut digest = Sha256::new();
-        for part in [&index, &theme, &manifest] {
+        for part in [&index, &manifest] {
             digest.update(part.as_bytes());
         }
         for (_, _, body) in FILES {
@@ -108,12 +95,12 @@ impl Assets {
         let version = hex(&digest.finalize()[..6]);
         let service_worker = include_str!("../web/sw.js")
             .replace("__WSX_CACHE__", &format!("wsx-{}-{version}", site.id))
-            .replace("__WSX_SHELL__", &json!(shell).to_string());
+            .replace("__WSX_SHELL__", &json!(shell).to_string())
+            .replace("__WSX_ICON__", &format!("theme/{}", theme.icon_192));
         Self {
             index,
             manifest,
             service_worker,
-            theme,
         }
     }
 }

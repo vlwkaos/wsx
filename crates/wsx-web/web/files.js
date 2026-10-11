@@ -1,5 +1,6 @@
 // Files panel: browse the one granted project; edit text when the site allows it.
 import { api } from "./api.js";
+import { toast } from "./ui.js";
 import { add, fill, h } from "./dom.js";
 
 export function filesView(app, main) {
@@ -29,7 +30,7 @@ export function filesView(app, main) {
       if (closed) return;
       const rows = data.entries.map((entry) => {
         const target = path ? `${path}/${entry.name}` : entry.name;
-        return h("li", {}, h("button", { type: "button", onclick: () => (entry.directory ? list(target) : open(target)) },
+        return h("li", { class: "list-row" }, h("button", { type: "button", onclick: () => (entry.directory ? list(target) : open(target)) },
           entry.directory ? `${entry.name}/` : entry.name));
       });
       fill(body,
@@ -51,24 +52,23 @@ export function filesView(app, main) {
         return;
       }
       if (!app.can("files_write")) {
-        fill(body, h("pre", { class: "file", tabIndex: 0 }, data.text));
+        fill(body, h("pre", { class: "terminal-frame", tabIndex: 0 }, data.text));
         return;
       }
       let original = data.text;
-      const message = h("p", { class: "small", role: "status" });
-      const editor = h("textarea", { class: "file", "aria-label": path, spellcheck: false, value: data.text });
+      const message = h("p", { class: "small error", role: "alert" });
+      const editor = h("textarea", { class: "terminal-frame", "aria-label": path, spellcheck: false, value: data.text });
       const save = h("button", {
-        class: "primary", type: "button",
+        class: "button-primary", type: "button",
         onclick: async () => {
           save.disabled = true;
           try {
             await api("api/file", { method: "PUT", json: { path, original, content: editor.value } });
             original = editor.value;
-            message.className = "small muted";
-            message.textContent = "Saved.";
+            message.textContent = "";
+            toast(`Saved ${path}.`);
           } catch (failure) {
             // The edited text stays in the editor so nothing typed is lost.
-            message.className = "small error";
             message.textContent = failure.message;
           }
           save.disabled = false;
