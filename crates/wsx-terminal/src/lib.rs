@@ -491,10 +491,13 @@ impl TerminalRuntime {
         if state.alternate_screen {
             emulator.terminal.write(b"\x1b[?1049h");
         }
-        emulator.terminal.write(state.history_ansi.as_bytes());
+        // ^ docs/daemon-live-upgrade.md: the keyboard-state dump repeats the visible
+        // screen, so apply it first and erase its text before the bounded history.
         emulator
             .terminal
             .write(state.keyboard_state_ansi.as_bytes());
+        emulator.terminal.write(b"\x1b[0m\x1b[H\x1b[2J\x1b[3J");
+        emulator.terminal.write(state.history_ansi.as_bytes());
         for (mode, value) in &state.modes {
             emulator.terminal.mode_set(*mode, *value)?;
         }

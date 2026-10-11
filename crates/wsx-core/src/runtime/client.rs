@@ -25,6 +25,8 @@ use std::{
 
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const HANDOFF_WAIT: Duration = Duration::from_secs(35);
+// A single request waits less than a monitor, so a caller's thread is not held for long.
+const CALL_HANDOFF_WAIT: Duration = Duration::from_secs(5);
 const START_WINDOW: Duration = Duration::from_secs(60);
 const MAX_START_ATTEMPTS: usize = 3;
 static ACTIVE_TUI_MONITORS: AtomicUsize = AtomicUsize::new(0);
@@ -177,6 +179,34 @@ impl Client {
     }
 
     pub fn call(&self, request: &Request) -> io::Result<Response> {
+        let result = self.call_once(request);
+        // ^ docs/daemon-live-upgrade.md: a request that a handing-off daemon refused or
+        // never received is sent once more to the successor.
+        let undelivered = match &result {
+            Ok(Response::Error(error)) => {
+                matches!(
+                    error.code.as_str(),
+                    "daemon_replacing" | "daemon_unavailable"
+                )
+            }
+            Ok(_) => false,
+            Err(error) => match error.kind() {
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => true,
+                // A connection lost mid-request may have applied a mutation; only a read repeats.
+                io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof => matches!(
+                    request,
+                    Request::Snapshot | Request::View { .. } | Request::LifecycleStatus
+                ),
+                _ => false,
+            },
+        };
+        if undelivered && wait_for_handoff(&self.socket, CALL_HANDOFF_WAIT) {
+            return self.call_once(request);
+        }
+        result
+    }
+
+    fn call_once(&self, request: &Request) -> io::Result<Response> {
         self.call_at_protocol(request, active_protocol(&self.socket))
     }
 
@@ -613,6 +643,7 @@ fn ensure_background_available_with(client: &Client) -> io::Result<Availability>
 }
 
 fn ensure_available_with(client: &Client, reset_crash_budget: bool) -> io::Result<Availability> {
+    wait_for_handoff(client.socket(), HANDOFF_WAIT);
     ensure_available_with_binary(client, reset_crash_budget, &daemon_binary())
 }
 
@@ -1409,8 +1440,42 @@ fn background_recovery_allowed(socket: &Path) -> bool {
         None => !socket.with_extension("lifecycle").exists(),
         Some("ready" | "unexpected" | "starting") => true,
         Some(reason) if reason.starts_with("replacement:") => true,
+        // A source daemon that died inside a handoff left a stale marker.
+        Some(reason) if reason.starts_with(super::protocol::HANDOFF_MARKER_PREFIX) => {
+            !handoff_marker_fresh(reason)
+        }
         Some(_) => false,
     }
+}
+
+fn handoff_marker_fresh(reason: &str) -> bool {
+    let Some(started) = reason
+        .strip_prefix(super::protocol::HANDOFF_MARKER_PREFIX)
+        .and_then(|value| value.parse::<u128>().ok())
+    else {
+        return false;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    now.saturating_sub(started) < HANDOFF_WAIT.as_millis()
+}
+
+// ^ docs/daemon-live-upgrade.md: the source daemon marks the socket gap, so an
+// attached client waits for the successor instead of reporting a failure or
+// starting a competing daemon. Returns whether a handoff was observed.
+fn wait_for_handoff(socket: &Path, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    let mut observed = false;
+    while Instant::now() < deadline
+        && lifecycle_marker_reason(socket)
+            .as_deref()
+            .is_some_and(handoff_marker_fresh)
+    {
+        observed = true;
+        thread::sleep(Duration::from_millis(20));
+    }
+    observed
 }
 
 fn lifecycle_round_trip(client: &Client, request: &Request) -> io::Result<Response> {
@@ -1724,6 +1789,7 @@ impl EventMonitor {
             version: super::protocol::WSX_VERSION.to_string(),
             target_binary_id: binary_identity(&daemon_binary()).unwrap_or_default(),
             target_daemon_revision: super::protocol::DAEMON_REVISION,
+            max_protocol: PROTOCOL_VERSION,
         };
         let thread = thread::Builder::new()
             .name("wsx-runtime-events".into())
@@ -1732,7 +1798,9 @@ impl EventMonitor {
                 let mut connected = false;
                 let mut recovery_availability = None;
                 while !stop.load(Ordering::Acquire) {
-                    match client.call(&Request::Poll {
+                    // The monitor must see a replaced daemon itself, so it does not use the
+                    // retrying call: a reconnect is what tells the TUI to take a new snapshot.
+                    match client.call_once(&Request::Poll {
                         after_revision: revision,
                         timeout_ms: 1_000,
                         tui: Some(tui.clone()),
@@ -1754,6 +1822,9 @@ impl EventMonitor {
                         Ok(Response::Error(error)) => {
                             connected = false;
                             revision = 0;
+                            if wait_for_handoff(client.socket(), HANDOFF_WAIT) {
+                                continue;
+                            }
                             let _ = sender.send(EventSignal::Disconnected(format!(
                                 "{}: {}",
                                 error.code, error.message
@@ -1771,6 +1842,10 @@ impl EventMonitor {
                         Err(error) => {
                             connected = false;
                             revision = 0;
+                            // ^ docs/daemon-live-upgrade.md: a live handoff is not a failure.
+                            if wait_for_handoff(client.socket(), HANDOFF_WAIT) {
+                                continue;
+                            }
                             let _ = sender.send(EventSignal::Disconnected(error.to_string()));
                             if daemon_is_stopped_error(&error)
                                 && background_recovery_allowed(client.socket())

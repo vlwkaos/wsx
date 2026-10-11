@@ -9,9 +9,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use wsx_core::runtime::{
-    binary_identity, AgentCapabilities, AgentState, Client, PaneId, ProjectSpec, Request, Response,
-    TerminalClientMessage, TerminalServerMessage, TerminalStream, TerminalUpdate, WorktreeSpec,
-    DAEMON_REVISION, PROTOCOL_VERSION, WSX_VERSION,
+    binary_identity, AgentCapabilities, AgentState, Client, EventMonitor, EventSignal, PaneId,
+    ProjectSpec, Request, Response, TerminalClientMessage, TerminalServerMessage, TerminalStream,
+    TerminalUpdate, WorktreeSpec, DAEMON_REVISION, PROTOCOL_VERSION, WSX_VERSION,
 };
 
 static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
@@ -290,6 +290,15 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
     fs::set_permissions(&target_binary, permissions).unwrap();
     let target_identity = binary_identity(&target_binary).unwrap();
 
+    // A TUI of the target protocol stays attached: its presence must not defer the
+    // handoff, and its stream must learn that the daemon, not the terminal, is leaving.
+    // The TUI identifies its adjacent daemon; only this test reads the override.
+    std::env::set_var("WSX_DAEMON_BIN", &source_binary);
+    let (tui, tui_signals) = EventMonitor::start(client.clone()).unwrap();
+    assert_eq!(
+        tui_signals.recv_timeout(Duration::from_secs(5)).unwrap(),
+        EventSignal::Connected(None)
+    );
     let response = client
         .call(&Request::PrepareHandoff {
             target_binary_id: target_identity,
@@ -300,9 +309,26 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
         })
         .unwrap();
     assert!(
-        matches!(response, Response::Replacement { .. }),
-        "unexpected handoff response: {response:?}"
+        matches!(
+            &response,
+            Response::Replacement { blockers, .. } if blockers.is_empty()
+        ),
+        "an attached current TUI must not defer the handoff: {response:?}"
     );
+    let stream_deadline = Instant::now() + Duration::from_secs(10);
+    let stream_end = loop {
+        match stream.try_recv() {
+            Ok(TerminalServerMessage::Error(error)) => break error.code,
+            Ok(_) | Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => break "closed".into(),
+        }
+        assert!(
+            Instant::now() < stream_deadline,
+            "stream outlived the handoff"
+        );
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(stream_end, "daemon_handoff");
     drop(stream);
 
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -319,6 +345,22 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
         );
         thread::sleep(Duration::from_millis(25));
     };
+    // The attached TUI reconnects to the successor without reporting a failure.
+    let reconnect_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match tui_signals.recv_timeout(Duration::from_millis(100)) {
+            Ok(EventSignal::Connected(_)) => break,
+            Ok(EventSignal::Disconnected(error)) => {
+                panic!("an attached TUI saw the handoff as a failure: {error}")
+            }
+            Ok(EventSignal::Dirty) | Err(_) => {}
+        }
+        assert!(
+            Instant::now() < reconnect_deadline,
+            "an attached TUI did not reconnect to the successor"
+        );
+    }
+    drop(tui);
     assert_eq!(after.projects.len(), 1);
     assert_eq!(after.projects[0].id, project_id);
     assert_eq!(after.projects[0].path, project_path);
