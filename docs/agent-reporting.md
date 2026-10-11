@@ -51,9 +51,9 @@ Already-loaded adapter/helper code cannot be repaired by changing its file alone
 Do not restart the shell or daemon to refresh an adapter. Current-CLI recovery does
 not require daemon handoff to finish; missing or unsafe candidates still fail explicitly.
 
-## Claude opt-in inspection
+## Claude and Codex opt-in inspection
 
-Claude integration 21 and Codex integration 15 save bounded, opt-in metadata for successful and failed reports in a private journal without changing report authority. See [source-only Claude inspection](claude-inspection.md), including the private-marker activation path for existing sessions and the limits of launch-version inference. Install with `wsx agent install claude`; installation does not rewrite a running agent environment or prove its loaded hook configuration changed.
+Claude integration 21 and Codex integration 15 save bounded, opt-in metadata for successful and failed reports in a private journal without changing report authority. See [hook inspection](claude-inspection.md), including the private-marker activation path for existing sessions and the limits of launch-version inference. Install the selected provider with `wsx agent install claude` or `wsx agent install codex`; installation does not rewrite a running agent environment or prove its loaded hook configuration changed. These diagnostics do not establish that a reported hook failure is fixed.
 
 ## Pi native exchange observer
 
