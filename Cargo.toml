@@ -5,6 +5,7 @@ members = [
     "crates/wsx-core",
     "crates/wsx-terminal",
     "crates/wsx-daemon",
+    "crates/wsx-web",
     "tools/xtask",
 ]
 exclude = ["vendor/asched", "vendor/herdr", "vendor/portable-pty"]
