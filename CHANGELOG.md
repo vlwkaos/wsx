@@ -6,6 +6,18 @@
 
 - Rust callers that construct `TuiClientPresence` must provide its new `max_protocol` field. Older JSON without the field decodes as a legacy TUI.
 
+### Features
+
+- Add the hosted web client. `wsx web serve --site <site.toml>` hosts one web site for one project on a loopback port, for use behind `tailscale serve`. A paired phone or browser can chat with the project's agents, attach files to a prompt, download files the agent produced and see images inline. Optional panels show project files, the current terminal screen and recent activity.
+  - One site file per process sets the base path, public origin, name, icon, theme, panels, capability bits, media limits and push keys. The file must be owner-only, and unknown fields are refused. A second site, for example a simpler chat for a family member, is the same binary with fewer panels and capability bits.
+  - `wsx web pair` prints a one-time code that pairs one device. The device keeps an `HttpOnly` credential; the server stores only its hash. `wsx web devices` lists and revokes devices. There is no shared token. The server checks the exact `Host` and `Origin`, sends a strict CSP and limits requests per device.
+  - Chat sends through the agent exchange broker and shows the agent's own saved conversation, including Claude's. Terminal output is never read into chat. The page states delivery evidence as it is: a PTY delivery is shown as typed into the terminal, not as accepted by the agent.
+  - A page receives updates over one server-sent event stream and has no polling timer.
+  - Media is stored per site under its SHA-256, with a maximum file size, a total quota with oldest-first eviction, and a time limit. File types are detected from content against an allowlist.
+  - The page is an installable PWA with an offline shell. Web Push is off until a device opts in, per topic: agent needs input, agent finished, agent error. Tapping a notification opens that session.
+  - Every browser URL is relative, so one build works under a sub-path such as `/app/wsx/` and at an alt-port root.
+  - No daemon or protocol change. The web server never starts `wsxd`. See `docs/web-client.md` and `docs/web-deploy.md`. Verified with `scripts/test-web-client.py`; a real Claude turn, a real push service and a phone are not covered by that script.
+
 ### Improvements
 
 - Make the CLI easier for an agent to drive. `wsx worktree create --from <ref>` starts the branch from a chosen commit, tag or branch instead of the default branch. A branch that already exists is checked out instead of failing, and a git failure now shows git's own error instead of only the exit status. `wsx worktree create --json` prints the worktree path, branch, project, session ID and pane ID. `wsx session current [--json]` reports the calling pane from `WSX_PANE_ID` with its session, project, worktree and agent status, without starting wsxd. Commands called with `--json` no longer print the runtime notice on stderr, and other commands print it on one line.

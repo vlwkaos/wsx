@@ -16,6 +16,7 @@ wsx presents **Project → Worktree → Session → Pane** in a keyboard-first T
 - Provider-neutral agent states, native conversation resume, and project routines
 - Typed, versioned, bounded same-user local protocol
 - Trusted executable plugins with bounded passive Terminal sidecars
+- Optional hosted web client: paired devices chat with one project's agents, exchange files, and receive push notifications
 - macOS and Linux support
 
 ## Product tour
@@ -148,7 +149,11 @@ wsx agent request|inspect|wait|continue|cancel|exchanges
 wsx plugin list|reload
 wsx runtime status [--json]
 wsx daemon stop|recover
+wsx web serve|pair|devices --site <site.toml>
+wsx web vapid
 ```
+
+`wsx web serve --site <site.toml>` hosts one web site for one project on a loopback port: chat through the agent exchange broker and the agent's own saved conversation, file upload and download, and optional files, terminal and activity panels. A site file sets the base path, public origin, panels, capability bits, media limits and push keys. `wsx web pair` prints a one-time code that pairs one device; `wsx web devices` lists and revokes devices. The page is an installable PWA with an offline shell and opt-in Web Push for "needs input", "finished" and "error". It works under a sub-path such as `/app/wsx/` and at an alt-port root from the same build. wsx does not run Tailscale for you: see [Hosted web client](docs/web-client.md) and [Deploying on a tailnet](docs/web-deploy.md).
 
 `wsx worktree create` starts a new branch from the project's default branch, or from `--from <ref>`. A branch that already exists is checked out as it is, and `--from` is then refused. When git fails, wsx prints git's own error. `--json` prints `worktree`, `branch`, `project`, `session_id` and `pane_id`; the two IDs are `null` when no initial session was created.
 
@@ -191,7 +196,8 @@ Handoff-capable wsxd updates wait until other wsx TUI generations detach, then t
 - Messages, frames, agent exchange prompts, deadlines, write claims, retained receipts, commands, plugin manifests, plugin view output, listeners, and resource counts are bounded.
 - UI-only wsx releases reuse the compatible daemon. Protocol 16 adds provider-neutral generation-bound agent exchanges, exited-pane restart, and prompt-bound Claude wake renewal while retaining protocol-15 live handoff. Protocol 11–15 daemons remain usable until their safe one-time transition, and opening wsx keeps the existing workspace visible throughout normal deferral and reconnection.
 - Native resume creates a new process, PTY, and terminal buffer from a validated provider reference. Unsupported references open a clean shell.
-- Remote access, transient graphics preservation across handoff, marketplace installation, and original-process restoration after an unplanned daemon crash are not supported.
+- `wsx web serve` is the only remote surface. It listens on loopback, accepts one exact public host and origin, authenticates paired devices with hashed per-device credentials, and limits each device to one project and the capability bits in its site file. Nothing else in wsx accepts network connections.
+- Transient graphics preservation across handoff, marketplace installation, and original-process restoration after an unplanned daemon crash are not supported.
 
 ## Development
 
