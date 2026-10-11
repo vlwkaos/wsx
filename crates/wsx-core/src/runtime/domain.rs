@@ -471,6 +471,10 @@ pub struct TuiClientPresence {
     pub target_binary_id: String,
     #[serde(default)]
     pub target_daemon_revision: u32,
+    // ^ docs/daemon-live-upgrade.md: the newest protocol this TUI reconnects to
+    // after a live handoff. Zero is a legacy TUI that must leave first.
+    #[serde(default)]
+    pub max_protocol: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -195,6 +195,53 @@ def run_scenario(args, tmux, wsx, wsxd, work):
                           ("j", "api"), ("k", "build"), ("Down", "api"), ("Up", "build")]:
             keys("C-a", key)
             wait(lambda: primary_name() == name, "project prefix " + key)
+        # ^ docs/daemon-live-upgrade.md: a newer wsx replaces wsxd while this TUI stays in
+        # Terminal mode. The same PTY must remain on screen and accept input afterwards.
+        before_upgrade = capture("before-live-upgrade")
+        assert not any("z" in row for row in before_upgrade), before_upgrade
+        next_daemon = work / "next" / "wsxd"
+        next_daemon.parent.mkdir(mode=0o700)
+        shutil.copy(wsxd, next_daemon)
+        next_daemon.chmod(0o700)
+        # The successor publishes its adjacent wsx as the agent reporter.
+        shutil.copy(wsx, next_daemon.with_name("wsx"))
+        next_daemon.with_name("wsx").chmod(0o700)
+        lifecycle = call("lifecycle_status")["data"]
+        old_epoch = lifecycle["epoch"]
+        # ^ Mirrors binary_identity in crates/wsx-core/src/runtime/protocol.rs. Two builds of one
+        # daemon revision reuse wsxd, so the request is sent as the newer client would send it.
+        stat = next_daemon.resolve().stat()
+        identity = ":".join([lifecycle["version"]] + [format(value, "x") for value in
+                            (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)])
+        prepared = call("prepare_handoff", {"target_binary_id": identity, "target_version": lifecycle["version"],
+                        "target_protocol": lifecycle["protocol"],
+                        "target_daemon_revision": lifecycle["daemon_revision"],
+                        "executable": str(next_daemon)})
+        assert prepared["type"] == "replacement" and not prepared["data"]["blockers"], prepared
+
+        def replaced():
+            try:
+                return call("lifecycle_status")["data"]["epoch"] != old_epoch
+            except (OSError, ValueError, AssertionError):
+                return False
+        wait(replaced, "live upgrade with an attached TUI", timeout=20)
+        # The first accepted key proves the stream reattached; earlier keys are dropped, not rerouted.
+        reattach_started = time.monotonic()
+        typed = [0]
+
+        def echoed():
+            keys("-l", "z")
+            typed[0] += 1
+            return any("z" in row for row in screen())
+        wait(echoed, "terminal input after live upgrade")
+        reattach_seconds = round(time.monotonic() - reattach_started, 2)
+        keys(*["BSpace"] * typed[0])
+        wait(lambda: not any("z" in row for row in screen()), "input erased after live upgrade")
+        rows = capture("after-live-upgrade")
+        # The rail and title pulse; the PTY row and the mode line must be unchanged.
+        assert rows[1][2:] == before_upgrade[1][2:], ("the terminal changed across the live upgrade", rows[1])
+        assert rows[-1].startswith(" TERMINAL"), rows[-1]
+        assert not any(word in row.lower() for row in rows for word in ("unavailable", "disconnected")), rows
         # Existing n keeps its broader attention behavior; the new cycle is separate.
         keys("C-a", "n")
         wait(lambda: primary_name() == "approval", "existing attention command")
@@ -311,6 +358,10 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         if daemon_socket.exists():
             try:
                 call("shutdown")
+                # The live-upgrade successor is not the process started above.
+                deadline = time.monotonic() + 5
+                while daemon_socket.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
             except Exception:
                 if daemon is not None:
                     daemon.terminate()
@@ -332,8 +383,9 @@ def run_scenario(args, tmux, wsx, wsxd, work):
                     assert client.connect_ex(("127.0.0.1", int((work / (name + ".port")).read_text()))) != 0, "fixture listener survived shutdown"
     return {"result": "PASS", "elapsed_seconds": round(time.monotonic()-started, 2),
                       "captures": str(work / "captures") if args.keep else None, "model_calls": 0,
+                      "live_upgrade_reattach_seconds": reattach_seconds,
                       "cleanup": "private tmux, wsxd, PTYs and listeners stopped",
-                      "journey": "preview ports, h/l and j/k cycle, bare keys, unchanged n, sidebar toggle and peek, mobile, live peer update, hierarchy, folded search counts and clearing, top title"}
+                      "journey": "preview ports, h/l and j/k cycle, bare keys, live daemon upgrade under an attached terminal, unchanged n, sidebar toggle and peek, mobile, live peer update, hierarchy, folded search counts and clearing, top title"}
 
 
 if __name__ == "__main__":
