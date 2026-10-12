@@ -22,6 +22,18 @@ const FILES: &[(&str, &str, &str)] = &[
     ("activity.js", JS, include_str!("../web/activity.js")),
     ("settings.js", JS, include_str!("../web/settings.js")),
     ("ui.js", JS, include_str!("../web/ui.js")),
+    // Pinned and patched by scripts/vendor-xterm.sh; license in web/vendor/xterm.LICENSE.
+    ("xterm.js", JS, include_str!("../web/vendor/xterm.js")),
+    (
+        "xterm-addon-fit.js",
+        JS,
+        include_str!("../web/vendor/addon-fit.js"),
+    ),
+    (
+        "xterm.css",
+        "text/css; charset=utf-8",
+        include_str!("../web/vendor/xterm.css"),
+    ),
 ];
 
 pub fn find(name: &str) -> Option<(&'static str, &'static str)> {

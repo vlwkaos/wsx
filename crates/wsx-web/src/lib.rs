@@ -1,7 +1,7 @@
 //! The wsx hosted web client: one paired site per process.
 //! Contract: docs/web-client.md. Deployment: docs/web-deploy.md.
 //! ^ This crate is a wsxd client like the TUI. It never starts, stops or replaces
-//! the daemon, and it adds no daemon or protocol surface.
+//! the daemon.
 
 mod assets;
 mod chat;
@@ -12,6 +12,7 @@ mod media;
 mod push;
 mod sandbox;
 mod site;
+mod terminal;
 mod theme;
 
 use anyhow::{Context, Result};
