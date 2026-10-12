@@ -1,6 +1,6 @@
 # Claude and Codex hook inspection (0.30.1)
 
-WSX 0.30.1 adds opt-in metadata diagnostics for Claude and Codex reports. It does not claim to fix hook-exit, prompt-submission, or transcript-saving failures. It preserves daemon revision 20, report-once behavior, generation fences, default hook output, and transcript settings. Keep existing TUI/daemon/agent sessions running; installing hook assets does not require restarting them.
+WSX 0.30.1 adds opt-in metadata diagnostics for Claude and Codex reports. It does not claim to fix hook-exit, prompt-submission, or transcript-saving failures. The diagnostics themselves change no daemon behavior; the same release raises the daemon revision to 22 for the terminal and live-upgrade repairs. It preserves report-once behavior, generation fences, default hook output, and transcript settings. Keep existing TUI/daemon/agent sessions running; installing hook assets does not require restarting them.
 
 ## Install and enable
 

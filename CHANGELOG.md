@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-10-12
+
 ### Breaking Changes
 
 - Rust callers that construct `TuiClientPresence` must provide its new `max_protocol` field. Older JSON without the field decodes as a legacy TUI.
@@ -10,6 +12,9 @@
 
 - Make the CLI easier for an agent to drive. `wsx worktree create --from <ref>` starts the branch from a chosen commit, tag or branch instead of the default branch. A branch that already exists is checked out instead of failing, and a git failure now shows git's own error instead of only the exit status. `wsx worktree create --json` prints the worktree path, branch, project, session ID and pane ID. `wsx session current [--json]` reports the calling pane from `WSX_PANE_ID` with its session, project, worktree and agent status, without starting wsxd. Commands called with `--json` no longer print the runtime notice on stderr, and other commands print it on one line.
 - Upgrade wsxd while wsx windows stay open. A TUI now tells the daemon the newest protocol it can reconnect to, and a live handoff no longer waits for such a TUI to quit. The daemon marks the whole transition, so attached windows wait for the successor without an error notice and without starting a competing daemon. A window in Terminal mode reattaches to the same PTY and keeps its screen; keys typed during the reattach are dropped. Older TUIs, and any TUI older than the target protocol, still defer the handoff until they quit. The running daemon applies its own rule, so this takes effect from the upgrade after this one. Daemon revision 22. See `docs/daemon-live-upgrade.md`.
+- Retain successful and failed Claude and Codex inspection records in an owner-only bounded journal. The shared helper reads only validated metadata, refuses symlinks and unsafe files, retains at most 32 records/64 KiB, and never changes the original reporting result. Claude integration is 21; Codex is 15. Source-verified 0.29.3 reporter observations support existing sessions without restarting them.
+- Add opt-in Claude and Codex diagnostics with bounded hook, reporter and daemon version observations, report error codes and environment-marker presence. A private hook-directory marker also enables diagnostics for existing sessions that call the refreshed hook. Agent launch version and startup environment remain unknown; installing files alone does not prove that old sessions loaded them.
+- Preserve default hook output, report-once behavior, generation fences and transcript settings. These diagnostics do not fix or verify the reported Claude Stop-hook, Codex hook-exit, prompt-submission or transcript-saving failures. See `docs/claude-inspection.md` for installation and existing-session instructions.
 
 ### Bug Fixes
 
@@ -17,14 +22,6 @@
 
 - Stop a terminal session from staying blank after an interrupted program. A program that enables synchronized output (mode 2026) and is ended by Ctrl+C before it releases the mode no longer hides all later output: the mode now expires after one second, as in Ghostty. Daemon revision 21 records this runtime-owned repair; the fix reaches a session after its daemon upgrades. See `docs/terminal-synchronized-output.md`.
 - Keep a resumed agent pane alive when a repeated Ctrl+C arrives after the agent has ended and before its fallback shell starts. The resume supervisor now ignores interactive signals until the shell replaces it.
-
-## [0.30.1] - 2026-10-11
-
-### Improvements
-
-- Retain successful and failed Claude and Codex inspection records in an owner-only bounded journal. The shared helper reads only validated metadata, refuses symlinks and unsafe files, retains at most 32 records/64 KiB, and never changes the original reporting result. Claude integration is 21; Codex is 15. Source-verified 0.29.3 reporter observations support existing sessions without restarting them.
-- Add opt-in Claude and Codex diagnostics with bounded hook, reporter and daemon version observations, report error codes and environment-marker presence. A private hook-directory marker also enables diagnostics for existing sessions that call the refreshed hook. Agent launch version and startup environment remain unknown; installing files alone does not prove that old sessions loaded them.
-- Preserve default hook output, report-once behavior, generation fences and transcript settings. These diagnostics do not fix or verify the reported Claude Stop-hook, Codex hook-exit, prompt-submission or transcript-saving failures. See `docs/claude-inspection.md` for installation and existing-session instructions.
 
 ### Packaging and verification
 
