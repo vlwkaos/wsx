@@ -516,7 +516,7 @@ def main():
 
         vapid = cli('web', 'vapid').stdout
         private_key = next(line.split('"')[1] for line in vapid.splitlines() if line.startswith('private_key'))
-        ports = {name: free_port() for name in ('owner', 'family', 'root', 'retro', 'viewer')}
+        ports = {name: free_port() for name in ('owner', 'family', 'root', 'viewer')}
         service_origin = 'https://wsx-fixture.example-tailnet.ts.net'
 
         def site_file(name, text, mode=0o600):
@@ -577,6 +577,8 @@ png_512 = "large.png"
         custom_css = b'.button-primary { text-transform: uppercase; }\n'
         custom_theme = theme_dir('family', custom_manifest,
                                  dict(custom_icons, **{'look.css': custom_css, 'fonts/fixture.woff2': fixture_font}))
+        # A theme that recolors the light scheme and has no dark table is light only.
+        plain_theme = theme_dir('plain', 'name = "plain"\n[tokens]\ncolor-accent = "#225577"\n')
         files = {
             'owner': site_file('owner', owner_text),
             # Site B: same binary, fewer panels and capability bits, another project.
@@ -607,23 +609,13 @@ max_file_bytes = 4096
 quota_bytes = 9000
 ttl_seconds = 4
 '''),
-            # Built-in retro theme with every panel, for the browser check.
-            'retro': site_file('retro', f'''id = "retro"
-name = "Retro"
-port = {ports['retro']}
-public_origin = "http://127.0.0.1:{ports['retro']}"
-panels = ["chat", "files", "terminal", "activity"]
-theme = "retro"
-[access]
-projects = ["{project}"]
-capabilities = ["chat_send", "agent_write", "files_read", "files_write", "terminal_view", "terminal_input", "media_upload", "media_download"]
-'''),
             # Watch-only terminal: terminal_view without terminal_input.
             'viewer': site_file('viewer', f'''id = "viewer"
 name = "Viewer"
 port = {ports['viewer']}
 public_origin = "http://127.0.0.1:{ports['viewer']}"
 panels = ["terminal"]
+theme = "{plain_theme}"
 [access]
 projects = "all"
 capabilities = ["terminal_view"]
@@ -657,8 +649,8 @@ capabilities = ["terminal_view"]
         def broken(label, manifest, expected, extra=None):
             refuse_theme(label, theme_dir(label, manifest, extra), expected)
 
-        refuse_theme('unknown name', 'neon', 'not a built-in theme')
-        refuse_theme('relative path', 'themes/mine', 'not a built-in theme')
+        refuse_theme('unknown name', 'neon', 'not the built-in theme')
+        refuse_theme('relative path', 'themes/mine', 'not the built-in theme')
         refuse_theme('missing path', work / 'no-such-theme', 'does not exist')
         base = 'name = "bad"\n'
         broken('css-injection', base + '[tokens]\ncolor-accent = "red;}body{display:none"\n', 'invalid value')
@@ -667,7 +659,7 @@ capabilities = ["terminal_view"]
         broken('dark-length', base + '[tokens_dark]\nspace-1 = "9px"\n', 'must be a color')
         broken('bad-shadow', base + '[tokens]\nshadow-raised = "0 0 9px url(x)"\n', 'invalid value')
         broken('unknown-field', base + 'script = "x.js"\n', 'unknown field')
-        broken('extends-unknown', base + 'extends = "neon"\n', 'not a built-in theme')
+        broken('extends-unknown', base + 'extends = "neon"\n', 'not the built-in theme')
         broken('bad-name', 'name = "Bad Name"\n', 'theme name')
         for index, css in enumerate((b'.button{background:url(https://evil.example/x.png)}', b'@import "https://evil.example/x.css";',
                                      b'@font-face{font-family:x;src:local(x)}', b'.button{background:image-set("x.png" 1x)}')):
@@ -699,7 +691,7 @@ capabilities = ["terminal_view"]
                 return False
         for site in sites.values():
             wait(lambda: up(site), 'web server')
-        owner, family, root, retro = sites['owner'], sites['family'], sites['root'], sites['retro']
+        owner, family, root = sites['owner'], sites['family'], sites['root']
         viewer = sites['viewer']
 
         # --- Sub-path first: both inbound shapes serve the same base-filled documents.
@@ -758,14 +750,10 @@ capabilities = ["terminal_view"]
         assert '--color-bg:#f6f5f1;' in css and dark_rule in css and '@font-face' not in css
         assert 'prefers-color-scheme' not in css
         assert (manifest['background_color'], manifest['theme_color']) == ('#f6f5f1', '#ffffff')
-        default_icon = owner.request('GET', '/' + manifest['icons'][0]['src'])[1]
 
-        html, css, manifest = themed(retro)
-        assert 'data-theme="retro"' in html and 'name="color-scheme" content="light"' in html
-        assert '--color-bg:#c0c0c0;' in css and '--radius-surface:0;' in css and '.app-title' in css
-        assert 'data-scheme' not in css, 'retro defines the light scheme only'
-        assert (manifest['background_color'], manifest['theme_color']) == ('#c0c0c0', '#c0c0c0')
-        assert retro.request('GET', '/' + manifest['icons'][0]['src'])[1] != default_icon
+        html, css, manifest = themed(sites['viewer'])
+        assert 'data-theme="plain"' in html and 'name="color-scheme" content="light"' in html
+        assert '--color-accent:#225577;' in css and 'data-scheme' not in css, 'a theme without a dark table is light only'
 
         html, css, manifest = themed(family)
         assert 'data-theme="family-warm"' in html and 'content="#102030"' in html
@@ -789,7 +777,7 @@ capabilities = ["terminal_view"]
         for hook in ('app-chrome', 'app-title', 'app-nav', 'panel', 'list', 'list-row', 'button', 'input',
                      'bubble', 'badge', 'dialog', 'toast', 'terminal-frame', 'terminal-bar', 'terminal-key'):
             assert re.search(r'\.%s[\s,.:{\[]' % hook, core), hook
-        ok('themes: built-in default and retro, custom directory with font and icons, hash URLs, manifest follows theme, CSP strict, token-only core CSS')
+        ok('themes: built-in default, a light-only custom theme, custom directory with font and icons, hash URLs, manifest follows theme, CSP strict, token-only core CSS')
 
         # --- Request checks.
         assert owner.request('GET', '/api/session')[0] == 401
@@ -1334,8 +1322,7 @@ capabilities = ["terminal_view"]
             session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == shell)
             assert call('session_close', {'session_id': shell, 'expected_revision': session['revision']})['type'] == 'ack'
 
-            for name, site, session, body_color in (('owner', owner, 'owner', 'rgb(23, 23, 21)'),
-                                                    ('retro', retro, 'owner', 'rgb(192, 192, 192)')):
+            for name, site, session, body_color in (('owner', owner, 'owner', 'rgb(23, 23, 21)'),):
                 settle(session)
                 code = cli('web', 'pair', '--site', files[name]).stdout.splitlines()[0].rsplit(' ', 1)[1]
                 result = subprocess.run([node, str(ROOT / 'scripts/web-browser-check.mjs'), site.origin + site.base + '/',
