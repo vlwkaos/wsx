@@ -178,7 +178,7 @@ async function chats() {
 
   // Blocked: a persistent row, a way to the terminal, and no sending.
   await openSession("blocked");
-  await until("!!document.querySelector('.attention')", "the blocked row did not show");
+  await until("!!document.querySelector('.attention') && document.querySelector('.message-user .prose')?.textContent === 'ask me which option to take'", "the blocked row or the sent message did not show");
   const blocked = await evaluate(`({ row: document.querySelector('.attention').textContent.trim().replace(/\\s+/g, ' '), link: document.querySelector('.attention a').getAttribute('href'),
     disabled: document.querySelector('.composer-field').disabled && document.querySelector('.composer .button-primary').disabled,
     label: (() => { const node = document.querySelector('.bar-label'); return node.scrollWidth > node.clientWidth; })(), state: document.querySelector('.bar-state').textContent })`);

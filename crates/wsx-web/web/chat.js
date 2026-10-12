@@ -164,7 +164,7 @@ function Composer({ session, working, onSent }) {
           <button class="icon-button" type="button" aria-label="Attach files" onClick=${() => picker.current.click()}><${Icon} name="attach" /></button>
           <input type="file" multiple hidden ref=${picker} onChange=${(event) => upload([...event.target.files])} />`}
         <textarea class="composer-field" ref=${field} rows="1" aria-label="Message"
-          placeholder=${blocked ? "The agent is waiting for an answer in its terminal" : ready ? "Message" : "This session cannot receive messages"}
+          placeholder=${blocked ? "Answer in the terminal" : ready ? "Message" : "Cannot receive messages"}
           disabled=${!ready || blocked}
           onInput=${() => { draft.text = field.current.value; grow(); }} onKeyDown=${keydown}></textarea>
         <button class="button button-primary" type="button" disabled=${busy || !ready || blocked} onClick=${send}>${working ? "Queue" : "Send"}</button>

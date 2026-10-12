@@ -287,7 +287,16 @@ async fn theme_file(State(app): State<Shared>, UrlPath(file): UrlPath<String>) -
 }
 async fn asset(UrlPath(name): UrlPath<String>) -> Response {
     match assets::find(&name) {
-        Some((content_type, body)) => typed(content_type, body),
+        // A font's name carries its version, so the response never changes.
+        Some((content_type, body, true)) => (
+            [
+                (header::CONTENT_TYPE, content_type),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            body,
+        )
+            .into_response(),
+        Some((content_type, body, false)) => typed(content_type, body),
         None => Fault::not_found().into_response(),
     }
 }

@@ -8,6 +8,11 @@ use sha2::{Digest, Sha256};
 const JS: &str = "text/javascript; charset=utf-8";
 const FILES: &[(&str, &str, &str)] = &[
     (
+        "terminal-fonts.css",
+        "text/css; charset=utf-8",
+        include_str!("../web/terminal-fonts.css"),
+    ),
+    (
         "app.css",
         "text/css; charset=utf-8",
         include_str!("../web/app.css"),
@@ -48,11 +53,49 @@ const FILES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-pub fn find(name: &str) -> Option<(&'static str, &'static str)> {
-    FILES
+// ^ docs/web-client.md "Terminal fonts": pinned by scripts/vendor-fonts.sh, licenses
+// beside them. The names carry the upstream version; they are not part of the offline shell.
+const WOFF2: &str = "font/woff2";
+const FONTS: &[(&str, &str, &[u8])] = &[
+    (
+        "JetBrainsMono-2.304-Regular.woff2",
+        WOFF2,
+        include_bytes!("../web/vendor/fonts/JetBrainsMono-Regular.woff2"),
+    ),
+    (
+        "JetBrainsMono-2.304-Bold.woff2",
+        WOFF2,
+        include_bytes!("../web/vendor/fonts/JetBrainsMono-Bold.woff2"),
+    ),
+    (
+        "JetBrainsMono-2.304-Italic.woff2",
+        WOFF2,
+        include_bytes!("../web/vendor/fonts/JetBrainsMono-Italic.woff2"),
+    ),
+    (
+        "SymbolsNerdFontMono-3.4.0.woff2",
+        WOFF2,
+        include_bytes!("../web/vendor/fonts/SymbolsNerdFontMono-Regular.woff2"),
+    ),
+    (
+        "SymbolsNerdFontMono-3.4.0.ttf",
+        "font/ttf",
+        include_bytes!("../web/vendor/fonts/SymbolsNerdFontMono-Regular.ttf"),
+    ),
+];
+
+/// A page file: its type, its bytes, and whether its name pins its content.
+pub fn find(name: &str) -> Option<(&'static str, &'static [u8], bool)> {
+    let text = FILES
         .iter()
         .find(|(file, _, _)| *file == name)
-        .map(|(_, content_type, body)| (*content_type, *body))
+        .map(|(_, content_type, body)| (*content_type, body.as_bytes(), false));
+    text.or_else(|| {
+        FONTS
+            .iter()
+            .find(|(file, _, _)| *file == name)
+            .map(|(_, content_type, body)| (*content_type, *body, true))
+    })
 }
 
 pub struct Assets {

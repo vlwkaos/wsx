@@ -199,6 +199,17 @@ os.write(1, b'\x1b[?1000l\x1b[?1006l\x1b[?1049l')
 termios.tcsetattr(0, termios.TCSADRAIN, saved)
 print('alt-done')
 ''',
+    'glyphs': r'''
+import sys
+out = sys.stdout.write
+# A prompt as Powerline themes draw it: colored segments joined by U+E0B0, thin separators, Nerd Font icons.
+out('\x1b[48;5;24;38;5;255m \uf015 home \x1b[48;5;238;38;5;24m\ue0b0\x1b[38;5;255m \ue0a0 main \ue0b1 \uf07c src \x1b[49;38;5;238m\ue0b0\x1b[0m \ue0b2\ue0b3 \ue7a8 \uf121\n')
+out('=> != -> === <= >= :: ++ |> www\n')
+out('\u250c\u2500\u2500\u252c\u2500\u2500\u2510\n\u2502ab\u2502cd\u2502\n\u2514\u2500\u2500\u2534\u2500\u2500\u2518\n')
+out('\x1b[1mbold text\x1b[0m \x1b[3mitalic text\x1b[0m plain text\n')
+out('\ud55c\uae00|\nabcd|\n')
+out('glyphs-end\n')
+''',
     'keys': r'''
 import os, pathlib, termios, tty
 saved = termios.tcgetattr(0)
@@ -649,6 +660,7 @@ port = {ports['viewer']}
 public_origin = "http://127.0.0.1:{ports['viewer']}"
 panels = ["terminal"]
 theme = "{plain_theme}"
+terminal = {{ ligatures = false }}
 [access]
 projects = "all"
 capabilities = ["terminal_view"]
@@ -783,9 +795,9 @@ capabilities = ["terminal_view"]
         dark_rule = ':root:not([data-scheme="light"]),[data-scheme="dark"]{color-scheme:dark;'
         assert '--color-bg:#f7f7f8;' in css and dark_rule in css and '@font-face' not in css
         assert css.split(dark_rule)[1].startswith('--color-accent:#6fe3c1;')
-        # The token contract is the default theme's list: 59 tokens, 16 of them the terminal palette.
+        # The token contract is the default theme's list: 60 tokens, 16 of them the terminal palette.
         light_tokens = re.findall(r'--([a-z0-9-]+):', css.split(dark_rule)[0])
-        assert len(light_tokens) == 59 and len([token for token in light_tokens if token.startswith('color-ansi-')]) == 16, len(light_tokens)
+        assert len(light_tokens) == 60 and len([token for token in light_tokens if token.startswith('color-ansi-')]) == 16, len(light_tokens)
         assert 'prefers-color-scheme' not in css
         # The page is dark by default, so the installed app's splash and toolbar are dark too.
         assert (manifest['background_color'], manifest['theme_color']) == ('#0a0b0d', '#0a0b0d')
@@ -1310,7 +1322,15 @@ capabilities = ["terminal_view"]
         assert elsewhere.status == 101, (elsewhere.status, elsewhere.error)
         elsewhere.drop()
         lease_free(sessions['family'])
-        ok('watch-only terminal: host size, no resize, no input; projects = "all" reaches every project')
+        assert viewer.request('GET', '/api/session')[1]['site']['terminal'] == {'ligatures': False}  # the site file's choice
+        # Terminal fonts: versioned names, cached for good, and outside the offline shell.
+        status, headers, font = owner.request('GET', '/assets/JetBrainsMono-2.304-Regular.woff2', raw=True)
+        assert status == 200 and font[:4] == b'wOF2' and headers['content-type'] == 'font/woff2' and 'immutable' in headers['cache-control']
+        status, headers, font = owner.request('GET', '/assets/SymbolsNerdFontMono-3.4.0.woff2', raw=True)
+        assert status == 200 and font[:4] == b'wOF2' and len(font) < 1500000
+        assert owner.request('GET', '/assets/SymbolsNerdFontMono-3.4.0.ttf', raw=True)[2][:4] == b'\x00\x01\x00\x00'
+        assert b'woff2' not in owner.request('GET', '/sw.js')[1] and b'terminal-fonts.css' in owner.request('GET', '/sw.js')[1]
+        ok('watch-only terminal: host size, no resize, no input; projects = "all" reaches every project; terminal fonts served')
         session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == term)
         assert call('session_close', {'session_id': term, 'expected_revision': session['revision']})['type'] == 'ack'
 
@@ -1354,6 +1374,7 @@ capabilities = ["terminal_view"]
             shell = created['data']['id']
             shell_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == shell)
             code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
+            args.captures.mkdir(parents=True, exist_ok=True)
             result = subprocess.run([node, str(ROOT / 'scripts/web-terminal-check.mjs'), owner.origin + owner.base + '/',
                                      code, str(shell), str(args.captures), str(path), str(shell_pane), str(tools / 'keys.trace')],
                                     capture_output=True, text=True, timeout=200)
@@ -1401,6 +1422,8 @@ capabilities = ["terminal_view"]
             for role, expected in (('blocked', 'blocked'), ('error', 'error'), ('exited', 'exited'), ('working', 'working'),
                                    ('done', 'done'), ('long', 'done')):
                 wait(lambda: state_of(role) == expected, role + ' state', timeout=20)
+            blocked_items = steady(m2, 'GET', '/api/chat/%d/timeline' % shown['blocked'])[1]
+            assert [item['text'] for item in blocked_items['items']] == ['ask me which option to take'], blocked_items
             queued = steady(m2, 'POST', '/api/chat/%d/send' % shown['working'], {'text': 'Also mention the new terminal in the notes'})
             assert 'queued' in queued[1], queued
             bare = sites['bare']
@@ -1411,8 +1434,7 @@ capabilities = ["terminal_view"]
             empty = bare_events.expect('workspace')
             assert [p['name'] for p in empty['projects']] == ['bare'] and empty['sessions'] == [], empty
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
-            page_captures = args.captures.parent / 'm2' if args.captures.name == 'm1' else args.captures
-            page_captures.mkdir(parents=True, exist_ok=True)
+            page_captures = args.captures
             result = subprocess.run([node, str(ROOT / 'scripts/web-browser-check.mjs'), 'tour', m2.origin + m2.base + '/',
                                      cli('web', 'pair', '--site', files['m2']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                      bare.origin + bare.base + '/',

@@ -43,6 +43,9 @@ color-ansi-15 = "#ffffff"
 # Type. UI text is the system font; mono is for the terminal, code and file paths.
 font-body = "system-ui, -apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto, sans-serif"
 font-mono = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+# The terminal: the shipped font with ligatures, the shipped symbols font, then the system
+# mono fonts, which also supply Korean and other wide characters.
+font-terminal = "'JetBrains Mono', 'Symbols Nerd Font Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
 font-size-md = "15px"
 font-size-sm = "13px"
 font-size-label = "11px"
