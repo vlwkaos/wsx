@@ -47,6 +47,7 @@ let library;
 function loadLibrary() {
   library ??= new Promise((done, failed) => {
     add(document.head, h("link", { rel: "stylesheet", href: resolve("assets/xterm.css") }));
+    add(document.head, h("link", { rel: "stylesheet", href: resolve("assets/terminal-fonts.css") }));
     const next = ([name, ...rest]) => {
       if (!name) return done();
       const script = h("script", { src: resolve(`assets/${name}`) });
@@ -64,6 +65,21 @@ function remembered() {
 }
 function remember(value) {
   try { localStorage.setItem(SIZE_KEY, value); } catch { /* a private window keeps the default */ }
+}
+
+// Runs of these characters may be one ligature in the terminal font (=> != -> === <=).
+// xterm.js draws each run as one piece of text, and the font decides what it joins.
+// The cells, the cursor, the selection and copied text stay one character each.
+const LIGATURE_RUNS = /[-=<>!|&:+*/.#?~^%]{2,8}|www/g;
+function joinLigatures(term) {
+  term.registerCharacterJoiner((text) => [...text.matchAll(LIGATURE_RUNS)].map((match) => [match.index, match.index + match[0].length]));
+}
+
+// The shipped fonts must be loaded before xterm.js measures its cell, or the grid has
+// the size of the fallback font. A font that is late is measured again when it arrives.
+async function terminalFonts(family, size) {
+  const faces = [`${size}px ${family}`, `bold ${size}px ${family}`, `italic ${size}px ${family}`].map((font) => document.fonts.load(font, "A\ue0b0"));
+  await Promise.race([Promise.allSettled(faces), new Promise((done) => setTimeout(done, 3000))]);
 }
 
 // Queries that xterm.js would answer on its own. wsxd answered them already.
@@ -392,6 +408,10 @@ export function terminalView(mount, current, tools) {
     }
     if (closed) return;
     const token = (name) => getComputedStyle(root).getPropertyValue(name).trim();
+    const fontFamily = token("--font-terminal") || "monospace";
+    const fontSize = touch ? FONT_PHONE : FONT_DESKTOP;
+    await terminalFonts(fontFamily, fontSize);
+    if (closed) return;
     const background = token("--color-bg");
     stage.style.backgroundColor = background;
     // The 16 ANSI colors come from the theme, in xterm.js's own order of names.
@@ -401,7 +421,7 @@ export function terminalView(mount, current, tools) {
       [`bright${name[0].toUpperCase()}${name.slice(1)}`, token(`--color-ansi-${index + 8}`)],
     ]));
     term = new globalThis.Terminal({
-      cursorBlink: true, fontSize: touch ? FONT_PHONE : FONT_DESKTOP, fontFamily: token("--font-mono") || "monospace",
+      cursorBlink: true, fontSize, fontFamily,
       theme: { ...palette, background, foreground: token("--color-text"), cursor: token("--color-accent"), cursorAccent: background,
         selectionBackground: `${token("--color-accent")}55` },
       scrollback: SCROLLBACK, allowProposedApi: true, disableStdin: !canType,
@@ -410,6 +430,14 @@ export function terminalView(mount, current, tools) {
     term.loadAddon(fit);
     term.open(host);
     silenceQueries(term);
+    if (store.site.terminal.ligatures) joinLigatures(term);
+    else host.dataset.ligatures = "off";
+    // A font that arrived after the first measurement: set the family again so the cell is measured again.
+    listen(document.fonts, "loadingdone", () => {
+      term.options.fontFamily = `${fontFamily}, monospace`;
+      term.options.fontFamily = fontFamily;
+      layout();
+    });
     for (const [name, value] of [["autocomplete", "off"], ["autocorrect", "off"], ["autocapitalize", "off"], ["spellcheck", "false"]]) {
       term.textarea.setAttribute(name, value);
     }
@@ -445,7 +473,10 @@ export function terminalView(mount, current, tools) {
       clearTimeout(retryTimer);
       socket?.close();
       for (const dispose of disposers) dispose();
-      term?.dispose();
+      // xterm.js starts a zero-delay timer when it opens; disposing before that timer
+      // runs makes it throw. A terminal closed right after it opened is disposed one turn later.
+      const opened = term;
+      setTimeout(() => opened?.dispose(), 0);
       root.remove();
       sizeToggle.remove();
     },

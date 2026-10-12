@@ -1,0 +1,22 @@
+/* Terminal fonts (docs/web-client.md "Terminal fonts"), loaded only when a terminal
+   opens. Files and licenses: web/vendor/fonts, rebuilt by scripts/vendor-fonts.sh.
+   The file names carry the upstream version, so they are cached for good. */
+@font-face {
+  font-family: "JetBrains Mono"; font-weight: 400; font-style: normal; font-display: block;
+  src: url("JetBrainsMono-2.304-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono"; font-weight: 700; font-style: normal; font-display: block;
+  src: url("JetBrainsMono-2.304-Bold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono"; font-weight: 400; font-style: italic; font-display: block;
+  src: url("JetBrainsMono-2.304-Italic.woff2") format("woff2");
+}
+/* Powerline and Nerd Font symbols only. The ttf is the upstream file; a browser that
+   refuses the woff2 made from it takes the ttf. */
+@font-face {
+  font-family: "Symbols Nerd Font Mono"; font-weight: 400; font-style: normal; font-display: block;
+  src: url("SymbolsNerdFontMono-3.4.0.woff2") format("woff2"), url("SymbolsNerdFontMono-3.4.0.ttf") format("truetype");
+  unicode-range: U+23FB-23FE, U+2665, U+26A1, U+2B58, U+E000-F8FF, U+F0000-FFFFD;
+}

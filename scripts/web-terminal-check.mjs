@@ -134,6 +134,69 @@ async function aboveKeyboard(height, top, label) {
     || seen.stageLeft !== 0 || seen.stageWidth !== seen.innerWidth || seen.barLeft !== 0 || seen.scrollY !== 0 || seen.scrollX !== 0 || seen.scrollable > 0 || seen.wide > 0;
   if (wrong) await fail(`${label}: the view does not fill the visual viewport (top ${top}, height ${height}): ${JSON.stringify(seen)}`);
 }
+// The shipped fonts: Powerline separators and Nerd Font icons from the symbols font,
+// ligatures from JetBrains Mono, and a grid that still matches the pane.
+async function glyphs(name) {
+  await run("printf '\\033[2J\\033[H'; ./glyphs", "glyphs-end");
+  const seen = await evaluate(`(() => {
+    const rows = [...document.querySelectorAll('.xterm-rows > div')];
+    const cell = document.querySelector('.xterm-char-measure-element').getBoundingClientRect().width / 32;
+    // Where one character of a row is drawn.
+    const box = (row, needle) => {
+      const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+      for (let node; (node = walker.nextNode());) {
+        const at = node.nodeValue.indexOf(needle);
+        if (at < 0) continue;
+        const range = document.createRange();
+        range.setStart(node, at);
+        range.setEnd(node, at + needle.length);
+        return range.getBoundingClientRect();
+      }
+      return null;
+    };
+    const row = (text) => rows.find((candidate) => candidate.textContent.includes(text));
+    const left = rows[0].getBoundingClientRect().left;
+    const column = (rect) => rect && (rect.left - left) / cell;
+    const joined = [...row('=> !=').querySelectorAll('span')].map((span) => span.textContent).filter((text) => /^[-=<>!|&:+*/.#?~^%w]{2,}$/.test(text));
+    return {
+      family: getComputedStyle(document.querySelector('.xterm-rows')).fontFamily,
+      loaded: [...document.fonts].filter((face) => face.status === 'loaded').map((face) => face.family.replaceAll('"', '') + ' ' + face.weight + ' ' + face.style).sort(),
+      powerline: (() => { const rect = box(row('main'), '\\ue0b0'); return rect && [rect.width / cell, rect.height > 0]; })(),
+      icon: (() => { const rect = box(row('main'), '\\uf015'); return rect && rect.width / cell; })(),
+      joined, arrow: (() => { const rect = box(row('=> !='), '=>'); return rect && rect.width / cell; })(),
+      ligatures: getComputedStyle(row('=> !=').querySelector('span')).fontVariantLigatures,
+      korean: [column(box(row('\\ud55c\\uae00|'), '|')), column(box(row('abcd|'), '|'))],
+      box: [column(box(row('\\u2502ab'), 'ab')), column(box(row('\\u2502ab'), 'cd'))],
+      bold: getComputedStyle([...row('bold text').querySelectorAll('span')].find((span) => span.textContent.includes('bold'))).fontWeight,
+      italic: getComputedStyle([...row('bold text').querySelectorAll('span')].find((span) => span.textContent.includes('italic'))).fontStyle,
+    };
+  })()`);
+  const near = (value, expected) => typeof value === "number" && Math.abs(value - expected) < 0.06;
+  if (!seen.family.startsWith('"JetBrains Mono", "Symbols Nerd Font Mono"')) await fail(`the terminal font stack is ${seen.family}`);
+  for (const face of ["JetBrains Mono 400 normal", "JetBrains Mono 700 normal", "JetBrains Mono 400 italic", "Symbols Nerd Font Mono 400 normal"]) {
+    if (!seen.loaded.includes(face)) await fail(`the font ${face} is not loaded: ${seen.loaded}`);
+  }
+  if (!seen.powerline || !near(seen.powerline[0], 1) || !near(seen.icon, 1)) await fail(`a Powerline separator or an icon does not fill one cell: ${JSON.stringify(seen)}`);
+  if (!["=>", "!=", "->", "===", "<="].every((run) => seen.joined.includes(run)) || !near(seen.arrow, 2) || seen.ligatures === "none") await fail(`ligature runs are not drawn as one piece of two cells: ${JSON.stringify(seen)}`);
+  if (!near(seen.korean[0], 4) || !near(seen.korean[1], 4)) await fail(`wide characters are not aligned to the grid: ${JSON.stringify(seen.korean)}`);
+  if (!near(seen.box[0], 1) || !near(seen.box[1], 4)) await fail(`box drawing is not aligned to the grid: ${JSON.stringify(seen.box)}`);
+  if (seen.bold !== "700" || seen.italic !== "italic") await fail(`bold or italic is not drawn with its own face: ${JSON.stringify(seen)}`);
+  await capture(`${name}-glyphs`);
+  // The grid still matches the pane: a line of exactly as many characters as stty reports
+  // columns fills one row and does not wrap.
+  await run("printf '\\033[2J\\033[H'; c=$(stty size | cut -d' ' -f2); printf '%*s' $c '' | tr ' ' '#'; echo; echo cols=$c", "cols=");
+  const grid = await evaluate(`(() => {
+    const rows = [...document.querySelectorAll('.xterm-rows > div')];
+    const rulers = rows.filter((row) => /^#+$/.test(row.textContent.trimEnd()));
+    const range = document.createRange();
+    range.selectNodeContents(rulers[0]);
+    const drawn = range.getBoundingClientRect();
+    const length = rulers[0].textContent.trimEnd().length;
+    return { rulers: rulers.length, length, cols: Number(rows.map((row) => row.textContent).find((row) => /^cols=\\d+/.test(row)).slice(5)),
+      cell: drawn.width / length, room: document.querySelector('.terminal-stage').getBoundingClientRect().right - drawn.right }; })()`);
+  // One more column would not fit beside the ruler (a desktop also keeps room for the scrollbar).
+  if (grid.rulers !== 1 || grid.length !== grid.cols || grid.room < -0.5 || grid.room >= grid.cell + 16) await fail(`the pane's columns do not match the visible grid: ${JSON.stringify(grid)}`);
+}
 async function open(width, height, scale) {
   await viewport(width, height, scale);
   // A new view: the touch layout is chosen when the view opens.
@@ -213,6 +276,8 @@ if (!(await evaluate(screenHas("da-replies=1")))) await fail(`a device-attribute
 await run("stty size", "$ stty size");
 const rows = await evaluate("document.querySelectorAll('.xterm-rows > div').length");
 await until(`${rowsText}.some((row) => new RegExp('^${rows} \\\\d+').test(row))`, `stty size does not report ${rows} rows`);
+
+await glyphs("phone");
 
 // Long output, then touch scroll through the local scrollback.
 await run("./long", "long-end");
@@ -367,6 +432,7 @@ if (await evaluate("!!document.querySelector('.terminal-keys')")) await fail("th
 await focusTerminal();
 await run("./colors", "truecolor-end");
 await capture("desktop-colors");
+await glyphs("desktop");
 await run("./long", "long-end");
 const desktop = await middle(".terminal-stage");
 await send("Input.dispatchMouseEvent", { type: "mouseWheel", x: desktop[0], y: desktop[1], deltaX: 0, deltaY: -900 });

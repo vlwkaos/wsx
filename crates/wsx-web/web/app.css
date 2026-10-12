@@ -116,7 +116,7 @@ a.row-link:active, button.row-link:active, .row-link[aria-current="page"] { back
 .button-danger { color: var(--color-danger); }
 .button:disabled, .link-action:disabled, .icon-button:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
 .link-action {
-  flex: 0 0 auto; padding: 0; border: 0; background: none; cursor: pointer;
+  flex: 0 0 auto; padding: 0; border: 0; background: none; color: var(--color-text); cursor: pointer;
   font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); text-decoration: none; white-space: nowrap;
 }
 .icon-button {
@@ -207,7 +207,7 @@ div.steps .steps-summary { cursor: default; }
 .queued-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-muted); }
 .queued-reason { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Opaque, with a hairline on top, so the end of the conversation is visible. */
-.composer { flex: 0 0 auto; padding: var(--space-2); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
+.composer { flex: 0 0 auto; padding: var(--space-2) var(--space-4) var(--space-2) var(--space-2); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
 .composer-row { display: flex; align-items: flex-end; gap: var(--space-1); }
 .composer-field {
   flex: 1; min-width: 0; min-height: var(--size-control); padding: var(--space-3) var(--space-2);
@@ -226,7 +226,9 @@ div.steps .steps-summary { cursor: default; }
   flex: 1; min-height: 0; width: 100%; margin: 0; padding: var(--space-4); overflow: auto;
   border: 0; background: var(--color-bg); color: var(--color-text); resize: none; outline: none;
   font-family: var(--font-mono); font-size: var(--font-size-sm); line-height: var(--line-height-prose); white-space: pre; tab-size: 4;
+  scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent;
 }
+.file-body .actions { border-top: var(--border-width) solid var(--color-hairline); }
 
 /* Hook: .options, .pair-form, .sheet, .notice — settings, pairing, dialog, notices. */
 .options { display: flex; flex-direction: column; }
@@ -270,6 +272,8 @@ div.steps .steps-summary { cursor: default; }
 }
 .terminal-stage { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; touch-action: none; }
 .terminal-host { height: 100%; }
+/* A site may turn ligatures off (terminal.ligatures in the site file). */
+.terminal-host[data-ligatures="off"] .xterm-rows { font-variant-ligatures: none; }
 .terminal-host[data-size="host"] { width: max-content; height: max-content; transform-origin: 0 0; }
 .terminal-controls { border-top: var(--border-width) solid var(--color-hairline); }
 .terminal-keys { display: flex; gap: var(--space-1); padding: var(--space-1); overflow-x: auto; scrollbar-width: none; touch-action: pan-x; }

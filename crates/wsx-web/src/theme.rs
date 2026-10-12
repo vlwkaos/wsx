@@ -442,7 +442,7 @@ fn color(text: &str) -> bool {
 fn check_token(token: &str, value: &str) -> Result<()> {
     let valid = match token {
         _ if token.starts_with("color-") => color(value),
-        "font-body" | "font-mono" => {
+        "font-body" | "font-mono" | "font-terminal" => {
             !value.is_empty()
                 && value.len() <= 200
                 && value
