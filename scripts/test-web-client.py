@@ -383,7 +383,7 @@ def main():
         checks.append(label)
 
     try:
-        for name in ('home', 'state', 'project', 'project2'):
+        for name in ('home', 'state', 'project', 'project2', 'project3'):
             (work / name).mkdir(mode=0o700)
         config = (work / 'home/Library/Application Support/wsx' if sys.platform == 'darwin' else work / 'config/wsx')
         config.mkdir(parents=True)
@@ -392,7 +392,7 @@ def main():
         env = {'HOME': str(work / 'home'), 'XDG_CONFIG_HOME': str(work / 'config'), 'XDG_STATE_HOME': str(work / 'state'),
                'XDG_CACHE_HOME': str(work / 'cache'), 'WSX_SOCKET': str(path), 'WSX_DAEMON_BIN': str(wsxd),
                'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8'}
-        for name in ('project', 'project2'):
+        for name in ('project', 'project2', 'project3'):
             subprocess.run(['git', 'init', '-q', '-b', 'main', str(work / name)], env=env, check=True, timeout=5)
         project = (work / 'project').resolve()
         (project / 'notes.txt').write_text('first line\n')
@@ -462,8 +462,10 @@ def main():
         wait(path.exists, 'daemon')
         assert call('synchronize_projects', {'projects': [
             {'name': name, 'path': str(work / name), 'worktrees': [{'path': str(work / name), 'branch': 'main'}]}
-            for name in ('project', 'project2')]})['type'] == 'ack'
+            for name in ('project', 'project2', 'project3')]})['type'] == 'ack'
         worktrees = {Path(item['path']).name: item['id'] for item in call('snapshot')['data']['worktrees']}
+        projects = {item['name']: item['id'] for item in call('snapshot')['data']['projects']}
+        (work / 'project3/third.txt').write_text('third project\n')
         sessions = {}
         for name, tree in (('owner', 'project'), ('family', 'project2')):
             created = call('session_create', {'worktree_id': worktrees[tree], 'label': name + ' chat',
@@ -501,8 +503,8 @@ port = {ports['owner']}
 public_origin = "http://127.0.0.1:{ports['owner']}"
 panels = ["chat", "files", "terminal", "activity"]
 theme = "default"
-[project]
-path = "{project}"
+[access]
+projects = ["{project}", "{(work / 'project3').resolve()}"]
 capabilities = ["chat_send", "agent_write", "files_read", "files_write", "terminal_view", "terminal_input", "media_upload", "media_download", "push"]
 [media]
 max_file_bytes = 65536
@@ -556,8 +558,8 @@ port = {ports['family']}
 public_origin = "http://127.0.0.1:{ports['family']}"
 panels = ["chat"]
 theme = "{custom_theme}"
-[project]
-path = "{(work / 'project2').resolve()}"
+[access]
+projects = ["{(work / 'project2').resolve()}"]
 capabilities = ["chat_send", "media_upload", "media_download"]
 '''),
             # The primary shape: a Tailscale Service, one https hostname per site, at
@@ -567,8 +569,8 @@ name = "Root"
 port = {ports['root']}
 public_origin = "{service_origin}"
 panels = ["chat"]
-[project]
-path = "{project}"
+[access]
+projects = ["{project}", "{(work / 'project3').resolve()}"]
 capabilities = ["chat_send", "session_start", "media_upload", "media_download"]
 agent_command = ["/bin/sh"]
 [media]
@@ -583,8 +585,8 @@ port = {ports['retro']}
 public_origin = "http://127.0.0.1:{ports['retro']}"
 panels = ["chat", "files", "terminal", "activity"]
 theme = "retro"
-[project]
-path = "{project}"
+[access]
+projects = ["{project}"]
 capabilities = ["chat_send", "agent_write", "files_read", "files_write", "terminal_view", "terminal_input", "media_upload", "media_download"]
 '''),
             # Watch-only terminal: terminal_view without terminal_input.
@@ -593,8 +595,8 @@ name = "Viewer"
 port = {ports['viewer']}
 public_origin = "http://127.0.0.1:{ports['viewer']}"
 panels = ["terminal"]
-[project]
-path = "{project}"
+[access]
+projects = "all"
 capabilities = ["terminal_view"]
 '''),
         }
@@ -605,7 +607,16 @@ capabilities = ["terminal_view"]
         assert 'unknown field' in refused.stderr, refused.stderr
         refused = cli('web', 'serve', '--site', site_file('caps', owner_text.replace('"files", ', '')), expect=1)
         assert 'needs the Files panel' in refused.stderr, refused.stderr
-        ok('site file: mode, unknown field and panel/capability mismatch refused')
+        granted = 'projects = ["%s", "%s"]' % (project, (work / 'project3').resolve())
+        assert granted in owner_text
+        for label, value, expected in (('old key', None, 'unknown field'), ('a word that is not all', 'projects = "some"', 'must be "all"'),
+                                       ('empty list', 'projects = []', '1-32 paths'), ('relative path', 'projects = ["project"]', 'must be absolute'),
+                                       ('missing path', 'projects = ["/no/such/project"]', 'is missing'),
+                                       ('duplicate', 'projects = ["%s", "%s"]' % (project, project), 'duplicate')):
+            text = owner_text.replace('[access]\n' + granted, '[project]\npath = "%s"' % project) if value is None else owner_text.replace(granted, value)
+            refused = cli('web', 'serve', '--site', site_file('grant', text), expect=1)
+            assert expected in refused.stderr, (label, refused.stderr)
+        ok('site file: mode, unknown field, panel/capability mismatch and an invalid project grant refused')
 
         # A theme is deployer data that ends up in a page under a strict CSP, so
         # every part of it is validated before the server starts.
@@ -810,6 +821,10 @@ capabilities = ["terminal_view"]
         streams.append(events)
         first = events.expect('workspace')
         assert [item['id'] for item in first['sessions']] == [sessions['owner']], first
+        # Both granted projects are listed, with their worktrees; the ungranted one is not.
+        assert [(p['id'], p['name']) for p in first['projects']] == [(projects['project'], 'project'), (projects['project3'], 'project3')], first
+        assert first['projects'][0]['worktrees'] == [{'id': worktrees['project'], 'branch': 'main', 'main': True}]
+        assert first['sessions'][0]['project'] == {'id': projects['project'], 'name': 'project'}
         assert first['sessions'][0]['agent']['provider'] == 'claude'
         chat = '/api/chat/%d' % sessions['owner']
         status, history = owner.request('GET', chat + '/history')
@@ -926,24 +941,36 @@ capabilities = ["terminal_view"]
         ok('media: oldest-first quota eviction, TTL expiry, sweep removes files')
 
         # --- Files, terminal and activity panels on the owner site.
-        status, listing = owner.request('GET', '/api/files?path=')
+        files_of = '/api/files?project=%d&path=' % projects['project']
+        file_of = '/api/file?project=%d&path=' % projects['project']
+        status, listing = owner.request('GET', files_of)
         # .git is never listed, read or written: its config can run commands on the host.
         assert [(e['name'], e['directory']) for e in listing['entries']] == [('out', True), ('sub', True), ('.env', False), ('notes.txt', False)]
         assert 'escape' not in [e['name'] for e in listing['entries']]  # symlinks are not listed
-        assert owner.request('GET', '/api/file?path=sub/deep.txt', shape='stripped')[1]['text'] == 'deep\n'
+        assert owner.request('GET', file_of + 'sub/deep.txt', shape='stripped')[1]['text'] == 'deep\n'
         for bad, status in (('../outside.png', 400), ('/etc/hosts', 400), ('sub/../../x', 400), ('.git/config', 400),
                             ('escape/.codex', 403), ('out/leak.png', 403), ('missing.txt', 404)):
-            assert owner.request('GET', '/api/file?path=' + bad)[0] == status, bad
-        assert owner.request('GET', '/api/files?path=escape')[0] == 403
-        write = {'path': 'notes.txt', 'original': 'first line\n', 'content': 'edited\n'}
+            assert owner.request('GET', file_of + bad)[0] == status, bad
+        assert owner.request('GET', files_of + 'escape')[0] == 403
+        write = {'project': projects['project'], 'path': 'notes.txt', 'original': 'first line\n', 'content': 'edited\n'}
         assert owner.request('PUT', '/api/file', write)[0] == 200 and (project / 'notes.txt').read_text() == 'edited\n'
         assert owner.request('PUT', '/api/file', write)[1]['error']['code'] == 'file_changed'
         assert owner.request('PUT', '/api/file', dict(write, path='out/leak.png'))[0] == 403
         git_config = (project / '.git/config').read_text()
-        assert owner.request('PUT', '/api/file', {'path': '.git/config', 'original': git_config, 'content': 'x'})[0] == 400
+        assert owner.request('PUT', '/api/file', {'project': projects['project'], 'path': '.git/config', 'original': git_config, 'content': 'x'})[0] == 400
         assert (project / '.git/config').read_text() == git_config
-        assert owner.request('GET', '/api/files?path=.git')[0] == 400
+        assert owner.request('GET', files_of + '.git')[0] == 400
         assert outside.read_bytes() == png(8, 200)
+        # A second granted project has its own root. An ungranted or unknown project does not exist.
+        third = '?project=%d&path=' % projects['project3']
+        assert [e['name'] for e in owner.request('GET', '/api/files' + third)[1]['entries']] == ['third.txt']
+        assert owner.request('GET', '/api/file' + third + 'third.txt')[1]['text'] == 'third project\n'
+        assert owner.request('GET', '/api/file' + third + 'notes.txt')[0] == 404  # a file of the first project
+        for foreign in (projects['project2'], 987654):
+            assert owner.request('GET', '/api/files?project=%d&path=' % foreign)[0] == 404
+            assert owner.request('GET', '/api/file?project=%d&path=notes.txt' % foreign)[0] == 404
+            assert owner.request('PUT', '/api/file', dict(write, project=foreign))[0] == 404
+        assert owner.request('GET', '/api/files?path=')[0] == 400  # the project is required
         # The terminal types into the agent's pane like a keyboard does.
         settle('owner')
         typing = Terminal(owner, sessions['owner'], '&rows=12&cols=100')
@@ -1085,7 +1112,12 @@ capabilities = ["terminal_view"]
             pass
         time.sleep(0.3)
         assert len(typed()) == size_before, 'a watch-only device typed into the terminal'
-        ok('watch-only terminal: host size, no resize, no input')
+        # This site is granted every project, so it also reaches the other project's session.
+        elsewhere = Terminal(viewer, sessions['family'])
+        assert elsewhere.status == 101, (elsewhere.status, elsewhere.error)
+        elsewhere.drop()
+        lease_free(sessions['family'])
+        ok('watch-only terminal: host size, no resize, no input; projects = "all" reaches every project')
         session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == term)
         assert call('session_close', {'session_id': term, 'expected_revision': session['revision']})['type'] == 'ack'
 
@@ -1095,10 +1127,10 @@ capabilities = ["terminal_view"]
         family_events = Events(family, shape='stripped')
         streams.append(family_events)
         assert [s['id'] for s in family_events.expect('workspace')['sessions']] == [sessions['family']]
-        for method, target, body in (('GET', '/api/files?path=', None), ('GET', '/api/file?path=notes.txt', None),
+        for method, target, body in (('GET', '/api/files?project=1&path=', None), ('GET', '/api/file?project=1&path=notes.txt', None),
                                      ('PUT', '/api/file', write),
                                      ('GET', '/api/activity', None), ('GET', '/api/push', None),
-                                     ('POST', '/api/sessions', {'label': 'new'})):
+                                     ('POST', '/api/sessions', {'project': projects['project2'], 'label': 'new'})):
             status, body = family.request(method, target, body)
             assert status == 403 and body['error']['code'] == 'capability_denied', (target, status, body)
         # The other project's session does not exist for this site, in any route.
@@ -1221,12 +1253,21 @@ capabilities = ["terminal_view"]
         ok('rate limit per device, revocation closes the stream and stops media, chat and push; pairing guesses limited')
 
         # --- session_start runs only the site file's command, in the granted project.
-        status, body = root.request('POST', '/api/sessions', {'label': 'from\x07 the web'})
+        status, body = root.request('POST', '/api/sessions', {'project': projects['project'], 'label': 'from\x07 the web'})
         assert status == 200, body
         snapshot = call('snapshot')['data']
         created = next(s for s in snapshot['sessions'] if s['id'] == body['session_id'])
         assert created['label'] == 'from the web' and created['worktree_id'] == worktrees['project']
-        ok('session start: site command, granted project, cleaned label')
+        # A chosen worktree must belong to the chosen project, and the project to the grant.
+        status, body = root.request('POST', '/api/sessions', {'project': projects['project3'], 'worktree': worktrees['project3']})
+        assert status == 200, body
+        created = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == body['session_id'])
+        assert created['worktree_id'] == worktrees['project3'] and created['label'] == 'chat'
+        for refused in ({'project': projects['project2']}, {'project': projects['project'], 'worktree': worktrees['project3']},
+                        {'project': projects['project2'], 'worktree': worktrees['project2']}, {'project': 987654}):
+            assert root.request('POST', '/api/sessions', refused)[0] == 404, refused
+        assert root.request('POST', '/api/sessions', {'label': 'no project'})[0] == 422
+        ok('session start: site command, granted project and worktree, cleaned label; ungranted project and foreign worktree refused')
 
         # --- The web server never starts wsxd; it reports the gap and recovers.
         assert call('shutdown')['type'] == 'ack'

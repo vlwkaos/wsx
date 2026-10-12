@@ -212,7 +212,7 @@ export function chatView(app, main, argument) {
 
   async function startSession() {
     try {
-      const created = await api("api/sessions", { method: "POST", json: { label: "chat" } });
+      const created = await api("api/sessions", { method: "POST", json: { project: app.projects[0]?.id, label: "chat" } });
       app.navigate(`#/chat/${created.session_id}`);
     } catch (failure) {
       status.textContent = failure.message;

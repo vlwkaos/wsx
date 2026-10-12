@@ -454,6 +454,10 @@ async fn events(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StartInput {
+    project: u64,
+    /// A worktree of that project; the main checkout when absent.
+    #[serde(default)]
+    worktree: Option<u64>,
     #[serde(default)]
     label: String,
 }
@@ -465,35 +469,30 @@ async fn session_start(
 ) -> Outcome<Json<Value>> {
     need(&app, Panel::Chat)?;
     allow(&app, Capability::SessionStart, "starting an agent session")?;
-    // Each start spawns a process on the host.
-    if !app.limiter.allow(&format!("start:{}", device.id), 3.0, 6.0) {
-        return Err(Fault::new(
-            429,
-            "rate_limited",
-            "too many new sessions; wait a moment",
-        ));
-    }
     blocking(|| {
         let snapshot = chat::snapshot(&app.client)?;
-        let project = snapshot
-            .projects
-            .iter()
-            .find(|project| {
-                std::fs::canonicalize(&project.path).is_ok_and(|path| path == app.site.project)
-            })
-            .ok_or_else(|| {
-                Fault::new(409, "project_unknown", "wsx does not manage this project")
-            })?;
+        let project = chat::project(&snapshot, &app.site.access, input.project)?;
         let worktrees = || {
             snapshot
                 .worktrees
                 .iter()
                 .filter(|worktree| worktree.project_id == project.id)
         };
-        let worktree = worktrees()
-            .find(|worktree| worktree.path == project.path)
-            .or_else(|| worktrees().next())
-            .ok_or_else(|| Fault::new(409, "project_unknown", "the project has no worktree"))?;
+        let worktree = match input.worktree {
+            Some(id) => worktrees().find(|worktree| worktree.id.0 == id),
+            None => worktrees()
+                .find(|worktree| worktree.path == project.path)
+                .or_else(|| worktrees().next()),
+        }
+        .ok_or_else(Fault::not_found)?;
+        // Each start spawns a process on the host.
+        if !app.limiter.allow(&format!("start:{}", device.id), 3.0, 6.0) {
+            return Err(Fault::new(
+                429,
+                "rate_limited",
+                "too many new sessions; wait a moment",
+            ));
+        }
         let label: String = input
             .label
             .chars()
@@ -761,8 +760,16 @@ fn sandbox_fault(error: SandboxError) -> Fault {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PathQuery {
+    project: u64,
     #[serde(default)]
     path: String,
+}
+
+/// The pinned root of one granted project.
+fn project_root(app: &App, project: u64) -> Outcome<Arc<crate::sandbox::Root>> {
+    let snapshot = chat::snapshot(&app.client)?;
+    let project = chat::project(&snapshot, &app.site.access, project)?;
+    app.root(&project.path).map_err(|_| Fault::not_found())
 }
 
 async fn files_list(
@@ -772,8 +779,11 @@ async fn files_list(
 ) -> Outcome<Json<Value>> {
     need(&app, Panel::Files)?;
     allow(&app, Capability::FilesRead, "reading files")?;
-    let (entries, truncated) =
-        blocking(|| app.root.list(Path::new(&query.path))).map_err(sandbox_fault)?;
+    let (entries, truncated) = blocking(|| {
+        project_root(&app, query.project)?
+            .list(Path::new(&query.path))
+            .map_err(sandbox_fault)
+    })?;
     Ok(Json(
         json!({ "path": query.path, "entries": entries, "truncated": truncated }),
     ))
@@ -786,8 +796,11 @@ async fn file_read(
 ) -> Outcome<Json<Value>> {
     need(&app, Panel::Files)?;
     allow(&app, Capability::FilesRead, "reading files")?;
-    let bytes = blocking(|| app.root.read(Path::new(&query.path), MAX_TEXT_BYTES))
-        .map_err(sandbox_fault)?;
+    let bytes = blocking(|| {
+        project_root(&app, query.project)?
+            .read(Path::new(&query.path), MAX_TEXT_BYTES)
+            .map_err(sandbox_fault)
+    })?;
     Ok(Json(match String::from_utf8(bytes) {
         Ok(text) if !text.contains('\0') => json!({ "path": query.path, "text": text }),
         _ => json!({ "path": query.path, "binary": true }),
@@ -797,6 +810,7 @@ async fn file_read(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WriteInput {
+    project: u64,
     path: String,
     original: String,
     content: String,
@@ -810,10 +824,10 @@ async fn file_write(
     need(&app, Panel::Files)?;
     allow(&app, Capability::FilesWrite, "editing files")?;
     blocking(|| {
-        app.root
+        project_root(&app, input.project)?
             .write_text(Path::new(&input.path), &input.original, &input.content)
-    })
-    .map_err(sandbox_fault)?;
+            .map_err(sandbox_fault)
+    })?;
     Ok(Json(json!({ "saved": true })))
 }
 
@@ -862,7 +876,7 @@ async fn terminal_socket(
     }
     let pane_id = blocking(|| {
         let snapshot = chat::snapshot(&app.client)?;
-        Ok(chat::target(&snapshot, &app.site.project, session)?.pane.id)
+        Ok(chat::target(&snapshot, &app.site.access, session)?.pane.id)
     })?;
     let slot = StreamSlot::take(&app, format!("terminal:{}", device.id), "terminals")?;
     if query.client.len() > 32 || !query.client.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -887,7 +901,7 @@ async fn activity(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json<
     need(&app, Panel::Activity)?;
     blocking(|| {
         let snapshot = chat::snapshot(&app.client)?;
-        let targets = chat::targets(&snapshot, &app.site.project);
+        let targets = chat::targets(&snapshot, &app.site.access);
         let mut exchanges: Vec<_> = chat::exchanges(&app.client, None)?
             .into_iter()
             .filter(|exchange| {

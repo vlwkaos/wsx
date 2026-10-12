@@ -26,7 +26,7 @@ export function filesView(app, main) {
   async function list(path) {
     renderCrumbs(path, false);
     try {
-      const data = await api("api/files", { query: { path } });
+      const data = await api("api/files", { query: { project: app.projects[0]?.id, path } });
       if (closed) return;
       const rows = data.entries.map((entry) => {
         const target = path ? `${path}/${entry.name}` : entry.name;
@@ -45,7 +45,7 @@ export function filesView(app, main) {
   async function open(path) {
     renderCrumbs(path, true);
     try {
-      const data = await api("api/file", { query: { path } });
+      const data = await api("api/file", { query: { project: app.projects[0]?.id, path } });
       if (closed) return;
       if (data.binary) {
         fill(body, h("p", { class: "muted" }, "This file is not text and cannot be shown here."));
@@ -63,7 +63,7 @@ export function filesView(app, main) {
         onclick: async () => {
           save.disabled = true;
           try {
-            await api("api/file", { method: "PUT", json: { path, original, content: editor.value } });
+            await api("api/file", { method: "PUT", json: { project: app.projects[0]?.id, path, original, content: editor.value } });
             original = editor.value;
             message.textContent = "";
             toast(`Saved ${path}.`);

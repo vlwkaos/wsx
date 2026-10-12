@@ -78,9 +78,10 @@ fn observe(app: Arc<App>) {
         let Ok(snapshot) = chat::snapshot(&app.client) else {
             continue;
         };
-        let targets = chat::targets(&snapshot, &app.site.project);
+        let targets = chat::targets(&snapshot, &app.site.access);
         if changed {
             let view = json!({
+                "projects": chat::projects_view(&snapshot, &app.site.access),
                 "sessions": targets.iter().map(session_view).collect::<Vec<_>>(),
             });
             let text = view.to_string();
