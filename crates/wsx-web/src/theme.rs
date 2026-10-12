@@ -17,25 +17,23 @@ const MAX_ICON_BYTES: u64 = 1024 * 1024;
 const MAX_FONTS: usize = 8;
 
 type Files = &'static [(&'static str, &'static [u8])];
-const BUILTIN: &[(&str, Files)] = &[
-    (
-        "default",
-        &[
-            (
-                "theme.toml",
-                include_bytes!("../web/themes/default/theme.toml"),
-            ),
-            (
-                "icon-192.png",
-                include_bytes!("../web/themes/default/icon-192.png"),
-            ),
-            (
-                "icon-512.png",
-                include_bytes!("../web/themes/default/icon-512.png"),
-            ),
-        ],
-    ),
-];
+const BUILTIN: &[(&str, Files)] = &[(
+    "default",
+    &[
+        (
+            "theme.toml",
+            include_bytes!("../web/themes/default/theme.toml"),
+        ),
+        (
+            "icon-192.png",
+            include_bytes!("../web/themes/default/icon-192.png"),
+        ),
+        (
+            "icon-512.png",
+            include_bytes!("../web/themes/default/icon-512.png"),
+        ),
+    ],
+)];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -226,6 +224,12 @@ impl Theme {
             ));
         }
         css.push_str(&resolved.components);
+        let scheme_color = resolved
+            .dark
+            .as_ref()
+            .and_then(|dark| dark.get("color-bg"))
+            .unwrap_or(&resolved.tokens["color-bg"])
+            .clone();
         let stylesheet = named(css.as_bytes(), "css");
         let (icon_192, icon_512) = (named(&icons.0, "png"), named(&icons.1, "png"));
         files.insert(
@@ -249,8 +253,10 @@ impl Theme {
             stylesheet,
             icon_192,
             icon_512,
-            chrome_color: resolved.tokens["color-chrome-bg"].clone(),
-            background_color: resolved.tokens["color-bg"].clone(),
+            // The page is dark when the theme has a dark scheme, so the installed
+            // app's splash and toolbar take the dark background too.
+            chrome_color: scheme_color.clone(),
+            background_color: scheme_color,
             files,
         }
     }
@@ -324,10 +330,10 @@ fn apply(source: &Source, manifest: Manifest, resolved: &mut Resolved) -> Result
             for (token, value) in &dark {
                 ensure!(
                     reference.contains_key(token)
-                        && ["color-", "shadow-", "opacity-"]
+                        && ["color-", "opacity-"]
                             .iter()
                             .any(|kind| token.starts_with(kind)),
-                    "tokens_dark.{token} must be a color, shadow or opacity token"
+                    "tokens_dark.{token} must be a color or opacity token"
                 );
                 check_token(token, value)?;
             }
@@ -433,25 +439,10 @@ fn color(text: &str) -> bool {
     })
 }
 
-/// `none`, or comma-separated `[inset] <x> <y> [blur] [spread] <color>`.
-fn shadow(text: &str) -> bool {
-    text == "none"
-        || text.split(',').all(|layer| {
-            let mut parts: Vec<&str> = layer.split_whitespace().collect();
-            if parts.first() == Some(&"inset") {
-                parts.remove(0);
-            }
-            let Some(last) = parts.pop() else {
-                return false;
-            };
-            color(last) && (2..=4).contains(&parts.len()) && parts.iter().all(|part| length(part))
-        })
-}
-
 fn check_token(token: &str, value: &str) -> Result<()> {
     let valid = match token {
         _ if token.starts_with("color-") => color(value),
-        "font-body" | "font-heading" | "font-mono" => {
+        "font-body" | "font-mono" => {
             !value.is_empty()
                 && value.len() <= 200
                 && value
@@ -459,10 +450,12 @@ fn check_token(token: &str, value: &str) -> Result<()> {
                     .all(|c| c.is_ascii_alphanumeric() || " ,'-_".contains(c))
                 && value.matches('\'').count().is_multiple_of(2)
         }
-        "font-weight-normal" | "font-weight-strong" => value
+        _ if token.starts_with("font-weight-") => value
             .parse::<u16>()
             .is_ok_and(|weight| (100..=900).contains(&weight)),
-        "line-height" => number(value).is_some_and(|height| (1.0..=3.0).contains(&height)),
+        _ if token.starts_with("line-height") => {
+            number(value).is_some_and(|height| (1.0..=3.0).contains(&height))
+        }
         "motion-duration" => ["ms", "s"].iter().any(|unit| {
             value
                 .strip_suffix(unit)
@@ -476,8 +469,8 @@ fn check_token(token: &str, value: &str) -> Result<()> {
         _ if token.starts_with("opacity-") => {
             number(value).is_some_and(|opacity| (0.0..=1.0).contains(&opacity))
         }
-        _ if token.starts_with("shadow-") => shadow(value),
-        // font-size-*, space-*, size-*, radius-*, border-width, focus-*
+        _ if token.starts_with("tracking-") => length(value.trim_start_matches('-')),
+        // font-size-*, space-*, size-*, radius-*, border-width, focus-width
         _ => length(value) && !value.starts_with('-'),
     };
     ensure!(valid, "token {token} has an invalid value {value:?}");

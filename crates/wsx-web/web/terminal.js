@@ -1,8 +1,9 @@
-// Terminal panel: xterm.js on the pane's raw byte stream over one WebSocket.
+// Terminal view of one session: xterm.js on the pane's raw byte stream over one WebSocket.
 // Contract: docs/web-client.md "Terminal". Input behaviour follows remotty's Terminal.tsx.
 // ^ wsxd's own emulator already answers terminal queries, so this one must stay silent.
 import { resolve } from "./api.js";
-import { add, fill, h, sessionSelect, stateLabel } from "./dom.js";
+import { add, fill, h } from "./dom.js";
+import { can, state as store, touch as touchDevice } from "./store.js";
 
 const KEYS = [
   ["Esc", "\x1b", "Escape"], ["Tab", "\t", "Tab"], ["^C", "\x03", "Control C"], ["^V", "\x16", "Control V"],
@@ -21,7 +22,6 @@ const MAX_FRAME = 32 * 1024;
 const SIZE_KEY = "wsx-terminal-size";
 const SVG = "http://www.w3.org/2000/svg";
 const ICONS = {
-  menu: "M3 5h14M3 10h14M3 15h14",
   fit: "M3 8V3h5M17 8V3h-5M3 12v5h5M17 12v5h-5",
   host: "M3 4h14v12H3zM7 8h6v4H7z",
 };
@@ -76,11 +76,12 @@ function silenceQueries(term) {
   for (const code of [4, 10, 11, 12]) term.parser.registerOscHandler(code, (data) => data.includes("?"));
 }
 
-export function terminalView(app, main, argument) {
-  let current = Number(argument) || null;
+// `mount` receives the view, `current` is the session id, and `tools` is the place in
+// the session's top row for this view's size toggle.
+export function terminalView(mount, current, tools) {
   let closed = false;
-  const canType = app.can("terminal_input");
-  const touch = matchMedia("(pointer: coarse)").matches || innerWidth < 700;
+  const canType = can("terminal_input");
+  const touch = touchDevice();
   // A device that may not type never resizes the pane: it scales the host's size.
   let hostSize = !canType || remembered() === "host";
   const encoder = new TextEncoder();
@@ -98,14 +99,7 @@ export function terminalView(app, main, argument) {
   let retryTimer = 0;
   let state = "loading";
 
-  const picker = h("div", { class: "terminal-picker" });
-  const badge = h("span", {});
-  const sizeToggle = h("button", { type: "button", class: "terminal-icon terminal-size", onclick: toggleSize });
-  // On a phone this row is the whole top frame: the panel list opens from its menu button.
-  const menu = touch
-    ? h("button", { type: "button", class: "terminal-icon", "aria-label": "Panels", "aria-haspopup": "dialog", onclick: openMenu }, icon("menu"))
-    : null;
-  const bar = h("div", { class: "terminal-bar" }, menu, picker, badge, canType ? sizeToggle : null);
+  const sizeToggle = h("button", { type: "button", class: "icon-button terminal-size", onclick: toggleSize });
   const noticeText = h("span", {});
   const noticeAction = h("button", { type: "button", class: "button-primary", hidden: true });
   const notice = h("div", { class: "terminal-notice", role: "status", hidden: true }, noticeText, noticeAction);
@@ -113,24 +107,9 @@ export function terminalView(app, main, argument) {
   const stage = h("div", { class: "terminal-stage" }, notice, host);
   const keys = touch && canType ? keyRows() : null;
   // The frame around the screen is dark in either scheme (docs/web-themes.md).
-  const root = h("div", { class: "terminal", "data-state": state, "data-scheme": "dark" }, bar, stage, keys);
-  main.classList.add("panel-terminal");
-  document.body.dataset.view = "terminal";
-  document.documentElement.dataset.view = "terminal";
-  if (touch) document.body.dataset.compact = "";
-  add(main, root);
-
-  // The panel list as a sheet. A native dialog keeps the focus inside and closes on Escape.
-  function openMenu() {
-    const sheet = h("dialog", { class: "dialog terminal-sheet", "aria-label": "Panels" },
-      h("ul", { class: "list" }, app.panels().map(([panel, label]) =>
-        h("li", { class: "list-row" },
-          h("a", { href: `#/${panel}`, "aria-current": panel === "terminal" ? "page" : null, onclick: () => sheet.close() }, label)))),
-      h("div", { class: "row" }, h("button", { type: "button", onclick: () => sheet.close() }, "Close")));
-    sheet.addEventListener("close", () => { sheet.remove(); menu.focus(); });
-    add(root, sheet);
-    sheet.showModal();
-  }
+  const root = h("div", { class: "terminal", "data-state": state, "data-scheme": "dark" }, stage, keys);
+  add(mount, root);
+  if (canType) add(tools, sizeToggle);
 
   function setState(next) {
     state = next;
@@ -321,7 +300,7 @@ export function terminalView(app, main, argument) {
     }, "Paste");
     const drag = { ax: 0, ay: 0, lx: 0, ly: 0 };
     const pad = h("div", {
-      class: "terminal-pad button", role: "img", "aria-label": "Drag to send arrow keys",
+      class: "terminal-pad", role: "img", "aria-label": "Drag to send arrow keys",
       onpointerdown: (event) => {
         event.preventDefault();
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -402,20 +381,6 @@ export function terminalView(app, main, argument) {
     }, { passive: false, capture: true });
   }
 
-  // ^ iOS Safari and an installed PWA keep the layout viewport when the keyboard opens:
-  // only the visual viewport shrinks, and it can move down the page. The page is pinned
-  // to the visual viewport, so the key row's bottom edge is the keyboard's top edge.
-  function viewportChanged() {
-    const viewport = window.visualViewport;
-    const style = document.documentElement.style;
-    style.setProperty("--viewport-height", `${viewport.height}px`);
-    style.setProperty("--viewport-top", `${viewport.offsetTop}px`);
-    // The keyboard covers the bottom safe area, so its inset must not stay as a gap.
-    const keyboard = viewport.scale <= 1.01 && document.documentElement.clientHeight - viewport.height > 120;
-    document.body.toggleAttribute("data-keyboard", keyboard);
-    requestAnimationFrame(layout);
-  }
-
   async function open() {
     try {
       await loadLibrary();
@@ -427,11 +392,17 @@ export function terminalView(app, main, argument) {
     }
     if (closed) return;
     const token = (name) => getComputedStyle(root).getPropertyValue(name).trim();
-    const background = token("--color-terminal-bg");
+    const background = token("--color-bg");
     stage.style.backgroundColor = background;
+    // The 16 ANSI colors come from the theme, in xterm.js's own order of names.
+    const names = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
+    const palette = Object.fromEntries(names.flatMap((name, index) => [
+      [name, token(`--color-ansi-${index}`)],
+      [`bright${name[0].toUpperCase()}${name.slice(1)}`, token(`--color-ansi-${index + 8}`)],
+    ]));
     term = new globalThis.Terminal({
       cursorBlink: true, fontSize: touch ? FONT_PHONE : FONT_DESKTOP, fontFamily: token("--font-mono") || "monospace",
-      theme: { background, foreground: token("--color-terminal-text"), cursor: token("--color-accent"), cursorAccent: background,
+      theme: { ...palette, background, foreground: token("--color-text"), cursor: token("--color-accent"), cursorAccent: background,
         selectionBackground: `${token("--color-accent")}55` },
       scrollback: SCROLLBACK, allowProposedApi: true, disableStdin: !canType,
     });
@@ -456,37 +427,15 @@ export function terminalView(app, main, argument) {
     const observer = new ResizeObserver(() => requestAnimationFrame(layout));
     observer.observe(stage);
     disposers.push(() => observer.disconnect());
-    if (window.visualViewport) {
-      listen(window.visualViewport, "resize", viewportChanged);
-      listen(window.visualViewport, "scroll", viewportChanged);
-      viewportChanged();
-    }
+    // main.js pins the page to the visual viewport; the grid follows the new height.
+    if (window.visualViewport) listen(window.visualViewport, "resize", () => requestAnimationFrame(layout));
     // A phone that wakes up or regains its network reconnects at once.
     listen(window, "online", () => { if (state === "reconnecting") connect(); });
     listen(document, "visibilitychange", () => { if (!document.hidden && state === "reconnecting") connect(); });
     connect();
   }
 
-  function select() {
-    if (!app.sessions.some((session) => session.id === current)) {
-      const first = app.sessions[0]?.id ?? null;
-      if (first !== current) {
-        current = first;
-        if (term) connect();
-      }
-    }
-    const session = app.sessions.find((candidate) => candidate.id === current);
-    if (!session) {
-      fill(picker, h("span", { class: "muted" }, "No session is open in this project."));
-      fill(badge);
-      return;
-    }
-    fill(picker, sessionSelect(app.sessions, current, (id) => app.navigate(`#/terminal/${id}`)));
-    fill(badge, stateLabel(session));
-  }
-
   updateSizeToggle();
-  select();
   open();
 
   return {
@@ -497,17 +446,8 @@ export function terminalView(app, main, argument) {
       socket?.close();
       for (const dispose of disposers) dispose();
       term?.dispose();
-      main.classList.remove("panel-terminal");
-      delete document.body.dataset.view;
-      delete document.body.dataset.compact;
-      delete document.documentElement.dataset.view;
-      document.body.removeAttribute("data-keyboard");
-      document.documentElement.style.removeProperty("--viewport-top");
-      document.documentElement.style.removeProperty("--viewport-height");
-    },
-    onWorkspace: () => {
-      select();
-      if (state === "reconnecting") connect();
+      root.remove();
+      sizeToggle.remove();
     },
   };
 }

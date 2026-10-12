@@ -1,6 +1,7 @@
-// Settings: this device's notification consent and its pairing.
+// Settings: this device's appearance, its notification consent and its pairing.
 import { api } from "./api.js";
-import { add, h } from "./dom.js";
+import { html, useEffect, useState } from "./lib.js";
+import { can, state } from "./store.js";
 import { confirmDialog, hasDarkScheme, scheme, setScheme } from "./ui.js";
 
 const TOPICS = [
@@ -14,100 +15,97 @@ function keyBytes(base64url) {
   return Uint8Array.from(text, (character) => character.charCodeAt(0));
 }
 
-export function settingsView(app, main) {
-  const status = h("p", { class: "small", role: "status" });
-  const boxes = TOPICS.map(([topic, label]) => [topic, h("input", { type: "checkbox", value: topic }), label]);
-  const save = h("button", { class: "button-primary", type: "button", onclick: apply }, "Save notification choices");
-  const fieldset = h(
-    "fieldset",
-    {},
-    h("legend", {}, "Notify this device when"),
-    boxes.map(([, box, label]) => h("label", {}, box, label)),
-    h("div", { class: "row" }, save),
-    status,
-  );
-  let publicKey = null;
-
-  function say(text, failed) {
-    status.className = failed ? "small error" : "small muted";
-    status.textContent = text;
-  }
-
-  async function load() {
+function Push() {
+  const [topics, setTopics] = useState([]);
+  const [key, setKey] = useState(null);
+  const [status, setStatus] = useState({ text: "" });
+  const [busy, setBusy] = useState(true);
+  useEffect(() => {
     if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
-      save.disabled = true;
-      say("This browser cannot receive notifications here. On iPhone, add the site to the Home Screen first.");
+      setStatus({ text: "This browser cannot receive notifications here. On iPhone, add the site to the Home Screen first." });
       return;
     }
-    try {
-      const data = await api("api/push");
-      publicKey = data.public_key;
-      for (const [topic, box] of boxes) box.checked = data.topics.includes(topic);
-    } catch (failure) {
-      save.disabled = true;
-      say(failure.message, true);
-    }
-  }
-
+    api("api/push").then((data) => { setKey(data.public_key); setTopics(data.topics); setBusy(false); })
+      .catch((failure) => setStatus({ text: failure.message, failed: true }));
+  }, []);
   // Runs only from the button, so the permission prompt follows an explicit choice.
-  async function apply() {
-    const topics = boxes.filter(([, box]) => box.checked).map(([topic]) => topic);
-    save.disabled = true;
+  const apply = async () => {
+    setBusy(true);
     try {
       const registration = await navigator.serviceWorker.ready;
       if (!topics.length) {
         await (await registration.pushManager.getSubscription())?.unsubscribe();
         await api("api/push", { method: "DELETE", json: {} });
-        say("Notifications are off for this device.");
+        setStatus({ text: "Notifications are off for this device." });
       } else {
-        if ((await Notification.requestPermission()) !== "granted") {
-          throw new Error("The browser did not allow notifications for this site.");
-        }
-        const subscription =
-          (await registration.pushManager.getSubscription()) ??
-          (await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(publicKey) }));
+        if ((await Notification.requestPermission()) !== "granted") throw new Error("The browser did not allow notifications for this site.");
+        const subscription = (await registration.pushManager.getSubscription())
+          ?? (await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) }));
         const { endpoint, keys, expirationTime } = subscription.toJSON();
         await api("api/push", { method: "POST", json: { subscription: { endpoint, keys, expirationTime }, topics } });
-        say("Saved. This device will be notified.");
+        setStatus({ text: "Saved. This device will be notified." });
       }
     } catch (failure) {
-      say(failure.message, true);
+      setStatus({ text: failure.message, failed: true });
     }
-    save.disabled = false;
-  }
+    setBusy(false);
+  };
+  const toggle = (topic) => setTopics((list) => list.includes(topic) ? list.filter((other) => other !== topic) : [...list, topic]);
+  return html`
+    <section aria-label="Notifications">
+      <h2 class="label">Notify this device when</h2>
+      <div class="options">
+        ${TOPICS.map(([topic, label]) => html`
+          <label class="option" key=${topic}><input type="checkbox" checked=${topics.includes(topic)} onChange=${() => toggle(topic)} />${label}</label>`)}
+      </div>
+      <div class="actions">
+        <button class="button" type="button" disabled=${busy} onClick=${apply}>Save notification choices</button>
+        <span class=${status.failed ? "error" : "muted"} role="status">${status.text}</span>
+      </div>
+    </section>`;
+}
 
-  const unpair = h("button", {
-    class: "button-danger", type: "button",
-    onclick: async () => {
-      const sure = await confirmDialog({
-        title: "Unpair this device?",
-        text: "You will need a new code from the owner to use this site again.",
-        confirm: "Unpair",
-        danger: true,
-      });
-      if (!sure) return;
-      try {
-        await api("api/logout", { method: "POST", json: {} });
-        location.reload();
-      } catch (failure) {
-        say(failure.message, true);
-      }
-    },
-  }, "Unpair this device");
-
-  const appearance = hasDarkScheme()
-    ? h("fieldset", {}, h("legend", {}, "Appearance on this device"),
-        [["dark", "Dark"], ["light", "Light"]].map(([value, label]) =>
-          h("label", {}, h("input", { type: "radio", name: "scheme", value, checked: scheme() === value, onchange: () => setScheme(value) }), label)))
-    : null;
-
-  add(main,
-    h("h2", {}, "Settings"),
-    appearance,
-    app.can("push") ? fieldset : null,
-    h("p", {}, `Paired as "${app.device.name}" (device ${app.device.id}).`),
-    h("div", { class: "row" }, unpair),
-  );
-  if (app.can("push")) load();
-  return {};
+export function Settings() {
+  const [current, setCurrent] = useState(scheme());
+  const [error, setError] = useState("");
+  const unpair = async () => {
+    const sure = await confirmDialog({
+      title: "Unpair this device?",
+      text: "You will need a new code from the owner to use this site again.",
+      confirm: "Unpair",
+      danger: true,
+    });
+    if (!sure) return;
+    try {
+      await api("api/logout", { method: "POST", json: {} });
+      location.reload();
+    } catch (failure) {
+      setError(failure.message);
+    }
+  };
+  return html`
+    <div class="page">
+      <h1 class="title">Settings</h1>
+      <div class="scroll settings">
+        ${hasDarkScheme() && html`
+          <section aria-label="Appearance">
+            <h2 class="label">Appearance on this device</h2>
+            <div class="options">
+              ${[["dark", "Dark"], ["light", "Light"]].map(([value, label]) => html`
+                <label class="option" key=${value}>
+                  <input type="radio" name="scheme" value=${value} checked=${current === value}
+                    onChange=${() => { setScheme(value); setCurrent(value); }} />${label}</label>`)}
+            </div>
+          </section>`}
+        ${can("push") && html`<${Push} />`}
+        <section aria-label="This device">
+          <h2 class="label">This device</h2>
+          <p class="muted device">Paired as "${state.device.name}" (device ${state.device.id}).</p>
+          <div class="actions">
+            <button class="button button-danger" type="button" onClick=${unpair}>Unpair this device</button>
+            ${error && html`<span class="error" role="alert">${error}</span>`}
+          </div>
+        </section>
+      </div>
+    </div>`;
 }

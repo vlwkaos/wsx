@@ -16,7 +16,6 @@ pub enum Panel {
     Chat,
     Files,
     Terminal,
-    Activity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -66,6 +65,21 @@ struct SiteFile {
     media: MediaLimits,
     #[serde(default)]
     push: Option<PushFile>,
+    #[serde(default)]
+    terminal: TerminalFile,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct TerminalFile {
+    /// Join character pairs such as `=>` and `!=` in the terminal font.
+    ligatures: bool,
+}
+
+impl Default for TerminalFile {
+    fn default() -> Self {
+        Self { ligatures: true }
+    }
 }
 
 fn default_theme() -> String {
@@ -181,6 +195,7 @@ pub struct Site {
     pub agent_command: Vec<String>,
     pub media: MediaLimits,
     pub push: Option<PushSettings>,
+    pub terminal_ligatures: bool,
     pub state_dir: PathBuf,
 }
 
@@ -352,6 +367,7 @@ impl Site {
             agent_command: file.access.agent_command,
             media,
             push,
+            terminal_ligatures: file.terminal.ligatures,
             state_dir,
         })
     }

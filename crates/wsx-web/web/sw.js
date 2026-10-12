@@ -54,7 +54,7 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const session = event.notification.data?.session_id;
-  const target = session ? `${scope}#/chat/${session}` : scope;
+  const target = session ? `${scope}#/s/${session}/chat` : scope;
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
       const open = windows.find((client) => client.url.startsWith(scope));
