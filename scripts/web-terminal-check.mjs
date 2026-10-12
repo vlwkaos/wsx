@@ -124,6 +124,31 @@ await evaluate(`(() => { const input = document.querySelector('#pair-code'); inp
 await until("!!document.querySelector('#nav a')", "the app did not open after pairing");
 await open(390, 844, 2);
 
+// The frame: one dark top row of at most 40 px, with the panel list behind its menu button.
+const frame = await evaluate(`(() => {
+  const color = (selector) => getComputedStyle(document.querySelector(selector)).backgroundColor;
+  const picker = document.querySelector('.terminal-picker select');
+  const keys = document.querySelector('.terminal-keys');
+  return { bar: document.querySelector('.terminal-bar').getBoundingClientRect().height, barTop: document.querySelector('.terminal-bar').getBoundingClientRect().top,
+    chrome: getComputedStyle(document.querySelector('.app-chrome')).display, page: color('body'), surface: color('.terminal'), key: color('.terminal-key'),
+    keyHeight: document.querySelector('.terminal-key').getBoundingClientRect().height, pad: document.querySelector('.terminal-pad').getBoundingClientRect().height,
+    scrolled: keys.scrollLeft, first: keys.firstElementChild.textContent, more: keys.dataset.more,
+    ellipsis: getComputedStyle(picker).textOverflow, toggle: document.querySelector('.terminal-size').getAttribute('aria-label'),
+    toggleText: document.querySelector('.terminal-size').textContent };
+})()`);
+if (frame.bar > 40 || frame.barTop !== 0 || frame.chrome !== "none") await fail(`the phone top frame is not one row of at most 40 px: ${JSON.stringify(frame)}`);
+if (frame.page !== "rgb(23, 23, 21)" || frame.surface !== "rgb(33, 33, 30)" || frame.key !== "rgb(33, 33, 30)") await fail(`the frame is not dark: ${JSON.stringify(frame)}`);
+if (frame.keyHeight !== 36 || frame.pad !== 36) await fail(`key row buttons are not 36 px: ${JSON.stringify(frame)}`);
+if (frame.scrolled !== 0 || frame.first !== "Esc" || frame.more !== "end") await fail(`the key row does not start at Esc with a fade at its end: ${JSON.stringify(frame)}`);
+if (frame.ellipsis !== "ellipsis" || !/^Fit screen/.test(frame.toggle) || frame.toggleText !== "") await fail(`picker or size toggle is wrong: ${JSON.stringify(frame)}`);
+await evaluate("document.querySelector('.terminal-bar .terminal-icon').click()");
+await until("document.querySelector('dialog.terminal-sheet[open]')?.querySelectorAll('a').length === 5", "the menu did not open the panel list");
+if ((await evaluate("[...document.querySelectorAll('.terminal-sheet a')].map((a) => a.textContent).join()")) !== "Chat,Files,Terminal,Activity,Settings") await fail("the panel sheet does not list the panels");
+await capture("phone-menu");
+await key("Escape", 27);
+await until("!document.querySelector('.terminal-sheet')", "Escape did not close the panel sheet");
+if (!(await evaluate("document.activeElement.getAttribute('aria-label') === 'Panels'"))) await fail("focus did not return to the menu button");
+
 const stage = await box(".terminal-stage");
 if (stage.x !== 0 || stage.width !== 390) await fail(`terminal is not edge to edge on the phone: ${JSON.stringify(stage)}`);
 if (!(await evaluate("document.documentElement.scrollWidth <= innerWidth"))) await fail("phone terminal overflows sideways");
@@ -231,14 +256,14 @@ await capture("phone-keyboard-open");
 
 // Host size: the pane keeps its size and the screen is scaled to show it.
 await evaluate("document.querySelector('.terminal-size').click()");
-await until(`${state("live")} && document.querySelector('.terminal-size').textContent === 'Host size'`, "host size did not connect");
+await until(`${state("live")} && document.querySelector('.terminal-size').dataset.size === 'host'`, "host size did not connect");
 await viewport(390, 844, 2);
 await pause(400);
 await run("stty size", `${fewer} `);
 if ((await evaluate("document.querySelectorAll('.xterm-rows > div').length")) !== fewer) await fail("host size resized the terminal");
 await capture("phone-host-size");
 await evaluate("document.querySelector('.terminal-size').click()");
-await until(`${state("live")} && document.querySelector('.terminal-size').textContent === 'Fit screen'`, "fit screen did not reconnect");
+await until(`${state("live")} && document.querySelector('.terminal-size').dataset.size === 'fit'`, "fit screen did not reconnect");
 await until(`document.querySelectorAll('.xterm-rows > div').length === ${rows}`, "fit screen did not resize the pane");
 await sameAsDaemon("after returning to fit screen");
 
@@ -266,6 +291,9 @@ window_.write('{"method":"hello","params":{"protocol":17}}\n');
 window_.write(`${JSON.stringify({ method: "terminal_subscribe", params: { pane_id: Number(paneId), client_id: 4242, takeover: true, rows: 24, cols: 80 } })}\n`);
 await until(state("elsewhere"), "the page did not notice that a wsx window took the terminal");
 if (!(await evaluate("document.querySelector('.terminal-notice').textContent.includes('another wsx window')"))) await fail("no 'controlled elsewhere' bar");
+const elsewhere = await evaluate(`(() => { const bar = document.querySelector('.terminal-notice');
+  return { height: bar.getBoundingClientRect().height, color: getComputedStyle(bar).backgroundColor }; })()`);
+if (elsewhere.height > 40 || elsewhere.color !== "rgb(33, 33, 30)") await fail(`the 'controlled elsewhere' bar is not one dark row: ${JSON.stringify(elsewhere)}`);
 await capture("phone-controlled-elsewhere");
 await pause(1200);
 if (!(await evaluate(state("elsewhere")))) await fail("the page took the terminal back without being asked");
@@ -276,8 +304,15 @@ if (lines.find((line) => line.type === "error")?.data.code !== "lease_transferre
 window_.destroy();
 await until(`document.querySelectorAll('.xterm-rows > div').length === ${rows}`, "taking control did not restore this screen's size");
 
-// --- Desktop: 1280x800, no key row, 14 px.
+// The narrowest phone: nothing scrolls sideways and the top row stays one row.
+await open(320, 640, 2);
+if (!(await evaluate("document.documentElement.scrollWidth <= innerWidth && document.querySelector('.terminal-bar').scrollWidth <= innerWidth"))) await fail("the terminal overflows sideways at 320 px");
+if ((await evaluate("document.querySelector('.terminal-bar').getBoundingClientRect().height")) > 40) await fail("the top row is taller than 40 px at 320 px");
+await capture("phone-320");
+
+// --- Desktop: 1280x800, visible tabs, no key row, 14 px.
 await open(1280, 800, 1);
+if ((await evaluate("getComputedStyle(document.querySelector('.app-chrome')).display")) === "none") await fail("the desktop lost its tabs");
 if ((await evaluate("getComputedStyle(document.querySelector('.xterm-rows')).fontSize")) !== "14px") await fail("desktop font is not 14 px");
 if (await evaluate("!!document.querySelector('.terminal-keys')")) await fail("the key row shows on a desktop");
 await focusTerminal();

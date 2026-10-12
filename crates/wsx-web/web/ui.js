@@ -2,6 +2,25 @@
 import { add, h } from "./dom.js";
 
 const region = () => document.getElementById("toasts");
+
+// A theme with a dark scheme is dark unless this device chose light (docs/web-themes.md).
+const SCHEME_KEY = "wsx-scheme";
+export const hasDarkScheme = () => document.querySelector("meta[name=color-scheme]").content.includes("dark");
+export function scheme() {
+  try { return localStorage.getItem(SCHEME_KEY) === "light" ? "light" : "dark"; } catch { return "dark"; }
+}
+export function applyScheme() {
+  if (!hasDarkScheme()) return;
+  if (scheme() === "light") document.documentElement.dataset.scheme = "light";
+  else delete document.documentElement.dataset.scheme;
+  // The browser's own bars take the color of the page chrome.
+  const chrome = getComputedStyle(document.documentElement).getPropertyValue("--color-chrome-bg").trim();
+  if (chrome) document.querySelector("meta[name=theme-color]").content = chrome;
+}
+export function setScheme(value) {
+  try { localStorage.setItem(SCHEME_KEY, value); } catch { /* a private window keeps the default */ }
+  applyScheme();
+}
 const sticky = new Map();
 
 // A named notice stays until it is cleared: `notice("link", "Connection lost")`,

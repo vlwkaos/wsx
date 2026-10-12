@@ -19,7 +19,7 @@ theme = "/abs/path/to/my-theme"   # a theme directory, or the path of a theme .t
 | Type scale | `font-size-sm` `font-size-md` `font-size-lg` `font-size-xl` `font-size-mono` | length |
 | Type weight | `font-weight-normal` `font-weight-strong`, `line-height` | 100-900; 1-3 |
 | Spacing | `space-1` … `space-5` | length |
-| Sizes | `size-control` `size-content` `size-bubble` `size-media` `size-field` `size-log` | length |
+| Sizes | `size-control` `size-key` (terminal keys and icon buttons) `size-content` `size-bubble` `size-media` `size-field` `size-log` | length |
 | Radius, border | `radius-control` `radius-surface` `border-width` | length |
 | Shadow | `shadow-raised` `shadow-sunken` `shadow-overlay` | `none`, or `[inset] x y [blur] [spread] #color`, comma-separated |
 | Motion | `motion-duration`, `motion-easing` | `ms` or `s`; `linear` `ease` `ease-in` `ease-out` `ease-in-out` |
@@ -29,6 +29,8 @@ theme = "/abs/path/to/my-theme"   # a theme directory, or the path of a theme .t
 A length is `0` or a number with `px`, `rem`, `em`, `ch`, `vh`, `vw` or `%`. Any other value, and any unknown token name, stops the server at start with the token named. `[tokens_dark]` may set only `color-*`, `shadow-*` and `opacity-*` tokens.
 
 Dark scheme rule: a theme has a dark scheme when it has a `[tokens_dark]` table. A theme that changes any `color-*` token in `[tokens]` and has no `[tokens_dark]` is light only; it does not inherit the dark colors of the theme it extends. A light-only theme is served with `color-scheme: light`.
+
+A theme with a dark scheme is shown dark by default. A device switches to light under Settings, "Appearance on this device"; the choice is kept in that browser as `data-scheme="light"` on the page root. The operating system preference is not read. An element with `data-scheme="dark"` uses the dark tokens in either case: the terminal frame does, so there is no light bar around the dark screen.
 
 ## Component hooks
 
@@ -45,7 +47,8 @@ Shared parts carry a stable class. Component CSS in a theme should style these c
 | Badge and status | `.badge` (`[data-state="idle|working|blocked|done|error|unknown"]`) |
 | Dialog | `.dialog` (a native `<dialog>`; backdrop uses `color-overlay`) |
 | Toast | `.toast` (`[data-kind="error"]`) |
-| Terminal frame | `.terminal-frame` (terminal screen and file text) |
+| Terminal frame | `.terminal-frame` (file text) |
+| Live terminal | `.terminal-bar` `.terminal-icon` `.terminal-notice` `.terminal-key` `.terminal-pad` `.terminal-sheet` |
 
 `<body data-theme="<name>">` names the active theme.
 
@@ -93,7 +96,7 @@ The server builds one stylesheet (font faces, tokens, dark tokens, component CSS
 
 | Theme | Schemes | Notes |
 |---|---|---|
-| `default` | light, dark | System fonts, flat surfaces. |
+| `default` | dark (default), light | System fonts, flat surfaces. |
 | `retro` | light | System 7 look after the remotty project: gray surfaces, black hairlines, beveled controls that invert when pressed, pinstripe title bar, hard offset shadow on dialogs. |
 
 `retro` ships no font. Chicago (ChicagoFLF) has conflicting licence statements (the author's public-domain note against "personal use" listings), and remotty's JetBrains Mono Nerd Font files are 2.5 MB each. The font stacks name Chicago and JetBrains Mono for machines that have them and fall back to Geneva, Verdana and the system monospace font. To ship a font you have the right to distribute, write a theme that extends `retro` and declares it under `[[fonts]]`.

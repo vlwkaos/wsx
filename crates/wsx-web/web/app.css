@@ -123,37 +123,59 @@ fieldset label { color: var(--color-text); font-size: var(--font-size-md); min-h
 }
 textarea.terminal-frame { resize: vertical; }
 
-/* Hook: .terminal-bar, .terminal-notice, .terminal-key, .terminal-pad — the live terminal.
-   The terminal panel is full-bleed: on a phone the screen runs edge to edge, and the
-   page is as tall as the visible viewport so the key row sits on the on-screen keyboard. */
+/* Hook: .terminal-bar, .terminal-icon, .terminal-notice, .terminal-key, .terminal-pad, .terminal-sheet — the live terminal.
+   The terminal panel is full-bleed and its frame is dark in either scheme (data-scheme on .terminal).
+   The page is as tall as the visible viewport, so the key row sits on the on-screen keyboard.
+   On a phone (body[data-compact]) the bar is the only top row: its menu button replaces the tabs. */
 body[data-view="terminal"] { height: var(--viewport-height, 100dvh); }
-/* One chrome row while the terminal is open: the title shortens and the navigation scrolls. */
-body[data-view="terminal"] .app-chrome { flex-wrap: nowrap; }
-body[data-view="terminal"] .app-title { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-body[data-view="terminal"] .app-nav { flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+body[data-view="terminal"][data-compact] .app-chrome { display: none; }
 .panel-terminal { max-width: none; padding: 0; overflow: hidden; }
-.terminal { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.terminal { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--color-surface); color: var(--color-text); }
 .terminal-bar {
-  display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2);
-  background: var(--color-surface); border-bottom: var(--border-width) solid var(--color-border);
+  height: var(--size-control); display: flex; align-items: center; gap: var(--space-1); padding: 0 var(--space-1);
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+.terminal-icon {
+  flex: 0 0 auto; width: var(--size-key); height: var(--size-key); min-height: 0; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 .terminal-picker { flex: 1 1 0; min-width: 0; }
-.terminal-picker select { width: 100%; }
-.terminal-size { flex: 0 0 auto; }
+/* The session picker reads as the title: no field chrome, and a long name ends in an ellipsis. */
+.terminal-picker .input {
+  width: 100%; min-height: 0; height: var(--size-key); padding: 0 var(--space-1);
+  border-color: transparent; background: none; box-shadow: none; font-weight: var(--font-weight-strong);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.terminal-bar .badge { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* The notice lies over the top of the screen: showing it must not resize the pane. */
 .terminal-notice {
-  position: absolute; inset: 0 0 auto 0; z-index: 1;
+  position: absolute; inset: 0 0 auto 0; z-index: 1; height: var(--size-control);
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
-  padding: var(--space-1) var(--space-3); font-size: var(--font-size-sm);
+  padding: 0 var(--space-1) 0 var(--space-3); font-size: var(--font-size-sm);
   background: var(--color-surface); border-bottom: var(--border-width) solid var(--color-border);
 }
+.terminal-notice span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-notice .button { flex: 0 0 auto; min-height: 0; height: var(--size-key); padding: 0 var(--space-3); white-space: nowrap; }
 .terminal-stage { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; }
 .terminal-host { height: 100%; }
 .terminal-host[data-size="host"] { width: max-content; height: max-content; transform-origin: 0 0; }
-.terminal-controls { background: var(--color-surface); border-top: var(--border-width) solid var(--color-border); }
+.terminal-controls { border-top: var(--border-width) solid var(--color-border); }
 .terminal-keys { display: flex; gap: var(--space-1); padding: var(--space-1) var(--space-2); overflow-x: auto; scrollbar-width: none; }
+/* A fade marks each edge that has more keys to scroll to. */
+.terminal-keys[data-more="end"] {
+  -webkit-mask-image: linear-gradient(to left, transparent, black var(--space-5));
+  mask-image: linear-gradient(to left, transparent, black var(--space-5));
+}
+.terminal-keys[data-more="start"] {
+  -webkit-mask-image: linear-gradient(to right, transparent, black var(--space-5));
+  mask-image: linear-gradient(to right, transparent, black var(--space-5));
+}
+.terminal-keys[data-more="start end"] {
+  -webkit-mask-image: linear-gradient(to right, transparent, black var(--space-5), black calc(100% - var(--space-5)), transparent);
+  mask-image: linear-gradient(to right, transparent, black var(--space-5), black calc(100% - var(--space-5)), transparent);
+}
 .terminal-key {
-  flex: 0 0 auto; min-width: var(--size-control); padding: 0 var(--space-2);
+  flex: 0 0 auto; min-width: var(--size-control); min-height: 0; height: var(--size-key); padding: 0 var(--space-2);
   font-size: var(--font-size-sm); touch-action: manipulation; user-select: none; -webkit-user-select: none;
 }
 .terminal-key[data-failed] { color: var(--color-danger); }
@@ -162,10 +184,18 @@ body[data-view="terminal"] .app-nav { flex: 0 1 auto; min-width: 0; flex-wrap: n
   gap: var(--space-1); padding: 0 var(--space-2) var(--space-1);
 }
 .terminal-pad {
-  width: calc(var(--size-control) * 3.5); padding: 0;
+  width: calc(var(--size-control) * 3.5); min-height: 0; height: var(--size-key); padding: 0;
   display: flex; align-items: center; justify-content: center;
   font-size: var(--font-size-sm); touch-action: none; cursor: crosshair; user-select: none; -webkit-user-select: none;
 }
+/* The panel list, as a sheet from the bottom edge. */
+.dialog.terminal-sheet { width: 100%; max-width: 100%; margin: auto 0 0; padding: var(--space-3); }
+.terminal-sheet .list-row > a {
+  min-height: var(--size-control); padding: 0 var(--space-3); display: flex; align-items: center;
+  color: inherit; text-decoration: none;
+}
+.terminal-sheet .list-row > a[aria-current="page"] { font-weight: var(--font-weight-strong); }
+.terminal-sheet .row { margin-top: var(--space-3); }
 
 /* Hook: .dialog — modal confirmation. */
 .dialog {

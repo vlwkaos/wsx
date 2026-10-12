@@ -713,14 +713,17 @@ capabilities = ["terminal_view"]
 
         html, css, manifest = themed(owner)
         assert 'data-theme="default"' in html and 'name="color-scheme" content="light dark"' in html
-        assert '--color-bg:#f6f5f1;' in css and 'prefers-color-scheme: dark' in css and '@font-face' not in css
+        # A theme with a dark scheme is dark unless the device chose light.
+        dark_rule = ':root:not([data-scheme="light"]),[data-scheme="dark"]{color-scheme:dark;'
+        assert '--color-bg:#f6f5f1;' in css and dark_rule in css and '@font-face' not in css
+        assert 'prefers-color-scheme' not in css
         assert (manifest['background_color'], manifest['theme_color']) == ('#f6f5f1', '#ffffff')
         default_icon = owner.request('GET', '/' + manifest['icons'][0]['src'])[1]
 
         html, css, manifest = themed(retro)
         assert 'data-theme="retro"' in html and 'name="color-scheme" content="light"' in html
         assert '--color-bg:#c0c0c0;' in css and '--radius-surface:0;' in css and '.app-title' in css
-        assert 'prefers-color-scheme: dark' not in css, 'retro defines the light scheme only'
+        assert 'data-scheme' not in css, 'retro defines the light scheme only'
         assert (manifest['background_color'], manifest['theme_color']) == ('#c0c0c0', '#c0c0c0')
         assert retro.request('GET', '/' + manifest['icons'][0]['src'])[1] != default_icon
 
@@ -728,7 +731,7 @@ capabilities = ["terminal_view"]
         assert 'data-theme="family-warm"' in html and 'content="#102030"' in html
         # Its own tokens over the inherited default ones, light and dark.
         assert '--color-accent:#225577;' in css and '--color-bg:#f6f5f1;' in css and '--radius-control:0;' in css
-        assert css.split('prefers-color-scheme: dark')[1].count('--color-accent:#88bbdd;') == 1
+        assert css.split(dark_rule)[1].count('--color-accent:#88bbdd;') == 1
         assert css.endswith(custom_css.decode())
         font_name = hashlib.sha256(fixture_font).hexdigest()[:16] + '.woff2'
         assert '@font-face{font-family:"Fixture Sans";src:url("%s");font-weight:700;' % font_name in css
@@ -744,7 +747,7 @@ capabilities = ["terminal_view"]
         literals = re.findall(r'#[0-9a-fA-F]{3,8}\b|\b\d*\.?\d+(?:px|rem|em|ms|s|pt)\b|\brgba?\(', core)
         assert literals == [], literals
         for hook in ('app-chrome', 'app-title', 'app-nav', 'panel', 'list', 'list-row', 'button', 'input',
-                     'bubble', 'badge', 'dialog', 'toast', 'terminal-frame'):
+                     'bubble', 'badge', 'dialog', 'toast', 'terminal-frame', 'terminal-bar', 'terminal-key'):
             assert re.search(r'\.%s[\s,.:{\[]' % hook, core), hook
         ok('themes: built-in default and retro, custom directory with font and icons, hash URLs, manifest follows theme, CSP strict, token-only core CSS')
 
@@ -1134,7 +1137,7 @@ capabilities = ["terminal_view"]
             session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == shell)
             assert call('session_close', {'session_id': shell, 'expected_revision': session['revision']})['type'] == 'ack'
 
-            for name, site, session, body_color in (('owner', owner, 'owner', 'rgb(246, 245, 241)'),
+            for name, site, session, body_color in (('owner', owner, 'owner', 'rgb(23, 23, 21)'),
                                                     ('retro', retro, 'owner', 'rgb(192, 192, 192)')):
                 settle(session)
                 code = cli('web', 'pair', '--site', files[name]).stdout.splitlines()[0].rsplit(' ', 1)[1]

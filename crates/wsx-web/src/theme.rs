@@ -233,10 +233,16 @@ impl Theme {
                 bytes,
             });
         }
-        css.push_str(&format!(":root{{{}}}", block(&resolved.tokens)));
+        css.push_str(&format!(
+            ":root{{color-scheme:light;{}}}",
+            block(&resolved.tokens)
+        ));
+        // ^ docs/web-themes.md "Dark scheme rule": a theme with a dark scheme is dark
+        // unless the device chose light. `data-scheme="dark"` on an element makes that
+        // part dark in either case; the terminal frame uses it.
         if let Some(dark) = &resolved.dark {
             css.push_str(&format!(
-                "@media (prefers-color-scheme: dark){{:root{{{}}}}}",
+                ":root:not([data-scheme=\"light\"]),[data-scheme=\"dark\"]{{color-scheme:dark;{}}}",
                 block(dark)
             ));
         }

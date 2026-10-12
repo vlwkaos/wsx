@@ -19,8 +19,23 @@ const REPLAY = "\x1bc"; // full reset, written in the stream so it stays in orde
 const RETRY_MS = [500, 1000, 2000, 5000];
 const MAX_FRAME = 32 * 1024;
 const SIZE_KEY = "wsx-terminal-size";
-// The terminal is dark in every theme: its palette is program content, not chrome.
-const SCREEN = { background: "#111110", foreground: "#ecebe6", cursor: "#7db8de", cursorAccent: "#111110", selectionBackground: "#7db8de55" };
+const SVG = "http://www.w3.org/2000/svg";
+const ICONS = {
+  menu: "M3 5h14M3 10h14M3 15h14",
+  fit: "M3 8V3h5M17 8V3h-5M3 12v5h5M17 12v5h-5",
+  host: "M3 4h14v12H3zM7 8h6v4H7z",
+};
+// A line icon. Its button carries the accessible name.
+function icon(name) {
+  const svg = document.createElementNS(SVG, "svg");
+  const attributes = { viewBox: "0 0 20 20", width: "20", height: "20", fill: "none", stroke: "currentColor",
+    "stroke-width": "1.75", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" };
+  for (const [key, value] of Object.entries(attributes)) svg.setAttribute(key, value);
+  const path = document.createElementNS(SVG, "path");
+  path.setAttribute("d", ICONS[name]);
+  svg.append(path);
+  return svg;
+}
 const RETRYABLE = new Set(["daemon_handoff", "stream_disconnected", "daemon_unavailable", "daemon_replacing"]);
 
 // Stable while this page is open, so a reconnect or a reopened panel replaces the
@@ -70,6 +85,11 @@ export function terminalView(app, main, argument) {
   let hostSize = !canType || remembered() === "host";
   const encoder = new TextEncoder();
 
+  const disposers = [];
+  const listen = (target, type, handler, options) => {
+    target.addEventListener(type, handler, options);
+    disposers.push(() => target.removeEventListener(type, handler, options));
+  };
   let term = null;
   let fit = null;
   let socket = null;
@@ -80,19 +100,36 @@ export function terminalView(app, main, argument) {
 
   const picker = h("div", { class: "terminal-picker" });
   const badge = h("span", {});
-  const sizeToggle = h("button", { type: "button", class: "terminal-size", onclick: toggleSize });
-  const bar = h("div", { class: "terminal-bar" }, picker, badge, canType ? sizeToggle : null);
+  const sizeToggle = h("button", { type: "button", class: "terminal-icon terminal-size", onclick: toggleSize });
+  // On a phone this row is the whole top frame: the panel list opens from its menu button.
+  const menu = touch
+    ? h("button", { type: "button", class: "terminal-icon", "aria-label": "Panels", "aria-haspopup": "dialog", onclick: openMenu }, icon("menu"))
+    : null;
+  const bar = h("div", { class: "terminal-bar" }, menu, picker, badge, canType ? sizeToggle : null);
   const noticeText = h("span", {});
   const noticeAction = h("button", { type: "button", class: "button-primary", hidden: true });
   const notice = h("div", { class: "terminal-notice", role: "status", hidden: true }, noticeText, noticeAction);
   const host = h("div", { class: "terminal-host" });
   const stage = h("div", { class: "terminal-stage" }, notice, host);
-  stage.style.backgroundColor = SCREEN.background;
   const keys = touch && canType ? keyRows() : null;
-  const root = h("div", { class: "terminal", "data-state": state }, bar, stage, keys);
+  // The frame around the screen is dark in either scheme (docs/web-themes.md).
+  const root = h("div", { class: "terminal", "data-state": state, "data-scheme": "dark" }, bar, stage, keys);
   main.classList.add("panel-terminal");
   document.body.dataset.view = "terminal";
+  if (touch) document.body.dataset.compact = "";
   add(main, root);
+
+  // The panel list as a sheet. A native dialog keeps the focus inside and closes on Escape.
+  function openMenu() {
+    const sheet = h("dialog", { class: "dialog terminal-sheet", "aria-label": "Panels" },
+      h("ul", { class: "list" }, app.panels().map(([panel, label]) =>
+        h("li", { class: "list-row" },
+          h("a", { href: `#/${panel}`, "aria-current": panel === "terminal" ? "page" : null, onclick: () => sheet.close() }, label)))),
+      h("div", { class: "row" }, h("button", { type: "button", onclick: () => sheet.close() }, "Close")));
+    sheet.addEventListener("close", () => { sheet.remove(); menu.focus(); });
+    add(root, sheet);
+    sheet.showModal();
+  }
 
   function setState(next) {
     state = next;
@@ -103,6 +140,7 @@ export function terminalView(app, main, argument) {
   function say(text, action) {
     notice.hidden = !text;
     noticeText.textContent = text ?? "";
+    noticeText.title = text ?? "";
     noticeAction.hidden = !action;
     if (action) {
       noticeAction.textContent = action[0];
@@ -120,11 +158,13 @@ export function terminalView(app, main, argument) {
   }
 
   function updateSizeToggle() {
-    sizeToggle.textContent = hostSize ? "Host size" : "Fit screen";
-    sizeToggle.setAttribute("aria-pressed", String(hostSize));
-    sizeToggle.title = hostSize
-      ? "Showing the pane at its own size, scaled. Tap to resize the pane to this screen."
-      : "The pane is resized to this screen. Tap to keep the pane's own size.";
+    const label = hostSize
+      ? "Host size: the pane keeps its size and the view is scaled. Switch to fit this screen."
+      : "Fit screen: the pane is resized to this screen. Switch to host size.";
+    fill(sizeToggle, icon(hostSize ? "host" : "fit"));
+    sizeToggle.dataset.size = hostSize ? "host" : "fit";
+    sizeToggle.setAttribute("aria-label", label);
+    sizeToggle.title = label;
   }
   function toggleSize() {
     hostSize = !hostSize;
@@ -251,6 +291,17 @@ export function terminalView(app, main, argument) {
         },
         onpointerup: stop, onpointerleave: stop, onpointercancel: stop,
       }, label)));
+    // A fade marks each edge of the row that has more keys.
+    const mark = () => {
+      const more = [];
+      if (row.scrollLeft > 1) more.push("start");
+      if (row.scrollLeft + row.clientWidth < row.scrollWidth - 1) more.push("end");
+      row.dataset.more = more.join(" ");
+    };
+    row.addEventListener("scroll", mark, { passive: true });
+    const rowSize = new ResizeObserver(mark);
+    rowSize.observe(row);
+    disposers.push(() => rowSize.disconnect());
     const paste = h("button", {
       type: "button", tabIndex: -1, class: "terminal-key", "aria-live": "polite",
       onpointerdown: (event) => event.preventDefault(),
@@ -303,12 +354,6 @@ export function terminalView(app, main, argument) {
       x, y, button: 4, action: direction < 0 ? 0 : 1,
     });
   }
-
-  const disposers = [];
-  const listen = (target, type, handler, options) => {
-    target.addEventListener(type, handler, options);
-    disposers.push(() => target.removeEventListener(type, handler, options));
-  };
 
   function touchInput() {
     const textarea = term.textarea;
@@ -374,10 +419,14 @@ export function terminalView(app, main, argument) {
       return;
     }
     if (closed) return;
-    const mono = getComputedStyle(root).getPropertyValue("--font-mono").trim() || "monospace";
+    const token = (name) => getComputedStyle(root).getPropertyValue(name).trim();
+    const background = token("--color-terminal-bg");
+    stage.style.backgroundColor = background;
     term = new globalThis.Terminal({
-      cursorBlink: true, fontSize: touch ? FONT_PHONE : FONT_DESKTOP, fontFamily: mono,
-      theme: SCREEN, scrollback: SCROLLBACK, allowProposedApi: true, disableStdin: !canType,
+      cursorBlink: true, fontSize: touch ? FONT_PHONE : FONT_DESKTOP, fontFamily: token("--font-mono") || "monospace",
+      theme: { background, foreground: token("--color-terminal-text"), cursor: token("--color-accent"), cursorAccent: background,
+        selectionBackground: `${token("--color-accent")}55` },
+      scrollback: SCROLLBACK, allowProposedApi: true, disableStdin: !canType,
     });
     fit = new globalThis.FitAddon.FitAddon();
     term.loadAddon(fit);
@@ -443,6 +492,7 @@ export function terminalView(app, main, argument) {
       term?.dispose();
       main.classList.remove("panel-terminal");
       delete document.body.dataset.view;
+      delete document.body.dataset.compact;
       document.documentElement.style.removeProperty("--viewport-height");
     },
     onWorkspace: () => {

@@ -109,16 +109,23 @@ for (const panel of panels.split(",").slice(1)) {
   }
 }
 
-// 7. Dark preference: a theme with a dark scheme changes, a light-only theme does not.
+// 7. Scheme: a theme with a dark scheme is dark until this device chooses light in Settings.
+// A light-only theme offers no choice.
 await viewport(320, 640);
+const scheme = await evaluate("document.querySelector('meta[name=color-scheme]').content");
+const choice = "document.querySelector('input[name=scheme][value=light]')";
+if ((scheme === "light") === (await evaluate(`!!${choice}`))) await fail(`color-scheme ${scheme} but the appearance choice is wrong`);
+if (scheme !== "light") {
+  await evaluate(`${choice}.click()`);
+  const light = await evaluate("getComputedStyle(document.body).backgroundColor");
+  if (light === bodyColor || (await evaluate("document.documentElement.dataset.scheme")) !== "light") await fail(`choosing light left the background at ${light}`);
+  await sound("settings in the light scheme");
+  await capture("settings-320-light");
+  await evaluate("document.querySelector('input[name=scheme][value=dark]').click()");
+  if ((await evaluate("getComputedStyle(document.body).backgroundColor")) !== bodyColor) await fail("choosing dark did not restore the dark scheme");
+}
 await click("#nav a", "Chat");
 await until("!!document.querySelector('.composer textarea')", "chat did not reopen");
-await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
-const scheme = await evaluate("document.querySelector('meta[name=color-scheme]').content");
-const dark = await evaluate("getComputedStyle(document.body).backgroundColor");
-if ((scheme === "light") !== (dark === bodyColor)) await fail(`color-scheme ${scheme} but dark background is ${dark}`);
-await sound("chat in the dark preference");
-await capture("chat-320-dark");
 
 // The first, unpaired load answers 401 by design; any other console error is a defect.
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
@@ -130,6 +137,6 @@ await send("Page.reload");
 await until("/Cannot reach the server/.test(document.querySelector('#main')?.textContent ?? '')", "offline shell did not render");
 await capture("offline-320");
 
-console.log(`${site}: paired, chat round trip over the event stream, base-path requests only, ${panels} and the dialog and toast at 320 and 1280 px without overflow, theme background ${bodyColor}, reduced motion, dark preference, offline shell`);
+console.log(`${site}: paired, chat round trip over the event stream, base-path requests only, ${panels} and the dialog and toast at 320 and 1280 px without overflow, theme background ${bodyColor}, reduced motion, scheme choice, offline shell`);
 await cleanup();
 process.exit(0);
