@@ -10,11 +10,14 @@ use crate::{
     push::{SubscriptionInput, Topic},
     sandbox::{SandboxError, MAX_TEXT_BYTES},
     site::{Capability, Panel},
-    App,
+    terminal, App,
 };
 use axum::{
     body::{Body, Bytes},
-    extract::{DefaultBodyLimit, FromRequestParts, Path as UrlPath, Query, Request, State},
+    extract::{
+        ws::WebSocketUpgrade, DefaultBodyLimit, FromRequestParts, Path as UrlPath, Query, Request,
+        State,
+    },
     http::{header, request::Parts, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{
@@ -35,7 +38,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
-use wsx_core::runtime::{self, Request as Daemon, Response as DaemonResponse};
+use wsx_core::runtime::{Request as Daemon, Response as DaemonResponse};
 
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; \
 media-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'self'; \
@@ -70,8 +73,7 @@ pub fn router(app: Shared) -> Router {
                     .put(file_write)
                     .layer(DefaultBodyLimit::max(3 * 1024 * 1024)),
             )
-            .route("/api/terminal/{session}", get(terminal_view))
-            .route("/api/terminal/{session}/input", post(terminal_input))
+            .route("/api/terminal/{session}/ws", get(terminal_socket))
             .route("/api/activity", get(activity))
             .route(
                 "/api/push",
@@ -198,7 +200,7 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .map(|(_, value)| value)
 }
 
-fn authenticate(app: &App, headers: &HeaderMap) -> Outcome<Device> {
+pub(crate) fn authenticate(app: &App, headers: &HeaderMap) -> Outcome<Device> {
     let unpaired = || Fault::new(401, "unpaired", "this device is not paired");
     let credential = cookie(headers, &app.site.cookie_name()).ok_or_else(unpaired)?;
     app.devices
@@ -240,7 +242,7 @@ fn allow(app: &App, capability: Capability, what: &str) -> Outcome<()> {
 }
 
 /// Daemon and file calls are short blocking I/O on a multi-thread runtime.
-fn blocking<T>(work: impl FnOnce() -> T) -> T {
+pub(crate) fn blocking<T>(work: impl FnOnce() -> T) -> T {
     tokio::task::block_in_place(work)
 }
 
@@ -357,7 +359,23 @@ async fn session(State(app): State<Shared>, Paired(device): Paired) -> Json<Valu
     }))
 }
 
+/// One of a device's long-lived connections of one kind: event streams or terminals.
 struct StreamSlot(Shared, String);
+impl StreamSlot {
+    fn take(app: &Shared, key: String, what: &str) -> Outcome<Self> {
+        let mut streams = app.streams.lock().unwrap_or_else(|lock| lock.into_inner());
+        let count = streams.entry(key.clone()).or_insert(0);
+        if *count >= MAX_STREAMS_PER_DEVICE {
+            return Err(Fault::new(
+                429,
+                "too_many_streams",
+                format!("too many open {what} on this device"),
+            ));
+        }
+        *count += 1;
+        Ok(Self(app.clone(), key))
+    }
+}
 impl Drop for StreamSlot {
     fn drop(&mut self) {
         let mut streams = self
@@ -377,20 +395,8 @@ async fn events(
     Paired(device): Paired,
     headers: HeaderMap,
 ) -> Outcome<Response> {
-    {
-        let mut streams = app.streams.lock().unwrap_or_else(|lock| lock.into_inner());
-        let count = streams.entry(device.id.clone()).or_insert(0);
-        if *count >= MAX_STREAMS_PER_DEVICE {
-            return Err(Fault::new(
-                429,
-                "too_many_streams",
-                "too many open pages on this device",
-            ));
-        }
-        *count += 1;
-    }
     // The slot is released when the stream task ends, however it ends.
-    let slot = StreamSlot(app.clone(), device.id);
+    let slot = StreamSlot::take(&app, device.id, "pages")?;
     let mut source = app.events.subscribe();
     let first = app
         .workspace
@@ -811,114 +817,70 @@ async fn file_write(
     Ok(Json(json!({ "saved": true })))
 }
 
-/// The pane's current screen as text. A snapshot, not a live terminal.
-async fn terminal_view(
-    State(app): State<Shared>,
-    Paired(_): Paired,
-    UrlPath(session): UrlPath<u64>,
-) -> Outcome<Json<Value>> {
-    need(&app, Panel::Terminal)?;
-    allow(&app, Capability::TerminalView, "viewing the terminal")?;
-    blocking(|| {
-        let snapshot = chat::snapshot(&app.client)?;
-        let target = chat::target(&snapshot, &app.site.project, session)?;
-        let frame = match chat::call(
-            &app.client,
-            &Daemon::View {
-                pane_ids: vec![target.pane.id],
-            },
-        )? {
-            DaemonResponse::View { mut frames, .. } => frames.pop(),
-            _ => None,
-        }
-        .ok_or_else(|| Fault::new(409, "no_frame", "the terminal has no screen yet"))?;
-        let mut lines: Vec<String> = frame
-            .cells
-            .chunks(usize::from(frame.cols.max(1)))
-            .map(|row| {
-                row.iter()
-                    .map(|cell| cell.symbol.as_str())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_owned()
-            })
-            .collect();
-        while lines.last().is_some_and(String::is_empty) {
-            lines.pop();
-        }
-        Ok(Json(json!({
-            "session": chat::session_view(&target),
-            "cols": frame.cols,
-            "rows": frame.rows,
-            "text": lines.join("\n"),
-        })))
-    })
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct InputBody {
+struct AttachQuery {
     #[serde(default)]
-    text: String,
+    takeover: bool,
     #[serde(default)]
-    key: Option<String>,
+    rows: u16,
+    #[serde(default)]
+    cols: u16,
+    /// Chosen by the page, stable while it stays open.
+    #[serde(default)]
+    client: String,
 }
 
-async fn terminal_input(
+/// A live terminal on one session (docs/web-client.md "Terminal").
+/// ^ A WebSocket upgrade is not covered by CORS and may carry no Origin that the
+/// guard would refuse, so the exact Origin is required here.
+async fn terminal_socket(
     State(app): State<Shared>,
-    Paired(_): Paired,
+    Paired(device): Paired,
     UrlPath(session): UrlPath<u64>,
-    Json(input): Json<InputBody>,
-) -> Outcome<Json<Value>> {
-    need(&app, Panel::Terminal)?;
-    allow(&app, Capability::TerminalInput, "terminal input")?;
-    if input.text.len() > 4096 || input.text.chars().any(char::is_control) {
+    Query(query): Query<AttachQuery>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Outcome<Response> {
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
+    if origin != Some(app.site.public.origin.as_str()) {
         return Err(Fault::new(
-            400,
-            "invalid_input",
-            "text must be printable and at most 4 KiB",
+            403,
+            "wrong_origin",
+            "a terminal connection needs this site's Origin",
         ));
     }
-    let mut bytes = input.text.into_bytes();
-    bytes.extend_from_slice(match input.key.as_deref() {
-        None => b"",
-        Some("enter") => b"\r",
-        Some("escape") => b"\x1b",
-        Some("tab") => b"\t",
-        Some("up") => b"\x1b[A",
-        Some("down") => b"\x1b[B",
-        Some("ctrl_c") => b"\x03",
-        Some(_) => return Err(Fault::new(400, "invalid_input", "unknown key")),
-    });
-    if bytes.is_empty() {
-        return Err(Fault::new(400, "invalid_input", "nothing to send"));
+    need(&app, Panel::Terminal)?;
+    allow(&app, Capability::TerminalView, "viewing the terminal")?;
+    // Without terminal_input a device only watches: it cannot type, resize the
+    // pane, or take the terminal from another controller.
+    let input = app.site.allows(Capability::TerminalInput);
+    if query.takeover && !input {
+        return Err(Fault::forbidden("taking control of the terminal"));
     }
-    blocking(|| {
+    let pane_id = blocking(|| {
         let snapshot = chat::snapshot(&app.client)?;
-        let pane_id = chat::target(&snapshot, &app.site.project, session)?.pane.id;
-        // Same short lease as `wsx session send-text`; never takes over a live terminal.
-        let client_id = runtime::new_client_id();
-        chat::call(
-            &app.client,
-            &Daemon::TerminalAcquire {
-                pane_id,
-                client_id,
-                takeover: false,
-            },
-        )?;
-        let result = chat::call(
-            &app.client,
-            &Daemon::TerminalInput {
-                pane_id,
-                client_id,
-                bytes,
-            },
-        );
-        let _ = app
-            .client
-            .call(&Daemon::TerminalRelease { pane_id, client_id });
-        result.map(|_| Json(json!({ "sent": true })))
-    })
+        Ok(chat::target(&snapshot, &app.site.project, session)?.pane.id)
+    })?;
+    let slot = StreamSlot::take(&app, format!("terminal:{}", device.id), "terminals")?;
+    if query.client.len() > 32 || !query.client.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(Fault::new(400, "invalid_client", "client must be digits"));
+    }
+    let attach = terminal::Attach {
+        pane_id,
+        client_id: terminal::client_id(&device.id, &query.client),
+        takeover: query.takeover,
+        size: (input && query.rows > 0 && query.cols > 0).then_some((query.rows, query.cols)),
+        input,
+    };
+    Ok(upgrade
+        .max_message_size(4 * terminal::MAX_INPUT_BYTES)
+        .on_upgrade(move |socket| async move {
+            let _slot = slot;
+            terminal::bridge(app, socket, attach, headers).await;
+        }))
 }
 
 async fn activity(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json<Value>> {

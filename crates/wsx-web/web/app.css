@@ -123,6 +123,50 @@ fieldset label { color: var(--color-text); font-size: var(--font-size-md); min-h
 }
 textarea.terminal-frame { resize: vertical; }
 
+/* Hook: .terminal-bar, .terminal-notice, .terminal-key, .terminal-pad — the live terminal.
+   The terminal panel is full-bleed: on a phone the screen runs edge to edge, and the
+   page is as tall as the visible viewport so the key row sits on the on-screen keyboard. */
+body[data-view="terminal"] { height: var(--viewport-height, 100dvh); }
+/* One chrome row while the terminal is open: the title shortens and the navigation scrolls. */
+body[data-view="terminal"] .app-chrome { flex-wrap: nowrap; }
+body[data-view="terminal"] .app-title { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body[data-view="terminal"] .app-nav { flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.panel-terminal { max-width: none; padding: 0; overflow: hidden; }
+.terminal { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.terminal-bar {
+  display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2);
+  background: var(--color-surface); border-bottom: var(--border-width) solid var(--color-border);
+}
+.terminal-picker { flex: 1 1 0; min-width: 0; }
+.terminal-picker select { width: 100%; }
+.terminal-size { flex: 0 0 auto; }
+/* The notice lies over the top of the screen: showing it must not resize the pane. */
+.terminal-notice {
+  position: absolute; inset: 0 0 auto 0; z-index: 1;
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
+  padding: var(--space-1) var(--space-3); font-size: var(--font-size-sm);
+  background: var(--color-surface); border-bottom: var(--border-width) solid var(--color-border);
+}
+.terminal-stage { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; }
+.terminal-host { height: 100%; }
+.terminal-host[data-size="host"] { width: max-content; height: max-content; transform-origin: 0 0; }
+.terminal-controls { background: var(--color-surface); border-top: var(--border-width) solid var(--color-border); }
+.terminal-keys { display: flex; gap: var(--space-1); padding: var(--space-1) var(--space-2); overflow-x: auto; scrollbar-width: none; }
+.terminal-key {
+  flex: 0 0 auto; min-width: var(--size-control); padding: 0 var(--space-2);
+  font-size: var(--font-size-sm); touch-action: manipulation; user-select: none; -webkit-user-select: none;
+}
+.terminal-key[data-failed] { color: var(--color-danger); }
+.terminal-tools {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center;
+  gap: var(--space-1); padding: 0 var(--space-2) var(--space-1);
+}
+.terminal-pad {
+  width: calc(var(--size-control) * 3.5); padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: var(--font-size-sm); touch-action: none; cursor: crosshair; user-select: none; -webkit-user-select: none;
+}
+
 /* Hook: .dialog — modal confirmation. */
 .dialog {
   width: min(100% - 2 * var(--space-4), var(--size-field) * 2); padding: var(--space-4);

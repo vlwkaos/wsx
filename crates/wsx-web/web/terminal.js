@@ -1,79 +1,453 @@
-// Terminal panel: the pane's current screen as text, refreshed on events.
-// It is a snapshot, not a live terminal emulator.
-import { api } from "./api.js";
+// Terminal panel: xterm.js on the pane's raw byte stream over one WebSocket.
+// Contract: docs/web-client.md "Terminal". Input behaviour follows remotty's Terminal.tsx.
+// ^ wsxd's own emulator already answers terminal queries, so this one must stay silent.
+import { resolve } from "./api.js";
 import { add, fill, h, sessionSelect, stateLabel } from "./dom.js";
 
-const KEYS = [["enter", "Enter"], ["escape", "Esc"], ["tab", "Tab"], ["up", "Up"], ["down", "Down"], ["ctrl_c", "Ctrl+C"]];
+const KEYS = [
+  ["Esc", "\x1b", "Escape"], ["Tab", "\t", "Tab"], ["^C", "\x03", "Control C"], ["^V", "\x16", "Control V"],
+  ["^A", "\x01", "Control A"], ["D", "d", "D"], ["^Z", "\x1a", "Control Z"], ["^R", "\x12", "Control R"],
+  ["^L", "\x0c", "Control L"], ["⌫", "\x7f", "Backspace"], ["^J", "\x0a", "Control J"], ["Enter", "\r", "Enter"],
+];
+const REPEAT_MS = 80;
+const ARROW_STEP = 18; // pixels of drag per arrow key
+const TOUCH_SCROLL_STEP = 28; // pixels of touch movement per line
+const SCROLLBACK = 10000;
+const FONT_PHONE = 11;
+const FONT_DESKTOP = 14;
+const REPLAY = "\x1bc"; // full reset, written in the stream so it stays in order with queued bytes
+const RETRY_MS = [500, 1000, 2000, 5000];
+const MAX_FRAME = 32 * 1024;
+const SIZE_KEY = "wsx-terminal-size";
+// The terminal is dark in every theme: its palette is program content, not chrome.
+const SCREEN = { background: "#111110", foreground: "#ecebe6", cursor: "#7db8de", cursorAccent: "#111110", selectionBackground: "#7db8de55" };
+const RETRYABLE = new Set(["daemon_handoff", "stream_disconnected", "daemon_unavailable", "daemon_replacing"]);
+
+// Stable while this page is open, so a reconnect or a reopened panel replaces the
+// page's own old stream without a takeover. Another tab is another controller.
+const client = crypto.getRandomValues(new Uint32Array(2)).join("");
+
+let library;
+// xterm.js is loaded only when a terminal opens; a chat-only visit never fetches it.
+function loadLibrary() {
+  library ??= new Promise((done, failed) => {
+    add(document.head, h("link", { rel: "stylesheet", href: resolve("assets/xterm.css") }));
+    const next = ([name, ...rest]) => {
+      if (!name) return done();
+      const script = h("script", { src: resolve(`assets/${name}`) });
+      script.onload = () => next(rest);
+      script.onerror = () => { library = undefined; failed(new Error("Cannot load the terminal. Check the connection.")); };
+      add(document.head, script);
+    };
+    next(["xterm.js", "xterm-addon-fit.js"]);
+  });
+  return library;
+}
+
+function remembered() {
+  try { return localStorage.getItem(SIZE_KEY); } catch { return null; }
+}
+function remember(value) {
+  try { localStorage.setItem(SIZE_KEY, value); } catch { /* a private window keeps the default */ }
+}
+
+// Queries that xterm.js would answer on its own. wsxd answered them already.
+function silenceQueries(term) {
+  const swallow = () => true;
+  const csi = [{ final: "c" }, { prefix: ">", final: "c" }, { final: "n" }, { prefix: "?", final: "n" },
+    { intermediates: "$", final: "p" }, { prefix: "?", intermediates: "$", final: "p" }];
+  for (const id of csi) term.parser.registerCsiHandler(id, swallow);
+  term.parser.registerDcsHandler({ intermediates: "$", final: "q" }, swallow);
+  for (const code of [4, 10, 11, 12]) term.parser.registerOscHandler(code, (data) => data.includes("?"));
+}
 
 export function terminalView(app, main, argument) {
   let current = Number(argument) || null;
   let closed = false;
-  let generation = 0;
-  const picker = h("div", { class: "row" });
-  const screen = h("pre", { class: "terminal-frame", tabIndex: 0, "aria-label": "Terminal screen" });
-  const error = h("p", { class: "error", role: "alert" });
-  const text = h("input", {
-    type: "text", class: "grow", "aria-label": "Text to type", autocapitalize: "off", autocomplete: "off", spellcheck: false,
-    onkeydown: (event) => { if (event.key === "Enter") { event.preventDefault(); input({ text: text.value, key: "enter" }); } },
-  });
-  const controls = h(
-    "div",
-    {},
-    h("div", { class: "row" }, text, h("button", { class: "button-primary", type: "button", onclick: () => input({ text: text.value, key: "enter" }) }, "Send line")),
-    h("div", { class: "row", role: "group", "aria-label": "Keys" },
-      KEYS.map(([key, label]) => h("button", { type: "button", onclick: () => input({ key }) }, label))),
-  );
-  add(main, picker, screen, error, app.can("terminal_input") ? controls : null);
+  const canType = app.can("terminal_input");
+  const touch = matchMedia("(pointer: coarse)").matches || innerWidth < 700;
+  // A device that may not type never resizes the pane: it scales the host's size.
+  let hostSize = !canType || remembered() === "host";
+  const encoder = new TextEncoder();
 
-  async function refresh() {
-    if (!current) return;
-    const mine = ++generation;
-    try {
-      const data = await api(`api/terminal/${current}`);
-      if (closed || mine !== generation) return;
-      screen.textContent = data.text || "(empty screen)";
-      error.textContent = "";
-    } catch (failure) {
-      if (closed || mine !== generation) return;
-      error.textContent = failure.message;
+  let term = null;
+  let fit = null;
+  let socket = null;
+  let generation = 0;
+  let retries = 0;
+  let retryTimer = 0;
+  let state = "loading";
+
+  const picker = h("div", { class: "terminal-picker" });
+  const badge = h("span", {});
+  const sizeToggle = h("button", { type: "button", class: "terminal-size", onclick: toggleSize });
+  const bar = h("div", { class: "terminal-bar" }, picker, badge, canType ? sizeToggle : null);
+  const noticeText = h("span", {});
+  const noticeAction = h("button", { type: "button", class: "button-primary", hidden: true });
+  const notice = h("div", { class: "terminal-notice", role: "status", hidden: true }, noticeText, noticeAction);
+  const host = h("div", { class: "terminal-host" });
+  const stage = h("div", { class: "terminal-stage" }, notice, host);
+  stage.style.backgroundColor = SCREEN.background;
+  const keys = touch && canType ? keyRows() : null;
+  const root = h("div", { class: "terminal", "data-state": state }, bar, stage, keys);
+  main.classList.add("panel-terminal");
+  document.body.dataset.view = "terminal";
+  add(main, root);
+
+  function setState(next) {
+    state = next;
+    root.dataset.state = next;
+  }
+
+  // One line above the screen. `action` is [label, handler] for a decision the reader must take.
+  function say(text, action) {
+    notice.hidden = !text;
+    noticeText.textContent = text ?? "";
+    noticeAction.hidden = !action;
+    if (action) {
+      noticeAction.textContent = action[0];
+      noticeAction.onclick = action[1];
     }
   }
 
-  async function input(body) {
-    try {
-      await api(`api/terminal/${current}/input`, { method: "POST", json: body });
-      text.value = "";
-      error.textContent = "";
-      // The screen changes after the program reads the input; show the next frame once.
-      setTimeout(refresh, 300);
-    } catch (failure) {
-      error.textContent = failure.message;
+  function send(bytes) {
+    if (!canType || state !== "live" || socket?.readyState !== WebSocket.OPEN) return;
+    for (let start = 0; start < bytes.length; start += MAX_FRAME) socket.send(bytes.subarray(start, start + MAX_FRAME));
+  }
+  const sendText = (text) => send(encoder.encode(text));
+  function sendControl(message) {
+    if (state === "live" && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  }
+
+  function updateSizeToggle() {
+    sizeToggle.textContent = hostSize ? "Host size" : "Fit screen";
+    sizeToggle.setAttribute("aria-pressed", String(hostSize));
+    sizeToggle.title = hostSize
+      ? "Showing the pane at its own size, scaled. Tap to resize the pane to this screen."
+      : "The pane is resized to this screen. Tap to keep the pane's own size.";
+  }
+  function toggleSize() {
+    hostSize = !hostSize;
+    remember(hostSize ? "host" : "fit");
+    updateSizeToggle();
+    layout();
+    connect();
+  }
+
+  // Fit mode: the pane follows this screen. Host mode: the screen is scaled to show the pane.
+  function layout() {
+    if (!term || closed) return;
+    if (!hostSize) {
+      delete host.dataset.size;
+      host.style.transform = "";
+      fit.fit();
+      return;
     }
+    host.dataset.size = "host";
+    const screen = host.querySelector(".xterm-screen");
+    if (!screen?.offsetWidth) return;
+    const scale = Math.min(1, stage.clientWidth / screen.offsetWidth, stage.clientHeight / screen.offsetHeight);
+    host.style.transform = `scale(${scale})`;
+  }
+
+  function retryLater(text) {
+    setState("reconnecting");
+    say(text);
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(connect, RETRY_MS[Math.min(retries++, RETRY_MS.length - 1)]);
+  }
+
+  function connect({ takeover = false } = {}) {
+    clearTimeout(retryTimer);
+    const mine = ++generation;
+    socket?.close();
+    socket = null;
+    if (closed || !term || !current) return;
+    setState("connecting");
+    const url = new URL(`api/terminal/${current}/ws`, document.baseURI);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.searchParams.set("client", client);
+    if (takeover) url.searchParams.set("takeover", "true");
+    if (!hostSize) {
+      fit.fit();
+      url.searchParams.set("rows", term.rows);
+      url.searchParams.set("cols", term.cols);
+    }
+    const link = new WebSocket(url);
+    link.binaryType = "arraybuffer";
+    socket = link;
+    // Set when a control message already explained why the stream ended.
+    let explained = false;
+    link.onmessage = (event) => {
+      if (mine !== generation) return;
+      if (typeof event.data !== "string") {
+        term.write(new Uint8Array(event.data));
+        return;
+      }
+      const message = JSON.parse(event.data);
+      switch (message.type) {
+        case "replay":
+          retries = 0;
+          setState("live");
+          say(message.truncated ? "Older scrollback was left out." : null);
+          term.write(REPLAY, () => {
+            if (hostSize) term.resize(message.cols, message.rows);
+            else if (term.rows !== message.rows || term.cols !== message.cols) sendControl({ type: "resize", rows: term.rows, cols: term.cols });
+            layout();
+          });
+          if (!touch) term.focus();
+          break;
+        case "resized":
+          if (hostSize) term.write("", () => { term.resize(message.cols, message.rows); layout(); });
+          break;
+        case "clipboard":
+          navigator.clipboard?.writeText(message.text).catch(() => say("The program copied text, but this browser refused the clipboard."));
+          break;
+        case "busy":
+        case "control_lost":
+          explained = true;
+          setState("elsewhere");
+          say(
+            message.type === "busy" ? "Controlled from another wsx window." : "Control moved to another wsx window.",
+            canType ? ["Take control", () => connect({ takeover: true })] : ["Try again", () => connect()],
+          );
+          break;
+        case "exited":
+          explained = true;
+          setState("exited");
+          say("The program in this session exited.");
+          break;
+        case "revoked":
+          location.reload();
+          break;
+        case "error":
+          explained = true;
+          if (RETRYABLE.has(message.code)) retryLater("wsx is restarting on the host. Reconnecting…");
+          else {
+            setState("failed");
+            say(message.message, ["Try again", () => connect()]);
+          }
+          break;
+      }
+    };
+    link.onclose = () => {
+      if (mine !== generation || closed || explained) return;
+      retryLater("Connection lost. Reconnecting…");
+    };
+  }
+
+  function keyRows() {
+    let repeat = 0;
+    const stop = () => { clearInterval(repeat); repeat = 0; };
+    // preventDefault on pointerdown keeps focus, and the on-screen keyboard, on the terminal.
+    const row = h("div", { class: "terminal-keys", role: "group", "aria-label": "Terminal keys" },
+      KEYS.map(([label, sequence, name]) => h("button", {
+        type: "button", tabIndex: -1, class: "terminal-key", "aria-label": name,
+        onpointerdown: (event) => {
+          event.preventDefault();
+          stop();
+          sendText(sequence);
+          repeat = setInterval(() => sendText(sequence), REPEAT_MS);
+        },
+        onpointerup: stop, onpointerleave: stop, onpointercancel: stop,
+      }, label)));
+    const paste = h("button", {
+      type: "button", tabIndex: -1, class: "terminal-key", "aria-live": "polite",
+      onpointerdown: (event) => event.preventDefault(),
+      onclick: async () => {
+        try {
+          const text = await navigator.clipboard.readText();
+          if (text) term?.paste(text);
+          paste.textContent = "Paste";
+          paste.removeAttribute("data-failed");
+        } catch {
+          // Stays visible until a later paste works; the reader can tap again.
+          paste.textContent = "Paste failed";
+          paste.dataset.failed = "";
+        }
+      },
+    }, "Paste");
+    const drag = { ax: 0, ay: 0, lx: 0, ly: 0 };
+    const pad = h("div", {
+      class: "terminal-pad button", role: "img", "aria-label": "Drag to send arrow keys",
+      onpointerdown: (event) => {
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        Object.assign(drag, { ax: 0, ay: 0, lx: event.clientX, ly: event.clientY });
+      },
+      onpointermove: (event) => {
+        if (!(event.buttons & 1)) return;
+        drag.ax += event.clientX - drag.lx;
+        drag.ay += event.clientY - drag.ly;
+        drag.lx = event.clientX;
+        drag.ly = event.clientY;
+        while (drag.ax >= ARROW_STEP) { sendText("\x1b[C"); drag.ax -= ARROW_STEP; }
+        while (drag.ax <= -ARROW_STEP) { sendText("\x1b[D"); drag.ax += ARROW_STEP; }
+        while (drag.ay >= ARROW_STEP) { sendText("\x1b[B"); drag.ay -= ARROW_STEP; }
+        while (drag.ay <= -ARROW_STEP) { sendText("\x1b[A"); drag.ay += ARROW_STEP; }
+      },
+    }, "← ↑ ↓ →");
+    return h("div", { class: "terminal-controls" }, row,
+      h("div", { class: "terminal-tools" },
+        h("div", {}, typeof navigator.clipboard?.readText === "function" ? paste : null), pad, h("div", { "aria-hidden": "true" })));
+  }
+
+  // Wheel report to a program that tracks the mouse. xterm.js has no public call for it.
+  function sendWheel(direction, clientX, clientY) {
+    const rect = host.getBoundingClientRect();
+    const x = Math.max(0, Math.floor(clientX - rect.left));
+    const y = Math.max(0, Math.floor(clientY - rect.top));
+    term._core?.coreMouseService?.triggerMouseEvent({
+      col: Math.min(term.cols - 1, Math.floor((x / rect.width) * term.cols)),
+      row: Math.min(term.rows - 1, Math.floor((y / rect.height) * term.rows)),
+      x, y, button: 4, action: direction < 0 ? 0 : 1,
+    });
+  }
+
+  const disposers = [];
+  const listen = (target, type, handler, options) => {
+    target.addEventListener(type, handler, options);
+    disposers.push(() => target.removeEventListener(type, handler, options));
+  };
+
+  function touchInput() {
+    const textarea = term.textarea;
+    let composing = false;
+    const isComposing = (event) => composing || event.isComposing || event.keyCode === 229;
+    listen(textarea, "compositionstart", () => { composing = true; });
+    listen(textarea, "compositionend", () => { composing = false; });
+    // iOS: without this xterm.js sends the backspace twice. Composition events are
+    // left alone so Korean and other IMEs can edit their preedit text.
+    listen(textarea, "keydown", (event) => {
+      if (isComposing(event)) return;
+      if (event.key === "Backspace" || event.keyCode === 8) event.stopPropagation();
+    }, { capture: true });
+    listen(textarea, "beforeinput", (event) => {
+      if (isComposing(event) || event.inputType !== "deleteContentBackward") return;
+      event.preventDefault();
+      sendText("\x7f");
+    });
+    // Keep the on-screen keyboard open unless another field took the focus.
+    listen(textarea, "blur", () => setTimeout(() => {
+      if (closed) return;
+      const active = document.activeElement;
+      if (active && active !== textarea && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) return;
+      textarea.focus();
+    }, 50));
+    listen(host, "click", () => term.focus());
+
+    let lastY = 0;
+    let moved = 0;
+    listen(host, "touchstart", (event) => { lastY = event.touches[0].clientY; moved = 0; }, { passive: true, capture: true });
+    // Captured before xterm.js sees it, so its own touch scrolling does not run as well.
+    listen(host, "touchmove", (event) => {
+      const point = event.touches[0];
+      moved += lastY - point.clientY;
+      lastY = point.clientY;
+      event.preventDefault();
+      event.stopPropagation();
+      while (Math.abs(moved) >= TOUCH_SCROLL_STEP) {
+        const direction = moved > 0 ? 1 : -1;
+        if (term.modes.mouseTrackingMode !== "none") sendWheel(direction, point.clientX, point.clientY);
+        else if (term.buffer.active.type === "alternate") sendText(direction < 0 ? "\x1b[A" : "\x1b[B");
+        else term.scrollLines(direction);
+        moved -= direction * TOUCH_SCROLL_STEP;
+      }
+    }, { passive: false, capture: true });
+  }
+
+  function viewportChanged() {
+    const viewport = window.visualViewport;
+    // The page is as tall as what is visible, so the key row sits on the on-screen keyboard.
+    document.documentElement.style.setProperty("--viewport-height", `${viewport.height}px`);
+    window.scrollTo(0, 0);
+    requestAnimationFrame(layout);
+  }
+
+  async function open() {
+    try {
+      await loadLibrary();
+    } catch (failure) {
+      if (closed) return;
+      setState("failed");
+      say(failure.message, ["Try again", open]);
+      return;
+    }
+    if (closed) return;
+    const mono = getComputedStyle(root).getPropertyValue("--font-mono").trim() || "monospace";
+    term = new globalThis.Terminal({
+      cursorBlink: true, fontSize: touch ? FONT_PHONE : FONT_DESKTOP, fontFamily: mono,
+      theme: SCREEN, scrollback: SCROLLBACK, allowProposedApi: true, disableStdin: !canType,
+    });
+    fit = new globalThis.FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(host);
+    silenceQueries(term);
+    for (const [name, value] of [["autocomplete", "off"], ["autocorrect", "off"], ["autocapitalize", "off"], ["spellcheck", "false"]]) {
+      term.textarea.setAttribute(name, value);
+    }
+    term.textarea.setAttribute("aria-label", "Terminal input");
+    if (touch && canType) touchInput();
+    term.onData(sendText);
+    term.onBinary((data) => send(Uint8Array.from(data, (character) => character.charCodeAt(0))));
+    // One resize after the size settles: each one makes wsxd send a new replay.
+    let resizing = 0;
+    term.onResize(() => {
+      clearTimeout(resizing);
+      resizing = setTimeout(() => { if (!hostSize && !closed) sendControl({ type: "resize", rows: term.rows, cols: term.cols }); }, 80);
+    });
+    disposers.push(() => clearTimeout(resizing));
+    const observer = new ResizeObserver(() => requestAnimationFrame(layout));
+    observer.observe(stage);
+    disposers.push(() => observer.disconnect());
+    if (window.visualViewport) {
+      listen(window.visualViewport, "resize", viewportChanged);
+      listen(window.visualViewport, "scroll", viewportChanged);
+      viewportChanged();
+    }
+    // A phone that wakes up or regains its network reconnects at once.
+    listen(window, "online", () => { if (state === "reconnecting") connect(); });
+    listen(document, "visibilitychange", () => { if (!document.hidden && state === "reconnecting") connect(); });
+    connect();
   }
 
   function select() {
-    if (!app.sessions.some((session) => session.id === current)) current = app.sessions[0]?.id ?? null;
+    if (!app.sessions.some((session) => session.id === current)) {
+      const first = app.sessions[0]?.id ?? null;
+      if (first !== current) {
+        current = first;
+        if (term) connect();
+      }
+    }
     const session = app.sessions.find((candidate) => candidate.id === current);
     if (!session) {
-      fill(picker, h("p", { class: "muted" }, "No session is open in this project."));
-      screen.textContent = "";
-      controls.hidden = true;
+      fill(picker, h("span", { class: "muted" }, "No session is open in this project."));
+      fill(badge);
       return;
     }
-    controls.hidden = false;
-    fill(picker,
-      h("div", { class: "grow" }, sessionSelect(app.sessions, current, (id) => app.navigate(`#/terminal/${id}`))),
-      stateLabel(session),
-      h("button", { type: "button", onclick: refresh }, "Refresh"),
-    );
+    fill(picker, sessionSelect(app.sessions, current, (id) => app.navigate(`#/terminal/${id}`)));
+    fill(badge, stateLabel(session));
   }
+
+  updateSizeToggle();
   select();
-  refresh();
+  open();
 
   return {
-    close: () => { closed = true; },
-    onWorkspace: () => { select(); refresh(); },
-    onHistory: (id) => { if (id === current) refresh(); },
-    onExchange: (exchange) => { if (exchange.session_id === current) refresh(); },
+    close: () => {
+      closed = true;
+      generation += 1;
+      clearTimeout(retryTimer);
+      socket?.close();
+      for (const dispose of disposers) dispose();
+      term?.dispose();
+      main.classList.remove("panel-terminal");
+      delete document.body.dataset.view;
+      document.documentElement.style.removeProperty("--viewport-height");
+    },
+    onWorkspace: () => {
+      select();
+      if (state === "reconnecting") connect();
+    },
   };
 }
