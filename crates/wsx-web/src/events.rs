@@ -13,6 +13,8 @@ use wsx_core::runtime::{AgentState, Request, Response};
 
 // Below the runtime client's 5 s read timeout.
 const POLL_MS: u64 = 2_000;
+// While an agent works and a page is open: a new tool line shows within about a second.
+const WORKING_POLL_MS: u64 = 800;
 
 /// A named server-sent event with a JSON body.
 #[derive(Clone)]
@@ -41,13 +43,14 @@ fn observe(app: Arc<App>) {
     let mut first = true;
     let mut available = true;
     let mut states: HashMap<u64, AgentState> = HashMap::new();
+    let mut watching = false;
     let mut stamps: HashMap<u64, Option<(std::path::PathBuf, u64, i64)>> = HashMap::new();
     let mut exchange_revisions: HashMap<u64, u64> = HashMap::new();
     let mut workspace = String::new();
     loop {
         let changed = match app.client.call(&Request::Poll {
             after_revision: revision,
-            timeout_ms: POLL_MS,
+            timeout_ms: if watching { WORKING_POLL_MS } else { POLL_MS },
             tui: None,
         }) {
             Ok(Response::Events {
@@ -114,6 +117,12 @@ fn observe(app: Arc<App>) {
                 .map_or(AgentState::Unknown, |agent| agent.state);
             let previous = states.insert(session, state);
             let mut history_changed = previous.is_some_and(|previous| previous != state);
+            if previous != Some(state) {
+                app.states
+                    .lock()
+                    .unwrap_or_else(|lock| lock.into_inner())
+                    .insert(session, (state, crate::devices::now_unix_ms()));
+            }
             // A transition is the only trigger: the first sight of a session, or a
             // server restart, never notifies.
             if history_changed && !first {
@@ -138,6 +147,12 @@ fn observe(app: Arc<App>) {
             }
         }
         states.retain(|session, _| targets.iter().any(|target| target.session_id.0 == *session));
+        app.states
+            .lock()
+            .unwrap_or_else(|lock| lock.into_inner())
+            .retain(|session, _| states.contains_key(session));
+        watching = app.events.receiver_count() > 0
+            && states.values().any(|state| *state == AgentState::Working);
         stamps.retain(|session, _| states.contains_key(session));
         first = false;
     }

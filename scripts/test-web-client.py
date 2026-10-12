@@ -46,13 +46,18 @@ def paint():
  rows = os.get_terminal_size().lines
  sys.stdout.write('\x1b[?2004h\x1b]2;✳ fixture\x07\x1b[2J\x1b['+str(max(1,rows-2))+';1H❯ '+draft+'\x1b[J')
  sys.stdout.flush()
-def record(kind, text):
+def record(kind, content):
  global leaf, sequence
  sequence += 1; entry = kind+'-'+str(sequence)
+ stamp = time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime()) + '.%03dZ' % (time.time() % 1 * 1000)
  with history.open('a') as out:
-  out.write(json.dumps({'type':kind,'uuid':entry,'parentUuid':leaf,'sessionId':'fixture',
-    'message':{'role':kind,'content':text}})+'\n')
+  out.write(json.dumps({'type':kind,'uuid':entry,'parentUuid':leaf,'sessionId':'fixture','timestamp':stamp,
+    'message':{'role':kind,'content':content}})+'\n')
  leaf = entry
+def gate(name):
+ # The test opens each gate, so it can read the timeline between two records.
+ while not trace.with_suffix('.'+name).exists(): time.sleep(0.02)
+ trace.with_suffix('.'+name).unlink()
 def turn(text):
  with trace.open('a') as out: out.write(json.dumps({'received':text})+'\n')
  record('user', text)
@@ -64,6 +69,15 @@ def turn(text):
   record('assistant', 'Saved the chart to `out/chart.png`.')
  elif 'leak' in body:
   record('assistant', 'See out/leak.png and ../outside.png and '+sys.argv[5]+' and .env and out/api-token.txt and .git/config.')
+ elif 'use tool' in body:
+  # A real Claude turn in its saved form: thinking and a tool call, the tool result, the answer.
+  record('assistant', [{'type':'thinking','thinking':'private reasoning','signature':'x'},
+    {'type':'tool_use','id':'call-'+str(sequence),'name':'Bash','input':{'command':'ls -la\nrm -rf x','description':'List the files\x07'}}])
+  call = 'call-'+str(sequence-1)
+  gate('result')
+  record('user', [{'type':'tool_result','tool_use_id':call,'is_error':'broken' in body,'content':'tool output text'}])
+  gate('answer')
+  record('assistant', 'Listed the files.')
  elif 'ask me' in body:
   report('blocked'); return
  elif 'fail' in body:
@@ -827,8 +841,10 @@ capabilities = ["terminal_view"]
         assert first['sessions'][0]['project'] == {'id': projects['project'], 'name': 'project'}
         assert first['sessions'][0]['agent']['provider'] == 'claude'
         chat = '/api/chat/%d' % sessions['owner']
-        status, history = owner.request('GET', chat + '/history')
-        assert status == 200 and history['messages'] == [] and history['exchange'] is None
+        status, history = owner.request('GET', chat + '/timeline')
+        assert status == 200 and history['items'] == [] and history['exchange'] is None
+        assert history['working'] is None and history['queue'] == [] and history['status'] == 'history_unreadable'
+        assert owner.request('GET', chat + '/history')[0] == 404  # replaced by the timeline
         status, exchange = owner.request('POST', chat + '/send', {'text': 'hello from the phone\r\nsecond line'})
         assert status == 200, exchange
         # Truthful evidence: a PTY write is reported as a PTY write, never as acceptance.
@@ -840,12 +856,15 @@ capabilities = ["terminal_view"]
         events.expect('exchange', lambda data: data['state'] == 'done_observed')
 
         def messages(site, session):
-            return site.request('GET', '/api/chat/%d/history' % session)[1]
+            """The timeline, with its user and assistant items also listed as `messages`."""
+            data = site.request('GET', '/api/chat/%d/timeline' % session)[1]
+            data['messages'] = [{'role': item['kind'], 'text': item['text'], 'attachments': item['attachments']}
+                                for item in data.get('items', []) if item['kind'] in ('user', 'assistant')]
+            return data
 
         history = wait(lambda: (lambda data: data if len(data['messages']) == 2 else None)(messages(owner, sessions['owner'])), 'history')
         assert [(m['role'], m['text']) for m in history['messages']] == [
             ('user', 'hello from the phone\nsecond line'), ('assistant', 'echo: hello from the phone')]
-        assert history['source'] == 'provider_native_persisted_history'
         # A done pane is lifecycle evidence only; it must not be shown as confirmed.
         assert history['exchange']['evidence'] == 'pane_lifecycle' and 'not confirmed' in history['exchange']['delivery']
         # The reply exists only in the native transcript, never on the fixture's screen.
@@ -915,6 +934,48 @@ capabilities = ["terminal_view"]
         history = wait(lambda: (lambda data: data if len(data['messages']) == 10 else None)(messages(owner, sessions['owner'])), 'leak history')
         assert history['messages'][9]['attachments'] == [], history['messages'][9]
         assert hashlib.sha256(outside.read_bytes()).hexdigest() not in json.dumps(history)
+
+        # --- Timeline: the saved conversation gains a tool call, then its result, then the answer.
+        def timeline():
+            return owner.request('GET', chat + '/timeline')[1]
+
+        def open_gate(name):
+            (work / ('owner.' + name)).write_text('')
+
+        for broken in (False, True):
+            settle('owner')
+            started = time.time() * 1000
+            # The per-device message budget (20 a minute) may be spent by now: wait for it.
+            status, sent = wait(lambda: (lambda answer: answer if answer[0] != 429 else None)(
+                owner.request('POST', chat + '/send', {'text': 'use tool' + (' broken' if broken else '')})), 'message budget', timeout=20)
+            assert status == 200, sent
+            running = wait(lambda: (lambda data: data if data['items'] and data['items'][-1]['kind'] == 'tool' else None)(timeline()), 'tool call in the timeline')
+            assert [item['kind'] for item in running['items'][-3:]] == ['user', 'thinking', 'tool'], running['items'][-3:]
+            step = running['items'][-1]
+            # The title is one clean line from the input; the input and the thinking text are never sent.
+            assert step['tool'] == {'name': 'Bash', 'title': 'List the files', 'status': 'running'} and step['text'] is None
+            assert started - 2000 <= step['at_unix_ms'] <= time.time() * 1000 + 2000, step
+            assert 'private reasoning' not in json.dumps(running) and 'rm -rf' not in json.dumps(running)
+            assert running['working']['activity'] == 'List the files'
+            assert started - 2000 <= running['working']['since_unix_ms'] <= time.time() * 1000, running['working']
+            # The change reaches the page within about a second of the write.
+            del events.seen[:]
+            opened = time.monotonic()
+            open_gate('result')
+            events.expect('history', lambda data: data['session_id'] == sessions['owner'], timeout=3)
+            assert time.monotonic() - opened < 1.6, time.monotonic() - opened
+            finished = timeline()
+            assert finished['items'][-1]['tool']['status'] == ('error' if broken else 'ok'), finished['items'][-1]
+            assert 'tool output text' not in json.dumps(finished)
+            assert finished['working']['activity'] == 'Working'
+            # One start time for the whole turn (a read just ahead of the observer may differ by a moment).
+            assert abs(finished['working']['since_unix_ms'] - running['working']['since_unix_ms']) < 1000, (finished['working'], running['working'])
+            open_gate('answer')
+            answered = wait(lambda: (lambda data: data if data['items'][-1]['kind'] == 'assistant' and data['working'] is None else None)(timeline()), 'answer and done')
+            assert answered['items'][-1]['text'] == 'Listed the files.' and answered['items'][-1]['tool'] is None
+            assert answered['items'][-2]['id'] == step['id']  # ids are stable between reads
+        settle('owner')
+        ok('timeline: tool call running, its result ok or failed, the answer; thinking and tool content never sent; working follows wsxd; change signalled within a second')
         assert not any(item['name'] in ('.env', 'api-token.txt', 'config') for item in
                        (work / 'state/wsx/web/owner/media/index.json').exists() and json.loads((work / 'state/wsx/web/owner/media/index.json').read_text()) or [])
         ok('media: upload, content hash URL, immutable cache, range, sniff allowlist, prompt attachment, agent file, no symlink or traversal')
@@ -1134,8 +1195,8 @@ capabilities = ["terminal_view"]
             status, body = family.request(method, target, body)
             assert status == 403 and body['error']['code'] == 'capability_denied', (target, status, body)
         # The other project's session does not exist for this site, in any route.
-        for target in ('/api/chat/%d/history', '/api/chat/%d/send', '/api/chat/%d/cancel'):
-            method = 'GET' if target.endswith('history') else 'POST'
+        for target in ('/api/chat/%d/timeline', '/api/chat/%d/send', '/api/chat/%d/cancel'):
+            method = 'GET' if target.endswith('timeline') else 'POST'
             assert family.request(method, target % sessions['owner'], {'text': 'x'} if method == 'POST' else None)[0] == 404
         before = len(traces('owner'))
         status, sent = family.request('POST', '/api/chat/%d/send' % sessions['family'], {'text': 'build me a page'})
@@ -1273,7 +1334,7 @@ capabilities = ["terminal_view"]
         assert call('shutdown')['type'] == 'ack'
         daemon.wait(timeout=5)
         family_events.expect('daemon', lambda data: data['available'] is False, timeout=10)
-        status, body = family.request('GET', '/api/chat/%d/history' % sessions['family'])
+        status, body = family.request('GET', '/api/chat/%d/timeline' % sessions['family'])
         assert status == 503 and body['error']['code'] == 'daemon_unavailable'
         assert family.request('GET', '/api/session')[0] == 200
         time.sleep(1.5)

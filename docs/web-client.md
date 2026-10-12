@@ -80,12 +80,32 @@ The default is a site at the root of its own hostname (a Tailscale Service) or p
 
 - Sending uses the exchange broker (`docs/agent-orchestration.md`): one exchange per pane, continued round by round. For an idle or done Claude the draft-stash variant is used, so the owner's unsent input is not merged into the message.
 - The page shows the broker's evidence in plain words. `pty_delivery` is "typed into the agent's terminal; the agent has not confirmed it". Only `request_bound` is shown as confirmed.
-- History is the provider's own saved conversation (`wsx_core::integration::memory`): the last 80 messages, at most 256 KiB. Terminal output is never read into chat. A sent message that is not in the saved conversation yet is shown as pending.
+- The transcript is the provider's own saved conversation (`wsx_core::integration::memory`). Terminal output is never read into chat. A sent message that is not in the saved conversation yet is shown as pending.
+
+### Timeline
+
+`GET api/chat/<session>/timeline` answers `{session, status, truncated, checkpoint, items, exchange, queue, working}`.
+
+| Item field | Content |
+|---|---|
+| `id` | stable between reads: the record id, or the tool call id |
+| `kind` | `user`, `assistant`, `tool`, `thinking` |
+| `at_unix_ms` | the record's own time, when it has one |
+| `text`, `attachments` | for `user` and `assistant` items |
+| `tool` | `{name, title, status}` for a `tool` item; `status` is `running`, `ok` or `error` |
+
+- One parser, two projections: `Reader::read` (messages, used by `wsx agent context`) and `Reader::read_timeline` come from the same parsed records. Bounds: the last 1 MiB of the file, 4096 records, then the newest 400 items and 256 KiB.
+- `title` is one line from the call's input: its `description`, else `command`, else `file_path` or `path`, else the tool name, at most 120 characters. The input itself, the tool result and the text of a thinking part are never sent. A `thinking` item says only that thinking happened.
+- A call with no result is `running` only in the last turn (after the newest message a person wrote). An older call without a result is `ok`.
+- Records are untrusted: ids and names are clipped and control characters removed.
+- Formats read (checked against real sessions on 2026-10-12): Claude `tool_use`, `tool_result`, `thinking` parts; Pi and omp `toolCall`, `thinking` parts and `toolResult` messages; Codex `function_call`, `custom_tool_call`, their `_output` items and `reasoning`. A Codex result has no error flag, so a Codex call is never `error`.
+- `working` is `null`, or `{since_unix_ms, activity}`. It is set only while wsxd reports the agent as working; the transcript never decides that. `activity` is the title of the running tool, else "Thinking", else "Working". `since_unix_ms` is when this server saw the state begin.
+- The `history` event is the change signal. While an agent works and a page is open, the server compares transcript stamps about every 0.8 seconds, so a new tool line shows within about a second.
 - A blocked agent shows a provider dialog. The chat refuses to send; the answer is given in the terminal panel or on the host.
 
 ## Live updates
 
-A page opens one `EventSource` (`api/events`) and has no polling timer. Events: `workspace` (session list), `history` (a session's saved conversation changed), `exchange`, `daemon`, `resync`, `revoked`. The server follows `wsxd` with its long-poll. While a page is connected it also compares each transcript file's size and modification time about every two seconds.
+A page opens one `EventSource` (`api/events`) and has no polling timer. Events: `workspace` (projects and session list), `history` (a session's saved conversation changed), `exchange`, `daemon`, `resync`, `revoked`. The server follows `wsxd` with its long-poll. While a page is connected it also compares each transcript file's size and modification time about every two seconds.
 
 ## Media
 

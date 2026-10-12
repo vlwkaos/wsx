@@ -14,6 +14,10 @@ use std::{
 const MAX_READ: u64 = 1024 * 1024;
 const MAX_FILES: usize = 2048;
 const MAX_RECORDS: usize = 4096;
+const MAX_TOOL_TITLE: usize = 120;
+const MAX_TOOL_NAME: usize = 64;
+const MAX_ITEM_ID: usize = 96;
+const MAX_TOOL_INPUT: usize = 64 * 1024;
 
 #[derive(Debug, Serialize)]
 pub struct Message {
@@ -43,6 +47,56 @@ impl Memory {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemKind {
+    User,
+    Assistant,
+    Tool,
+    Thinking,
+    Summary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolStatus {
+    Running,
+    Ok,
+    Error,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ToolCall {
+    pub name: String,
+    /// One line built from the call's input, never the input itself.
+    pub title: String,
+    pub status: ToolStatus,
+}
+
+/// One entry of the typed timeline. A thinking item says only that thinking happened.
+#[derive(Debug, Serialize)]
+pub struct Item {
+    pub id: String,
+    pub kind: ItemKind,
+    pub at_unix_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<ToolCall>,
+}
+
+/// The same conversation as `Memory`, with tool calls and thinking kept as items.
+#[derive(Debug, Serialize)]
+pub struct Timeline {
+    pub source: &'static str,
+    pub status: &'static str,
+    pub path: Option<PathBuf>,
+    pub items: Vec<Item>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<String>,
+    pub truncated: bool,
+}
+
 /// Reuse one bounded store inventory per provider during multi-agent discovery.
 #[derive(Default)]
 pub struct Reader {
@@ -56,16 +110,53 @@ impl Reader {
         messages: usize,
         bytes: usize,
     ) -> Memory {
+        match self.load(provider, reference, bytes) {
+            Ok(loaded) => messages_of(loaded, messages, bytes),
+            Err((status, path)) => {
+                let mut memory = Memory::unavailable(status);
+                memory.truncated = status == "output_limit";
+                memory.path = path;
+                memory
+            }
+        }
+    }
+
+    /// The typed projection of the same parsed records: messages, tool calls with
+    /// their outcome, and thinking markers. `items` and `bytes` bound the newest part.
+    pub fn read_timeline(
+        &mut self,
+        provider: &str,
+        reference: Option<&AgentSessionRef>,
+        items: usize,
+        bytes: usize,
+    ) -> Timeline {
+        match self.load(provider, reference, bytes) {
+            Ok(loaded) => timeline_of(loaded, items, bytes),
+            Err((status, path)) => Timeline {
+                source: "provider_native_persisted_history",
+                status,
+                path,
+                items: Vec::new(),
+                checkpoint: None,
+                truncated: status == "output_limit",
+            },
+        }
+    }
+
+    fn load(
+        &mut self,
+        provider: &str,
+        reference: Option<&AgentSessionRef>,
+        bytes: usize,
+    ) -> Result<Loaded, (&'static str, Option<PathBuf>)> {
         if bytes == 0 {
-            let mut memory = Memory::unavailable("output_limit");
-            memory.truncated = true;
-            return memory;
+            return Err(("output_limit", None));
         }
         if !matches!(provider, "claude" | "pi" | "omp" | "codex") {
-            return Memory::unavailable("unsupported_provider");
+            return Err(("unsupported_provider", None));
         }
         let Some(reference) = reference else {
-            return Memory::unavailable("identity_unavailable");
+            return Err(("identity_unavailable", None));
         };
         let explicit = reference.transcript_path.as_deref().or_else(|| {
             (reference.kind == AgentSessionRefKind::Path).then(|| Path::new(&reference.value))
@@ -109,22 +200,15 @@ impl Reader {
                 })
                 .collect();
             if inventory.1 {
-                return Memory::unavailable("inventory_limit");
+                return Err(("inventory_limit", None));
             }
             match candidates.as_slice() {
                 [path] => (*path).clone(),
-                [] => return Memory::unavailable("history_not_found"),
-                _ => return Memory::unavailable("ambiguous_history"),
+                [] => return Err(("history_not_found", None)),
+                _ => return Err(("ambiguous_history", None)),
             }
         };
-        match read_file(provider, reference, &path, messages, bytes) {
-            Ok(memory) => memory,
-            Err(status) => {
-                let mut memory = Memory::unavailable(status);
-                memory.path = Some(path);
-                memory
-            }
-        }
+        read_file(provider, reference, &path).map_err(|status| (status, Some(path)))
     }
 }
 
@@ -161,13 +245,20 @@ fn inventory_files(
     }
 }
 
+/// The parsed, bounded conversation both projections start from: the records
+/// on the path from the newest one back to the root, oldest first.
+struct Loaded {
+    path: PathBuf,
+    nodes: Vec<Node>,
+    truncated: bool,
+    malformed: bool,
+}
+
 fn read_file(
     provider: &str,
     reference: &AgentSessionRef,
     path: &Path,
-    count: usize,
-    budget: usize,
-) -> Result<Memory, &'static str> {
+) -> Result<Loaded, &'static str> {
     if path.extension().is_none_or(|v| v != "jsonl") {
         return Err("unsupported_format");
     }
@@ -232,38 +323,54 @@ fn read_file(
             truncated = true
         }
     }
-    let mut selected = Vec::new();
-    if provider == "codex" {
-        selected = nodes.iter().collect();
-    } else if let Some(last) = nodes.last() {
-        let index: HashMap<_, _> = nodes
-            .iter()
-            .filter_map(|n| n.id.as_deref().map(|id| (id, n)))
-            .collect();
-        let mut current = Some(last);
-        let mut seen = HashSet::new();
-        while let Some(node) = current {
-            if let Some(id) = node.id.as_deref() {
-                if !seen.insert(id) {
-                    truncated = true;
-                    break;
+    if provider != "codex" {
+        // Keep only the branch that ends at the newest record.
+        let mut keep = vec![false; nodes.len()];
+        if !nodes.is_empty() {
+            let index: HashMap<_, _> = nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(position, node)| node.id.as_deref().map(|id| (id, position)))
+                .collect();
+            let mut current = Some(nodes.len() - 1);
+            let mut seen = HashSet::new();
+            while let Some(position) = current {
+                let node = &nodes[position];
+                if let Some(id) = node.id.as_deref() {
+                    if !seen.insert(id) {
+                        truncated = true;
+                        break;
+                    }
                 }
+                keep[position] = true;
+                current = node.parent.as_deref().and_then(|id| {
+                    let next = index.get(id).copied();
+                    if next.is_none() {
+                        truncated = true
+                    }
+                    next
+                });
             }
-            selected.push(node);
-            current = node.parent.as_deref().and_then(|id| {
-                let next = index.get(id).copied();
-                if next.is_none() {
-                    truncated = true
-                }
-                next
-            });
         }
-        selected.reverse();
+        let mut kept = keep.into_iter();
+        nodes.retain(|_| kept.next().unwrap_or(false));
     }
-    let visible: Vec<_> = selected
-        .into_iter()
-        .filter(|node| !node.text.is_empty())
-        .collect();
+    Ok(Loaded {
+        path: path.into(),
+        nodes,
+        truncated,
+        malformed,
+    })
+}
+
+fn messages_of(loaded: Loaded, count: usize, budget: usize) -> Memory {
+    let Loaded {
+        path,
+        nodes,
+        mut truncated,
+        malformed,
+    } = loaded;
+    let visible: Vec<_> = nodes.iter().filter(|node| !node.text.is_empty()).collect();
     // ^ Keep the latest persisted compaction even when it falls outside the
     // recent-message tail. Split one fixed budget, never replay full history.
     let summary = visible.iter().rev().find(|node| node.role == "summary");
@@ -296,18 +403,147 @@ fn read_file(
     }
     truncated |= recent.len() > count || malformed;
     output.reverse();
-    Ok(Memory {
+    Memory {
         source: "provider_native_persisted_history",
         status: if output.is_empty() && checkpoint.is_none() {
             "no_readable_messages"
         } else {
             "available"
         },
-        path: Some(path.into()),
+        path: Some(path),
         messages: output,
         checkpoint,
         truncated,
-    })
+    }
+}
+
+fn timeline_of(loaded: Loaded, count: usize, budget: usize) -> Timeline {
+    let Loaded {
+        path,
+        nodes,
+        mut truncated,
+        malformed,
+    } = loaded;
+    // Outcome of each call, and where the last turn starts: at the newest message
+    // a person wrote. A call without a result is running only inside that turn.
+    let mut results: HashMap<&str, bool> = HashMap::new();
+    let mut last_turn = 0;
+    for (position, node) in nodes.iter().enumerate() {
+        for step in &node.steps {
+            if let Step::Result { call, error } = step {
+                results.insert(call, *error);
+            }
+        }
+        if node.role == "user" && !node.text.is_empty() && !node.meta {
+            last_turn = position;
+        }
+    }
+    let summary = nodes
+        .iter()
+        .rev()
+        .find(|node| node.role == "summary" && !node.text.is_empty());
+    let checkpoint = summary.and_then(|node| {
+        let text = clip(&node.text, budget / 2);
+        truncated |= text.len() < node.text.len();
+        (!text.is_empty()).then_some(text)
+    });
+    let mut remaining = budget - checkpoint.as_ref().map_or(0, String::len);
+    let mut items = Vec::new();
+    'nodes: for (position, node) in nodes.iter().enumerate().rev() {
+        if node.role == "summary" {
+            continue;
+        }
+        let name = |suffix: String| {
+            let id = node.id.as_deref().map_or_else(
+                || format!("r{position}{suffix}"),
+                |id| format!("{}{suffix}", clean(id, MAX_ITEM_ID)),
+            );
+            clean(&id, MAX_ITEM_ID + 8)
+        };
+        // Newest first here, so a record's steps go in before its text.
+        for (index, step) in node.steps.iter().enumerate().rev() {
+            let (kind, id, tool) = match step {
+                Step::Result { .. } => continue,
+                Step::Thinking => (ItemKind::Thinking, name(format!(":t{index}")), None),
+                Step::Call { id, name, title } => {
+                    let status = match results.get(id.as_str()) {
+                        Some(true) => ToolStatus::Error,
+                        Some(false) => ToolStatus::Ok,
+                        None if position >= last_turn => ToolStatus::Running,
+                        None => ToolStatus::Ok,
+                    };
+                    let tool = ToolCall {
+                        name: name.clone(),
+                        title: title.clone(),
+                        status,
+                    };
+                    (ItemKind::Tool, clean(id, MAX_ITEM_ID), Some(tool))
+                }
+            };
+            let cost = tool.as_ref().map_or(8, |tool| tool.title.len() + 8);
+            if items.len() == count || remaining < cost {
+                truncated = true;
+                break 'nodes;
+            }
+            remaining -= cost;
+            items.push(Item {
+                id,
+                kind,
+                at_unix_ms: node.at_unix_ms,
+                text: None,
+                tool,
+            });
+        }
+        let kind = match node.role.as_str() {
+            "user" => ItemKind::User,
+            "assistant" => ItemKind::Assistant,
+            _ => continue,
+        };
+        if node.text.is_empty() || node.meta {
+            continue;
+        }
+        if items.len() == count || remaining == 0 {
+            truncated = true;
+            break;
+        }
+        let text = clip(&node.text, remaining);
+        truncated |= text.len() < node.text.len();
+        remaining -= text.len();
+        items.push(Item {
+            id: name(String::new()),
+            kind,
+            at_unix_ms: node.at_unix_ms,
+            text: Some(text),
+            tool: None,
+        });
+    }
+    items.reverse();
+    Timeline {
+        source: "provider_native_persisted_history",
+        status: if items.is_empty() && checkpoint.is_none() {
+            "no_readable_messages"
+        } else {
+            "available"
+        },
+        path: Some(path),
+        items,
+        checkpoint,
+        truncated: truncated || malformed,
+    }
+}
+
+/// What a record did besides saying something.
+enum Step {
+    Call {
+        id: String,
+        name: String,
+        title: String,
+    },
+    Result {
+        call: String,
+        error: bool,
+    },
+    Thinking,
 }
 
 struct Node {
@@ -315,6 +551,10 @@ struct Node {
     parent: Option<String>,
     role: String,
     text: String,
+    at_unix_ms: Option<u64>,
+    /// A record the provider wrote for itself in the person's name.
+    meta: bool,
+    steps: Vec<Step>,
 }
 fn node(provider: &str, record: &Value) -> Option<Node> {
     let kind = record.get("type")?.as_str()?;
@@ -334,10 +574,16 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
         message.get("role").and_then(Value::as_str).unwrap_or(kind)
     };
     let visible = matches!(role, "user" | "assistant" | "summary");
+    let steps = if summary {
+        Vec::new()
+    } else {
+        steps(provider, role, message)
+    };
     if provider == "codex"
         && !summary
         && !(kind == "response_item"
-            && message.get("type").and_then(Value::as_str) == Some("message"))
+            && (message.get("type").and_then(Value::as_str) == Some("message")
+                || !steps.is_empty()))
     {
         return None;
     }
@@ -365,15 +611,156 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
     if provider != "codex" && record.get(key).and_then(Value::as_str).is_none() {
         return None;
     }
+    // A codex record has no id of its own; its payload does.
+    let id = record.get(key).or_else(|| message.get("id"));
     Some(Node {
-        id: record.get(key).and_then(Value::as_str).map(str::to_owned),
+        id: id.and_then(Value::as_str).map(str::to_owned),
         parent: record
             .get(parent)
             .and_then(Value::as_str)
             .map(str::to_owned),
         role: role.into(),
         text,
+        at_unix_ms: message
+            .get("timestamp")
+            .and_then(Value::as_u64)
+            .or_else(|| unix_ms(record.get("timestamp")?.as_str()?)),
+        meta: record.get("isMeta").and_then(Value::as_bool) == Some(true),
+        steps,
     })
+}
+
+// ^ Record shapes read from real sessions on 2026-10-12 (docs/web-client.md "Timeline"):
+// claude `tool_use`/`tool_result`/`thinking` parts, pi and omp `toolCall`/`thinking`
+// parts and `toolResult` messages, codex `function_call`, `custom_tool_call`, their
+// `_output` items and `reasoning`.
+fn steps(provider: &str, role: &str, message: &Value) -> Vec<Step> {
+    let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
+    let call = |id: Option<String>, name: Option<String>, input: Option<&Value>| {
+        let name = clean(name.as_deref().unwrap_or("tool"), MAX_TOOL_NAME);
+        Some(Step::Call {
+            id: id?,
+            title: title(&name, input),
+            name,
+        })
+    };
+    if provider == "codex" {
+        let step = match message.get("type").and_then(Value::as_str) {
+            Some("function_call") => {
+                // The arguments are a JSON document in a string.
+                let input = message
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .filter(|arguments| arguments.len() <= MAX_TOOL_INPUT)
+                    .and_then(|arguments| serde_json::from_str::<Value>(arguments).ok());
+                call(
+                    text(message, "call_id"),
+                    text(message, "name"),
+                    input.as_ref(),
+                )
+            }
+            Some("custom_tool_call") => call(
+                text(message, "call_id"),
+                text(message, "name"),
+                message.get("input"),
+            ),
+            Some("function_call_output" | "custom_tool_call_output") => {
+                text(message, "call_id").map(|call| Step::Result { call, error: false })
+            }
+            Some("reasoning") => Some(Step::Thinking),
+            _ => None,
+        };
+        return step.into_iter().collect();
+    }
+    if role == "toolResult" {
+        let error = message.get("isError").and_then(Value::as_bool) == Some(true);
+        return text(message, "toolCallId")
+            .map(|call| Step::Result { call, error })
+            .into_iter()
+            .collect();
+    }
+    let Some(Value::Array(parts)) = message.get("content") else {
+        return Vec::new();
+    };
+    parts
+        .iter()
+        .filter_map(|part| match part.get("type").and_then(Value::as_str)? {
+            "thinking" => Some(Step::Thinking),
+            "tool_use" => call(text(part, "id"), text(part, "name"), part.get("input")),
+            "toolCall" => call(text(part, "id"), text(part, "name"), part.get("arguments")),
+            "tool_result" => Some(Step::Result {
+                call: text(part, "tool_use_id")?,
+                error: part.get("is_error").and_then(Value::as_bool) == Some(true),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// One line that says what a call does: its description, else its command, else
+/// the file it names, else the tool name.
+fn title(name: &str, input: Option<&Value>) -> String {
+    let line = match input {
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(Value::Object(fields)) => ["description", "command", "file_path", "path"]
+            .iter()
+            .find_map(|key| match fields.get(*key)? {
+                Value::String(text) => Some(text.clone()),
+                Value::Array(words) => Some(
+                    words
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
+                _ => None,
+            }),
+        _ => None,
+    };
+    let line = line.unwrap_or_default();
+    let line = clean(line.trim().lines().next().unwrap_or(""), MAX_TOOL_TITLE);
+    if line.is_empty() {
+        name.to_owned()
+    } else {
+        line
+    }
+}
+
+/// Untrusted text for display: no control characters, at most `chars` characters.
+fn clean(text: &str, chars: usize) -> String {
+    text.chars()
+        .filter(|character| !character.is_control())
+        .take(chars)
+        .collect()
+}
+
+/// Milliseconds since the epoch of an RFC 3339 UTC time such as `2026-10-12T05:01:02.123Z`.
+fn unix_ms(text: &str) -> Option<u64> {
+    let number = |range: std::ops::Range<usize>| text.get(range)?.parse::<u64>().ok();
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    if !(1970..=9999).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let millis = match text.get(19..20) {
+        Some(".") => {
+            let digits: String = text[20..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .chain("000".chars())
+                .take(3)
+                .collect();
+            digits.parse::<u64>().ok()?
+        }
+        _ => 0,
+    };
+    // Days from civil date (proleptic Gregorian), for March-based years.
+    let year = if month <= 2 { year - 1 } else { year };
+    let era_year = year % 400;
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let day_of_era = era_year * 365 + era_year / 4 - era_year / 100 + day_of_year;
+    let days = (year / 400) * 146_097 + day_of_era - 719_468;
+    Some((((days * 24 + hour) * 60 + minute) * 60 + second) * 1000 + millis)
 }
 fn content_text(content: Option<&Value>) -> String {
     match content {
