@@ -429,6 +429,7 @@ pub struct Capabilities {
     pub live_handoff: bool,
     pub agent_exchanges: bool,
     pub agent_exchange_bound_receipts: bool,
+    pub raw_terminal_stream: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

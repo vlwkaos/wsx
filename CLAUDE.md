@@ -27,7 +27,7 @@ Tests that open a PTY or a Unix socket fail inside a command sandbox. Rerun them
 
 ## Where to look
 
-- `docs/` — one contract per file, for example `agent-orchestration.md`, `terminal-exit-ordering.md`, `terminal-synchronized-output.md`.
+- `docs/` — one contract per file, for example `agent-orchestration.md`, `terminal-exit-ordering.md`, `terminal-synchronized-output.md`, `terminal-raw-stream.md`.
 - `crates/wsx-core/src/runtime/protocol.rs` — protocol version and `DAEMON_REVISION`.
 - `crates/wsx-core/src/integration/` — agent hook installers and status mapping.
 - Unknown project term or prior decision: `/seek <topic>` before guessing.

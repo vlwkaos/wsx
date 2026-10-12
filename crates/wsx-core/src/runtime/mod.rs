@@ -12,7 +12,7 @@ mod review;
 pub use client::{
     ensure_available, ensure_background_available, new_client_id, recover_daemon,
     routine_daemon_command, Availability, Client, DaemonStatus, EventMonitor, EventSignal,
-    TerminalStream,
+    RawTerminalStream, TerminalStream,
 };
 pub use domain::*;
 pub use protocol::*;

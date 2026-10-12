@@ -1713,17 +1713,35 @@ fn serve_client(mut stream: UnixStream, daemon: Arc<Daemon>) -> io::Result<()> {
                 continue;
             }
         };
-        if let Request::TerminalSubscribe {
-            pane_id,
-            client_id,
-            takeover,
-            rows,
-            cols,
-        } = request
-        {
-            return serve_terminal_stream(stream, daemon, pane_id, client_id, takeover, rows, cols);
-        }
-        write_response(&mut stream, handle(&daemon, request))?;
+        let (kind, lease, size) = match request {
+            Request::TerminalSubscribe {
+                pane_id,
+                client_id,
+                takeover,
+                rows,
+                cols,
+            } => (
+                TerminalStreamKind::Frames,
+                (pane_id, client_id, takeover),
+                (rows, cols),
+            ),
+            Request::TerminalRawSubscribe {
+                pane_id,
+                client_id,
+                takeover,
+                rows,
+                cols,
+            } => (
+                TerminalStreamKind::Raw,
+                (pane_id, client_id, takeover),
+                (rows, cols),
+            ),
+            request => {
+                write_response(&mut stream, handle(&daemon, request))?;
+                continue;
+            }
+        };
+        return serve_terminal_stream(stream, daemon, kind, lease, size);
     }
     Ok(())
 }
@@ -1755,14 +1773,21 @@ fn write_response(stream: &mut UnixStream, response: Response) -> io::Result<()>
     }
     stream.write_all(&bytes)
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TerminalStreamKind {
+    /// Rendered cell frames for the TUI.
+    Frames,
+    /// PTY bytes for a client that runs its own emulator (docs/terminal-raw-stream.md).
+    Raw,
+}
+
 fn serve_terminal_stream(
     mut stream: UnixStream,
     daemon: Arc<Daemon>,
-    pane_id: PaneId,
-    client_id: u64,
-    takeover: bool,
-    rows: u16,
-    cols: u16,
+    kind: TerminalStreamKind,
+    (pane_id, client_id, takeover): (PaneId, u64, bool),
+    (rows, cols): (u16, u16),
 ) -> io::Result<()> {
     let (acquire_revision, lease_generation) =
         match acquire_terminal_lease(&daemon, pane_id, client_id, takeover) {
@@ -1777,8 +1802,14 @@ fn serve_terminal_stream(
         write_response(&mut stream, Response::Error(error))?;
         return Ok(());
     }
-    let resized =
-        resize_terminal_for_stream(&daemon, pane_id, client_id, lease_generation, rows, cols);
+    // A raw subscriber may keep the pane's size: it then scales its own view.
+    let keep_size = kind == TerminalStreamKind::Raw && rows == 0 && cols == 0;
+    let resized = if keep_size {
+        Ok(())
+    } else {
+        resize_terminal_for_stream(&daemon, pane_id, client_id, lease_generation, rows, cols)
+            .map(|_| ())
+    };
     if let Err(error) = resized {
         release_stream_lease(&daemon, pane_id, client_id, lease_generation);
         write_response(&mut stream, Response::Error(error))?;
@@ -1858,18 +1889,19 @@ fn serve_terminal_stream(
             input_daemon.changed.notify_all();
         })?;
 
-    let result = stream_terminal_updates(
-        &mut stream,
-        &daemon,
-        StreamLease {
-            pane_id,
-            client_id,
-            generation: lease_generation,
-        },
-        &active,
-        &resync,
-        &input_error,
-    );
+    let lease = StreamLease {
+        pane_id,
+        client_id,
+        generation: lease_generation,
+    };
+    let result = match kind {
+        TerminalStreamKind::Frames => {
+            stream_terminal_updates(&mut stream, &daemon, lease, &active, &resync, &input_error)
+        }
+        TerminalStreamKind::Raw => {
+            stream_raw_terminal_output(&mut stream, &daemon, lease, &active, &resync, &input_error)
+        }
+    };
     active.store(false, Ordering::Release);
     let _ = stream.shutdown(Shutdown::Both);
     let _ = input_thread.join();
@@ -1897,19 +1929,7 @@ fn stream_terminal_updates(
         }
         let operation_lock = terminal_operation_lock(daemon, lease.pane_id);
         let operation = lock(&operation_lock);
-        let runtime = {
-            let state = lock(&daemon.state);
-            match terminal_stream_lease_error(&state, lease, Instant::now()) {
-                Some(error) => Err(error),
-                None => state.runtimes.get(&lease.pane_id).cloned().ok_or_else(|| {
-                    ApiError::new(
-                        "lease_lost",
-                        "terminal stream no longer owns the pane lease",
-                    )
-                }),
-            }
-        };
-        let runtime = match runtime {
+        let runtime = match leased_stream_runtime(&lock(&daemon.state), lease) {
             Ok(runtime) => runtime,
             Err(error) => {
                 write_stream_message(stream, &TerminalServerMessage::Error(error))?;
@@ -1976,6 +1996,143 @@ fn stream_terminal_updates(
     Ok(())
 }
 
+// ^ docs/terminal-raw-stream.md: a replay, then the PTY bytes after it. A subscriber
+// that falls behind the tap gets a new replay instead of a gap. Messages are sampled
+// under the pane operation lock and written after it, so a slow reader cannot delay
+// a takeover of the pane.
+fn stream_raw_terminal_output(
+    stream: &mut UnixStream,
+    daemon: &Arc<Daemon>,
+    lease: StreamLease,
+    active: &AtomicBool,
+    resync: &AtomicBool,
+    input_error: &Mutex<Option<ApiError>>,
+) -> io::Result<()> {
+    let mut position = None::<u64>;
+    let mut size = (0, 0);
+    while active.load(Ordering::Acquire) {
+        // The handoff holds every pane operation lock, so tell the client before waiting on one.
+        let handoff = terminal_stream_lease_error(&lock(&daemon.state), lease, Instant::now())
+            .filter(|error| error.code == "daemon_handoff");
+        if let Some(error) = handoff {
+            write_stream_message(stream, &TerminalRawServerMessage::Error(error))?;
+            break;
+        }
+        let mut messages = Vec::new();
+        let mut ended = false;
+        let operation_lock = terminal_operation_lock(daemon, lease.pane_id);
+        let operation = lock(&operation_lock);
+        let runtime = match leased_stream_runtime(&lock(&daemon.state), lease) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                drop(operation);
+                write_stream_message(stream, &TerminalRawServerMessage::Error(error))?;
+                break;
+            }
+        };
+        // Read the exit flag and the revision first: bytes ingested before the exit
+        // are still sent, and a later byte or resize changes the revision.
+        let exited = runtime.exited();
+        let revision = runtime.revision();
+        if resync.swap(false, Ordering::AcqRel) {
+            position = None;
+        }
+        let mut drained = false;
+        let sampled = match position {
+            None => runtime.raw_replay().map(|replay| {
+                position = Some(replay.sequence);
+                size = (replay.rows, replay.cols);
+                messages.push(TerminalRawServerMessage::Replay(TerminalRawReplay {
+                    ansi: replay.ansi,
+                    rows: replay.rows,
+                    cols: replay.cols,
+                    truncated: replay.truncated,
+                }));
+            }),
+            Some(after) => runtime.raw_sample(after).map(|sample| {
+                messages.extend(
+                    sample
+                        .clipboard_writes
+                        .into_iter()
+                        .map(TerminalRawServerMessage::ClipboardWrite),
+                );
+                if (sample.rows, sample.cols) != size {
+                    // Two emulators reflow a resized screen differently, so the
+                    // client restarts from this one's screen: a replay follows.
+                    size = (sample.rows, sample.cols);
+                    messages.push(TerminalRawServerMessage::Resized {
+                        rows: sample.rows,
+                        cols: sample.cols,
+                    });
+                    position = None;
+                    return;
+                }
+                match sample.output {
+                    None => position = None,
+                    Some(bytes) => {
+                        drained = bytes.is_empty();
+                        position = Some(after + bytes.len() as u64);
+                        if !drained {
+                            messages.push(TerminalRawServerMessage::Output(bytes));
+                        }
+                    }
+                }
+            }),
+        };
+        if let Err(error) = sampled {
+            messages.push(TerminalRawServerMessage::Error(ApiError::new(
+                "replay_failed",
+                error.to_string(),
+            )));
+            ended = true;
+        } else if let Some(error) = lock(input_error).take() {
+            messages.push(TerminalRawServerMessage::Error(error));
+            ended = true;
+        } else if exited && drained {
+            messages.push(TerminalRawServerMessage::Exited);
+            ended = true;
+        }
+        drop(operation);
+        for message in &messages {
+            write_stream_message(stream, message)?;
+        }
+        if ended {
+            break;
+        }
+        let state = lock(&daemon.state);
+        // Recheck every wake predicate while holding the notifier mutex.
+        if !active.load(Ordering::Acquire)
+            || resync.load(Ordering::Acquire)
+            || !drained
+            || runtime.exited() != exited
+            || runtime.revision() != revision
+        {
+            continue;
+        }
+        let _ = daemon
+            .changed
+            .wait_timeout(state, Duration::from_millis(250))
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    }
+    Ok(())
+}
+
+/// The runtime of a stream that still holds its pane lease.
+fn leased_stream_runtime(
+    state: &State,
+    lease: StreamLease,
+) -> Result<Arc<TerminalRuntime>, ApiError> {
+    if let Some(error) = terminal_stream_lease_error(state, lease, Instant::now()) {
+        return Err(error);
+    }
+    state.runtimes.get(&lease.pane_id).cloned().ok_or_else(|| {
+        ApiError::new(
+            "lease_lost",
+            "terminal stream no longer owns the pane lease",
+        )
+    })
+}
+
 fn record_transferred_stream(state: &mut State, stream: StreamLease) {
     while state.transferred_streams.len() >= MAX_CLIENTS {
         state.transferred_streams.pop_front();
@@ -2020,10 +2177,7 @@ fn terminal_stream_lease_error(
     }
 }
 
-fn write_stream_message(
-    stream: &mut UnixStream,
-    message: &TerminalServerMessage,
-) -> io::Result<()> {
+fn write_stream_message(stream: &mut UnixStream, message: &impl Serialize) -> io::Result<()> {
     let bytes = encode_line(message).map_err(io::Error::other)?;
     if bytes.len() > MAX_RESPONSE_BYTES {
         return Err(io::Error::new(
@@ -2399,9 +2553,9 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
         Request::TerminalHeartbeat { pane_id, client_id } => {
             mutate_runtime(daemon, |state| refresh_lease(state, pane_id, client_id))
         }
-        Request::TerminalSubscribe { .. } => Err(api(
+        Request::TerminalSubscribe { .. } | Request::TerminalRawSubscribe { .. } => Err(api(
             "invalid_request",
-            "terminal_subscribe is only valid as a connection upgrade",
+            "a terminal subscribe is only valid as a connection upgrade",
         )),
         Request::TerminalInput {
             pane_id,
@@ -2779,6 +2933,7 @@ fn capabilities() -> Capabilities {
         live_handoff: true,
         agent_exchanges: true,
         agent_exchange_bound_receipts: true,
+        raw_terminal_stream: true,
     }
 }
 

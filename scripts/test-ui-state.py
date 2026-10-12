@@ -159,7 +159,7 @@ def main():
                 client.settimeout(5)
                 client.connect(env['WSX_SOCKET'])
                 reader = client.makefile('rb')
-                client.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
+                client.sendall(b'{"method":"hello","params":{"protocol":17}}\n')
                 assert json.loads(reader.readline())['type'] == 'hello'
                 request = {'method': method}
                 if params is not None:

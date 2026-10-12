@@ -10,7 +10,7 @@ use std::{
 };
 
 // ^ [[Terminal Stream Protocol v3]] Wire-version history and compatibility boundaries.
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const MAX_AGENT_EXCHANGE_PROMPT_BYTES: usize = 64 * 1024;
 pub const MAX_AGENT_EXCHANGE_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1000;
@@ -23,7 +23,8 @@ pub const ROUTINE_DAEMON_ARG: &str = "__wsx_routine_daemon";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ^ Receipt expiry and final PTY drain are daemon-owned runtime behavior.
 // UI-only releases continue to reuse wsxd. See docs/agent-orchestration.md and docs/terminal-exit-ordering.md.
-pub const DAEMON_REVISION: u32 = 22;
+// Revision 23 adds the raw terminal stream (docs/terminal-raw-stream.md).
+pub const DAEMON_REVISION: u32 = 23;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -270,6 +271,15 @@ pub enum Request {
         client_id: u64,
     },
     TerminalSubscribe {
+        pane_id: PaneId,
+        client_id: u64,
+        takeover: bool,
+        rows: u16,
+        cols: u16,
+    },
+    // ^ docs/terminal-raw-stream.md: same handshake and lease as `TerminalSubscribe`.
+    // `rows` and `cols` both 0 keep the pane's current size.
+    TerminalRawSubscribe {
         pane_id: PaneId,
         client_id: u64,
         takeover: bool,
@@ -548,6 +558,29 @@ pub enum TerminalServerMessage {
     Exited,
 }
 
+/// The terminal state a client emulator starts from. Output that follows
+/// continues at the byte after this replay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalRawReplay {
+    pub ansi: Vec<u8>,
+    pub rows: u16,
+    pub cols: u16,
+    /// Older scrollback was left out to keep the replay bounded.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum TerminalRawServerMessage {
+    Replay(TerminalRawReplay),
+    Output(Vec<u8>),
+    Resized { rows: u16, cols: u16 },
+    ClipboardWrite(Vec<u8>),
+    Error(ApiError),
+    Exited,
+}
+
 pub fn encode_line<T: Serialize>(value: &T) -> Result<Vec<u8>, serde_json::Error> {
     let mut bytes = serde_json::to_vec(value)?;
     bytes.push(b'\n');
@@ -604,6 +637,7 @@ mod tests {
         assert!(!capabilities.daemon_revision_coordination);
         assert!(!capabilities.agent_exchanges);
         assert!(!capabilities.agent_exchange_bound_receipts);
+        assert!(!capabilities.raw_terminal_stream);
     }
 
     #[test]
