@@ -16,7 +16,7 @@ theme = "/abs/path/to/my-theme"   # a theme directory, or the path of a theme .t
 | Color roles | `color-bg` `color-surface` `color-sunken` `color-text` `color-muted` `color-border` `color-accent` `color-accent-text` `color-danger` `color-ok` `color-focus` `color-overlay` | `#rgb`, `#rrggbb` or `#rrggbbaa` |
 | Component colors | `color-chrome-bg` `color-chrome-text` `color-bubble-user-bg` `color-bubble-user-text` `color-bubble-agent-bg` `color-bubble-agent-text` `color-terminal-bg` `color-terminal-text` | same |
 | Type families | `font-body` `font-heading` `font-mono` | family list: letters, digits, space, `,` `'` `-` `_` |
-| Type scale | `font-size-sm` `font-size-md` `font-size-lg` `font-size-xl` `font-size-mono` | length |
+| Type scale | `font-size-sm` `font-size-md` `font-size-lg` `font-size-xl` `font-size-mono`, `font-size-field` (text fields on a touch device; keep it at 16px or more, or iOS zooms the page on focus) | length |
 | Type weight | `font-weight-normal` `font-weight-strong`, `line-height` | 100-900; 1-3 |
 | Spacing | `space-1` … `space-5` | length |
 | Sizes | `size-control` `size-key` (terminal keys and icon buttons) `size-content` `size-bubble` `size-media` `size-field` `size-log` | length |

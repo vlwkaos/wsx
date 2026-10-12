@@ -38,6 +38,8 @@ font-size-md = "1rem"
 font-size-lg = "1.125rem"
 font-size-xl = "1.25rem"
 font-size-mono = "0.8125rem"
+# Text fields on a touch device. iOS zooms the page when a focused field is below 16px.
+font-size-field = "16px"
 font-weight-normal = "400"
 font-weight-strong = "600"
 line-height = "1.5"

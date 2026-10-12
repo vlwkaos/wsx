@@ -13,6 +13,8 @@ body {
   background: var(--color-bg); color: var(--color-text);
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
+/* The page never scrolls: each screen has one scroll container inside it. */
+html, body { overflow: hidden; }
 [hidden] { display: none !important; }
 :focus-visible { outline: var(--focus-width) solid var(--color-focus); outline-offset: var(--focus-offset); }
 .skip { position: absolute; transform: translateY(-200%); background: var(--color-surface); padding: var(--space-2); z-index: 3; }
@@ -54,6 +56,8 @@ label { font-size: var(--font-size-sm); color: var(--color-muted); display: bloc
   display: flex; flex-direction: column; gap: var(--space-3);
 }
 .panel:focus { outline: none; }
+/* The chat log scrolls, so its panel must not scroll as well. */
+.panel:has(> .log) { overflow: hidden; }
 
 /* Hook: .button, .button-primary, .button-danger */
 button, select, input, textarea { font: inherit; color: inherit; }
@@ -76,6 +80,11 @@ button, select, input, textarea { font: inherit; color: inherit; }
   box-shadow: var(--shadow-sunken);
 }
 textarea.input { width: 100%; resize: vertical; }
+/* iOS zooms the page when a focused field's font is smaller than font-size-field.
+   The terminal's own input field is invisible, so only its computed size matters. */
+@media (pointer: coarse) {
+  input, select, textarea, textarea.terminal-frame, .terminal .xterm .xterm-helper-textarea { font-size: var(--font-size-field); }
+}
 fieldset { border: var(--border-width) solid var(--color-border); border-radius: var(--radius-surface); padding: var(--space-3); margin: 0; }
 fieldset label { color: var(--color-text); font-size: var(--font-size-md); min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-2); }
 
@@ -133,7 +142,9 @@ body[data-view="terminal"] { position: fixed; inset: var(--viewport-top, 0) 0 au
 body[data-view="terminal"][data-keyboard] { padding-bottom: 0; }
 body[data-view="terminal"][data-compact] .app-chrome { display: none; }
 .panel-terminal { max-width: none; padding: 0; overflow: hidden; }
-.terminal { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--color-surface); color: var(--color-text); }
+/* touch-action rules out double-tap zoom: the screen and the pad handle every gesture
+   themselves, the key row may pan sideways, everything else only taps. */
+.terminal { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--color-surface); color: var(--color-text); touch-action: manipulation; }
 .terminal-bar {
   height: var(--size-control); display: flex; align-items: center; gap: var(--space-1); padding: 0 var(--space-1);
   border-bottom: var(--border-width) solid var(--color-border);
@@ -159,11 +170,11 @@ body[data-view="terminal"][data-compact] .app-chrome { display: none; }
 }
 .terminal-notice span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .terminal-notice .button { flex: 0 0 auto; min-height: 0; height: var(--size-key); padding: 0 var(--space-3); white-space: nowrap; }
-.terminal-stage { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; }
+.terminal-stage { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; touch-action: none; }
 .terminal-host { height: 100%; }
 .terminal-host[data-size="host"] { width: max-content; height: max-content; transform-origin: 0 0; }
 .terminal-controls { border-top: var(--border-width) solid var(--color-border); }
-.terminal-keys { display: flex; gap: var(--space-1); padding: var(--space-1); overflow-x: auto; scrollbar-width: none; }
+.terminal-keys { display: flex; gap: var(--space-1); padding: var(--space-1); overflow-x: auto; scrollbar-width: none; touch-action: pan-x; }
 /* A fade marks each edge that has more keys to scroll to. */
 .terminal-keys[data-more="end"] {
   -webkit-mask-image: linear-gradient(to left, transparent, black var(--space-5));
@@ -179,7 +190,7 @@ body[data-view="terminal"][data-compact] .app-chrome { display: none; }
 }
 .terminal-key {
   flex: 0 0 auto; min-width: var(--size-key); min-height: 0; height: var(--size-key); padding: 0 var(--space-2);
-  font-size: var(--font-size-sm); touch-action: manipulation; user-select: none; -webkit-user-select: none;
+  font-size: var(--font-size-sm); user-select: none; -webkit-user-select: none;
 }
 .terminal-key[data-failed] { color: var(--color-danger); }
 .terminal-tools {
@@ -222,7 +233,7 @@ body[data-view="terminal"][data-compact] .app-chrome { display: none; }
 
 .pair { max-width: calc(var(--size-field) * 2); display: flex; flex-direction: column; gap: var(--space-3); }
 .pair .input { width: 100%; }
-#pair-code { font-family: var(--font-mono); font-size: var(--font-size-xl); text-transform: uppercase; }
+#pair-code { font-family: var(--font-mono); font-size: max(var(--font-size-field), var(--font-size-xl)); text-transform: uppercase; }
 
 @media (prefers-reduced-motion: reduce) {
   .button { transition: none; }
