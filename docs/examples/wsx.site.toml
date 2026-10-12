@@ -8,7 +8,7 @@ id = "wsx"
 name = "wsx"
 port = 4690
 public_origin = "https://wsx.taile808cc.ts.net"
-panels = ["chat", "files", "terminal", "activity"]
+panels = ["chat", "files", "terminal"]
 theme = "default"
 
 [access]
