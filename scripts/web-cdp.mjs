@@ -99,9 +99,13 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: scale, mobile });
     await send("Emulation.setTouchEmulationEnabled", { enabled: mobile, maxTouchPoints: 5 });
   }
-  async function capture(name) {
-    const { data } = await send("Page.captureScreenshot", { format: "png" });
-    fs.writeFileSync(path.join(captures, `${prefix}${name}.png`), Buffer.from(data, "base64"));
+  // clip: {x, y, width, height, scale} in CSS pixels, for one enlarged part of the page.
+  // Returns the PNG, so two captures can be compared.
+  async function capture(name, clip) {
+    const { data } = await send("Page.captureScreenshot", { format: "png", ...(clip ? { clip } : {}) });
+    const image = Buffer.from(data, "base64");
+    fs.writeFileSync(path.join(captures, `${prefix}${name}.png`), image);
+    return image;
   }
   return {
     send, evaluate, until, viewport, capture, fail, problems,

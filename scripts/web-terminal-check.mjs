@@ -165,6 +165,8 @@ async function glyphs(name) {
       icon: (() => { const rect = box(row('main'), '\\uf015'); return rect && rect.width / cell; })(),
       joined, arrow: (() => { const rect = box(row('=> !='), '=>'); return rect && rect.width / cell; })(),
       ligatures: getComputedStyle(row('=> !=').querySelector('span')).fontVariantLigatures,
+      spacing: [document.querySelector('.xterm-rows').style.letterSpacing, ...[...row('=> !=').querySelectorAll('span')].map((span) => span.style.letterSpacing)],
+      line: (() => { const rect = row('=> !=').getBoundingClientRect(); return { x: rect.left, y: rect.top, width: cell * 30, height: rect.height }; })(),
       korean: [column(box(row('\\ud55c\\uae00|'), '|')), column(box(row('abcd|'), '|'))],
       box: [column(box(row('\\u2502ab'), 'ab')), column(box(row('\\u2502ab'), 'cd'))],
       bold: getComputedStyle([...row('bold text').querySelectorAll('span')].find((span) => span.textContent.includes('bold'))).fontWeight,
@@ -182,6 +184,14 @@ async function glyphs(name) {
   if (!near(seen.box[0], 1) || !near(seen.box[1], 4)) await fail(`box drawing is not aligned to the grid: ${JSON.stringify(seen.box)}`);
   if (seen.bold !== "700" || seen.italic !== "italic") await fail(`bold or italic is not drawn with its own face: ${JSON.stringify(seen)}`);
   await capture(`${name}-glyphs`);
+  // Proof that the font joins the runs: the same line, enlarged, with the font's ligatures
+  // on and off. Only the font feature differs, so equal pictures mean nothing was joined.
+  const clip = { ...seen.line, scale: 4 };
+  const on = await capture(`${name}-ligatures-on`, clip);
+  await evaluate("document.querySelector('.terminal-host').dataset.ligatures = 'off'");
+  const off = await capture(`${name}-ligatures-off`, clip);
+  await evaluate("delete document.querySelector('.terminal-host').dataset.ligatures");
+  if (on.equals(off)) await fail(`the font does not join the operator runs: the line looks the same with ligatures off; letter spacing ${JSON.stringify(seen.spacing)}`);
   // The grid still matches the pane: a line of exactly as many characters as stty reports
   // columns fills one row and does not wrap.
   await run("printf '\\033[2J\\033[H'; c=$(stty size | cut -d' ' -f2); printf '%*s' $c '' | tr ' ' '#'; echo; echo cols=$c", "cols=");
