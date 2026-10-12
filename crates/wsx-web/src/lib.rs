@@ -1,0 +1,162 @@
+//! The wsx hosted web client: one paired site per process.
+//! Contract: docs/web-client.md. Deployment: docs/web-deploy.md.
+//! ^ This crate is a wsxd client like the TUI. It never starts, stops or replaces
+//! the daemon, and it adds no daemon or protocol surface.
+
+mod assets;
+mod chat;
+mod devices;
+mod events;
+mod http;
+mod media;
+mod push;
+mod sandbox;
+mod site;
+mod theme;
+
+use anyhow::{Context, Result};
+use std::{
+    collections::HashMap,
+    net::{Ipv4Addr, SocketAddr},
+    path::Path,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+pub(crate) struct App {
+    site: site::Site,
+    devices: devices::Devices,
+    media: media::Media,
+    push: Option<push::Push>,
+    root: sandbox::Root,
+    chat: chat::Chat,
+    client: wsx_core::runtime::Client,
+    assets: assets::Assets,
+    limiter: http::Limiter,
+    events: tokio::sync::broadcast::Sender<events::Message>,
+    /// Latest workspace event, replayed first on every new stream.
+    workspace: Mutex<Option<events::Message>>,
+    streams: Mutex<HashMap<String, usize>>,
+}
+
+/// `wsx web serve --site <file>`: run until SIGINT or SIGTERM.
+pub fn serve(site_file: &Path) -> Result<()> {
+    let site = site::Site::load(site_file)?;
+    let app = Arc::new(App {
+        devices: devices::Devices::open(&site.state_dir)?,
+        media: media::Media::open(&site.state_dir, site.media.clone())?,
+        push: site
+            .push
+            .as_ref()
+            .map(|settings| push::Push::open(&site.state_dir, settings))
+            .transpose()?,
+        root: sandbox::Root::pin(&site.project).context("cannot open the project")?,
+        chat: chat::Chat::new(),
+        // Never `Client::local()`: a web server must not start wsxd.
+        client: wsx_core::runtime::Client::new(wsx_core::runtime::default_socket_path()),
+        assets: assets::Assets::build(&site),
+        limiter: http::Limiter::new(),
+        events: tokio::sync::broadcast::channel(256).0,
+        workspace: Mutex::new(None),
+        streams: Mutex::new(HashMap::new()),
+        site,
+    });
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async move {
+            // Loopback only: the tailnet proxy is the single public entry.
+            let address = SocketAddr::from((Ipv4Addr::LOCALHOST, app.site.port));
+            let listener = tokio::net::TcpListener::bind(address)
+                .await
+                .with_context(|| format!("cannot listen on {address}"))?;
+            eprintln!(
+                "wsx web: site '{}' on http://{address}{} for {}{}",
+                app.site.id,
+                app.site.scope(),
+                app.site.public.origin,
+                app.site.scope()
+            );
+            events::spawn(app.clone());
+            let sweeper = app.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(60));
+                loop {
+                    tick.tick().await;
+                    tokio::task::block_in_place(|| sweeper.media.sweep());
+                }
+            });
+            axum::serve(listener, http::router(app))
+                .with_graceful_shutdown(async {
+                    let mut terminate =
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                            .expect("install SIGTERM handler");
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {}
+                        _ = terminate.recv() => {}
+                    }
+                })
+                .await?;
+            Ok(())
+        })
+}
+
+/// `wsx web pair --site <file>`: print a one-time pairing code.
+pub fn pair(site_file: &Path) -> Result<()> {
+    let site = site::Site::load(site_file)?;
+    let code = devices::Devices::open(&site.state_dir)?.create_pairing()?;
+    println!("pairing code for '{}': {code}", site.id);
+    println!(
+        "open {}{} on the device and enter it within 10 minutes",
+        site.public.origin,
+        site.scope()
+    );
+    Ok(())
+}
+
+/// `wsx web devices --site <file> [--revoke <id>] [--json]`.
+pub fn devices(site_file: &Path, revoke: Option<&str>, json: bool) -> Result<()> {
+    let site = site::Site::load(site_file)?;
+    let devices = devices::Devices::open(&site.state_dir)?;
+    if let Some(id) = revoke {
+        anyhow::ensure!(devices.revoke(id)?, "no paired device has id {id}");
+        println!("revoked device {id} from '{}'", site.id);
+        return Ok(());
+    }
+    let list = devices.list()?;
+    if json {
+        let rows: Vec<_> = list
+            .iter()
+            .map(|device| {
+                serde_json::json!({
+                    "id": device.id, "name": device.name, "created_unix": device.created_unix,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string(&rows)?);
+    } else if list.is_empty() {
+        println!("no device is paired with '{}'", site.id);
+    } else {
+        println!("{} paired with '{}'", list.len(), site.id);
+        println!("{:<10}{:<12}NAME", "ID", "PAIRED");
+        for device in list {
+            let days = devices::now_unix().saturating_sub(device.created_unix) / 86_400;
+            println!(
+                "{:<10}{:<12}{}",
+                device.id,
+                format!("{days}d ago"),
+                device.name
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `wsx web vapid`: print a new key pair for a site file's `[push]` section.
+pub fn vapid() -> Result<()> {
+    let (private, public) = push::generate_vapid()?;
+    println!("# add to the site file; keep the file owner-only");
+    println!("[push]\nsubject = \"mailto:you@example.com\"\nprivate_key = \"{private}\"");
+    println!("# public key (the server derives it; shown for reference): {public}");
+    Ok(())
+}

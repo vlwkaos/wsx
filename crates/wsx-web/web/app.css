@@ -1,0 +1,155 @@
+/* Core component CSS. Contract: docs/web-themes.md.
+   Every design value comes from a theme token (var(--...)). This file holds
+   structure only: no color, font, length, radius, shadow or duration literal.
+   Themes restyle the hook classes named in each section heading. */
+
+* { box-sizing: border-box; }
+html {
+  font-family: var(--font-body); font-size: var(--font-size-md);
+  font-weight: var(--font-weight-normal); line-height: var(--line-height);
+}
+body {
+  margin: 0; height: 100dvh; display: flex; flex-direction: column;
+  background: var(--color-bg); color: var(--color-text);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+[hidden] { display: none !important; }
+:focus-visible { outline: var(--focus-width) solid var(--color-focus); outline-offset: var(--focus-offset); }
+.skip { position: absolute; transform: translateY(-200%); background: var(--color-surface); padding: var(--space-2); z-index: 3; }
+.skip:focus { transform: none; }
+a { color: var(--color-accent); }
+h2 { font-family: var(--font-heading); font-size: var(--font-size-lg); font-weight: var(--font-weight-strong); margin: 0; }
+label { font-size: var(--font-size-sm); color: var(--color-muted); display: block; }
+.muted { color: var(--color-muted); }
+.small { font-size: var(--font-size-sm); }
+.error { color: var(--color-danger); margin: 0; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.row > .grow { flex: 1 1 var(--size-field); min-width: 0; }
+.stack { display: contents; }
+
+/* Hook: .app-chrome, .app-title, .app-nav — the title bar and panel navigation. */
+.app-chrome {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-chrome-bg); color: var(--color-chrome-text);
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+.app-title { font-family: var(--font-heading); font-size: var(--font-size-md); font-weight: var(--font-weight-strong); margin: 0; }
+.app-nav { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.app-nav a {
+  min-height: var(--size-control); padding: var(--space-2) var(--space-3);
+  display: inline-flex; align-items: center;
+  color: inherit; text-decoration: none; border-radius: var(--radius-control);
+}
+.app-nav a[aria-current="page"] {
+  background: var(--color-bg); color: var(--color-text); font-weight: var(--font-weight-strong);
+  box-shadow: inset 0 calc(-1 * var(--focus-width)) 0 var(--color-accent);
+}
+
+/* Hook: .panel — the scrolling work area. The page itself never scrolls: a panel
+   scrolls inside main, and the chat log scrolls inside the panel so the composer stays in view. */
+.panel {
+  flex: 1; min-height: 0; overflow-y: auto; width: 100%; max-width: var(--size-content);
+  margin: 0 auto; padding: var(--space-4);
+  display: flex; flex-direction: column; gap: var(--space-3);
+}
+.panel:focus { outline: none; }
+
+/* Hook: .button, .button-primary, .button-danger */
+button, select, input, textarea { font: inherit; color: inherit; }
+.button {
+  min-height: var(--size-control); padding: var(--space-2) var(--space-3);
+  background: var(--color-surface); color: var(--color-text);
+  border: var(--border-width) solid var(--color-border); border-radius: var(--radius-control);
+  box-shadow: var(--shadow-raised); cursor: pointer;
+  transition: background-color var(--motion-duration) var(--motion-easing);
+}
+.button-primary { background: var(--color-accent); color: var(--color-accent-text); border-color: var(--color-accent); font-weight: var(--font-weight-strong); }
+.button-danger { color: var(--color-danger); }
+.button:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
+
+/* Hook: .input — text fields, selects and text areas. */
+.input {
+  min-height: var(--size-control); max-width: 100%; padding: var(--space-2);
+  background: var(--color-sunken); color: var(--color-text);
+  border: var(--border-width) solid var(--color-border); border-radius: var(--radius-control);
+  box-shadow: var(--shadow-sunken);
+}
+textarea.input { width: 100%; resize: vertical; }
+fieldset { border: var(--border-width) solid var(--color-border); border-radius: var(--radius-surface); padding: var(--space-3); margin: 0; }
+fieldset label { color: var(--color-text); font-size: var(--font-size-md); min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-2); }
+
+/* Hook: .badge — agent and session state. The text carries the state; color repeats it. */
+.badge { font-size: var(--font-size-sm); white-space: nowrap; }
+.badge[data-state="blocked"], .badge[data-state="error"] { color: var(--color-danger); font-weight: var(--font-weight-strong); }
+.badge[data-state="done"] { color: var(--color-ok); }
+
+/* Hook: .list, .list-row */
+.list {
+  list-style: none; margin: 0; padding: 0;
+  background: var(--color-surface); border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-surface); box-shadow: var(--shadow-raised);
+}
+.list-row + .list-row { border-top: var(--border-width) solid var(--color-border); }
+.list-row > .button { width: 100%; text-align: left; border: 0; border-radius: 0; background: none; box-shadow: none; overflow-wrap: anywhere; }
+.list-row.line { padding: var(--space-2) var(--space-3); display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-1) var(--space-3); }
+
+/* Hook: .bubble, .bubble-user, .bubble-agent — chat messages. */
+.log { flex: 1 1 0; min-height: var(--size-log); overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-1) 0; }
+.bubble { max-width: min(100%, var(--size-bubble)); padding: var(--space-2) var(--space-3); border-radius: var(--radius-surface); border: var(--border-width) solid transparent; }
+.bubble-user { align-self: flex-end; background: var(--color-bubble-user-bg); color: var(--color-bubble-user-text); border-color: var(--color-border); box-shadow: var(--shadow-raised); }
+.bubble-agent { align-self: flex-start; background: var(--color-bubble-agent-bg); color: var(--color-bubble-agent-text); }
+.bubble[data-pending] { border-style: dashed; }
+.bubble .who { font-size: var(--font-size-sm); opacity: var(--opacity-quiet); margin: 0; }
+.bubble .text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.attachments { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-2) 0 0; padding: 0; list-style: none; }
+.attachments img { display: block; max-width: min(100%, var(--size-media)); max-height: var(--size-media); border: var(--border-width) solid var(--color-border); border-radius: var(--radius-control); }
+.composer { border-top: var(--border-width) solid var(--color-border); padding-top: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
+/* Attach, Stop and Send stay on one line at 320 px so Send is never below the fold. */
+.composer .row { flex-wrap: nowrap; }
+.composer .row > .grow { flex: 1 1 0; }
+.chips { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: 0; margin: 0; list-style: none; font-size: var(--font-size-sm); }
+.chips li { border: var(--border-width) solid var(--color-border); border-radius: var(--radius-control); padding-left: var(--space-2); display: inline-flex; align-items: center; gap: var(--space-1); max-width: 100%; }
+.chips li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chips .button { border: 0; background: none; box-shadow: none; }
+
+/* Hook: .terminal-frame — terminal screen and file text. */
+.terminal-frame {
+  flex: 1; min-height: var(--size-log); margin: 0; padding: var(--space-3); overflow: auto;
+  font-family: var(--font-mono); font-size: var(--font-size-mono);
+  background: var(--color-terminal-bg); color: var(--color-terminal-text);
+  border: var(--border-width) solid var(--color-border); border-radius: var(--radius-surface);
+  box-shadow: var(--shadow-sunken);
+}
+textarea.terminal-frame { resize: vertical; }
+
+/* Hook: .dialog — modal confirmation. */
+.dialog {
+  width: min(100% - 2 * var(--space-4), var(--size-field) * 2); padding: var(--space-4);
+  background: var(--color-surface); color: var(--color-text);
+  border: var(--border-width) solid var(--color-border); border-radius: var(--radius-surface);
+  box-shadow: var(--shadow-overlay);
+}
+.dialog::backdrop { background: var(--color-overlay); }
+.dialog h2 { margin-bottom: var(--space-2); }
+.dialog .row { justify-content: flex-end; margin-top: var(--space-4); }
+
+/* Hook: .toast — connection and result notices, above the panel. */
+.toasts { display: flex; flex-direction: column; }
+.toast {
+  margin: 0; padding: var(--space-2) var(--space-4); font-size: var(--font-size-sm);
+  background: var(--color-surface); color: var(--color-text);
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+.toast[data-kind="error"] { color: var(--color-danger); }
+
+.pair { max-width: calc(var(--size-field) * 2); display: flex; flex-direction: column; gap: var(--space-3); }
+.pair .input { width: 100%; }
+#pair-code { font-family: var(--font-mono); font-size: var(--font-size-xl); text-transform: uppercase; }
+
+@media (prefers-reduced-motion: reduce) {
+  .button { transition: none; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .log { scroll-behavior: smooth; }
+}

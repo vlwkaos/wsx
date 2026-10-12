@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 wsx-core = { path = "../wsx-core", version = "=0.30.1" }
+wsx-web = { path = "../wsx-web", version = "=0.30.1" }
 asched-core = { workspace = true }
 
 ratatui = { workspace = true }

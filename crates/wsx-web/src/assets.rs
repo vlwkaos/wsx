@@ -1,0 +1,106 @@
+//! Browser files embedded in the binary. No build step: `web/` is served as written.
+//! ^ Only four documents are filled in at serve time, from the validated site file:
+//! index.html (base path, name), the manifest, the service worker and theme.css.
+use crate::{devices::hex, site::Site};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+
+const JS: &str = "text/javascript; charset=utf-8";
+const FILES: &[(&str, &str, &str)] = &[
+    (
+        "app.css",
+        "text/css; charset=utf-8",
+        include_str!("../web/app.css"),
+    ),
+    ("main.js", JS, include_str!("../web/main.js")),
+    ("api.js", JS, include_str!("../web/api.js")),
+    ("dom.js", JS, include_str!("../web/dom.js")),
+    ("pair.js", JS, include_str!("../web/pair.js")),
+    ("chat.js", JS, include_str!("../web/chat.js")),
+    ("files.js", JS, include_str!("../web/files.js")),
+    ("terminal.js", JS, include_str!("../web/terminal.js")),
+    ("activity.js", JS, include_str!("../web/activity.js")),
+    ("settings.js", JS, include_str!("../web/settings.js")),
+    ("ui.js", JS, include_str!("../web/ui.js")),
+];
+
+pub fn find(name: &str) -> Option<(&'static str, &'static str)> {
+    FILES
+        .iter()
+        .find(|(file, _, _)| *file == name)
+        .map(|(_, content_type, body)| (*content_type, *body))
+}
+
+pub struct Assets {
+    pub index: String,
+    pub manifest: String,
+    pub service_worker: String,
+}
+
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+impl Assets {
+    pub fn build(site: &Site) -> Self {
+        let theme = &site.theme;
+        let index = include_str!("../web/index.html")
+            .replace("__WSX_BASE__", &site.base)
+            .replace("__WSX_NAME__", &escape(&site.name))
+            .replace("__WSX_THEME_CSS__", &format!("theme/{}", theme.stylesheet))
+            .replace("__WSX_ICON__", &format!("theme/{}", theme.icon_192))
+            .replace("__WSX_THEME_COLOR__", &theme.chrome_color)
+            .replace("__WSX_THEME__", &escape(&theme.name))
+            // A light-only theme must not get dark form controls from the browser.
+            .replace(
+                "__WSX_SCHEMES__",
+                if theme.dark { "light dark" } else { "light" },
+            );
+        let scope = site.scope();
+        let manifest = json!({
+            "id": scope, "scope": scope, "start_url": scope,
+            "name": site.name, "short_name": site.name,
+            "display": "standalone",
+            "background_color": theme.background_color,
+            "theme_color": theme.chrome_color,
+            "icons": [
+                { "src": format!("theme/{}", theme.icon_192), "sizes": "192x192", "type": "image/png", "purpose": "any" },
+                { "src": format!("theme/{}", theme.icon_512), "sizes": "512x512", "type": "image/png", "purpose": "any" },
+            ],
+        })
+        .to_string();
+        // Offline shell: the page, the manifest, the scripts, and every theme file
+        // except the large icon.
+        let mut shell = vec!["./".to_owned(), "manifest.webmanifest".to_owned()];
+        shell.extend(
+            theme
+                .files
+                .iter()
+                .filter(|file| file.name != theme.icon_512)
+                .map(|file| format!("theme/{}", file.name)),
+        );
+        shell.extend(FILES.iter().map(|(name, _, _)| format!("assets/{name}")));
+        // The cache name changes whenever any shell byte changes, so an old cache is dropped.
+        // Theme files are named by their content hash, so the index covers them.
+        let mut digest = Sha256::new();
+        for part in [&index, &manifest] {
+            digest.update(part.as_bytes());
+        }
+        for (_, _, body) in FILES {
+            digest.update(body.as_bytes());
+        }
+        let version = hex(&digest.finalize()[..6]);
+        let service_worker = include_str!("../web/sw.js")
+            .replace("__WSX_CACHE__", &format!("wsx-{}-{version}", site.id))
+            .replace("__WSX_SHELL__", &json!(shell).to_string())
+            .replace("__WSX_ICON__", &format!("theme/{}", theme.icon_192));
+        Self {
+            index,
+            manifest,
+            service_worker,
+        }
+    }
+}

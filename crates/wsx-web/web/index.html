@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<base href="__WSX_BASE__/">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="__WSX_SCHEMES__">
+<meta name="theme-color" content="__WSX_THEME_COLOR__">
+<title>__WSX_NAME__</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="__WSX_ICON__">
+<link rel="apple-touch-icon" href="__WSX_ICON__">
+<link rel="stylesheet" href="assets/app.css">
+<link rel="stylesheet" href="__WSX_THEME_CSS__">
+</head>
+<body data-theme="__WSX_THEME__">
+<a class="skip" href="#main">Skip to content</a>
+<header class="app-chrome" id="bar" hidden>
+  <h1 class="app-title"><span>__WSX_NAME__</span></h1>
+  <nav class="app-nav" id="nav" aria-label="Panels"></nav>
+</header>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+<main class="panel" id="main" tabindex="-1"><p class="muted">Loading…</p></main>
+<noscript><p>This page needs JavaScript.</p></noscript>
+<script type="module" src="assets/main.js"></script>
+</body>
+</html>

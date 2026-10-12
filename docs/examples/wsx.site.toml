@@ -1,0 +1,22 @@
+# Example wsx web site: Tailscale Service "wsx", retro theme, all panels.
+# Copy to ~/.config/wsx/web/wsx.toml and chmod 600 (the server refuses other modes).
+# Deployment steps: docs/web-deploy.md. Fields: docs/web-client.md. Themes: docs/web-themes.md.
+# ^ This file holds no secret. Web Push needs a private key: run `wsx web vapid`,
+# paste its [push] block into your copy only, and add "push" to capabilities.
+
+id = "wsx"
+name = "wsx"
+port = 4690
+public_origin = "https://wsx.taile808cc.ts.net"
+panels = ["chat", "files", "terminal", "activity"]
+theme = "retro"
+
+[project]
+path = "/Users/vlwkaos/ws/wsx"
+capabilities = [
+  "chat_send", "agent_write", "session_start",
+  "files_read", "files_write",
+  "terminal_view", "terminal_input",
+  "media_upload", "media_download",
+]
+agent_command = ["claude"]

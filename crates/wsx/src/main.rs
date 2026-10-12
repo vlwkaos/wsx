@@ -32,6 +32,7 @@ fn main() -> Result<()> {
         args.command,
         Some(
             cli::Command::Routine { .. }
+                | cli::Command::Web { .. }
                 | cli::Command::Runtime { .. }
                 | cli::Command::Daemon { .. }
                 | cli::Command::Agent {
