@@ -179,6 +179,7 @@ struct Lease {
 struct TuiPresenceLease {
     target_binary_id: String,
     target_daemon_revision: u32,
+    max_protocol: u32,
     expires_at: Instant,
 }
 
@@ -757,13 +758,17 @@ pub fn run_resume_supervisor(mut arguments: impl Iterator<Item = OsString>) -> i
     let signals = InteractiveSignalGuard::ignore()?;
     reset_child_interactive_signals(&mut command);
     let status = command.status()?;
-    drop(signals);
     if !status.success() {
         eprintln!("wsxd resumed agent exited with {status}; opening a shell");
     }
     transition_resumed_agent_to_shell()?;
     let shell = std::env::var_os("SHELL").unwrap_or_else(|| OsString::from("/bin/sh"));
-    let error = Command::new(shell).exec();
+    let mut shell = Command::new(shell);
+    // ^ A repeated Ctrl+C that ends the agent must not kill this supervisor before
+    // the shell exists, so the default dispositions return only at exec.
+    reset_child_interactive_signals(&mut shell);
+    let error = shell.exec();
+    drop(signals);
     Err(error)
 }
 
@@ -1159,6 +1164,15 @@ fn take_ready_handoff(daemon: &Daemon) -> Option<HandoffTarget> {
         daemon_revision: state.replacement_daemon_revision?,
         executable,
     };
+    // ^ docs/daemon-live-upgrade.md: mark the whole transition before any client is
+    // told, so attached clients wait for the successor or the rollback.
+    if let Err(error) = write_lifecycle_marker(
+        &daemon.lifecycle_path,
+        &format!("{HANDOFF_MARKER_PREFIX}{}", unix_time_millis()),
+    ) {
+        eprintln!("wsxd handoff marker: {error}");
+        return None;
+    }
     state.handoff_in_progress = true;
     state.handoff_started = Some(Instant::now());
     daemon.changed.notify_all();
@@ -1323,6 +1337,7 @@ fn rollback_handoff(
     for runtime in paused {
         runtime.resume_handoff_reader();
     }
+    write_lifecycle_marker(&daemon.lifecycle_path, "ready")?;
     let mut state = lock(&daemon.state);
     if let Some(started) = state.handoff_started.take() {
         let paused_for = started.elapsed();
@@ -1873,6 +1888,13 @@ fn stream_terminal_updates(
     let mut baseline = None;
     let mut last_frame_sent = Instant::now();
     while active.load(Ordering::Acquire) {
+        // The handoff holds every pane operation lock, so tell the client before waiting on one.
+        let handoff = terminal_stream_lease_error(&lock(&daemon.state), lease, Instant::now())
+            .filter(|error| error.code == "daemon_handoff");
+        if let Some(error) = handoff {
+            write_stream_message(stream, &TerminalServerMessage::Error(error))?;
+            break;
+        }
         let operation_lock = terminal_operation_lock(daemon, lease.pane_id);
         let operation = lock(&operation_lock);
         let runtime = {
@@ -1966,7 +1988,13 @@ fn terminal_stream_lease_error(
     stream: StreamLease,
     now: Instant,
 ) -> Option<ApiError> {
-    if state.stopping || state.handoff_in_progress {
+    if state.handoff_in_progress || state.stop_reason == Some(StopReason::Handoff) {
+        return Some(ApiError::new(
+            "daemon_handoff",
+            "wsxd is handing this terminal to a newer daemon",
+        ));
+    }
+    if state.stopping {
         return Some(ApiError::new(
             "lease_lost",
             "terminal stream no longer owns the pane lease",
@@ -3020,7 +3048,14 @@ fn validate_handoff_executable(path: &Path, expected_identity: &str) -> io::Resu
 
 fn handoff_blockers(state: &mut State, _target_binary_id: &str) -> Vec<ReplacementBlocker> {
     expire_tui_presence(state, Instant::now());
-    let another_tui = state.legacy_tui_until.is_some() || !state.tui_clients.is_empty();
+    // ^ docs/daemon-live-upgrade.md: a TUI that speaks the target protocol reconnects
+    // to the successor on its own, so only older TUIs must leave first.
+    let target_protocol = state.replacement_protocol.unwrap_or(u32::MAX);
+    let another_tui = state.legacy_tui_until.is_some()
+        || state
+            .tui_clients
+            .values()
+            .any(|client| client.max_protocol < target_protocol);
     let mut blockers = Vec::new();
     if another_tui {
         blockers.push(ReplacementBlocker::OtherTui);
@@ -3139,6 +3174,7 @@ fn record_tui_presence(state: &mut State, tui: Option<TuiClientPresence>) -> Res
         TuiPresenceLease {
             target_binary_id: tui.target_binary_id,
             target_daemon_revision: tui.target_daemon_revision,
+            max_protocol: tui.max_protocol,
             expires_at: now + TUI_PRESENCE_TTL,
         },
     );
@@ -6986,6 +7022,7 @@ mod tests {
             TuiPresenceLease {
                 target_binary_id: "target".into(),
                 target_daemon_revision: DAEMON_REVISION + 1,
+                max_protocol: 0,
                 expires_at: Instant::now() + TUI_PRESENCE_TTL,
             },
         );
@@ -7078,6 +7115,7 @@ mod tests {
                 version: "0.20.0".into(),
                 target_binary_id: "0.20.0:1:2:3:10".into(),
                 target_daemon_revision: 0,
+                max_protocol: 0,
             }),
         )
         .unwrap();
@@ -7110,6 +7148,7 @@ mod tests {
                 version: "0.22.0".into(),
                 target_binary_id: "0.22.0:1:2:3:10".into(),
                 target_daemon_revision: 0,
+                max_protocol: 0,
             }),
         )
         .unwrap();
@@ -7155,6 +7194,7 @@ mod tests {
                 version: "0.23.1".into(),
                 target_binary_id: "0.23.1:4:5:6:30".into(),
                 target_daemon_revision: DAEMON_REVISION + 1,
+                max_protocol: 0,
             }),
         )
         .unwrap();
@@ -7198,6 +7238,7 @@ mod tests {
                         version: version.into(),
                         target_binary_id: target_binary_id.into(),
                         target_daemon_revision: 0,
+                        max_protocol: 0,
                     }),
                 )
                 .is_err(),

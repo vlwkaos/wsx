@@ -113,7 +113,23 @@ pub fn to_worktree_infos(
         .collect()
 }
 
-/// `git worktree add -b {branch} {path} {base_branch}`
+/// True when `refs/heads/{branch}` exists in the repository.
+pub fn branch_exists(repo_path: &Path, branch: &str) -> bool {
+    git_cmd(repo_path)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// `git worktree add -b {branch} {path} {base_branch}`, or
+/// `git worktree add {path} {branch}` when the branch already exists.
 pub fn create_worktree(repo_path: &Path, branch: &str, base_branch: &str) -> Result<PathBuf> {
     let parent = repo_path.parent().context("repo has no parent dir")?;
     let repo_name = repo_path
@@ -126,22 +142,27 @@ pub fn create_worktree(repo_path: &Path, branch: &str, base_branch: &str) -> Res
     );
     let wt_path = parent.join(format!("{}-{}", repo_name, slug));
 
-    let status = git_cmd(repo_path)
-        .args([
-            "worktree",
-            "add",
-            "-b",
-            branch,
-            &wt_path.to_string_lossy(),
-            base_branch,
-        ])
+    let wt_arg = wt_path.to_string_lossy();
+    let mut command = git_cmd(repo_path);
+    command.args(["worktree", "add"]);
+    if branch_exists(repo_path, branch) {
+        command.args([wt_arg.as_ref(), branch]);
+    } else {
+        command.args(["-b", branch, wt_arg.as_ref(), base_branch]);
+    }
+    let output = command
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::piped())
+        .output()
         .context("git worktree add failed")?;
 
-    if !status.success() {
-        bail!("git worktree add exited {}", status);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            bail!("git worktree add exited {}", output.status);
+        }
+        bail!("git worktree add exited {}: {stderr}", output.status);
     }
     Ok(wt_path)
 }

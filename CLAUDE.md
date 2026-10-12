@@ -1,38 +1,31 @@
 # wsx
 
-Rust TUI workspace manager: git worktrees + tmux sessions via ratatui.
+Project-first terminal workspace manager: `Project → Worktree → Session → Pane → Terminal`.
+`wsxd` owns sessions, PTYs and Ghostty terminal state. `wsx` is the ratatui TUI and CLI client.
 
-## Session Start
-
-Run `/load` to load project context from `~/knowledge/wsx/`.
-Run `/load {task}` when working on an unfamiliar area.
+Release rules, verified gotchas and the recurring audit axes are in @AGENTS.md.
 
 ## Quick Reference
 
 ```bash
-cargo build          # compile
-./target/debug/wsx   # run (must be inside tmux)
+cargo build -p wsx -p wsx-daemon          # adjacent target/debug/wsx and wsxd
+cargo nextest run --workspace --locked    # unit and integration tests
+cargo test --workspace --locked --doc     # doctests
+python3 scripts/runtime-smoke.py          # real PTY and stream scenarios; rebuild both binaries first
 ```
 
-## Workspace layout
+Tests that open a PTY or a Unix socket fail inside a command sandbox. Rerun them outside it.
 
-Cargo workspace with two member crates (since `feat/extract-wsx-core`):
+## Crates
 
-- `crates/wsx-core/` — library (ratatui-free). Exported modules:
-  `cache`, `config`, `git`, `hooks`, `model`, `ops`, `proc_tree`, `tmux`.
-  Consumable by external orchestrators (notably `auwsx`).
-- `crates/wsx/` — TUI/CLI binary. Depends on `wsx-core` via path.
+- `crates/wsx-core/` — published library: `cache`, `config`, `git`, `hooks`, `integration`, `model`, `ops`, `runtime` (wire protocol and client).
+- `crates/wsx-terminal/` — PTY runtime and embedded `libghostty-vt` (`vendor/libghostty-vt`).
+- `crates/wsx-daemon/` — `wsxd`: state, leases, streams, agent lifecycle, live handoff.
+- `crates/wsx/` — TUI (`app.rs`, `ui/`) and CLI (`cli.rs`).
 
-## Key Files
+## Where to look
 
-- `crates/wsx/src/main.rs` — entry, tmux check, panic hook, dispatches TUI vs CLI subcommand
-- `crates/wsx/src/app.rs` — state machine, event loop, action dispatch
-- `crates/wsx/src/ui/` — ratatui render code
-- `crates/wsx/src/cli.rs` — non-interactive subcommands (status / worktree / session / tab)
-- `crates/wsx-core/src/ops.rs` — workspace business logic (worktree/session ops)
-- `crates/wsx-core/src/tmux/` — tmux shell commands
-- `crates/wsx-core/src/git/` — git CLI wrappers
-- `crates/wsx-core/src/config/` — global + per-project config (TOML)
-- `crates/wsx-core/src/model/workspace.rs` — data model (Project → Worktree → Session)
-- `crates/wsx-core/src/hooks.rs` — `.gtrconfig` post-create + gitignored copy
-- `crates/wsx-core/src/cache.rs` — startup session-snapshot cache
+- `docs/` — one contract per file, for example `agent-orchestration.md`, `terminal-exit-ordering.md`, `terminal-synchronized-output.md`.
+- `crates/wsx-core/src/runtime/protocol.rs` — protocol version and `DAEMON_REVISION`.
+- `crates/wsx-core/src/integration/` — agent hook installers and status mapping.
+- Unknown project term or prior decision: `/seek <topic>` before guessing.
