@@ -5,6 +5,7 @@ use crate::{
     media::Media,
     sandbox::Root,
     site::{Access, Capability, Site},
+    App,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -15,15 +16,15 @@ use std::{
     sync::Mutex,
 };
 use wsx_core::{
-    integration::memory::Reader,
+    integration::memory::{Item, ItemKind, Reader, ToolStatus},
     runtime::{
         AgentExchange, AgentExchangeAccess, AgentExchangeEvidence, AgentSessionRefKind, AgentState,
         Client, Pane, PaneId, Project, Request, Response, SessionId, Snapshot,
     },
 };
 
-const HISTORY_MESSAGES: usize = 80;
-const HISTORY_BYTES: usize = 256 * 1024;
+const TIMELINE_ITEMS: usize = 400;
+const TIMELINE_BYTES: usize = 256 * 1024;
 const EXCHANGE_TIMEOUT_MS: u64 = 60 * 60 * 1000;
 const MAX_PROMPT_BYTES: usize = 60 * 1024;
 const MAX_ATTACHMENTS: usize = 8;
@@ -252,14 +253,10 @@ impl Chat {
         }
     }
 
-    /// Bounded provider-native history plus the latest exchange for the pane.
-    pub fn history(
-        &self,
-        client: &Client,
-        site: &Site,
-        media: &Media,
-        session: u64,
-    ) -> Outcome<Value> {
+    /// The typed timeline of the provider's saved conversation, the latest exchange
+    /// for the pane, and what the agent is doing now (docs/web-client.md "Timeline").
+    pub fn timeline(&self, app: &App, session: u64) -> Outcome<Value> {
+        let (client, site, media) = (&app.client, &app.site, &app.media);
         let snapshot = snapshot(client)?;
         let target = target(&snapshot, &site.access, session)?;
         // Agent output is looked up in the session's own worktree, which wsxd lists
@@ -267,50 +264,72 @@ impl Chat {
         let root = std::fs::canonicalize(target.worktree)
             .ok()
             .and_then(|path| Root::pin(&path).ok());
-        let (status, source, truncated, checkpoint, messages) = match &target.pane.agent {
-            None => ("no_agent", None, false, None, Vec::new()),
-            Some(agent) => {
-                let memory = Reader::default().read(
-                    &agent.provider,
-                    agent.session_ref.as_ref(),
-                    HISTORY_MESSAGES,
-                    HISTORY_BYTES,
-                );
-                let messages = memory
-                    .messages
-                    .iter()
-                    .map(|message| {
-                        let (text, attachments) = if message.role == "user" {
-                            sent_message(&message.text, media)
-                        } else {
-                            let files = root
-                                .as_ref()
-                                .filter(|_| site.allows(Capability::MediaDownload))
-                                .map(|root| self.produced_files(&message.text, root, media))
-                                .unwrap_or_default();
-                            (message.text.clone(), files)
-                        };
-                        json!({ "role": message.role, "text": text, "attachments": attachments })
-                    })
-                    .collect();
-                (
-                    memory.status,
-                    Some(memory.source),
-                    memory.truncated,
-                    memory.checkpoint.map(|message| message.text),
-                    messages,
-                )
-            }
-        };
+        let timeline = target.pane.agent.as_ref().map(|agent| {
+            Reader::default().read_timeline(
+                &agent.provider,
+                agent.session_ref.as_ref(),
+                TIMELINE_ITEMS,
+                TIMELINE_BYTES,
+            )
+        });
+        let items: Vec<Value> = timeline
+            .iter()
+            .flat_map(|timeline| &timeline.items)
+            .map(|item| {
+                let (text, attachments) = match (&item.text, item.kind) {
+                    (Some(text), ItemKind::User) => {
+                        let (text, attachments) = sent_message(text, media);
+                        (Some(text), attachments)
+                    }
+                    (Some(text), _) => {
+                        let files = root
+                            .as_ref()
+                            .filter(|_| site.allows(Capability::MediaDownload))
+                            .map(|root| self.produced_files(text, root, media))
+                            .unwrap_or_default();
+                        (Some(text.clone()), files)
+                    }
+                    (None, _) => (None, Vec::new()),
+                };
+                json!({
+                    "id": item.id, "kind": item.kind, "at_unix_ms": item.at_unix_ms,
+                    "text": text, "attachments": attachments, "tool": item.tool,
+                })
+            })
+            .collect();
+        // Only wsxd decides that the agent works; the transcript says at what.
+        let working = target
+            .pane
+            .agent
+            .as_ref()
+            .filter(|agent| agent.attached && agent.state == AgentState::Working)
+            .map(|_| {
+                let steps = timeline.iter().flat_map(|timeline| &timeline.items);
+                let activity = match steps.last() {
+                    Some(Item {
+                        tool: Some(tool), ..
+                    }) if tool.status == ToolStatus::Running => tool.title.clone(),
+                    Some(Item {
+                        kind: ItemKind::Thinking,
+                        ..
+                    }) => "Thinking".into(),
+                    _ => "Working".to_owned(),
+                };
+                json!({
+                    "since_unix_ms": app.state_since(session, AgentState::Working),
+                    "activity": activity,
+                })
+            });
         let exchange = latest_exchange(client, target.pane.id)?;
         Ok(json!({
             "session": session_view(&target),
-            "status": status,
-            "source": source,
-            "truncated": truncated,
-            "checkpoint": checkpoint,
-            "messages": messages,
+            "status": timeline.as_ref().map_or("no_agent", |timeline| timeline.status),
+            "truncated": timeline.as_ref().is_some_and(|timeline| timeline.truncated),
+            "checkpoint": timeline.and_then(|timeline| timeline.checkpoint),
+            "items": items,
             "exchange": exchange.as_ref().map(exchange_view),
+            "queue": [],
+            "working": working,
         }))
     }
 

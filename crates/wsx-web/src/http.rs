@@ -61,7 +61,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/logout", post(logout))
             .route("/api/events", get(events))
             .route("/api/sessions", post(session_start))
-            .route("/api/chat/{session}/history", get(history))
+            .route("/api/chat/{session}/timeline", get(timeline))
             .route("/api/chat/{session}/send", post(send))
             .route("/api/chat/{session}/cancel", post(cancel))
             .route("/api/media", put(media_put))
@@ -524,17 +524,13 @@ async fn session_start(
     })
 }
 
-async fn history(
+async fn timeline(
     State(app): State<Shared>,
     Paired(_): Paired,
     UrlPath(session): UrlPath<u64>,
 ) -> Outcome<Json<Value>> {
     need(&app, Panel::Chat)?;
-    blocking(|| {
-        app.chat
-            .history(&app.client, &app.site, &app.media, session)
-            .map(Json)
-    })
+    blocking(|| app.chat.timeline(&app, session).map(Json))
 }
 
 #[derive(Deserialize)]

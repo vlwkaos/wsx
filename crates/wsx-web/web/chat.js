@@ -145,7 +145,9 @@ export function chatView(app, main, argument) {
     if (!current) return;
     const mine = ++generation;
     try {
-      const data = await api(`api/chat/${current}/history`);
+      const data = await api(`api/chat/${current}/timeline`);
+      data.messages = data.items.filter((item) => item.text != null)
+        .map((item) => ({ role: item.kind, text: item.text, attachments: item.attachments }));
       // A slower earlier response must not replace a newer one.
       if (closed || mine !== generation) return;
       loaded = data;
