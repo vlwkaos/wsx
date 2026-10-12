@@ -45,13 +45,19 @@ const stepWord = (item) => item.kind === "thinking" ? "Thinking" : item.tool.nam
 const Step = ({ item }) => html`
   <li class="step">
     <span class="step-title">${item.kind === "thinking" ? "Thinking" : item.tool.title}</span>
-    ${item.tool?.status === "error" ? html`<span class="step-state" data-tone="danger">failed</span>`
-      : item.tool?.status === "running" ? html`<span class="step-state">running</span>` : null}
+    ${item.tool?.status === "error" && html`<span class="step-state" data-tone="danger">failed</span>`}
   </li>`;
 
 // Consecutive tool and thinking items between two messages are one line. The run that
-// is still going shows its last three items.
+// is still going shows its last three finished items: the step that runs now is in
+// the working row and nowhere else.
 function Steps({ items, live }) {
+  if (live) {
+    const finished = items.filter((item) => item.tool?.status !== "running");
+    // With no tool running, a last thinking item is what the agent does now.
+    items = finished.length === items.length && items.at(-1).kind === "thinking" ? items.slice(0, -1) : finished;
+    if (!items.length) return null;
+  }
   const names = [...new Set(items.map(stepWord))];
   const summary = `${items.length} ${items.length === 1 ? "step" : "steps"}: ${names.join(", ")}`;
   if (live) {
@@ -91,7 +97,6 @@ function Composer({ session, working, onSent }) {
   const [busy, setBusy] = useState(false);
   const field = useRef();
   const picker = useRef();
-  const blocked = stateOf(session).key === "blocked";
   const ready = Boolean(session.agent?.attached && session.agent.prompt) && !session.exited;
 
   // The field grows with its text, up to six lines.
@@ -105,7 +110,7 @@ function Composer({ session, working, onSent }) {
 
   const send = async () => {
     const body = field.current.value.trim();
-    if (busy || blocked || !ready || (!body && !draft.attachments.length)) return;
+    if (busy || !ready || (!body && !draft.attachments.length)) return;
     setBusy(true);
     setError("");
     try {
@@ -164,10 +169,10 @@ function Composer({ session, working, onSent }) {
           <button class="icon-button" type="button" aria-label="Attach files" onClick=${() => picker.current.click()}><${Icon} name="attach" /></button>
           <input type="file" multiple hidden ref=${picker} onChange=${(event) => upload([...event.target.files])} />`}
         <textarea class="composer-field" ref=${field} rows="1" aria-label="Message"
-          placeholder=${blocked ? "Answer in the terminal" : ready ? "Message" : "Cannot receive messages"}
-          disabled=${!ready || blocked}
+          placeholder=${ready ? "Message" : "Cannot receive messages"}
+          disabled=${!ready}
           onInput=${() => { draft.text = field.current.value; grow(); }} onKeyDown=${keydown}></textarea>
-        <button class="button button-primary" type="button" disabled=${busy || !ready || blocked} onClick=${send}>${working ? "Queue" : "Send"}</button>
+        <button class="button button-primary" type="button" disabled=${busy || !ready} onClick=${send}>${working ? "Queue" : "Send"}</button>
       </div>
     </div>`;
 }
@@ -239,6 +244,9 @@ export function Chat({ session }) {
   const list = blocks(items);
   const delivery = data?.exchange && !working ? DELIVERY_WORDS[data.exchange.state]
     ?? (data.exchange.evidence === "intent_persisted" && data.exchange.active ? "Saved, not delivered to the agent yet." : null) : null;
+  // A blocked agent takes its answer in the terminal: the blocked row replaces the composer.
+  // The draft stays for when the agent is ready again.
+  const blocked = status.key === "blocked";
   const lastUserBlock = list.findLast?.((block) => block.kind === "user");
 
   return html`
@@ -268,11 +276,6 @@ export function Chat({ session }) {
             <span class="time">${elapsed(now - working.since_unix_ms)}</span>
             ${can("chat_send") && html`<button class="link-action" type="button" onClick=${() => act("cancel")}>Stop</button>`}
           </div>`}
-        ${status.key === "blocked" && html`
-          <div class="attention" role="status">
-            <span>The agent is waiting for your answer.</span>
-            ${shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`}
-          </div>`}
       </div>
       ${away && html`<button class="jump" type="button" onClick=${toEnd}><${Icon} name="down" />Jump to latest</button>`}
       </div>
@@ -288,7 +291,12 @@ export function Chat({ session }) {
                 onClick=${() => act(`queue/${queued.id}`, "DELETE")}>Remove</button>
             </li>`)}
         </ul>` : null}
-      ${can("chat_send") && html`<${Composer} session=${session} working=${Boolean(working) || Boolean(data?.queue?.length)}
+      ${blocked ? html`
+        <div class="attention" role="status">
+          <span>Waiting for your answer.</span>
+          ${shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`}
+        </div>`
+      : can("chat_send") && html`<${Composer} session=${session} working=${Boolean(working) || Boolean(data?.queue?.length)}
         onSent=${() => { atEnd.current = true; load(); }} />`}
     </div>`;
 }

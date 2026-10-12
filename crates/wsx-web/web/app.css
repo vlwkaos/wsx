@@ -143,6 +143,8 @@ a.row-link:active, button.row-link:active, .row-link[aria-current="page"] { back
 .bar-title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: var(--space-2); }
 .bar-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--font-weight-medium); }
 .bar-state { flex: 0 0 auto; font-size: var(--font-size-sm); color: var(--color-muted); white-space: nowrap; }
+/* Without the rail the label keeps the row's free width and the state word goes under it. */
+.app:not([data-wide]) .bar-title { flex-direction: column; align-items: stretch; gap: 0; }
 .bar-tools { flex: 0 0 auto; display: flex; }
 .switch { flex: 0 0 auto; display: flex; }
 .switch a {
@@ -156,13 +158,16 @@ a.row-link:active, button.row-link:active, .row-link[aria-current="page"] { back
 
 /* Hook: .chat, .log, .message, .steps, .working, .composer, .queue — the conversation.
    One scroll container between the top row and the composer. */
+/* On a wide screen the conversation, the waiting messages and the composer share one
+   centered column of the prose width. Each user of the inset is as wide as the chat
+   and has the body font size, so the percentage and the ch unit mean the same in all. */
+.chat { --column-inset: max(var(--space-4), calc((100% - var(--size-prose)) / 2)); }
 .chat, .log-wrap { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .log-wrap { position: relative; }
 .log {
   flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
-  /* On a wide screen the conversation is one centered column of the prose width. */
-  padding-inline: max(var(--space-4), calc((100% - var(--size-prose)) / 2));
+  padding-inline: var(--column-inset);
 }
 .log:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
 .message { max-width: var(--size-prose); }
@@ -184,9 +189,8 @@ div.steps .steps-summary { cursor: default; }
 .step { display: flex; gap: var(--space-2); min-width: 0; }
 .step-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .step-state { flex: 0 0 auto; }
-.working, .attention { display: flex; align-items: center; gap: var(--space-2); font-size: var(--font-size-sm); color: var(--color-muted); }
+.working { display: flex; align-items: center; gap: var(--space-2); font-size: var(--font-size-sm); color: var(--color-muted); }
 .working-activity { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.attention { color: var(--color-attention); justify-content: space-between; }
 /* The only looping motion, and only while an agent works. */
 .pulse { flex: 0 0 auto; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-accent); }
 @media (prefers-reduced-motion: no-preference) {
@@ -201,14 +205,23 @@ div.steps .steps-summary { cursor: default; }
   background: var(--color-raised); color: var(--color-text); font-size: var(--font-size-sm); cursor: pointer; white-space: nowrap;
 }
 .chat-error { padding: var(--space-1) var(--space-4); }
-.queue { list-style: none; margin: 0; padding: 0; border-top: var(--border-width) solid var(--color-hairline); background: var(--color-surface); }
-.queued { display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-4); min-height: var(--size-key); font-size: var(--font-size-sm); }
+.queue { list-style: none; margin: 0; padding: 0 var(--column-inset); border-top: var(--border-width) solid var(--color-hairline); background: var(--color-surface); }
+.queued { display: flex; align-items: center; gap: var(--space-3); min-height: var(--size-key); font-size: var(--font-size-sm); }
 .queued + .queued { border-top: var(--border-width) solid var(--color-hairline); }
 .queued-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-muted); }
 .queued-reason { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Opaque, with a hairline on top, so the end of the conversation is visible. */
-.composer { flex: 0 0 auto; padding: var(--space-2) var(--space-4) var(--space-2) var(--space-2); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
+.composer, .attention { flex: 0 0 auto; padding: var(--space-2) var(--column-inset); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
 .composer-row { display: flex; align-items: flex-end; gap: var(--space-1); }
+/* The attach icon, not its touch target, starts at the column edge. */
+.composer-row > .icon-button:first-child { margin-left: calc(-1 * var(--space-3)); }
+.composer .button { height: var(--size-control); }
+/* A blocked agent takes its answer in the terminal: this row stands where the composer was. */
+.attention {
+  min-height: calc(var(--size-control) + 2 * var(--space-2)); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  color: var(--color-attention);
+}
+.attention span { font-size: var(--font-size-sm); }
 .composer-field {
   flex: 1; min-width: 0; min-height: var(--size-control); padding: var(--space-3) var(--space-2);
   border: 0; background: none; resize: none; line-height: var(--line-height); outline: none;
@@ -272,7 +285,10 @@ div.steps .steps-summary { cursor: default; }
 }
 .terminal-stage { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; touch-action: none; }
 .terminal-host { height: 100%; }
-/* A site may turn ligatures off (terminal.ligatures in the site file). */
+/* xterm.js sets a letter spacing on its rows to hold the grid, and a browser drops a font's
+   ligatures wherever letter spacing is not zero. Naming the features turns them on again.
+   A site may turn ligatures off (terminal.ligatures in the site file). */
+.terminal-host:not([data-ligatures="off"]) .xterm-rows { font-feature-settings: "calt" 1, "liga" 1; }
 .terminal-host[data-ligatures="off"] .xterm-rows { font-variant-ligatures: none; }
 .terminal-host[data-size="host"] { width: max-content; height: max-content; transform-origin: 0 0; }
 .terminal-controls { border-top: var(--border-width) solid var(--color-hairline); }

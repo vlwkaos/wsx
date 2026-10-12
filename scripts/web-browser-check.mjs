@@ -140,7 +140,8 @@ async function openSession(role, tab = "chat") {
 }
 
 async function chats() {
-  // Working: a running tool, the elapsed time, Stop, and a message that waits.
+  // Working: the running tool is in the working row only, with the elapsed time and Stop;
+  // the step list holds the finished steps; a message waits.
   await openSession("working");
   await until("!!document.querySelector('.working') && !!document.querySelector('.queued')", "the working row or the queue did not show");
   const working = await evaluate(`({ state: document.querySelector('.bar-state').textContent, activity: document.querySelector('.working-activity').textContent,
@@ -150,9 +151,23 @@ async function chats() {
     pulse: getComputedStyle(document.querySelector('.pulse')).animationName })`);
   if (working.state !== "working" || working.activity !== "List the files" || working.send !== "Queue" || working.stop !== "Stop"
     || working.queued !== "Also mention the new terminal in the notes" || working.switch !== "Chat*,Terminal"
-    || !working.live.some((line) => /^List the files ?running$/.test(line)) || !working.live.includes("Thinking") || working.pulse !== "pulse") {
+    || working.live.join() !== "Thinking" || working.pulse !== "pulse") {
     await fail(`the working chat is wrong: ${JSON.stringify(working)}`);
   }
+  // One column: the user's message ends, and the composer's button ends, where the agent's
+  // text column ends; the button is as high as any control.
+  const column = await evaluate(`(() => { const edge = (selector, side) => Math.round(document.querySelector(selector).getBoundingClientRect()[side]);
+    const log = document.querySelector('.log'); const style = getComputedStyle(log);
+    return { left: Math.round(log.getBoundingClientRect().left + parseFloat(style.paddingLeft)), right: Math.round(log.getBoundingClientRect().right - parseFloat(style.paddingRight)),
+      steps: edge('.steps', 'left'), user: edge('.message-user', 'right'), send: edge('.composer .button', 'right'), field: edge('.composer-field', 'left'), queued: edge('.queued-text', 'left'),
+      height: document.querySelector('.composer .button').getBoundingClientRect().height, control: document.querySelector('.composer-field').getBoundingClientRect().height,
+      radius: [getComputedStyle(document.querySelector('.composer .button')).borderRadius, getComputedStyle(document.querySelector('.message-user')).borderRadius],
+      chars: Math.round((log.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)) / parseFloat(getComputedStyle(document.documentElement).fontSize || 16)) }; })()`);
+  if (column.steps !== column.left || column.user !== column.right || column.send !== column.right || column.queued !== column.left
+    || column.height !== 44 || column.radius[0] !== column.radius[1] || column.field < column.left) {
+    await fail(`the chat is not one column, or the send button is not a 44 px control: ${JSON.stringify(column)}`);
+  }
+  console.log(`chat column at ${size[0]} px: ${JSON.stringify(column)}`);
   await sound("working chat");
   await shot("chat-working", ".composer .button-primary");
 
@@ -180,9 +195,13 @@ async function chats() {
   await openSession("blocked");
   await until("!!document.querySelector('.attention') && document.querySelector('.message-user .prose')?.textContent === 'ask me which option to take'", "the blocked row or the sent message did not show");
   const blocked = await evaluate(`({ row: document.querySelector('.attention').textContent.trim().replace(/\\s+/g, ' '), link: document.querySelector('.attention a').getAttribute('href'),
-    disabled: document.querySelector('.composer-field').disabled && document.querySelector('.composer .button-primary').disabled,
-    label: (() => { const node = document.querySelector('.bar-label'); return node.scrollWidth > node.clientWidth; })(), state: document.querySelector('.bar-state').textContent })`);
-  if (!blocked.row.startsWith("The agent is waiting for your answer.") || !blocked.link.endsWith("/terminal") || !blocked.disabled || (phone() && !blocked.label) || blocked.state !== "needs input") {
+    composer: !!document.querySelector('.composer'), filled: document.querySelectorAll('.button-primary').length,
+    under: document.querySelector('.bar-state').getBoundingClientRect().top >= document.querySelector('.bar-label').getBoundingClientRect().bottom - 1,
+    label: Math.round(document.querySelector('.bar-label').getBoundingClientRect().width), state: document.querySelector('.bar-state').textContent })`);
+  // The blocked row stands in for the composer. On a phone the state word is under the label,
+  // so the label has the row's free width.
+  if (!blocked.row.startsWith("Waiting for your answer.") || !blocked.link.endsWith("/terminal") || blocked.composer || blocked.filled
+    || (phone() && (!blocked.under || blocked.label < size[0] - 200)) || blocked.state !== "needs input") {
     await fail(`the blocked chat is wrong: ${JSON.stringify(blocked)}`);
   }
   await sound("blocked chat");
