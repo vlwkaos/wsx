@@ -5,6 +5,7 @@ Real wsxd, real PTY fixture agents, three `wsx web serve` processes and a local
 Web Push receiver. Nothing here touches the user's daemon, Tailscale or network.
 """
 import argparse
+import base64
 import hashlib
 import http.client
 import json
@@ -35,7 +36,7 @@ draft, pending, leaf, sequence = '', b'', None, 0
 def report(state):
  with socket.socket(socket.AF_UNIX) as client:
   client.connect(os.environ['WSX_SOCKET']); stream = client.makefile('rb')
-  client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
+  client.sendall(b'{"method":"hello","params":{"protocol":17}}\n'); stream.readline()
   params = {'pane_id':pane,'runtime_generation':generation,'provider':'claude','state':state,
     'session_ref':{'kind':'id','value':'fixture','transcript_path':str(history)},
     'capabilities':{'prompt':True,'lifecycle':True}}
@@ -71,6 +72,8 @@ def turn(text):
   record('assistant', 'echo: '+body.splitlines()[0])
  time.sleep(0.2)
  report('done')
+# Like a real agent TUI, repaint after a resize: a web terminal resizes the pane.
+signal.signal(signal.SIGWINCH, lambda *_: paint())
 report('idle'); paint()
 while True:
  pending += os.read(0,4096)
@@ -88,6 +91,98 @@ while True:
   else:
    draft += char.decode(errors='replace'); paint()
 '''
+
+# A terminal fixture: raw mode, records every input byte, answers with its hex
+# in angle brackets, and reports its size after each resize.
+TERMINAL = r'''
+import fcntl, os, pathlib, signal, struct, sys, termios, tty
+trace = pathlib.Path(sys.argv[1])
+tty.setraw(0)
+def winch(*_):
+ rows, cols = struct.unpack('hhhh', fcntl.ioctl(0, termios.TIOCGWINSZ, b'\0' * 8))[:2]
+ os.write(1, b'\r\n[size %dx%d]\r\n' % (cols, rows))  # its own line: a replay wraps long lines
+signal.signal(signal.SIGWINCH, winch)
+os.write(1, b'term-ready')
+while True:
+ data = os.read(0, 65536)
+ if not data: break
+ with trace.open('ab') as out: out.write(data)
+ os.write(1, b'<' + data.hex().encode() + b'>')
+'''
+
+# Programs for the real-browser terminal check, run from a shell in the pane.
+TOOLS = {
+    'colors': r'''
+import sys
+out = sys.stdout.write
+for row in range(8):
+    out(''.join('\x1b[48;5;%dm ' % (row * 32 + cell) for cell in range(32)) + '\x1b[0m\n')
+out(''.join('\x1b[48;2;%d;%d;%dm ' % (255 - step * 8, step * 8, 128) for step in range(30)))
+out('\x1b[48;2;18;52;86m  \x1b[0m\n')
+out('\x1b[1mbold\x1b[0m \x1b[3mitalic\x1b[0m \x1b[4munderline\x1b[0m \x1b[7minverse\x1b[0m \x1b[38;5;208morange\x1b[0m\n')
+out('truecolor-end\n')
+''',
+    'query': r'''
+import os, select, termios, tty
+saved = termios.tcgetattr(0)
+tty.setraw(0)
+os.write(1, b'\x1b[c')
+replies = b''
+while select.select([0], [], [], 0.7)[0]:
+    replies += os.read(0, 1024)
+termios.tcsetattr(0, termios.TCSADRAIN, saved)
+print('da-replies=%d' % replies.count(b'c'))
+''',
+    'long': r'''
+for index in range(1, 301):
+    print('line-%03d' % index)
+print('long-end')
+''',
+    'alt': r'''
+import os, re, termios, tty
+saved = termios.tcgetattr(0)
+tty.setraw(0)
+counts = dict.fromkeys(('up', 'down', 'left', 'right', 'wheel-up', 'wheel-down'), 0)
+mouse = False
+def paint():
+    # Two short lines: a phone screen is narrower than one long status line.
+    items = ['%s=%d' % item for item in counts.items()]
+    lines = [' '.join(items[:4]), ' '.join(items[4:]) + ' mouse=' + ('on' if mouse else 'off')]
+    os.write(1, ('\x1b[H\x1b[2J\x1b[7m ALT SCREEN \x1b[0m\r\n\r\n' + '\r\n'.join(lines) + '\r\n\r\nm: mouse tracking   q: quit').encode())
+os.write(1, b'\x1b[?1049h')
+paint()
+while True:
+    data = os.read(0, 4096)
+    if not data or b'q' in data:
+        break
+    if b'm' in data and not mouse:
+        mouse = True
+        os.write(1, b'\x1b[?1000h\x1b[?1006h')
+    for name, sequence in (('up', b'\x1b[A'), ('down', b'\x1b[B'), ('right', b'\x1b[C'), ('left', b'\x1b[D'),
+                           ('up', b'\x1bOA'), ('down', b'\x1bOB'), ('right', b'\x1bOC'), ('left', b'\x1bOD')):
+        counts[name] += data.count(sequence)
+    counts['wheel-up'] += len(re.findall(rb'\x1b\[<64;', data))
+    counts['wheel-down'] += len(re.findall(rb'\x1b\[<65;', data))
+    paint()
+os.write(1, b'\x1b[?1000l\x1b[?1006l\x1b[?1049l')
+termios.tcsetattr(0, termios.TCSADRAIN, saved)
+print('alt-done')
+''',
+    'keys': r'''
+import os, pathlib, termios, tty
+saved = termios.tcgetattr(0)
+tty.setraw(0)
+os.write(1, b'keys-ready\r\n')
+with (pathlib.Path(__file__).parent / 'keys.trace').open('wb', buffering=0) as trace:
+    while True:
+        data = os.read(0, 4096)
+        trace.write(data)
+        if not data or b'Q' in data:
+            break
+termios.tcsetattr(0, termios.TCSADRAIN, saved)
+print('keys-done')
+''',
+}
 
 
 def png(size, shade):
@@ -136,6 +231,84 @@ class Site:
         if raw:
             return response.status, dict((k.lower(), v) for k, v in response.getheaders()), data
         return response.status, (json.loads(data) if data[:1] in (b'{', b'[') else data)
+
+
+class Terminal:
+    """One terminal WebSocket, opened and read the way a browser does it."""
+
+    def __init__(self, site, session, query='', origin='site', cookie='site', client='7'):
+        self.status, self.error, self.controls, self.output = None, None, [], b''
+        self.socket = socket.create_connection(('127.0.0.1', site.port), timeout=10)
+        path = '%s/api/terminal/%d/ws?client=%s%s' % (site.base, session, client, query)
+        lines = ['GET %s HTTP/1.1' % path, 'Host: %s' % (site.host or '127.0.0.1:%d' % site.port),
+                 'Upgrade: websocket', 'Connection: Upgrade', 'Sec-WebSocket-Version: 13',
+                 'Sec-WebSocket-Key: ' + base64.b64encode(os.urandom(16)).decode()]
+        origin = site.origin if origin == 'site' else origin
+        cookie = site.cookie if cookie == 'site' else cookie
+        if origin:
+            lines.append('Origin: ' + origin)
+        if cookie:
+            lines.append('Cookie: ' + cookie)
+        self.socket.sendall(('\r\n'.join(lines) + '\r\n\r\n').encode())
+        self.pending = b''
+        while b'\r\n\r\n' not in self.pending:
+            self.pending += self.socket.recv(65536)
+        head, self.pending = self.pending.split(b'\r\n\r\n', 1)
+        self.status = int(head.split(b' ', 2)[1])
+        if self.status != 101:
+            length = int(re.search(rb'content-length: (\d+)', head, re.I).group(1))
+            while len(self.pending) < length:
+                self.pending += self.socket.recv(65536)
+            self.error = json.loads(self.pending)['error']['code'] if self.pending[:1] == b'{' else None
+            self.socket.close()
+
+    def take(self, count):
+        while len(self.pending) < count:
+            chunk = self.socket.recv(65536)
+            if not chunk:
+                raise EOFError
+            self.pending += chunk
+        data, self.pending = self.pending[:count], self.pending[count:]
+        return data
+
+    def frame(self):
+        """Read one frame into `controls` or `output`. False when the server closed."""
+        try:
+            first, second = self.take(2)
+            length = second & 0x7f
+            if length == 126:
+                length = struct.unpack('>H', self.take(2))[0]
+            elif length == 127:
+                length = struct.unpack('>Q', self.take(8))[0]
+            payload = self.take(length)
+        except (EOFError, ConnectionError):
+            return False
+        opcode = first & 0x0f
+        if opcode == 1:
+            self.controls.append(json.loads(payload))
+        elif opcode == 2:
+            self.output += payload
+        return opcode != 8
+
+    def until(self, test, label):
+        """Read frames until `test()` holds. The stream ending first is a failure."""
+        while not test():
+            assert self.frame(), '%s: stream ended; controls %r, output %r' % (label, self.controls, self.output[-200:])
+
+    def control(self, kind):
+        self.until(lambda: any(item['type'] == kind for item in self.controls), kind)
+        return next(item for item in self.controls if item['type'] == kind)
+
+    def send(self, data):
+        """bytes: terminal input. dict: a control message."""
+        opcode, payload = (2, data) if isinstance(data, bytes) else (1, json.dumps(data).encode())
+        mask = os.urandom(4)
+        size = bytes([0x80 | len(payload)]) if len(payload) < 126 else bytes([0x80 | 126]) + struct.pack('>H', len(payload))
+        self.socket.sendall(bytes([0x80 | opcode]) + size + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+
+    def drop(self):
+        """Lose the connection without a close frame, as a network failure does."""
+        self.socket.close()
 
 
 class Events(threading.Thread):
@@ -242,7 +415,7 @@ def main():
                 client.settimeout(5)
                 client.connect(str(path))
                 stream = client.makefile('rb')
-                client.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
+                client.sendall(b'{"method":"hello","params":{"protocol":17}}\n')
                 stream.readline()
                 request = {'method': method}
                 if params is not None:
@@ -277,6 +450,13 @@ def main():
                 return next(p for p in snapshot['panes'] if p['id'] == pane)['agent']['state'] in ('idle', 'done')
             wait(state, name + ' agent ready')
 
+        def lease_free(session):
+            """Wait until no terminal holds the session's pane: a closed socket frees it shortly after."""
+            pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == session)
+            wait(lambda: call('terminal_acquire', {'pane_id': pane, 'client_id': 6, 'takeover': False})['type'] == 'ack',
+                 'terminal lease released')
+            assert call('terminal_release', {'pane_id': pane, 'client_id': 6})['type'] == 'ack'
+
         daemon = subprocess.Popen([str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         processes.append(daemon)
         wait(path.exists, 'daemon')
@@ -305,7 +485,7 @@ def main():
 
         vapid = cli('web', 'vapid').stdout
         private_key = next(line.split('"')[1] for line in vapid.splitlines() if line.startswith('private_key'))
-        ports = {name: free_port() for name in ('owner', 'family', 'root', 'retro')}
+        ports = {name: free_port() for name in ('owner', 'family', 'root', 'retro', 'viewer')}
         service_origin = 'https://wsx-fixture.example-tailnet.ts.net'
 
         def site_file(name, text, mode=0o600):
@@ -407,6 +587,16 @@ theme = "retro"
 path = "{project}"
 capabilities = ["chat_send", "agent_write", "files_read", "files_write", "terminal_view", "terminal_input", "media_upload", "media_download"]
 '''),
+            # Watch-only terminal: terminal_view without terminal_input.
+            'viewer': site_file('viewer', f'''id = "viewer"
+name = "Viewer"
+port = {ports['viewer']}
+public_origin = "http://127.0.0.1:{ports['viewer']}"
+panels = ["terminal"]
+[project]
+path = "{project}"
+capabilities = ["terminal_view"]
+'''),
         }
         # The site file is a trust boundary: wrong mode and unknown fields are refused.
         refused = cli('web', 'serve', '--site', site_file('open', owner_text, 0o644), expect=1)
@@ -470,6 +660,7 @@ capabilities = ["chat_send", "agent_write", "files_read", "files_write", "termin
         for site in sites.values():
             wait(lambda: up(site), 'web server')
         owner, family, root, retro = sites['owner'], sites['family'], sites['root'], sites['retro']
+        viewer = sites['viewer']
 
         # --- Sub-path first: both inbound shapes serve the same base-filled documents.
         for shape in ('prefixed', 'stripped'):
@@ -750,15 +941,21 @@ capabilities = ["chat_send", "agent_write", "files_read", "files_write", "termin
         assert (project / '.git/config').read_text() == git_config
         assert owner.request('GET', '/api/files?path=.git')[0] == 400
         assert outside.read_bytes() == png(8, 200)
-        status, screen = owner.request('GET', '/api/terminal/%d' % sessions['owner'])
-        assert status == 200 and '❯' in screen['text'], screen
+        # The terminal types into the agent's pane like a keyboard does.
         settle('owner')
-        assert owner.request('POST', '/api/terminal/%d/input' % sessions['owner'], {'text': 'typed in terminal', 'key': 'enter'})[0] == 200
+        typing = Terminal(owner, sessions['owner'], '&rows=12&cols=100')
+        typing.control('replay')
+        typing.until(lambda: '❯'.encode() in typing.output, 'agent screen replay')
+        typing.send(b'typed in terminal\r')
         wait(lambda: traces('owner')[-1] == 'typed in terminal', 'terminal input')
+        typing.drop()
+        lease_free(sessions['owner'])
         # Let this turn finish here; its done transition must not reach the push checks below.
         wait(lambda: messages(owner, sessions['owner'])['messages'][-1]['text'] == 'echo: typed in terminal', 'terminal turn')
         settle('owner')
-        assert owner.request('POST', '/api/terminal/%d/input' % sessions['owner'], {'text': 'a\x1bb'})[0] == 400
+        # The snapshot terminal API is gone.
+        assert owner.request('GET', '/api/terminal/%d' % sessions['owner'])[0] == 404
+        assert owner.request('POST', '/api/terminal/%d/input' % sessions['owner'], {'key': 'enter'})[0] in (404, 405)
         status, activity = owner.request('GET', '/api/activity')
         assert [s['id'] for s in activity['sessions']] == [sessions['owner']] and activity['exchanges'][0]['id'] == exchange['id']
         # A site without agent_write does not continue the owner's writer exchange.
@@ -775,7 +972,119 @@ capabilities = ["chat_send", "agent_write", "files_read", "files_write", "termin
             page.connection.sock.shutdown(socket.SHUT_RDWR)
             assert page.closed.wait(3)
             time.sleep(0.15)
-        ok('files sandbox without .git, terminal snapshot and input, activity, access-bound continuation, stream slots released')
+        ok('files sandbox without .git, terminal typing into the agent pane, activity, access-bound continuation, stream slots released')
+
+
+        # --- Live terminal: one WebSocket per session, bridged to the wsxd raw stream.
+        terminal_trace = work / 'terminal.trace'
+        (work / 'terminal.py').write_text(TERMINAL)
+        created = call('session_create', {'worktree_id': worktrees['project'], 'label': 'terminal',
+            'command': [sys.executable, str(work / 'terminal.py'), str(terminal_trace)], 'rows': 12, 'cols': 60})
+        assert created['type'] == 'created', created
+        term = created['data']['id']
+        term_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == term)
+        _, viewer_cookie = pair(viewer, 'viewer')
+        viewer.cookie = viewer_cookie.split(';')[0]
+
+        def typed():
+            return terminal_trace.read_bytes() if terminal_trace.exists() else b''
+
+        # The upgrade is refused before any daemon stream exists.
+        for label, refused, status, code in (
+                ('no cookie', Terminal(owner, term, cookie=None), 401, 'unpaired'),
+                ('forged cookie', Terminal(owner, term, cookie=owner.cookie[:-1] + ('0' if owner.cookie[-1] != '0' else '1')), 401, 'unpaired'),
+                ("another site's cookie", Terminal(owner, term, cookie=viewer.cookie), 401, 'unpaired'),
+                ('wrong Origin', Terminal(owner, term, origin='http://evil.example'), 403, 'wrong_origin'),
+                ('no Origin', Terminal(owner, term, origin=None), 403, 'wrong_origin'),
+                ('site without the terminal panel', Terminal(family, sessions['family']), 403, 'capability_denied'),
+                ('takeover without terminal_input', Terminal(viewer, term, '&takeover=true'), 403, 'capability_denied'),
+                ("another project's session", Terminal(owner, sessions['family']), 404, 'not_found'),
+                ('client that is not digits', Terminal(owner, term, client='abc'), 400, 'invalid_client')):
+            assert (refused.status, refused.error) == (status, code), (label, refused.status, refused.error)
+        assert call('terminal_acquire', {'pane_id': term_pane, 'client_id': 5, 'takeover': False})['type'] == 'ack'
+        assert call('terminal_release', {'pane_id': term_pane, 'client_id': 5})['type'] == 'ack'
+        ok('terminal upgrade refused: no or forged cookie, wrong or missing Origin, missing panel or capability, foreign session')
+
+        # Replay first, then bytes both ways. Each key of the key row arrives as its byte.
+        page = Terminal(owner, term, '&rows=20&cols=70')
+        assert page.status == 101
+        replay = page.control('replay')
+        assert (replay['rows'], replay['cols']) == (20, 70), replay
+        page.until(lambda: b'term-ready' in page.output and b'[size 70x20]' in page.output, 'replay and first size')
+        key_row = [b'\x1b', b'\t', b'\x03', b'\x16', b'\x01', b'd', b'\x1a', b'\x12', b'\x0c', b'\x7f', b'\n', b'\r']
+        for key in key_row:
+            page.send(key)
+            page.until(lambda: page.output.endswith(b'<' + key.hex().encode() + b'>'), 'echo of %r' % key)
+        assert typed() == b''.join(key_row), typed()
+        page.send('한글'.encode())
+        page.until(lambda: page.output.endswith(b'<' + '한글'.encode().hex().encode() + b'>'), 'UTF-8 echo')
+        page.send({'type': 'resize', 'rows': 9, 'cols': 44})
+        page.until(lambda: b'[size 44x9]' in page.output, 'resize reaches the PTY')
+        ok('terminal: replay then bytes both ways, every key-row byte and UTF-8 reach the PTY, resize reaches the PTY')
+
+        # A watch-only device sees the pane at its own size and cannot type or resize.
+        # It attaches only when no controller holds the pane.
+        watch = Terminal(viewer, term, '&rows=30&cols=90')
+        assert watch.control('busy') and not watch.frame()
+        # A wsx window takes the terminal: the page is told, and it does not take it back by itself.
+        with socket.socket(socket.AF_UNIX) as window:
+            window.settimeout(5)
+            window.connect(str(path))
+            lines = window.makefile('rb')
+            window.sendall(b'{"method":"hello","params":{"protocol":17}}\n')
+            lines.readline()
+            window.sendall(json.dumps({'method': 'terminal_subscribe', 'params': {
+                'pane_id': term_pane, 'client_id': 77, 'takeover': True, 'rows': 12, 'cols': 60}}).encode() + b'\n')
+            assert json.loads(lines.readline())['type'] == 'ack'
+            # Read frames as a window does; an unread stream would stall the pane.
+            window_messages = []
+
+            def read_window():
+                try:
+                    for line in lines:
+                        window_messages.append(json.loads(line))
+                except (OSError, ValueError):
+                    pass
+            threading.Thread(target=read_window, daemon=True).start()
+            assert page.control('control_lost') and not page.frame()
+            busy = Terminal(owner, term, '&rows=20&cols=70', client='8')
+            assert busy.control('busy') and not busy.frame()
+            assert typed() == b''.join(key_row) + '한글'.encode()
+            taken = Terminal(owner, term, '&rows=20&cols=70&takeover=true', client='8')
+            taken.control('replay')
+            displaced = wait(lambda: [m for m in window_messages if m['type'] == 'error'], 'the window is displaced')
+            assert displaced[0]['data']['code'] == 'lease_transferred', displaced
+        taken.send(b'x')
+        taken.until(lambda: taken.output.endswith(b'<78>'), 'input after taking control')
+        # A lost connection: the same page reconnects without a takeover and gets a new replay.
+        taken.drop()
+        again = Terminal(owner, term, '&rows=20&cols=70', client='8')
+        again.control('replay')
+        again.until(lambda: b'<78>' in again.output, 'replay shows the earlier screen')
+        again.send(b'y')
+        again.until(lambda: again.output.endswith(b'<79>'), 'input after reconnect')
+        again.send({'type': 'shutdown'})
+        assert again.control('error')['code'] == 'invalid_message' and not again.frame()
+        # Closing the socket releases the lease.
+        lease_free(term)
+        ok('terminal control: lost to a wsx window, busy without takeover, taken back, same-page reconnect with a new replay, lease released on close')
+
+        size_before = len(typed())
+        watch = Terminal(viewer, term, '&rows=30&cols=90')
+        replay = watch.control('replay')
+        assert (replay['rows'], replay['cols']) == (20, 70), 'a watch-only device must not resize the pane'
+        watch.send({'type': 'resize', 'rows': 5, 'cols': 5})
+        assert watch.control('error')['code'] == 'invalid_message' and not watch.frame()
+        watch = Terminal(viewer, term)
+        watch.control('replay')
+        watch.send(b'z')
+        while watch.frame():  # the socket timeout fails this if the server keeps the stream open
+            pass
+        time.sleep(0.3)
+        assert len(typed()) == size_before, 'a watch-only device typed into the terminal'
+        ok('watch-only terminal: host size, no resize, no input')
+        session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == term)
+        assert call('session_close', {'session_id': term, 'expected_revision': session['revision']})['type'] == 'ack'
 
         # --- Site B: same binary, fewer bits. Every missing bit is a server refusal.
         status, session = family.request('GET', '/api/session')
@@ -784,8 +1093,7 @@ capabilities = ["chat_send", "agent_write", "files_read", "files_write", "termin
         streams.append(family_events)
         assert [s['id'] for s in family_events.expect('workspace')['sessions']] == [sessions['family']]
         for method, target, body in (('GET', '/api/files?path=', None), ('GET', '/api/file?path=notes.txt', None),
-                                     ('PUT', '/api/file', write), ('GET', '/api/terminal/%d' % sessions['family'], None),
-                                     ('POST', '/api/terminal/%d/input' % sessions['family'], {'key': 'enter'}),
+                                     ('PUT', '/api/file', write),
                                      ('GET', '/api/activity', None), ('GET', '/api/push', None),
                                      ('POST', '/api/sessions', {'label': 'new'})):
             status, body = family.request(method, target, body)
@@ -806,6 +1114,26 @@ capabilities = ["chat_send", "agent_write", "files_read", "files_write", "termin
         # --- Optional real browser, on both sites, before any device is revoked.
         if args.browser:
             args.captures.mkdir(parents=True, exist_ok=True)
+            # The live terminal, on a shell session of its own.
+            tools = work / 'tools'
+            tools.mkdir()
+            for name, source in TOOLS.items():
+                (tools / name).write_text('#!%s\n%s' % (sys.executable, source.lstrip()))
+                (tools / name).chmod(0o700)
+            created = call('session_create', {'worktree_id': worktrees['project'], 'label': 'shell',
+                'command': ['/bin/sh', '-c', "cd '%s' && PS1='$ ' exec /bin/sh" % tools], 'rows': 24, 'cols': 80})
+            assert created['type'] == 'created', created
+            shell = created['data']['id']
+            shell_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == shell)
+            code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
+            result = subprocess.run([node, str(ROOT / 'scripts/web-terminal-check.mjs'), owner.origin + owner.base + '/',
+                                     code, str(shell), str(args.captures), str(path), str(shell_pane), str(tools / 'keys.trace')],
+                                    capture_output=True, text=True, timeout=200)
+            assert result.returncode == 0, result.stdout + result.stderr
+            ok('real browser, ' + result.stdout.strip().splitlines()[-1])
+            session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == shell)
+            assert call('session_close', {'session_id': shell, 'expected_revision': session['revision']})['type'] == 'ack'
+
             for name, site, session, body_color in (('owner', owner, 'owner', 'rgb(246, 245, 241)'),
                                                     ('retro', retro, 'owner', 'rgb(192, 192, 192)')):
                 settle(session)
@@ -852,8 +1180,12 @@ capabilities = ["chat_send", "agent_write", "files_read", "files_write", "termin
         events.expect('workspace', lambda data: data['sessions'][0]['agent']['state'] == 'blocked')
         refused = owner.request('POST', chat + '/send', {'text': 'yes'})
         assert refused[0] == 409 and refused[1]['error']['code'] == 'agent_blocked'
-        assert owner.request('POST', '/api/terminal/%d/input' % sessions['owner'], {'key': 'ctrl_c'})[0] == 200
+        interrupt = Terminal(owner, sessions['owner'])
+        interrupt.control('replay')
+        interrupt.send(b'\x03')
         events.expect('workspace', lambda data: data['sessions'][0]['agent']['state'] == 'idle')
+        interrupt.drop()
+        lease_free(sessions['owner'])
         # "error" was not consented to: the state change happens, no push is sent.
         settle('owner')
         owner.request('POST', chat + '/send', {'text': 'fail now'})
