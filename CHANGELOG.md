@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- The web client's `GET api/terminal/<session>` and `POST api/terminal/<session>/input` routes are removed with the text-snapshot terminal. `terminal_view` now allows watching the live terminal; `terminal_input` allows typing, resizing the pane and taking control.
+- The wire protocol is 17. A wsx or script that says `hello` with protocol 16 is refused by the new daemon, apart from the lifecycle requests.
+
+### Features
+
+- Make the web client's terminal panel a real terminal. It is xterm.js on the pane's own byte stream over a WebSocket, with a key row, paste, an arrow drag pad and touch scrolling on phones, Korean and other IME input, and reconnect after a lost connection. A pane still has one controller: the page shows when a wsx window holds the terminal and takes it only on request. *Fit screen* resizes the pane to the browser; *Host size* scales the view instead. The text-snapshot terminal and its `api/terminal` routes are removed. See `docs/web-client.md`.
+- Add a raw terminal stream to wsxd for clients that run their own emulator: a replay of the current screen, then the PTY bytes, with the same single-writer lease as the TUI stream. Protocol 17, daemon revision 23, capability `raw_terminal_stream`. The TUI's frame stream is unchanged. A protocol-16 TUI defers the upgrade until it quits, as described in `docs/daemon-live-upgrade.md`. See `docs/terminal-raw-stream.md`.
+
 ## [0.30.1] - 2026-10-12
 
 ### Breaking Changes
