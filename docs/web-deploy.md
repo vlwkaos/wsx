@@ -10,12 +10,12 @@ Each site is one `wsx web serve` process on a loopback port. `wsx` never runs `t
 
 ## 1. Site file
 
-A ready example for the service `remotty` is [examples/remotty.site.toml](examples/remotty.site.toml).
+A ready example for the service `wsx` is [examples/wsx.site.toml](examples/wsx.site.toml).
 
 ```sh
 mkdir -p ~/.config/wsx/web && chmod 700 ~/.config/wsx/web
-cp docs/examples/remotty.site.toml ~/.config/wsx/web/remotty.toml
-chmod 600 ~/.config/wsx/web/remotty.toml        # the server refuses any other mode
+cp docs/examples/wsx.site.toml ~/.config/wsx/web/wsx.toml
+chmod 600 ~/.config/wsx/web/wsx.toml        # the server refuses any other mode
 ```
 
 The `public_origin` must be the exact origin the browser uses, and `port` must be free (`lsof -iTCP:4690 -sTCP:LISTEN`). For Web Push, run `wsx web vapid`, paste the printed `[push]` block into your copy, and add `"push"` to `capabilities`. The project must already be a wsx project.
@@ -38,17 +38,17 @@ capabilities = ["chat_send", "agent_write", "media_upload", "media_download"]
 ## 2. Process manager (PM2)
 
 ```sh
-pm2 start "$(command -v wsx)" --name wsx-web-remotty --interpreter none -- web serve --site ~/.config/wsx/web/remotty.toml
+pm2 start "$(command -v wsx)" --name wsx-web --interpreter none -- web serve --site ~/.config/wsx/web/wsx.toml
 pm2 save
-pm2 logs wsx-web-remotty --lines 5      # expect: wsx web: site 'remotty' on http://127.0.0.1:4690/ ...
+pm2 logs wsx-web --lines 5      # expect: wsx web: site 'wsx' on http://127.0.0.1:4690/ ...
 ```
 
-After a wsx upgrade, restart only this process: `pm2 restart wsx-web-remotty`. Never use `pm2 kill`, `pm2 stop all` or `pm2 delete all`. The web server does not start `wsxd`; open `wsx` once on the host, or the page says that wsx is not running.
+After a wsx upgrade, restart only this process: `pm2 restart wsx-web`. Never use `pm2 kill`, `pm2 stop all` or `pm2 delete all`. The web server does not start `wsxd`; open `wsx` once on the host, or the page says that wsx is not running.
 
 Loopback check before exposing anything (the `Host` header must be the public host):
 
 ```sh
-curl -fsS -H 'Host: remotty.<tailnet>.ts.net' http://127.0.0.1:4690/manifest.webmanifest   # "scope":"/"
+curl -fsS -H 'Host: wsx.<tailnet>.ts.net' http://127.0.0.1:4690/manifest.webmanifest   # "scope":"/"
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4690/                             # 421: wrong Host
 ```
 
@@ -60,32 +60,32 @@ Requirements, each one yours to decide and apply:
 |---|---|
 | Tailscale 1.86.0 or later on the host | `tailscale version` |
 | The host is a tagged device | Tailnet admin. A tagged device loses its user identity and its key expiry; removing all tags needs re-authentication. |
-| Service `svc:remotty` defined with `tcp:443` | Admin console, Services |
+| Service `svc:wsx` defined with `tcp:443` | Admin console, Services |
 | The host approved for the service | Admin console, or an `autoApprovers` rule |
-| A grant that lets your devices reach `svc:remotty` on 443 | Tailnet policy |
+| A grant that lets your devices reach `svc:wsx` on 443 | Tailnet policy |
 
 Policy entries (replace the tag and owner with your own):
 
 ```jsonc
 "tagOwners":     { "tag:server": ["<owner>"] },
-"autoApprovers": { "services": { "svc:remotty": ["tag:server"] } },
-"grants": [ { "src": ["autogroup:member"], "dst": ["svc:remotty"], "ip": ["443"] } ]
+"autoApprovers": { "services": { "svc:wsx": ["tag:server"] } },
+"grants": [ { "src": ["autogroup:member"], "dst": ["svc:wsx"], "ip": ["443"] } ]
 ```
 
 Serve configuration is shared by every app on the node. Use service-scoped commands only and never `tailscale serve reset`. Flags differ between releases; confirm them with `tailscale serve --help`.
 
 ```sh
 tailscale serve status --json                                          # record the state before
-tailscale serve --service=svc:remotty --https=443 127.0.0.1:4690
+tailscale serve --service=svc:wsx --https=443 127.0.0.1:4690
 tailscale serve status --json                                          # the service is listed, others unchanged
 ```
 
 Remove the site (the service definition and grant stay in the tailnet until you remove them):
 
 ```sh
-tailscale serve drain svc:remotty     # stop new connections, let open ones finish
-tailscale serve clear svc:remotty     # remove this service from this host
-pm2 delete wsx-web-remotty
+tailscale serve drain svc:wsx     # stop new connections, let open ones finish
+tailscale serve clear svc:wsx     # remove this service from this host
+pm2 delete wsx-web
 ```
 
 The service name appears in public Certificate Transparency logs when its certificate is issued; do not put a sensitive word in it.
@@ -93,16 +93,16 @@ The service name appears in public Certificate Transparency logs when its certif
 ## 4. Pair a device
 
 ```sh
-wsx web pair --site ~/.config/wsx/web/remotty.toml      # prints XXXXX-XXXXX, valid 10 minutes, one use
-wsx web devices --site ~/.config/wsx/web/remotty.toml
-wsx web devices --site ~/.config/wsx/web/remotty.toml --revoke <id>
+wsx web pair --site ~/.config/wsx/web/wsx.toml      # prints XXXXX-XXXXX, valid 10 minutes, one use
+wsx web devices --site ~/.config/wsx/web/wsx.toml
+wsx web devices --site ~/.config/wsx/web/wsx.toml --revoke <id>
 ```
 
 Open the public URL on the device, enter the code, then use the browser's "Add to Home Screen" or "Install". On iPhone, notifications work only from the installed app.
 
 ## 5. Check on the tailnet
 
-1. From a second tailnet device, `https://remotty.<tailnet>.ts.net/` shows the pairing form, or the chat on a paired device.
+1. From a second tailnet device, `https://wsx.<tailnet>.ts.net/` shows the pairing form, or the chat on a paired device.
 2. If every request answers `421`, the proxy did not pass the public `Host`; compare it with `public_origin`.
 3. A device without the grant cannot connect.
 
