@@ -4,7 +4,7 @@
 use crate::{
     media::Media,
     sandbox::Root,
-    site::{Capability, Site},
+    site::{Access, Capability, Site},
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -18,7 +18,7 @@ use wsx_core::{
     integration::memory::Reader,
     runtime::{
         AgentExchange, AgentExchangeAccess, AgentExchangeEvidence, AgentSessionRefKind, AgentState,
-        Client, Pane, PaneId, Request, Response, SessionId, Snapshot,
+        Client, Pane, PaneId, Project, Request, Response, SessionId, Snapshot,
     },
 };
 
@@ -45,7 +45,7 @@ impl Fault {
         )
     }
     pub fn not_found() -> Self {
-        Self::new(404, "not_found", "not found in this site's project")
+        Self::new(404, "not_found", "not found in this site's projects")
     }
 }
 
@@ -86,8 +86,9 @@ pub fn snapshot(client: &Client) -> Outcome<Snapshot> {
     }
 }
 
-/// A session of the granted project, with the pane that carries its agent.
+/// A session of a granted project, with the pane that carries its agent.
 pub struct Target<'a> {
+    pub project: &'a Project,
     pub session_id: SessionId,
     pub label: &'a str,
     pub pane: &'a Pane,
@@ -95,16 +96,26 @@ pub struct Target<'a> {
     pub branch: &'a str,
 }
 
-/// Every session whose worktree belongs to the site's one project. This is the
-/// only place that maps daemon state to the grant; nothing else may widen it.
-pub fn targets<'a>(snapshot: &'a Snapshot, project: &Path) -> Vec<Target<'a>> {
-    let Some(project) = snapshot
+/// The projects of wsxd that the site may reach. This and `targets` are the only
+/// place that maps daemon state to the grant; nothing else may widen it.
+pub fn projects<'a>(snapshot: &'a Snapshot, access: &Access) -> Vec<&'a Project> {
+    snapshot
         .projects
         .iter()
-        .find(|candidate| std::fs::canonicalize(&candidate.path).is_ok_and(|path| path == project))
-    else {
-        return Vec::new();
-    };
+        .filter(|project| access.grants(&project.path))
+        .collect()
+}
+
+pub fn project<'a>(snapshot: &'a Snapshot, access: &Access, id: u64) -> Outcome<&'a Project> {
+    projects(snapshot, access)
+        .into_iter()
+        .find(|project| project.id.0 == id)
+        .ok_or_else(Fault::not_found)
+}
+
+/// Every session whose worktree belongs to a granted project.
+pub fn targets<'a>(snapshot: &'a Snapshot, access: &Access) -> Vec<Target<'a>> {
+    let projects = projects(snapshot, access);
     snapshot
         .sessions
         .iter()
@@ -113,9 +124,9 @@ pub fn targets<'a>(snapshot: &'a Snapshot, project: &Path) -> Vec<Target<'a>> {
                 .worktrees
                 .iter()
                 .find(|worktree| worktree.id == session.worktree_id)?;
-            if worktree.project_id != project.id {
-                return None;
-            }
+            let project = *projects
+                .iter()
+                .find(|project| project.id == worktree.project_id)?;
             let panes = || {
                 session
                     .panes
@@ -126,6 +137,7 @@ pub fn targets<'a>(snapshot: &'a Snapshot, project: &Path) -> Vec<Target<'a>> {
                 .find(|pane| pane.agent.is_some())
                 .or_else(|| panes().find(|pane| pane.id == session.primary_pane))?;
             Some(Target {
+                project,
                 session_id: session.id,
                 label: &session.label,
                 pane,
@@ -136,8 +148,8 @@ pub fn targets<'a>(snapshot: &'a Snapshot, project: &Path) -> Vec<Target<'a>> {
         .collect()
 }
 
-pub fn target<'a>(snapshot: &'a Snapshot, project: &Path, session: u64) -> Outcome<Target<'a>> {
-    targets(snapshot, project)
+pub fn target<'a>(snapshot: &'a Snapshot, access: &Access, session: u64) -> Outcome<Target<'a>> {
+    targets(snapshot, access)
         .into_iter()
         .find(|target| target.session_id.0 == session)
         .ok_or_else(Fault::not_found)
@@ -147,6 +159,7 @@ pub fn session_view(target: &Target) -> Value {
     json!({
         "id": target.session_id,
         "label": target.label,
+        "project": { "id": target.project.id, "name": target.project.name },
         "branch": target.branch,
         "pane_id": target.pane.id,
         "exited": target.pane.exited,
@@ -248,7 +261,7 @@ impl Chat {
         session: u64,
     ) -> Outcome<Value> {
         let snapshot = snapshot(client)?;
-        let target = target(&snapshot, &site.project, session)?;
+        let target = target(&snapshot, &site.access, session)?;
         // Agent output is looked up in the session's own worktree, which wsxd lists
         // under the granted project and which may live outside the main checkout.
         let root = std::fs::canonicalize(target.worktree)
@@ -429,7 +442,7 @@ impl Chat {
             ));
         }
         let snapshot = snapshot(client)?;
-        let target = target(&snapshot, &site.project, session)?;
+        let target = target(&snapshot, &site.access, session)?;
         let agent = target.pane.agent.as_ref().filter(|agent| agent.attached);
         let Some(agent) = agent else {
             return Err(Fault::new(
@@ -513,7 +526,7 @@ impl Chat {
             return Err(Fault::forbidden("cancelling messages"));
         }
         let snapshot = snapshot(client)?;
-        let target = target(&snapshot, &site.project, session)?;
+        let target = target(&snapshot, &site.access, session)?;
         let exchange = latest_exchange(client, target.pane.id)?
             .filter(|exchange| !exchange.is_terminal())
             .ok_or_else(|| Fault::new(409, "nothing_to_cancel", "no message is in progress"))?;
@@ -595,4 +608,26 @@ pub fn history_stamp(pane: &Pane) -> Option<(PathBuf, u64, i64)> {
             .saturating_mul(1_000_000_000)
             .saturating_add(metadata.mtime_nsec()),
     ))
+}
+
+/// The granted projects and their worktrees, for the page's session list and
+/// its "new session" and files actions.
+pub fn projects_view(snapshot: &Snapshot, access: &Access) -> Vec<Value> {
+    projects(snapshot, access)
+        .into_iter()
+        .map(|project| {
+            let worktrees: Vec<Value> = snapshot
+                .worktrees
+                .iter()
+                .filter(|worktree| worktree.project_id == project.id)
+                .map(|worktree| {
+                    json!({
+                        "id": worktree.id, "branch": worktree.branch,
+                        "main": worktree.path == project.path,
+                    })
+                })
+                .collect();
+            json!({ "id": project.id, "name": project.name, "worktrees": worktrees })
+        })
+        .collect()
 }

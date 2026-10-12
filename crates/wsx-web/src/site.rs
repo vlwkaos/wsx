@@ -61,7 +61,7 @@ struct SiteFile {
     theme: String,
     #[serde(default)]
     icon: Option<IconFile>,
-    project: ProjectFile,
+    access: AccessFile,
     #[serde(default)]
     media: MediaLimits,
     #[serde(default)]
@@ -81,11 +81,37 @@ struct IconFile {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProjectFile {
-    path: PathBuf,
+struct AccessFile {
+    projects: ProjectsFile,
     capabilities: Vec<Capability>,
     #[serde(default)]
     agent_command: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ProjectsFile {
+    All(String),
+    Paths(Vec<PathBuf>),
+}
+
+/// The projects a site may reach. Listed paths are canonical directories.
+#[derive(Debug, Clone)]
+pub enum Access {
+    /// Every project wsxd manages, now and later.
+    All,
+    Projects(Vec<PathBuf>),
+}
+
+impl Access {
+    pub fn grants(&self, project: &Path) -> bool {
+        match self {
+            Self::All => true,
+            Self::Projects(paths) => {
+                fs::canonicalize(project).is_ok_and(|path| paths.contains(&path))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -150,7 +176,7 @@ pub struct Site {
     pub public: Origin,
     pub panels: Vec<Panel>,
     pub theme: Theme,
-    pub project: PathBuf,
+    pub access: Access,
     pub capabilities: Vec<Capability>,
     pub agent_command: Vec<String>,
     pub media: MediaLimits,
@@ -195,10 +221,10 @@ impl Site {
         ensure!(!file.panels.is_empty(), "panels must not be empty");
         ensure!(unique(&file.panels), "panels contains a duplicate");
         ensure!(
-            unique(&file.project.capabilities),
+            unique(&file.access.capabilities),
             "capabilities contains a duplicate"
         );
-        for capability in &file.project.capabilities {
+        for capability in &file.access.capabilities {
             if let Some(panel) = capability.panel() {
                 ensure!(
                     file.panels.contains(&panel),
@@ -206,7 +232,7 @@ impl Site {
                 );
             }
         }
-        let has = |capability| file.project.capabilities.contains(&capability);
+        let has = |capability| file.access.capabilities.contains(&capability);
         ensure!(
             !has(Capability::FilesWrite) || has(Capability::FilesRead),
             "files_write needs files_read"
@@ -220,23 +246,50 @@ impl Site {
             "agent_write needs chat_send"
         );
         ensure!(
-            has(Capability::SessionStart) != file.project.agent_command.is_empty(),
+            has(Capability::SessionStart) != file.access.agent_command.is_empty(),
             "session_start and agent_command must be set together"
         );
         ensure!(
-            file.project
+            file.access
                 .agent_command
                 .iter()
                 .all(|part| !part.is_empty() && !part.contains('\0'))
-                && file.project.agent_command.len() <= 16,
+                && file.access.agent_command.len() <= 16,
             "agent_command is invalid"
         );
-        ensure!(
-            file.project.path.is_absolute(),
-            "project path must be absolute"
-        );
-        let project = fs::canonicalize(&file.project.path).context("project path is missing")?;
-        ensure!(project.is_dir(), "project path must be a directory");
+        let access = match file.access.projects {
+            ProjectsFile::All(word) => {
+                ensure!(
+                    word == "all",
+                    "access.projects must be \"all\" or a list of paths"
+                );
+                Access::All
+            }
+            ProjectsFile::Paths(paths) => {
+                ensure!(
+                    (1..=32).contains(&paths.len()),
+                    "access.projects must list 1-32 paths"
+                );
+                let mut projects = Vec::new();
+                for path in paths {
+                    ensure!(
+                        path.is_absolute(),
+                        "project path {} must be absolute",
+                        path.display()
+                    );
+                    let project = fs::canonicalize(&path)
+                        .with_context(|| format!("project path {} is missing", path.display()))?;
+                    ensure!(
+                        project.is_dir(),
+                        "project path {} must be a directory",
+                        path.display()
+                    );
+                    projects.push(project);
+                }
+                ensure!(unique(&projects), "access.projects contains a duplicate");
+                Access::Projects(projects)
+            }
+        };
         let media = file.media;
         ensure!(
             (1..=512 * 1024 * 1024).contains(&media.max_file_bytes)
@@ -294,9 +347,9 @@ impl Site {
             public,
             panels: file.panels,
             theme,
-            project,
-            capabilities: file.project.capabilities,
-            agent_command: file.project.agent_command,
+            access,
+            capabilities: file.access.capabilities,
+            agent_command: file.access.agent_command,
             media,
             push,
             state_dir,

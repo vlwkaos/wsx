@@ -29,7 +29,8 @@ pub(crate) struct App {
     devices: devices::Devices,
     media: media::Media,
     push: Option<push::Push>,
-    root: sandbox::Root,
+    /// One pinned root per granted project that was opened, by canonical path.
+    roots: Mutex<HashMap<std::path::PathBuf, Arc<sandbox::Root>>>,
     chat: chat::Chat,
     client: wsx_core::runtime::Client,
     assets: assets::Assets,
@@ -38,6 +39,20 @@ pub(crate) struct App {
     /// Latest workspace event, replayed first on every new stream.
     workspace: Mutex<Option<events::Message>>,
     streams: Mutex<HashMap<String, usize>>,
+}
+
+impl App {
+    /// The pinned root of a granted project. The caller checked the grant.
+    fn root(&self, project: &Path) -> std::io::Result<Arc<sandbox::Root>> {
+        let path = std::fs::canonicalize(project)?;
+        let mut roots = self.roots.lock().unwrap_or_else(|lock| lock.into_inner());
+        if let Some(root) = roots.get(&path) {
+            return Ok(root.clone());
+        }
+        let root = Arc::new(sandbox::Root::pin(&path)?);
+        roots.insert(path, root.clone());
+        Ok(root)
+    }
 }
 
 /// `wsx web serve --site <file>`: run until SIGINT or SIGTERM.
@@ -51,7 +66,7 @@ pub fn serve(site_file: &Path) -> Result<()> {
             .as_ref()
             .map(|settings| push::Push::open(&site.state_dir, settings))
             .transpose()?,
-        root: sandbox::Root::pin(&site.project).context("cannot open the project")?,
+        roots: Mutex::new(HashMap::new()),
         chat: chat::Chat::new(),
         // Never `Client::local()`: a web server must not start wsxd.
         client: wsx_core::runtime::Client::new(wsx_core::runtime::default_socket_path()),
@@ -78,6 +93,13 @@ pub fn serve(site_file: &Path) -> Result<()> {
                 app.site.public.origin,
                 app.site.scope()
             );
+            // A listed project must be readable now; "all" pins each project on first use.
+            if let site::Access::Projects(paths) = &app.site.access {
+                for path in paths {
+                    app.root(path)
+                        .with_context(|| format!("cannot open project {}", path.display()))?;
+                }
+            }
             events::spawn(app.clone());
             let sweeper = app.clone();
             tokio::spawn(async move {

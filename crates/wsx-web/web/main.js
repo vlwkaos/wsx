@@ -18,6 +18,7 @@ const app = {
   site: null,
   device: null,
   sessions: [],
+  projects: [],
   daemon: true,
   can: (capability) => app.site.capabilities.includes(capability),
   navigate: (hash) => {
@@ -53,6 +54,7 @@ function start(session) {
   openEvents({
     workspace: (data) => {
       app.sessions = data.sessions;
+      app.projects = data.projects;
       app.daemon = true;
       notice("daemon", null);
       view?.onWorkspace?.();

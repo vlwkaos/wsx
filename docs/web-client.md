@@ -1,6 +1,6 @@
 # Hosted web client
 
-`wsx web serve --site <site.toml>` hosts one paired web site: a remote chat with the agents of one project, plus optional files, terminal and activity panels. It is a `wsxd` client like the TUI. It never starts, stops or replaces `wsxd`. The terminal panel needs a `wsxd` with the raw terminal stream (protocol 17, [terminal-raw-stream.md](terminal-raw-stream.md)). Deployment commands are in [web-deploy.md](web-deploy.md).
+`wsx web serve --site <site.toml>` hosts one paired web site: a remote chat with the agents of the granted projects, plus optional files, terminal and activity panels. It is a `wsxd` client like the TUI. It never starts, stops or replaces `wsxd`. The terminal panel needs a `wsxd` with the raw terminal stream (protocol 17, [terminal-raw-stream.md](terminal-raw-stream.md)). Deployment commands are in [web-deploy.md](web-deploy.md).
 
 ```sh
 wsx web vapid                          # print a new Web Push key pair for a site file
@@ -26,8 +26,8 @@ theme = "default"                         # default, retro, or the absolute path
 png_192 = "/abs/icon-192.png"
 png_512 = "/abs/icon-512.png"
 
-[project]
-path = "/abs/path/to/project"             # the one project this site may reach
+[access]
+projects = ["/abs/path/to/project"]       # 1 to 32 absolute paths, or "all" for every project wsx manages
 capabilities = ["chat_send", "agent_write", "files_read", "files_write",
                 "terminal_view", "terminal_input", "media_upload", "media_download", "push"]
 agent_command = []                        # required with session_start, for example ["claude"]
@@ -52,6 +52,8 @@ private_key = "<base64url>"
 | `terminal_input` | type, paste, resize the pane, take control from another wsx window | terminal |
 | `media_upload`, `media_download` | attach files to a prompt; receive agent-produced files | any |
 | `push` | Web Push for this device | any |
+
+`projects` is the grant. A session, pane, worktree or file of a project outside it answers 404, as if it did not exist; `chat::targets` and `chat::projects` are the only code that maps daemon state to the grant. With `"all"`, a project that wsx starts to manage later is reachable at once. The files API and `POST api/sessions` name the project by its wsx id (`project`), and a new session may name a worktree of that project (`worktree`); the page gets both lists in the `workspace` event.
 
 A second site is the same binary with another file, fewer panels and fewer bits. The server enforces every bit; the page only hides what the session answer does not list. `read-only` and `writer` are the broker's cooperative labels. They do not restrict what the agent process can do.
 
@@ -122,7 +124,7 @@ Limits: while a terminal is open it holds the pane's lease, so a chat message or
 
 ## Files
 
-The files panel covers the project's main checkout only, not its other worktrees. `.git` is never listed, read or written. File access uses `O_NOFOLLOW` descriptors from the pinned project root; a write replaces an existing text file only when it did not change since it was read.
+The files panel covers each granted project's main checkout only, not its other worktrees. A project's root is pinned when it is first opened (at start for listed paths). `.git` is never listed, read or written. File access uses `O_NOFOLLOW` descriptors from the pinned project root; a write replaces an existing text file only when it did not change since it was read.
 
 ## Dependencies
 
