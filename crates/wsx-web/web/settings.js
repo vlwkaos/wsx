@@ -1,7 +1,7 @@
 // Settings: this device's notification consent and its pairing.
 import { api } from "./api.js";
 import { add, h } from "./dom.js";
-import { confirmDialog } from "./ui.js";
+import { confirmDialog, hasDarkScheme, scheme, setScheme } from "./ui.js";
 
 const TOPICS = [
   ["blocked", "An agent needs my input"],
@@ -95,8 +95,15 @@ export function settingsView(app, main) {
     },
   }, "Unpair this device");
 
+  const appearance = hasDarkScheme()
+    ? h("fieldset", {}, h("legend", {}, "Appearance on this device"),
+        [["dark", "Dark"], ["light", "Light"]].map(([value, label]) =>
+          h("label", {}, h("input", { type: "radio", name: "scheme", value, checked: scheme() === value, onchange: () => setScheme(value) }), label)))
+    : null;
+
   add(main,
     h("h2", {}, "Settings"),
+    appearance,
     app.can("push") ? fieldset : null,
     h("p", {}, `Paired as "${app.device.name}" (device ${app.device.id}).`),
     h("div", { class: "row" }, unpair),

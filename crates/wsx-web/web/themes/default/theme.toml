@@ -49,6 +49,7 @@ space-4 = "16px"
 space-5 = "24px"
 # Sizes
 size-control = "40px"
+size-key = "36px"
 size-content = "60rem"
 size-bubble = "46rem"
 size-media = "20rem"

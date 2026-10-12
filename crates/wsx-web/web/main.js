@@ -7,7 +7,7 @@ import { filesView } from "./files.js";
 import { terminalView } from "./terminal.js";
 import { activityView } from "./activity.js";
 import { settingsView } from "./settings.js";
-import { notice } from "./ui.js";
+import { applyScheme, notice } from "./ui.js";
 
 const main = document.getElementById("main");
 const VIEWS = { chat: chatView, files: filesView, terminal: terminalView, activity: activityView, settings: settingsView };
@@ -23,6 +23,8 @@ const app = {
   navigate: (hash) => {
     location.hash = hash;
   },
+  // [name, label] of every panel this site shows, in navigation order.
+  panels: () => [...app.site.panels, "settings"].map((panel) => [panel, LABELS[panel]]),
 };
 let view = null;
 
@@ -45,9 +47,7 @@ function start(session) {
   app.device = session.device;
   document.getElementById("bar").hidden = false;
   document.getElementById("nav").replaceChildren(
-    ...[...app.site.panels, "settings"].map((panel) =>
-      h("a", { href: `#/${panel}`, "data-panel": panel }, LABELS[panel]),
-    ),
+    ...app.panels().map(([panel, label]) => h("a", { href: `#/${panel}`, "data-panel": panel }, label)),
   );
   window.addEventListener("hashchange", route);
   openEvents({
@@ -93,4 +93,5 @@ async function boot() {
   }
 }
 
+applyScheme();
 boot();
