@@ -15,10 +15,23 @@ async function sound(label) {
 }
 const noOverflow = "document.documentElement.scrollWidth <= window.innerWidth";
 
+// A focused text field on a phone must not make the browser zoom or pan sideways:
+// iOS zooms when the field's font is below 16 px.
+async function steadyOnFocus(selector, label) {
+  await viewport(390, 844);
+  const seen = await evaluate(`(() => { const field = document.querySelector(${JSON.stringify(selector)}); field.focus();
+    return { focused: document.activeElement === field, font: parseFloat(getComputedStyle(field).fontSize),
+      scale: visualViewport.scale, left: document.scrollingElement.scrollLeft, top: document.scrollingElement.scrollTop }; })()`);
+  if (!seen.focused || seen.font < 16 || seen.scale !== 1 || seen.left !== 0 || seen.top !== 0) await fail(`${label} zooms or scrolls the page on focus: ${JSON.stringify(seen)}`);
+}
+
 // 1. Unpaired device at 320 px: the pairing form, no horizontal scroll.
 await viewport(320, 640);
 await send("Page.navigate", { url: siteUrl });
 await until("!!document.querySelector('#pair-code')", "pairing form did not render");
+await steadyOnFocus("#pair-code", "the pairing code field");
+await steadyOnFocus("#pair-name", "the device name field");
+await viewport(320, 640);
 await sound("pairing form at 320 px");
 await capture("pair-320");
 
@@ -37,6 +50,10 @@ await evaluate(`(() => { const box = document.querySelector('.composer textarea'
 await until(`[...document.querySelectorAll('.bubble-agent .text')].some((n) => n.textContent === ${JSON.stringify("echo: " + sentinel)})`,
   "the agent reply did not appear");
 await until("!document.querySelector('.bubble[data-pending]')", "the sent message stayed pending");
+await steadyOnFocus(".composer textarea", "the chat field");
+await steadyOnFocus("select", "the session picker");
+if ((await evaluate("[...document.querySelectorAll('#main, #main *')].filter((node) => node.scrollHeight > node.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(node).overflowY)).length")) > 1) await fail("the chat screen has more than one scroll container");
+await viewport(320, 640);
 const statusText = await evaluate("document.querySelector('p[role=status].small').textContent");
 if (!/not confirmed/.test(statusText)) await fail(`delivery status overstates evidence: ${statusText}`);
 await sound("chat at 320 px");
@@ -89,6 +106,7 @@ for (const panel of panels.split(",").slice(1)) {
     await until("[...document.querySelectorAll('.list-row .button')].some((n) => n.textContent === 'notes.txt')", "file list did not load");
     await click(".list-row .button", "notes.txt");
     await until("!!document.querySelector('textarea.terminal-frame')", "file did not open");
+    await steadyOnFocus("textarea.terminal-frame", "the file editor");
     await evaluate("document.querySelector('.button-primary').click()");
     await until("/Saved notes.txt/.test(document.querySelector('.toast')?.textContent ?? '')", "save toast did not show");
     await both("files-toast", "file editor with toast");

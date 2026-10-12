@@ -185,6 +185,13 @@ if ((await evaluate("document.querySelectorAll('.terminal-keys .terminal-key').l
 const attributes = await evaluate(`(() => { const t = document.querySelector('.xterm-helper-textarea');
   return ['autocomplete', 'autocorrect', 'autocapitalize', 'spellcheck'].map((name) => t.getAttribute(name)).join(','); })()`);
 if (attributes !== "off,off,off,false") await fail(`textarea attributes are ${attributes}`);
+// No zoom: the hidden input field has a 16 px font (iOS zooms below that). touch-action on the
+// frame applies to everything inside it, and the screen, key row and pad narrow it further.
+const steady = await evaluate(`(() => { const action = (selector) => getComputedStyle(document.querySelector(selector)).touchAction;
+  const field = document.querySelector('.xterm-helper-textarea'); field.focus();
+  return { font: parseFloat(getComputedStyle(field).fontSize), scale: visualViewport.scale, left: document.scrollingElement.scrollLeft,
+    stage: action('.terminal-stage'), keys: action('.terminal-keys'), key: action('.terminal-key'), pad: action('.terminal-pad'), frame: action('.terminal') }; })()`);
+if (steady.font < 16 || steady.scale !== 1 || steady.left !== 0 || steady.stage !== "none" || steady.keys !== "pan-x" || steady.pad !== "none" || steady.frame !== "manipulation") await fail(`the terminal can zoom: ${JSON.stringify(steady)}`);
 
 // A tap focuses the terminal; a key-row tap must leave the focus there.
 await tap(".terminal-stage");
