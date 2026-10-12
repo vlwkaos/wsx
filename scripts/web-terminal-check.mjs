@@ -105,6 +105,34 @@ async function live(label) {
   await fail(`${label}: at ${await evaluate("location.href")}, state ${await evaluate("document.querySelector('.terminal')?.dataset.state")}, notice ${JSON.stringify(
     await evaluate("document.querySelector('.terminal-notice')?.textContent"))}, console ${JSON.stringify(problems)}`);
 }
+// The on-screen keyboard the way iOS reports it: `height` and `top` of the visual viewport
+// change and the layout viewport stays. `null` closes the keyboard.
+const keyboard = (height, top = 0) => evaluate(`(() => {
+  const viewport = window.visualViewport;
+  delete viewport.height;
+  delete viewport.offsetTop;
+  if (${height} !== null) {
+    Object.defineProperty(viewport, "height", { configurable: true, get: () => ${height} });
+    Object.defineProperty(viewport, "offsetTop", { configurable: true, get: () => ${top} });
+  }
+  viewport.dispatchEvent(new Event("resize"));
+  viewport.dispatchEvent(new Event("scroll"));
+})()`);
+// The view fills the visual viewport exactly: top row at its top, key row at its bottom
+// (the keyboard's top edge), the screen between them with no gap, and no page scroll.
+async function aboveKeyboard(height, top, label) {
+  await pause(150);
+  const seen = await evaluate(`(() => {
+    const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
+    const [bar, stage, controls] = ['.terminal-bar', '.terminal-stage', '.terminal-controls'].map(rect);
+    return { barTop: bar.top, barLeft: bar.left, barWidth: bar.width, gapTop: stage.top - bar.bottom, gapBottom: controls.top - stage.bottom,
+      stageLeft: stage.left, stageWidth: stage.width, controlsBottom: controls.bottom, innerWidth, scrollY, scrollX,
+      scrollable: document.documentElement.scrollHeight - document.documentElement.clientHeight,
+      wide: document.documentElement.scrollWidth - innerWidth }; })()`);
+  const wrong = Math.abs(seen.barTop - top) > 1 || Math.abs(seen.controlsBottom - (top + height)) > 1 || Math.abs(seen.gapTop) > 0.5 || Math.abs(seen.gapBottom) > 0.5
+    || seen.stageLeft !== 0 || seen.stageWidth !== seen.innerWidth || seen.barLeft !== 0 || seen.scrollY !== 0 || seen.scrollX !== 0 || seen.scrollable > 0 || seen.wide > 0;
+  if (wrong) await fail(`${label}: the view does not fill the visual viewport (top ${top}, height ${height}): ${JSON.stringify(seen)}`);
+}
 async function open(width, height, scale) {
   await viewport(width, height, scale);
   // A new view: the touch layout is chosen when the view opens.
@@ -244,12 +272,16 @@ if (!typed.startsWith(expected)) await fail(`key row sent ${JSON.stringify(typed
 const repeats = typed.slice(expected.length, -1);
 if (!/^\x01{4,8}$/.test(repeats)) await fail(`a key held for 450 ms sent ${JSON.stringify(repeats)}; expected one press and a repeat every 80 ms`);
 
-// The on-screen keyboard shrinks the visual viewport: the key row stays at its bottom edge and the pane shrinks.
-await viewport(390, 500, 2);
-await until(`document.querySelectorAll('.xterm-rows > div').length < ${rows}`, "the terminal did not refit to a smaller viewport");
-const controls = await box(".terminal-controls");
-if (Math.abs(controls.y + controls.height - 500) > 1) await fail(`key row is not at the bottom of the visible viewport: ${JSON.stringify(controls)}`);
+// The on-screen keyboard as iOS shows it: the visual viewport shrinks, the layout viewport does not.
+// The key row's bottom edge is the keyboard's top edge, and the pane is refit to what is left.
+await keyboard(508);
+await until(`document.querySelectorAll('.xterm-rows > div').length < ${rows}`, "the terminal did not refit above the keyboard");
+await aboveKeyboard(508, 0, "keyboard open at 390x844");
 const fewer = await evaluate("document.querySelectorAll('.xterm-rows > div').length");
+// iOS may also move the visual viewport down the page: the view follows it.
+await keyboard(508, 70);
+await aboveKeyboard(508, 70, "keyboard open and the viewport moved");
+await keyboard(508);
 await run("stty size", `${fewer} `);
 await sameAsDaemon("after the keyboard resize");
 await capture("phone-keyboard-open");
@@ -257,8 +289,9 @@ await capture("phone-keyboard-open");
 // Host size: the pane keeps its size and the screen is scaled to show it.
 await evaluate("document.querySelector('.terminal-size').click()");
 await until(`${state("live")} && document.querySelector('.terminal-size').dataset.size === 'host'`, "host size did not connect");
-await viewport(390, 844, 2);
+await keyboard(null);
 await pause(400);
+await aboveKeyboard(844, 0, "keyboard closed");
 await run("stty size", `${fewer} `);
 if ((await evaluate("document.querySelectorAll('.xterm-rows > div').length")) !== fewer) await fail("host size resized the terminal");
 await capture("phone-host-size");
@@ -304,11 +337,24 @@ if (lines.find((line) => line.type === "error")?.data.code !== "lease_transferre
 window_.destroy();
 await until(`document.querySelectorAll('.xterm-rows > div').length === ${rows}`, "taking control did not restore this screen's size");
 
-// The narrowest phone: nothing scrolls sideways and the top row stays one row.
-await open(320, 640, 2);
-if (!(await evaluate("document.documentElement.scrollWidth <= innerWidth && document.querySelector('.terminal-bar').scrollWidth <= innerWidth"))) await fail("the terminal overflows sideways at 320 px");
+// Rotated: the same view refits to the landscape viewport.
+await send("Emulation.setDeviceMetricsOverride", { width: 844, height: 390, deviceScaleFactor: 2, mobile: true });
+await until(`document.querySelectorAll('.xterm-rows > div').length < ${rows}`, "the terminal did not refit after rotating");
+await aboveKeyboard(390, 0, "landscape");
+await capture("phone-landscape");
+
+// The smallest phone, 320x568: nothing scrolls sideways, and the keyboard leaves a usable screen.
+await open(320, 568, 2);
+if (!(await evaluate("document.querySelector('.terminal-bar').scrollWidth <= innerWidth"))) await fail("the top row overflows sideways at 320 px");
 if ((await evaluate("document.querySelector('.terminal-bar').getBoundingClientRect().height")) > 40) await fail("the top row is taller than 40 px at 320 px");
+await aboveKeyboard(568, 0, "320x568");
 await capture("phone-320");
+await keyboard(315);
+await pause(300);
+await aboveKeyboard(315, 0, "keyboard open at 320x568");
+if ((await evaluate("document.querySelectorAll('.xterm-rows > div').length")) < 8) await fail("the keyboard leaves fewer than 8 terminal rows at 320x568");
+await capture("phone-320-keyboard-open");
+await keyboard(null);
 
 // --- Desktop: 1280x800, visible tabs, no key row, 14 px.
 await open(1280, 800, 1);

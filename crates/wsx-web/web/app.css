@@ -125,9 +125,12 @@ textarea.terminal-frame { resize: vertical; }
 
 /* Hook: .terminal-bar, .terminal-icon, .terminal-notice, .terminal-key, .terminal-pad, .terminal-sheet — the live terminal.
    The terminal panel is full-bleed and its frame is dark in either scheme (data-scheme on .terminal).
-   The page is as tall as the visible viewport, so the key row sits on the on-screen keyboard.
+   The page is pinned to the visual viewport and never scrolls, so the key row sits on the
+   on-screen keyboard even where the keyboard does not shrink the layout viewport (iOS).
    On a phone (body[data-compact]) the bar is the only top row: its menu button replaces the tabs. */
-body[data-view="terminal"] { height: var(--viewport-height, 100dvh); }
+html[data-view="terminal"] { overflow: hidden; overscroll-behavior: none; }
+body[data-view="terminal"] { position: fixed; inset: var(--viewport-top, 0) 0 auto 0; height: var(--viewport-height, 100dvh); }
+body[data-view="terminal"][data-keyboard] { padding-bottom: 0; }
 body[data-view="terminal"][data-compact] .app-chrome { display: none; }
 .panel-terminal { max-width: none; padding: 0; overflow: hidden; }
 .terminal { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--color-surface); color: var(--color-text); }
@@ -160,7 +163,7 @@ body[data-view="terminal"][data-compact] .app-chrome { display: none; }
 .terminal-host { height: 100%; }
 .terminal-host[data-size="host"] { width: max-content; height: max-content; transform-origin: 0 0; }
 .terminal-controls { border-top: var(--border-width) solid var(--color-border); }
-.terminal-keys { display: flex; gap: var(--space-1); padding: var(--space-1) var(--space-2); overflow-x: auto; scrollbar-width: none; }
+.terminal-keys { display: flex; gap: var(--space-1); padding: var(--space-1); overflow-x: auto; scrollbar-width: none; }
 /* A fade marks each edge that has more keys to scroll to. */
 .terminal-keys[data-more="end"] {
   -webkit-mask-image: linear-gradient(to left, transparent, black var(--space-5));
@@ -175,13 +178,13 @@ body[data-view="terminal"][data-compact] .app-chrome { display: none; }
   mask-image: linear-gradient(to right, transparent, black var(--space-5), black calc(100% - var(--space-5)), transparent);
 }
 .terminal-key {
-  flex: 0 0 auto; min-width: var(--size-control); min-height: 0; height: var(--size-key); padding: 0 var(--space-2);
+  flex: 0 0 auto; min-width: var(--size-key); min-height: 0; height: var(--size-key); padding: 0 var(--space-2);
   font-size: var(--font-size-sm); touch-action: manipulation; user-select: none; -webkit-user-select: none;
 }
 .terminal-key[data-failed] { color: var(--color-danger); }
 .terminal-tools {
   display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center;
-  gap: var(--space-1); padding: 0 var(--space-2) var(--space-1);
+  gap: var(--space-1); padding: 0 var(--space-1) var(--space-1);
 }
 .terminal-pad {
   width: calc(var(--size-control) * 3.5); min-height: 0; height: var(--size-key); padding: 0;
