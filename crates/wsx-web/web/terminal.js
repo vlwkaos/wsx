@@ -116,6 +116,7 @@ export function terminalView(app, main, argument) {
   const root = h("div", { class: "terminal", "data-state": state, "data-scheme": "dark" }, bar, stage, keys);
   main.classList.add("panel-terminal");
   document.body.dataset.view = "terminal";
+  document.documentElement.dataset.view = "terminal";
   if (touch) document.body.dataset.compact = "";
   add(main, root);
 
@@ -401,11 +402,17 @@ export function terminalView(app, main, argument) {
     }, { passive: false, capture: true });
   }
 
+  // ^ iOS Safari and an installed PWA keep the layout viewport when the keyboard opens:
+  // only the visual viewport shrinks, and it can move down the page. The page is pinned
+  // to the visual viewport, so the key row's bottom edge is the keyboard's top edge.
   function viewportChanged() {
     const viewport = window.visualViewport;
-    // The page is as tall as what is visible, so the key row sits on the on-screen keyboard.
-    document.documentElement.style.setProperty("--viewport-height", `${viewport.height}px`);
-    window.scrollTo(0, 0);
+    const style = document.documentElement.style;
+    style.setProperty("--viewport-height", `${viewport.height}px`);
+    style.setProperty("--viewport-top", `${viewport.offsetTop}px`);
+    // The keyboard covers the bottom safe area, so its inset must not stay as a gap.
+    const keyboard = viewport.scale <= 1.01 && document.documentElement.clientHeight - viewport.height > 120;
+    document.body.toggleAttribute("data-keyboard", keyboard);
     requestAnimationFrame(layout);
   }
 
@@ -493,6 +500,9 @@ export function terminalView(app, main, argument) {
       main.classList.remove("panel-terminal");
       delete document.body.dataset.view;
       delete document.body.dataset.compact;
+      delete document.documentElement.dataset.view;
+      document.body.removeAttribute("data-keyboard");
+      document.documentElement.style.removeProperty("--viewport-top");
       document.documentElement.style.removeProperty("--viewport-height");
     },
     onWorkspace: () => {
