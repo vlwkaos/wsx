@@ -142,10 +142,14 @@ fn observe(app: Arc<App>) {
                     .insert(session, stamp.clone())
                     .is_some_and(|previous| previous != stamp);
             }
+            // The agent reached a wait boundary: the oldest waiting message goes next.
+            history_changed |= app.chat.deliver_queued(app, target);
             if history_changed {
-                publish(app, message("history", json!({ "session_id": session })));
+                self::history_changed(app, session);
             }
         }
+        let alive: Vec<u64> = targets.iter().map(|target| target.session_id.0).collect();
+        app.queue.retain(&alive);
         states.retain(|session, _| targets.iter().any(|target| target.session_id.0 == *session));
         app.states
             .lock()
@@ -156,6 +160,11 @@ fn observe(app: Arc<App>) {
         stamps.retain(|session, _| states.contains_key(session));
         first = false;
     }
+}
+
+/// Tell every open page that a session's timeline, including its queue, changed.
+pub fn history_changed(app: &App, session: u64) {
+    publish(app, message("history", json!({ "session_id": session })));
 }
 
 fn publish(app: &App, message: Message) {

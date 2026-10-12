@@ -103,6 +103,17 @@ The default is a site at the root of its own hostname (a Tailscale Service) or p
 - The `history` event is the change signal. While an agent works and a page is open, the server compares transcript stamps about every 0.8 seconds, so a new tool line shows within about a second.
 - A blocked agent shows a provider dialog. The chat refuses to send; the answer is given in the terminal panel or on the host.
 
+### Queue and Stop
+
+wsxd allows one active exchange per pane. A message sent while the agent works, or while older messages wait, is kept by the web server instead of failing.
+
+- At most 5 messages wait per session. They are saved in `queue.json` in the site state directory (owner-only) and survive a restart of the server. A sixth message answers `queue_full`.
+- The event observer delivers the oldest waiting message when the agent is attached and neither working nor blocked and wsxd accepts it. `agent_busy` and `exchange_busy` mean "not yet"; the message stays and is tried again at the next change.
+- Any other refusal, for example `terminal_busy` while a terminal holds the pane, keeps the message, marks it failed with the daemon's words and stops that session's queue until the person retries (`POST api/chat/<session>/queue/<id>/retry`) or removes it (`DELETE api/chat/<session>/queue/<id>`).
+- `POST api/chat/<session>/send` answers the exchange when it delivered, or `{"queued": {...}}`. The queue is the `queue` field of the timeline, and every change raises the `history` event.
+- A queue belongs to one site. Another site's queue for the same session is not visible.
+- Stop (`POST api/chat/<session>/cancel`) asks wsxd to interrupt the turn ([agent-orchestration.md](agent-orchestration.md) "Cancel"). It is refused with `terminal_busy` while a writable terminal lease exists. After a stop, waiting messages are delivered as usual; a cancelled exchange is not continued, the next message starts a new one.
+
 ## Live updates
 
 A page opens one `EventSource` (`api/events`) and has no polling timer. Events: `workspace` (projects and session list), `history` (a session's saved conversation changed), `exchange`, `daemon`, `resync`, `revoked`. The server follows `wsxd` with its long-poll. While a page is connected it also compares each transcript file's size and modification time about every two seconds.

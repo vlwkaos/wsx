@@ -10,6 +10,7 @@ mod events;
 mod http;
 mod media;
 mod push;
+mod queue;
 mod sandbox;
 mod site;
 mod terminal;
@@ -32,6 +33,7 @@ pub(crate) struct App {
     /// One pinned root per granted project that was opened, by canonical path.
     roots: Mutex<HashMap<std::path::PathBuf, Arc<sandbox::Root>>>,
     chat: chat::Chat,
+    queue: queue::Queue,
     client: wsx_core::runtime::Client,
     assets: assets::Assets,
     limiter: http::Limiter,
@@ -85,6 +87,7 @@ pub fn serve(site_file: &Path) -> Result<()> {
             .transpose()?,
         roots: Mutex::new(HashMap::new()),
         chat: chat::Chat::new(),
+        queue: queue::Queue::open(&site.state_dir)?,
         // Never `Client::local()`: a web server must not start wsxd.
         client: wsx_core::runtime::Client::new(wsx_core::runtime::default_socket_path()),
         assets: assets::Assets::build(&site),

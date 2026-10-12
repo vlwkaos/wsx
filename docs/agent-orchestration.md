@@ -87,3 +87,21 @@ The model-free journey uses an isolated daemon, real PTYs, independent provider-
 The scenario also splits stash acknowledgements across real PTY reads for both initial and continued requests. wsxd releases daemon state while waiting, retains mutation and pane-operation fences, then adopts current state before recording delivery. Pre-repair binaries fail the independent received-input assertion; the repaired path preserves the draft and observes completion. Current release-candidate verification is recorded separately from earlier whole-workspace receipts.
 
 These source changes require a new WSX installation and updated integrations before use. Read-only skill evaluations are not proof of actual agent acceptance or completion.
+
+## Cancel
+
+`wsx agent cancel` and the web client's Stop write the provider's own interrupt to the pane and mark the exchange `cancel_requested`. Daemon revision 24.
+
+| Provider | Key | Checked against the real program (2026-10-12) |
+|---|---|---|
+| Claude (`escape_interrupts`) | Escape | The turn ends with "Interrupted" and the editor is ready. Ctrl+C would ask to quit on its second press. |
+| Pi, omp | Escape | The turn ends. Ctrl+C does not stop a working Pi. |
+| others | Ctrl+C | not checked |
+
+- The exchange becomes `cancelled` when the agent is seen to stop working. Claude has no interrupt hook, so the cancel asks for a new reading of Claude's screen; a state read from the screen settles the exchange like a reported state does. Before revision 24 that reading was never requested and its result never reached the exchange, so the exchange stayed in `cancel_requested`.
+- A cancel is refused with `terminal_busy` while a writable terminal lease exists on the pane.
+- A cancelled exchange cannot be continued. The next request starts a new exchange.
+
+## Claude's empty editor
+
+Draft stashing needs an editor that is visibly idle. A fresh Claude shows a suggestion in its empty editor, such as `❯ Try "fix typecheck errors"`. Claude draws it dimmed; text a person typed is not dimmed. From revision 24 the editor line counts as empty when every character of that line is dimmed in the terminal frame. A line that starts with `Try "` and is not dimmed is still refused as ambiguous.

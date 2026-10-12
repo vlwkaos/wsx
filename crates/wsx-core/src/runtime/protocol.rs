@@ -24,7 +24,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ^ Receipt expiry and final PTY drain are daemon-owned runtime behavior.
 // UI-only releases continue to reuse wsxd. See docs/agent-orchestration.md and docs/terminal-exit-ordering.md.
 // Revision 23 adds the raw terminal stream (docs/terminal-raw-stream.md).
-pub const DAEMON_REVISION: u32 = 23;
+// Revision 24 cancels an exchange with the provider's interrupt and accepts
+// Claude's dimmed start-up suggestion as an empty editor.
+pub const DAEMON_REVISION: u32 = 24;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 

@@ -4732,6 +4732,42 @@ fn claude_editor(observation: &AgentTerminalObservation) -> Option<&str> {
     Some("")
 }
 
+// ^ docs/agent-orchestration.md: an empty Claude editor shows a suggestion such as
+// `❯ Try "fix typecheck errors"`. Claude draws it dimmed; text a person typed is not.
+// Only the editor line of the frame, dimmed as a whole, counts as empty.
+fn claude_suggestion(runtime: &TerminalRuntime, observation: &AgentTerminalObservation) -> bool {
+    if claude_status::classify(&observation.title, &observation.text)
+        != Some(claude_status::TerminalEvidence::Idle)
+    {
+        return false;
+    }
+    let Ok(frame) = runtime.frame() else {
+        return false;
+    };
+    if frame.cols == 0 {
+        return false;
+    }
+    // The editor is the lowest prompt line; a short conversation leaves blank rows below it.
+    let input = |row: &[Cell]| {
+        let text: String = row.iter().map(|cell| cell.symbol.as_str()).collect();
+        text.trim_start()
+            .strip_prefix('❯')
+            .map(|input| input.trim().to_owned())
+    };
+    let editor = frame
+        .cells
+        .chunks(usize::from(frame.cols))
+        .rev()
+        .find(|row| input(row).is_some());
+    editor.is_some_and(|row| {
+        input(row).is_some_and(|input| input.starts_with("Try \""))
+            && row
+                .iter()
+                .filter(|cell| !cell.symbol.trim().is_empty() && cell.symbol != "❯")
+                .all(|cell| cell.modifiers.dim)
+    })
+}
+
 fn validate_draft_target(agent: &AgentInfo, runtime: &TerminalRuntime) -> Result<(), ApiError> {
     if agent.provider != "claude" {
         return Err(api(
@@ -4748,7 +4784,7 @@ fn validate_draft_target(agent: &AgentInfo, runtime: &TerminalRuntime) -> Result
     let observation = runtime
         .agent_observation()
         .map_err(|_| api("editor_unavailable", "cannot read current Claude editor"))?;
-    if claude_editor(&observation).is_none() {
+    if claude_editor(&observation).is_none() && !claude_suggestion(runtime, &observation) {
         return Err(api(
             "editor_unavailable",
             "Claude input editor is not visibly idle",
@@ -4762,7 +4798,7 @@ fn stash_claude_draft(runtime: &TerminalRuntime) -> Result<(), ApiError> {
         .agent_observation()
         .map_err(|_| api("editor_unavailable", "cannot observe Claude editor"))?;
     // An empty editor needs no key: Ctrl+S would restore the existing stash.
-    if claude_editor(&before) == Some("") {
+    if claude_editor(&before) == Some("") || claude_suggestion(runtime, &before) {
         return Ok(());
     }
     runtime
@@ -5524,7 +5560,24 @@ fn cancel_agent_exchange(
         .filter(|runtime| !runtime.exited())
         .cloned()
         .ok_or_else(|| api("terminal_unavailable", "pane has no live terminal"))?;
-    runtime.write(&[3]).map_err(terminal_api)?;
+    // ^ docs/agent-orchestration.md "Cancel": the provider's own interrupt. Escape ends a
+    // Claude, Pi or omp turn and leaves the agent ready. Ctrl+C does not stop a working
+    // Pi, and in Claude its second press quits. Both were checked against the real
+    // programs on 2026-10-12. Other providers get Ctrl+C.
+    let escape = state
+        .persisted
+        .panes
+        .iter()
+        .find(|pane| pane.id == pane_id)
+        .and_then(|pane| pane.agent.as_ref())
+        .is_some_and(|agent| {
+            agent.attached
+                && (agent.capabilities.escape_interrupts
+                    || matches!(agent.provider.as_str(), "pi" | "omp"))
+        });
+    runtime
+        .write(if escape { b"\x1b" } else { b"\x03" })
+        .map_err(terminal_api)?;
     let revision = state.revision.saturating_add(1);
     let mut persisted = state.persisted.clone();
     let exchange = persisted
@@ -5545,6 +5598,10 @@ fn cancel_agent_exchange(
         "agent_exchange.cancel_requested",
         id.0,
     );
+    drop(state);
+    // Claude has no interrupt hook: only its screen shows that the turn ended. Without
+    // this the agent stays working here and the exchange stays in cancel_requested.
+    request_claude_reconcile(daemon, pane_id, true);
     Ok(Response::AgentExchange {
         exchange: response,
         frame: None,
@@ -5864,6 +5921,15 @@ fn apply_claude_terminal_observation(
         persisted.projects[project_index].last_agent_active_unix_ms = Some(unix_time_millis());
         persisted.projects[project_index].revision = revision;
     }
+    // A state read from the screen ends a cancelled exchange like a reported one does.
+    observe_agent_exchange(
+        &mut persisted,
+        pane_id,
+        effective,
+        true,
+        revision,
+        unix_time_millis(),
+    );
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
     state.persisted = persisted;
     state.claude_reconciliations.insert(pane_id, reconciliation);
