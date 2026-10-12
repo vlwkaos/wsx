@@ -35,27 +35,6 @@ const BUILTIN: &[(&str, Files)] = &[
             ),
         ],
     ),
-    (
-        "retro",
-        &[
-            (
-                "theme.toml",
-                include_bytes!("../web/themes/retro/theme.toml"),
-            ),
-            (
-                "components.css",
-                include_bytes!("../web/themes/retro/components.css"),
-            ),
-            (
-                "icon-192.png",
-                include_bytes!("../web/themes/retro/icon-192.png"),
-            ),
-            (
-                "icon-512.png",
-                include_bytes!("../web/themes/retro/icon-512.png"),
-            ),
-        ],
-    ),
 ];
 
 #[derive(Deserialize)]
@@ -172,7 +151,7 @@ impl Theme {
             let path = Path::new(spec);
             ensure!(
                 path.is_absolute(),
-                "theme {spec:?} is not a built-in theme (default, retro) or an absolute path"
+                "theme {spec:?} is not the built-in theme (default) or an absolute path"
             );
             let path = std::fs::canonicalize(path)
                 .with_context(|| format!("theme {spec:?} does not exist"))?;
@@ -291,7 +270,7 @@ fn layer(name: &str, resolved: &mut Resolved) -> Result<()> {
         .iter()
         .find(|(candidate, _)| *candidate == name)
         .map(|(_, files)| *files)
-        .with_context(|| format!("{name:?} is not a built-in theme (default, retro)"))?;
+        .with_context(|| format!("{name:?} is not the built-in theme (default)"))?;
     let source = Source::Builtin(files);
     let manifest = manifest(&source, "theme.toml")?;
     if let Some(parent) = &manifest.extends {

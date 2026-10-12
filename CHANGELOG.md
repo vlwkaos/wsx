@@ -6,6 +6,7 @@
 
 - The web client's `GET api/terminal/<session>` and `POST api/terminal/<session>/input` routes are removed with the text-snapshot terminal. `terminal_view` now allows watching the live terminal; `terminal_input` allows typing, resizing the pane and taking control.
 - A web site file names its projects under `[access]`: `projects = "all"` or a list of 1 to 32 absolute paths, with `capabilities` and `agent_command`. The old `[project]` table is refused. The files API and `POST api/sessions` now take a `project` id.
+- The built-in `retro` web theme is removed. A site file with `theme = "retro"`, or a custom theme that extends it, is refused; use `default`.
 - `GET api/chat/<session>/history` is replaced by `GET api/chat/<session>/timeline`.
 - The wire protocol is 17. A wsx or script that says `hello` with protocol 16 is refused by the new daemon, apart from the lifecycle requests.
 

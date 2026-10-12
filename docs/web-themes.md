@@ -3,7 +3,7 @@
 The web client's look is a contract with three parts: tokens, component hooks, and theme packages. The core stylesheet (`crates/wsx-web/web/app.css`) holds structure only; every design value is a token. Site file and security rules are in [web-client.md](web-client.md).
 
 ```toml
-theme = "default"                 # built-in: default (light and dark) or retro (light only)
+theme = "default"                 # the built-in theme (dark, with a light scheme)
 theme = "/abs/path/to/my-theme"   # a theme directory, or the path of a theme .toml file
 ```
 
@@ -58,7 +58,7 @@ A directory with a `theme.toml`, or a single `.toml` file. Unknown fields are re
 
 ```toml
 name = "my-theme"                 # a-z, 0-9, '-'
-extends = "retro"                 # a built-in theme; default: "default"
+extends = "default"               # the built-in theme; this is the default
 components = "components.css"     # optional component overrides
 
 [tokens]                          # only the tokens that differ from the extended theme
@@ -97,10 +97,7 @@ The server builds one stylesheet (font faces, tokens, dark tokens, component CSS
 | Theme | Schemes | Notes |
 |---|---|---|
 | `default` | dark (default), light | System fonts, flat surfaces. |
-| `retro` | light | System 7 look after the remotty project: gray surfaces, black hairlines, beveled controls that invert when pressed, pinstripe title bar, hard offset shadow on dialogs. |
-
-`retro` ships no font. Chicago (ChicagoFLF) has conflicting licence statements (the author's public-domain note against "personal use" listings), and remotty's JetBrains Mono Nerd Font files are 2.5 MB each. The font stacks name Chicago and JetBrains Mono for machines that have them and fall back to Geneva, Verdana and the system monospace font. To ship a font you have the right to distribute, write a theme that extends `retro` and declares it under `[[fonts]]`.
 
 ## Verification
 
-`scripts/test-web-client.py` covers theme selection, a custom directory with a font and icons, each refusal above, content-hash URLs, the manifest, the CSP, and that `app.css` holds no color or length literal. With `--browser` it captures every panel, the dialog and the toast for `default` and `retro` at 320 and 1280 px.
+`scripts/test-web-client.py` covers theme selection, a custom directory with a font and icons, each refusal above, content-hash URLs, the manifest, the CSP, and that `app.css` holds no color or length literal. With `--browser` it captures every panel, the dialog and the toast at 320 and 1280 px.

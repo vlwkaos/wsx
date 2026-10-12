@@ -20,7 +20,7 @@ port = 7431                               # loopback port
 public_origin = "https://wsx.tailnet.ts.net"   # exact origin the browser uses
 base_path = ""                            # omit for a service or alt-port site; "/app/wsx" for a sub-path
 panels = ["chat", "files", "terminal", "activity"]
-theme = "default"                         # default, retro, or the absolute path of a theme (web-themes.md)
+theme = "default"                         # default, or the absolute path of a theme (web-themes.md)
 
 [icon]                                    # optional; replaces the theme's icons
 png_192 = "/abs/icon-192.png"
