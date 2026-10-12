@@ -103,7 +103,8 @@ async function live(label) {
     await pause(100);
   }
   await fail(`${label}: at ${await evaluate("location.href")}, state ${await evaluate("document.querySelector('.terminal')?.dataset.state")}, notice ${JSON.stringify(
-    await evaluate("document.querySelector('.terminal-notice')?.textContent"))}, console ${JSON.stringify(problems)}`);
+    await evaluate("document.querySelector('.terminal-notice')?.textContent"))}, console ${JSON.stringify(problems)}, page ${JSON.stringify(
+    await evaluate("document.querySelector('#app').innerText.slice(0, 300)"))}`);
 }
 // The on-screen keyboard the way iOS reports it: `height` and `top` of the visual viewport
 // change and the layout viewport stays. `null` closes the keyboard.
@@ -124,7 +125,7 @@ async function aboveKeyboard(height, top, label) {
   await pause(150);
   const seen = await evaluate(`(() => {
     const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
-    const [bar, stage, controls] = ['.terminal-bar', '.terminal-stage', '.terminal-controls'].map(rect);
+    const [bar, stage, controls] = ['.bar', '.terminal-stage', '.terminal-controls'].map(rect);
     return { barTop: bar.top, barLeft: bar.left, barWidth: bar.width, gapTop: stage.top - bar.bottom, gapBottom: controls.top - stage.bottom,
       stageLeft: stage.left, stageWidth: stage.width, controlsBottom: controls.bottom, innerWidth, scrollY, scrollX,
       scrollable: document.documentElement.scrollHeight - document.documentElement.clientHeight,
@@ -138,7 +139,7 @@ async function open(width, height, scale) {
   // A new view: the touch layout is chosen when the view opens.
   await evaluate("location.hash = '#/settings'");
   await until("!document.querySelector('.terminal')", "the terminal view did not close");
-  await evaluate(`location.hash = '#/terminal/${sessionId}'`);
+  await evaluate(`location.hash = '#/s/${sessionId}/terminal'`);
   await live(`terminal did not go live at ${width} px`);
   await until("!!document.querySelector('.xterm-helper-textarea')", "xterm did not open");
 }
@@ -149,33 +150,25 @@ await viewport(390, 844, 2);
 await send("Page.navigate", { url: siteUrl });
 await until("!!document.querySelector('#pair-code')", "pairing form did not render");
 await evaluate(`(() => { const input = document.querySelector('#pair-code'); input.value = ${JSON.stringify(code)}; input.form.requestSubmit(); })()`);
-await until("!!document.querySelector('#nav a')", "the app did not open after pairing");
+await until("!!document.querySelector('.app')", "the app did not open after pairing");
 await open(390, 844, 2);
 
-// The frame: one dark top row of at most 40 px, with the panel list behind its menu button.
+// The frame: the session's one top row, then the terminal down to the key row, all dark.
 const frame = await evaluate(`(() => {
   const color = (selector) => getComputedStyle(document.querySelector(selector)).backgroundColor;
-  const picker = document.querySelector('.terminal-picker select');
   const keys = document.querySelector('.terminal-keys');
-  return { bar: document.querySelector('.terminal-bar').getBoundingClientRect().height, barTop: document.querySelector('.terminal-bar').getBoundingClientRect().top,
-    chrome: getComputedStyle(document.querySelector('.app-chrome')).display, page: color('body'), surface: color('.terminal'), key: color('.terminal-key'),
+  return { bar: document.querySelector('.bar').getBoundingClientRect().height, barTop: document.querySelector('.bar').getBoundingClientRect().top,
+    tabbar: !!document.querySelector('.tabbar'), page: color('body'), surface: color('.terminal'), key: color('.terminal-key'),
     keyHeight: document.querySelector('.terminal-key').getBoundingClientRect().height, pad: document.querySelector('.terminal-pad').getBoundingClientRect().height,
     scrolled: keys.scrollLeft, first: keys.firstElementChild.textContent, more: keys.dataset.more,
-    ellipsis: getComputedStyle(picker).textOverflow, toggle: document.querySelector('.terminal-size').getAttribute('aria-label'),
-    toggleText: document.querySelector('.terminal-size').textContent };
+    switch: [...document.querySelectorAll('.switch a')].map((a) => a.textContent.trim() + (a.getAttribute('aria-current') ? '*' : '')).join(),
+    toggle: document.querySelector('.bar .terminal-size').getAttribute('aria-label'), toggleText: document.querySelector('.terminal-size').textContent };
 })()`);
-if (frame.bar > 40 || frame.barTop !== 0 || frame.chrome !== "none") await fail(`the phone top frame is not one row of at most 40 px: ${JSON.stringify(frame)}`);
-if (frame.page !== "rgb(23, 23, 21)" || frame.surface !== "rgb(33, 33, 30)" || frame.key !== "rgb(33, 33, 30)") await fail(`the frame is not dark: ${JSON.stringify(frame)}`);
+if (frame.bar > 48 || frame.barTop !== 0 || frame.tabbar) await fail(`the session top row is not the only frame above the terminal: ${JSON.stringify(frame)}`);
+if (frame.page !== "rgb(10, 11, 13)" || frame.surface !== "rgb(10, 11, 13)" || frame.key !== "rgb(26, 29, 34)") await fail(`the frame is not dark: ${JSON.stringify(frame)}`);
 if (frame.keyHeight !== 36 || frame.pad !== 36) await fail(`key row buttons are not 36 px: ${JSON.stringify(frame)}`);
 if (frame.scrolled !== 0 || frame.first !== "Esc" || frame.more !== "end") await fail(`the key row does not start at Esc with a fade at its end: ${JSON.stringify(frame)}`);
-if (frame.ellipsis !== "ellipsis" || !/^Fit screen/.test(frame.toggle) || frame.toggleText !== "") await fail(`picker or size toggle is wrong: ${JSON.stringify(frame)}`);
-await evaluate("document.querySelector('.terminal-bar .terminal-icon').click()");
-await until("document.querySelector('dialog.terminal-sheet[open]')?.querySelectorAll('a').length === 5", "the menu did not open the panel list");
-if ((await evaluate("[...document.querySelectorAll('.terminal-sheet a')].map((a) => a.textContent).join()")) !== "Chat,Files,Terminal,Activity,Settings") await fail("the panel sheet does not list the panels");
-await capture("phone-menu");
-await key("Escape", 27);
-await until("!document.querySelector('.terminal-sheet')", "Escape did not close the panel sheet");
-if (!(await evaluate("document.activeElement.getAttribute('aria-label') === 'Panels'"))) await fail("focus did not return to the menu button");
+if (frame.switch !== "Chat,Terminal*" || !/^Fit screen/.test(frame.toggle) || frame.toggleText !== "") await fail(`the top row's switch or size toggle is wrong: ${JSON.stringify(frame)}`);
 
 const stage = await box(".terminal-stage");
 if (stage.x !== 0 || stage.width !== 390) await fail(`terminal is not edge to edge on the phone: ${JSON.stringify(stage)}`);
@@ -209,7 +202,7 @@ const colors = await evaluate(`(() => {
            screen: getComputedStyle(document.querySelector('.terminal-stage')).backgroundColor }; })()`);
 if (!colors.indexed) await fail("256-colour cells are not painted");
 if (!colors.truecolor) await fail("truecolour cells are not painted");
-if (colors.screen !== "rgb(17, 17, 16)") await fail(`terminal background is ${colors.screen}`);
+if (colors.screen !== "rgb(10, 11, 13)") await fail(`terminal background is ${colors.screen}`);
 await capture("phone-colors");
 
 // wsxd's emulator answers a query; xterm.js must not answer it a second time.
@@ -254,8 +247,12 @@ await until(screenHas("alt-done"), "the alternate-screen program did not exit");
 // Korean through the textarea, composed the way an IME does it.
 await type("echo ");
 for (const [steps, final] of [[["ㅎ", "하", "한"], "한"], [["ㄱ", "그", "글"], "글"]]) {
-  for (const step of steps) await send("Input.imeSetComposition", { text: step, selectionStart: step.length, selectionEnd: step.length });
+  for (const step of steps) {
+    await send("Input.imeSetComposition", { text: step, selectionStart: step.length, selectionEnd: step.length });
+    await pause(40);
+  }
   await type(final);
+  await pause(40);
 }
 await type(" 입력");
 await press("Enter");
@@ -333,7 +330,7 @@ await until(state("elsewhere"), "the page did not notice that a wsx window took 
 if (!(await evaluate("document.querySelector('.terminal-notice').textContent.includes('another wsx window')"))) await fail("no 'controlled elsewhere' bar");
 const elsewhere = await evaluate(`(() => { const bar = document.querySelector('.terminal-notice');
   return { height: bar.getBoundingClientRect().height, color: getComputedStyle(bar).backgroundColor }; })()`);
-if (elsewhere.height > 40 || elsewhere.color !== "rgb(33, 33, 30)") await fail(`the 'controlled elsewhere' bar is not one dark row: ${JSON.stringify(elsewhere)}`);
+if (elsewhere.height > 44 || elsewhere.color !== "rgb(18, 20, 23)") await fail(`the 'controlled elsewhere' bar is not one dark row: ${JSON.stringify(elsewhere)}`);
 await capture("phone-controlled-elsewhere");
 await pause(1200);
 if (!(await evaluate(state("elsewhere")))) await fail("the page took the terminal back without being asked");
@@ -352,8 +349,7 @@ await capture("phone-landscape");
 
 // The smallest phone, 320x568: nothing scrolls sideways, and the keyboard leaves a usable screen.
 await open(320, 568, 2);
-if (!(await evaluate("document.querySelector('.terminal-bar').scrollWidth <= innerWidth"))) await fail("the top row overflows sideways at 320 px");
-if ((await evaluate("document.querySelector('.terminal-bar').getBoundingClientRect().height")) > 40) await fail("the top row is taller than 40 px at 320 px");
+if (!(await evaluate("document.querySelector('.bar').scrollWidth <= innerWidth"))) await fail("the top row overflows sideways at 320 px");
 await aboveKeyboard(568, 0, "320x568");
 await capture("phone-320");
 await keyboard(315);
@@ -365,7 +361,7 @@ await keyboard(null);
 
 // --- Desktop: 1280x800, visible tabs, no key row, 14 px.
 await open(1280, 800, 1);
-if ((await evaluate("getComputedStyle(document.querySelector('.app-chrome')).display")) === "none") await fail("the desktop lost its tabs");
+if (!(await evaluate("!!document.querySelector('.rail')"))) await fail("the desktop has no rail beside the terminal");
 if ((await evaluate("getComputedStyle(document.querySelector('.xterm-rows')).fontSize")) !== "14px") await fail("desktop font is not 14 px");
 if (await evaluate("!!document.querySelector('.terminal-keys')")) await fail("the key row shows on a desktop");
 await focusTerminal();

@@ -62,7 +62,8 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
       if (message.error) done.reject(new Error(JSON.stringify(message.error)));
       else done.resolve(message.result);
     } else if (message.method === "Runtime.exceptionThrown") {
-      problems.push(`exception: ${message.params.exceptionDetails.text}`);
+      const details = message.params.exceptionDetails;
+      problems.push(`exception: ${details.exception?.description ?? details.text} (${details.url ?? ""}:${details.lineNumber ?? ""})`);
     } else if (message.method === "Log.entryAdded" && message.params.entry.level === "error") {
       problems.push(`log: ${message.params.entry.text} ${message.params.entry.url ?? ""}`);
     }

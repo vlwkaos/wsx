@@ -47,6 +47,8 @@ fn observe(app: Arc<App>) {
     let mut stamps: HashMap<u64, Option<(std::path::PathBuf, u64, i64)>> = HashMap::new();
     let mut exchange_revisions: HashMap<u64, u64> = HashMap::new();
     let mut workspace = String::new();
+    // What each working session does now, read again only when its transcript changed.
+    let mut activities: HashMap<u64, String> = HashMap::new();
     loop {
         let changed = match app.client.call(&Request::Poll {
             after_revision: revision,
@@ -66,6 +68,10 @@ fn observe(app: Arc<App>) {
                 if available {
                     available = false;
                     workspace.clear();
+                    // A page that opens now must not start from the last session list.
+                    *app.workspace
+                        .lock()
+                        .unwrap_or_else(|lock| lock.into_inner()) = None;
                     publish(app, message("daemon", json!({ "available": false })));
                 }
                 revision = 0;
@@ -83,15 +89,6 @@ fn observe(app: Arc<App>) {
         };
         let targets = chat::targets(&snapshot, &app.site.access);
         if changed {
-            let view = json!({
-                "projects": chat::projects_view(&snapshot, &app.site.access),
-                "sessions": targets.iter().map(session_view).collect::<Vec<_>>(),
-            });
-            let text = view.to_string();
-            if text != workspace {
-                workspace = text;
-                publish(app, message("workspace", view));
-            }
             if let Ok(exchanges) = chat::exchanges(&app.client, None) {
                 for exchange in exchanges.iter().filter(|exchange| {
                     targets
@@ -142,14 +139,41 @@ fn observe(app: Arc<App>) {
                     .insert(session, stamp.clone())
                     .is_some_and(|previous| previous != stamp);
             }
+            if state != AgentState::Working {
+                activities.remove(&session);
+            } else if history_changed || !activities.contains_key(&session) {
+                activities.insert(session, chat::activity(target));
+            }
             // The agent reached a wait boundary: the oldest waiting message goes next.
             history_changed |= app.chat.deliver_queued(app, target);
             if history_changed {
                 self::history_changed(app, session);
             }
         }
+        // The session list, with when each state began and what a working agent does.
+        let sessions: Vec<Value> = targets
+            .iter()
+            .map(|target| {
+                let session = target.session_id.0;
+                let mut view = session_view(target);
+                let state = states.get(&session).copied().unwrap_or_default();
+                view["state_since_unix_ms"] = json!(app.state_since(session, state));
+                view["activity"] = json!(activities.get(&session));
+                view
+            })
+            .collect();
+        let view = json!({
+            "projects": chat::projects_view(&snapshot, &app.site.access),
+            "sessions": sessions,
+        });
+        let text = view.to_string();
+        if text != workspace {
+            workspace = text;
+            publish(app, message("workspace", view));
+        }
         let alive: Vec<u64> = targets.iter().map(|target| target.session_id.0).collect();
         app.queue.retain(&alive);
+        activities.retain(|session, _| alive.contains(session));
         states.retain(|session, _| targets.iter().any(|target| target.session_id.0 == *session));
         app.states
             .lock()

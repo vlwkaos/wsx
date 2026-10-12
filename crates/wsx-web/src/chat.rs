@@ -305,17 +305,7 @@ impl Chat {
             .as_ref()
             .filter(|agent| agent.attached && agent.state == AgentState::Working)
             .map(|_| {
-                let steps = timeline.iter().flat_map(|timeline| &timeline.items);
-                let activity = match steps.last() {
-                    Some(Item {
-                        tool: Some(tool), ..
-                    }) if tool.status == ToolStatus::Running => tool.title.clone(),
-                    Some(Item {
-                        kind: ItemKind::Thinking,
-                        ..
-                    }) => "Thinking".into(),
-                    _ => "Working".to_owned(),
-                };
+                let activity = activity_of(timeline.iter().flat_map(|timeline| &timeline.items));
                 json!({
                     "since_unix_ms": app.state_since(session, AgentState::Working),
                     "activity": activity,
@@ -604,6 +594,34 @@ impl Chat {
             )),
         }
     }
+}
+
+/// What a working agent does now, from the end of its saved conversation: the
+/// title of the running tool, else "Thinking", else "Working".
+fn activity_of<'a>(items: impl Iterator<Item = &'a Item>) -> String {
+    match items.last() {
+        Some(Item {
+            tool: Some(tool), ..
+        }) if tool.status == ToolStatus::Running => tool.title.clone(),
+        Some(Item {
+            kind: ItemKind::Thinking,
+            ..
+        }) => "Thinking".into(),
+        _ => "Working".to_owned(),
+    }
+}
+
+/// The activity line of a working session, for the session list.
+pub fn activity(target: &Target) -> String {
+    let timeline = target.pane.agent.as_ref().map(|agent| {
+        Reader::default().read_timeline(
+            &agent.provider,
+            agent.session_ref.as_ref(),
+            TIMELINE_ITEMS,
+            TIMELINE_BYTES,
+        )
+    });
+    activity_of(timeline.iter().flat_map(|timeline| &timeline.items))
 }
 
 /// Whether the daemon refused because the agent or its exchange is still in a turn.

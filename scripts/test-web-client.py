@@ -82,6 +82,17 @@ def turn(text):
   record('user', [{'type':'tool_result','tool_use_id':call,'is_error':'broken' in body,'content':'tool output text'}])
   gate('answer')
   record('assistant', 'Listed the files.')
+ elif 'long talk' in body:
+  # A long saved conversation: many turns, runs of tool calls between them, a very long word.
+  for index in range(1, 25):
+   record('user', 'Question %d: what does step %d of the release checklist cover?' % (index, index))
+   calls = [{'type':'tool_use','id':'long-%d-%d' % (index, step),'name':('Read','Grep','Bash','Edit')[step % 4],
+     'input':{'description':'Check item %d of step %d' % (step + 1, index)}} for step in range(index % 4 + 1)]
+   record('assistant', [{'type':'thinking','thinking':'private','signature':'x'}] + calls)
+   record('user', [{'type':'tool_result','tool_use_id':call['id'],'is_error':index == 7,'content':'ok'} for call in calls])
+   record('assistant', 'Step %d covers the build, the tests and the notes.\nIt has %d checks.\n\n%s' % (index, index % 4 + 1, 'W' * 300 if index == 12 else 'Nothing unusual was found.'))
+ elif 'quit now' in body:
+  report('working'); os._exit(3)
  elif 'ask me' in body:
   report('blocked'); return
  elif 'fail' in body:
@@ -412,7 +423,7 @@ def main():
         checks.append(label)
 
     try:
-        for name in ('home', 'state', 'project', 'project2', 'project3'):
+        for name in ('home', 'state', 'project', 'project2', 'project3', 'design', 'bare'):
             (work / name).mkdir(mode=0o700)
         config = (work / 'home/Library/Application Support/wsx' if sys.platform == 'darwin' else work / 'config/wsx')
         config.mkdir(parents=True)
@@ -421,7 +432,7 @@ def main():
         env = {'HOME': str(work / 'home'), 'XDG_CONFIG_HOME': str(work / 'config'), 'XDG_STATE_HOME': str(work / 'state'),
                'XDG_CACHE_HOME': str(work / 'cache'), 'WSX_SOCKET': str(path), 'WSX_DAEMON_BIN': str(wsxd),
                'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8'}
-        for name in ('project', 'project2', 'project3'):
+        for name in ('project', 'project2', 'project3', 'design', 'bare'):
             subprocess.run(['git', 'init', '-q', '-b', 'main', str(work / name)], env=env, check=True, timeout=5)
         project = (work / 'project').resolve()
         (project / 'notes.txt').write_text('first line\n')
@@ -491,7 +502,7 @@ def main():
         wait(path.exists, 'daemon')
         assert call('synchronize_projects', {'projects': [
             {'name': name, 'path': str(work / name), 'worktrees': [{'path': str(work / name), 'branch': 'main'}]}
-            for name in ('project', 'project2', 'project3')]})['type'] == 'ack'
+            for name in ('project', 'project2', 'project3', 'design', 'bare')]})['type'] == 'ack'
         worktrees = {Path(item['path']).name: item['id'] for item in call('snapshot')['data']['worktrees']}
         projects = {item['name']: item['id'] for item in call('snapshot')['data']['projects']}
         (work / 'project3/third.txt').write_text('third project\n')
@@ -516,7 +527,7 @@ def main():
 
         vapid = cli('web', 'vapid').stdout
         private_key = next(line.split('"')[1] for line in vapid.splitlines() if line.startswith('private_key'))
-        ports = {name: free_port() for name in ('owner', 'family', 'root', 'viewer')}
+        ports = {name: free_port() for name in ('owner', 'family', 'root', 'viewer', 'm2', 'bare')}
         service_origin = 'https://wsx-fixture.example-tailnet.ts.net'
 
         def site_file(name, text, mode=0o600):
@@ -530,7 +541,7 @@ name = "Owner <wsx>"
 base_path = "/app/owner"
 port = {ports['owner']}
 public_origin = "http://127.0.0.1:{ports['owner']}"
-panels = ["chat", "files", "terminal", "activity"]
+panels = ["chat", "files", "terminal"]
 theme = "default"
 [access]
 projects = ["{project}", "{(work / 'project3').resolve()}"]
@@ -560,8 +571,6 @@ extends = "default"
 components = "look.css"
 [tokens]
 color-accent = "#225577"
-color-chrome-bg = "#102030"
-color-chrome-text = "#ffffff"
 font-body = "Fixture Sans, system-ui, sans-serif"
 radius-control = "0"
 [tokens_dark]
@@ -608,6 +617,30 @@ agent_command = ["/bin/sh"]
 max_file_bytes = 4096
 quota_bytes = 9000
 ttl_seconds = 4
+'''),
+            # The sites of the real-browser check: every screen and state, and an empty one.
+            # No agent_write: wsxd lets only one writer exchange be active in a worktree,
+            # and this site shows several agents of one worktree at work.
+            'm2': site_file('m2', f'''id = "m2"
+name = "wsx"
+base_path = "/app/m2"
+port = {ports['m2']}
+public_origin = "http://127.0.0.1:{ports['m2']}"
+panels = ["chat", "files", "terminal"]
+[access]
+projects = ["{(work / 'design').resolve()}"]
+capabilities = ["chat_send", "session_start", "files_read", "files_write", "terminal_view", "terminal_input", "media_upload", "media_download"]
+agent_command = ["/bin/sh"]
+'''),
+            'bare': site_file('bare', f'''id = "bare"
+name = "wsx"
+port = {ports['bare']}
+public_origin = "http://127.0.0.1:{ports['bare']}"
+panels = ["chat"]
+[access]
+projects = ["{(work / 'bare').resolve()}"]
+capabilities = ["chat_send", "session_start"]
+agent_command = ["/bin/sh"]
 '''),
             # Watch-only terminal: terminal_view without terminal_input.
             'viewer': site_file('viewer', f'''id = "viewer"
@@ -657,7 +690,8 @@ capabilities = ["terminal_view"]
         broken('remote-font-stack', base + '[tokens]\nfont-body = "url(https://evil.example/a.woff2)"\n', 'invalid value')
         broken('unknown-token', base + '[tokens]\ncolor-brand = "#ffffff"\n', 'not a theme token')
         broken('dark-length', base + '[tokens_dark]\nspace-1 = "9px"\n', 'must be a color')
-        broken('bad-shadow', base + '[tokens]\nshadow-raised = "0 0 9px url(x)"\n', 'invalid value')
+        broken('removed-token', base + '[tokens]\nshadow-raised = "none"\n', 'not a theme token')
+        broken('bad-tracking', base + '[tokens]\ntracking-label = "url(x)"\n', 'invalid value')
         broken('unknown-field', base + 'script = "x.js"\n', 'unknown field')
         broken('extends-unknown', base + 'extends = "neon"\n', 'not the built-in theme')
         broken('bad-name', 'name = "Bad Name"\n', 'theme name')
@@ -681,7 +715,7 @@ capabilities = ["terminal_view"]
             process = subprocess.Popen([str(wsx), 'web', 'serve', '--site', str(files[name])], env=env,
                                        cwd=project, stdout=subprocess.DEVNULL, stderr=(work / (name + '.log')).open('w'))
             processes.append(process)
-            sites[name] = Site(ports[name], {'owner': '/app/owner', 'family': '/app/family'}.get(name, ''),
+            sites[name] = Site(ports[name], {'owner': '/app/owner', 'family': '/app/family', 'm2': '/app/m2'}.get(name, ''),
                                service_origin if name == 'root' else None)
 
         def up(site):
@@ -747,18 +781,24 @@ capabilities = ["terminal_view"]
         assert 'data-theme="default"' in html and 'name="color-scheme" content="light dark"' in html
         # A theme with a dark scheme is dark unless the device chose light.
         dark_rule = ':root:not([data-scheme="light"]),[data-scheme="dark"]{color-scheme:dark;'
-        assert '--color-bg:#f6f5f1;' in css and dark_rule in css and '@font-face' not in css
+        assert '--color-bg:#f7f7f8;' in css and dark_rule in css and '@font-face' not in css
+        assert css.split(dark_rule)[1].startswith('--color-accent:#6fe3c1;')
+        # The token contract is the default theme's list: 59 tokens, 16 of them the terminal palette.
+        light_tokens = re.findall(r'--([a-z0-9-]+):', css.split(dark_rule)[0])
+        assert len(light_tokens) == 59 and len([token for token in light_tokens if token.startswith('color-ansi-')]) == 16, len(light_tokens)
         assert 'prefers-color-scheme' not in css
-        assert (manifest['background_color'], manifest['theme_color']) == ('#f6f5f1', '#ffffff')
+        # The page is dark by default, so the installed app's splash and toolbar are dark too.
+        assert (manifest['background_color'], manifest['theme_color']) == ('#0a0b0d', '#0a0b0d')
+        assert 'content="#0a0b0d"' in html
 
         html, css, manifest = themed(sites['viewer'])
         assert 'data-theme="plain"' in html and 'name="color-scheme" content="light"' in html
         assert '--color-accent:#225577;' in css and 'data-scheme' not in css, 'a theme without a dark table is light only'
 
         html, css, manifest = themed(family)
-        assert 'data-theme="family-warm"' in html and 'content="#102030"' in html
+        assert 'data-theme="family-warm"' in html and 'content="#0a0b0d"' in html
         # Its own tokens over the inherited default ones, light and dark.
-        assert '--color-accent:#225577;' in css and '--color-bg:#f6f5f1;' in css and '--radius-control:0;' in css
+        assert '--color-accent:#225577;' in css and '--color-bg:#f7f7f8;' in css and '--radius-control:0;' in css
         assert css.split(dark_rule)[1].count('--color-accent:#88bbdd;') == 1
         assert css.endswith(custom_css.decode())
         font_name = hashlib.sha256(fixture_font).hexdigest()[:16] + '.woff2'
@@ -766,7 +806,7 @@ capabilities = ["terminal_view"]
         status, headers, body = family.request('GET', '/theme/' + font_name, raw=True)
         assert status == 200 and body == fixture_font and headers['content-type'] == 'font/woff2'
         assert 'immutable' in headers['cache-control']
-        assert (manifest['background_color'], manifest['theme_color']) == ('#f6f5f1', '#102030')
+        assert (manifest['background_color'], manifest['theme_color']) == ('#0a0b0d', '#0a0b0d')
         assert [family.request('GET', '/' + icon['src'])[1] for icon in manifest['icons']] == [custom_icons['small.png'], custom_icons['large.png']]
         assert '"theme/%s"' % font_name in family.request('GET', '/sw.js')[1].decode()  # offline shell has the font
         assert family.request('GET', '/theme/theme.toml')[0] == 404 and family.request('GET', '/theme/..%2Ftheme.toml')[0] == 404
@@ -774,8 +814,9 @@ capabilities = ["terminal_view"]
         core = re.sub(r'/\*.*?\*/', '', (ROOT / 'crates/wsx-web/web/app.css').read_text(), flags=re.S)
         literals = re.findall(r'#[0-9a-fA-F]{3,8}\b|\b\d*\.?\d+(?:px|rem|em|ms|s|pt)\b|\brgba?\(', core)
         assert literals == [], literals
-        for hook in ('app-chrome', 'app-title', 'app-nav', 'panel', 'list', 'list-row', 'button', 'input',
-                     'bubble', 'badge', 'dialog', 'toast', 'terminal-frame', 'terminal-bar', 'terminal-key'):
+        for hook in ('app', 'rail', 'tabbar', 'title', 'label', 'rows', 'row', 'button', 'input', 'bar', 'switch',
+                     'chat', 'message', 'steps', 'working', 'composer', 'queue', 'code', 'sheet', 'notice',
+                     'terminal', 'terminal-key'):
             assert re.search(r'\.%s[\s,.:{\[]' % hook, core), hook
         ok('themes: built-in default, a light-only custom theme, custom directory with font and icons, hash URLs, manifest follows theme, CSP strict, token-only core CSS')
 
@@ -814,7 +855,7 @@ capabilities = ["terminal_view"]
         for shape in ('prefixed', 'stripped'):
             status, session = owner.request('GET', '/api/session', shape=shape)
             assert status == 200 and session['device']['name'] == 'owner phone'
-            assert session['site']['panels'] == ['chat', 'files', 'terminal', 'activity']
+            assert session['site']['panels'] == ['chat', 'files', 'terminal'] and session['site']['terminal'] == {'ligatures': True}
         saved = owner.cookie
         for forged in (saved[:-1] + ('0' if saved[-1] != '0' else '1'), saved.split('.')[0] + '.' + '0' * 64, 'wsx_web_owner=x'):
             owner.cookie = forged
@@ -1093,7 +1134,7 @@ capabilities = ["terminal_view"]
         assert status == 200 and [p.name for p in media_dir.glob('*.png')] == [entry['url'].split('/')[1]]
         ok('media: oldest-first quota eviction, TTL expiry, sweep removes files')
 
-        # --- Files, terminal and activity panels on the owner site.
+        # --- Files and terminal on the owner site.
         files_of = '/api/files?project=%d&path=' % projects['project']
         file_of = '/api/file?project=%d&path=' % projects['project']
         status, listing = steady(owner, 'GET', files_of)
@@ -1139,8 +1180,7 @@ capabilities = ["terminal_view"]
         # The snapshot terminal API is gone.
         assert steady(owner, 'GET', '/api/terminal/%d' % sessions['owner'])[0] == 404
         assert steady(owner, 'POST', '/api/terminal/%d/input' % sessions['owner'], {'key': 'enter'})[0] in (404, 405)
-        status, activity = steady(owner, 'GET', '/api/activity')
-        assert [s['id'] for s in activity['sessions']] == [sessions['owner']] and activity['exchanges']
+        assert steady(owner, 'GET', '/api/activity')[0] == 404  # the inbox replaced the activity panel
         # A site without agent_write does not continue the owner's writer exchange.
         status, other = steady(root, 'POST', chat + '/send', {'text': 'from the read-only site'})
         assert status == 200 and other['access'] == 'read_only' and other['id'] != exchange['id'], other
@@ -1155,7 +1195,7 @@ capabilities = ["terminal_view"]
             page.connection.sock.shutdown(socket.SHUT_RDWR)
             assert page.closed.wait(3)
             time.sleep(0.15)
-        ok('files sandbox without .git, terminal typing into the agent pane, activity, access-bound continuation, stream slots released')
+        ok('files sandbox without .git, terminal typing into the agent pane, access-bound continuation, stream slots released')
 
 
         # --- Live terminal: one WebSocket per session, bridged to the wsxd raw stream.
@@ -1282,7 +1322,7 @@ capabilities = ["terminal_view"]
         assert [s['id'] for s in family_events.expect('workspace')['sessions']] == [sessions['family']]
         for method, target, body in (('GET', '/api/files?project=1&path=', None), ('GET', '/api/file?project=1&path=notes.txt', None),
                                      ('PUT', '/api/file', write),
-                                     ('GET', '/api/activity', None), ('GET', '/api/push', None),
+                                     ('GET', '/api/push', None),
                                      ('POST', '/api/sessions', {'project': projects['project2'], 'label': 'new'})):
             status, body = family.request(method, target, body)
             assert status == 403 and body['error']['code'] == 'capability_denied', (target, status, body)
@@ -1297,7 +1337,7 @@ capabilities = ["terminal_view"]
         assert len(traces('owner')) == before
         wait(lambda: len(messages(family, sessions['family'])['messages']) == 2, 'family history')
         assert family.request('GET', '/' + uploaded['url'])[0] == 404  # media stores are per site
-        ok('site B: capability denial for files, terminal, activity, push, session start; other project invisible')
+        ok('site B: capability denial for files, terminal, push, session start; other project invisible')
 
         # --- Optional real browser, on both sites, before any device is revoked.
         if args.browser:
@@ -1322,19 +1362,66 @@ capabilities = ["terminal_view"]
             session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == shell)
             assert call('session_close', {'session_id': shell, 'expected_revision': session['revision']})['type'] == 'ack'
 
-            for name, site, session, body_color in (('owner', owner, 'owner', 'rgb(23, 23, 21)'),):
-                settle(session)
-                code = cli('web', 'pair', '--site', files[name]).stdout.splitlines()[0].rsplit(' ', 1)[1]
-                result = subprocess.run([node, str(ROOT / 'scripts/web-browser-check.mjs'), site.origin + site.base + '/',
-                                         code, str(sessions[session]), str(args.captures), name,
-                                         'Chat,Files,Terminal,Activity,Settings', body_color],
-                                        capture_output=True, text=True, timeout=200)
-                assert result.returncode == 0, result.stdout + result.stderr
-                ok('real browser, ' + result.stdout.strip().splitlines()[-1])
-                wait(lambda: messages(owner, sessions[session])['messages'][-1]['text'].startswith('echo: browser check'), 'browser turn')
-                settle(session)
-                # The browser saved notes.txt through the files panel; put the fixture back.
-                (project / 'notes.txt').write_text('edited\n')
+            # Every screen and state of the page, on a project of its own.
+            design = (work / 'design').resolve()
+            (design / 'README.md').write_text('# design\n\nA fixture project for the browser check.\n')
+            (design / 'src').mkdir()
+            (design / 'src/main.rs').write_text('fn main() {\n    println!("hello");\n}\n')
+            m2 = sites['m2']
+            _, m2_cookie = pair(m2, 'm2')
+            m2.cookie = m2_cookie.split(';')[0]
+            shown = {}
+            for role, label in (('blocked', 'Fix the login redirect loop on mobile Safari when third-party cookies are blocked'),
+                                ('error', 'api-tests'), ('exited', 'crashed-import'), ('working', 'release notes'),
+                                ('done', 'docs cleanup'), ('long', 'release checklist'), ('idle', 'refactor')):
+                created = call('session_create', {'worktree_id': worktrees['design'], 'label': label,
+                    'command': [sys.executable, str(actor), str(work / (role + '.jsonl')), str(work / (role + '.trace')),
+                                str(design), str(chart), str(outside)], 'rows': 12, 'cols': 100})
+                assert created['type'] == 'created', created
+                shown[role] = created['data']['id']
+            created = call('session_create', {'worktree_id': worktrees['design'], 'label': 'shell', 'command': ['/bin/sh'], 'rows': 12, 'cols': 100})
+            shown['shell'] = created['data']['id']
+
+            def state_of(role):
+                snapshot = call('snapshot')['data']
+                pane = next(s['focused_pane'] for s in snapshot['sessions'] if s['id'] == shown[role])
+                pane = next(p for p in snapshot['panes'] if p['id'] == pane)
+                return 'exited' if pane['exited'] else pane['agent'] and pane['agent']['state']
+            def prompt_shown(role):
+                pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == shown[role])
+                frames = call('view', {'pane_ids': [pane]})['data']['frames']
+                return bool(frames) and '❯' in ''.join(cell[0] for cell in frames[0]['cells'])
+            for role in ('blocked', 'error', 'exited', 'working', 'done', 'long', 'idle'):
+                # The agent reports idle just before it paints its prompt; wsxd types only into a visible editor.
+                wait(lambda: state_of(role) == 'idle' and prompt_shown(role), role + ' agent ready', timeout=20)
+            for role, text in (('blocked', 'ask me which option to take'), ('error', 'fail now'), ('exited', 'quit now'),
+                               ('working', 'use tool'), ('done', 'tidy the docs'), ('long', 'long talk')):
+                status, sent = steady(m2, 'POST', '/api/chat/%d/send' % shown[role], {'text': text})
+                assert status == 200, (role, sent)
+            for role, expected in (('blocked', 'blocked'), ('error', 'error'), ('exited', 'exited'), ('working', 'working'),
+                                   ('done', 'done'), ('long', 'done')):
+                wait(lambda: state_of(role) == expected, role + ' state', timeout=20)
+            queued = steady(m2, 'POST', '/api/chat/%d/send' % shown['working'], {'text': 'Also mention the new terminal in the notes'})
+            assert 'queued' in queued[1], queued
+            bare = sites['bare']
+            _, bare_cookie = pair(bare, 'bare')
+            bare.cookie = bare_cookie.split(';')[0]
+            bare_events = Events(bare)
+            streams.append(bare_events)
+            empty = bare_events.expect('workspace')
+            assert [p['name'] for p in empty['projects']] == ['bare'] and empty['sessions'] == [], empty
+            audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
+            page_captures = args.captures.parent / 'm2' if args.captures.name == 'm1' else args.captures
+            page_captures.mkdir(parents=True, exist_ok=True)
+            result = subprocess.run([node, str(ROOT / 'scripts/web-browser-check.mjs'), 'tour', m2.origin + m2.base + '/',
+                                     cli('web', 'pair', '--site', files['m2']).stdout.splitlines()[0].rsplit(' ', 1)[1],
+                                     bare.origin + bare.base + '/',
+                                     cli('web', 'pair', '--site', files['bare']).stdout.splitlines()[0].rsplit(' ', 1)[1],
+                                     json.dumps(shown), str(page_captures), str(audit) if audit.exists() else ''],
+                                    capture_output=True, text=True, timeout=280)
+            assert result.returncode == 0, result.stdout + result.stderr
+            ok('real browser, ' + result.stdout.strip().splitlines()[-1])
+            wait(lambda: steady(m2, 'GET', '/api/chat/%d/timeline' % shown['idle'])[1]['items'][-1].get('text') == 'echo: line one', 'browser turn')
 
         # --- Web Push with explicit device consent, to the local receiver.
         status, info = owner.request('GET', '/api/push')
@@ -1430,6 +1517,13 @@ capabilities = ["terminal_view"]
         assert family.request('GET', '/api/session')[0] == 200
         time.sleep(1.5)
         assert not path.exists(), 'wsx web started a daemon'
+        if args.browser:
+            result = subprocess.run([node, str(ROOT / 'scripts/web-browser-check.mjs'), 'down', m2.origin + m2.base + '/',
+                                     cli('web', 'pair', '--site', files['m2']).stdout.splitlines()[0].rsplit(' ', 1)[1],
+                                     str(page_captures), str(audit) if audit.exists() else ''],
+                                    capture_output=True, text=True, timeout=120)
+            assert result.returncode == 0, result.stdout + result.stderr
+            ok('real browser, ' + result.stdout.strip().splitlines()[-1])
         ok('daemon stop: reported on the stream, API says unavailable, no daemon started')
         success = True
     finally:

@@ -1,196 +1,296 @@
 /* Core component CSS. Contract: docs/web-themes.md.
    Every design value comes from a theme token (var(--...)). This file holds
-   structure only: no color, font, length, radius, shadow or duration literal.
-   Themes restyle the hook classes named in each section heading. */
+   structure only: no color, font, length, radius or duration literal.
+   Direction: few elements, exact alignment, one accent, type doing the hierarchy.
+   No gradient, glass, glow, shadow on rows, or card around peer rows. */
 
 * { box-sizing: border-box; }
 html {
-  font-family: var(--font-body); font-size: var(--font-size-md);
-  font-weight: var(--font-weight-normal); line-height: var(--line-height);
+  font-family: var(--font-body); font-size: var(--font-size-md); line-height: var(--line-height);
+  overflow: hidden; overscroll-behavior: none; -webkit-text-size-adjust: 100%;
 }
+/* The page is pinned to the visual viewport and never scrolls: each screen has one
+   scroll container inside it, and a composer or key row sits on the on-screen keyboard
+   even where the keyboard does not shrink the layout viewport (iOS). */
 body {
-  margin: 0; height: 100dvh; display: flex; flex-direction: column;
+  position: fixed; inset: var(--viewport-top, 0) 0 auto 0; height: var(--viewport-height, 100dvh);
+  margin: 0; overflow: hidden; display: flex; flex-direction: column;
   background: var(--color-bg); color: var(--color-text);
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
-/* The page never scrolls: each screen has one scroll container inside it. */
-html, body { overflow: hidden; }
+body[data-keyboard] { padding-bottom: 0; }
 [hidden] { display: none !important; }
-:focus-visible { outline: var(--focus-width) solid var(--color-focus); outline-offset: var(--focus-offset); }
-.skip { position: absolute; transform: translateY(-200%); background: var(--color-surface); padding: var(--space-2); z-index: 3; }
-.skip:focus { transform: none; }
-a { color: var(--color-accent); }
-h2 { font-family: var(--font-heading); font-size: var(--font-size-lg); font-weight: var(--font-weight-strong); margin: 0; }
-label { font-size: var(--font-size-sm); color: var(--color-muted); display: block; }
-.muted { color: var(--color-muted); }
-.small { font-size: var(--font-size-sm); }
-.error { color: var(--color-danger); margin: 0; }
-.row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
-.row > .grow { flex: 1 1 var(--size-field); min-width: 0; }
-.stack { display: contents; }
-
-/* Hook: .app-chrome, .app-title, .app-nav — the title bar and panel navigation. */
-.app-chrome {
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4);
-  padding: var(--space-2) var(--space-4);
-  background: var(--color-chrome-bg); color: var(--color-chrome-text);
-  border-bottom: var(--border-width) solid var(--color-border);
-}
-.app-title { font-family: var(--font-heading); font-size: var(--font-size-md); font-weight: var(--font-weight-strong); margin: 0; }
-.app-nav { display: flex; flex-wrap: wrap; gap: var(--space-1); }
-.app-nav a {
-  min-height: var(--size-control); padding: var(--space-2) var(--space-3);
-  display: inline-flex; align-items: center;
-  color: inherit; text-decoration: none; border-radius: var(--radius-control);
-}
-.app-nav a[aria-current="page"] {
-  background: var(--color-bg); color: var(--color-text); font-weight: var(--font-weight-strong);
-  box-shadow: inset 0 calc(-1 * var(--focus-width)) 0 var(--color-accent);
-}
-
-/* Hook: .panel — the scrolling work area. The page itself never scrolls: a panel
-   scrolls inside main, and the chat log scrolls inside the panel so the composer stays in view. */
-.panel {
-  flex: 1; min-height: 0; overflow-y: auto; width: 100%; max-width: var(--size-content);
-  margin: 0 auto; padding: var(--space-4);
-  display: flex; flex-direction: column; gap: var(--space-3);
-}
-.panel:focus { outline: none; }
-/* The chat log scrolls, so its panel must not scroll as well. */
-.panel:has(> .log) { overflow: hidden; }
-
-/* Hook: .button, .button-primary, .button-danger */
+:focus-visible { outline: var(--focus-width) solid var(--color-accent); outline-offset: var(--focus-width); }
+a { color: inherit; }
 button, select, input, textarea { font: inherit; color: inherit; }
-.button {
-  min-height: var(--size-control); padding: var(--space-2) var(--space-3);
-  background: var(--color-surface); color: var(--color-text);
-  border: var(--border-width) solid var(--color-border); border-radius: var(--radius-control);
-  box-shadow: var(--shadow-raised); cursor: pointer;
-  transition: background-color var(--motion-duration) var(--motion-easing);
-}
-.button-primary { background: var(--color-accent); color: var(--color-accent-text); border-color: var(--color-accent); font-weight: var(--font-weight-strong); }
-.button-danger { color: var(--color-danger); }
-.button:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
-
-/* Hook: .input — text fields, selects and text areas. */
-.input {
-  min-height: var(--size-control); max-width: 100%; padding: var(--space-2);
-  background: var(--color-sunken); color: var(--color-text);
-  border: var(--border-width) solid var(--color-border); border-radius: var(--radius-control);
-  box-shadow: var(--shadow-sunken);
-}
-textarea.input { width: 100%; resize: vertical; }
+p, h1, h2 { margin: 0; }
+.muted { color: var(--color-muted); }
+.error { color: var(--color-danger); font-size: var(--font-size-sm); }
+.path { font-family: var(--font-mono); font-size: var(--font-size-sm); }
+.time { font-variant-numeric: tabular-nums; color: var(--color-muted); }
+.icon { flex: 0 0 auto; }
 /* iOS zooms the page when a focused field's font is smaller than font-size-field.
    The terminal's own input field is invisible, so only its computed size matters. */
 @media (pointer: coarse) {
-  input, select, textarea, textarea.terminal-frame, .terminal .xterm .xterm-helper-textarea { font-size: var(--font-size-field); }
+  input, select, textarea, textarea.code, .terminal .xterm .xterm-helper-textarea { font-size: var(--font-size-field); }
 }
-fieldset { border: var(--border-width) solid var(--color-border); border-radius: var(--radius-surface); padding: var(--space-3); margin: 0; }
-fieldset label { color: var(--color-text); font-size: var(--font-size-md); min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-2); }
 
-/* Hook: .badge — agent and session state. The text carries the state; color repeats it. */
-.badge { font-size: var(--font-size-sm); white-space: nowrap; }
-.badge[data-state="blocked"], .badge[data-state="error"] { color: var(--color-danger); font-weight: var(--font-weight-strong); }
-.badge[data-state="done"] { color: var(--color-ok); }
-
-/* Hook: .list, .list-row */
-.list {
-  list-style: none; margin: 0; padding: 0;
-  background: var(--color-surface); border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-surface); box-shadow: var(--shadow-raised);
+/* Hook: .app, .rail, .tabbar — the two layouts. Phone: screens over a bottom tab bar.
+   Wide (.app[data-wide]): a left rail with the inbox or the projects. */
+#app, .app, .stage, .screen, .page { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.app[data-wide] { flex-direction: row; }
+.rail {
+  flex: 0 0 var(--size-rail); width: var(--size-rail); min-width: 0; min-height: 0; display: flex; flex-direction: column;
+  border-right: var(--border-width) solid var(--color-hairline);
 }
-.list-row + .list-row { border-top: var(--border-width) solid var(--color-border); }
-.list-row > .button { width: 100%; text-align: left; border: 0; border-radius: 0; background: none; box-shadow: none; overflow-wrap: anywhere; }
-.list-row.line { padding: var(--space-2) var(--space-3); display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-1) var(--space-3); }
+.rail-head { padding: var(--space-3) var(--space-4) 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.rail-name { font-weight: var(--font-weight-strong); }
+.rail-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.rail-tabs { display: flex; gap: var(--space-4); border-bottom: var(--border-width) solid var(--color-hairline); }
+.rail-tabs a, .tabbar a { text-decoration: none; color: var(--color-muted); font-size: var(--font-size-sm); }
+.rail-tabs a { padding: var(--space-2) 0; }
+.rail-tabs a[aria-current="page"], .tabbar a[aria-current="page"] { color: var(--color-text); font-weight: var(--font-weight-medium); }
+.rail-tabs a[aria-current="page"] { box-shadow: inset 0 calc(-1 * var(--focus-width)) 0 var(--color-text); }
+.tabbar { flex: 0 0 auto; display: flex; border-top: var(--border-width) solid var(--color-hairline); }
+.tabbar a { flex: 1; min-height: var(--size-row); display: flex; align-items: center; justify-content: center; }
+.placeholder { margin: auto; color: var(--color-faint); }
 
-/* Hook: .bubble, .bubble-user, .bubble-agent — chat messages. */
-.log { flex: 1 1 0; min-height: var(--size-log); overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-1) 0; }
-.bubble { max-width: min(100%, var(--size-bubble)); padding: var(--space-2) var(--space-3); border-radius: var(--radius-surface); border: var(--border-width) solid transparent; }
-.bubble-user { align-self: flex-end; background: var(--color-bubble-user-bg); color: var(--color-bubble-user-text); border-color: var(--color-border); box-shadow: var(--shadow-raised); }
-.bubble-agent { align-self: flex-start; background: var(--color-bubble-agent-bg); color: var(--color-bubble-agent-text); }
-.bubble[data-pending] { border-style: dashed; }
-.bubble .who { font-size: var(--font-size-sm); opacity: var(--opacity-quiet); margin: 0; }
-.bubble .text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.attachments { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-2) 0 0; padding: 0; list-style: none; }
-.attachments img { display: block; max-width: min(100%, var(--size-media)); max-height: var(--size-media); border: var(--border-width) solid var(--color-border); border-radius: var(--radius-control); }
-.composer { border-top: var(--border-width) solid var(--color-border); padding-top: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
-/* Attach, Stop and Send stay on one line at 320 px so Send is never below the fold. */
-.composer .row { flex-wrap: nowrap; }
-.composer .row > .grow { flex: 1 1 0; }
-.chips { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: 0; margin: 0; list-style: none; font-size: var(--font-size-sm); }
-.chips li { border: var(--border-width) solid var(--color-border); border-radius: var(--radius-control); padding-left: var(--space-2); display: inline-flex; align-items: center; gap: var(--space-1); max-width: 100%; }
-.chips li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chips .button { border: 0; background: none; box-shadow: none; }
-
-/* Hook: .terminal-frame — terminal screen and file text. */
-.terminal-frame {
-  flex: 1; min-height: var(--size-log); margin: 0; padding: var(--space-3); overflow: auto;
-  font-family: var(--font-mono); font-size: var(--font-size-mono);
-  background: var(--color-terminal-bg); color: var(--color-terminal-text);
-  border: var(--border-width) solid var(--color-border); border-radius: var(--radius-surface);
-  box-shadow: var(--shadow-sunken);
+/* Hook: .title, .label, .rows, .row — screens are a title, section labels and plain rows. */
+.title {
+  padding: var(--space-4) var(--space-4) var(--space-2);
+  font-size: var(--font-size-title); font-weight: var(--font-weight-strong); letter-spacing: var(--tracking-title);
 }
-textarea.terminal-frame { resize: vertical; }
-
-/* Hook: .terminal-bar, .terminal-icon, .terminal-notice, .terminal-key, .terminal-pad, .terminal-sheet — the live terminal.
-   The terminal panel is full-bleed and its frame is dark in either scheme (data-scheme on .terminal).
-   The page is pinned to the visual viewport and never scrolls, so the key row sits on the
-   on-screen keyboard even where the keyboard does not shrink the layout viewport (iOS).
-   On a phone (body[data-compact]) the bar is the only top row: its menu button replaces the tabs. */
-html[data-view="terminal"] { overflow: hidden; overscroll-behavior: none; }
-body[data-view="terminal"] { position: fixed; inset: var(--viewport-top, 0) 0 auto 0; height: var(--viewport-height, 100dvh); }
-body[data-view="terminal"][data-keyboard] { padding-bottom: 0; }
-body[data-view="terminal"][data-compact] .app-chrome { display: none; }
-.panel-terminal { max-width: none; padding: 0; overflow: hidden; }
-/* touch-action rules out double-tap zoom: the screen and the pad handle every gesture
-   themselves, the key row may pan sideways, everything else only taps. */
-.terminal { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--color-surface); color: var(--color-text); touch-action: manipulation; }
-.terminal-bar {
-  height: var(--size-control); display: flex; align-items: center; gap: var(--space-1); padding: 0 var(--space-1);
-  border-bottom: var(--border-width) solid var(--color-border);
+.scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.label {
+  padding: var(--space-4) var(--space-4) var(--space-1);
+  font-size: var(--font-size-label); font-weight: var(--font-weight-medium); letter-spacing: var(--tracking-label);
+  text-transform: uppercase; color: var(--color-faint);
 }
-.terminal-icon {
-  flex: 0 0 auto; width: var(--size-key); height: var(--size-key); min-height: 0; padding: 0;
+.empty, .note { padding: var(--space-4); color: var(--color-muted); }
+.note { font-size: var(--font-size-sm); padding: var(--space-1) 0; }
+.rows { list-style: none; margin: 0; padding: 0; }
+.row { position: relative; }
+/* The hairline starts at the text inset. */
+.row + .row::before {
+  content: ""; position: absolute; top: 0; right: 0; left: var(--row-inset, var(--space-4));
+  border-top: var(--border-width) solid var(--color-hairline);
+}
+.row-link {
+  width: 100%; min-height: var(--size-row); padding: var(--space-2) var(--space-4);
+  display: flex; align-items: center; gap: var(--space-3);
+  text-align: left; text-decoration: none; background: none; border: 0; cursor: pointer;
+}
+div.row-link { cursor: default; }
+a.row-link:active, button.row-link:active, .row-link[aria-current="page"] { background: var(--color-raised); }
+/* A row with a state mark: its text, and so its hairline, starts after the mark. */
+.row:has(.mark) { --row-inset: calc(var(--space-4) + var(--space-1) * 1.5 + var(--space-3)); }
+.row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.row-label, .row-context, .row-activity { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-label { font-weight: var(--font-weight-medium); }
+.row-context, .row-activity { font-size: var(--font-size-sm); color: var(--color-muted); }
+.row-state {
+  flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end;
+  font-size: var(--font-size-sm); color: var(--color-muted);
+}
+.row-actions { flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-3); }
+.new { color: var(--color-accent); font-weight: var(--font-weight-medium); }
+/* State is always a word; the mark and the tone repeat it. */
+.mark { flex: 0 0 auto; width: calc(var(--space-1) * 1.5); height: calc(var(--space-1) * 1.5); border-radius: 50%; background: var(--color-faint); }
+.mark[data-tone="accent"] { background: var(--color-accent); }
+.mark[data-tone="attention"] { background: var(--color-attention); }
+.mark[data-tone="danger"] { background: var(--color-danger); }
+[data-tone="accent"]:not(.mark) { color: var(--color-accent); }
+[data-tone="attention"]:not(.mark) { color: var(--color-attention); }
+[data-tone="danger"]:not(.mark) { color: var(--color-danger); }
+.group-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-4) 0; }
+.group-name { font-size: var(--font-size-sm); color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Hook: .button, .button-primary, .button-danger, .link-action, .icon-button, .input.
+   One filled accent control at most is visible on a screen. */
+.button {
+  min-height: var(--size-control); padding: 0 var(--space-4);
+  border: 0; border-radius: var(--radius-control); background: var(--color-raised); color: var(--color-text);
+  font-weight: var(--font-weight-medium); cursor: pointer;
+}
+.button-primary { background: var(--color-accent); color: var(--color-accent-text); }
+.button-danger { color: var(--color-danger); }
+.button:disabled, .link-action:disabled, .icon-button:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
+.link-action {
+  flex: 0 0 auto; padding: 0; border: 0; background: none; cursor: pointer;
+  font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); text-decoration: none; white-space: nowrap;
+}
+.icon-button {
+  flex: 0 0 auto; width: var(--size-control); height: var(--size-control); padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: var(--radius-control); background: none; color: var(--color-muted); cursor: pointer;
 }
-.terminal-picker { flex: 1 1 0; min-width: 0; }
-/* The session picker reads as the title: no field chrome, and a long name ends in an ellipsis. */
-.terminal-picker .input {
-  width: 100%; min-height: 0; height: var(--size-key); padding: 0 var(--space-1);
-  border-color: transparent; background: none; box-shadow: none; font-weight: var(--font-weight-strong);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.icon-button[aria-pressed="true"] { color: var(--color-text); }
+@media (pointer: coarse) {
+  .link-action { min-height: var(--size-control); display: inline-flex; align-items: center; }
 }
-.terminal-bar .badge { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.input {
+  width: 100%; min-height: var(--size-control); padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
+  background: var(--color-raised);
+}
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-4); }
+
+/* Hook: .bar, .switch — the one top row of a session or of the files screen. */
+.bar {
+  flex: 0 0 var(--size-bar); min-width: 0; display: flex; align-items: center; gap: var(--space-1);
+  padding: 0 var(--space-2) 0 0; border-bottom: var(--border-width) solid var(--color-hairline);
+}
+.bar-title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: var(--space-2); }
+.bar-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--font-weight-medium); }
+.bar-state { flex: 0 0 auto; font-size: var(--font-size-sm); color: var(--color-muted); white-space: nowrap; }
+.bar-tools { flex: 0 0 auto; display: flex; }
+.switch { flex: 0 0 auto; display: flex; }
+.switch a {
+  position: relative; isolation: isolate; height: var(--size-control); padding: 0 var(--space-3);
+  display: flex; align-items: center; text-decoration: none; font-size: var(--font-size-sm); color: var(--color-muted);
+}
+/* The link is a full-height target; its visible block is inset. */
+.switch a::before { content: ""; position: absolute; z-index: -1; inset: var(--space-2) 0; border-radius: var(--radius-key); }
+.switch a[aria-current="page"] { color: var(--color-text); font-weight: var(--font-weight-medium); }
+.switch a[aria-current="page"]::before { background: var(--color-raised); }
+
+/* Hook: .chat, .log, .message, .steps, .working, .composer, .queue — the conversation.
+   One scroll container between the top row and the composer. */
+.chat, .log-wrap { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.log-wrap { position: relative; }
+.log {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
+  /* On a wide screen the conversation is one centered column of the prose width. */
+  padding-inline: max(var(--space-4), calc((100% - var(--size-prose)) / 2));
+}
+.log:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
+.message { max-width: var(--size-prose); }
+.prose { white-space: pre-wrap; overflow-wrap: anywhere; line-height: var(--line-height-prose); }
+/* The person's message: a block on the surface, to the right. The agent's text has no bubble. */
+.message-user {
+  align-self: flex-end; max-width: 85%; padding: var(--space-2) var(--space-3);
+  background: var(--color-surface); border-radius: var(--radius-control);
+}
+.message[data-pending] { color: var(--color-muted); }
+.attachments { list-style: none; margin: var(--space-2) 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); font-size: var(--font-size-sm); }
+.attachments img { display: block; max-width: 100%; max-height: calc(var(--size-rail) * 0.8); border-radius: var(--radius-key); }
+.steps { font-size: var(--font-size-sm); color: var(--color-muted); max-width: var(--size-prose); }
+.steps-summary { display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; overflow-wrap: anywhere; }
+.steps-summary::-webkit-details-marker { display: none; }
+.steps[open] > .steps-summary .icon { transform: rotate(90deg); }
+div.steps .steps-summary { cursor: default; }
+.step-list { list-style: none; margin: var(--space-1) 0 0; padding: 0 0 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); }
+.step { display: flex; gap: var(--space-2); min-width: 0; }
+.step-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step-state { flex: 0 0 auto; }
+.working, .attention { display: flex; align-items: center; gap: var(--space-2); font-size: var(--font-size-sm); color: var(--color-muted); }
+.working-activity { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attention { color: var(--color-attention); justify-content: space-between; }
+/* The only looping motion, and only while an agent works. */
+.pulse { flex: 0 0 auto; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-accent); }
+@media (prefers-reduced-motion: no-preference) {
+  .pulse { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
+  .steps .icon { transition: transform var(--motion-duration) var(--motion-easing); }
+}
+@keyframes pulse { 50% { opacity: var(--opacity-disabled); } }
+.jump {
+  position: absolute; bottom: var(--space-3); left: 50%; transform: translateX(-50%);
+  min-height: var(--size-key); padding: 0 var(--space-3); display: inline-flex; align-items: center; gap: var(--space-1);
+  border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
+  background: var(--color-raised); color: var(--color-text); font-size: var(--font-size-sm); cursor: pointer; white-space: nowrap;
+}
+.chat-error { padding: var(--space-1) var(--space-4); }
+.queue { list-style: none; margin: 0; padding: 0; border-top: var(--border-width) solid var(--color-hairline); background: var(--color-surface); }
+.queued { display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-4); min-height: var(--size-key); font-size: var(--font-size-sm); }
+.queued + .queued { border-top: var(--border-width) solid var(--color-hairline); }
+.queued-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-muted); }
+.queued-reason { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Opaque, with a hairline on top, so the end of the conversation is visible. */
+.composer { flex: 0 0 auto; padding: var(--space-2); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
+.composer-row { display: flex; align-items: flex-end; gap: var(--space-1); }
+.composer-field {
+  flex: 1; min-width: 0; min-height: var(--size-control); padding: var(--space-3) var(--space-2);
+  border: 0; background: none; resize: none; line-height: var(--line-height); outline: none;
+}
+.composer:focus-within { border-top-color: var(--color-accent); }
+.chips { list-style: none; margin: 0; padding: 0 var(--space-2) var(--space-1); display: flex; flex-wrap: wrap; gap: var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted); }
+.chips li { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; }
+.chips li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Hook: .code, .crumbs — a project's files. */
+.crumbs { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-1); overflow-x: auto; scrollbar-width: none; white-space: nowrap; }
+.crumb-mark { color: var(--color-faint); }
+.file-body { display: flex; flex-direction: column; }
+.code {
+  flex: 1; min-height: 0; width: 100%; margin: 0; padding: var(--space-4); overflow: auto;
+  border: 0; background: var(--color-bg); color: var(--color-text); resize: none; outline: none;
+  font-family: var(--font-mono); font-size: var(--font-size-sm); line-height: var(--line-height-prose); white-space: pre; tab-size: 4;
+}
+
+/* Hook: .options, .pair-form, .sheet, .notice — settings, pairing, dialog, notices. */
+.options { display: flex; flex-direction: column; }
+.option { min-height: var(--size-control); padding: 0 var(--space-4); display: flex; align-items: center; gap: var(--space-3); }
+.option input { accent-color: var(--color-accent); }
+.device { padding: 0 var(--space-4); font-size: var(--font-size-sm); }
+.pair { justify-content: center; padding: var(--space-4); }
+.pair-form { width: 100%; max-width: calc(var(--size-rail) * 1.2); margin: 0 auto; display: flex; flex-direction: column; gap: var(--space-4); }
+.pair-form .title { padding: 0; }
+.field { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--font-size-sm); color: var(--color-muted); }
+#pair-code { font-family: var(--font-mono); font-size: max(var(--font-size-field), var(--font-size-title)); text-transform: uppercase; color: var(--color-text); }
+#pair-name { color: var(--color-text); }
+.sheet {
+  width: min(100% - 2 * var(--space-4), calc(var(--size-rail) * 1.2)); padding: var(--space-4);
+  border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-sheet);
+  background: var(--color-surface); color: var(--color-text);
+}
+.sheet::backdrop { background: var(--color-overlay); }
+.sheet-title { font-size: var(--font-size-md); font-weight: var(--font-weight-strong); margin-bottom: var(--space-2); }
+.sheet-actions { justify-content: flex-end; padding: var(--space-4) 0 0; }
+.notices { flex: 0 0 auto; }
+.notice { padding: var(--space-2) var(--space-4); font-size: var(--font-size-sm); background: var(--color-surface); border-bottom: var(--border-width) solid var(--color-hairline); }
+
+/* Hook: .terminal, .terminal-notice, .terminal-key, .terminal-pad — the live terminal.
+   It fills the session below the top row, edge to edge, and is dark in either scheme
+   (data-scheme on .terminal). touch-action rules out double-tap zoom: the screen and the
+   pad handle every gesture themselves, the key row may pan sideways, the rest only taps. */
+.terminal-mount { flex: 1; min-height: 0; min-width: 0; display: flex; }
+.terminal { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--color-bg); color: var(--color-text); touch-action: manipulation; }
 /* The notice lies over the top of the screen: showing it must not resize the pane. */
 .terminal-notice {
   position: absolute; inset: 0 0 auto 0; z-index: 1; height: var(--size-control);
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
-  padding: 0 var(--space-1) 0 var(--space-3); font-size: var(--font-size-sm);
-  background: var(--color-surface); border-bottom: var(--border-width) solid var(--color-border);
+  padding: 0 var(--space-1) 0 var(--space-4); font-size: var(--font-size-sm);
+  background: var(--color-surface); border-bottom: var(--border-width) solid var(--color-hairline);
 }
 .terminal-notice span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.terminal-notice .button { flex: 0 0 auto; min-height: 0; height: var(--size-key); padding: 0 var(--space-3); white-space: nowrap; }
+.terminal-notice button {
+  flex: 0 0 auto; height: var(--size-key); padding: 0 var(--space-3); border: 0; border-radius: var(--radius-key);
+  background: var(--color-raised); color: var(--color-text); font-weight: var(--font-weight-medium); white-space: nowrap; cursor: pointer;
+}
 .terminal-stage { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; touch-action: none; }
 .terminal-host { height: 100%; }
 .terminal-host[data-size="host"] { width: max-content; height: max-content; transform-origin: 0 0; }
-.terminal-controls { border-top: var(--border-width) solid var(--color-border); }
+.terminal-controls { border-top: var(--border-width) solid var(--color-hairline); }
 .terminal-keys { display: flex; gap: var(--space-1); padding: var(--space-1); overflow-x: auto; scrollbar-width: none; touch-action: pan-x; }
 /* A fade marks each edge that has more keys to scroll to. */
 .terminal-keys[data-more="end"] {
-  -webkit-mask-image: linear-gradient(to left, transparent, black var(--space-5));
-  mask-image: linear-gradient(to left, transparent, black var(--space-5));
+  -webkit-mask-image: linear-gradient(to left, transparent, black var(--space-4));
+  mask-image: linear-gradient(to left, transparent, black var(--space-4));
 }
 .terminal-keys[data-more="start"] {
-  -webkit-mask-image: linear-gradient(to right, transparent, black var(--space-5));
-  mask-image: linear-gradient(to right, transparent, black var(--space-5));
+  -webkit-mask-image: linear-gradient(to right, transparent, black var(--space-4));
+  mask-image: linear-gradient(to right, transparent, black var(--space-4));
 }
 .terminal-keys[data-more="start end"] {
-  -webkit-mask-image: linear-gradient(to right, transparent, black var(--space-5), black calc(100% - var(--space-5)), transparent);
-  mask-image: linear-gradient(to right, transparent, black var(--space-5), black calc(100% - var(--space-5)), transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, black var(--space-4), black calc(100% - var(--space-4)), transparent);
+  mask-image: linear-gradient(to right, transparent, black var(--space-4), black calc(100% - var(--space-4)), transparent);
 }
-.terminal-key {
-  flex: 0 0 auto; min-width: var(--size-key); min-height: 0; height: var(--size-key); padding: 0 var(--space-2);
-  font-size: var(--font-size-sm); user-select: none; -webkit-user-select: none;
+/* Keys are flat raised blocks. */
+.terminal-key, .terminal-pad {
+  flex: 0 0 auto; min-width: var(--size-key); height: var(--size-key); padding: 0 var(--space-2);
+  border: 0; border-radius: var(--radius-key); background: var(--color-raised); color: var(--color-text);
+  font-size: var(--font-size-sm); user-select: none; -webkit-user-select: none; cursor: pointer;
 }
 .terminal-key[data-failed] { color: var(--color-danger); }
 .terminal-tools {
@@ -198,46 +298,6 @@ body[data-view="terminal"][data-compact] .app-chrome { display: none; }
   gap: var(--space-1); padding: 0 var(--space-1) var(--space-1);
 }
 .terminal-pad {
-  width: calc(var(--size-control) * 3.5); min-height: 0; height: var(--size-key); padding: 0;
-  display: flex; align-items: center; justify-content: center;
-  font-size: var(--font-size-sm); touch-action: none; cursor: crosshair; user-select: none; -webkit-user-select: none;
-}
-/* The panel list, as a sheet from the bottom edge. */
-.dialog.terminal-sheet { width: 100%; max-width: 100%; margin: auto 0 0; padding: var(--space-3); }
-.terminal-sheet .list-row > a {
-  min-height: var(--size-control); padding: 0 var(--space-3); display: flex; align-items: center;
-  color: inherit; text-decoration: none;
-}
-.terminal-sheet .list-row > a[aria-current="page"] { font-weight: var(--font-weight-strong); }
-.terminal-sheet .row { margin-top: var(--space-3); }
-
-/* Hook: .dialog — modal confirmation. */
-.dialog {
-  width: min(100% - 2 * var(--space-4), var(--size-field) * 2); padding: var(--space-4);
-  background: var(--color-surface); color: var(--color-text);
-  border: var(--border-width) solid var(--color-border); border-radius: var(--radius-surface);
-  box-shadow: var(--shadow-overlay);
-}
-.dialog::backdrop { background: var(--color-overlay); }
-.dialog h2 { margin-bottom: var(--space-2); }
-.dialog .row { justify-content: flex-end; margin-top: var(--space-4); }
-
-/* Hook: .toast — connection and result notices, above the panel. */
-.toasts { display: flex; flex-direction: column; }
-.toast {
-  margin: 0; padding: var(--space-2) var(--space-4); font-size: var(--font-size-sm);
-  background: var(--color-surface); color: var(--color-text);
-  border-bottom: var(--border-width) solid var(--color-border);
-}
-.toast[data-kind="error"] { color: var(--color-danger); }
-
-.pair { max-width: calc(var(--size-field) * 2); display: flex; flex-direction: column; gap: var(--space-3); }
-.pair .input { width: 100%; }
-#pair-code { font-family: var(--font-mono); font-size: max(var(--font-size-field), var(--font-size-xl)); text-transform: uppercase; }
-
-@media (prefers-reduced-motion: reduce) {
-  .button { transition: none; }
-}
-@media (prefers-reduced-motion: no-preference) {
-  .log { scroll-behavior: smooth; }
+  width: calc(var(--size-key) * 4); padding: 0; display: flex; align-items: center; justify-content: center;
+  touch-action: none; cursor: crosshair;
 }

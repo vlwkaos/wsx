@@ -1,7 +1,6 @@
-// Shared dialog and toast components. Theme hooks: .dialog, .toast.
-import { add, h } from "./dom.js";
-
-const region = () => document.getElementById("toasts");
+// Notices, the confirmation dialog, and the device's light or dark choice.
+import { html, useEffect, useState } from "./lib.js";
+import { useStore } from "./store.js";
 
 // A theme with a dark scheme is dark unless this device chose light (docs/web-themes.md).
 const SCHEME_KEY = "wsx-scheme";
@@ -13,57 +12,72 @@ export function applyScheme() {
   if (!hasDarkScheme()) return;
   if (scheme() === "light") document.documentElement.dataset.scheme = "light";
   else delete document.documentElement.dataset.scheme;
-  // The browser's own bars take the color of the page chrome.
-  const chrome = getComputedStyle(document.documentElement).getPropertyValue("--color-chrome-bg").trim();
-  if (chrome) document.querySelector("meta[name=theme-color]").content = chrome;
+  // The browser's own bars take the page background.
+  const background = getComputedStyle(document.documentElement).getPropertyValue("--color-bg").trim();
+  if (background) document.querySelector("meta[name=theme-color]").content = background;
 }
 export function setScheme(value) {
   try { localStorage.setItem(SCHEME_KEY, value); } catch { /* a private window keeps the default */ }
   applyScheme();
 }
-const sticky = new Map();
-
-// A named notice stays until it is cleared: `notice("link", "Connection lost")`,
-// then `notice("link", null)`. An actionable failure must not vanish by itself.
-export function notice(name, text) {
-  sticky.get(name)?.remove();
-  sticky.delete(name);
-  if (!text) return;
-  const node = h("p", { class: "toast", "data-kind": "error" }, text);
-  sticky.set(name, node);
-  add(region(), node);
-}
 
 // A result message that clears itself, for outcomes that need no action.
+let toasts = [];
+const watchers = new Set();
 export function toast(text) {
-  const node = h("p", { class: "toast" }, text);
-  add(region(), node);
-  setTimeout(() => node.remove(), 4000);
+  const entry = { text };
+  toasts = [...toasts, entry];
+  for (const watcher of watchers) watcher();
+  setTimeout(() => {
+    toasts = toasts.filter((other) => other !== entry);
+    for (const watcher of watchers) watcher();
+  }, 4000);
+}
+
+// One line per condition, above the screen. A lost connection stays until it is back.
+export function Notices() {
+  const store = useStore();
+  const [, renew] = useState(0);
+  useEffect(() => {
+    const watcher = () => renew((count) => count + 1);
+    watchers.add(watcher);
+    return () => watchers.delete(watcher);
+  }, []);
+  return html`
+    <div class="notices" role="status" aria-live="polite">
+      ${!store.online && html`<p class="notice" data-tone="attention">Connection lost. Reconnecting…</p>`}
+      ${toasts.map((entry) => html`<p class="notice">${entry.text}</p>`)}
+    </div>`;
 }
 
 // Modal confirmation on the native <dialog>: focus is trapped while it is open,
 // Escape cancels, and focus returns to the control that opened it.
 export function confirmDialog({ title, text, confirm, danger = false }) {
-  return new Promise((resolve) => {
+  return new Promise((done) => {
     const opener = document.activeElement;
-    const dialog = h(
-      "dialog",
-      { class: "dialog", "aria-labelledby": "dialog-title" },
-      h("h2", { id: "dialog-title" }, title),
-      h("p", {}, text),
-      h(
-        "div",
-        { class: "row" },
-        h("button", { type: "button", autofocus: true, onclick: () => dialog.close("cancel") }, "Cancel"),
-        h("button", { type: "button", class: danger ? "button-danger" : "button-primary", onclick: () => dialog.close("confirm") }, confirm),
-      ),
+    const dialog = document.createElement("dialog");
+    dialog.className = "sheet";
+    dialog.setAttribute("aria-labelledby", "dialog-title");
+    const element = (tag, props, ...children) => {
+      const node = Object.assign(document.createElement(tag), props);
+      node.append(...children);
+      return node;
+    };
+    const cancel = element("button", { type: "button", className: "button", autofocus: true, textContent: "Cancel" });
+    const accept = element("button", { type: "button", className: danger ? "button button-danger" : "button button-primary", textContent: confirm });
+    cancel.addEventListener("click", () => dialog.close("cancel"));
+    accept.addEventListener("click", () => dialog.close("confirm"));
+    dialog.append(
+      element("h2", { id: "dialog-title", className: "sheet-title", textContent: title }),
+      element("p", { className: "muted", textContent: text }),
+      element("div", { className: "actions sheet-actions" }, cancel, accept),
     );
     dialog.addEventListener("close", () => {
       dialog.remove();
       opener?.focus?.();
-      resolve(dialog.returnValue === "confirm");
+      done(dialog.returnValue === "confirm");
     });
-    add(document.body, dialog);
+    document.body.append(dialog);
     dialog.showModal();
   });
 }

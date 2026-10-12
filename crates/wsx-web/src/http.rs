@@ -76,7 +76,6 @@ pub fn router(app: Shared) -> Router {
                     .layer(DefaultBodyLimit::max(3 * 1024 * 1024)),
             )
             .route("/api/terminal/{session}/ws", get(terminal_socket))
-            .route("/api/activity", get(activity))
             .route(
                 "/api/push",
                 get(push_get).post(push_set).delete(push_delete),
@@ -356,6 +355,7 @@ async fn session(State(app): State<Shared>, Paired(device): Paired) -> Json<Valu
             "panels": app.site.panels,
             "capabilities": app.site.capabilities,
             "max_file_bytes": app.site.media.max_file_bytes,
+            "terminal": { "ligatures": app.site.terminal_ligatures },
         },
         "device": { "id": device.id, "name": device.name },
     }))
@@ -904,28 +904,6 @@ async fn terminal_socket(
             let _slot = slot;
             terminal::bridge(app, socket, attach, headers).await;
         }))
-}
-
-async fn activity(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json<Value>> {
-    need(&app, Panel::Activity)?;
-    blocking(|| {
-        let snapshot = chat::snapshot(&app.client)?;
-        let targets = chat::targets(&snapshot, &app.site.access);
-        let mut exchanges: Vec<_> = chat::exchanges(&app.client, None)?
-            .into_iter()
-            .filter(|exchange| {
-                targets
-                    .iter()
-                    .any(|target| target.pane.id == exchange.pane_id)
-            })
-            .collect();
-        exchanges.sort_by_key(|exchange| std::cmp::Reverse(exchange.updated_unix_ms));
-        exchanges.truncate(30);
-        Ok(Json(json!({
-            "sessions": targets.iter().map(chat::session_view).collect::<Vec<_>>(),
-            "exchanges": exchanges.iter().map(chat::exchange_view).collect::<Vec<_>>(),
-        })))
-    })
 }
 
 async fn push_get(State(app): State<Shared>, Paired(device): Paired) -> Outcome<Json<Value>> {
