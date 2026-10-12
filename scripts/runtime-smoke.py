@@ -14,7 +14,7 @@ import time
 import weakref
 
 ROOT = Path(__file__).resolve().parents[1]
-PROTOCOL = 16
+PROTOCOL = 17
 # ^ Plugin manifest commands must be absolute even when the scratch root is relative.
 WORK = Path(os.environ.get("WSX_SMOKE_WORK", ROOT / ".work" / "runtime-smoke")).resolve()
 if WORK.exists():
@@ -908,6 +908,158 @@ stuck_session = next(
 assert call("session_close", {
     "session_id": stuck_session_id,
     "expected_revision": stuck_session["revision"],
+})["type"] == "ack"
+
+# ^ docs/terminal-raw-stream.md: PTY bytes for a client that runs its own emulator.
+RAW_FIXTURE = WORK / "raw-fixture.py"
+RAW_FIXTURE.write_text(
+    "import fcntl, os, signal, struct, termios, tty\n"
+    "tty.setraw(0)\n"
+    "def winch(*_):\n"
+    "    rows, cols = struct.unpack('hhhh', fcntl.ioctl(0, termios.TIOCGWINSZ, b'\\0' * 8))[:2]\n"
+    "    os.write(1, b'\\r\\n[size %dx%d]\\r\\n' % (cols, rows))\n"
+    "signal.signal(signal.SIGWINCH, winch)\n"
+    "os.write(1, b'raw-ready')\n"
+    "while True:\n"
+    "    data = os.read(0, 65536)\n"
+    "    if not data or data == b'\\x04':\n"
+    "        break\n"
+    "    if data.startswith(b'flood:'):\n"
+    "        for index in range(int(data[6:]) // 9):\n"
+    "            os.write(1, b'%07d\\r\\n' % index)\n"
+    "        os.write(1, b'[flood-end]')\n"
+    "    else:\n"
+    "        os.write(1, data)\n"
+    "os.write(1, b'[bye]')\n"
+)
+
+
+def raw_subscribe(target, client_id, takeover, rows, cols):
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(10)
+    client.connect(str(SOCKET))
+    client.sendall(json.dumps({"method": "hello", "params": {"protocol": PROTOCOL}}).encode() + b"\n")
+    hello = recv_line(client)
+    assert hello["data"]["capabilities"]["raw_terminal_stream"] is True, hello
+    client.sendall(json.dumps({
+        "method": "terminal_raw_subscribe",
+        "params": {
+            "pane_id": target, "client_id": client_id, "takeover": takeover,
+            "rows": rows, "cols": cols,
+        },
+    }).encode() + b"\n")
+    return client, recv_line(client)
+
+
+def raw_send(client, kind, data=None):
+    message = {"type": kind} if data is None else {"type": kind, "data": data}
+    client.sendall(json.dumps(message).encode() + b"\n")
+
+
+def raw_output_until(client, marker):
+    """Output bytes after the newest replay, read until they contain `marker`."""
+    output = b""
+    replays = []
+    while marker not in output:
+        message = recv_line(client)
+        if message["type"] == "replay":
+            replays.append(message["data"])
+            output = bytes(message["data"]["ansi"]) if marker in bytes(message["data"]["ansi"]) else b""
+        elif message["type"] == "output":
+            output += bytes(message["data"])
+        else:
+            assert message["type"] in ("resized", "clipboard_write"), message
+    return output, replays
+
+
+raw_created = call("session_create", {
+    "worktree_id": worktree_id,
+    "label": "raw-stream",
+    "command": [sys.executable, str(RAW_FIXTURE)],
+    "rows": 12,
+    "cols": 40,
+})
+assert raw_created["type"] == "created", raw_created
+raw_session_id = raw_created["data"]["id"]
+raw_pane_id = next(
+    item for item in call("snapshot")["data"]["sessions"] if item["id"] == raw_session_id
+)["focused_pane"]
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline:
+    frames = call("view", {"pane_ids": [raw_pane_id]})["data"]["frames"]
+    if frames and "raw-ready" in "".join(cell[0] for cell in frames[0]["cells"]):
+        break
+    time.sleep(0.05)
+refused, response = raw_subscribe(raw_pane_id, 60, False, 0, 5)
+assert response["type"] == "error", response
+refused.close()
+first, response = raw_subscribe(raw_pane_id, 60, False, 10, 40)
+assert response["type"] == "ack", response
+replay = recv_line(first)
+assert replay["type"] == "replay", replay
+assert (replay["data"]["rows"], replay["data"]["cols"]) == (10, 40), replay
+assert b"raw-ready" in bytes(replay["data"]["ansi"]), replay
+# Replay, then exactly the bytes the PTY wrote after it: no gap and no repeat.
+exact = b"exact-\x01\x02-\xe2\x9c\x93-bytes"
+raw_send(first, "input", list(exact))
+output, replays = raw_output_until(first, b"-bytes")
+assert output.endswith(exact) and not replays, (output, replays)
+assert output[:-len(exact)] in (b"", b"\r\n[size 40x10]\r\n"), output
+# A resize reaches the PTY. The stream reports it and restarts from a replay,
+# because a client emulator reflows a resized screen differently.
+raw_send(first, "resize", {"rows": 7, "cols": 33})
+resized = recv_line(first)
+assert resized == {"type": "resized", "data": {"rows": 7, "cols": 33}}, resized
+replay = recv_line(first)
+assert replay["type"] == "replay" and (replay["data"]["rows"], replay["data"]["cols"]) == (7, 33), replay
+output = bytes(replay["data"]["ansi"])
+while b"[size 33x7]" not in output:
+    message = recv_line(first)
+    assert message["type"] == "output", message
+    output += bytes(message["data"])
+# One writable controller: a second subscriber is refused, a takeover displaces.
+busy, response = raw_subscribe(raw_pane_id, 61, False, 7, 33)
+assert response["type"] == "error" and response["data"]["code"] == "terminal_busy", response
+busy.close()
+second, response = raw_subscribe(raw_pane_id, 61, True, 0, 0)
+assert response["type"] == "ack", response
+replay = recv_line(second)
+assert replay["type"] == "replay", replay
+assert (replay["data"]["rows"], replay["data"]["cols"]) == (7, 33), "0x0 keeps the pane size"
+displaced = recv_line(first)
+while displaced["type"] != "error":
+    displaced = recv_line(first)
+assert displaced["data"]["code"] == "lease_transferred", displaced
+first.close()
+# A subscriber that stops reading while the pane writes more than the tap holds
+# is resynchronized with a new replay.
+raw_send(second, "input", list(b"flood:4194304"))
+time.sleep(1.5)
+output, replays = raw_output_until(second, b"[flood-end]")
+assert replays, "a subscriber behind the tap must get a new replay"
+raw_send(second, "input", list(b"after-flood"))
+output, replays = raw_output_until(second, b"after-flood")
+assert output.endswith(b"after-flood") and not replays, (output[-64:], replays)
+raw_send(second, "resync")
+output, replays = raw_output_until(second, b"after-flood")
+assert len(replays) == 1 and b"after-flood" in bytes(replays[0]["ansi"]), replays
+# The last PTY bytes arrive before the exit notice.
+raw_send(second, "input", [4])
+output = b""
+while True:
+    message = recv_line(second)
+    if message["type"] == "exited":
+        break
+    assert message["type"] == "output", message
+    output += bytes(message["data"])
+assert output.endswith(b"[bye]"), output
+second.close()
+raw_session = next(
+    item for item in call("snapshot")["data"]["sessions"] if item["id"] == raw_session_id
+)
+assert call("session_close", {
+    "session_id": raw_session_id,
+    "expected_revision": raw_session["revision"],
 })["type"] == "ack"
 
 deadline = time.monotonic() + 3

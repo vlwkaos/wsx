@@ -6,6 +6,7 @@ mod ghostty;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::VecDeque,
     error::Error,
     fmt,
     io::{self, Write},
@@ -46,6 +47,24 @@ const AGENT_OBSERVATION_TITLE_BYTES: usize = 1024;
 const HANDOFF_PAUSE_TIMEOUT: Duration = Duration::from_secs(2);
 const SYNCHRONIZED_OUTPUT_TIMEOUT: Duration = Duration::from_secs(1);
 pub const MAX_HANDOFF_ANSI_BYTES: usize = 512 * 1024;
+// ^ docs/terminal-raw-stream.md: bounds of the PTY byte tap and of one stream message.
+const RAW_TAP_BYTES: usize = 1024 * 1024;
+const MAX_RAW_OUTPUT_BYTES: usize = 256 * 1024;
+// Modes a replay restores in a client emulator, with the value after its reset.
+const RAW_REPLAY_MODES: &[(u16, bool)] = &[
+    (ghostty::MODE_APPLICATION_CURSOR_KEYS, false),
+    (7, true),  // wraparound
+    (25, true), // cursor visible
+    (9, false), // mouse tracking: X10, normal, button, any
+    (1000, false),
+    (1002, false),
+    (1003, false),
+    (ghostty::MODE_FOCUS_EVENT, false),
+    (ghostty::MODE_MOUSE_UTF8, false),
+    (ghostty::MODE_MOUSE_SGR, false),
+    (ghostty::MODE_MOUSE_SGR_PIXELS, false),
+    (ghostty::MODE_BRACKETED_PASTE, false),
+];
 #[cfg(unix)]
 const HANDOFF_MODES: &[u16] = &[
     ghostty::MODE_APPLICATION_CURSOR_KEYS,
@@ -119,7 +138,46 @@ struct Emulator {
     selection_autoscroll_worker_running: bool,
     child_mouse_gesture: Option<ChildMouseGesture>,
     synchronized_since: Option<Instant>,
+    raw: RawTap,
 }
+
+/// PTY output as the child wrote it, for clients that run their own emulator.
+/// `end` counts every ingested byte. The ring exists from the first replay on.
+#[derive(Default)]
+struct RawTap {
+    end: u64,
+    ring: Option<VecDeque<u8>>,
+}
+
+impl RawTap {
+    fn push(&mut self, bytes: &[u8]) {
+        self.end += bytes.len() as u64;
+        let Some(ring) = &mut self.ring else {
+            return;
+        };
+        let bytes = &bytes[bytes.len().saturating_sub(RAW_TAP_BYTES)..];
+        let overflow = (ring.len() + bytes.len()).saturating_sub(RAW_TAP_BYTES);
+        ring.drain(..overflow);
+        ring.extend(bytes);
+    }
+
+    /// Bytes after `after`, or `None` when the ring no longer holds them.
+    fn read(&self, after: u64, max_bytes: usize) -> Option<Vec<u8>> {
+        let ring = self.ring.as_ref()?;
+        let start = self.end - ring.len() as u64;
+        if after < start || after > self.end {
+            return None;
+        }
+        Some(
+            ring.iter()
+                .skip((after - start) as usize)
+                .take(max_bytes)
+                .copied()
+                .collect(),
+        )
+    }
+}
+
 impl Emulator {
     fn sync_input(&mut self) {
         self.keys.set_from_terminal(&self.terminal);
@@ -127,6 +185,7 @@ impl Emulator {
     }
 
     fn ingest(&mut self, bytes: &[u8]) {
+        self.raw.push(bytes);
         self.terminal.write(bytes);
         self.sync_input();
         self.synchronized_output(Instant::now());
@@ -216,6 +275,23 @@ pub struct TerminalRuntime {
     process: Option<Process>,
     selection_clock: Instant,
     preserve_process_on_drop: AtomicBool,
+}
+
+/// A screen a client emulator can start from, and the tap position it was taken at.
+pub struct RawReplay {
+    pub ansi: Vec<u8>,
+    pub rows: u16,
+    pub cols: u16,
+    pub sequence: u64,
+    pub truncated: bool,
+}
+
+pub struct RawSample {
+    pub rows: u16,
+    pub cols: u16,
+    /// `None`: the tap no longer holds the bytes after the requested position.
+    pub output: Option<Vec<u8>>,
+    pub clipboard_writes: Vec<Vec<u8>>,
 }
 
 pub struct PresentationSample {
@@ -1098,6 +1174,79 @@ impl TerminalRuntime {
         }
     }
 
+    // ^ docs/terminal-raw-stream.md: the replay and its tap position come from one
+    // emulator lock, so the replay plus every later byte has no gap and no repeat.
+    pub fn raw_replay(&self) -> Result<RawReplay, TerminalError> {
+        let mut emulator = lock(&self.shared.emulator);
+        let Emulator {
+            terminal,
+            render,
+            raw,
+            ..
+        } = &mut *emulator;
+        render.update(terminal)?;
+        let cols = terminal.cols()?;
+        let rows = terminal.rows()?;
+        let total_rows = terminal.total_rows()?.max(usize::from(rows));
+        let scrollback_rows = total_rows - usize::from(rows);
+        let end_col = cols.saturating_sub(1);
+        let row = |index: usize| u32::try_from(index).unwrap_or(u32::MAX);
+        let mut ansi = String::new();
+        let mut truncated = false;
+        if terminal.active_screen()? == ghostty::ActiveScreen::Alternate {
+            ansi.push_str("\x1b[?1049h");
+        } else if scrollback_rows > 0 {
+            let (history, history_truncated) =
+                bounded_handoff_ansi(terminal, cols, scrollback_rows, MAX_HANDOFF_ANSI_BYTES)?;
+            truncated = history_truncated;
+            // Scroll exactly the written history lines off the screen, so the
+            // screen below starts at row 1 as it does in this emulator.
+            let lines = history.lines().count().min(usize::from(rows));
+            if lines > 0 {
+                ansi.push_str(&history);
+                ansi.push_str(&format!("\x1b[0m\x1b[{rows};1H"));
+                ansi.push_str(&"\n".repeat(lines));
+            }
+        }
+        ansi.push_str("\x1b[H");
+        ansi.push_str(&terminal.read_ansi_screen(
+            (0, row(scrollback_rows)),
+            (end_col, row(total_rows - 1)),
+            false,
+            false,
+        )?);
+        ansi.push_str("\x1b[0m");
+        for (mode, after_reset) in RAW_REPLAY_MODES {
+            // A mode this emulator does not know stays at the client's reset value.
+            let value = terminal.mode_get(*mode).unwrap_or(*after_reset);
+            if value != *after_reset {
+                ansi.push_str(&format!("\x1b[?{mode}{}", if value { 'h' } else { 'l' }));
+            }
+        }
+        let (cursor_x, cursor_y) = render
+            .cursor_viewport()?
+            .map_or((0, 0), |cursor| (cursor.x, cursor.y));
+        ansi.push_str(&format!("\x1b[{};{}H", cursor_y + 1, cursor_x + 1));
+        raw.ring.get_or_insert_with(VecDeque::new);
+        Ok(RawReplay {
+            ansi: ansi.into_bytes(),
+            rows,
+            cols,
+            sequence: raw.end,
+            truncated,
+        })
+    }
+
+    pub fn raw_sample(&self, after: u64) -> Result<RawSample, TerminalError> {
+        let mut emulator = lock(&self.shared.emulator);
+        Ok(RawSample {
+            rows: emulator.terminal.rows()?,
+            cols: emulator.terminal.cols()?,
+            output: emulator.raw.read(after, MAX_RAW_OUTPUT_BYTES),
+            clipboard_writes: emulator.terminal.take_clipboard_writes(),
+        })
+    }
+
     pub fn take_clipboard_writes(&self) -> Vec<Vec<u8>> {
         lock(&self.shared.emulator).terminal.take_clipboard_writes()
     }
@@ -1207,6 +1356,7 @@ fn make_emulator(
         selection_autoscroll_worker_running: false,
         child_mouse_gesture: None,
         synchronized_since: None,
+        raw: RawTap::default(),
     })
 }
 
@@ -1351,7 +1501,6 @@ fn spawn_reader_fd(
         .map_err(TerminalError::Io)
 }
 
-#[cfg(unix)]
 fn bounded_handoff_ansi(
     terminal: &ghostty::Terminal,
     cols: u16,

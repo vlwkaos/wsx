@@ -1,7 +1,7 @@
 use super::protocol::{
     binary_identity, binary_identity_with_version, encode_line, Request, Response,
-    TerminalClientMessage, TerminalServerMessage, MAX_RESPONSE_BYTES, PROTOCOL_VERSION,
-    ROUTINE_DAEMON_ARG,
+    TerminalClientMessage, TerminalRawServerMessage, TerminalServerMessage, MAX_RESPONSE_BYTES,
+    PROTOCOL_VERSION, ROUTINE_DAEMON_ARG,
 };
 use std::{
     collections::HashMap,
@@ -324,10 +324,37 @@ fn read_json_line<T: serde::de::DeserializeOwned>(
 const TERMINAL_INPUT_QUEUE: usize = 1024;
 const TERMINAL_UPDATE_QUEUE: usize = 64;
 
-pub struct TerminalStream {
+/// What the stream reader must know about a server message type.
+pub trait TerminalStreamMessage: serde::de::DeserializeOwned + Send + 'static {
+    fn disconnected(error: super::protocol::ApiError) -> Self;
+    fn ends_stream(&self) -> bool;
+}
+
+impl TerminalStreamMessage for TerminalServerMessage {
+    fn disconnected(error: super::protocol::ApiError) -> Self {
+        Self::Error(error)
+    }
+    fn ends_stream(&self) -> bool {
+        matches!(self, Self::Error(_) | Self::Exited)
+    }
+}
+
+impl TerminalStreamMessage for TerminalRawServerMessage {
+    fn disconnected(error: super::protocol::ApiError) -> Self {
+        Self::Error(error)
+    }
+    fn ends_stream(&self) -> bool {
+        matches!(self, Self::Error(_) | Self::Exited)
+    }
+}
+
+/// The raw PTY byte stream of one pane (docs/terminal-raw-stream.md).
+pub type RawTerminalStream = TerminalStream<TerminalRawServerMessage>;
+
+pub struct TerminalStream<M = TerminalServerMessage> {
     epoch: u64,
     input: mpsc::SyncSender<TerminalClientMessage>,
-    updates: mpsc::Receiver<TerminalServerMessage>,
+    updates: mpsc::Receiver<M>,
     resync: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
     socket: UnixStream,
@@ -344,16 +371,8 @@ impl TerminalStream {
         rows: u16,
         cols: u16,
     ) -> io::Result<Self> {
-        let mut stream = client.connect()?;
-        let mut reader = BufReader::with_capacity(64 * 1024, stream.try_clone()?);
-        let protocol = active_protocol(client.socket());
-        let handshake = validate_hello(
-            round_trip_buffered(&mut stream, &mut reader, &Request::Hello { protocol })?,
-            protocol,
-        )?;
-        match round_trip_buffered(
-            &mut stream,
-            &mut reader,
+        Self::subscribe(
+            client,
             &Request::TerminalSubscribe {
                 pane_id,
                 client_id,
@@ -361,7 +380,50 @@ impl TerminalStream {
                 rows,
                 cols,
             },
-        )? {
+        )
+    }
+}
+
+impl RawTerminalStream {
+    /// `rows` and `cols` both 0 keep the pane's current size.
+    pub fn connect_raw(
+        client: &Client,
+        pane_id: super::domain::PaneId,
+        client_id: u64,
+        takeover: bool,
+        rows: u16,
+        cols: u16,
+    ) -> io::Result<Self> {
+        Self::subscribe(
+            client,
+            &Request::TerminalRawSubscribe {
+                pane_id,
+                client_id,
+                takeover,
+                rows,
+                cols,
+            },
+        )
+    }
+
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<TerminalRawServerMessage, mpsc::RecvTimeoutError> {
+        self.updates.recv_timeout(timeout)
+    }
+}
+
+impl<M: TerminalStreamMessage> TerminalStream<M> {
+    fn subscribe(client: &Client, request: &Request) -> io::Result<Self> {
+        let mut stream = client.connect()?;
+        let mut reader = BufReader::with_capacity(64 * 1024, stream.try_clone()?);
+        let protocol = active_protocol(client.socket());
+        let handshake = validate_hello(
+            round_trip_buffered(&mut stream, &mut reader, &Request::Hello { protocol })?,
+            protocol,
+        )?;
+        match round_trip_buffered(&mut stream, &mut reader, request)? {
             Response::Ack { .. } => {}
             Response::Error(error) => {
                 return Err(io::Error::other(format!(
@@ -419,12 +481,17 @@ impl TerminalStream {
         self.input.try_send(message)
     }
 
-    pub fn try_recv(&self) -> Result<TerminalServerMessage, mpsc::TryRecvError> {
+    /// A sender for another thread, while this stream's owner blocks on updates.
+    pub fn input(&self) -> mpsc::SyncSender<TerminalClientMessage> {
+        self.input.clone()
+    }
+
+    pub fn try_recv(&self) -> Result<M, mpsc::TryRecvError> {
         self.updates.try_recv()
     }
 }
 
-impl Drop for TerminalStream {
+impl<M> Drop for TerminalStream<M> {
     fn drop(&mut self) {
         let _ = self.input.try_send(TerminalClientMessage::Detach);
         self.stopping.store(true, Ordering::Release);
@@ -477,25 +544,23 @@ fn terminal_writer(
     }
 }
 
-fn terminal_reader(
+fn terminal_reader<M: TerminalStreamMessage>(
     mut reader: BufReader<UnixStream>,
-    updates: mpsc::SyncSender<TerminalServerMessage>,
+    updates: mpsc::SyncSender<M>,
     stopping: &AtomicBool,
 ) {
     while !stopping.load(Ordering::Acquire) {
-        let message = match read_buffered_json_line(&mut reader, MAX_RESPONSE_BYTES) {
+        let message: M = match read_buffered_json_line(&mut reader, MAX_RESPONSE_BYTES) {
             Ok(message) => message,
             Err(error) => {
-                let _ = updates.try_send(TerminalServerMessage::Error(
-                    super::protocol::ApiError::new("stream_disconnected", error.to_string()),
-                ));
+                let _ = updates.try_send(M::disconnected(super::protocol::ApiError::new(
+                    "stream_disconnected",
+                    error.to_string(),
+                )));
                 break;
             }
         };
-        let terminal = matches!(
-            &message,
-            TerminalServerMessage::Error(_) | TerminalServerMessage::Exited
-        );
+        let terminal = message.ends_stream();
         if !queue_terminal_update(&updates, message, stopping) || terminal {
             break;
         }
@@ -503,9 +568,9 @@ fn terminal_reader(
     stopping.store(true, Ordering::Release);
 }
 
-fn queue_terminal_update(
-    updates: &mpsc::SyncSender<TerminalServerMessage>,
-    mut message: TerminalServerMessage,
+fn queue_terminal_update<M>(
+    updates: &mpsc::SyncSender<M>,
+    mut message: M,
     stopping: &AtomicBool,
 ) -> bool {
     // ^ [[wsx Architecture]] Backpressure may pause this reader, but

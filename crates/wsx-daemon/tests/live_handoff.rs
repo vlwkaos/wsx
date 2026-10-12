@@ -10,8 +10,9 @@ use std::{
 };
 use wsx_core::runtime::{
     binary_identity, AgentCapabilities, AgentState, Client, EventMonitor, EventSignal, PaneId,
-    ProjectSpec, Request, Response, TerminalClientMessage, TerminalServerMessage, TerminalStream,
-    TerminalUpdate, WorktreeSpec, DAEMON_REVISION, PROTOCOL_VERSION, WSX_VERSION,
+    ProjectSpec, RawTerminalStream, Request, Response, TerminalClientMessage,
+    TerminalRawServerMessage, TerminalServerMessage, TerminalStream, TerminalUpdate, WorktreeSpec,
+    DAEMON_REVISION, PROTOCOL_VERSION, WSX_VERSION,
 };
 
 static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
@@ -142,6 +143,40 @@ fn frame_text(stream: &TerminalStream, expected: &str) -> String {
         thread::sleep(Duration::from_millis(10));
     }
     panic!("terminal did not render {expected:?}: {latest:?}");
+}
+
+/// Reads a raw stream until its replay plus later output contains `expected`,
+/// or until the stream ends. Returns that text and the code that ended it.
+fn raw_text(stream: &RawTerminalStream, expected: &str) -> (String, Option<String>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut bytes = Vec::new();
+    loop {
+        match stream.recv_timeout(Duration::from_millis(50)) {
+            Ok(TerminalRawServerMessage::Replay(replay)) => bytes = replay.ansi,
+            Ok(TerminalRawServerMessage::Output(output)) => bytes.extend(output),
+            Ok(TerminalRawServerMessage::Error(error)) => {
+                return (
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                    Some(error.code),
+                )
+            }
+            Ok(TerminalRawServerMessage::Exited) => {
+                return (
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                    Some("exited".into()),
+                )
+            }
+            Ok(_) | Err(_) => {}
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        if !expected.is_empty() && text.contains(expected) {
+            return (text.into_owned(), None);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "raw stream never produced {expected:?}: {text:?}"
+        );
+    }
 }
 
 fn reported_value(text: &str, marker: &str) -> String {
@@ -555,6 +590,15 @@ fn daemon_handoff_restores_a_legacy_sized_history_cohort() {
         response => panic!("unexpected lifecycle response: {response:?}"),
     };
 
+    // docs/terminal-raw-stream.md: a raw stream attached during the handoff learns that
+    // the daemon, not the terminal, is leaving. Its replay carries the scrollback.
+    let (raw_pane, raw_pid) = identities.first().unwrap().clone();
+    let raw = RawTerminalStream::connect_raw(&client, raw_pane, 30_000, true, 0, 0).unwrap();
+    let (replay, ended) = raw_text(&raw, "ready-0:pid=[");
+    assert_eq!(ended, None);
+    // More history than the 12 screen rows, in order, up to the newest line.
+    assert!(replay.matches("history-0-").count() > 100 && replay.contains("history-0-1023-"));
+
     let target_binary = fixture.root.join("bin/wsxd-next");
     fs::write(&target_binary, fs::read(&source_binary).unwrap()).unwrap();
     let mut permissions = fs::metadata(&target_binary).unwrap().permissions();
@@ -587,6 +631,20 @@ fn daemon_handoff_restores_a_legacy_sized_history_cohort() {
         thread::sleep(Duration::from_millis(25));
     };
     assert_eq!(after.panes.len(), PANES);
+    assert_eq!(raw_text(&raw, "").1.as_deref(), Some("daemon_handoff"));
+    drop(raw);
+    // The successor's stream starts from a new replay of the restored screen.
+    let raw = RawTerminalStream::connect_raw(&client, raw_pane, 30_001, true, 0, 0).unwrap();
+    assert_eq!(raw_text(&raw, "ready-0:pid=[").1, None);
+    raw.try_send(TerminalClientMessage::Input(b"raw\n".to_vec()))
+        .unwrap();
+    let (output, ended) = raw_text(&raw, "echo-0:raw:pid=[");
+    assert_eq!(ended, None);
+    assert_eq!(
+        reported_pid(&output[output.find("echo-0:raw:pid=[").unwrap()..]),
+        raw_pid
+    );
+    drop(raw);
 
     for (client_id, (pane, pid)) in [identities.first().unwrap(), identities.last().unwrap()]
         .into_iter()

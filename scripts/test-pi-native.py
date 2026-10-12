@@ -46,7 +46,7 @@ def main():
                 conn.settimeout(5)
                 conn.connect(str(address))
                 stream = conn.makefile('rb')
-                conn.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
+                conn.sendall(b'{"method":"hello","params":{"protocol":17}}\n')
                 assert json.loads(stream.readline())['type'] == 'hello'
                 request = {'method': method}
                 if params is not None:
