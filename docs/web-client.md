@@ -1,6 +1,6 @@
 # Hosted web client
 
-`wsx web serve --site <site.toml>` hosts one paired web site: a remote chat with the agents of the granted projects, plus optional files, terminal and activity panels. It is a `wsxd` client like the TUI. It never starts, stops or replaces `wsxd`. The terminal panel needs a `wsxd` with the raw terminal stream (protocol 17, [terminal-raw-stream.md](terminal-raw-stream.md)). Deployment commands are in [web-deploy.md](web-deploy.md).
+`wsx web serve --site <site.toml>` hosts one paired web site: a remote chat with the agents of the granted projects, plus optional files and terminal panels. It is a `wsxd` client like the TUI. It never starts, stops or replaces `wsxd`. The terminal panel needs a `wsxd` with the raw terminal stream (protocol 17, [terminal-raw-stream.md](terminal-raw-stream.md)). Deployment commands are in [web-deploy.md](web-deploy.md).
 
 ```sh
 wsx web vapid                          # print a new Web Push key pair for a site file
@@ -19,7 +19,7 @@ name = "wsx"                              # shown in the page and the installed 
 port = 7431                               # loopback port
 public_origin = "https://wsx.tailnet.ts.net"   # exact origin the browser uses
 base_path = ""                            # omit for a service or alt-port site; "/app/wsx" for a sub-path
-panels = ["chat", "files", "terminal", "activity"]
+panels = ["chat", "files", "terminal"]
 theme = "default"                         # default, or the absolute path of a theme (web-themes.md)
 
 [icon]                                    # optional; replaces the theme's icons
@@ -31,6 +31,9 @@ projects = ["/abs/path/to/project"]       # 1 to 32 absolute paths, or "all" for
 capabilities = ["chat_send", "agent_write", "files_read", "files_write",
                 "terminal_view", "terminal_input", "media_upload", "media_download", "push"]
 agent_command = []                        # required with session_start, for example ["claude"]
+
+[terminal]                                # optional
+ligatures = true                          # false shows operators such as => as separate characters
 
 [media]                                   # optional; these are the defaults
 max_file_bytes = 26214400
@@ -71,6 +74,23 @@ A second site is the same binary with another file, fewer panels and fewer bits.
 ## Base path
 
 The default is a site at the root of its own hostname (a Tailscale Service) or port, with `base_path` omitted. A sub-path remains supported as a secondary shape. Every browser URL is relative to `<base href="<base>/">`, written at serve time, so one build serves all shapes. The manifest `id`, `scope` and `start_url`, the service worker scope and cache list, and the cookie `Path` use the same base. With a base path, each route answers with and without the prefix, because `tailscale serve --set-path` may strip it.
+
+## Screens
+
+The page is a set of ES modules served as written: Preact 10.29.7 and htm 3.1.1 are vendored in `web/vendor/` (`scripts/vendor-preact.sh`, SHA-512 pinned, MIT) and there is no build step. Routes are in the URL fragment.
+
+| Route | Screen |
+|---|---|
+| `#/` | Inbox: sessions by what they need. *Needs you* (blocked, error, exited agent), *Running* (with the activity line and elapsed time), *Finished* (unseen first, marked "new"), then the remaining sessions by project. A section with no session is not shown. |
+| `#/projects` | Every granted project, with *Files* and *New session* where granted |
+| `#/s/<session>/chat`, `#/s/<session>/terminal` | One session. The top row has back, the label with the state in words, and a Chat or Terminal switch with the granted panels |
+| `#/p/<project>/files` | The files of one project |
+| `#/settings` | Appearance, notifications, this device |
+
+- A phone shows Inbox, Projects and Settings over a bottom tab bar. A session owns the full height and has no tab bar. At 900 px and wider the inbox or the project list is a 300 px left column and the bar is gone.
+- The `workspace` event gives each session `state_since_unix_ms` and, for a working agent, `activity`. "new" is per device: the browser keeps the `state_since_unix_ms` it last saw for a session (`localStorage`) and sets it when that session's chat opens.
+- When `wsxd` is unavailable the page says so, drops the session list it had, and recovers by itself.
+- Chat: one scroll container between the top row and the composer. New items do not move a reader who is more than 80 px from the end; a "Jump to latest" button appears instead. Tool and thinking items between two messages fold into one line. The working row has the activity, the elapsed time and Stop. Enter sends on a hardware keyboard and is a newline on a touch device; nothing is sent during IME composition. A draft, its attachments and a pending message survive a route change.
 
 ## Themes
 
@@ -127,7 +147,7 @@ A page opens one `EventSource` (`api/events`) and has no polling timer. Events: 
 
 ## PWA and push
 
-The manifest has 192 and 512 px PNG icons. The service worker caches the shell and serves it when offline; API and media requests are never cached by it. Push is off until a device picks topics in Settings and accepts the browser prompt: agent needs input (`blocked`), agent finished (`done`), agent error (`error`). Only a state change notifies. Tapping a notification opens that session. A subscription endpoint must be on one of `push.service_origins` (default: FCM, Mozilla and Apple).
+The manifest has 192 and 512 px PNG icons. The service worker caches the shell and serves it when offline; API and media requests are never cached by it. Push is off until a device picks topics in Settings and accepts the browser prompt: agent needs input (`blocked`), agent finished (`done`), agent error (`error`). Only a state change notifies. Tapping a notification opens that session's chat (`#/s/<session>/chat`). A subscription endpoint must be on one of `push.service_origins` (default: FCM, Mozilla and Apple).
 
 ## Terminal
 
@@ -146,10 +166,26 @@ The terminal panel is xterm.js on the pane's raw byte stream. One WebSocket (`ap
 - **Reconnect.** After a lost connection, a daemon handoff or a daemon restart the page reconnects by itself (0.5 to 5 seconds apart) and starts from a new replay. A resize also ends in a new replay, because xterm.js and `wsxd`'s emulator reflow a resized screen differently.
 - **Queries.** `wsxd`'s emulator answers terminal queries. The page disables xterm.js's own answers (device attributes, status reports, mode and color queries), so a program gets one reply.
 - **Touch devices** (`pointer: coarse`, or a window narrower than 700 px) get the key row `Esc Tab ^C ^V ^A D ^Z ^R ^L ⌫ ^J Enter` (a held key repeats every 80 ms), a Paste button, and a pad that sends one arrow key per 18 px of drag. A touch drag on the screen sends wheel reports when the program tracks the mouse, arrow keys on the alternate screen, and scrolls the 10,000-line local scrollback otherwise. Composition events are not touched, so Korean and other IME input works. While the terminal is open the page is pinned to `visualViewport` (its height and `offsetTop`) and never scrolls. iOS Safari and an installed PWA keep the layout viewport when the keyboard opens, so this is what puts the key row's bottom edge on the keyboard's top edge. The bottom safe-area inset is dropped while the keyboard is open. The screen runs from edge to edge between the top row and the key row; buttons are `size-key` high with `space-1` gaps.
-- **Frame.** On a touch device the top frame is one row: a menu button that opens the panel list as a sheet, the session picker as the title, the agent state, and the size toggle as an icon button. The tabs stay visible on a desktop. The frame uses the theme's dark tokens in either scheme ([web-themes.md](web-themes.md)).
-- **Font and color.** 11 px on touch devices, 14 px otherwise, in the theme's `font-mono`. The screen takes `color-terminal-bg`, `color-terminal-text` and `color-accent` from the dark tokens.
+- **Frame.** The session's top row gains the size toggle as an icon button. The terminal uses the theme's dark tokens in either scheme ([web-themes.md](web-themes.md)).
+- **Font and color.** 11 px on touch devices, 14 px otherwise, in the theme's `font-terminal`. The screen takes `color-bg`, `color-text`, `color-accent` (cursor) and the 16 `color-ansi-*` tokens from the dark tokens.
 
 xterm.js 5.5.0 and its fit addon 0.10.0 are vendored in `crates/wsx-web/web/vendor/` and loaded only when a terminal opens. `scripts/vendor-xterm.sh` rebuilds them from the npm tarballs, checks their SHA-512, and applies one patch: the DOM renderer's `<style>` elements and `style` attributes become CSSOM calls, because the CSP has no `'unsafe-inline'`. License: `web/vendor/xterm.LICENSE` (MIT).
+
+### Terminal fonts
+
+The terminal ships its own fonts, so Powerline separators, Nerd Font icons and ligatures do not depend on what the device has installed.
+
+| Font | Version | Files | Bytes | License |
+|---|---|---|---|---|
+| JetBrains Mono | 2.304 | Regular, Bold, Italic woff2 | 92,164 + 94,588 + 95,864 | SIL OFL 1.1 (`web/vendor/fonts/JetBrainsMono.OFL.txt`) |
+| Symbols Nerd Font Mono | 3.4.0 | woff2, and the upstream ttf as a fallback | 1,340,674 (ttf 2,507,556) | MIT for the patcher, per-icon-set licenses (`NerdFonts.LICENSE`) |
+
+- `scripts/vendor-fonts.sh` downloads the pinned releases, checks their SHA-256 and writes `web/vendor/fonts/`. Nerd Fonts publishes no woff2, so the script wraps the upstream ttf in a WOFF2 container with Node's built-in Brotli (tables unchanged). A browser that refuses that file takes the ttf. The symbols font is not subset.
+- The files are served as `assets/<name>-<version>.<ext>` with `Cache-Control: immutable`. `terminal-fonts.css` declares them and is loaded only when a terminal opens; the service worker does not precache them. A browser downloads about 1.6 MB once, when the first terminal opens.
+- Stack (`font-terminal`): JetBrains Mono, Symbols Nerd Font Mono (limited by `unicode-range` to the private-use areas and five symbols), then the system mono fonts, which keep supplying Korean and other wide characters.
+- The page loads the faces before it opens xterm.js, so the cell grid is measured with the real font. When a face arrives later, the page measures again.
+- Ligatures: xterm.js's DOM renderer puts each cell in its own element, so a font cannot join characters by itself. The page registers a character joiner for runs of operator characters (`[-=<>!|&:+*/.#?~^%]{2,8}` and `www`). xterm.js then draws such a run as one text element and the font's own substitution applies. Cells, cursor position, selection and copied text are unchanged: `=>` is still two cells and copies as `=>`. `ligatures = false` in the site file's `[terminal]` table skips the joiner and turns the font feature off.
+- `@xterm/addon-ligatures` is not used: its 0.10.0 release depends on `font-finder` and `font-ligatures`, which find and parse the font files installed on the machine. A served page cannot do that, and the shipped font is not an installed one.
 
 Limits: while a terminal is open it holds the pane's lease, so a chat message or `wsx session send-text` to that pane is not typed until the terminal closes or a wsx window takes control. xterm.js 5.5 does not implement the kitty keyboard protocol, so keys use legacy encoding. In host size, mouse positions are not corrected for the scale. A replay taken on the alternate screen has no primary screen behind it.
 
@@ -168,4 +204,4 @@ cargo build --locked -p wsx -p wsx-daemon
 python3 -B scripts/test-web-client.py [--browser] [--captures <dir>]
 ```
 
-The model-free journey uses an isolated `wsxd`, PTY fixture agents with their own transcripts, three served sites and `scripts/web-push-fixture.mjs`, a separate receiver that verifies the VAPID signature and decrypts the payload. It opens terminal WebSockets like a browser does: refused upgrades, bytes both ways, every key-row byte, resize, control lost and taken, reconnect, and a watch-only site. `--browser` adds `scripts/web-terminal-check.mjs` and `scripts/web-browser-check.mjs` with an installed Chrome and writes captures to `.work/web-captures/` or `--captures`. The terminal check runs at 390x844 with touch and at 1280x800, and compares the browser screen with `wsxd`'s screen row by row. It does not prove a real Claude turn, a real push service, a phone, an on-screen keyboard, Safari, or Tailscale.
+The model-free journey uses an isolated `wsxd`, PTY fixture agents with their own transcripts, six served sites and `scripts/web-push-fixture.mjs`, a separate receiver that verifies the VAPID signature and decrypts the payload. It opens terminal WebSockets like a browser does: refused upgrades, bytes both ways, every key-row byte, resize, control lost and taken, reconnect, and a watch-only site. `--browser` adds `scripts/web-terminal-check.mjs` and `scripts/web-browser-check.mjs` with an installed Chrome and writes captures to `.work/web-captures/` or `--captures`. The terminal check runs at 390x844 with touch and at 1280x800, compares the browser screen with `wsxd`'s screen row by row, and checks the shipped fonts: Powerline and icon glyphs in one cell, joined operator runs, Korean and box drawing on the grid, and a full-width line against `stty size`. The page check captures every screen and state at 320x568, 390x844 and 1280x800 with a slop audit beside each. `scripts/web-real-agent-check.py` is the opt-in real turn: one short Claude or Pi turn in an isolated `wsxd`, for the timeline and Stop. The model-free journey does not prove a real Claude turn, a real push service, a phone, an on-screen keyboard, Safari, or Tailscale.

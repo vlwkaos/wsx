@@ -9,28 +9,44 @@ theme = "/abs/path/to/my-theme"   # a theme directory, or the path of a theme .t
 
 ## Tokens
 
-`crates/wsx-web/web/themes/default/theme.toml` is the complete list. A theme must define every token, directly or through `extends`. A token becomes the CSS variable `--<token>`.
+`crates/wsx-web/web/themes/default/theme.toml` is the complete list: 60 tokens, 16 of them the terminal palette. A theme must define every token, directly or through `extends`. A token becomes the CSS variable `--<token>`.
 
 | Group | Tokens | Value |
 |---|---|---|
-| Color roles | `color-bg` `color-surface` `color-sunken` `color-text` `color-muted` `color-border` `color-accent` `color-accent-text` `color-danger` `color-ok` `color-focus` `color-overlay` | `#rgb`, `#rrggbb` or `#rrggbbaa` |
-| Component colors | `color-chrome-bg` `color-chrome-text` `color-bubble-user-bg` `color-bubble-user-text` `color-bubble-agent-bg` `color-bubble-agent-text` `color-terminal-bg` `color-terminal-text` | same |
-| Type families | `font-body` `font-heading` `font-mono` | family list: letters, digits, space, `,` `'` `-` `_` |
-| Type scale | `font-size-sm` `font-size-md` `font-size-lg` `font-size-xl` `font-size-mono`, `font-size-field` (text fields on a touch device; keep it at 16px or more, or iOS zooms the page on focus) | length |
-| Type weight | `font-weight-normal` `font-weight-strong`, `line-height` | 100-900; 1-3 |
-| Spacing | `space-1` … `space-5` | length |
-| Sizes | `size-control` `size-key` (terminal keys and icon buttons) `size-content` `size-bubble` `size-media` `size-field` `size-log` | length |
-| Radius, border | `radius-control` `radius-surface` `border-width` | length |
-| Shadow | `shadow-raised` `shadow-sunken` `shadow-overlay` | `none`, or `[inset] x y [blur] [spread] #color`, comma-separated |
+| Color roles | `color-bg` `color-surface` `color-raised` `color-hairline` `color-text` `color-muted` `color-faint` `color-accent` `color-accent-text` `color-attention` `color-danger` `color-overlay` | `#rgb`, `#rrggbb` or `#rrggbbaa` |
+| Terminal palette | `color-ansi-0` … `color-ansi-15` (ANSI 0-7, then bright) | same |
+| Type families | `font-body` `font-mono` `font-terminal` | family list: letters, digits, space, `,` `'` `-` `_` |
+| Type scale | `font-size-md` `font-size-sm` `font-size-label` `font-size-title`, `font-size-field` (text fields on a touch device; keep it at 16px or more, or iOS zooms the page on focus) | length |
+| Type weight, leading, tracking | `font-weight-medium` `font-weight-strong`, `line-height` `line-height-prose`, `tracking-label` `tracking-title` | 100-900; 1-3; length, may be negative |
+| Spacing | `space-1` … `space-4` (4 px grid; `space-4` is the screen gutter and row inset) | length |
+| Sizes | `size-control` (touch target) `size-row` `size-bar` (top row, tab bar) `size-key` (terminal keys) `size-rail` `size-prose` (longest text line) | length |
+| Radius, border | `radius-control` `radius-key` `radius-sheet` `border-width` | length |
 | Motion | `motion-duration`, `motion-easing` | `ms` or `s`; `linear` `ease` `ease-in` `ease-out` `ease-in-out` |
-| Focus | `focus-width` `focus-offset` (with `color-focus`) | length |
-| Opacity | `opacity-disabled` `opacity-quiet` | 0-1 |
+| Focus, opacity | `focus-width`, `opacity-disabled` | length; 0-1 |
 
-A length is `0` or a number with `px`, `rem`, `em`, `ch`, `vh`, `vw` or `%`. Any other value, and any unknown token name, stops the server at start with the token named. `[tokens_dark]` may set only `color-*`, `shadow-*` and `opacity-*` tokens.
+A length is `0` or a number with `px`, `rem`, `em`, `ch`, `vh`, `vw` or `%`. Any other value, and any unknown token name, stops the server at start with the token named. `[tokens_dark]` may set only `color-*` and `opacity-*` tokens. There are no shadow tokens: the design has no shadows.
+
+Role use: `color-bg` is the page and the terminal. `color-surface` is the composer, sheets and the user's message. `color-raised` is pressed and selected rows, inputs and terminal keys. `color-hairline` is every divider and border. `color-accent` is the one primary action of a screen, the focus ring and the working state. `color-attention` is "needs you". `color-danger` is error, failed and destructive. A state is always a word; the color repeats it.
 
 Dark scheme rule: a theme has a dark scheme when it has a `[tokens_dark]` table. A theme that changes any `color-*` token in `[tokens]` and has no `[tokens_dark]` is light only; it does not inherit the dark colors of the theme it extends. A light-only theme is served with `color-scheme: light`.
 
-A theme with a dark scheme is shown dark by default. A device switches to light under Settings, "Appearance on this device"; the choice is kept in that browser as `data-scheme="light"` on the page root. The operating system preference is not read. An element with `data-scheme="dark"` uses the dark tokens in either case: the terminal frame does, so there is no light bar around the dark screen.
+A theme with a dark scheme is shown dark by default. A device switches to light under Settings, "Appearance on this device"; the choice is kept in that browser as `data-scheme="light"` on the page root. The operating system preference is not read. An element with `data-scheme="dark"` uses the dark tokens in either case: the terminal does, so there is no light bar around the dark screen.
+
+### Contrast of the default theme
+
+WCAG contrast ratio of each text and state color on `color-bg`, `color-surface` and `color-raised`. Every pair is 4.5 or more.
+
+| Token | Dark | bg / surface / raised | Light | bg / surface / raised |
+|---|---|---|---|---|
+| `color-text` | `#ecedee` | 16.8 / 15.7 / 14.4 | `#16181c` | 16.6 / 17.8 / 15.2 |
+| `color-muted` | `#9aa0a8` | 7.5 / 7.0 / 6.4 | `#5a6069` | 5.9 / 6.3 / 5.4 |
+| `color-faint` | `#80858e` | 5.3 / 5.0 / 4.6 | `#646a74` | 5.1 / 5.5 / 4.7 |
+| `color-accent` | `#6fe3c1` | 12.6 / 11.8 / 10.8 | `#0b6b56` | 6.0 / 6.5 / 5.5 |
+| `color-attention` | `#f2b84b` | 11.0 / 10.3 / 9.4 | `#8a5a00` | 5.5 / 5.9 / 5.1 |
+| `color-danger` | `#f2777a` | 7.2 / 6.8 / 6.2 | `#b3261e` | 6.1 / 6.5 / 5.6 |
+| `color-accent-text` on `color-accent` | `#06231b` | 10.6 | `#ffffff` | 6.5 |
+
+The terminal palette is read on the dark `color-bg` (`#0a0b0d`) in both schemes. Its lowest ratios are `color-ansi-0` (`#747983`, 4.5) and `color-ansi-8` (`#8b9098`, 6.1); every other entry is 7.2 or more.
 
 ## Component hooks
 
@@ -38,17 +54,14 @@ Shared parts carry a stable class. Component CSS in a theme should style these c
 
 | Part | Hook classes |
 |---|---|
-| App chrome and title bar | `.app-chrome` `.app-title` (the name is in a child `span`) `.app-nav` (current link: `[aria-current="page"]`) |
-| Panel | `.panel` |
-| List and row | `.list` `.list-row` |
-| Button | `.button` `.button-primary` `.button-danger` |
-| Input | `.input` (text fields, selects, text areas) |
-| Chat bubble | `.bubble` `.bubble-user` `.bubble-agent` (`[data-pending]`) |
-| Badge and status | `.badge` (`[data-state="idle|working|blocked|done|error|unknown"]`) |
-| Dialog | `.dialog` (a native `<dialog>`; backdrop uses `color-overlay`) |
-| Toast | `.toast` (`[data-kind="error"]`) |
-| Terminal frame | `.terminal-frame` (file text) |
-| Live terminal | `.terminal-bar` `.terminal-icon` `.terminal-notice` `.terminal-key` `.terminal-pad` `.terminal-sheet` |
+| Layout | `.app` `.rail` (left column at 900 px and wider) `.tabbar` (bottom bar on a phone; current link: `[aria-current="page"]`) |
+| Screen | `.title` `.label` (section label) `.rows` `.row` (state mark: `.mark`; `[data-tone="accent|attention|danger"]` repeats a state word in color) |
+| Controls | `.button` `.button-primary` `.button-danger` `.link-action` `.icon-button` `.input` |
+| Session top row | `.bar` `.switch` (Chat or Terminal) |
+| Conversation | `.chat` `.log` `.message` `.steps` `.working` `.composer` `.queue` |
+| Files | `.code` `.crumbs` |
+| Settings, pairing, dialog | `.options` `.pair-form` `.sheet` (a native `<dialog>`; backdrop uses `color-overlay`) `.notice` |
+| Live terminal | `.terminal` `.terminal-notice` `.terminal-key` `.terminal-pad` |
 
 `<body data-theme="<name>">` names the active theme.
 
@@ -90,14 +103,14 @@ Files are read once at start, relative to the theme directory, without following
 
 ## Serving
 
-The server builds one stylesheet (font faces, tokens, dark tokens, component CSS of the extended theme, then the theme's own) and serves it, the fonts and the icons as `theme/<first 16 hex of SHA-256>.<ext>` with `Cache-Control: public, max-age=31536000, immutable`. The page links the stylesheet; there is no inline style. The CSP stays `default-src 'none'` with `'self'` for styles and fonts, so a theme cannot load anything from another origin. The PWA manifest takes `background_color` from `color-bg`, `theme_color` from `color-chrome-bg`, and its icons from the theme.
+The server builds one stylesheet (font faces, tokens, dark tokens, component CSS of the extended theme, then the theme's own) and serves it, the fonts and the icons as `theme/<first 16 hex of SHA-256>.<ext>` with `Cache-Control: public, max-age=31536000, immutable`. The page links the stylesheet; there is no inline style. The CSP stays `default-src 'none'` with `'self'` for styles and fonts, so a theme cannot load anything from another origin. The PWA manifest takes `background_color` and `theme_color` from `color-bg` of the scheme the page starts in, and its icons from the theme.
 
 ## Built-in themes
 
 | Theme | Schemes | Notes |
 |---|---|---|
-| `default` | dark (default), light | System fonts, flat surfaces. |
+| `default` | dark (default), light | System UI font, hairlines and no shadows, one accent. |
 
 ## Verification
 
-`scripts/test-web-client.py` covers theme selection, a custom directory with a font and icons, each refusal above, content-hash URLs, the manifest, the CSP, and that `app.css` holds no color or length literal. With `--browser` it captures every panel, the dialog and the toast at 320 and 1280 px.
+`scripts/test-web-client.py` covers theme selection, a custom directory with a font and icons, each refusal above, content-hash URLs, the manifest, the CSP, and that `app.css` holds no color or length literal. With `--browser` it captures every screen at 320, 390 and 1280 px and writes a slop audit beside each capture.
