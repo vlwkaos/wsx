@@ -40,6 +40,9 @@ fn main() -> Result<()> {
                         | cli::AgentCmd::Report { .. }
                         | cli::AgentCmd::ExchangeReceipt { .. },
                 }
+                | cli::Command::Session {
+                    subcommand: cli::SessionCmd::Current { .. },
+                }
         )
     ) {
         return cli::run(args.command.expect("matched Some"));
@@ -49,8 +52,11 @@ fn main() -> Result<()> {
             // ^ [[wsx Architecture]] CLI mutations require a ready adjacent daemon.
             let availability =
                 wsx_core::runtime::ensure_available().context("wsxd is unavailable")?;
-            if let Some((_, message)) = app::runtime_availability_notice(&availability) {
-                eprintln!("wsx: {message}");
+            // ^ JSON callers parse the output; other callers get the notice on one line.
+            if !cmd.json_output() {
+                if let Some((_, message)) = app::runtime_availability_notice(&availability) {
+                    eprintln!("wsx: {}", message.replace('\n', "; "));
+                }
             }
             cli::run(cmd)
         }

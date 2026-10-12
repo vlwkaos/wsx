@@ -44,6 +44,7 @@ const AGENT_OBSERVATION_TEXT_BYTES: usize = 32 * 1024;
 const AGENT_OBSERVATION_TITLE_BYTES: usize = 1024;
 #[cfg(unix)]
 const HANDOFF_PAUSE_TIMEOUT: Duration = Duration::from_secs(2);
+const SYNCHRONIZED_OUTPUT_TIMEOUT: Duration = Duration::from_secs(1);
 pub const MAX_HANDOFF_ANSI_BYTES: usize = 512 * 1024;
 #[cfg(unix)]
 const HANDOFF_MODES: &[u16] = &[
@@ -117,11 +118,40 @@ struct Emulator {
     selection_autoscroll: Option<SelectionAutoscrollState>,
     selection_autoscroll_worker_running: bool,
     child_mouse_gesture: Option<ChildMouseGesture>,
+    synchronized_since: Option<Instant>,
 }
 impl Emulator {
     fn sync_input(&mut self) {
         self.keys.set_from_terminal(&self.terminal);
         self.mouse.set_from_terminal(&self.terminal);
+    }
+
+    fn ingest(&mut self, bytes: &[u8]) {
+        self.terminal.write(bytes);
+        self.sync_input();
+        self.synchronized_output(Instant::now());
+    }
+
+    // ^ docs/terminal-synchronized-output.md: a program that dies mid-frame never
+    // resets mode 2026, so the mode expires instead of hiding all later output.
+    fn synchronized_output(&mut self, now: Instant) -> bool {
+        if !self
+            .terminal
+            .mode_get(ghostty::MODE_SYNCHRONIZED_OUTPUT)
+            .unwrap_or(false)
+        {
+            self.synchronized_since = None;
+            return false;
+        }
+        let since = *self.synchronized_since.get_or_insert(now);
+        if now.saturating_duration_since(since) < SYNCHRONIZED_OUTPUT_TIMEOUT {
+            return true;
+        }
+        self.synchronized_since = None;
+        let _ = self
+            .terminal
+            .mode_set(ghostty::MODE_SYNCHRONIZED_OUTPUT, false);
+        false
     }
 }
 
@@ -461,10 +491,13 @@ impl TerminalRuntime {
         if state.alternate_screen {
             emulator.terminal.write(b"\x1b[?1049h");
         }
-        emulator.terminal.write(state.history_ansi.as_bytes());
+        // ^ docs/daemon-live-upgrade.md: the keyboard-state dump repeats the visible
+        // screen, so apply it first and erase its text before the bounded history.
         emulator
             .terminal
             .write(state.keyboard_state_ansi.as_bytes());
+        emulator.terminal.write(b"\x1b[0m\x1b[H\x1b[2J\x1b[3J");
+        emulator.terminal.write(state.history_ansi.as_bytes());
         for (mode, value) in &state.modes {
             emulator.terminal.mode_set(*mode, *value)?;
         }
@@ -925,10 +958,7 @@ impl TerminalRuntime {
         let runtime_error = lock(&self.shared.error).clone();
         let mut emulator = lock(&self.shared.emulator);
         let revision = self.shared.revision.load(Ordering::Acquire);
-        let synchronized_output = emulator
-            .terminal
-            .mode_get(ghostty::MODE_SYNCHRONIZED_OUTPUT)
-            .unwrap_or(false);
+        let synchronized_output = emulator.synchronized_output(Instant::now());
         let clipboard_writes = emulator.terminal.take_clipboard_writes();
         let update = if let Some(error) = runtime_error {
             Err(TerminalError::Runtime(error))
@@ -1176,6 +1206,7 @@ fn make_emulator(
         selection_autoscroll: None,
         selection_autoscroll_worker_running: false,
         child_mouse_gesture: None,
+        synchronized_since: None,
     })
 }
 
@@ -1295,8 +1326,7 @@ fn spawn_reader_fd(
                 let count = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
                 if count > 0 {
                     let mut emulator = lock(&shared.emulator);
-                    emulator.terminal.write(&buffer[..count as usize]);
-                    emulator.sync_input();
+                    emulator.ingest(&buffer[..count as usize]);
                     shared.revision.fetch_add(1, Ordering::AcqRel);
                     drop(emulator);
                     (shared.notify)();
@@ -1368,8 +1398,7 @@ fn spawn_reader(
                     Ok(0) => break,
                     Ok(count) => {
                         let mut emulator = lock(&shared.emulator);
-                        emulator.terminal.write(&buffer[..count]);
-                        emulator.sync_input();
+                        emulator.ingest(&buffer[..count]);
                         shared.revision.fetch_add(1, Ordering::AcqRel);
                         drop(emulator);
                         (shared.notify)();

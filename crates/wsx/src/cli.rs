@@ -84,6 +84,39 @@ pub enum Command {
     },
 }
 
+impl Command {
+    /// True when the caller asked for JSON, so stderr must stay free of notices.
+    pub fn json_output(&self) -> bool {
+        match self {
+            Command::Status { json, .. } => *json,
+            Command::Worktree { subcommand } => matches!(
+                subcommand,
+                WorktreeCmd::Create { json: true, .. } | WorktreeCmd::List { json: true, .. }
+            ),
+            Command::Session { subcommand } => matches!(
+                subcommand,
+                SessionCmd::Create { json: true, .. }
+                    | SessionCmd::Delete { json: true, .. }
+                    | SessionCmd::Restart { json: true, .. }
+                    | SessionCmd::List { json: true, .. }
+            ),
+            Command::Agent { subcommand } => matches!(
+                subcommand,
+                AgentCmd::Request { json: true, .. }
+                    | AgentCmd::Inspect { json: true, .. }
+                    | AgentCmd::Wait { json: true, .. }
+                    | AgentCmd::Continue { json: true, .. }
+                    | AgentCmd::Cancel { json: true, .. }
+                    | AgentCmd::Exchanges { json: true, .. }
+            ),
+            Command::Plugin { subcommand } => {
+                matches!(subcommand, PluginCmd::List { json: true })
+            }
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 pub enum AgentStateArg {
     Unknown,
@@ -409,6 +442,11 @@ pub enum WorktreeCmd {
         branch: String,
         #[arg(short, long)]
         project: Option<String>,
+        /// Start a new branch from this commit, tag, or branch instead of the default branch
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Delete a worktree and its sessions
     Delete {
@@ -454,6 +492,11 @@ pub enum SessionCmd {
         json: bool,
         #[command(flatten)]
         scope: SessionScope,
+    },
+    /// Report the managed pane that runs this command
+    Current {
+        #[arg(long)]
+        json: bool,
     },
     /// Delete a session and all of its panes
     Delete {
@@ -539,9 +582,12 @@ pub fn run(cmd: Command) -> Result<()> {
             group,
         } => cmd_status(json, format, group.as_ref()),
         Command::Worktree { subcommand } => match subcommand {
-            WorktreeCmd::Create { branch, project } => {
-                cmd_worktree_create(&branch, project.as_deref())
-            }
+            WorktreeCmd::Create {
+                branch,
+                project,
+                from,
+                json,
+            } => cmd_worktree_create(&branch, project.as_deref(), from.as_deref(), json),
             WorktreeCmd::Delete { branch, project } => {
                 cmd_worktree_delete(&branch, project.as_deref())
             }
@@ -559,6 +605,7 @@ pub fn run(cmd: Command) -> Result<()> {
                 json,
                 scope,
             } => cmd_session_create(scope, name, command, json),
+            SessionCmd::Current { json } => cmd_session_current(json),
             SessionCmd::Delete {
                 session,
                 json,
@@ -2003,15 +2050,24 @@ fn cmd_status(json: bool, format: Format, group: Option<&GroupKey>) -> Result<()
     Ok(())
 }
 
-fn cmd_worktree_create(branch: &str, project_name: Option<&str>) -> Result<()> {
+fn cmd_worktree_create(
+    branch: &str,
+    project_name: Option<&str>,
+    from: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let (config, workspace) = load_full_workspace()?;
     let project = resolve_project(&workspace, project_name)?;
+    // ^ An existing branch is checked out as it is, so a start point cannot apply.
+    if from.is_some() && wsx_core::git::worktree::branch_exists(&project.path, branch) {
+        bail!("branch '{branch}' already exists; omit --from to check it out");
+    }
     let proj_config = project.config.clone().unwrap_or_default();
     let created = ops::create_configured_worktree(
         &config,
         &project.name,
         &project.path,
-        &project.default_branch,
+        from.unwrap_or(&project.default_branch),
         &proj_config,
         branch,
         wsx_core::model::workspace::WorktreeInitialSession::Shell,
@@ -2019,12 +2075,35 @@ fn cmd_worktree_create(branch: &str, project_name: Option<&str>) -> Result<()> {
     if let Some(warning) = created.warning {
         eprintln!("warning: {warning}");
     }
-    println!("worktree: {}", created.path.display());
+    let session_id = created.session.as_ref().map(|(session_id, _)| *session_id);
+    if json {
+        // ^ A lookup failure must not hide the worktree that already exists.
+        let pane_id = session_id.and_then(|session_id| {
+            ops::runtime_snapshot()
+                .ok()?
+                .sessions
+                .iter()
+                .find(|session| session.id == session_id)
+                .map(|session| session.focused_pane)
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "worktree": created.path,
+                "branch": branch,
+                "project": project.name,
+                "session_id": session_id,
+                "pane_id": pane_id,
+            }))?
+        );
+    } else {
+        println!("worktree: {}", created.path.display());
+        if let Some(session_id) = session_id {
+            println!("{}", created_session_line(session_id));
+        }
+    }
     if let Some(error) = created.session_error {
         anyhow::bail!("worktree created, but its initial wsx session failed: {error}");
-    }
-    if let Some((session_id, _)) = created.session {
-        println!("{}", created_session_line(session_id));
     }
     Ok(())
 }
@@ -2110,6 +2189,16 @@ struct ContextOptions {
     json: bool,
 }
 
+// ^ Observation only: read the existing daemon and never start or replace wsxd.
+fn existing_daemon_snapshot() -> Result<runtime::Snapshot> {
+    let client = runtime::Client::new(runtime::default_socket_path());
+    match client.call(&runtime::Request::Snapshot)? {
+        runtime::Response::Snapshot(snapshot) => Ok(snapshot),
+        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
+        _ => bail!("unexpected daemon snapshot"),
+    }
+}
+
 fn cmd_agent_context(
     selector: Option<&str>,
     provider: Option<&str>,
@@ -2118,12 +2207,7 @@ fn cmd_agent_context(
 ) -> Result<()> {
     // ^ One existing-daemon snapshot; discovery must not start or replace wsxd.
     // Native history stays local and is not exposed through the browser bridge.
-    let client = runtime::Client::new(runtime::default_socket_path());
-    let snapshot = match client.call(&runtime::Request::Snapshot)? {
-        runtime::Response::Snapshot(snapshot) => snapshot,
-        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("unexpected daemon snapshot"),
-    };
+    let snapshot = existing_daemon_snapshot()?;
     let config = requested
         .worktree
         .as_ref()
@@ -3506,6 +3590,67 @@ fn cmd_session_create(
         println!("{}", created_session_line(session_id));
         println!("label:    {label}");
         println!("worktree: {}", worktree.path.display());
+    }
+    Ok(())
+}
+
+fn cmd_session_current(json: bool) -> Result<()> {
+    let pane_id = std::env::var(runtime::WSX_PANE_ID_ENV)
+        .ok()
+        .filter(|id| !id.is_empty())
+        .context("not inside a wsx-managed pane: WSX_PANE_ID is not set")?
+        .parse::<runtime::PaneId>()
+        .map_err(|_| anyhow::anyhow!("WSX_PANE_ID is not a valid pane ID"))?;
+    let snapshot = existing_daemon_snapshot()?;
+    let pane = snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.id == pane_id)
+        .ok_or_else(|| anyhow::anyhow!("managed pane {pane_id} is not present in wsxd"))?;
+    let session = snapshot
+        .sessions
+        .iter()
+        .find(|session| session.id == pane.session_id)
+        .context("pane session missing")?;
+    let worktree = snapshot
+        .worktrees
+        .iter()
+        .find(|worktree| worktree.id == session.worktree_id)
+        .context("pane worktree missing")?;
+    let project = snapshot
+        .projects
+        .iter()
+        .find(|project| project.id == worktree.project_id)
+        .context("pane project missing")?;
+    let agent = pane.agent.as_ref().filter(|agent| agent.attached);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "pane_id": pane.id,
+                "session_id": session.id,
+                "label": session.label,
+                "project": project.name,
+                "worktree": worktree.path,
+                "branch": worktree.branch,
+                "agent": agent.map(|agent| &agent.provider),
+                "agent_status": agent.map(|agent| agent.state),
+            }))?
+        );
+    } else {
+        println!("pane:     {}", pane.id);
+        println!("{}", created_session_line(session.id));
+        println!("label:    {}", session.label);
+        println!("project:  {}", project.name);
+        println!("worktree: {}", worktree.path.display());
+        println!("branch:   {}", worktree.branch);
+        if let Some(agent) = agent {
+            println!(
+                "agent:    {} ({})",
+                agent.provider,
+                format!("{:?}", agent.state).to_lowercase()
+            );
+        }
     }
     Ok(())
 }

@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Rust callers that construct `TuiClientPresence` must provide its new `max_protocol` field. Older JSON without the field decodes as a legacy TUI.
+
+### Improvements
+
+- Make the CLI easier for an agent to drive. `wsx worktree create --from <ref>` starts the branch from a chosen commit, tag or branch instead of the default branch. A branch that already exists is checked out instead of failing, and a git failure now shows git's own error instead of only the exit status. `wsx worktree create --json` prints the worktree path, branch, project, session ID and pane ID. `wsx session current [--json]` reports the calling pane from `WSX_PANE_ID` with its session, project, worktree and agent status, without starting wsxd. Commands called with `--json` no longer print the runtime notice on stderr, and other commands print it on one line.
+- Upgrade wsxd while wsx windows stay open. A TUI now tells the daemon the newest protocol it can reconnect to, and a live handoff no longer waits for such a TUI to quit. The daemon marks the whole transition, so attached windows wait for the successor without an error notice and without starting a competing daemon. A window in Terminal mode reattaches to the same PTY and keeps its screen; keys typed during the reattach are dropped. Older TUIs, and any TUI older than the target protocol, still defer the handoff until they quit. The running daemon applies its own rule, so this takes effect from the upgrade after this one. Daemon revision 22. See `docs/daemon-live-upgrade.md`.
+
+### Bug Fixes
+
+- Stop a live daemon handoff from writing the visible screen twice. The keyboard-state transfer also carried the screen text, so the last lines of a shell session appeared doubled after an upgrade.
+
+- Stop a terminal session from staying blank after an interrupted program. A program that enables synchronized output (mode 2026) and is ended by Ctrl+C before it releases the mode no longer hides all later output: the mode now expires after one second, as in Ghostty. Daemon revision 21 records this runtime-owned repair; the fix reaches a session after its daemon upgrades. See `docs/terminal-synchronized-output.md`.
+- Keep a resumed agent pane alive when a repeated Ctrl+C arrives after the agent has ended and before its fallback shell starts. The resume supervisor now ignores interactive signals until the shell replaces it.
+
 ## [0.30.1] - 2026-10-11
 
 ### Improvements

@@ -294,6 +294,7 @@ const GIT_SWEEP_INTERVAL_MS: u64 = 15_000;
 const SLOW_INTERVAL_MS: u64 = 30_000;
 const WORKSPACE_SCROLL_LINES: isize = 3;
 const NOTICE_MIN_DWELL: Duration = Duration::from_secs(2);
+const STREAM_REATTACH_WINDOW: Duration = Duration::from_secs(5);
 const NOTICE_QUEUE_CAPACITY: usize = 8;
 
 fn unix_time_millis() -> u64 {
@@ -958,6 +959,7 @@ pub struct App {
     terminal_stream_generation: u64,
     pending_terminal_entry: Option<PendingTerminalEntry>,
     pending_terminal_resume: Option<PendingTerminalResume>,
+    last_stream_reattach: Option<Instant>,
     suspend_detector: SuspendDetector,
     terminal_escape_chord: EscapeSequence,
     terminal_sidebar_override: Option<TerminalSidebar>,
@@ -1156,6 +1158,7 @@ impl App {
             terminal_stream_generation: 0,
             pending_terminal_entry: None,
             pending_terminal_resume: None,
+            last_stream_reattach: None,
             suspend_detector: SuspendDetector::new(),
             terminal_escape_chord,
             terminal_sidebar_override: None,
@@ -1774,6 +1777,15 @@ impl App {
                         self.set_error(format!("Clipboard write failed: {error}"));
                     }
                 }
+                // ^ docs/daemon-live-upgrade.md: a replaced daemon keeps the PTY, so
+                // reattach snapshot-first instead of leaving the terminal.
+                runtime::TerminalServerMessage::Error(error)
+                    if self.stream_loss_reattaches(&error) =>
+                {
+                    self.clear_active_terminal_selection();
+                    self.begin_resume_boundary();
+                    break;
+                }
                 runtime::TerminalServerMessage::Error(error) => {
                     self.clear_active_terminal_selection();
                     self.terminal_stream = None;
@@ -1967,6 +1979,22 @@ impl App {
         }
     }
 
+    // An unannounced disconnect reattaches once; a repeat within the window is a failure.
+    fn stream_loss_reattaches(&mut self, error: &runtime::ApiError) -> bool {
+        match error.code.as_str() {
+            "daemon_handoff" => true,
+            "stream_disconnected" => {
+                let now = Instant::now();
+                let repeated = self
+                    .last_stream_reattach
+                    .is_some_and(|last| now.duration_since(last) < STREAM_REATTACH_WINDOW);
+                self.last_stream_reattach = Some(now);
+                !repeated
+            }
+            _ => false,
+        }
+    }
+
     fn prepare_terminal_resume(&mut self) -> Option<u64> {
         if self.pending_terminal_entry.take().is_some() {
             self.terminal_stream = None;
@@ -2043,7 +2071,7 @@ impl App {
         } else {
             self.pending_terminal_resume = None;
             self.mode = Mode::Workspace;
-            self.set_warning("Terminal closed while the system was suspended");
+            self.set_warning("Terminal closed while wsx was reconnecting");
         }
     }
 
@@ -3870,7 +3898,10 @@ impl App {
 
     fn send_terminal_stream(&mut self, message: runtime::TerminalClientMessage) {
         let Some(active) = self.terminal_stream.as_ref() else {
-            self.set_error("Terminal stream is unavailable");
+            // Input typed while the terminal reattaches is dropped, as during entry.
+            if self.pending_terminal_resume.is_none() {
+                self.set_error("Terminal stream is unavailable");
+            }
             return;
         };
         match active.stream.try_send(message) {
@@ -6864,6 +6895,7 @@ mod tests {
             terminal_stream_generation: 0,
             pending_terminal_entry: None,
             pending_terminal_resume: None,
+            last_stream_reattach: None,
             suspend_detector: SuspendDetector::new(),
             terminal_escape_chord,
             terminal_sidebar_override: None,

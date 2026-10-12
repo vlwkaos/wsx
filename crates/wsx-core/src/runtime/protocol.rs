@@ -23,7 +23,9 @@ pub const ROUTINE_DAEMON_ARG: &str = "__wsx_routine_daemon";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ^ Receipt expiry and final PTY drain are daemon-owned runtime behavior.
 // UI-only releases continue to reuse wsxd. See docs/agent-orchestration.md and docs/terminal-exit-ordering.md.
-pub const DAEMON_REVISION: u32 = 20;
+pub const DAEMON_REVISION: u32 = 22;
+// ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
+pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
 fn default_attached() -> bool {
     true
