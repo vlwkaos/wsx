@@ -18,8 +18,9 @@ use std::{
 use wsx_core::{
     integration::memory::{Item, ItemKind, Reader, ToolStatus},
     runtime::{
-        AgentExchange, AgentExchangeAccess, AgentExchangeEvidence, AgentSessionRefKind, AgentState,
-        Client, Pane, PaneId, Project, Request, Response, SessionId, Snapshot,
+        AgentExchange, AgentExchangeAccess, AgentExchangeEvidence, AgentExchangeState,
+        AgentSessionRefKind, AgentState, Client, Pane, PaneId, Project, Request, Response,
+        SessionId, Snapshot,
     },
 };
 
@@ -328,7 +329,7 @@ impl Chat {
             "checkpoint": timeline.and_then(|timeline| timeline.checkpoint),
             "items": items,
             "exchange": exchange.as_ref().map(exchange_view),
-            "queue": [],
+            "queue": app.queue.list(session).iter().map(|queued| queued_view(queued, media)).collect::<Vec<_>>(),
             "working": working,
         }))
     }
@@ -405,6 +406,97 @@ impl Chat {
         found
     }
 
+    /// Take one message from the page. It is delivered now, or it waits in the
+    /// session's queue while the agent works or older messages wait.
+    pub fn submit(
+        &self,
+        app: &App,
+        session: u64,
+        text: &str,
+        attachments: &[String],
+    ) -> Outcome<Value> {
+        let (client, site, media) = (&app.client, &app.site, &app.media);
+        prompt_of(site, media, text, attachments)?;
+        let snapshot = snapshot(client)?;
+        let target = target(&snapshot, &site.access, session)?;
+        let agent = attached_agent(&target)?;
+        let enqueue = || {
+            let queued = app.queue.push(session, text, attachments).ok_or_else(|| {
+                Fault::new(
+                    409,
+                    "queue_full",
+                    "five messages already wait for this agent; remove one first",
+                )
+            })?;
+            crate::events::history_changed(app, session);
+            Ok(json!({ "queued": queued_view(&queued, media) }))
+        };
+        if agent.state == AgentState::Working || !app.queue.list(session).is_empty() {
+            return enqueue();
+        }
+        match self.send(client, site, media, session, text, attachments) {
+            // The agent or its exchange became busy between the check and the delivery.
+            Err(fault) if busy(&fault) => enqueue(),
+            result => result,
+        }
+    }
+
+    /// Remove a waiting message, or let a failed one be delivered again.
+    pub fn edit_queue(&self, app: &App, session: u64, id: u64, retry: bool) -> Outcome<Value> {
+        if !app.site.allows(Capability::ChatSend) {
+            return Err(Fault::forbidden("sending messages"));
+        }
+        let snapshot = snapshot(&app.client)?;
+        target(&snapshot, &app.site.access, session)?;
+        let changed = if retry {
+            app.queue.retry(session, id)
+        } else {
+            app.queue.remove(session, id)
+        };
+        if !changed {
+            return Err(Fault::new(
+                404,
+                "not_found",
+                "this message is no longer waiting",
+            ));
+        }
+        crate::events::history_changed(app, session);
+        Ok(
+            json!({ "queue": app.queue.list(session).iter().map(|queued| queued_view(queued, &app.media)).collect::<Vec<_>>() }),
+        )
+    }
+
+    /// Deliver the oldest waiting message of a session when the agent can take it.
+    /// Returns whether the queue changed.
+    pub fn deliver_queued(&self, app: &App, target: &Target) -> bool {
+        let session = target.session_id.0;
+        let Some(queued) = app.queue.next(session) else {
+            return false;
+        };
+        let ready = target.pane.agent.as_ref().is_some_and(|agent| {
+            agent.attached && !matches!(agent.state, AgentState::Working | AgentState::Blocked)
+        });
+        if !ready {
+            return false;
+        }
+        match self.send(
+            &app.client,
+            &app.site,
+            &app.media,
+            session,
+            &queued.text,
+            &queued.attachments,
+        ) {
+            Ok(_) => app.queue.remove(session, queued.id),
+            // Not at a wait boundary yet: try again on the next change.
+            Err(fault) if busy(&fault) => false,
+            Err(fault) => {
+                app.queue.fail(session, queued.id, &fault.2);
+                true
+            }
+        }
+    }
+
     /// Deliver one message. Returns the exchange with its truthful evidence level.
     pub fn send(
         &self,
@@ -415,70 +507,10 @@ impl Chat {
         text: &str,
         attachments: &[String],
     ) -> Outcome<Value> {
-        if !site.allows(Capability::ChatSend) {
-            return Err(Fault::forbidden("sending messages"));
-        }
-        if !attachments.is_empty() && !site.allows(Capability::MediaUpload) {
-            return Err(Fault::forbidden("attachments"));
-        }
-        if attachments.len() > MAX_ATTACHMENTS {
-            return Err(Fault::new(
-                400,
-                "too_many_attachments",
-                "at most 8 attachments",
-            ));
-        }
-        // The daemon rejects terminal control characters; drop them here so a pasted
-        // carriage return does not fail the whole message.
-        let mut prompt: String = text
-            .chars()
-            .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
-            .collect::<String>()
-            .trim()
-            .to_owned();
-        if !attachments.is_empty() {
-            prompt.push_str(&format!("\n\n{ATTACHMENT_HEADER}"));
-            for hash in attachments {
-                let entry = media.by_hash(hash).ok_or_else(|| {
-                    Fault::new(
-                        400,
-                        "attachment_missing",
-                        "an attachment expired; upload it again",
-                    )
-                })?;
-                prompt.push_str(&format!(
-                    "\n{} ({})",
-                    media.path(&entry).display(),
-                    entry.name
-                ));
-            }
-        }
-        if prompt.is_empty() || prompt.len() > MAX_PROMPT_BYTES {
-            return Err(Fault::new(
-                400,
-                "invalid_message",
-                "message must be 1 byte to 60 KiB",
-            ));
-        }
+        let prompt = prompt_of(site, media, text, attachments)?;
         let snapshot = snapshot(client)?;
         let target = target(&snapshot, &site.access, session)?;
-        let agent = target.pane.agent.as_ref().filter(|agent| agent.attached);
-        let Some(agent) = agent else {
-            return Err(Fault::new(
-                409,
-                "no_agent",
-                "no agent is attached to this session",
-            ));
-        };
-        // A blocked agent shows a provider dialog. Pasted text plus Enter could
-        // pick an option nobody chose, so that answer stays in the terminal.
-        if agent.state == AgentState::Blocked {
-            return Err(Fault::new(
-                409,
-                "agent_blocked",
-                "the agent is waiting for an answer in its terminal",
-            ));
-        }
+        let agent = attached_agent(&target)?;
         let previous = latest_exchange(client, target.pane.id)?;
         let access = if site.allows(Capability::AgentWrite) {
             AgentExchangeAccess::Writer
@@ -493,7 +525,15 @@ impl Chat {
         // An exchange keeps the access it was created with, so one that another site
         // or the owner's CLI opened with different access is not continued from here.
         let request = match previous.filter(|exchange| {
+            // wsxd does not continue a cancelled exchange or one whose pane is gone:
+            // the next message starts a new one.
             exchange.can_continue()
+                && !matches!(
+                    exchange.state,
+                    AgentExchangeState::Cancelled
+                        | AgentExchangeState::TargetExited
+                        | AgentExchangeState::TargetReplaced
+                )
                 && exchange.pane_id == target.pane.id
                 && exchange.agent_id == agent.id
                 && exchange.access == access
@@ -564,6 +604,95 @@ impl Chat {
             )),
         }
     }
+}
+
+/// Whether the daemon refused because the agent or its exchange is still in a turn.
+fn busy(fault: &Fault) -> bool {
+    fault.1 == "daemon_refused"
+        && (fault.2.starts_with("agent_busy") || fault.2.starts_with("exchange_busy"))
+}
+
+/// The agent a message may go to. A blocked agent shows a provider dialog: pasted
+/// text plus Enter could pick an option nobody chose, so that answer stays in the terminal.
+fn attached_agent<'a>(target: &Target<'a>) -> Outcome<&'a wsx_core::runtime::AgentInfo> {
+    let agent = target
+        .pane
+        .agent
+        .as_ref()
+        .filter(|agent| agent.attached)
+        .ok_or_else(|| Fault::new(409, "no_agent", "no agent is attached to this session"))?;
+    if agent.state == AgentState::Blocked {
+        return Err(Fault::new(
+            409,
+            "agent_blocked",
+            "the agent is waiting for an answer in its terminal",
+        ));
+    }
+    Ok(agent)
+}
+
+/// The text the agent receives for a message and its attachments, or why the
+/// message cannot be sent at all.
+fn prompt_of(site: &Site, media: &Media, text: &str, attachments: &[String]) -> Outcome<String> {
+    if !site.allows(Capability::ChatSend) {
+        return Err(Fault::forbidden("sending messages"));
+    }
+    if !attachments.is_empty() && !site.allows(Capability::MediaUpload) {
+        return Err(Fault::forbidden("attachments"));
+    }
+    if attachments.len() > MAX_ATTACHMENTS {
+        return Err(Fault::new(
+            400,
+            "too_many_attachments",
+            "at most 8 attachments",
+        ));
+    }
+    // The daemon rejects terminal control characters; drop them here so a pasted
+    // carriage return does not fail the whole message.
+    let mut prompt: String = text
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+        .collect::<String>()
+        .trim()
+        .to_owned();
+    if !attachments.is_empty() {
+        prompt.push_str(&format!("\n\n{ATTACHMENT_HEADER}"));
+        for hash in attachments {
+            let entry = media.by_hash(hash).ok_or_else(|| {
+                Fault::new(
+                    400,
+                    "attachment_missing",
+                    "an attachment expired; upload it again",
+                )
+            })?;
+            prompt.push_str(&format!(
+                "\n{} ({})",
+                media.path(&entry).display(),
+                entry.name
+            ));
+        }
+    }
+    if prompt.is_empty() || prompt.len() > MAX_PROMPT_BYTES {
+        return Err(Fault::new(
+            400,
+            "invalid_message",
+            "message must be 1 byte to 60 KiB",
+        ));
+    }
+    Ok(prompt)
+}
+
+fn queued_view(queued: &crate::queue::Queued, media: &Media) -> Value {
+    let attachments: Vec<Attachment> = queued
+        .attachments
+        .iter()
+        .filter_map(|hash| media.by_hash(hash))
+        .map(Attachment::from)
+        .collect();
+    json!({
+        "id": queued.id, "text": queued.text, "attachments": attachments,
+        "at_unix_ms": queued.at_unix_ms, "failed": queued.failed,
+    })
 }
 
 /// Files an agent may name but the web client must not hand out: hidden paths

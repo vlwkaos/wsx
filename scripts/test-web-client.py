@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # A fixture agent: reports as Claude, records what the PTY delivered, and writes
 # its own native transcript. The web server may only learn replies from that file.
 ACTOR = r'''
-import json, os, pathlib, signal, socket, sys, time, tty
+import json, os, pathlib, select, signal, socket, sys, time, tty
 signal.signal(signal.SIGHUP, signal.SIG_IGN)
 history, trace, project = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
 pane = int(os.environ['WSX_PANE_ID']); generation = os.environ['WSX_RUNTIME_GENERATION']
@@ -54,9 +54,13 @@ def record(kind, content):
   out.write(json.dumps({'type':kind,'uuid':entry,'parentUuid':leaf,'sessionId':'fixture','timestamp':stamp,
     'message':{'role':kind,'content':content}})+'\n')
  leaf = entry
+class Stopped(Exception): pass
 def gate(name):
  # The test opens each gate, so it can read the timeline between two records.
- while not trace.with_suffix('.'+name).exists(): time.sleep(0.02)
+ # Ctrl+C while the turn waits here ends the turn, as an interrupt does in a real agent.
+ while not trace.with_suffix('.'+name).exists():
+  if select.select([0],[],[],0.02)[0] and b'\x03' in os.read(0,4096):
+   report('idle'); raise Stopped()
  trace.with_suffix('.'+name).unlink()
 def turn(text):
  with trace.open('a') as out: out.write(json.dumps({'received':text})+'\n')
@@ -99,7 +103,9 @@ while True:
   if pending.startswith(b'\x1b') and len(pending) < 6: break
   char, pending = pending[:1], pending[1:]
   if char == b'\r':
-   text, draft = draft, ''; paint(); turn(text)
+   text, draft = draft, ''; paint()
+   try: turn(text)
+   except Stopped: pass
   elif char == b'\x03':
    report('idle')
   else:
@@ -245,6 +251,15 @@ class Site:
         if raw:
             return response.status, dict((k.lower(), v) for k, v in response.getheaders()), data
         return response.status, (json.loads(data) if data[:1] in (b'{', b'[') else data)
+
+
+def steady(site, *arguments, **options):
+    """A request that waits when the device's request budget is spent (429)."""
+    while True:
+        answer = site.request(*arguments, **options)
+        if answer[0] != 429:
+            return answer
+        time.sleep(0.5)
 
 
 class Terminal:
@@ -857,7 +872,7 @@ capabilities = ["terminal_view"]
 
         def messages(site, session):
             """The timeline, with its user and assistant items also listed as `messages`."""
-            data = site.request('GET', '/api/chat/%d/timeline' % session)[1]
+            data = steady(site, 'GET', '/api/chat/%d/timeline' % session)[1]
             data['messages'] = [{'role': item['kind'], 'text': item['text'], 'attachments': item['attachments']}
                                 for item in data.get('items', []) if item['kind'] in ('user', 'assistant')]
             return data
@@ -937,7 +952,10 @@ capabilities = ["terminal_view"]
 
         # --- Timeline: the saved conversation gains a tool call, then its result, then the answer.
         def timeline():
-            return owner.request('GET', chat + '/timeline')[1]
+            # These scenarios poll often; when the device's request budget is spent, wait for it.
+            status, data = steady(owner, 'GET', chat + '/timeline')
+            assert status == 200, data
+            return data
 
         def open_gate(name):
             (work / ('owner.' + name)).write_text('')
@@ -976,6 +994,92 @@ capabilities = ["terminal_view"]
             assert answered['items'][-2]['id'] == step['id']  # ids are stable between reads
         settle('owner')
         ok('timeline: tool call running, its result ok or failed, the answer; thinking and tool content never sent; working follows wsxd; change signalled within a second')
+
+        # --- Queue: messages sent while the agent works wait in order and survive a server restart.
+        def send(text, **extra):
+            return steady(owner, 'POST', chat + '/send', dict({'text': text}, **extra))
+
+        def delivered():
+            return [text.split(']\n', 1)[-1] for text in traces('owner')]
+
+        assert send('use tool')[0] == 200
+        wait(lambda: timeline()['working'], 'working turn')
+        del events.seen[:]
+        status, first = send('queued one')
+        assert status == 200 and first['queued']['text'] == 'queued one' and first['queued']['failed'] is None, first
+        events.expect('history', lambda data: data['session_id'] == sessions['owner'])
+        assert send('queued two')[1]['queued']['id'] > first['queued']['id']
+        extra = [send('extra %d' % index)[1]['queued']['id'] for index in range(3)]
+        status, full = send('one too many')
+        assert status == 409 and full['error']['code'] == 'queue_full', full
+        assert [item['text'] for item in timeline()['queue']] == ['queued one', 'queued two', 'extra 0', 'extra 1', 'extra 2']
+        for queued in extra:
+            assert steady(owner, 'DELETE', chat + '/queue/%d' % queued)[0] == 200
+        assert steady(owner, 'DELETE', chat + '/queue/%d' % extra[0])[0] == 404
+        assert steady(owner, 'DELETE', '/api/chat/%d/queue/1' % sessions['family'])[0] == 404  # another project's session
+        assert steady(root, 'DELETE', chat + '/queue/%d' % first['queued']['id'])[0] == 404  # another site's queue
+        assert delivered()[-1] == 'use tool', 'a queued message was typed while the agent worked'
+        # The queue is site state: a restarted server still has it and still delivers it.
+        queue_file = work / 'state/wsx/web/owner/queue.json'
+        assert queue_file.stat().st_mode & 0o777 == 0o600 and 'queued two' in queue_file.read_text()
+        owner_process = processes[[process.args[-1] for process in processes if isinstance(process.args, list)].index(str(files['owner']))]
+        # The server ends when its open pages are gone: close this test's event stream first.
+        events.connection.sock.shutdown(socket.SHUT_RDWR)
+        owner_process.terminate()
+        owner_process.wait(timeout=5)
+        processes.append(subprocess.Popen([str(wsx), 'web', 'serve', '--site', str(files['owner'])], env=env, cwd=project,
+                                          stdout=subprocess.DEVNULL, stderr=(work / 'owner.log').open('a')))
+        wait(lambda: up(owner), 'restarted web server')
+        events = Events(owner)
+        streams.append(events)
+        assert [item['text'] for item in timeline()['queue']] == ['queued one', 'queued two']
+        open_gate('result')
+        open_gate('answer')
+        wait(lambda: delivered()[-2:] == ['queued one', 'queued two'], 'queued messages delivered in order', timeout=20)
+        wait(lambda: messages(owner, sessions['owner'])['messages'][-1]['text'] == 'echo: queued two', 'queued turn')
+        assert timeline()['queue'] == [] and not queue_file.exists() or json.loads(queue_file.read_text())['sessions'] == {}
+        settle('owner')
+        # A delivery the daemon refuses stays in the queue with the daemon's words and stops the queue.
+        assert send('use tool')[0] == 200
+        wait(lambda: timeline()['working'], 'working turn')
+        failing = send('held back')[1]['queued']['id']
+        send('after the refusal')
+        owner_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == sessions['owner'])
+        assert call('terminal_acquire', {'pane_id': owner_pane, 'client_id': 6, 'takeover': False})['type'] == 'ack'
+        open_gate('result')
+        open_gate('answer')
+        failed = wait(lambda: (lambda queue: queue if queue and queue[0]['failed'] else None)(timeline()['queue']), 'failed delivery', timeout=10)
+        assert failed[0]['id'] == failing and 'terminal_busy' in failed[0]['failed'] and failed[1]['failed'] is None, failed
+        call('terminal_release', {'pane_id': owner_pane, 'client_id': 6})
+        time.sleep(1.5)
+        assert [item['text'] for item in timeline()['queue']] == ['held back', 'after the refusal'] and delivered()[-1] == 'use tool'
+        assert steady(owner, 'POST', chat + '/queue/%d/retry' % failing, {})[0] == 200
+        wait(lambda: delivered()[-2:] == ['held back', 'after the refusal'], 'retried queue delivered in order', timeout=20)
+        wait(lambda: timeline()['queue'] == [] and timeline()['working'] is None, 'queue drained')
+        settle('owner')
+        ok('queue: waits while the agent works, in order, limit of five, removal, survives a server restart, failed delivery keeps its reason and stops the queue until retried')
+
+        # --- Stop: the turn ends, the exchange is cancelled, and a waiting message goes next.
+        assert send('use tool')[0] == 200
+        wait(lambda: timeline()['working'], 'working turn')
+        send('after the stop')
+        assert call('terminal_acquire', {'pane_id': owner_pane, 'client_id': 6, 'takeover': False})['type'] == 'ack'
+        status, refused = steady(owner, 'POST', chat + '/cancel', {})
+        assert status == 409 and 'terminal_busy' in refused['error']['message'], refused
+        call('terminal_release', {'pane_id': owner_pane, 'client_id': 6})
+        status, stopping = steady(owner, 'POST', chat + '/cancel', {})
+        assert status == 200 and stopping['state'] == 'cancel_requested', stopping
+        # The stopped exchange ends as cancelled. It is not continued: the waiting message starts a new one.
+        def stopped_state():
+            listed = call('agent_exchange_list', {'pane_id': owner_pane})['data']
+            return next(item['state'] for item in listed if item['id'] == stopping['id'])
+        wait(lambda: stopped_state() != 'cancel_requested', 'stopped turn')
+        assert stopped_state() == 'cancelled', stopped_state()
+        wait(lambda: delivered()[-1] == 'after the stop', 'message after the stop')
+        assert timeline()['exchange']['id'] != stopping['id']
+        wait(lambda: messages(owner, sessions['owner'])['messages'][-1]['text'] == 'echo: after the stop', 'turn after the stop')
+        settle('owner')
+        ok('stop: refused while a terminal holds the pane, then the turn ends, the exchange is cancelled and the queue continues')
         assert not any(item['name'] in ('.env', 'api-token.txt', 'config') for item in
                        (work / 'state/wsx/web/owner/media/index.json').exists() and json.loads((work / 'state/wsx/web/owner/media/index.json').read_text()) or [])
         ok('media: upload, content hash URL, immutable cache, range, sniff allowlist, prompt attachment, agent file, no symlink or traversal')
@@ -985,53 +1089,53 @@ capabilities = ["terminal_view"]
         assert all(3000 < len(blob) <= 4096 for blob in blobs), [len(blob) for blob in blobs]
         urls = []
         for index, blob in enumerate(blobs):
-            status, entry = root.request('PUT', '/api/media?name=%d.png' % index, blob)
+            status, entry = steady(root, 'PUT', '/api/media?name=%d.png' % index, blob)
             assert status == 200, entry
             urls.append('/' + entry['url'])
             time.sleep(1.05)  # distinct creation seconds, so "oldest" is well defined
         media_dir = work / 'state/wsx/web/root/media'
-        assert root.request('GET', urls[0])[0] == 404, 'oldest entry was not evicted at quota'
-        assert root.request('GET', urls[1])[1] == blobs[1] and root.request('GET', urls[2])[1] == blobs[2]
+        assert steady(root, 'GET', urls[0])[0] == 404, 'oldest entry was not evicted at quota'
+        assert steady(root, 'GET', urls[1])[1] == blobs[1] and steady(root, 'GET', urls[2])[1] == blobs[2]
         assert sorted(p.suffix for p in media_dir.iterdir()) == ['.json', '.png', '.png']
-        max_age = int(root.request('GET', urls[2], raw=True)[1]['cache-control'].split('max-age=')[1].split(',')[0])
+        max_age = int(steady(root, 'GET', urls[2], raw=True)[1]['cache-control'].split('max-age=')[1].split(',')[0])
         assert 0 < max_age <= 4
         time.sleep(4.2)
-        assert root.request('GET', urls[1])[0] == 404 and root.request('GET', urls[2])[0] == 404
-        status, entry = root.request('PUT', '/api/media?name=late.png', png(9, 99))
+        assert steady(root, 'GET', urls[1])[0] == 404 and steady(root, 'GET', urls[2])[0] == 404
+        status, entry = steady(root, 'PUT', '/api/media?name=late.png', png(9, 99))
         assert status == 200 and [p.name for p in media_dir.glob('*.png')] == [entry['url'].split('/')[1]]
         ok('media: oldest-first quota eviction, TTL expiry, sweep removes files')
 
         # --- Files, terminal and activity panels on the owner site.
         files_of = '/api/files?project=%d&path=' % projects['project']
         file_of = '/api/file?project=%d&path=' % projects['project']
-        status, listing = owner.request('GET', files_of)
+        status, listing = steady(owner, 'GET', files_of)
         # .git is never listed, read or written: its config can run commands on the host.
         assert [(e['name'], e['directory']) for e in listing['entries']] == [('out', True), ('sub', True), ('.env', False), ('notes.txt', False)]
         assert 'escape' not in [e['name'] for e in listing['entries']]  # symlinks are not listed
-        assert owner.request('GET', file_of + 'sub/deep.txt', shape='stripped')[1]['text'] == 'deep\n'
+        assert steady(owner, 'GET', file_of + 'sub/deep.txt', shape='stripped')[1]['text'] == 'deep\n'
         for bad, status in (('../outside.png', 400), ('/etc/hosts', 400), ('sub/../../x', 400), ('.git/config', 400),
                             ('escape/.codex', 403), ('out/leak.png', 403), ('missing.txt', 404)):
-            assert owner.request('GET', file_of + bad)[0] == status, bad
-        assert owner.request('GET', files_of + 'escape')[0] == 403
+            assert steady(owner, 'GET', file_of + bad)[0] == status, bad
+        assert steady(owner, 'GET', files_of + 'escape')[0] == 403
         write = {'project': projects['project'], 'path': 'notes.txt', 'original': 'first line\n', 'content': 'edited\n'}
-        assert owner.request('PUT', '/api/file', write)[0] == 200 and (project / 'notes.txt').read_text() == 'edited\n'
-        assert owner.request('PUT', '/api/file', write)[1]['error']['code'] == 'file_changed'
-        assert owner.request('PUT', '/api/file', dict(write, path='out/leak.png'))[0] == 403
+        assert steady(owner, 'PUT', '/api/file', write)[0] == 200 and (project / 'notes.txt').read_text() == 'edited\n'
+        assert steady(owner, 'PUT', '/api/file', write)[1]['error']['code'] == 'file_changed'
+        assert steady(owner, 'PUT', '/api/file', dict(write, path='out/leak.png'))[0] == 403
         git_config = (project / '.git/config').read_text()
-        assert owner.request('PUT', '/api/file', {'project': projects['project'], 'path': '.git/config', 'original': git_config, 'content': 'x'})[0] == 400
+        assert steady(owner, 'PUT', '/api/file', {'project': projects['project'], 'path': '.git/config', 'original': git_config, 'content': 'x'})[0] == 400
         assert (project / '.git/config').read_text() == git_config
-        assert owner.request('GET', files_of + '.git')[0] == 400
+        assert steady(owner, 'GET', files_of + '.git')[0] == 400
         assert outside.read_bytes() == png(8, 200)
         # A second granted project has its own root. An ungranted or unknown project does not exist.
         third = '?project=%d&path=' % projects['project3']
-        assert [e['name'] for e in owner.request('GET', '/api/files' + third)[1]['entries']] == ['third.txt']
-        assert owner.request('GET', '/api/file' + third + 'third.txt')[1]['text'] == 'third project\n'
-        assert owner.request('GET', '/api/file' + third + 'notes.txt')[0] == 404  # a file of the first project
+        assert [e['name'] for e in steady(owner, 'GET', '/api/files' + third)[1]['entries']] == ['third.txt']
+        assert steady(owner, 'GET', '/api/file' + third + 'third.txt')[1]['text'] == 'third project\n'
+        assert steady(owner, 'GET', '/api/file' + third + 'notes.txt')[0] == 404  # a file of the first project
         for foreign in (projects['project2'], 987654):
-            assert owner.request('GET', '/api/files?project=%d&path=' % foreign)[0] == 404
-            assert owner.request('GET', '/api/file?project=%d&path=notes.txt' % foreign)[0] == 404
-            assert owner.request('PUT', '/api/file', dict(write, project=foreign))[0] == 404
-        assert owner.request('GET', '/api/files?path=')[0] == 400  # the project is required
+            assert steady(owner, 'GET', '/api/files?project=%d&path=' % foreign)[0] == 404
+            assert steady(owner, 'GET', '/api/file?project=%d&path=notes.txt' % foreign)[0] == 404
+            assert steady(owner, 'PUT', '/api/file', dict(write, project=foreign))[0] == 404
+        assert steady(owner, 'GET', '/api/files?path=')[0] == 400  # the project is required
         # The terminal types into the agent's pane like a keyboard does.
         settle('owner')
         typing = Terminal(owner, sessions['owner'], '&rows=12&cols=100')
@@ -1045,12 +1149,12 @@ capabilities = ["terminal_view"]
         wait(lambda: messages(owner, sessions['owner'])['messages'][-1]['text'] == 'echo: typed in terminal', 'terminal turn')
         settle('owner')
         # The snapshot terminal API is gone.
-        assert owner.request('GET', '/api/terminal/%d' % sessions['owner'])[0] == 404
-        assert owner.request('POST', '/api/terminal/%d/input' % sessions['owner'], {'key': 'enter'})[0] in (404, 405)
-        status, activity = owner.request('GET', '/api/activity')
-        assert [s['id'] for s in activity['sessions']] == [sessions['owner']] and activity['exchanges'][0]['id'] == exchange['id']
+        assert steady(owner, 'GET', '/api/terminal/%d' % sessions['owner'])[0] == 404
+        assert steady(owner, 'POST', '/api/terminal/%d/input' % sessions['owner'], {'key': 'enter'})[0] in (404, 405)
+        status, activity = steady(owner, 'GET', '/api/activity')
+        assert [s['id'] for s in activity['sessions']] == [sessions['owner']] and activity['exchanges']
         # A site without agent_write does not continue the owner's writer exchange.
-        status, other = root.request('POST', chat + '/send', {'text': 'from the read-only site'})
+        status, other = steady(root, 'POST', chat + '/send', {'text': 'from the read-only site'})
         assert status == 200 and other['access'] == 'read_only' and other['id'] != exchange['id'], other
         wait(lambda: traces('owner')[-1] == '[wsx exchange %d, round 1, read-only]\nfrom the read-only site' % other['id'], 'read-only delivery')
         wait(lambda: messages(owner, sessions['owner'])['messages'][-1]['text'] == 'echo: from the read-only site', 'read-only turn')

@@ -611,6 +611,7 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
     if provider != "codex" && record.get(key).and_then(Value::as_str).is_none() {
         return None;
     }
+    let text_is_notice = provider == "claude" && text.starts_with("[Request interrupted by user");
     // A codex record has no id of its own; its payload does.
     let id = record.get(key).or_else(|| message.get("id"));
     Some(Node {
@@ -625,7 +626,9 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
             .get("timestamp")
             .and_then(Value::as_u64)
             .or_else(|| unix_ms(record.get("timestamp")?.as_str()?)),
-        meta: record.get("isMeta").and_then(Value::as_bool) == Some(true),
+        // Claude also writes its own interruption notice in the person's name.
+        meta: record.get("isMeta").and_then(Value::as_bool) == Some(true)
+            || (role == "user" && text_is_notice),
         steps,
     })
 }

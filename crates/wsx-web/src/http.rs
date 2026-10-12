@@ -24,7 +24,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use serde::Deserialize;
@@ -64,6 +64,8 @@ pub fn router(app: Shared) -> Router {
             .route("/api/chat/{session}/timeline", get(timeline))
             .route("/api/chat/{session}/send", post(send))
             .route("/api/chat/{session}/cancel", post(cancel))
+            .route("/api/chat/{session}/queue/{id}", delete(queue_remove))
+            .route("/api/chat/{session}/queue/{id}/retry", post(queue_retry))
             .route("/api/media", put(media_put))
             .route("/api/files", get(files_list))
             // A text file is at most 1 MiB and a write carries the old and the new text.
@@ -560,16 +562,27 @@ async fn send(
     }
     blocking(|| {
         app.chat
-            .send(
-                &app.client,
-                &app.site,
-                &app.media,
-                session,
-                &input.text,
-                &input.attachments,
-            )
+            .submit(&app, session, &input.text, &input.attachments)
             .map(Json)
     })
+}
+
+async fn queue_remove(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath((session, id)): UrlPath<(u64, u64)>,
+) -> Outcome<Json<Value>> {
+    need(&app, Panel::Chat)?;
+    blocking(|| app.chat.edit_queue(&app, session, id, false).map(Json))
+}
+
+async fn queue_retry(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath((session, id)): UrlPath<(u64, u64)>,
+) -> Outcome<Json<Value>> {
+    need(&app, Panel::Chat)?;
+    blocking(|| app.chat.edit_queue(&app, session, id, true).map(Json))
 }
 
 async fn cancel(

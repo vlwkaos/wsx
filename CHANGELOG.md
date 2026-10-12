@@ -6,14 +6,23 @@
 
 - The web client's `GET api/terminal/<session>` and `POST api/terminal/<session>/input` routes are removed with the text-snapshot terminal. `terminal_view` now allows watching the live terminal; `terminal_input` allows typing, resizing the pane and taking control.
 - A web site file names its projects under `[access]`: `projects = "all"` or a list of 1 to 32 absolute paths, with `capabilities` and `agent_command`. The old `[project]` table is refused. The files API and `POST api/sessions` now take a `project` id.
+- `GET api/chat/<session>/history` is replaced by `GET api/chat/<session>/timeline`.
 - The wire protocol is 17. A wsx or script that says `hello` with protocol 16 is refused by the new daemon, apart from the lifecycle requests.
 
 ### Features
 
+- Queue web chat messages while the agent works: up to five per session, delivered in order when the agent is ready, kept across a restart of the web server. A delivery that wsxd refuses stays in the queue with the reason until it is retried or removed.
+- Show what the agent is doing in the web chat: the timeline now carries tool calls with their outcome and thinking markers from the agent's own saved conversation, for Claude, Pi, omp and Codex. Tool input, tool output and thinking text are not sent.
 - Let one web site reach several projects, or every project wsx manages. Anything outside the grant answers 404.
 - Show the web client dark by default when its theme has a dark scheme. A device can choose light under Settings. The operating system preference is no longer read.
 - Make the web client's terminal panel a real terminal. It is xterm.js on the pane's own byte stream over a WebSocket, with a key row, paste, an arrow drag pad and touch scrolling on phones, Korean and other IME input, and reconnect after a lost connection. A pane still has one controller: the page shows when a wsx window holds the terminal and takes it only on request. *Fit screen* resizes the pane to the browser; *Host size* scales the view instead. The text-snapshot terminal and its `api/terminal` routes are removed. See `docs/web-client.md`.
 - Add a raw terminal stream to wsxd for clients that run their own emulator: a replay of the current screen, then the PTY bytes, with the same single-writer lease as the TUI stream. Protocol 17, daemon revision 23, capability `raw_terminal_stream`. The TUI's frame stream is unchanged. A protocol-16 TUI defers the upgrade until it quits, as described in `docs/daemon-live-upgrade.md`. See `docs/terminal-raw-stream.md`.
+
+### Fixes
+
+- Stop an agent turn with the provider's own interrupt. `wsx agent cancel` and the web client's Stop now send Escape to Claude, Pi and omp; Ctrl+C did not stop a working Pi, and in Claude its second press quits. An exchange no longer stays in `cancel_requested` after a working Claude was stopped: wsxd now re-reads Claude's screen after the interrupt and settles the exchange from it. Daemon revision 24. See `docs/agent-orchestration.md`.
+- Deliver a request to a freshly started Claude. Its empty editor shows a dimmed suggestion (`Try "..."`), which wsxd refused as a possible draft, so the first message to a new Claude session failed with `editor_unavailable`. The dimmed line now counts as empty.
+- Start a new exchange for the first web chat message after a stop. The web client tried to continue the cancelled exchange, which wsxd refuses.
 
 ## [0.30.1] - 2026-10-12
 
