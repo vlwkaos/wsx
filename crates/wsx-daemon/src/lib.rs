@@ -6,6 +6,7 @@ mod handoff;
 mod plugins;
 mod reporter;
 mod state_store;
+mod views;
 #[cfg(any(target_os = "macos", test))]
 mod wake;
 
@@ -267,6 +268,7 @@ struct State {
     events: VecDeque<Event>,
     plugins: Vec<PluginManifest>,
     plugin_events: VecDeque<(String, String)>,
+    views: views::Store,
     tui_clients: HashMap<u64, TuiPresenceLease>,
     legacy_tui_until: Option<Instant>,
     replacement_target: Option<String>,
@@ -936,6 +938,7 @@ fn new_state(persisted: Persisted) -> State {
         events: VecDeque::new(),
         plugins: plugins::discover(),
         plugin_events: VecDeque::new(),
+        views: views::Store::default(),
         tui_clients: HashMap::new(),
         legacy_tui_until: None,
         replacement_target: None,
@@ -958,7 +961,7 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     secure_parent(&socket)?;
     secure_parent(&state_path)?;
 
-    let (singleton_lock, persisted, recovered_from_backup, import) = match import {
+    let (singleton_lock, persisted, recovered_from_backup, views, import) = match import {
         Some(handoff::Received {
             manifest,
             singleton_lock,
@@ -970,6 +973,7 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
                 fs::File::from(singleton_lock),
                 manifest.persisted,
                 false,
+                manifest.views,
                 Some((manifest.panes, pane_fds, stream)),
             )
         }
@@ -977,12 +981,21 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
             let singleton_lock = acquire_singleton_lock(&state_path.with_extension("lock"))?;
             prepare_socket(&socket)?;
             let (persisted, recovered) = load_state_with_status(&state_path)?;
-            (singleton_lock, persisted, recovered, None)
+            (
+                singleton_lock,
+                persisted,
+                recovered,
+                views::Store::default(),
+                None,
+            )
         }
     };
 
     let daemon = Arc::new(Daemon {
-        state: Mutex::new(new_state(persisted)),
+        state: Mutex::new(State {
+            views,
+            ..new_state(persisted)
+        }),
         mutation_lock: Mutex::new(()),
         changed: Condvar::new(),
         plugin_changed: Condvar::new(),
@@ -1221,10 +1234,16 @@ fn perform_live_handoff(
     let mut duplicate_fds = Vec::<std::os::fd::OwnedFd>::new();
     let mut source_ownership = Vec::<(Arc<TerminalRuntime>, libc::pid_t)>::new();
     let result = (|| {
-        let (persisted, generations) = {
-            let state = lock(&daemon.state);
+        let (persisted, generations, views) = {
+            let mut state = lock(&daemon.state);
             save_state(&daemon.state_path, &state.persisted)?;
-            (state.persisted.clone(), state.runtime_generations.clone())
+            let live = live_pane_ids(&state);
+            state.views.retain_panes(&live);
+            (
+                state.persisted.clone(),
+                state.runtime_generations.clone(),
+                state.views.clone(),
+            )
         };
         let mut pane_handoffs = Vec::with_capacity(runtimes.len());
         for (pane_id, runtime) in &runtimes {
@@ -1243,6 +1262,7 @@ fn perform_live_handoff(
         let manifest = handoff::manifest(
             persisted,
             pane_handoffs,
+            views,
             target.version.clone(),
             target.protocol,
             target.daemon_revision,
@@ -2271,6 +2291,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             | Request::View { .. }
             | Request::AgentExchangeWait { .. }
             | Request::PluginList
+            | Request::PaneViewGet { .. }
             | Request::LifecycleStatus
     ))
     .then(|| lock(&daemon.mutation_lock));
@@ -2667,6 +2688,23 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             rows,
             generation,
         } => render_plugin_view(daemon, plugin_id, pane_id, columns, rows, generation),
+        Request::PaneViewSet {
+            pane_id,
+            runtime_generation,
+            page,
+            title,
+            markdown,
+        } => set_pane_view(daemon, pane_id, runtime_generation, page, title, markdown),
+        Request::PaneViewClear {
+            pane_id,
+            runtime_generation,
+            page,
+        } => clear_pane_view(daemon, pane_id, runtime_generation, page),
+        Request::PaneViewGet {
+            pane_id,
+            page,
+            columns,
+        } => get_pane_view(daemon, pane_id, page, columns),
         Request::LifecycleStatus => {
             let mut state = lock(&daemon.state);
             Ok(Response::Lifecycle(lifecycle_status(daemon, &mut state)))
@@ -2700,6 +2738,93 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             })
         }
     }
+}
+
+fn live_pane_ids(state: &State) -> HashSet<PaneId> {
+    state.persisted.panes.iter().map(|pane| pane.id).collect()
+}
+
+// ^ docs/terminal-view.md: only the pane's live runtime may publish, as with agent reports.
+fn set_pane_view(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    runtime_generation: String,
+    page: Option<String>,
+    title: Option<String>,
+    markdown: String,
+) -> Result<Response, ApiError> {
+    let runtime_generation = bounded_runtime_generation(runtime_generation)?;
+    let mut state = lock(&daemon.state);
+    expect_runtime_generation(&state, pane_id, Some(&runtime_generation))?;
+    let live = live_pane_ids(&state);
+    state.views.retain_panes(&live);
+    state.views.set(pane_id, page, title, markdown)?;
+    let revision = bump(daemon, &mut state, "pane.view", pane_id.0);
+    Ok(Response::Ack { revision })
+}
+
+fn clear_pane_view(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    runtime_generation: String,
+    page: Option<String>,
+) -> Result<Response, ApiError> {
+    let runtime_generation = bounded_runtime_generation(runtime_generation)?;
+    let mut state = lock(&daemon.state);
+    expect_runtime_generation(&state, pane_id, Some(&runtime_generation))?;
+    let revision = if state.views.clear(pane_id, page)? {
+        bump(daemon, &mut state, "pane.view", pane_id.0)
+    } else {
+        state.revision
+    };
+    Ok(Response::Ack { revision })
+}
+
+fn get_pane_view(
+    daemon: &Daemon,
+    pane_id: PaneId,
+    page: Option<String>,
+    columns: u16,
+) -> Result<Response, ApiError> {
+    if columns == 0 || columns > MAX_VIEW_COLUMNS {
+        return Err(api("invalid_view", "columns must be 1..500"));
+    }
+    let name = page.map(|page| views::page_name(Some(page))).transpose()?;
+    let (page, renderers) = {
+        let state = lock(&daemon.state);
+        if !state.persisted.panes.iter().any(|pane| pane.id == pane_id) {
+            return Err(api("pane_not_found", "pane does not exist"));
+        }
+        let page = state
+            .views
+            .page(pane_id, name.as_deref())
+            .cloned()
+            .ok_or_else(|| api("view_not_found", "pane has no such view page"))?;
+        (page, plugins::renderers(&state.plugins))
+    };
+    // Renderer plugins run outside every daemon lock; a failure shows the block source.
+    let blocks = match page.rendered {
+        Some((cached, ref blocks)) if cached == columns => blocks.clone(),
+        _ => {
+            let blocks = plugins::render_blocks(&renderers, &page.markdown, columns);
+            lock(&daemon.state).views.cache_rendered(
+                pane_id,
+                &page.name,
+                page.revision,
+                columns,
+                blocks.clone(),
+            );
+            blocks
+        }
+    };
+    Ok(Response::PaneView(PaneViewDocument {
+        pane_id,
+        surface: PluginSurface::TerminalTop,
+        page: page.summary(),
+        columns,
+        markdown: page.markdown,
+        blocks,
+    }))
 }
 
 fn render_plugin_view(
@@ -3109,6 +3234,7 @@ fn snapshot(daemon: &Daemon, state: &State) -> Snapshot {
         listening_ports,
         pane_activity,
         plugin_sidecars: plugins::sidecars(&state.plugins),
+        pane_views: state.views.summaries(&live_pane_ids(state)),
         capabilities,
     }
 }
@@ -3774,6 +3900,8 @@ fn restart_session(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Re
         .transferred_streams
         .retain(|stream| stream.pane_id != id);
     state.runtimes.insert(id, Arc::clone(&runtime));
+    // A document published by the exited runtime does not describe its replacement.
+    state.views.remove_pane(id);
     publish(daemon, &mut state, revision, "session.restarted", id.0);
     if !live {
         record_terminal_exit(daemon, &mut state, id);
@@ -6729,6 +6857,7 @@ mod tests {
                 events: VecDeque::new(),
                 plugins: Vec::new(),
                 plugin_events: VecDeque::new(),
+                views: views::Store::default(),
                 tui_clients: HashMap::new(),
                 legacy_tui_until: None,
                 replacement_target: None,

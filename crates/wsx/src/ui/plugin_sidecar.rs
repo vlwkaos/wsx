@@ -6,7 +6,7 @@ use wsx_core::runtime::{PluginSidecarDescriptor, PluginSidecarView, PluginTone, 
 
 use super::theme;
 
-fn tone_color(tone: PluginTone) -> Color {
+pub(super) fn tone_color(tone: PluginTone) -> Color {
     match tone {
         PluginTone::Normal => theme::TEXT,
         PluginTone::Muted => theme::TEXT_MUTED,

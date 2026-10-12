@@ -52,6 +52,31 @@ pub fn terminal_titlebar() -> Style {
     Style::default().fg(TEXT).bg(PANEL_ACTIVE)
 }
 
+// ^ docs/terminal-view.md: the view panel is a bounded opaque surface over terminal cells.
+pub fn view_surface() -> Style {
+    Style::default().fg(TEXT).bg(PANEL)
+}
+
+pub fn view_status() -> Style {
+    Style::default().fg(TEXT_MUTED).bg(PANEL_ACTIVE)
+}
+
+pub fn view_title() -> Style {
+    Style::default().fg(ACCENT).bg(PANEL_ACTIVE).bold()
+}
+
+pub fn view_code() -> Style {
+    Style::default().fg(DONE)
+}
+
+pub fn view_chip(unread: bool) -> Style {
+    if unread {
+        Style::default().fg(PANEL).bg(ACCENT).bold()
+    } else {
+        Style::default().fg(TEXT_MUTED).bg(PANEL)
+    }
+}
+
 pub fn terminal_current() -> Style {
     Style::default().fg(TEXT).bg(ROW_SELECTED).bold()
 }

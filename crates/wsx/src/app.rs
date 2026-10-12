@@ -102,6 +102,10 @@ enum RuntimeResult {
         pane_id: runtime::PaneId,
         result: Result<runtime::PluginSidecarView>,
     },
+    PaneView {
+        key: crate::view_panel::FetchKey,
+        lines: Result<Vec<ratatui::text::Line<'static>>>,
+    },
 }
 
 struct ActiveTerminalStream {
@@ -938,6 +942,8 @@ pub struct App {
     runtime_full_refresh_stale: bool,
     runtime_capture_pending: bool,
     plugin_sidecars: Vec<runtime::PluginSidecarDescriptor>,
+    pane_views: Vec<runtime::PaneView>,
+    view_panel: crate::view_panel::ViewPanel,
     plugin_view: Option<runtime::PluginSidecarView>,
     plugin_view_generation: u64,
     plugin_view_pending: bool,
@@ -1142,6 +1148,8 @@ impl App {
             runtime_full_refresh_stale: false,
             runtime_capture_pending: false,
             plugin_sidecars: Vec::new(),
+            pane_views: Vec::new(),
+            view_panel: Default::default(),
             plugin_view: None,
             plugin_view_generation: 0,
             plugin_view_pending: false,
@@ -1965,6 +1973,7 @@ impl App {
                     pane_id,
                     result,
                 } => self.apply_plugin_view(generation, &plugin_id, pane_id, result),
+                RuntimeResult::PaneView { key, lines } => self.apply_pane_view(key, lines),
             }
         }
         while let Ok(result) = self.routine_rx.try_recv() {
@@ -2421,6 +2430,7 @@ impl App {
             self.spawn_git_local_for_all();
         }
 
+        self.spawn_pane_view();
         if self.fast_timer.ready() {
             self.spawn_runtime_capture();
             self.spawn_plugin_view();
@@ -2865,6 +2875,9 @@ impl App {
                 self.plugin_view = None;
             }
         }
+        if self.pane_views != snapshot.pane_views {
+            self.apply_pane_views(snapshot.pane_views.clone());
+        }
         let live_sessions = snapshot
             .sessions
             .iter()
@@ -3152,6 +3165,240 @@ impl App {
         }
     }
 
+    // ^ docs/terminal-view.md: view documents arrive as snapshot metadata; the body is
+    // fetched off the TUI thread and rendered once per revision and width.
+    fn terminal_pane_view(&self) -> Option<&runtime::PaneView> {
+        if !matches!(self.mode, Mode::Terminal { .. }) {
+            return None;
+        }
+        let pane_id = self.selected_terminal_identity()?.0;
+        self.pane_views.iter().find(|view| {
+            view.pane_id == pane_id && view.surface == runtime::PluginSurface::TerminalTop
+        })
+    }
+
+    fn view_columns(&self) -> u16 {
+        self.terminal_area.width.saturating_sub(2)
+    }
+
+    fn view_fetch_key(&self) -> Option<crate::view_panel::FetchKey> {
+        let columns = self.view_columns();
+        (columns > 0)
+            .then(|| self.terminal_pane_view())
+            .flatten()
+            .and_then(|view| self.view_panel.fetch_key(view, columns))
+    }
+
+    pub(crate) fn view_chip(&self, pane_id: runtime::PaneId) -> Option<bool> {
+        self.pane_views
+            .iter()
+            .find(|view| view.pane_id == pane_id)
+            .map(|view| self.view_panel.unread(view))
+    }
+
+    fn apply_pane_views(&mut self, views: Vec<runtime::PaneView>) {
+        let selected = matches!(self.mode, Mode::Terminal { .. })
+            .then(|| self.selected_terminal_identity())
+            .flatten()
+            .map(|identity| identity.0);
+        // Auto-open needs the prefix to exist, or the band could not be closed.
+        let auto_open =
+            self.config.view_auto_open && self.terminal_escape_chord.suffix_label().is_some();
+        for view in &views {
+            if !self.pane_views.contains(view) {
+                self.view_panel
+                    .document_changed(view, selected == Some(view.pane_id), auto_open);
+            }
+        }
+        self.view_panel.retain(&views);
+        self.pane_views = views;
+        self.needs_redraw = true;
+    }
+
+    fn spawn_pane_view(&mut self) {
+        let columns = self.view_columns();
+        if columns == 0 || self.view_panel.pending.is_some() {
+            return;
+        }
+        let Some(key) = self
+            .terminal_pane_view()
+            .and_then(|view| self.view_panel.next_fetch(view, columns))
+        else {
+            return;
+        };
+        self.view_panel.pending = Some(key.clone());
+        let tx = self.runtime_tx.clone();
+        let client = self.runtime_client.clone();
+        std::thread::spawn(move || {
+            let lines = match client.call(&runtime::Request::PaneViewGet {
+                pane_id: key.pane_id,
+                page: Some(key.page.clone()),
+                columns: key.columns,
+            }) {
+                Ok(runtime::Response::PaneView(document))
+                    if document.page.revision == key.revision =>
+                {
+                    Ok(crate::ui::view_markdown::render(
+                        &document.markdown,
+                        &document.blocks,
+                        usize::from(key.columns),
+                    ))
+                }
+                Ok(runtime::Response::PaneView(_)) => {
+                    Err(anyhow::anyhow!("view changed while it was loading"))
+                }
+                Ok(runtime::Response::Error(error)) => {
+                    Err(anyhow::anyhow!("{}: {}", error.code, error.message))
+                }
+                Ok(_) => Err(anyhow::anyhow!("unexpected daemon view response")),
+                Err(error) => Err(error.into()),
+            };
+            let _ = tx.send(RuntimeResult::PaneView { key, lines });
+        });
+    }
+
+    fn apply_pane_view(
+        &mut self,
+        key: crate::view_panel::FetchKey,
+        lines: Result<Vec<ratatui::text::Line<'static>>>,
+    ) {
+        if self.view_panel.pending.as_ref() == Some(&key) {
+            self.view_panel.pending = None;
+        }
+        let columns = self.view_columns();
+        let Some(view) = self.terminal_pane_view().cloned() else {
+            return;
+        };
+        // A result for a superseded revision, page, pane or width is dropped.
+        match lines {
+            Ok(lines) => {
+                let loaded = crate::view_panel::LoadedView { key, lines };
+                if self.view_panel.store(&view, columns, loaded) {
+                    self.view_panel.failed = None;
+                }
+            }
+            Err(_) => self.view_panel.failed = Some(key),
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Rectangle the open panel covers inside `terminal_area`; empty when closed.
+    pub(crate) fn layout_view_panel(&mut self) -> Rect {
+        use crate::view_panel::{band_height, ViewOpen};
+        self.view_panel.area = Rect::default();
+        let Some((key, view)) = self.view_fetch_key().zip(self.terminal_pane_view()) else {
+            return Rect::default();
+        };
+        let open = self.view_panel.open_for(view.pane_id);
+        let total = self.view_panel.lines(&key).map_or(1, <[_]>::len);
+        let terminal = self.terminal_area;
+        let area = match open {
+            ViewOpen::Closed => return Rect::default(),
+            ViewOpen::Band => Rect::new(
+                terminal.x,
+                terminal.y,
+                terminal.width,
+                band_height(total, terminal.height),
+            ),
+            ViewOpen::Reader => terminal,
+        };
+        if area.is_empty() {
+            return Rect::default();
+        }
+        self.view_panel
+            .clamp(total, crate::ui::view_panel::visible_rows(open, area));
+        self.view_panel.area = area;
+        area
+    }
+
+    pub(crate) fn view_panel_view(&self) -> Option<crate::ui::view_panel::ViewPanelView<'_>> {
+        if self.view_panel.area.is_empty() {
+            return None;
+        }
+        let view = self.terminal_pane_view()?;
+        let key = self.view_fetch_key()?;
+        let page = self.view_panel.page(view)?;
+        Some(crate::ui::view_panel::ViewPanelView {
+            open: self.view_panel.open_for(view.pane_id),
+            title: page.title.as_deref().unwrap_or(&page.name),
+            page: self.view_panel.page_position(view),
+            lines: self.view_panel.lines(&key),
+            failed: self.view_panel.failed.as_ref() == Some(&key),
+            scroll: self.view_panel.scroll(),
+            prefix: self.terminal_escape_chord.prefix_label(),
+        })
+    }
+
+    /// Handle view keys and pointer input. Returns the action the terminal still gets.
+    fn intercept_view_action(&mut self, action: Action) -> Option<Action> {
+        use crate::view_panel::{ReaderKey, ViewOpen, BAND_WHEEL_LINES};
+        use crossterm::event::MouseEventKind;
+        if matches!(action, Action::ViewToggle | Action::ViewClose) {
+            match self.terminal_pane_view().cloned() {
+                Some(view) if action == Action::ViewToggle => {
+                    // An explicit key retries a document that failed to load.
+                    self.view_panel.failed = None;
+                    self.view_panel.toggle(&view)
+                }
+                Some(_) => self.view_panel.close(),
+                None => self.set_status("This session has no view"),
+            }
+            self.force_terminal_redraw = true;
+            self.needs_redraw = true;
+            return None;
+        }
+        let area = self.view_panel.area;
+        let Some(view) = self
+            .terminal_pane_view()
+            .filter(|_| !area.is_empty())
+            .cloned()
+        else {
+            return Some(action);
+        };
+        let open = self.view_panel.open_for(view.pane_id);
+        let visible = crate::ui::view_panel::visible_rows(open, area);
+        let total = self
+            .view_fetch_key()
+            .and_then(|key| self.view_panel.lines(&key).map(<[_]>::len))
+            .unwrap_or(0);
+        let mouse = match &action {
+            Action::TerminalMouse(mouse) | Action::TerminalPrefixedMouse(_, mouse) => Some(*mouse),
+            _ => None,
+        };
+        if let Some(mouse) = mouse {
+            if !area.contains(Position::new(mouse.column, mouse.row)) {
+                return Some(action);
+            }
+            let wheel = isize::try_from(BAND_WHEEL_LINES).unwrap_or(1);
+            match mouse.kind {
+                MouseEventKind::ScrollUp => self.view_panel.scroll_by(-wheel, total, visible),
+                MouseEventKind::ScrollDown => self.view_panel.scroll_by(wheel, total, visible),
+                // A drag or release that began below the panel still belongs to the terminal.
+                MouseEventKind::Drag(_) | MouseEventKind::Up(_) => return Some(action),
+                _ => return None,
+            }
+            self.needs_redraw = true;
+            return None;
+        }
+        if open != ViewOpen::Reader {
+            return Some(action);
+        }
+        match action {
+            Action::TerminalKey(key) => {
+                if let ReaderKey::Close = self.view_panel.reader_key(key, &view, total, visible) {
+                    self.view_panel.leave_reader();
+                    self.force_terminal_redraw = true;
+                }
+                self.needs_redraw = true;
+                None
+            }
+            Action::TerminalKeys(_)
+            | Action::TerminalPaste(_)
+            | Action::TerminalPrefixedPaste(_, _) => None,
+            other => Some(other),
+        }
+    }
+
     fn spawn_runtime_capture(&mut self) {
         if self.terminal_stream.is_some() || self.runtime_capture_pending || !self.shows_preview() {
             return;
@@ -3271,6 +3518,9 @@ impl App {
         ]);
         if !self.is_mobile {
             hints.push(hint("b", "sidebar"));
+        }
+        if self.terminal_pane_view().is_some() {
+            hints.push(hint("v", "view"));
         }
         hints.push(hint("q", "quit"));
         if self.terminal_prefix_pending() {
@@ -3809,6 +4059,9 @@ impl App {
         {
             return Ok(());
         }
+        let Some(action) = self.intercept_view_action(action) else {
+            return Ok(());
+        };
         match action {
             Action::InputEscape => self.leave_terminal_mode(pane_id),
             Action::Quit => self.should_quit = true,
@@ -4760,6 +5013,8 @@ impl App {
         self.pending_terminal_entry = None;
         self.pending_terminal_resume = None;
         self.terminal_escape_chord.reset();
+        // The reader takes keys only in Terminal mode; re-entry shows the band.
+        self.view_panel.leave_reader_if_open();
         self.mode = Mode::Workspace;
     }
 
@@ -6879,6 +7134,8 @@ mod tests {
             runtime_full_refresh_stale: false,
             runtime_capture_pending: false,
             plugin_sidecars: Vec::new(),
+            pane_views: Vec::new(),
+            view_panel: Default::default(),
             plugin_view: None,
             plugin_view_generation: 0,
             plugin_view_pending: false,
@@ -7817,6 +8074,7 @@ mod tests {
                 listening_ports: vec![],
                 pane_activity: vec![],
                 plugin_sidecars: Vec::new(),
+                pane_views: Vec::new(),
                 capabilities: runtime::Capabilities::default(),
             }
         }
@@ -10001,6 +10259,7 @@ mod tests {
             listening_ports: vec![],
             pane_activity: vec![],
             plugin_sidecars: Vec::new(),
+            pane_views: Vec::new(),
             capabilities: runtime::Capabilities::default(),
         });
         assert_eq!(
@@ -10777,6 +11036,7 @@ mod tests {
                 listening_ports: vec![],
                 pane_activity: vec![],
                 plugin_sidecars: Vec::new(),
+                pane_views: Vec::new(),
                 capabilities: runtime::Capabilities::default(),
             },
             None,

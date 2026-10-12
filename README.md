@@ -16,6 +16,7 @@ wsx presents **Project → Worktree → Session → Pane** in a keyboard-first T
 - Provider-neutral agent states, native conversation resume, and project routines
 - Typed, versioned, bounded same-user local protocol
 - Trusted executable plugins with bounded passive Terminal sidecars
+- Agent-published view documents (tables, diagrams) shown over the terminal on a key, without resizing it
 - macOS and Linux support
 
 ## Product tour
@@ -77,7 +78,7 @@ A foreground command appears as a running job without an agent name until an int
 | Groups | `T` manage, `{`/`}` switch, `g` assign |
 | Global | `/` search, `,` settings, `R` refresh, `?` help, `q` quit TUI, `Q` stop wsxd and quit |
 
-Terminal mode uses the configured prefix, `Ctrl+A` by default. Follow it with `h/l` for the previous/next session in the current project in Workspace order. Left/Right, `k/j` and Up/Down remain aliases. Other prefixed commands are `{`/`}` for the previous or next group, `i/I` for idle, `a/A` for active, `n/N` for attention, `B` to toggle the desktop sidebar, `W` for Workspace, or `Q` to quit only the TUI. While wsx waits for the next key after the prefix, it can temporarily show the expanded sidebar without leaving Terminal mode. Attention navigation defaults to Blocked sessions before other attention states and can restore Workspace order in Global Settings. Group navigation keeps Workspace order, selecting the first session needing attention and then the first idle agent session; if neither exists, the current terminal stays active. `Ctrl+A Ctrl+A` sends a literal prefix. The title previews the same order with the current session highlighted, worktree attribution and hidden-session counts. Bare keys remain terminal input. An explicitly configured `h` or `l` escape suffix takes priority over navigation.
+Terminal mode uses the configured prefix, `Ctrl+A` by default. Follow it with `h/l` for the previous/next session in the current project in Workspace order. Left/Right, `k/j` and Up/Down remain aliases. Other prefixed commands are `{`/`}` for the previous or next group, `i/I` for idle, `a/A` for active, `n/N` for attention, `B` to toggle the desktop sidebar, `W` for Workspace, or `Q` to quit only the TUI. While wsx waits for the next key after the prefix, it can temporarily show the expanded sidebar without leaving Terminal mode. Attention navigation defaults to Blocked sessions before other attention states and can restore Workspace order in Global Settings. Group navigation keeps Workspace order, selecting the first session needing attention and then the first idle agent session; if neither exists, the current terminal stays active. `Prefix v` opens the [view](docs/terminal-view.md) an agent published for the session as a band over the top of the terminal, `Prefix v` again opens a full-height reader (`q` returns), and `Prefix V` closes it; the title shows `▤ view` when a view exists. `Ctrl+A Ctrl+A` sends a literal prefix. The title previews the same order with the current session highlighted, worktree attribution and hidden-session counts. Bare keys remain terminal input. An explicitly configured `h` or `l` escape suffix takes priority over navigation.
 
 Groups are ordered project filters. The default **ungrouped** anti-group matches projects with no memberships. Trusted agent work, terminal activity, session entry, and expansion changes update each project's inactivity window. The default adaptive policy starts at 24 hours, adds 12 hours on the first trusted activity of each new UTC day, and stops growing at 28 days. If inactivity exceeds the earned window, the next active period starts again at the configured base. When the timer auto-collapses an open project, wsx marks the project `stale` as the cause of its last collapse. The marker survives restart but clears as soon as you interact with the project. wsx never infers agent identity or state from process trees. For an adapter-identified Claude session only, bounded live terminal evidence may reconcile incomplete lifecycle events.
 
@@ -90,6 +91,7 @@ Open typed Global Settings with `,`. The platform configuration file is `~/.conf
 ```toml
 terminal_escape_chord = "ctrl+a w"
 terminal_prefix_shows_sidebar = true
+view_auto_open = false
 resume_agents_on_restore = true
 wake_mode = true
 auto_collapse = { mode = "adaptive", base_hours = 24 }
@@ -146,6 +148,8 @@ wsx agent report <pane> --provider <name> --state <state> [--session-id <id>|--s
 wsx agent context [session|pane|label] [--metadata-only] --json [-p <project>] [-w <worktree>]
 wsx agent request|inspect|wait|continue|cancel|exchanges
 wsx plugin list|reload
+wsx view set [--title <title>] [--page <name>] [--file <path>]
+wsx view clear [--page <name>]
 wsx runtime status [--json]
 wsx daemon stop|recover
 ```
@@ -177,7 +181,9 @@ Start discovery with `wsx agent context --metadata-only --json -p <project>` to 
 
 Each routine `--arg` is one direct argv item. wsx never invokes a shell for routine argv. Inspect untrusted routines with `wsx routine show <name>` before enabling or running them.
 
-See [Executable plugins](docs/plugins.md) for the versioned event, Terminal-sidecar, and worktree-review contracts. With a review provider installed, Tab on a worktree opens keyboard-driven file and diff review inside its preview. The [reference Git provider setup](docs/worktree-review.md) does not change the agent terminal.
+`wsx view set` runs inside a managed pane and publishes markdown from stdin or `--file` for that pane; see [Terminal view](docs/terminal-view.md) for limits, keys and the mermaid renderer plugin.
+
+See [Executable plugins](docs/plugins.md) for the versioned event, Terminal-sidecar, fenced-block renderer, and worktree-review contracts. With a review provider installed, Tab on a worktree opens keyboard-driven file and diff review inside its preview. The [reference Git provider setup](docs/worktree-review.md) does not change the agent terminal.
 
 Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed terminal. Explicit subcommands remain available. `wsx runtime status` and `wsx daemon stop` never start the daemon. Runtime status distinguishes a stopped daemon from one that is running but incompatible, awaiting an upgrade, deferring replacement, or ready. Its lifecycle output includes the daemon version and revision when the daemon supports them.
 
@@ -189,7 +195,7 @@ Handoff-capable wsxd updates wait until other wsx TUI generations detach, then t
 - Owner-only sockets and peer-UID checks reject cross-user access.
 - One writable lease owns each pane. Explicit Terminal entry transfers control to the latest wsx instance; the displaced instance returns to Workspace, and lease generations reject stale input, resize, heartbeat, selection, and release operations. Events invalidate revisions; clients reconcile from authoritative snapshots.
 - Messages, frames, agent exchange prompts, deadlines, write claims, retained receipts, commands, plugin manifests, plugin view output, listeners, and resource counts are bounded.
-- UI-only wsx releases reuse the compatible daemon. Protocol 16 adds provider-neutral generation-bound agent exchanges, exited-pane restart, and prompt-bound Claude wake renewal while retaining protocol-15 live handoff. Protocol 11–15 daemons remain usable until their safe one-time transition, and opening wsx keeps the existing workspace visible throughout normal deferral and reconnection.
+- UI-only wsx releases reuse the compatible daemon. Protocol 17 adds bounded per-pane view documents that survive a live handoff. Protocol 16 adds provider-neutral generation-bound agent exchanges, exited-pane restart, and prompt-bound Claude wake renewal while retaining protocol-15 live handoff. Protocol 11–16 daemons remain usable until their safe one-time transition, and opening wsx keeps the existing workspace visible throughout normal deferral and reconnection.
 - Native resume creates a new process, PTY, and terminal buffer from a validated provider reference. Unsupported references open a clean shell.
 - Remote access, transient graphics preservation across handoff, marketplace installation, and original-process restoration after an unplanned daemon crash are not supported.
 
@@ -201,6 +207,7 @@ cargo nextest run --workspace --locked
 cargo test --workspace --locked --doc
 cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 scripts/runtime-smoke.py
+python3 -B scripts/test-terminal-view.py
 ```
 
 See `THIRD-PARTY-NOTICES.md` for vendored terminal dependencies.

@@ -234,6 +234,9 @@ pub struct GlobalConfig {
     pub terminal_escape_chord: String,
     #[serde(default = "default_terminal_prefix_shows_sidebar")]
     pub terminal_prefix_shows_sidebar: bool,
+    // ^ docs/terminal-view.md: off by default so an agent cannot cover the terminal.
+    #[serde(default)]
+    pub view_auto_open: bool,
     #[serde(default = "default_resume_agents_on_restore")]
     pub resume_agents_on_restore: bool,
     #[serde(default = "default_wake_mode")]
@@ -262,6 +265,7 @@ impl Default for GlobalConfig {
             exclude_worktree_paths: default_exclude_worktree_paths(),
             terminal_escape_chord: default_terminal_escape_chord(),
             terminal_prefix_shows_sidebar: default_terminal_prefix_shows_sidebar(),
+            view_auto_open: false,
             resume_agents_on_restore: default_resume_agents_on_restore(),
             wake_mode: default_wake_mode(),
             auto_collapse: AutoCollapsePolicy::default(),
@@ -318,6 +322,8 @@ struct GlobalConfigWire {
     terminal_escape_chord: String,
     #[serde(default = "default_terminal_prefix_shows_sidebar")]
     terminal_prefix_shows_sidebar: bool,
+    #[serde(default)]
+    view_auto_open: bool,
     #[serde(default = "default_resume_agents_on_restore")]
     resume_agents_on_restore: bool,
     #[serde(default = "default_wake_mode")]
@@ -427,6 +433,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
             exclude_worktree_paths: wire.exclude_worktree_paths,
             terminal_escape_chord: wire.terminal_escape_chord,
             terminal_prefix_shows_sidebar: wire.terminal_prefix_shows_sidebar,
+            view_auto_open: wire.view_auto_open,
             resume_agents_on_restore: wire.resume_agents_on_restore,
             wake_mode: wire.wake_mode,
             auto_collapse,

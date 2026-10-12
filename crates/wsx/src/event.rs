@@ -97,6 +97,8 @@ pub(crate) enum TerminalEscapeAction {
     Escape,
     Quit,
     ToggleSidebar,
+    ViewToggle,
+    ViewClose,
     NextIdle,
     PrevIdle,
     NextActive,
@@ -209,6 +211,12 @@ impl EscapeSequence {
                 TerminalEscapeAction::PrevGroup
             } else if suffix.matches_after_prefix(key, &self.prefix) {
                 TerminalEscapeAction::Escape
+            } else if self.matches_prefixed_char(key, 'v') {
+                // ^ docs/terminal-view.md: after the configured Workspace key, so an
+                // existing `v` binding keeps its meaning.
+                TerminalEscapeAction::ViewToggle
+            } else if self.matches_prefixed_uppercase(key, 'V') {
+                TerminalEscapeAction::ViewClose
             } else {
                 TerminalEscapeAction::Forward(vec![self.prefix.key_event(), key])
             }
@@ -358,6 +366,8 @@ pub fn poll_event(
                 TerminalEscapeAction::Escape => Action::InputEscape,
                 TerminalEscapeAction::Quit => Action::Quit,
                 TerminalEscapeAction::ToggleSidebar => Action::ToggleTerminalSidebar,
+                TerminalEscapeAction::ViewToggle => Action::ViewToggle,
+                TerminalEscapeAction::ViewClose => Action::ViewClose,
                 TerminalEscapeAction::NextIdle => Action::NextIdle,
                 TerminalEscapeAction::PrevIdle => Action::PrevIdle,
                 TerminalEscapeAction::NextActive => Action::NextActive,

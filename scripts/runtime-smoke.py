@@ -14,7 +14,7 @@ import time
 import weakref
 
 ROOT = Path(__file__).resolve().parents[1]
-PROTOCOL = 16
+PROTOCOL = 17
 # ^ Plugin manifest commands must be absolute even when the scratch root is relative.
 WORK = Path(os.environ.get("WSX_SMOKE_WORK", ROOT / ".work" / "runtime-smoke")).resolve()
 if WORK.exists():
@@ -1234,6 +1234,228 @@ assert notice_text.stderr == (
     "wsx: wsxd recovered a corrupt primary state from its last-known-good backup\n"
 ), notice_text.stderr
 shutdown(recovered_from_backup)
+
+
+# ^ docs/terminal-view.md: pane view documents through the real CLI, wire and live handoff.
+RENDERER = PLUGIN_DIR / "render-demo.py"
+RENDERER.write_text(
+    "#!/usr/bin/env python3\n"
+    "import json, sys, time\n"
+    "request = json.load(sys.stdin)\n"
+    "if 'SLOW' in request['source']:\n"
+    "    time.sleep(30)\n"
+    "if 'BROKEN' in request['source']:\n"
+    "    print('{\"lines\": [[{\"text\": \"\\\\u001b[2J\"}]]}'); sys.exit(0)\n"
+    "print(json.dumps({'lines': [[{'text': 'rendered %s at %d' % "
+    "(request['language'], request['columns']), 'tone': 'accent'}]], 'note': 'demo note'}))\n"
+)
+RENDERER.chmod(0o700)
+(PLUGIN_DIR / "render-demo.json").write_text(json.dumps({
+    "api_version": 1,
+    "id": "smoke-renderer",
+    "name": "Smoke renderer",
+    "command": [str(RENDERER)],
+    "events": [],
+    "enabled": True,
+    "renderer": {"api_version": 1, "languages": ["demo"]},
+}))
+(PLUGIN_DIR / "render-demo.json").chmod(0o600)
+view_daemon = start()
+snapshot = call("snapshot")["data"]
+assert "pane_views" not in snapshot, snapshot.get("pane_views")
+view_session = call("session_create", {
+    "worktree_id": snapshot["worktrees"][0]["id"],
+    "label": "view",
+    "command": [],
+    "initial_input": None,
+    "rows": 12,
+    "cols": 60,
+})
+assert view_session["type"] == "created", view_session
+snapshot = call("snapshot")["data"]
+view_pane_id = next(
+    item for item in snapshot["sessions"] if item["id"] == view_session["data"]["id"]
+)["focused_pane"]
+VIEW_DOCS = WORK / "view-docs"
+VIEW_DOCS.mkdir()
+
+
+def pane_view(pane_id=None):
+    views = call("snapshot")["data"].get("pane_views", [])
+    return next((view for view in views if view["pane_id"] == (pane_id or view_pane_id)), None)
+
+
+def wait_view(test, label):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        view = pane_view()
+        if test(view):
+            return view
+        time.sleep(0.05)
+    raise RuntimeError(f"{label}: {pane_view()}")
+
+
+def view_in_pane(arguments, document=None, client_id=70, then=""):
+    """Run `wsx view` in the pane's own shell, so identity comes from the real runtime."""
+    command = f"{json.dumps(str(WSX))} view {arguments}"
+    if document is not None:
+        path = VIEW_DOCS / f"doc-{len(list(VIEW_DOCS.iterdir()))}.md"
+        path.write_text(document)
+        command += f" < {json.dumps(str(path))}"
+    send_shell_command(view_pane_id, command + then, client_id)
+
+
+first_document = "# Plan\n\n| step | owner |\n| --- | --- |\n| build | wsxd |\n\n```demo\nA --> B\n```\n"
+view_in_pane("set --title 'Build plan'", first_document)
+view = wait_view(lambda view: view is not None, "view set from stdin did not publish")
+assert view["surface"] == "terminal_top", view
+assert [page["name"] for page in view["pages"]] == ["main"], view
+assert view["pages"][0]["title"] == "Build plan" and view["pages"][0]["lines"] == 9, view
+# The snapshot carries metadata only; the body needs an explicit fetch.
+assert "markdown" not in json.dumps(call("snapshot")["data"]), "snapshot leaked a view body"
+fetched = call("pane_view_get", {"pane_id": view_pane_id, "columns": 72})
+assert fetched["type"] == "pane_view", fetched
+assert fetched["data"]["markdown"] == first_document, fetched
+assert fetched["data"]["page"] == view["pages"][0], fetched
+assert fetched["data"]["blocks"] == [{
+    "index": 0,
+    "lines": [[{"text": "rendered demo at 72", "tone": "accent"}]],
+    "note": "demo note",
+}], fetched
+# A renderer that fails, emits control bytes or exceeds its deadline leaves the source in place.
+for marker in ("BROKEN", "SLOW"):
+    view_in_pane("set --page probe", f"```demo\n{marker}\n```\n")
+    wait_view(
+        lambda view: view is not None and view["pages"][0]["name"] == "probe"
+        and view["pages"][0]["lines"] == 3,
+        "probe page did not publish",
+    )
+    probe_started = time.monotonic()
+    probe = call("pane_view_get", {"pane_id": view_pane_id, "page": "probe", "columns": 40})
+    assert probe["type"] == "pane_view" and "blocks" not in probe["data"], probe
+    assert time.monotonic() - probe_started < 4, f"{marker} renderer was not bounded"
+    view_in_pane("clear --page probe")
+    wait_view(lambda view: [page["name"] for page in view["pages"]] == ["main"], "probe not cleared")
+
+# Pages: a named page from --file is newest first; replacing a page raises its revision.
+(VIEW_DOCS / "notes.md").write_text("notes one\n")
+view_in_pane(f"set --page notes --file {json.dumps(str(VIEW_DOCS / 'notes.md'))}")
+view = wait_view(lambda view: len(view["pages"]) == 2, "second page did not publish")
+assert [page["name"] for page in view["pages"]] == ["notes", "main"], view
+main_revision = view["pages"][1]["revision"]
+view_in_pane("set", "replaced\n")
+view = wait_view(lambda view: view["pages"][0]["name"] == "main", "main was not replaced")
+assert view["pages"][0]["revision"] > main_revision and "title" not in view["pages"][0], view
+# Bounds: only the newest four pages are kept.
+for name in ("p1", "p2", "p3"):
+    view_in_pane(f"set --page {name}", f"{name}\n")
+view = wait_view(lambda view: view["pages"][0]["name"] == "p3", "page bound was not reached")
+assert [page["name"] for page in view["pages"]] == ["p3", "p2", "p1", "main"], view
+assert call("pane_view_get", {"pane_id": view_pane_id, "page": "notes", "columns": 40})[
+    "data"]["code"] == "view_not_found"
+
+# Only the pane's live runtime may publish; every refusal leaves the documents unchanged.
+kept = pane_view()
+stale_cli = subprocess.run(
+    [str(WSX), "view", "set"], input="stale\n", text=True, capture_output=True, cwd=PROJECT,
+    env=env | {"WSX_PANE_ID": str(view_pane_id), "WSX_RUNTIME_GENERATION": "deadbeef"},
+)
+assert stale_cli.returncode != 0 and "stale_runtime" in stale_cli.stderr, stale_cli
+outside = wsx("view", "set", "--file", str(VIEW_DOCS / "notes.md"))
+assert outside.returncode != 0 and "wsx-managed pane" in outside.stderr, outside
+for refused, code in (
+    ({"markdown": "x", "runtime_generation": "deadbeef"}, "stale_runtime"),
+    ({"markdown": "x", "runtime_generation": "not hex"}, "invalid_runtime_generation"),
+):
+    reply = call("pane_view_set", {"pane_id": view_pane_id} | refused)
+    assert reply["type"] == "error" and reply["data"]["code"] == code, reply
+assert call("pane_view_clear", {"pane_id": view_pane_id, "runtime_generation": "deadbeef"})[
+    "data"]["code"] == "stale_runtime"
+(VIEW_DOCS / "large.md").write_text("x" * 65537)
+large_cli = subprocess.run(
+    [str(WSX), "view", "set", "--file", str(VIEW_DOCS / "large.md")], capture_output=True,
+    text=True, cwd=PROJECT,
+    env=env | {"WSX_PANE_ID": str(view_pane_id), "WSX_RUNTIME_GENERATION": "deadbeef"},
+)
+assert large_cli.returncode != 0 and "larger than 65536 bytes" in large_cli.stderr, large_cli
+assert pane_view() == kept, "a refused publish changed the documents"
+# Daemon-side validation runs after the generation check, through the pane's own shell.
+REFUSALS = VIEW_DOCS / "refusals.txt"
+for arguments, document in (
+    ("set --page 'bad name'", "x\n"),
+    ("set --title " + "t" * 121, "x\n"),
+    ("set", "escape \x1b[2J\n"),
+    ("set", "   \n"),
+):
+    view_in_pane(arguments, document, then=f" 2>> {json.dumps(str(REFUSALS))}; echo refused >> "
+                 + json.dumps(str(REFUSALS)))
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline and (
+    not REFUSALS.exists() or REFUSALS.read_text().count("refused") < 4
+):
+    time.sleep(0.05)
+assert REFUSALS.read_text().count("invalid_view") == 4, REFUSALS.read_text()
+assert pane_view() == kept, "an invalid publish changed the documents"
+assert call("pane_view_get", {"pane_id": view_pane_id, "columns": 0})["data"]["code"] == "invalid_view"
+
+# Live handoff: the successor owns the same documents and the pane can still publish.
+# The successor publishes its reporter from the adjacent wsx, so both binaries are copied.
+# A fresh mtime makes the copy the newer binary.
+(WORK / "next").mkdir()
+handoff_target = WORK / "next" / "wsxd"
+for source in (DAEMON, WSX):
+    shutil.copy(source, WORK / "next" / source.name)
+    (WORK / "next" / source.name).chmod(0o700)
+target_stat = handoff_target.resolve().stat()
+lifecycle = call("lifecycle_status")["data"]
+before_handoff = call("snapshot")["data"]
+p3_before = call("pane_view_get", {"pane_id": view_pane_id, "columns": 40})["data"]
+prepared = call("prepare_handoff", {
+    "target_binary_id": "{}:{:x}:{:x}:{:x}:{:x}".format(
+        lifecycle["version"], target_stat.st_dev, target_stat.st_ino,
+        target_stat.st_size, target_stat.st_mtime_ns),
+    "target_version": lifecycle["version"],
+    "target_protocol": PROTOCOL,
+    "target_daemon_revision": lifecycle["daemon_revision"],
+    "executable": str(handoff_target),
+})
+assert prepared["type"] == "replacement" and prepared["data"]["blockers"] == [], prepared
+view_daemon.wait(timeout=15)
+deadline = time.monotonic() + 15
+after_handoff = None
+while time.monotonic() < deadline:
+    try:
+        reply = call("snapshot")
+        if reply.get("type") == "snapshot" and reply["data"]["epoch"] != before_handoff["epoch"]:
+            after_handoff = reply["data"]
+            break
+    except (OSError, RuntimeError, AssertionError):
+        pass
+    time.sleep(0.05)
+assert after_handoff is not None, "handoff successor did not become ready"
+assert after_handoff["pane_views"] == before_handoff["pane_views"], after_handoff.get("pane_views")
+assert call("pane_view_get", {"pane_id": view_pane_id, "columns": 40})["data"] == p3_before
+view_in_pane("set --page after", "published after the handoff\n", client_id=71)
+view = wait_view(lambda view: view["pages"][0]["name"] == "after", "publish after handoff failed")
+assert view["pages"][0]["revision"] > before_handoff["pane_views"][0]["pages"][0]["revision"], view
+
+# Clearing removes one page, then all; closing the session removes its documents.
+view_in_pane("clear --page after", client_id=71)
+wait_view(lambda view: view["pages"][0]["name"] == "p3", "page clear failed")
+view_in_pane("clear", client_id=71)
+wait_view(lambda view: view is None, "clear did not remove every page")
+view_in_pane("set", "last\n", client_id=71)
+wait_view(lambda view: view is not None, "publish after clear failed")
+session = next(
+    item for item in call("snapshot")["data"]["sessions"] if item["id"] == view_session["data"]["id"]
+)
+assert call("session_close", {
+    "session_id": session["id"], "expected_revision": session["revision"],
+})["type"] == "ack"
+assert pane_view() is None, "a closed pane kept its view"
+assert call("shutdown")["type"] == "ack"
+wait_socket_stopped()
+print("pane view scenario: PASS", flush=True)
 
 latency_passes = 0
 latency_failures = 0
