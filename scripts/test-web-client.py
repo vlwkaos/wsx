@@ -1569,9 +1569,14 @@ capabilities = ["terminal_view"]
         wait(lambda: last_text() == 'You chose: Ask the server on each request', 'answered by number')
         # Typed text and Enter arrive as one write, without control characters.
         asked = ask('ask me which way')
+        del events.seen[:]
         assert answer(root, asked['stamp'], 'text', text='neither,\x1b wait')[0] == 200
         wait(lambda: last_text() == 'You chose: typed: neither, wait', 'typed answer')
         assert answers()[-1] == b'neither, wait\r', answers()
+        # The owner's server must have seen this turn end before a later step subscribes to
+        # push, or the "finished" of this turn is the first notification there.
+        events.expect('workspace', lambda data: any(
+            item['id'] == sessions['owner'] and item['agent']['state'] == 'done' for item in data['sessions']))
         ok('answer: question with screen, choices and waiting tool; refused without the capability, for a stale stamp, an invalid key, a held terminal and an agent that is not blocked; approve, deny, number and text reach the PTY')
 
         # --- Optional real browser, on both sites, before any device is revoked.
