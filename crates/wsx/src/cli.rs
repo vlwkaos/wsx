@@ -4078,10 +4078,19 @@ fn cmd_session_list(
     let (config, workspace) = load_full_workspace()?;
     let projects = resolve_projects(&config, &workspace, project_name, group)?;
     if json {
-        let sessions: Vec<_> = projects
-            .iter()
-            .flat_map(|p| p.worktrees.iter().flat_map(|w| w.sessions.iter()))
-            .collect();
+        let mut sessions = Vec::new();
+        for project in &projects {
+            for worktree in &project.worktrees {
+                for session in &worktree.sessions {
+                    // ^ Added keys only: a row says where it is without a second call.
+                    let mut row = serde_json::to_value(session)?;
+                    row["project"] = serde_json::json!(project.name);
+                    row["branch"] = serde_json::json!(worktree.branch);
+                    row["worktree"] = serde_json::json!(worktree.path);
+                    sessions.push(row);
+                }
+            }
+        }
         println!("{}", serde_json::to_string_pretty(&sessions)?);
         return Ok(());
     }
