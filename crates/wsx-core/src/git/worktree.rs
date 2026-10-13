@@ -128,8 +128,63 @@ pub fn branch_exists(repo_path: &Path, branch: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// `git worktree add -b {branch} {path} {base_branch}`, or
-/// `git worktree add {path} {branch}` when the branch already exists.
+fn git_failure(action: &str, output: &std::process::Output) -> anyhow::Error {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    if stderr.is_empty() {
+        anyhow::anyhow!("{action} exited {}", output.status)
+    } else {
+        anyhow::anyhow!("{action} exited {}: {stderr}", output.status)
+    }
+}
+
+/// Create `refs/heads/{branch}` at `base` and return the commit it points at.
+/// `git branch` refuses an existing name, so success proves this call made the branch.
+fn create_branch(repo_path: &Path, branch: &str, base: &str) -> Result<String> {
+    let output = git_cmd(repo_path)
+        .args(["branch", "--", branch, base])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .context("git branch failed")?;
+    if !output.status.success() {
+        return Err(git_failure("git branch", &output));
+    }
+    let output = git_cmd(repo_path)
+        .args(["rev-parse", "--verify", &format!("refs/heads/{branch}")])
+        .stderr(Stdio::null())
+        .output()
+        .context("git rev-parse failed")?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// Remove a branch that `create_branch` made, only while it still points at `start`.
+/// ^ `update-ref -d <ref> <old>` compares and deletes in one git transaction, so a
+/// branch that moved, or one that someone else made, is never removed.
+fn discard_created_branch(repo_path: &Path, branch: &str, start: &str) -> bool {
+    if start.is_empty() {
+        return false;
+    }
+    let removed = git_cmd(repo_path)
+        .args(["update-ref", "-d", &format!("refs/heads/{branch}"), start])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if removed {
+        // The upstream that `git branch` may have recorded belongs to the removed branch.
+        let _ = git_cmd(repo_path)
+            .args(["config", "--remove-section", &format!("branch.{branch}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    removed
+}
+
+/// `git branch {branch} {base_branch}` then `git worktree add {path} {branch}`, or only
+/// the second command when the branch already exists. A branch this call made is removed
+/// again when the worktree cannot be added, so the same command can be repeated.
 pub fn create_worktree(repo_path: &Path, branch: &str, base_branch: &str) -> Result<PathBuf> {
     let parent = repo_path.parent().context("repo has no parent dir")?;
     let repo_name = repo_path
@@ -143,28 +198,28 @@ pub fn create_worktree(repo_path: &Path, branch: &str, base_branch: &str) -> Res
     let wt_path = parent.join(format!("{}-{}", repo_name, slug));
 
     let wt_arg = wt_path.to_string_lossy();
-    let mut command = git_cmd(repo_path);
-    command.args(["worktree", "add"]);
-    if branch_exists(repo_path, branch) {
-        command.args([wt_arg.as_ref(), branch]);
+    let created_at = if branch_exists(repo_path, branch) {
+        None
     } else {
-        command.args(["-b", branch, wt_arg.as_ref(), base_branch]);
-    }
-    let output = command
+        Some(create_branch(repo_path, branch, base_branch)?)
+    };
+    let added = git_cmd(repo_path)
+        .args(["worktree", "add", wt_arg.as_ref(), branch])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
-        .context("git worktree add failed")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
-        if stderr.is_empty() {
-            bail!("git worktree add exited {}", output.status);
+        .context("git worktree add failed");
+    let error = match added {
+        Ok(output) if output.status.success() => return Ok(wt_path),
+        Ok(output) => git_failure("git worktree add", &output),
+        Err(error) => error,
+    };
+    match created_at {
+        Some(start) if !discard_created_branch(repo_path, branch, &start) => {
+            bail!("{error}; branch '{branch}' was created and could not be removed")
         }
-        bail!("git worktree add exited {}: {stderr}", output.status);
+        _ => Err(error),
     }
-    Ok(wt_path)
 }
 
 /// `git worktree remove --force {path}` then `git branch -d {branch}`
