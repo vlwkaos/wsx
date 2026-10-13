@@ -71,6 +71,23 @@ pub enum Availability {
     },
 }
 
+/// Result of `restart_daemon`. No outcome ends a session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DaemonRestart {
+    NotRunning,
+    Restarted {
+        live_runtimes: usize,
+    },
+    Deferred {
+        live_runtimes: usize,
+        blockers: Vec<super::domain::ReplacementBlocker>,
+    },
+    /// The running daemon cannot hand off into this build.
+    Unsupported {
+        daemon_version: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonStatus {
     Missing,
@@ -148,6 +165,11 @@ impl Client {
                 }
             }
         })
+    }
+
+    /// Read the lifecycle of a running daemon of any protocol that reports one.
+    pub fn lifecycle(&self) -> io::Result<super::domain::DaemonLifecycle> {
+        lifecycle_status(self)
     }
 
     /// Gracefully stop the current daemon and wait for its socket cleanup.
@@ -828,6 +850,7 @@ fn ensure_available_with_binary(
                     target_protocol: PROTOCOL_VERSION,
                     target_daemon_revision: super::protocol::DAEMON_REVISION,
                     executable: binary.to_path_buf(),
+                    restart: false,
                 }
             } else {
                 Request::PrepareReplacement {
@@ -939,6 +962,153 @@ fn ensure_available_with_binary(
     }
 }
 
+/// A running daemon that the next `ensure_available` replaces through a live handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUpgrade {
+    pub daemon_version: String,
+    pub daemon_revision: u32,
+    pub live_runtimes: usize,
+}
+
+/// Report a pending live upgrade without starting it. The running daemon stays usable
+/// to this client, so a caller may also continue on it. See docs/daemon-live-upgrade.md.
+pub fn pending_upgrade() -> io::Result<Option<PendingUpgrade>> {
+    let client = Client::local();
+    let target_binary_id = binary_identity(&daemon_binary()).ok();
+    let existing = probe_existing_daemon(&client)?;
+    let live_handoff = match &existing {
+        ExistingDaemon::Ready {
+            lifecycle_coordination: true,
+            live_handoff,
+            ..
+        } => *live_handoff,
+        ExistingDaemon::Incompatible {
+            lifecycle_coordination: true,
+            live_handoff,
+            advertised_protocol: Some(protocol),
+            ..
+        } => *live_handoff && (LEGACY_BASELINE_PROTOCOL..PROTOCOL_VERSION).contains(protocol),
+        _ => false,
+    };
+    if !live_handoff
+        || ready_without_transition(&client, &existing, target_binary_id.as_deref())?.is_some()
+    {
+        return Ok(None);
+    }
+    let status = lifecycle_status(&client)?;
+    Ok(Some(PendingUpgrade {
+        daemon_version: lifecycle_version(&status),
+        daemon_revision: status.daemon_revision,
+        live_runtimes: status.live_runtimes,
+    }))
+}
+
+/// Hand the running daemon off into the installed wsxd, also when it is the same build.
+/// Sessions keep their PTYs. This never stops a daemon. See docs/daemon-live-upgrade.md.
+pub fn restart_daemon() -> io::Result<DaemonRestart> {
+    restart_with_binary(&Client::local(), &daemon_binary())
+}
+
+fn restart_with_binary(client: &Client, binary: &Path) -> io::Result<DaemonRestart> {
+    wait_for_handoff(client.socket(), HANDOFF_WAIT);
+    let _bootstrap = acquire_bootstrap_lock(client.socket())?;
+    let status = match lifecycle_status(client) {
+        Ok(status) => status,
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            return Ok(DaemonRestart::NotRunning)
+        }
+        Err(error) => return Err(error),
+    };
+    let request = Request::PrepareHandoff {
+        target_binary_id: binary_identity(binary)?,
+        target_version: super::protocol::WSX_VERSION.to_string(),
+        target_protocol: PROTOCOL_VERSION,
+        target_daemon_revision: super::protocol::DAEMON_REVISION,
+        executable: binary.to_path_buf(),
+        restart: true,
+    };
+    let unsupported = !daemon_capabilities(client)?.daemon_restart;
+    match lifecycle_round_trip(client, &request) {
+        Ok(Response::Replacement {
+            disposition: super::domain::ReplacementDisposition::Stopping,
+            live_runtimes,
+            ..
+        }) => {
+            wait_until_restarted(client, status.epoch)?;
+            set_active_protocol(client.socket(), PROTOCOL_VERSION);
+            Ok(DaemonRestart::Restarted { live_runtimes })
+        }
+        Ok(Response::Replacement {
+            live_runtimes,
+            blockers,
+            ..
+        }) => Ok(DaemonRestart::Deferred {
+            live_runtimes,
+            blockers,
+        }),
+        // An older daemon refuses an equal build or does not know the request.
+        Ok(_) | Err(_) if unsupported => Ok(DaemonRestart::Unsupported {
+            daemon_version: lifecycle_version(&status),
+        }),
+        Ok(Response::Error(error)) => Err(io::Error::other(format!(
+            "{}: {}",
+            error.code, error.message
+        ))),
+        Ok(response) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unexpected wsxd restart response: {response:?}"),
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+// A daemon too old to answer a newer Hello with its capabilities has none of the new ones.
+fn daemon_capabilities(client: &Client) -> io::Result<super::domain::Capabilities> {
+    let mut stream = client.connect()?;
+    Ok(
+        match round_trip(
+            &mut stream,
+            &Request::Hello {
+                protocol: PROTOCOL_VERSION,
+            },
+        )? {
+            Response::Hello { capabilities, .. } => capabilities,
+            _ => Default::default(),
+        },
+    )
+}
+
+// A successor has a new epoch. The old epoch back in the ready phase is a rollback.
+fn wait_until_restarted(client: &Client, old_epoch: u64) -> io::Result<()> {
+    let deadline = Instant::now() + HANDOFF_WAIT;
+    loop {
+        if let Ok(status) = lifecycle_status(client) {
+            if status.phase == super::domain::DaemonPhase::Ready {
+                if status.epoch != old_epoch {
+                    return Ok(());
+                }
+                if status.replacement_target.is_none() {
+                    return Err(io::Error::other(
+                        "wsxd could not hand off and kept running; no session was stopped",
+                    ));
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "wsxd live handoff did not become ready",
+            ));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn pending_handoff_target(
     status: &super::domain::DaemonLifecycle,
     binary: &Path,
@@ -1007,6 +1177,7 @@ fn legacy_handoff_retry_request(
         target_protocol: PROTOCOL_VERSION,
         target_daemon_revision: super::protocol::DAEMON_REVISION,
         executable: binary.to_path_buf(),
+        restart: false,
     }))
 }
 
@@ -1790,6 +1961,14 @@ fn wait_until_handoff_ready(client: &Client, target_revision: u32) -> io::Result
                     {
                         return Ok(());
                     }
+                    // The source daemon cleared the target and answers again: it rolled back.
+                    if status.phase == super::domain::DaemonPhase::Ready
+                        && status.replacement_target.is_none()
+                    {
+                        return Err(io::Error::other(
+                            "wsxd live handoff failed and was rolled back; the running daemon kept its sessions",
+                        ));
+                    }
                 }
             }
             Ok(ExistingDaemon::Missing | ExistingDaemon::Incompatible { .. }) => {}
@@ -1846,6 +2025,16 @@ pub struct EventMonitor {
 }
 impl EventMonitor {
     pub fn start(client: Client) -> io::Result<(Self, mpsc::Receiver<EventSignal>)> {
+        Self::spawn(client, false)
+    }
+
+    /// Start a monitor for a TUI that re-executes into the installed wsx after a handoff.
+    /// See docs/daemon-live-upgrade.md.
+    pub fn start_following(client: Client) -> io::Result<(Self, mpsc::Receiver<EventSignal>)> {
+        Self::spawn(client, true)
+    }
+
+    fn spawn(client: Client, follows: bool) -> io::Result<(Self, mpsc::Receiver<EventSignal>)> {
         let (sender, receiver) = mpsc::channel();
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stopping);
@@ -1855,6 +2044,7 @@ impl EventMonitor {
             target_binary_id: binary_identity(&daemon_binary()).unwrap_or_default(),
             target_daemon_revision: super::protocol::DAEMON_REVISION,
             max_protocol: PROTOCOL_VERSION,
+            follows,
         };
         let thread = thread::Builder::new()
             .name("wsx-runtime-events".into())
@@ -2754,6 +2944,7 @@ mod tests {
                             target_protocol: PROTOCOL_VERSION,
                             target_daemon_revision: super::super::protocol::DAEMON_REVISION,
                             executable: server_executable.clone(),
+                            restart: false,
                         }
                     );
                     send_response(
@@ -2852,6 +3043,7 @@ mod tests {
                                 target_protocol: PROTOCOL_VERSION,
                                 target_daemon_revision: super::super::protocol::DAEMON_REVISION,
                                 executable: expected_binary.clone(),
+                                restart: false,
                             }
                         );
                         send_response(

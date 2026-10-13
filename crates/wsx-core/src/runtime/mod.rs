@@ -10,9 +10,9 @@ mod protocol;
 mod review;
 
 pub use client::{
-    ensure_available, ensure_background_available, new_client_id, recover_daemon,
-    routine_daemon_command, Availability, Client, DaemonStatus, EventMonitor, EventSignal,
-    RawTerminalStream, TerminalStream,
+    ensure_available, ensure_background_available, new_client_id, pending_upgrade, recover_daemon,
+    restart_daemon, routine_daemon_command, Availability, Client, DaemonRestart, DaemonStatus,
+    EventMonitor, EventSignal, PendingUpgrade, RawTerminalStream, TerminalStream,
 };
 pub use domain::*;
 pub use protocol::*;

@@ -432,7 +432,7 @@ def main():
             item.close()
             completed.append(item.proc)
         if daemon and daemon.poll() is None:
-            subprocess.run([str(wsx), 'daemon', 'stop'], env=env, capture_output=True, timeout=8)
+            subprocess.run([str(wsx), 'daemon', 'stop', '--force'], env=env, capture_output=True, timeout=8)
             try:
                 daemon.wait(timeout=5)
             except subprocess.TimeoutExpired:

@@ -10,6 +10,8 @@
 - The web client's Activity panel is removed; the inbox replaces it. A site file that lists `"activity"` under `panels` is refused.
 - The web theme contract changed with the new page: 60 tokens (`color-raised`, `color-hairline`, `color-faint`, `color-attention`, `color-ansi-0` to `color-ansi-15`, `font-terminal`, `tracking-*`, `size-row`, `size-bar`, `size-rail`, `size-prose` and others are new; the component color, shadow, `color-border`, `color-sunken`, `color-ok` and `color-focus` tokens are gone) and new component hooks. A custom theme must be updated; the server names the first token it refuses. See `docs/web-themes.md`.
 - `GET api/chat/<session>/history` is replaced by `GET api/chat/<session>/timeline`.
+- `wsx daemon stop` refuses while sessions are running. Scripts that stop a daemon with live sessions must pass `--force`.
+- Rust callers that construct `TuiClientPresence` must provide `follows`, and callers that construct `Request::PrepareHandoff` must provide `restart`. `Capabilities` has the new `daemon_restart` flag, and `DaemonPhase` and `ReplacementBlocker` have an `Unknown` variant. Older JSON without the new fields decodes as before.
 
 ### Features
 
@@ -21,6 +23,15 @@
 - Show the web client dark by default when its theme has a dark scheme. A device can choose light under Settings. The operating system preference is no longer read.
 - Make the web client's terminal panel a real terminal. It is xterm.js on the pane's own byte stream over a WebSocket, with a key row, paste, an arrow drag pad and touch scrolling on phones, Korean and other IME input, and reconnect after a lost connection. A pane still has one controller: the page shows when a wsx window holds the terminal and takes it only on request. *Fit screen* resizes the pane to the browser; *Host size* scales the view instead. The text-snapshot terminal and its `api/terminal` routes are removed. See `docs/web-client.md`.
 - Add a raw terminal stream to wsxd for clients that run their own emulator: a replay of the current screen, then the PTY bytes, with the same single-writer lease as the TUI stream. The wire protocol stays 16: the stream is an added request, announced by the capability `raw_terminal_stream` (daemon revision 23). The TUI's frame stream is unchanged, and an open 0.30 TUI does not defer the daemon upgrade. Against a daemon without the capability the web client's terminal panel says that the daemon must be upgraded; the other panels work. A running `wsx web serve` sends client presence with its poll, so it does not defer the upgrade either. See `docs/terminal-raw-stream.md`.
+
+### Improvements
+
+- Keep wsx windows open through a wsxd upgrade. A window whose installed `wsx` was replaced now re-executes into it in the same terminal, with the same process ID, and returns to the same project, worktree, session and mode, Terminal mode included. It waits while a form, prompt or search is open. When the installed `wsx` cannot start, the window keeps running the old code and says so. A window that follows no longer defers a handoff, even below the target protocol. Daemon revision 25. See `docs/daemon-live-upgrade.md`.
+- Upgrade wsxd before a starting wsx opens. A start that finds an older wsxd with live handoff shows an upgrade screen with both versions, the number of running terminals and the step, instead of the workspace on the old daemon. While another window defers the upgrade it says which window to quit, asks again by itself and opens when the upgrade is done; `Enter` opens on the old wsxd and `q` quits. A handoff that rolls back is detected at once instead of after the 35-second wait, and the window opens on the running daemon with a notice. CLI commands are unchanged.
+- Add `wsx daemon restart [--json]`. It replaces wsxd with the installed build through a live handoff, also when it is the build that is running. Sessions, shells and agents keep running. A wsxd of 0.30.1 or older cannot restart into its own build: the command says so and stops nothing.
+- Make `wsx daemon stop` safe. With running sessions it prints how many would end and that `wsx daemon restart` keeps them; `--force` stops anyway. The help text now says that a stop ends running programs. `--json` reports the result.
+- Say what to do when an upgrade waits. The notice names the window to quit, says that sessions keep running, and says that the upgrade then continues by itself. For a wsxd without live handoff it says that the upgrade will restart the sessions.
+- State the protocol rule: the protocol number changes only when an older client can no longer talk to the new daemon. Additions use `Capabilities` and the daemon revision. wsxd now answers an unknown request on a mismatched connection with an error instead of closing the connection.
 
 ### Fixes
 
