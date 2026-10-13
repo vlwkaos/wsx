@@ -156,6 +156,7 @@ impl Command {
             Command::Agent { subcommand } => matches!(
                 subcommand,
                 AgentCmd::Request { json: true, .. }
+                    | AgentCmd::Start(AgentStartArgs { json: true, .. })
                     | AgentCmd::Inspect { json: true, .. }
                     | AgentCmd::Wait { json: true, .. }
                     | AgentCmd::Continue { json: true, .. }
@@ -292,6 +293,8 @@ pub enum AgentCmd {
         #[command(flatten)]
         scope: SessionScope,
     },
+    /// Start an agent on a branch in one call: worktree, session, readiness and request
+    Start(AgentStartArgs),
     /// Submit an adapter-observed receipt for the exact current exchange round
     #[command(hide = true)]
     ExchangeReceipt {
@@ -368,6 +371,42 @@ pub enum AgentCmd {
         #[command(flatten)]
         scope: SessionScope,
     },
+}
+
+// ^ docs/agent-orchestration.md "Start a worker in one call".
+#[derive(clap::Args)]
+pub struct AgentStartArgs {
+    /// Branch of the worktree; the worktree is created when it is missing
+    branch: String,
+    #[command(flatten)]
+    prompt: PromptSource,
+    #[arg(short, long)]
+    project: Option<String>,
+    /// Start a new branch from this commit, tag, or branch instead of the default branch
+    #[arg(long)]
+    from: Option<String>,
+    /// Command that starts the agent in the new session
+    /// (default: the project's worktree.defaultSession.command)
+    #[arg(long, value_name = "COMMAND")]
+    agent: Option<String>,
+    /// Session name; an existing session of this name in the worktree is used
+    /// (default: the first word of the agent command)
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long, default_value_t = 600)]
+    timeout: u64,
+    /// Seconds to wait until the agent can take a prompt
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=3600))]
+    ready_timeout: u64,
+    #[arg(long)]
+    writer: bool,
+    #[arg(long = "write-claim", requires = "writer")]
+    write_claims: Vec<PathBuf>,
+    /// Deliver once per key and pane: a repeat returns the existing exchange
+    #[arg(long, value_name = "TEXT")]
+    key: Option<String>,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -898,6 +937,7 @@ pub fn run(cmd: Command) -> Result<()> {
                 json,
                 &scope,
             ),
+            AgentCmd::Start(args) => cmd_agent_start(args),
             AgentCmd::ExchangeReceipt {
                 exchange,
                 round,
@@ -2237,10 +2277,7 @@ fn cmd_worktree_create(
 ) -> Result<()> {
     let (config, workspace) = load_full_workspace()?;
     let project = resolve_project(&workspace, project_name)?;
-    // ^ An existing branch is checked out as it is, so a start point cannot apply.
-    if from.is_some() && wsx_core::git::worktree::branch_exists(&project.path, branch) {
-        bail!("branch '{branch}' already exists; omit --from to check it out");
-    }
+    refuse_start_point_of_existing_branch(project, branch, from)?;
     let proj_config = project.config.clone().unwrap_or_default();
     let created = ops::create_configured_worktree(
         &config,
@@ -2276,6 +2313,18 @@ fn cmd_worktree_create(
     }
     if let Some(error) = created.session_error {
         anyhow::bail!("worktree created, but its initial wsx session failed: {error}");
+    }
+    Ok(())
+}
+
+// ^ An existing branch is checked out as it is, so a start point cannot apply.
+fn refuse_start_point_of_existing_branch(
+    project: &Project,
+    branch: &str,
+    from: Option<&str>,
+) -> Result<()> {
+    if from.is_some() && wsx_core::git::worktree::branch_exists(&project.path, branch) {
+        bail!("branch '{branch}' already exists; omit --from to check it out");
     }
     Ok(())
 }
@@ -3002,6 +3051,268 @@ fn deliver_exchange(request: &runtime::Request) -> Result<runtime::Response> {
             )
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+/// What `agent start` made or found. A late failure prints the same object with `error`
+/// and `next`, so the caller knows what exists and what to run.
+#[derive(serde::Serialize)]
+struct AgentStart {
+    project: String,
+    branch: String,
+    worktree: PathBuf,
+    worktree_created: bool,
+    session_id: Option<runtime::SessionId>,
+    session_label: String,
+    session_created: bool,
+    pane_id: Option<runtime::PaneId>,
+    agent: Option<String>,
+    exchange: Option<runtime::AgentExchange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next: Option<String>,
+}
+
+// ^ docs/agent-orchestration.md "Start a worker in one call": every step uses what a
+// former run left, so the same command with the same --key continues and delivers once.
+fn cmd_agent_start(args: AgentStartArgs) -> Result<()> {
+    // Refuse what can be refused before anything is made.
+    let prompt = args.prompt.read(runtime::MAX_AGENT_EXCHANGE_PROMPT_BYTES)?;
+    let timeout_ms = exchange_timeout_ms(args.timeout)?;
+    let (config, workspace) = load_full_workspace()?;
+    let project = resolve_project(&workspace, args.project.as_deref())?;
+    let project_config = project.config.clone().unwrap_or_default();
+    // ^ One owner of the command: `worktree.defaultSession.command`. `--agent` is the same
+    // value for one call. A disabled default session gives no command.
+    let configured = match project_config
+        .initial_session(wsx_core::model::workspace::WorktreeInitialSession::Disabled)
+    {
+        wsx_core::model::workspace::WorktreeInitialSession::Command(command) => Some(command),
+        _ => None,
+    };
+    let Some(command) = args
+        .agent
+        .or(configured)
+        .filter(|command| !command.trim().is_empty())
+    else {
+        bail!(
+            "no agent command: pass --agent <command>, or set worktree.defaultSession.command for project '{}'",
+            project.name
+        );
+    };
+    let label = args
+        .name
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| command.split_whitespace().next().map(str::to_owned))
+        .unwrap_or_default();
+
+    // The worktree. A failure here leaves nothing: see git::worktree::create_worktree.
+    let existing = project
+        .worktrees
+        .iter()
+        .find(|worktree| worktree.branch == args.branch);
+    let (worktree, worktree_created) = match existing {
+        Some(worktree) => (worktree.path.clone(), false),
+        None => {
+            refuse_start_point_of_existing_branch(project, &args.branch, args.from.as_deref())?;
+            // No default session: the agent session below is the only one.
+            let (path, warning) = ops::create_worktree(
+                &project.path,
+                args.from.as_deref().unwrap_or(&project.default_branch),
+                &project_config,
+                &args.branch,
+            )?;
+            if let Some(warning) = warning {
+                eprintln!("warning: {warning}");
+            }
+            (path, true)
+        }
+    };
+    let mut start = AgentStart {
+        project: project.name.clone(),
+        branch: args.branch.clone(),
+        worktree,
+        worktree_created,
+        session_id: None,
+        session_label: label,
+        session_created: false,
+        pane_id: None,
+        agent: None,
+        exchange: None,
+        error: None,
+        next: None,
+    };
+
+    let access = if args.writer {
+        runtime::AgentExchangeAccess::Writer
+    } else {
+        runtime::AgentExchangeAccess::ReadOnly
+    };
+    let outcome = (|| -> std::result::Result<(), (&'static str, anyhow::Error)> {
+        let snapshot = ops::runtime_snapshot().map_err(|error| ("session", error))?;
+        let existing = snapshot
+            .worktrees
+            .iter()
+            .find(|worktree| worktree.path == start.worktree)
+            .and_then(|worktree| {
+                snapshot.sessions.iter().find(|session| {
+                    session.worktree_id == worktree.id && session.label == start.session_label
+                })
+            });
+        let session_id = match existing {
+            Some(session) => session.id,
+            None => {
+                start.session_created = true;
+                ops::create_session(
+                    &config,
+                    &project.name,
+                    "",
+                    &start.worktree,
+                    Some(start.session_label.clone()),
+                    Some(command.clone()),
+                )
+                .map_err(|error| ("session", error))?
+                .0
+            }
+        };
+        start.session_id = Some(session_id);
+
+        // A repeat finds the exchange of its key before it waits: its agent may be at work on it.
+        if let (Some(key), Some(session)) = (args.key.as_deref(), existing) {
+            start.pane_id = Some(session.focused_pane);
+            let exchanges =
+                list_agent_exchanges(Some(session.focused_pane), RuntimeSessionScope::default())
+                    .map_err(|error| ("request", error))?;
+            if let Some(exchange) = exchanges
+                .into_iter()
+                .find(|exchange| exchange.key.as_deref() == Some(key))
+            {
+                start.agent = Some(exchange.provider.clone());
+                start.exchange = Some(exchange);
+                return Ok(());
+            }
+        }
+
+        let (pane_id, provider) = wait_for_prompt_agent(
+            session_id,
+            Instant::now() + Duration::from_secs(args.ready_timeout),
+            &mut start.pane_id,
+        )
+        .map_err(|error| ("ready", error))?;
+        start.agent = Some(provider);
+        let request = exchange_create_request(
+            pane_id,
+            prompt,
+            timeout_ms,
+            access,
+            args.write_claims,
+            false,
+            args.key,
+        );
+        match deliver_exchange(&request).map_err(|error| ("request", error))? {
+            runtime::Response::AgentExchange { exchange, .. } => {
+                start.exchange = Some(exchange);
+                Ok(())
+            }
+            runtime::Response::Error(error) => Err((
+                "request",
+                anyhow::anyhow!("{}: {}", error.code, error.message),
+            )),
+            _ => Err((
+                "request",
+                anyhow::anyhow!("wsxd returned an unexpected agent exchange response"),
+            )),
+        }
+    })();
+
+    let failure = outcome.err();
+    if let Some((step, error)) = &failure {
+        start.error = Some(serde_json::json!({ "step": step, "message": error.to_string() }));
+        start.next = Some(match (*step, start.session_id) {
+            ("ready", Some(session_id)) => format!(
+                "the worktree and session {session_id} are kept; read `wsx session peek {session_id} --trim`, then repeat this command"
+            ),
+            _ => "what is listed here is kept; repeat this command".to_owned(),
+        });
+    }
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&start)?);
+    } else {
+        println!("worktree: {}", start.worktree.display());
+        if let Some(session_id) = start.session_id {
+            println!("{}", created_session_line(session_id));
+        }
+        if let Some(pane_id) = start.pane_id {
+            println!("pane:     {pane_id}");
+        }
+        if let Some(exchange) = &start.exchange {
+            println!(
+                "exchange: {} round {}: {:?}",
+                exchange.id, exchange.round, exchange.state
+            );
+        }
+        if let Some(next) = &start.next {
+            println!("next:     {next}");
+        }
+    }
+    match failure {
+        Some((step, error)) => Err(error.context(format!("agent start stopped at step '{step}'"))),
+        None => Ok(()),
+    }
+}
+
+/// Wait until the session's pane has an attached agent that can take a prompt now.
+/// `seen_pane` keeps the pane ID for the report when the wait fails.
+fn wait_for_prompt_agent(
+    session_id: runtime::SessionId,
+    deadline: Instant,
+    seen_pane: &mut Option<runtime::PaneId>,
+) -> Result<(runtime::PaneId, String)> {
+    loop {
+        let snapshot = ops::runtime_snapshot()?;
+        let session = snapshot
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .context("session_missing: the session was closed")?;
+        let pane = snapshot
+            .panes
+            .iter()
+            .find(|pane| pane.id == session.focused_pane)
+            .context("session_missing: the session has no pane")?;
+        *seen_pane = Some(pane.id);
+        if pane.exited {
+            bail!("session_exited: run `wsx session restart {session_id}`");
+        }
+        let agent = pane.agent.as_ref().filter(|agent| agent.attached);
+        if let Some(agent) = agent.filter(|agent| {
+            agent.capabilities.prompt
+                && matches!(
+                    agent.state,
+                    runtime::AgentState::Idle | runtime::AgentState::Done
+                )
+        }) {
+            return Ok((pane.id, agent.provider.clone()));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            match agent {
+                Some(agent) => bail!(
+                    "agent_not_ready: {} is {:?}{}",
+                    agent.provider,
+                    agent.state,
+                    if agent.capabilities.prompt {
+                        ""
+                    } else {
+                        " and its integration cannot take a prompt"
+                    }
+                ),
+                None => bail!("agent_not_ready: no agent reported from the session"),
+            }
+        }
+        // ^ Not `poll`: wsxd counts a poll without TUI data as an open TUI.
+        std::thread::sleep(remaining.min(Duration::from_millis(100)));
     }
 }
 
