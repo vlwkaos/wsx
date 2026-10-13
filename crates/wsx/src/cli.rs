@@ -2899,28 +2899,53 @@ fn cmd_agent_exchange_cancel(exchange_id: runtime::AgentExchangeId, json: bool) 
     Ok(())
 }
 
-fn cmd_agent_exchange_list(selector: Option<&str>, json: bool, scope: &SessionScope) -> Result<()> {
-    let pane_id = selector
-        .map(|selector| resolve_pane(selector, scope))
-        .transpose()?;
-    match runtime::Client::local().call(&runtime::Request::AgentExchangeList { pane_id })? {
-        runtime::Response::AgentExchanges(exchanges) if json => {
-            println!("{}", serde_json::to_string_pretty(&exchanges)?);
+/// Retained exchanges of one session or pane, or of the requested project and worktree.
+/// ^ wsxd filters by pane only. A scope without a session is applied here, on the
+/// project and worktree IDs that every exchange carries.
+fn scoped_agent_exchanges(
+    selector: Option<&str>,
+    requested: &SessionScope,
+) -> Result<Vec<runtime::AgentExchange>> {
+    let mut pane_id = None;
+    let mut scope = RuntimeSessionScope::default();
+    if selector.is_some() || requested.project.is_some() || requested.worktree.is_some() {
+        let snapshot = ops::runtime_snapshot()?;
+        let config = requested
+            .worktree
+            .as_ref()
+            .map(|_| load_config())
+            .transpose()?;
+        scope = runtime_session_scope(&snapshot, requested, config.as_ref())?;
+        if let Some(selector) = selector {
+            pane_id = Some(resolve_session_in_snapshot(&snapshot, selector, scope)?.pane_id);
         }
-        runtime::Response::AgentExchanges(exchanges) => {
-            for exchange in exchanges {
-                println!(
-                    "{}\tpane {}\tround {}\t{:?}\t{:?}",
-                    exchange.id,
-                    exchange.pane_id,
-                    exchange.round,
-                    exchange.state,
-                    exchange.evidence
-                );
-            }
+    }
+    match runtime::Client::local().call(&runtime::Request::AgentExchangeList { pane_id })? {
+        runtime::Response::AgentExchanges(mut exchanges) => {
+            exchanges.retain(|exchange| {
+                scope.project_id.is_none_or(|id| exchange.project_id == id)
+                    && scope
+                        .worktree_id
+                        .is_none_or(|id| exchange.worktree_id == id)
+            });
+            Ok(exchanges)
         }
         runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
         _ => bail!("wsxd returned an unexpected agent exchange list response"),
+    }
+}
+
+fn cmd_agent_exchange_list(selector: Option<&str>, json: bool, scope: &SessionScope) -> Result<()> {
+    let exchanges = scoped_agent_exchanges(selector, scope)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&exchanges)?);
+        return Ok(());
+    }
+    for exchange in exchanges {
+        println!(
+            "{}\tpane {}\tround {}\t{:?}\t{:?}",
+            exchange.id, exchange.pane_id, exchange.round, exchange.state, exchange.evidence
+        );
     }
     Ok(())
 }
@@ -3292,7 +3317,7 @@ fn cmd_runtime_status(json: bool) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct RuntimeSessionScope {
     project_id: Option<runtime::ProjectId>,
     worktree_id: Option<runtime::WorktreeId>,
