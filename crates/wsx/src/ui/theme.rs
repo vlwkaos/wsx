@@ -13,6 +13,7 @@ pub const TEXT: Color = Color::Rgb(224, 229, 237);
 pub const TEXT_MUTED: Color = Color::Rgb(143, 152, 166);
 pub const TEXT_SUBTLE: Color = Color::Rgb(99, 108, 123);
 pub const ACCENT: Color = Color::Rgb(102, 153, 255);
+const ACCENT_MUTED: Color = Color::Rgb(92, 132, 208);
 pub const SUCCESS: Color = Color::Rgb(88, 190, 112);
 pub const WORKING: Color = Color::Rgb(137, 220, 158);
 pub const IDLE: Color = Color::Rgb(226, 190, 118);
@@ -52,26 +53,35 @@ pub fn terminal_titlebar() -> Style {
     Style::default().fg(TEXT).bg(PANEL_ACTIVE)
 }
 
-pub fn terminal_current() -> Style {
-    Style::default().fg(TEXT).bg(ROW_SELECTED).bold()
-}
-
+// ^ docs/terminal-context.md: one role per title level, used nowhere else in the row.
 pub fn terminal_project() -> Style {
     Style::default().fg(ACCENT).bg(ROW_SELECTED).bold()
 }
 
+/// A worktree is a group heading: accent text on the bar itself, never a chip.
 pub fn terminal_worktree(current: bool) -> Style {
-    Style::default()
-        .fg(TEXT_MUTED)
-        .bg(if current { PANEL } else { BACKGROUND })
+    if current {
+        Style::default().fg(ACCENT).bold()
+    } else {
+        Style::default().fg(ACCENT_MUTED)
+    }
+}
+
+/// A session is an item: a chip that always starts with its state icon.
+pub fn terminal_session(current: bool) -> Style {
+    if current {
+        Style::default().fg(TEXT).bg(ROW_SELECTED).bold()
+    } else {
+        Style::default().fg(TEXT_MUTED).bg(PANEL)
+    }
+}
+
+pub fn terminal_group_rule() -> Style {
+    Style::default().fg(TEXT_SUBTLE)
 }
 
 pub fn terminal_context() -> Style {
     Style::default().fg(TEXT_MUTED)
-}
-
-pub fn terminal_peer() -> Style {
-    terminal_context().bg(PANEL)
 }
 
 pub fn stale_project() -> Style {
@@ -154,6 +164,7 @@ mod tests {
             TEXT_MUTED,
             TEXT_SUBTLE,
             ACCENT,
+            ACCENT_MUTED,
             SUCCESS,
             WORKING,
             IDLE,

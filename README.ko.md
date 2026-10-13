@@ -82,7 +82,7 @@ Terminal mode는 기본 `Ctrl+A` prefix를 사용합니다. 이어서 `h/l`은 �
 
 Group은 순서가 있는 project filter입니다. 기본 **ungrouped** anti-group은 membership이 없는 project를 표시합니다. Trusted agent 작업, terminal 활동, session 진입, expand 또는 collapse 변경은 project의 비활성 window를 갱신합니다. 기본 adaptive policy는 24시간으로 시작하고, 새로운 UTC 날짜의 첫 trusted activity마다 12시간을 더해 최대 28일까지 늘어납니다. 활동이 확보한 window를 넘게 중단되면 다음 active period는 설정된 base부터 다시 시작합니다. Timer가 열린 project를 자동으로 접으면 wsx는 마지막 collapse 원인을 나타내기 위해 project를 `stale`로 표시합니다. 이 표시는 재시작 뒤에도 유지되지만 project와 직접 상호작용하면 즉시 사라집니다. wsx는 process tree로 agent identity나 상태를 추론하지 않습니다. Adapter가 Claude session임을 확인한 경우에만 제한된 live terminal evidence로 누락된 lifecycle event를 보정할 수 있습니다.
 
-Terminal title은 같은 project의 session을 worktree별로 묶고 Workspace 순서를 유지합니다. Project와 worktree의 배경색으로 계층을 구분하며 `›` 뒤에 해당 worktree의 session을 표시합니다. 현재 session을 강조하고 화면 밖 session 수를 표시하며 port는 넣지 않습니다. Worktree preview의 port는 해당 session 옆에 표시합니다. `/` 검색은 보이는 일치 항목을 강조하고 접힌 하위 항목도 펼치지 않고 집계합니다. Footer에는 전체 일치 항목 수를 표시합니다. 순서, 검색, viewport 경계는 [terminal context](docs/terminal-context.md)를 참고합니다.
+Terminal title은 같은 project의 session을 worktree별로 묶고 Workspace 순서를 유지합니다. Project는 배경이 채워진 chip, worktree는 `›`가 붙는 강조색 제목, session은 상태 아이콘으로 시작하는 chip으로 표시하며, worktree 묶음 사이에는 흐린 세로선을 둡니다. 현재 session을 강조하고 화면 밖 session 수를 표시하며 port는 넣지 않습니다. Worktree preview의 port는 해당 session 옆에 표시합니다. `/` 검색은 보이는 일치 항목을 강조하고 접힌 하위 항목도 펼치지 않고 집계합니다. Footer에는 전체 일치 항목 수를 표시합니다. 순서, 검색, viewport 경계는 [terminal context](docs/terminal-context.md)를 참고합니다.
 
 ## 설정
 
