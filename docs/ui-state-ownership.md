@@ -6,7 +6,38 @@ The wsx TUI thread owns raw mode, alternate screen, mouse capture, bracketed pas
 
 A worker panic does not release the outer terminal. Its bounded, control-free failure message returns to the TUI owner for display instead of writing panic output into the live frame. An editor borrows the terminal temporarily. Its baseline kernel attributes return before crossterm re-enters raw mode, even if the editor changes those attributes and fails. Both successful and failed editors return the modes to the same owner. Failure to regain those modes terminates the TUI through normal cleanup.
 
-The daemon still owns child PTYs, Ghostty selection, leases, and frames. This repair adds no mouse recovery shortcut or periodic mode re-enable loop. A natural mouse-loss incident without a worker failure still requires its actual producer to be identified; controlled fault tests do not establish that trigger.
+The daemon still owns child PTYs, Ghostty selection, leases, and frames.
+
+## Mode recovery
+
+The terminal can lose the modes without telling wsx. A terminal reset (for example Ghostty's `reset` action) clears the screen and every mode and sends no event. After a sleep, mouse capture can be gone, so the wheel scrolls the terminal and a drag selects across the whole window; that producer is not identified. ratatui then diffs against its old buffer and writes little or nothing.
+
+`tui::enter_modes` is the one function that writes every output mode wsx owns: alternate screen, mouse capture, bracketed paste, focus reporting and the scroll margin. Each sequence sets a state, so the function is safe to repeat. `tui::draw_sync` calls it and then draws a full frame, inside one synchronized update, for a `ModeCheck` the event loop chooses:
+
+| Trigger | `ModeCheck` | Why |
+|---|---|---|
+| Resume boundary (suspend detector) | `Reassert` | the repair must not depend on the unknown producer |
+| Focus gained (`CSI I`) | `Reassert` | a wake or an unlock normally returns focus |
+| Resize | `Reassert` | terminals reset the scroll margin on resize |
+| No terminal event for one second, at most once a second | `Probe` | a reset sends no event |
+
+The probe cannot use DECRQM. crossterm 0.28.1 keeps a reply that starts with `CSI ?` in its parse buffer until a `u` or `c` byte arrives (`event/sys/unix/parse.rs`, `parse_csi`), so `CSI ? 1000 ; 2 $ y` would swallow the keys typed after it. A raw read of the terminal beside crossterm can take a key that arrives with the reply and cannot give it back. The only reply crossterm returns to its caller is the cursor position, so the probe reads an owned state through it:
+
+1. `enter_modes` sets the scroll margin to all rows except the last (`CSI 1 ; rows-1 r`). wsx addresses every cell and never scrolls, so the margin changes no frame.
+2. The probe moves the cursor to the margin line, sends cursor-down and reads the position with `crossterm::cursor::position()`. With the margin the cursor stays; after a reset it reaches the last row.
+3. The frame that follows in the same synchronized update places or hides the cursor again.
+
+Bounds:
+
+- At startup wsx sends one device-attributes query (`CSI c`, a reply crossterm consumes) and waits at most 150 ms for input. A terminal that stays silent is never probed.
+- A terminal that answers the first query but not a cursor report costs one wait of crossterm's two seconds, then no more probes.
+- A probe that finds the margin gone directly after a repair means the terminal does not keep the margin. wsx repairs twice at most, then stops probing. Two real resets within two seconds end probing for that window in the same way.
+- The probe waits for its reply before the frame, so no reply is in flight when wsx quits or starts an editor.
+- A probe-detected repair is recorded as `terminal_reset_repaired`. Event-driven reasserts are not recorded.
+
+The probe finds a reset, which returns the margin to the full screen. It does not find a terminal that drops only mouse capture; resume, focus and resize cover that case without a query.
+
+Ghostty's `keybind = ctrl+shift+r=reset` with `chain=text:\r` also sends Enter after the reset. wsx receives it as an ordinary key: Workspace toggles the selected project or worktree or enters the selected session, Terminal mode sends it to the program in the pane, and a form or confirm dialog accepts. wsx does not filter it, because nothing distinguishes it from an Enter the user typed.
 
 ## Recurrence evidence
 
@@ -48,6 +79,6 @@ python3 scripts/test-ui-state.py --test-binary target/debug/deps/wsx-<test-hash>
   --render-binary target/debug/deps/wsx_terminal-<test-hash>
 ```
 
-The scenario observes cursor-addressed output through the existing Ghostty engine, not raw substring matching. It retains folded screen/frame evidence beside the receipt. The scenario uses an isolated HOME, configuration, state, project, daemon, and real PTYs. It checks two-window clear/refresh/quit/restart in both exit orders, legitimate later collapse, one-time legacy import, old-writer isolation, real TUI drag through daemon selection and clipboard, worker panic without mode reset, failed editor return, owner panic with shared or redirected stderr, startup failure, partial initialization failure, configured kernel-attribute restoration after a real failed editor, and child/socket cleanup. The Darwin oracle excludes only `PENDIN`, which XNU sets and preserves when returning to canonical input; settings, speeds, and control characters still match their original values. It also verifies private bounded mode records across worker failure, failed editor, normal cleanup, and owner panic. It makes no model calls. A compact JSON receipt remains under `.work`; synthetic runtime fixtures are removed.
+The scenario observes cursor-addressed output through the existing Ghostty engine, not raw substring matching. It retains folded screen/frame evidence beside the receipt. The scenario uses an isolated HOME, configuration, state, project, daemon, and real PTYs. It checks two-window clear/refresh/quit/restart in both exit orders, legitimate later collapse, one-time legacy import, old-writer isolation, real TUI drag through daemon selection and clipboard, worker panic without mode reset, failed editor return, owner panic with shared or redirected stderr, startup failure, partial initialization failure, configured kernel-attribute restoration after a real failed editor, and child/socket cleanup. The Darwin oracle excludes only `PENDIN`, which XNU sets and preserves when returning to canonical input; settings, speeds, and control characters still match their original values. It also verifies private bounded mode records across worker failure, failed editor, normal cleanup, and owner panic. One view answers device-attribute and cursor queries as a terminal that keeps the scroll margin; clearing that margin stands for a terminal reset, and the scenario requires one full repair, no repeated repair, a reassert on focus gained, and no probe of a view that answers nothing. It makes no model calls. A compact JSON receipt remains under `.work`; synthetic runtime fixtures are removed.
 
 Core cache tests exercise concurrent processes, automatic-collapse fencing, removals, revision acknowledgements, unreadable state, bounded lock contention and retry, and unsafe lock-file rejection. Folded-status tests cover hidden panes, exits, mute, acknowledged outcomes, mixed states, and actual tree rendering at tiny/narrow/normal widths. The PTY journey checks an independently advancing heartbeat and unchanged runtime generation beneath project and worktree folds.

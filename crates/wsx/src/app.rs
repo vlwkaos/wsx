@@ -289,6 +289,7 @@ fn lifecycle_clock_sample() -> Option<LifecycleClockSample> {
 
 const TICK_MS: u64 = 100;
 const TERMINAL_TICK_MS: u64 = 4;
+const MODE_PROBE_IDLE: Duration = Duration::from_secs(1);
 const FAST_INTERVAL_MS: u64 = 500;
 const GIT_SWEEP_INTERVAL_MS: u64 = 15_000;
 const SLOW_INTERVAL_MS: u64 = 30_000;
@@ -942,6 +943,9 @@ pub struct App {
     needs_redraw: bool,
     should_quit: bool,
     force_terminal_redraw: bool,
+    /// Write the outer terminal modes again with the next frame.
+    reassert_terminal_modes: bool,
+    last_terminal_event: Instant,
     force_preview_redraw: bool,
     /// Tracks whether the last successful desktop frame contained captured terminal content.
     last_rendered_preview_was_session: bool,
@@ -1155,6 +1159,8 @@ impl App {
             needs_redraw: true,
             should_quit: false,
             force_terminal_redraw: false,
+            reassert_terminal_modes: false,
+            last_terminal_event: Instant::now(),
             force_preview_redraw: false,
             last_rendered_preview_was_session: false,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
@@ -1711,6 +1717,8 @@ impl App {
             }
             if self.suspend_detector.resumed() {
                 self.begin_resume_boundary();
+                // The outer terminal can lose mouse capture across a sleep.
+                self.reassert_terminal_modes = true;
             }
             // Drain async results every iteration so they're never blocked by UI events.
             self.drain_async_results();
@@ -1720,7 +1728,16 @@ impl App {
                 self.set_error(format!("Terminal resume failed: {error}"));
             }
 
-            if self.needs_redraw {
+            // ^ docs/ui-state-ownership.md: resume, focus and resize write the modes again;
+            // an idle window asks the terminal, because a reset sends no event.
+            let mode_check = if std::mem::take(&mut self.reassert_terminal_modes) {
+                tui::ModeCheck::Reassert
+            } else if self.last_terminal_event.elapsed() >= MODE_PROBE_IDLE && session.probe_due() {
+                tui::ModeCheck::Probe
+            } else {
+                tui::ModeCheck::Skip
+            };
+            if self.needs_redraw || mode_check != tui::ModeCheck::Skip {
                 self.ensure_flat();
                 let clear_terminal = self.force_terminal_redraw;
                 let clear_preview = self.force_preview_redraw;
@@ -1734,6 +1751,8 @@ impl App {
                 let cursor = self.terminal_cursor();
                 match tui::draw_sync(
                     terminal,
+                    session,
+                    mode_check,
                     clear_terminal,
                     clear_preview,
                     cursor,
@@ -1778,6 +1797,18 @@ impl App {
                 event_mode,
                 &mut self.terminal_escape_chord,
             )?;
+            let action = action.map(|action| {
+                self.last_terminal_event = Instant::now();
+                if matches!(action, Action::Resize | Action::FocusGained) {
+                    self.reassert_terminal_modes = true;
+                    self.needs_redraw = true;
+                }
+                if action == Action::FocusGained {
+                    Action::None
+                } else {
+                    action
+                }
+            });
             let mut terminal_sidebar_action = false;
             if self.upgrade.is_some() {
                 match action {
@@ -7155,6 +7186,8 @@ mod tests {
             needs_redraw: false,
             should_quit: false,
             force_terminal_redraw: false,
+            reassert_terminal_modes: false,
+            last_terminal_event: Instant::now(),
             force_preview_redraw: false,
             last_rendered_preview_was_session: false,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
