@@ -2521,12 +2521,7 @@ fn cmd_agent_context(
     // ^ One existing-daemon snapshot; discovery must not start or replace wsxd.
     // Native history stays local and is not exposed through the browser bridge.
     let snapshot = existing_daemon_snapshot()?;
-    let config = requested
-        .worktree
-        .as_ref()
-        .map(|_| load_config())
-        .transpose()?;
-    let scope = runtime_session_scope(&snapshot, requested, config.as_ref())?;
+    let scope = requested_runtime_scope(&snapshot, requested)?;
     let target = selector
         .map(|selector| resolve_session_in_snapshot(&snapshot, selector, scope))
         .transpose()?;
@@ -3542,12 +3537,7 @@ fn wait_any_agent_exchange(
     deadline: Instant,
 ) -> Result<WatchedExchanges> {
     let snapshot = ops::runtime_snapshot()?;
-    let config = requested
-        .worktree
-        .as_ref()
-        .map(|_| load_config())
-        .transpose()?;
-    let scope = runtime_session_scope(&snapshot, requested, config.as_ref())?;
+    let scope = requested_runtime_scope(&snapshot, requested)?;
     let mut watched = named;
     if watched.is_empty() {
         watched = list_agent_exchanges(None, scope)?
@@ -3677,12 +3667,7 @@ fn scoped_agent_exchanges(
     let mut scope = RuntimeSessionScope::default();
     if selector.is_some() || requested.project.is_some() || requested.worktree.is_some() {
         let snapshot = ops::runtime_snapshot()?;
-        let config = requested
-            .worktree
-            .as_ref()
-            .map(|_| load_config())
-            .transpose()?;
-        scope = runtime_session_scope(&snapshot, requested, config.as_ref())?;
+        scope = requested_runtime_scope(&snapshot, requested)?;
         if let Some(selector) = selector {
             pane_id = Some(resolve_session_in_snapshot(&snapshot, selector, scope)?.pane_id);
         }
@@ -4162,6 +4147,19 @@ fn runtime_session_scope(
     })
 }
 
+/// The requested scope in one snapshot. Worktree aliases need the configuration.
+fn requested_runtime_scope(
+    snapshot: &runtime::Snapshot,
+    requested: &SessionScope,
+) -> Result<RuntimeSessionScope> {
+    let config = requested
+        .worktree
+        .as_ref()
+        .map(|_| load_config())
+        .transpose()?;
+    runtime_session_scope(snapshot, requested, config.as_ref())
+}
+
 fn session_matches_scope(
     snapshot: &runtime::Snapshot,
     session: &runtime::Session,
@@ -4241,12 +4239,7 @@ fn resolve_session_in_snapshot(
 
 fn resolve_session(selector: &str, requested: &SessionScope) -> Result<ResolvedSession> {
     let snapshot = ops::runtime_snapshot()?;
-    let config = requested
-        .worktree
-        .as_ref()
-        .map(|_| load_config())
-        .transpose()?;
-    let scope = runtime_session_scope(&snapshot, requested, config.as_ref())?;
+    let scope = requested_runtime_scope(&snapshot, requested)?;
     resolve_session_in_snapshot(&snapshot, selector, scope)
 }
 
