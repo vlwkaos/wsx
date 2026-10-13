@@ -4895,6 +4895,8 @@ impl App {
 
     /// Explicit session interaction clears local mute and acknowledges the exact
     /// provider-completion revision. Cursor navigation and pane output do neither.
+    /// Entering Terminal mode and leaving it both count: a session that finishes while
+    /// the user is inside it was seen when the user leaves.
     fn unmute_on_interaction(&mut self, pane_id: runtime::PaneId) {
         let result = self
             .workspace
@@ -5059,7 +5061,10 @@ impl App {
         if self.terminal_surfaces.clear_selection(pane_id, terminal_id) {
             self.needs_redraw = true;
         }
-        self.terminal_stream = None;
+        // A switch from another session leaves that session.
+        if let Some(left) = self.terminal_stream.take().map(|active| active.pane_id) {
+            self.unmute_on_interaction(left);
+        }
         self.unmute_on_interaction(pane_id);
         let (rows, cols) = self.terminal_pane_size(terminal);
         match runtime::TerminalStream::connect(
@@ -5094,7 +5099,8 @@ impl App {
         Ok(())
     }
 
-    fn leave_terminal_mode(&mut self, _pane_id: runtime::PaneId) {
+    fn leave_terminal_mode(&mut self, pane_id: runtime::PaneId) {
+        self.unmute_on_interaction(pane_id);
         self.clear_active_terminal_selection();
         self.terminal_stream = None;
         self.pending_terminal_entry = None;
