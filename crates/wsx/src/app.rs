@@ -59,15 +59,13 @@ enum RuntimeRefreshOutcome {
 
 type RuntimeRefresh = Result<RuntimeRefreshOutcome>;
 
-fn collect_runtime_refresh(config: &GlobalConfig, background: bool) -> RuntimeRefresh {
+fn collect_runtime_refresh(
+    config: &GlobalConfig,
+    availability: fn() -> std::io::Result<runtime::Availability>,
+) -> RuntimeRefresh {
     let discovery = ops::discover_workspace(config)?;
     let worktrees = discovery.clone().into_worktrees();
-    let availability = if background {
-        runtime::ensure_background_available()
-    } else {
-        runtime::ensure_available()
-    };
-    let availability = match availability {
+    let availability = match availability() {
         Ok(availability) => availability,
         Err(error) => {
             return Ok(RuntimeRefreshOutcome::DiscoveryOnly {
@@ -97,6 +95,7 @@ enum RuntimeResult {
     },
     Frame(Result<(u64, runtime::TerminalFrame)>),
     FollowCheck(Option<crate::follow::Target>),
+    UpgradeAttempt(Result<runtime::Availability>),
     PluginView {
         generation: u64,
         plugin_id: String,
@@ -884,6 +883,22 @@ pub(crate) fn runtime_availability_notice(
     }
 }
 
+// ^ docs/daemon-live-upgrade.md: a starting TUI waits for the daemon upgrade before it opens.
+pub struct UpgradeGate {
+    pub daemon_version: String,
+    pub daemon_revision: u32,
+    pub live_runtimes: usize,
+    pub step: UpgradeStep,
+    retry_at: Option<Instant>,
+}
+
+pub enum UpgradeStep {
+    Upgrading,
+    Waiting(Vec<runtime::ReplacementBlocker>),
+}
+
+const UPGRADE_RETRY: Duration = Duration::from_secs(1);
+
 #[derive(Debug, Clone)]
 pub enum RuntimeHealth {
     Connecting,
@@ -994,6 +1009,7 @@ pub struct App {
     follow_check_pending: bool,
     follow_target: Option<crate::follow::Target>,
     follow_resume_pane: Option<runtime::PaneId>,
+    upgrade: Option<UpgradeGate>,
     suspend_detector: SuspendDetector,
     terminal_escape_chord: EscapeSequence,
     terminal_sidebar_override: Option<TerminalSidebar>,
@@ -1197,6 +1213,17 @@ impl App {
             follow_check_pending: false,
             follow_target: None,
             follow_resume_pane: None,
+            // One daemon question before the first frame decides which screen opens.
+            upgrade: runtime::pending_upgrade()
+                .ok()
+                .flatten()
+                .map(|pending| UpgradeGate {
+                    daemon_version: pending.daemon_version,
+                    daemon_revision: pending.daemon_revision,
+                    live_runtimes: pending.live_runtimes,
+                    step: UpgradeStep::Upgrading,
+                    retry_at: None,
+                }),
             suspend_detector: SuspendDetector::new(),
             terminal_escape_chord,
             terminal_sidebar_override: None,
@@ -1223,7 +1250,11 @@ impl App {
                 app.tree_selected = index;
             }
         }
-        app.spawn_runtime_refresh();
+        if app.upgrade.is_some() {
+            app.spawn_upgrade_attempt();
+        } else {
+            app.spawn_runtime_refresh();
+        }
         app.spawn_routine_refresh();
         app.spawn_repo_scan();
         Ok(app)
@@ -1720,6 +1751,7 @@ impl App {
             }
 
             let event_mode = match &self.mode {
+                _ if self.upgrade.is_some() => EventMode::Normal,
                 Mode::Workspace => EventMode::Workspace,
                 Mode::Terminal { .. } => EventMode::Terminal,
                 Mode::Input { .. }
@@ -1747,6 +1779,17 @@ impl App {
                 &mut self.terminal_escape_chord,
             )?;
             let mut terminal_sidebar_action = false;
+            if self.upgrade.is_some() {
+                match action {
+                    Some(Action::Quit) => break,
+                    Some(Action::Select) => self.open_on_running_daemon(),
+                    Some(Action::None) | None => {}
+                    // A resize or any other key repaints the same screen.
+                    Some(_) => self.needs_redraw = true,
+                }
+                self.retry_upgrade();
+                continue;
+            }
             if let Some(action) = action {
                 if action == Action::Quit && matches!(self.mode, Mode::Workspace) {
                     break;
@@ -2001,6 +2044,7 @@ impl App {
                     self.apply_resume_refresh(generation, result)
                 }
                 RuntimeResult::Frame(frame) => self.apply_runtime_frame(frame),
+                RuntimeResult::UpgradeAttempt(result) => self.apply_upgrade_attempt(result),
                 RuntimeResult::FollowCheck(target) => {
                     self.follow_check_pending = false;
                     self.follow_target = target;
@@ -2258,6 +2302,89 @@ impl App {
             },
         };
         self.needs_redraw = true;
+    }
+
+    pub fn upgrade_gate(&self) -> Option<&UpgradeGate> {
+        self.upgrade.as_ref()
+    }
+
+    // The handoff blocks its caller until the successor answers, so it runs off the UI thread.
+    fn spawn_upgrade_attempt(&mut self) {
+        let tx = self.runtime_tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(RuntimeResult::UpgradeAttempt(
+                runtime::ensure_available().map_err(Into::into),
+            ));
+        });
+    }
+
+    fn apply_upgrade_attempt(&mut self, result: Result<runtime::Availability>) {
+        // The user may have opened the old daemon while this attempt ran.
+        let Some(gate) = self.upgrade.as_mut() else {
+            return;
+        };
+        self.needs_redraw = true;
+        match result {
+            Ok(runtime::Availability::ReplacementDeferred {
+                live_runtimes,
+                blockers,
+                ..
+            }) => {
+                gate.live_runtimes = live_runtimes;
+                gate.step = UpgradeStep::Waiting(blockers);
+                gate.retry_at = Some(Instant::now() + UPGRADE_RETRY);
+            }
+            Ok(availability) => {
+                // A handoff that waited is finished by the daemon, not by this request.
+                let availability = match availability {
+                    runtime::Availability::Current => runtime::Availability::DaemonReplaced {
+                        previous_version: gate.daemon_version.clone(),
+                    },
+                    other => other,
+                };
+                self.upgrade = None;
+                self.announce_runtime_availability(&availability);
+                self.spawn_runtime_refresh();
+            }
+            Err(error) => {
+                let daemon_version = gate.daemon_version.clone();
+                self.upgrade = None;
+                self.set_warning(format!(
+                    "Upgrade to wsxd {} did not finish; this window runs on wsxd {daemon_version}\n{error}",
+                    runtime::WSX_VERSION
+                ));
+                // Do not request the handoff again on the way in: read the running daemon.
+                self.spawn_runtime_refresh_with(|| Ok(runtime::Availability::Current));
+            }
+        }
+    }
+
+    fn retry_upgrade(&mut self) {
+        let due = self
+            .upgrade
+            .as_ref()
+            .and_then(|gate| gate.retry_at)
+            .is_some_and(|retry_at| retry_at <= Instant::now());
+        if due {
+            if let Some(gate) = self.upgrade.as_mut() {
+                gate.retry_at = None;
+            }
+            self.spawn_upgrade_attempt();
+        }
+    }
+
+    // Only a waiting upgrade offers this; a running handoff cannot be left.
+    fn open_on_running_daemon(&mut self) {
+        if !matches!(
+            self.upgrade.as_ref().map(|gate| &gate.step),
+            Some(UpgradeStep::Waiting(_))
+        ) {
+            return;
+        }
+        self.upgrade = None;
+        self.needs_redraw = true;
+        // The normal start reports the waiting upgrade as a notice.
+        self.spawn_runtime_refresh();
     }
 
     /// Show where this process came from and return to the terminal that was open.
@@ -2873,6 +3000,13 @@ impl App {
     }
 
     fn spawn_runtime_refresh(&mut self) {
+        self.spawn_runtime_refresh_with(runtime::ensure_available);
+    }
+
+    fn spawn_runtime_refresh_with(
+        &mut self,
+        availability: fn() -> std::io::Result<runtime::Availability>,
+    ) {
         if self.runtime_refresh_pending {
             self.runtime_full_refresh_stale = true;
             return;
@@ -2882,7 +3016,8 @@ impl App {
         let config = self.config.clone();
         std::thread::spawn(move || {
             let _ = tx.send(RuntimeResult::FullRefresh(collect_runtime_refresh(
-                &config, false,
+                &config,
+                availability,
             )));
         });
     }
@@ -2896,7 +3031,8 @@ impl App {
         let config = self.config.clone();
         std::thread::spawn(move || {
             let _ = tx.send(RuntimeResult::FullRefresh(collect_runtime_refresh(
-                &config, true,
+                &config,
+                runtime::ensure_background_available,
             )));
         });
     }
@@ -7069,6 +7205,7 @@ mod tests {
             follow_check_pending: false,
             follow_target: None,
             follow_resume_pane: None,
+            upgrade: None,
             suspend_detector: SuspendDetector::new(),
             terminal_escape_chord,
             terminal_sidebar_override: None,

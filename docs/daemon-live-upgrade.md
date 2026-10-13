@@ -26,6 +26,21 @@ The running daemon applies its own rule. A daemon older than revision 22 still w
 
 A deferred handoff stays pending in the daemon. When the last blocking TUI quits, its presence expires after three seconds and the daemon starts the handoff by itself. The notice in the waiting TUI and the output of `wsx daemon restart` say which window to quit and that sessions keep running.
 
+## A starting TUI waits for the upgrade
+
+A starting TUI asks once, before its first frame, whether a live upgrade is pending (`pending_upgrade` in `crates/wsx-core/src/runtime/client.rs`). A start that needs no upgrade opens as before. A daemon without live handoff also opens as before, because its upgrade restarts sessions.
+
+When an upgrade is pending, the TUI shows the upgrade screen (`crates/wsx/src/ui/upgrade.rs`) and not the workspace: the old and new version and daemon revision, the number of running terminals, and the step.
+
+| Step | What happens | Keys |
+| --- | --- | --- |
+| Upgrading wsxd | A worker runs the live handoff. The TUI then opens on the new daemon with the upgrade notice. | `q` quit |
+| Waiting | A window blocks the handoff. The screen says which window to quit. The TUI asks again every second and opens when the daemon has upgraded. | `Enter` open on the old daemon now, `q` quit |
+
+A handoff that fails rolls back in the source daemon. The client reads the rollback from the lifecycle (ready phase, no target, old revision) and stops waiting. The TUI then opens on the running daemon with a notice. It reads that daemon without requesting the handoff again.
+
+CLI commands show no screen. They keep the one-line notice.
+
 ## A TUI follows the daemon
 
 A TUI records the file it was started from. When the daemon connection changes, and every 30 seconds, `crates/wsx/src/follow.rs` checks two facts:
@@ -87,9 +102,11 @@ python3 scripts/test-terminal-context.py --next-wsx <dir>/wsx --next-daemon <dir
 python3 scripts/test-terminal-context.py --released-wsx <path>/wsx --released-daemon <path>/wsxd
 ```
 
+- With `--next-wsx`, the same script starts a TUI of the higher revision while an older window blocks the handoff. The upgrade screen must appear at 80x24 and 40x12 without the workspace, `q` must quit, `Enter` must open the old daemon, and the TUI must open on the new daemon by itself when the blocking window quits. With `--released-wsx` and `--next-daemon` it also starts a TUI whose handoff target refuses the transfer: the daemon rolls back and the TUI opens on it with a notice.
 - `scripts/runtime-smoke.py` sends a request of a later release on a matching and on a mismatched connection, and stops a daemon with live sessions only with `--force`.
 
 ## Not covered yet
 
 - A handoff across two protocol numbers with a following TUI has no real second protocol to run against. The daemon rule is tested with a presence below the target protocol; the re-exec is tested with the same protocol.
+- The "Upgrading wsxd" step lasts only as long as the handoff, so no capture of it exists.
 - A TUI of a release before `follows` cannot re-execute. It stays attached while the protocol number is unchanged.

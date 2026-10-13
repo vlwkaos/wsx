@@ -14,6 +14,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +46,8 @@ def main():
         released = None
         if args.released_wsx:
             released = run_released_upgrade(tmux, args.released_wsx.resolve(),
-                                            args.released_daemon.resolve(), wsx, wsxd, work / "r")
+                                            args.released_daemon.resolve(), wsx, wsxd, work / "r",
+                                            args.next_daemon and args.next_daemon.resolve())
         result = run_scenario(args, tmux, wsx, wsxd, work)
         result["released_upgrade"] = released
     finally:
@@ -163,7 +165,27 @@ def alive(pid):
         return False
 
 
-def run_released_upgrade(tmux, released_wsx, released_daemon, wsx, wsxd, work):
+def legacy_window(fx):
+    """Renew the presence of a wsx window from before the presence contract: it defers a handoff."""
+    stop = threading.Event()
+
+    def renew():
+        while not stop.is_set():
+            try:
+                fx.call("poll", {"after_revision": 2**62, "timeout_ms": 0})
+            except (OSError, ValueError, AssertionError):
+                pass
+            stop.wait(0.5)
+    thread = threading.Thread(target=renew, daemon=True)
+    thread.start()
+
+    def quit_window():
+        stop.set()
+        thread.join()
+    return quit_window
+
+
+def run_released_upgrade(tmux, released_wsx, released_daemon, wsx, wsxd, work, unfit_daemon=None):
     """docs/daemon-live-upgrade.md: the previous release keeps its sessions and its open TUI."""
     fx = Fixture(work, tmux, released_daemon)
     daemon = None
@@ -205,6 +227,18 @@ def run_released_upgrade(tmux, released_wsx, released_daemon, wsx, wsxd, work):
         assert guarded.returncode != 0 and "2 running session(s)" in guarded.stderr, guarded
         assert "wsx daemon restart" in guarded.stderr, guarded.stderr
         assert fx.epoch() == before["epoch"] and all(alive(pid) for pid in pids)
+
+        if unfit_daemon:
+            # A starting TUI asks for a handoff into a wsxd that refuses the transfer. The
+            # running daemon rolls back; the TUI must say so and open on the running daemon.
+            fx.tm("new-session", "-d", "-s", "unfit", "-x", "100", "-y", "24",
+                  "exec env WSX_DAEMON_BIN=" + shlex.quote(str(unfit_daemon)) + " " + shlex.quote(str(wsx)))
+            wait(lambda: any("did not finish" in row for row in fx.screen("unfit")), "rolled-back upgrade notice", timeout=45)
+            wait(lambda: "WORKSPACE" in "\n".join(fx.screen("unfit")) and "counter" in "\n".join(fx.screen("unfit")),
+                 "Workspace on the running daemon after a rollback")
+            fx.capture("rolled-back-upgrade", "unfit")
+            assert fx.epoch() == before["epoch"] and all(alive(pid) for pid in pids), "a rollback lost the daemon"
+            fx.keys("q", target="unfit")
 
         # The new build runs once. The daemon is replaced live under the open released TUI.
         upgraded = fx.cli(wsx, "session", "list", daemon_bin=wsxd)
@@ -258,6 +292,62 @@ def run_released_upgrade(tmux, released_wsx, released_daemon, wsx, wsxd, work):
             except subprocess.TimeoutExpired:
                 daemon.kill()
                 daemon.wait(timeout=3)
+
+
+def starting_tui_waits_for_the_upgrade(fx, next_wsx, replaced_daemon):
+    """docs/daemon-live-upgrade.md: upgrade screen, its two keys, and the unattended continuation."""
+    launch = "exec " + shlex.quote(str(next_wsx))
+
+    def text():
+        return "\n".join(fx.screen("up"))
+
+    def start(width, height):
+        fx.tm("new-session", "-d", "-s", "up", "-x", str(width), "-y", str(height), launch)
+        wait(lambda: "Waiting" in text() and "Quit the other wsx window" in text(), "upgrade screen")
+        rows = fx.capture("upgrade-waiting-{}x{}".format(width, height), "up")
+        assert all(len(row) <= width for row in rows), rows
+        shown = text()
+        # The workspace must not open on the old daemon.
+        assert "WORKSPACE" not in shown and "build" not in shown, shown
+        assert "wsx upgrade" in shown and "→" in shown, shown
+        assert "12 running terminals keep running" in shown, shown
+        assert "continues by itself" in shown, shown
+        assert "Enter" in shown and "open on wsxd" in shown and "quit" in shown, shown
+        return rows
+
+    def gone():
+        return subprocess.run([fx.tmux, "-S", str(fx.tmux_socket), "has-session", "-t", "up"],
+                              env=fx.env, capture_output=True).returncode != 0
+
+    quit_legacy_window = legacy_window(fx)
+    try:
+        # Quit key: no dead end, and the daemon is untouched.
+        tiny = start(40, 12)
+        fx.keys("q", target="up")
+        wait(gone, "quit from the upgrade screen")
+        assert fx.epoch() == replaced_daemon.epoch, "quitting the upgrade screen changed wsxd"
+
+        # Open on the old version anyway: the normal TUI on the running daemon, with the notice.
+        normal = start(80, 24)
+        fx.keys("Enter", target="up")
+        wait(lambda: "WORKSPACE" in text() and "build" in text(), "Workspace on the old daemon")
+        wait(lambda: "is waiting" in text(), "waiting notice in the opened TUI")
+        assert fx.epoch() == replaced_daemon.epoch, "opening on the old daemon changed wsxd"
+        fx.keys("q", target="up")
+        wait(gone, "quit the TUI on the old daemon")
+
+        # The blocker goes away. The user presses nothing.
+        start(80, 24)
+    finally:
+        quit_legacy_window()
+    wait(lambda: fx.epoch() not in (None, replaced_daemon.epoch), "unattended upgrade", timeout=30)
+    replaced_daemon.epoch = fx.epoch()
+    wait(lambda: "WORKSPACE" in text() and "build" in text(), "Workspace on the new daemon")
+    wait(lambda: "Runtime upgraded" in text(), "upgrade notice in the opened TUI")
+    fx.capture("upgrade-opened", "up")
+    fx.keys("q", target="up")
+    wait(gone, "quit the upgraded TUI")
+    return {"80x24": normal, "40x12": tiny}
 
 
 def run_scenario(args, tmux, wsx, wsxd, work):
@@ -422,10 +512,14 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         unusable.chmod(0o600)
         relink(installed_daemon, next_daemon)
         relink(installed_wsx, unusable)
-        # A build with a higher daemon revision upgrades wsxd by running once. A copy of the
-        # same build is a different install of the same revision, so it needs the restart.
-        upgrade = ["session", "list"] if args.next_wsx else ["daemon", "restart"]
-        replaced_daemon(fx.cli(next_wsx, *upgrade), "upgrade into the new install")
+        if args.next_wsx:
+            # A starting TUI of the higher revision must upgrade wsxd before it opens.
+            upgrade_screens = starting_tui_waits_for_the_upgrade(fx, next_wsx, replaced_daemon)
+        else:
+            # A copy of this build is a different install of the same revision: no upgrade is
+            # pending, so a restart replaces the daemon.
+            upgrade_screens = None
+            replaced_daemon(fx.cli(next_wsx, "daemon", "restart"), "upgrade into the new install")
         wait(lambda: any("Could not switch to the installed wsx" in row for row in screen()),
              "notice of the failed re-exec", timeout=20)
         capture("failed-re-exec")
@@ -616,6 +710,7 @@ def run_scenario(args, tmux, wsx, wsxd, work):
                       "restart_reattach_seconds": reattach_seconds,
                       "re_exec_ready_seconds": follow_seconds,
                       "next_build": "given" if args.next_wsx else "copy of this build",
+                      "upgrade_screens": upgrade_screens,
                       "cleanup": "private tmux, wsxd, PTYs and listeners stopped",
                       "journey": "preview ports, h/l and j/k cycle, bare keys, guarded stop, same-build restart, failed and successful TUI re-exec under an attached terminal, unchanged n, sidebar toggle and peek, mobile, live peer update, hierarchy, folded search counts and clearing, top title"}
 
