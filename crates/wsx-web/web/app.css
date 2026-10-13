@@ -210,11 +210,9 @@ a.row-link:active, button.row-link:active, .row-link[aria-current="page"] { back
 .tok-deletion { color: var(--color-danger); }
 .tok-title { font-weight: var(--font-weight-medium); }
 /* Hook: .diagram, .viewer — a drawn diagram, and the same diagram full screen. */
-.diagram { overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent; }
+.diagram-scroll { overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent; }
 .diagram-open { display: block; padding: 0; border: 0; background: none; cursor: zoom-in; }
 .diagram img, .viewer img { display: block; max-width: none; border-radius: 0; }
-.diagram[data-fits] img { max-width: 100%; height: auto; }
-.diagram[data-fits] .diagram-open { max-width: 100%; }
 .diagram-failed > * + * { margin-top: var(--space-1); }
 .viewer {
   width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; padding: 0; border: 0;
@@ -386,15 +384,15 @@ div.steps .steps-summary { cursor: default; }
 .terminal-controls { border-top: var(--border-width) solid var(--color-hairline); }
 .terminal-keys { display: flex; gap: var(--space-1); padding: var(--space-1); overflow-x: auto; scrollbar-width: none; touch-action: pan-x; }
 /* A fade marks each edge that has more keys to scroll to. */
-.terminal-keys[data-more="end"] {
+.terminal-keys[data-more="end"], .diagram-scroll[data-more="end"] {
   -webkit-mask-image: linear-gradient(to left, transparent, black var(--space-4));
   mask-image: linear-gradient(to left, transparent, black var(--space-4));
 }
-.terminal-keys[data-more="start"] {
+.terminal-keys[data-more="start"], .diagram-scroll[data-more="start"] {
   -webkit-mask-image: linear-gradient(to right, transparent, black var(--space-4));
   mask-image: linear-gradient(to right, transparent, black var(--space-4));
 }
-.terminal-keys[data-more="start end"] {
+.terminal-keys[data-more="start end"], .diagram-scroll[data-more="start end"] {
   -webkit-mask-image: linear-gradient(to right, transparent, black var(--space-4), black calc(100% - var(--space-4)), transparent);
   mask-image: linear-gradient(to right, transparent, black var(--space-4), black calc(100% - var(--space-4)), transparent);
 }

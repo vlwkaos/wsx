@@ -311,18 +311,29 @@ async function diagrams(light = false) {
   await until("document.querySelectorAll('.diagram img').length === 2 && !!document.querySelector('.diagram-failed .code-block')", "the diagrams did not draw");
   const seen = await evaluate(`(async () => { const images = [...document.querySelectorAll('.diagram img')];
     await Promise.all(images.map((image) => image.decode()));
-    const frame = document.querySelector('.diagram');
+    const frame = document.querySelector('.diagram-scroll');
     const cache = await caches.open((await caches.keys())[0]);
     return { sources: images.map((image) => image.src.slice(0, 5)), natural: images.map((image) => [image.naturalWidth, image.naturalHeight]),
       inline: document.querySelectorAll('.markdown svg, .markdown style, .markdown [style]').length,
-      scrolls: frame.scrollWidth > frame.clientWidth, fits: frame.hasAttribute('data-fits'), shown: Math.round(images[0].getBoundingClientRect().width),
-      column: frame.clientWidth, failed: document.querySelector('.diagram-failed').textContent.includes('Diagram could not be drawn'),
+      shown: images.map((image) => Math.round(image.getBoundingClientRect().width)), ratio: images.map((image) => image.getBoundingClientRect().width / image.getBoundingClientRect().height),
+      column: frame.clientWidth, more: [...document.querySelectorAll('.diagram-scroll')].map((node) => node.dataset.more ?? ''),
+      mask: getComputedStyle(frame).maskImage || getComputedStyle(frame).webkitMaskImage, failed: document.querySelector('.diagram-failed').textContent.includes('Diagram could not be drawn'),
       source: document.querySelector('.diagram-failed pre').textContent, left: document.querySelectorAll('body > :not(#app):not(noscript):not(script)').length,
       sheets: document.adoptedStyleSheets.length, kept: !!(await cache.match('assets/mermaid-11.17.2.js')),
       shell: (await cache.keys()).length }; })()`);
   if (seen.sources.join() !== "blob:,blob:" || seen.natural.some(([width, height]) => width < 200 || height < 100) || seen.inline) await fail(`a diagram is not a drawn image: ${JSON.stringify(seen)}`);
-  // Wider than the column: shown smaller when it stays readable, else at its size with a sideways scroll.
-  if (seen.fits ? seen.shown > seen.column : !seen.scrolls) await fail(`a wide diagram neither fits nor scrolls in its own block: ${JSON.stringify(seen)}`);
+  // The whole diagram shows first: scaled down to the column, never up, with its shape kept.
+  // Only where its text would fall under 10 px does it stay wider and scroll, with a fade
+  // on the side that holds more.
+  for (const [index, [width, height]] of seen.natural.entries()) {
+    const least = Math.round(width * 10 / 15);
+    const expected = Math.min(width, Math.max(seen.column, least));
+    const wide = expected > seen.column;
+    if (Math.abs(seen.shown[index] - expected) > 1 || Math.abs(seen.ratio[index] - width / height) > 0.02 || seen.more[index] !== (wide ? "end" : "")
+      || (wide && index === 0 && !/gradient/.test(seen.mask))) {
+      await fail(`diagram ${index} is not fitted to the column: ${JSON.stringify(seen)}`);
+    }
+  }
   if (!seen.failed || !seen.source.includes("A -->") || seen.left || seen.sheets) await fail(`the broken diagram or the page after drawing is wrong: ${JSON.stringify(seen)}`);
   if (!seen.kept) await fail("the service worker did not keep the diagram library after its first use");
   await sound("diagrams");
