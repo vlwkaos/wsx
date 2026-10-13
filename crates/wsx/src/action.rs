@@ -56,5 +56,6 @@ pub enum Action {
     MouseClick { col: u16, row: u16 },
     MouseScroll { col: u16, row: u16, delta: i8 },
     Resize,
+    FocusGained,
     None,
 }

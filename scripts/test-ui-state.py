@@ -28,9 +28,13 @@ DISABLE = b'\x1b[?1006l'
 
 
 class View:
-    def __init__(self, command, env, rows=24, cols=100, failed_stdout=False, stderr_file=None):
+    def __init__(self, command, env, rows=24, cols=100, failed_stdout=False, stderr_file=None,
+                 answers=False):
         self.master, self.slave = pty.openpty()
         self.output = bytearray()
+        # ^ docs/ui-state-ownership.md: with answers, this view replies as a terminal that keeps
+        # the scroll margin until `margin` is cleared, which is what a terminal reset does.
+        self.answers, self.answered, self.margin, self.cursor_row = answers, 0, False, 1
         self.rows, self.cols = rows, cols
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
         self.original_attributes = termios.tcgetattr(self.slave)
@@ -65,6 +69,23 @@ class View:
                 if not data:
                     break
                 self.output.extend(data)
+                if self.answers:
+                    self.answer()
+
+    def answer(self):
+        queries = rb'\x1b\[1;\d+r|\x1b\[r|\x1b\[c|\x1b\[6n|\x1b\[(\d+);1H\x1b\[1B'
+        for match in re.finditer(queries, bytes(self.output[self.answered:])):
+            text = match.group(0)
+            if text.endswith(b'r'):
+                self.margin = text != b'\x1b[r'
+            elif text == b'\x1b[c':
+                os.write(self.master, b'\x1b[?62;22c')
+            elif text.endswith(b'B'):
+                # Cursor-down from the margin line stays only while the margin exists.
+                self.cursor_row = int(match.group(1)) + (0 if self.margin else 1)
+            else:
+                os.write(self.master, b'\x1b[%d;1R' % self.cursor_row)
+        self.answered = len(self.output)
 
     def send(self, data):
         os.write(self.master, data)
@@ -384,6 +405,29 @@ def main():
             close(a)
         assert b'controlled owner failure' in (work/'owner-stderr.log').read_bytes()
         report['owner_panic_cleanup'] = 'passed with shared and redirected stderr'
+
+        # docs/ui-state-ownership.md: a terminal reset sends no event. The idle probe finds the
+        # scroll margin gone, writes every mode again and draws a full frame, once.
+        a = view([str(wsx)], answers=True)
+        a.drain(1.5)
+        mark = len(a.output)
+        a.margin = False
+        full_frame = lambda: (ENABLE in a.output[mark:] and b'\x1b[?1049h' in a.output[mark:]
+                              and b'\x1b[2J' in a.output[mark:] and b'WORKSPACE' in a.output[mark:])
+        wait(full_frame, 'terminal reset repair', [a], seconds=3)
+        mark = len(a.output)
+        a.drain(2.5)
+        assert b'\x1b[6n' in a.output[mark:] and ENABLE not in a.output[mark:], 'repair repeated'
+        a.send(b'\x1b[I')
+        wait(full_frame, 'focus gained reassert', [a], seconds=2)
+        close(a)
+        # A terminal that answers nothing is asked once at startup and never probed.
+        a = view([str(wsx)])
+        a.drain(2.5)
+        assert a.output.count(b'\x1b[c') == 1 and b'\x1b[6n' not in a.output
+        assert a.output.count(b'\x1b[?1049h') == 1
+        close(a)
+        report['terminal_reset_and_focus_recovery'] = 'passed; silent terminal never probed'
 
         # Read errors after mode initialization and output errors during partial initialization.
         config_file.unlink()
