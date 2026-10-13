@@ -897,6 +897,47 @@ fn ensure_available_with_binary(
     }
 }
 
+/// A running daemon that the next `ensure_available` replaces through a live handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUpgrade {
+    pub daemon_version: String,
+    pub daemon_revision: u32,
+    pub live_runtimes: usize,
+}
+
+/// Report a pending live upgrade without starting it. The running daemon stays usable
+/// to this client, so a caller may also continue on it. See docs/daemon-live-upgrade.md.
+pub fn pending_upgrade() -> io::Result<Option<PendingUpgrade>> {
+    let client = Client::local();
+    let target_binary_id = binary_identity(&daemon_binary()).ok();
+    let existing = probe_existing_daemon(&client)?;
+    let live_handoff = match &existing {
+        ExistingDaemon::Ready {
+            lifecycle_coordination: true,
+            live_handoff,
+            ..
+        } => *live_handoff,
+        ExistingDaemon::Incompatible {
+            lifecycle_coordination: true,
+            live_handoff,
+            advertised_protocol: Some(protocol),
+            ..
+        } => *live_handoff && (LEGACY_BASELINE_PROTOCOL..PROTOCOL_VERSION).contains(protocol),
+        _ => false,
+    };
+    if !live_handoff
+        || ready_without_transition(&client, &existing, target_binary_id.as_deref())?.is_some()
+    {
+        return Ok(None);
+    }
+    let status = lifecycle_status(&client)?;
+    Ok(Some(PendingUpgrade {
+        daemon_version: lifecycle_version(&status),
+        daemon_revision: status.daemon_revision,
+        live_runtimes: status.live_runtimes,
+    }))
+}
+
 /// Hand the running daemon off into the installed wsxd, also when it is the same build.
 /// Sessions keep their PTYs. This never stops a daemon. See docs/daemon-live-upgrade.md.
 pub fn restart_daemon() -> io::Result<DaemonRestart> {
@@ -1854,6 +1895,14 @@ fn wait_until_handoff_ready(client: &Client, target_revision: u32) -> io::Result
                         && status.phase == super::domain::DaemonPhase::Ready
                     {
                         return Ok(());
+                    }
+                    // The source daemon cleared the target and answers again: it rolled back.
+                    if status.phase == super::domain::DaemonPhase::Ready
+                        && status.replacement_target.is_none()
+                    {
+                        return Err(io::Error::other(
+                            "wsxd live handoff failed and was rolled back; the running daemon kept its sessions",
+                        ));
                     }
                 }
             }
