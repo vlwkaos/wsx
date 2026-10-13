@@ -147,7 +147,9 @@ wsx agent request|inspect|wait|continue|cancel|exchanges
 wsx agent report <pane> --provider <name> --state <state> [--session-id <id>|--session-path <path>]
 wsx plugin list|reload
 wsx runtime status [--json]
-wsx daemon stop|recover
+wsx daemon restart [--json]
+wsx daemon stop [--force] [--json]
+wsx daemon recover
 ```
 
 `wsx worktree create`는 project의 기본 branch에서 새 branch를 만들며, `--from <ref>`를 주면 그 지점에서 시작합니다. 이미 있는 branch는 그대로 checkout하고, 이때 `--from`은 거부합니다. git이 실패하면 git의 오류 메시지를 그대로 출력합니다. `--json`은 `worktree`, `branch`, `project`, `session_id`, `pane_id`를 출력하며, 초기 session을 만들지 않았다면 두 ID는 `null`입니다.
@@ -179,9 +181,11 @@ Routine의 각 `--arg`는 direct argv item 하나입니다. wsx는 routine argv�
 
 Versioned event, Terminal sidecar, worktree review contract는 [Executable plugins](docs/plugins.md)에서 확인할 수 있습니다. Review provider를 설치하면 worktree에서 Tab을 눌러 preview 안에서 파일과 diff를 키보드로 살펴볼 수 있습니다. [Git provider 설정](docs/worktree-review.md)은 agent terminal을 변경하지 않습니다.
 
-wsx-managed terminal 안에서는 plain `wsx`와 `wsx --mobile`이 nested TUI startup을 거부합니다. 명시적인 subcommand는 계속 사용할 수 있습니다. `wsx runtime status`와 `wsx daemon stop`은 daemon을 시작하지 않습니다. Runtime status는 daemon이 중지된 상태와 실행 중이지만 호환되지 않는 상태, upgrade 대기 상태, 교체 지연 상태, 준비 상태를 구분합니다. Daemon이 lifecycle 정보를 지원하면 version과 revision도 함께 표시합니다.
+wsx-managed terminal 안에서는 plain `wsx`와 `wsx --mobile`이 nested TUI startup을 거부합니다. 명시적인 subcommand는 계속 사용할 수 있습니다. `wsx runtime status`, `wsx daemon restart`, `wsx daemon stop`은 daemon을 시작하지 않습니다. Runtime status는 daemon이 중지된 상태와 실행 중이지만 호환되지 않는 상태, upgrade 대기 상태, 교체 지연 상태, 준비 상태를 구분합니다. Daemon이 lifecycle 정보를 지원하면 version과 revision도 함께 표시합니다.
 
-Live handoff를 지원하는 wsxd update는 다른 wsx TUI generation이 종료될 때까지 기다린 뒤, shell, agent, foreground job, listening server를 재시작하지 않고 새 daemon으로 terminal 소유권을 이전합니다. TUI는 upgrade 성공 또는 교체를 지연시킨 blocker를 표시합니다. Routine 요청도 기존 standalone scheduler를 adjacent wsxd로 자동 교체합니다.
+wsxd update는 shell, agent, foreground job, listening server를 재시작하지 않고 새 daemon으로 terminal 소유권을 이전합니다. 열려 있는 wsx 창은 닫지 않아도 됩니다. 설치된 `wsx`가 교체된 창은 같은 terminal에서 새 `wsx`로 자기 process를 교체하고, 보고 있던 session과 mode로 돌아옵니다. 새 daemon과 통신할 수 없는 이전 release의 창만 update를 지연시킵니다. 이때 안내문이 어느 창을 종료해야 하는지 알려 주고, 그 창을 종료하면 update가 스스로 이어집니다.
+
+`wsx daemon restart`는 같은 방식으로 wsxd를 설치된 build로 교체합니다. 실행 중인 build와 같아도 동작하며 session은 계속 실행됩니다. 이 기능이 없는 이전 wsxd는 요청을 거부하고 아무것도 중지하지 않습니다. `wsx daemon stop`은 모든 session의 program을 종료하므로 실행 중인 session이 있으면 거부하고 `--force`를 요구합니다. 저장된 session command는 다음 실행 때 다시 시작합니다. 자세한 내용은 [Daemon live upgrade](docs/daemon-live-upgrade.md)에 있습니다. Routine 요청도 기존 standalone scheduler를 adjacent wsxd로 자동 교체합니다.
 
 ## Runtime과 보안
 

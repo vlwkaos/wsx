@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `wsx daemon stop` refuses while sessions are running. Scripts that stop a daemon with live sessions must pass `--force`.
+- Rust callers that construct `TuiClientPresence` must provide `follows`, and callers that construct `Request::PrepareHandoff` must provide `restart`. `Capabilities` has the new `daemon_restart` flag, and `DaemonPhase` and `ReplacementBlocker` have an `Unknown` variant. Older JSON without the new fields decodes as before.
+
+### Improvements
+
+- Keep wsx windows open through a wsxd upgrade. A window whose installed `wsx` was replaced now re-executes into it in the same terminal, with the same process ID, and returns to the same project, worktree, session and mode, Terminal mode included. It waits while a form, prompt or search is open. When the installed `wsx` cannot start, the window keeps running the old code and says so. A window that follows no longer defers a handoff, even below the target protocol. Daemon revision 23. See `docs/daemon-live-upgrade.md`.
+- Add `wsx daemon restart [--json]`. It replaces wsxd with the installed build through a live handoff, also when it is the build that is running. Sessions, shells and agents keep running. A wsxd of 0.30.1 or older cannot restart into its own build: the command says so and stops nothing.
+- Make `wsx daemon stop` safe. With running sessions it prints how many would end and that `wsx daemon restart` keeps them; `--force` stops anyway. The help text now says that a stop ends running programs. `--json` reports the result.
+- Say what to do when an upgrade waits. The notice names the window to quit, says that sessions keep running, and says that the upgrade then continues by itself. For a wsxd without live handoff it says that the upgrade will restart the sessions.
+- State the protocol rule: the protocol number changes only when an older client can no longer talk to the new daemon. Additions use `Capabilities` and the daemon revision. wsxd now answers an unknown request on a mismatched connection with an error instead of closing the connection.
+
 ## [0.30.1] - 2026-10-12
 
 ### Breaking Changes
