@@ -233,22 +233,13 @@ impl Client {
     }
 
     pub fn wait_agent_exchange(&self, request: &Request) -> io::Result<Response> {
-        let Request::AgentExchangeWait { timeout_ms, .. } = request else {
+        if !matches!(request, Request::AgentExchangeWait { .. }) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "exchange wait requires an agent_exchange_wait request",
             ));
-        };
-        let protocol = active_protocol(&self.socket);
-        let mut stream = self.connect()?;
-        validate_hello(
-            round_trip(&mut stream, &Request::Hello { protocol })?,
-            protocol,
-        )?;
-        stream.set_read_timeout(Some(
-            Duration::from_millis((*timeout_ms).min(30_000)).saturating_add(IO_TIMEOUT),
-        ))?;
-        round_trip(&mut stream, request)
+        }
+        self.call_once(request)
     }
 
     fn call_at_protocol(&self, request: &Request, protocol: u32) -> io::Result<Response> {
@@ -259,6 +250,7 @@ impl Client {
                 protocol,
             )?;
         }
+        stream.set_read_timeout(Some(reply_timeout(request)))?;
         round_trip(&mut stream, request)
     }
 
@@ -270,6 +262,27 @@ impl Client {
         validate_peer_owner(&stream)?;
         Ok(stream)
     }
+}
+
+/// How long the reply to `request` may take.
+/// ^ docs/agent-orchestration.md "Idempotent delivery": wsxd answers a delivery only after
+/// the PTY took the whole prompt, which an agent that reads slowly holds back. The exchange
+/// timeout is the budget its caller already accepted. An exchange wait is answered at its
+/// own timeout, which wsxd limits to 30 seconds.
+fn reply_timeout(request: &Request) -> Duration {
+    let wait_ms = match request {
+        Request::AgentExchangeCreate { timeout_ms, .. }
+        | Request::AgentExchangeCreateStashingDraft { timeout_ms, .. }
+        | Request::AgentExchangeCreateKeyed { timeout_ms, .. }
+        | Request::AgentExchangeContinue { timeout_ms, .. }
+        | Request::AgentExchangeContinueStashingDraft { timeout_ms, .. }
+        | Request::AgentExchangeContinueKeyed { timeout_ms, .. } => {
+            (*timeout_ms).min(super::protocol::MAX_AGENT_EXCHANGE_TIMEOUT_MS)
+        }
+        Request::AgentExchangeWait { timeout_ms, .. } => (*timeout_ms).min(30_000),
+        _ => 0,
+    };
+    IO_TIMEOUT.saturating_add(Duration::from_millis(wait_ms))
 }
 
 struct Handshake {

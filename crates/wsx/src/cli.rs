@@ -284,6 +284,9 @@ pub enum AgentCmd {
         /// Stash an idle Claude draft before delivery (never cancels a running agent)
         #[arg(long)]
         stash_draft: bool,
+        /// Deliver once per key and pane: a repeat returns the existing exchange
+        #[arg(long, value_name = "TEXT")]
+        key: Option<String>,
         #[arg(long)]
         json: bool,
         #[command(flatten)]
@@ -330,6 +333,9 @@ pub enum AgentCmd {
         /// Stash an idle Claude draft before delivery
         #[arg(long)]
         stash_draft: bool,
+        /// Deliver this round once per key: a repeat returns the exchange unchanged
+        #[arg(long, value_name = "TEXT")]
+        key: Option<String>,
         #[arg(long, default_value_t = 600)]
         timeout: u64,
         #[arg(long)]
@@ -865,6 +871,7 @@ pub fn run(cmd: Command) -> Result<()> {
                 writer,
                 write_claims,
                 stash_draft,
+                key,
                 json,
                 scope,
             } => cmd_agent_exchange_request(
@@ -874,6 +881,7 @@ pub fn run(cmd: Command) -> Result<()> {
                 writer,
                 write_claims,
                 stash_draft,
+                key,
                 json,
                 &scope,
             ),
@@ -907,9 +915,10 @@ pub fn run(cmd: Command) -> Result<()> {
                 exchange,
                 prompt,
                 stash_draft,
+                key,
                 timeout,
                 json,
-            } => cmd_agent_exchange_continue(exchange, prompt, timeout, stash_draft, json),
+            } => cmd_agent_exchange_continue(exchange, prompt, timeout, stash_draft, key, json),
             AgentCmd::Cancel { exchange, json } => cmd_agent_exchange_cancel(exchange, json),
             AgentCmd::Exchanges {
                 session,
@@ -1564,6 +1573,7 @@ mod agent_command_tests {
                     writer: true,
                     write_claims,
                     stash_draft: false,
+                    key: None,
                     json: true,
                     scope,
                 }
@@ -2764,6 +2774,7 @@ fn cmd_agent_exchange_request(
     writer: bool,
     write_claims: Vec<PathBuf>,
     stash_draft: bool,
+    key: Option<String>,
     json: bool,
     scope: &SessionScope,
 ) -> Result<()> {
@@ -2775,29 +2786,101 @@ fn cmd_agent_exchange_request(
     } else {
         runtime::AgentExchangeAccess::ReadOnly
     };
-    let request = if stash_draft {
-        runtime::Request::AgentExchangeCreateStashingDraft {
-            pane_id,
-            prompt,
-            timeout_ms,
-            access,
-            write_claims,
-            command: false,
-            takeover: false,
-        }
-    } else {
-        runtime::Request::AgentExchangeCreate {
-            pane_id,
-            prompt,
-            timeout_ms,
-            access,
-            write_claims,
-            command: false,
-            takeover: false,
-        }
-    };
-    agent_exchange_response(runtime::Client::local().call(&request)?, json)?;
+    let request = exchange_create_request(
+        pane_id,
+        prompt,
+        timeout_ms,
+        access,
+        write_claims,
+        stash_draft,
+        key,
+    );
+    agent_exchange_response(deliver_exchange(&request)?, json)?;
     Ok(())
+}
+
+/// The create request for these options. A key selects the keyed variant, which an
+/// older wsxd refuses; without a key the request is the one every protocol-16 wsxd knows.
+fn exchange_create_request(
+    pane_id: runtime::PaneId,
+    prompt: String,
+    timeout_ms: u64,
+    access: runtime::AgentExchangeAccess,
+    write_claims: Vec<PathBuf>,
+    stash_draft: bool,
+    key: Option<String>,
+) -> runtime::Request {
+    match key {
+        Some(key) => runtime::Request::AgentExchangeCreateKeyed {
+            command: false,
+            takeover: false,
+            pane_id,
+            prompt,
+            timeout_ms,
+            access,
+            write_claims,
+            key,
+            stash_draft,
+        },
+        None if stash_draft => runtime::Request::AgentExchangeCreateStashingDraft {
+            command: false,
+            takeover: false,
+            pane_id,
+            prompt,
+            timeout_ms,
+            access,
+            write_claims,
+        },
+        None => runtime::Request::AgentExchangeCreate {
+            command: false,
+            takeover: false,
+            pane_id,
+            prompt,
+            timeout_ms,
+            access,
+            write_claims,
+        },
+    }
+}
+
+/// Send a create or continue request and say what state a failure left.
+/// ^ docs/agent-orchestration.md "Idempotent delivery".
+fn deliver_exchange(request: &runtime::Request) -> Result<runtime::Response> {
+    let keyed = matches!(
+        request,
+        runtime::Request::AgentExchangeCreateKeyed { .. }
+            | runtime::Request::AgentExchangeContinueKeyed { .. }
+    );
+    match runtime::Client::local().call(request) {
+        // An older wsxd cannot decode a keyed request and answers with its parse error.
+        Ok(runtime::Response::Error(error))
+            if keyed
+                && error.code == "invalid_json"
+                && error.message.contains("unknown variant") =>
+        {
+            bail!(
+                "unsupported_request: this wsxd is older than --key and delivered nothing; \
+                 run `wsx daemon restart`, or repeat the command without --key"
+            )
+        }
+        Ok(response) => Ok(response),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+        {
+            bail!(
+                "reply_timeout: wsxd did not answer in time, and the prompt may be delivered; {}",
+                if keyed {
+                    "repeat the command with the same --key to get the exchange"
+                } else {
+                    "run `wsx agent exchanges <session>` before you send it again"
+                }
+            )
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn parse_exchange_receipt(
@@ -2923,32 +3006,42 @@ fn cmd_agent_exchange_continue(
     prompt: PromptSource,
     timeout: u64,
     stash_draft: bool,
+    key: Option<String>,
     json: bool,
 ) -> Result<()> {
     let prompt = prompt.read(runtime::MAX_AGENT_EXCHANGE_PROMPT_BYTES)?;
     let current = current_agent_exchange(exchange_id)?;
     let expected_revision = current.revision;
     let timeout_ms = exchange_timeout_ms(timeout)?;
-    let request = if stash_draft {
-        runtime::Request::AgentExchangeContinueStashingDraft {
+    let request = match key {
+        Some(key) => runtime::Request::AgentExchangeContinueKeyed {
+            command: false,
+            takeover: false,
             exchange_id,
             expected_revision,
             prompt,
             timeout_ms,
+            key,
+            stash_draft,
+        },
+        None if stash_draft => runtime::Request::AgentExchangeContinueStashingDraft {
             command: false,
             takeover: false,
-        }
-    } else {
-        runtime::Request::AgentExchangeContinue {
             exchange_id,
             expected_revision,
             prompt,
             timeout_ms,
+        },
+        None => runtime::Request::AgentExchangeContinue {
             command: false,
             takeover: false,
-        }
+            exchange_id,
+            expected_revision,
+            prompt,
+            timeout_ms,
+        },
     };
-    agent_exchange_response(runtime::Client::local().call(&request)?, json)?;
+    agent_exchange_response(deliver_exchange(&request)?, json)?;
     Ok(())
 }
 
