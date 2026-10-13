@@ -966,7 +966,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  [ / ]         Jump to prev / next project",
         "  i / I         Jump to next / prev idle session (○)",
         "  a / A         Jump to next / prev active session (◉)",
-        "  n / N         Jump to next / prev attention session (●)",
+        "  n / N         Jump to next / prev attention session (◐ ✓)",
         "  R             Refresh",
         "  ,             Open global settings",
         "  ?             Help",

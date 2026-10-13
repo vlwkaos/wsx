@@ -415,6 +415,7 @@ pub fn poll_event(
                 Action::Resize
             }
             Event::Resize(_, _) => Action::Resize,
+            Event::FocusGained => Action::FocusGained,
             _ => Action::None,
         };
         Ok(Some(action))

@@ -4,8 +4,11 @@
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use crossterm::{
-    cursor::SetCursorStyle,
-    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
+    cursor::{MoveDown, MoveTo, SetCursorStyle},
+    event::{
+        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture,
+    },
     execute,
     terminal::{
         disable_raw_mode, enable_raw_mode, BeginSynchronizedUpdate, EndSynchronizedUpdate,
@@ -14,6 +17,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{
+    cell::Cell,
     fs::File,
     io::{self, IsTerminal, Stdout, Write},
     marker::PhantomData,
@@ -23,6 +27,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
+    time::{Duration, Instant},
 };
 use wsx_core::runtime::Cursor;
 
@@ -183,7 +188,28 @@ pub struct TerminalSession {
     previous_hook: Arc<PanicHook>,
     output: Arc<File>,
     attributes: Arc<TerminalAttributes>,
+    watch: Cell<ModeWatch>,
     _owner_thread: PhantomData<Rc<()>>,
+}
+
+/// What the next frame does about the modes the outer terminal holds for wsx.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeCheck {
+    Skip,
+    /// Ask the terminal whether it still holds them; write them again if not.
+    Probe,
+    /// Write them again without asking.
+    Reassert,
+}
+
+const PROBE_INTERVAL: Duration = Duration::from_secs(1);
+
+// ^ docs/ui-state-ownership.md: a terminal reset sends no event, so the owner asks.
+#[derive(Clone, Copy)]
+struct ModeWatch {
+    answers: bool,
+    lost_in_a_row: u8,
+    last_probe: Instant,
 }
 
 impl TerminalSession {
@@ -264,8 +290,43 @@ impl TerminalSession {
             previous_hook,
             output,
             attributes,
+            watch: Cell::new(ModeWatch {
+                answers: false,
+                lost_in_a_row: 0,
+                last_probe: Instant::now(),
+            }),
             _owner_thread: PhantomData,
         })
+    }
+
+    /// True when the terminal answers queries and the last probe is a second old.
+    pub fn probe_due(&self) -> bool {
+        let watch = self.watch.get();
+        watch.answers && watch.last_probe.elapsed() >= PROBE_INTERVAL
+    }
+
+    // A terminal reset returns the scroll margin to the full screen. Cursor-down from the
+    // owned margin line then reaches the last row, and the cursor report shows it.
+    fn modes_lost(&self, terminal: &mut Tui) -> io::Result<bool> {
+        let mut watch = self.watch.get();
+        watch.last_probe = Instant::now();
+        let rows = terminal.size()?.height;
+        let mut lost = false;
+        if rows >= MIN_MARGIN_ROWS {
+            execute!(terminal.backend_mut(), MoveTo(0, rows - 2), MoveDown(1))?;
+            match crossterm::cursor::position() {
+                Ok((_, row)) => lost = row >= rows - 1,
+                // No answer: never ask this terminal again.
+                Err(_) => watch.answers = false,
+            }
+        }
+        watch.lost_in_a_row = if lost { watch.lost_in_a_row + 1 } else { 0 };
+        // Lost again directly after a repair: the terminal does not keep the margin.
+        if watch.lost_in_a_row >= 2 {
+            watch.answers = false;
+        }
+        self.watch.set(watch);
+        Ok(lost)
     }
 
     #[track_caller]
@@ -318,19 +379,68 @@ pub fn init() -> Result<(TerminalSession, Tui)> {
     let mut stdout = io::stdout();
     enter_modes(&mut stdout)
         .map_err(|error| TerminalModeError::at("initial_output_modes_failed", error))?;
+    session.watch.set(ModeWatch {
+        answers: terminal_answers(&mut stdout, &session.attributes.input),
+        ..session.watch.get()
+    });
     let terminal = Terminal::new(CrosstermBackend::new(stdout))
         .map_err(|error| TerminalModeError::at("initial_backend_failed", error))?;
     record_mode_event("initialized", None);
     Ok((session, terminal))
 }
 
+const MIN_MARGIN_ROWS: u16 = 3;
+
+/// Writes every output mode wsx owns. Safe to repeat: each sequence sets a state.
 fn enter_modes(writer: &mut impl Write) -> io::Result<()> {
     execute!(
         writer,
         EnterAlternateScreen,
         EnableMouseCapture,
-        EnableBracketedPaste
-    )
+        EnableBracketedPaste,
+        EnableFocusChange
+    )?;
+    // The margin leaves out the last row. wsx addresses every cell and never scrolls,
+    // so the margin changes no frame; it exists for `TerminalSession::modes_lost`.
+    match crossterm::terminal::size() {
+        Ok((_, rows)) if rows >= MIN_MARGIN_ROWS => {
+            write!(writer, "\x1b[1;{}r", rows - 1)?;
+            writer.flush()
+        }
+        _ => Ok(()),
+    }
+}
+
+// Device attributes: crossterm consumes the reply, so it never reaches a key handler.
+// The wait is bounded and happens once; a silent terminal is never probed.
+fn terminal_answers(writer: &mut impl Write, input: &File) -> bool {
+    if write!(writer, "\x1b[c")
+        .and_then(|()| writer.flush())
+        .is_err()
+    {
+        return false;
+    }
+    let fd = input.as_raw_fd();
+    let mut timeout = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 150_000,
+    };
+    // SAFETY: the set holds one live descriptor below FD_SETSIZE and outlives the call.
+    unsafe {
+        let mut readable: libc::fd_set = std::mem::zeroed();
+        libc::FD_ZERO(&mut readable);
+        if fd < 0 || fd >= libc::FD_SETSIZE as i32 {
+            return false;
+        }
+        libc::FD_SET(fd, &mut readable);
+        libc::select(
+            fd + 1,
+            &mut readable,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut timeout,
+        ) > 0
+    }
 }
 
 fn restore_modes(
@@ -349,6 +459,8 @@ fn restore_modes(
         execute!(writer, EndSynchronizedUpdate),
         execute!(writer, DisableBracketedPaste),
         execute!(writer, DisableMouseCapture),
+        execute!(writer, DisableFocusChange),
+        write!(writer, "\x1b[r").and_then(|()| writer.flush()),
         execute!(writer, SetCursorStyle::DefaultUserShape),
         execute!(writer, LeaveAlternateScreen),
         execute!(writer, crossterm::cursor::Show),
@@ -362,8 +474,11 @@ fn restore_modes(
 
 /// Draw with synchronized output to prevent terminal from rendering partial frames.
 /// Terminal clears are reserved for resize; preview clears flush captured terminal glyphs.
+/// A lost or reasserted mode set is written again and followed by a full frame.
 pub fn draw_sync<F>(
     terminal: &mut Tui,
+    session: &TerminalSession,
+    check: ModeCheck,
     clear_terminal: bool,
     clear_preview: bool,
     cursor: Option<Cursor>,
@@ -374,7 +489,18 @@ where
 {
     execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
     let result = (|| -> Result<()> {
-        if clear_terminal {
+        let reassert = match check {
+            ModeCheck::Skip => false,
+            ModeCheck::Reassert => true,
+            ModeCheck::Probe => session.modes_lost(terminal)?,
+        };
+        if reassert {
+            enter_modes(terminal.backend_mut())?;
+            if check == ModeCheck::Probe {
+                record_mode_event("terminal_reset_repaired", None);
+            }
+        }
+        if clear_terminal || reassert {
             terminal.clear()?;
             // terminal.clear() resets the back buffer but NOT the current (front) buffer,
             // so the next diff skips cells that match the stale front buffer even though

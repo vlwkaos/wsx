@@ -289,6 +289,7 @@ fn lifecycle_clock_sample() -> Option<LifecycleClockSample> {
 
 const TICK_MS: u64 = 100;
 const TERMINAL_TICK_MS: u64 = 4;
+const MODE_PROBE_IDLE: Duration = Duration::from_secs(1);
 const FAST_INTERVAL_MS: u64 = 500;
 const GIT_SWEEP_INTERVAL_MS: u64 = 15_000;
 const SLOW_INTERVAL_MS: u64 = 30_000;
@@ -942,6 +943,9 @@ pub struct App {
     needs_redraw: bool,
     should_quit: bool,
     force_terminal_redraw: bool,
+    /// Write the outer terminal modes again with the next frame.
+    reassert_terminal_modes: bool,
+    last_terminal_event: Instant,
     force_preview_redraw: bool,
     /// Tracks whether the last successful desktop frame contained captured terminal content.
     last_rendered_preview_was_session: bool,
@@ -1155,6 +1159,8 @@ impl App {
             needs_redraw: true,
             should_quit: false,
             force_terminal_redraw: false,
+            reassert_terminal_modes: false,
+            last_terminal_event: Instant::now(),
             force_preview_redraw: false,
             last_rendered_preview_was_session: false,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
@@ -1711,6 +1717,8 @@ impl App {
             }
             if self.suspend_detector.resumed() {
                 self.begin_resume_boundary();
+                // The outer terminal can lose mouse capture across a sleep.
+                self.reassert_terminal_modes = true;
             }
             // Drain async results every iteration so they're never blocked by UI events.
             self.drain_async_results();
@@ -1720,7 +1728,16 @@ impl App {
                 self.set_error(format!("Terminal resume failed: {error}"));
             }
 
-            if self.needs_redraw {
+            // ^ docs/ui-state-ownership.md: resume, focus and resize write the modes again;
+            // an idle window asks the terminal, because a reset sends no event.
+            let mode_check = if std::mem::take(&mut self.reassert_terminal_modes) {
+                tui::ModeCheck::Reassert
+            } else if self.last_terminal_event.elapsed() >= MODE_PROBE_IDLE && session.probe_due() {
+                tui::ModeCheck::Probe
+            } else {
+                tui::ModeCheck::Skip
+            };
+            if self.needs_redraw || mode_check != tui::ModeCheck::Skip {
                 self.ensure_flat();
                 let clear_terminal = self.force_terminal_redraw;
                 let clear_preview = self.force_preview_redraw;
@@ -1734,6 +1751,8 @@ impl App {
                 let cursor = self.terminal_cursor();
                 match tui::draw_sync(
                     terminal,
+                    session,
+                    mode_check,
                     clear_terminal,
                     clear_preview,
                     cursor,
@@ -1778,6 +1797,18 @@ impl App {
                 event_mode,
                 &mut self.terminal_escape_chord,
             )?;
+            let action = action.map(|action| {
+                self.last_terminal_event = Instant::now();
+                if matches!(action, Action::Resize | Action::FocusGained) {
+                    self.reassert_terminal_modes = true;
+                    self.needs_redraw = true;
+                }
+                if action == Action::FocusGained {
+                    Action::None
+                } else {
+                    action
+                }
+            });
             let mut terminal_sidebar_action = false;
             if self.upgrade.is_some() {
                 match action {
@@ -3565,10 +3596,15 @@ impl App {
         if self.terminal_prefix_pending() {
             hints.push(hint("esc", "cancel"));
         }
+        hints.push(hint(&workspace.to_ascii_lowercase(), "workspace"));
+        // A hint names a key only while the key has a target.
+        if self.context_session_target(1).is_some() {
+            hints.push(hint(self.terminal_session_navigation_label(), "session"));
+        }
+        if adjacent_group(&self.config.ordered_group_keys(), &self.active_group, 1).is_some() {
+            hints.push(hint("{/}", "group"));
+        }
         hints.extend([
-            hint(&workspace.to_ascii_lowercase(), "workspace"),
-            hint(self.terminal_session_navigation_label(), "session"),
-            hint("{/}", "group"),
             crate::ui::IDLE_ITERATION_HINT.to_string(),
             crate::ui::ACTIVE_ITERATION_HINT.to_string(),
             crate::ui::ATTENTION_ITERATION_HINT.to_string(),
@@ -4859,6 +4895,8 @@ impl App {
 
     /// Explicit session interaction clears local mute and acknowledges the exact
     /// provider-completion revision. Cursor navigation and pane output do neither.
+    /// Entering Terminal mode and leaving it both count: a session that finishes while
+    /// the user is inside it was seen when the user leaves.
     fn unmute_on_interaction(&mut self, pane_id: runtime::PaneId) {
         let result = self
             .workspace
@@ -5023,7 +5061,10 @@ impl App {
         if self.terminal_surfaces.clear_selection(pane_id, terminal_id) {
             self.needs_redraw = true;
         }
-        self.terminal_stream = None;
+        // A switch from another session leaves that session.
+        if let Some(left) = self.terminal_stream.take().map(|active| active.pane_id) {
+            self.unmute_on_interaction(left);
+        }
         self.unmute_on_interaction(pane_id);
         let (rows, cols) = self.terminal_pane_size(terminal);
         match runtime::TerminalStream::connect(
@@ -5058,7 +5099,8 @@ impl App {
         Ok(())
     }
 
-    fn leave_terminal_mode(&mut self, _pane_id: runtime::PaneId) {
+    fn leave_terminal_mode(&mut self, pane_id: runtime::PaneId) {
+        self.unmute_on_interaction(pane_id);
         self.clear_active_terminal_selection();
         self.terminal_stream = None;
         self.pending_terminal_entry = None;
@@ -7150,6 +7192,8 @@ mod tests {
             needs_redraw: false,
             should_quit: false,
             force_terminal_redraw: false,
+            reassert_terminal_modes: false,
+            last_terminal_event: Instant::now(),
             force_preview_redraw: false,
             last_rendered_preview_was_session: false,
             fast_timer: Timer::new(FAST_INTERVAL_MS),
@@ -9662,7 +9706,6 @@ mod tests {
             vec![
                 "(alt+g)commands",
                 "(z)workspace",
-                "(h/l)session",
                 "({/})group",
                 crate::ui::IDLE_ITERATION_HINT,
                 crate::ui::ACTIVE_ITERATION_HINT,
@@ -9671,7 +9714,8 @@ mod tests {
                 concat!("(q)", "quit"),
             ]
         );
-        for hint in ["(alt+g)commands", "(z)workspace", "(h/l)session"] {
+        // This project has no session to switch to, so the session hint is absent.
+        for hint in ["(alt+g)commands", "(z)workspace", "({/})group"] {
             assert!(
                 terminal_footer.contains(hint),
                 "missing {hint}: {terminal_footer:?}"
@@ -9700,7 +9744,6 @@ mod tests {
                 "(alt+g)commands",
                 "(esc)cancel",
                 "(z)workspace",
-                "(h/l)session",
                 "({/})group",
                 crate::ui::IDLE_ITERATION_HINT,
                 crate::ui::ACTIVE_ITERATION_HINT,
