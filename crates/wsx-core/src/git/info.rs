@@ -84,6 +84,30 @@ pub fn get_git_info(
     })
 }
 
+/// Whether a worktree holds work that its base branch does not have.
+/// Counts only, so the answer stays small for any worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct WorkSummary {
+    /// Changed and untracked paths. `None` when git could not read the worktree.
+    pub uncommitted: Option<usize>,
+    /// Commits of HEAD that the base branch does not have. `None` when git could not compare.
+    pub unmerged_commits: Option<usize>,
+}
+
+pub fn work_summary(worktree_path: &Path, base: &str) -> WorkSummary {
+    let unmerged_commits = super::output_with_timeout(
+        git_read(worktree_path).args(["rev-list", "--count", &format!("{base}..HEAD"), "--"]),
+        std::time::Duration::from_secs(10),
+    )
+    .ok()
+    .filter(|output| output.status.success())
+    .and_then(|output| String::from_utf8_lossy(&output.stdout).trim().parse().ok());
+    WorkSummary {
+        uncommitted: status_porcelain2(worktree_path).map(|status| status.entries.len()),
+        unmerged_commits,
+    }
+}
+
 struct StatusEntry {
     path: String,
     submodule: Option<String>,
