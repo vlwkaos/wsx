@@ -4180,6 +4180,18 @@ fn observe_agent_exchange(
             AgentState::Blocked => Some(AgentExchangeState::BlockedObserved),
             AgentState::Done => Some(AgentExchangeState::DoneObserved),
             AgentState::Error => Some(AgentExchangeState::ErrorObserved),
+            // ^ docs/agent-orchestration.md "Interrupted turn": an agent that was seen at
+            // work on this exchange and is idle again was stopped by a person (Escape in
+            // its terminal, or a denied dialog). No "done" will follow, so the exchange
+            // ends here and the next request is not held back until the deadline.
+            AgentState::Idle
+                if matches!(
+                    exchange.state,
+                    AgentExchangeState::WorkingObserved | AgentExchangeState::BlockedObserved
+                ) =>
+            {
+                Some(AgentExchangeState::Interrupted)
+            }
             AgentState::Unknown | AgentState::Idle => None,
         }
     };

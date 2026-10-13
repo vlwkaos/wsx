@@ -102,6 +102,19 @@ These source changes require a new WSX installation and updated integrations bef
 - A cancel is refused with `terminal_busy` while a writable terminal lease exists on the pane.
 - A cancelled exchange cannot be continued. The next request starts a new exchange.
 
+## Interrupted turn
+
+An agent that was seen at work or blocked on an exchange and then reports idle was stopped by a person: Escape in its terminal, or a dialog denied with Escape. No "done" follows such a turn. From daemon revision 26 the exchange then becomes `interrupted`, which is terminal, and the next request starts a new exchange. Before, the exchange stayed active until its deadline and held back every later request to that pane. An idle report before the agent was seen at work changes nothing.
+
+## Reading Claude's screen
+
+wsxd reads the end of Claude's screen to see a dialog or a ready editor, because Claude has no hook for either. From revision 26:
+
+- The rows are the last 12 up to the last written row. Before, they were the last 12 rows of the screen, so a fresh Claude in a tall pane, whose output ends near the top, was never seen as blocked.
+- A permission dialog is a row with "Do you want to", numbered Yes or No choices and "Esc to cancel". This covers "Do you want to proceed?" for a command and "Do you want to create notes.txt?" for a file. Before, only the first wording was known.
+
+Both were found with a real Claude 2.1.296 on 2026-10-13 (`scripts/web-real-agent-check.py --scenario answers`).
+
 ## Claude's empty editor
 
 Draft stashing needs an editor that is visibly idle. A fresh Claude shows a suggestion in its empty editor, such as `❯ Try "fix typecheck errors"`. Claude draws it dimmed; text a person typed is not dimmed. From revision 24 the editor line counts as empty when every character of that line is dimmed in the terminal frame. A line that starts with `Try "` and is not dimmed is still refused as ambiguous.

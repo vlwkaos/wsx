@@ -32,7 +32,10 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Claude's dimmed start-up suggestion as an empty editor.
 // Revision 25 joins both lines: equal-build restart handoff and the "follows" TUI rule
 // (docs/daemon-live-upgrade.md). It is above the 23 of the restart line and the 24 of the web line.
-pub const DAEMON_REVISION: u32 = 25;
+// Revision 26 reads an agent's screen up to its last written row, so a dialog of a fresh
+// Claude is seen, takes Claude's file permission dialogs ("Do you want to create ...?") as blocked,
+// and ends an exchange as interrupted when its agent is idle again after it was seen at work.
+pub const DAEMON_REVISION: u32 = 26;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 

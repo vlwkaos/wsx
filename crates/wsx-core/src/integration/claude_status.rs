@@ -30,7 +30,9 @@ pub fn classify(title: &str, text: &str) -> Option<TerminalEvidence> {
         || lower.contains("arrows to navigate")
         || lower.contains("↑/↓ to navigate")
         || lower.contains("↑↓ to navigate");
-    let visible_permission = lower.contains("do you want to proceed?")
+    // "Do you want to proceed?" for a command, "Do you want to create notes.txt?" and
+    // "Do you want to make this edit to main.rs?" for a file.
+    let visible_permission = lower.contains("do you want to ")
         && (lower.contains("1. yes")
             || lower.contains("2. yes")
             || lower.contains("2. no")

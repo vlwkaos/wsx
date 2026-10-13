@@ -915,7 +915,10 @@ impl TerminalRuntime {
         let cols = terminal.cols()?;
         let total_rows = terminal.total_rows()?;
         let visible_rows = usize::from(terminal.rows()?);
-        let rows = AGENT_OBSERVATION_ROWS.min(visible_rows).min(total_rows);
+        // ^ The live bottom is where the program's output ends, not the last screen row:
+        // a program that has written little, such as a fresh agent that shows a dialog,
+        // leaves the rows below it empty. Read the screen, then keep the last written rows.
+        let rows = visible_rows.min(total_rows);
         let mut text = if rows == 0 || cols == 0 {
             String::new()
         } else {
@@ -929,6 +932,10 @@ impl TerminalRuntime {
                 false,
             )?
         };
+        text.truncate(text.trim_end().len());
+        if let Some((start, _)) = text.rmatch_indices('\n').nth(AGENT_OBSERVATION_ROWS - 1) {
+            text.drain(..=start);
+        }
         truncate_utf8_start(&mut text, AGENT_OBSERVATION_TEXT_BYTES);
         let mut title = terminal.title()?;
         truncate_utf8_end(&mut title, AGENT_OBSERVATION_TITLE_BYTES);
