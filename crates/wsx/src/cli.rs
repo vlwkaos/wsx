@@ -2220,7 +2220,10 @@ fn cmd_status(json: bool, format: Format, group: Option<&GroupKey>) -> Result<()
     let projects = resolve_projects(&config, &workspace, None, group)?;
     if json {
         // ^ Status JSON is a top-level project array; runtime status uses an object.
-        println!("{}", serde_json::to_string_pretty(&projects)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&manager_status(&projects)?)?
+        );
         return Ok(());
     }
     if let Format::Compact = format {
@@ -2267,6 +2270,72 @@ fn cmd_status(json: bool, format: Format, group: Option<&GroupKey>) -> Result<()
         }
     }
     Ok(())
+}
+
+/// The status projects with what a manager needs for its next step, as added keys:
+/// `work` on a worktree and `exchange` on a session.
+/// ^ docs/agent-orchestration.md "One status call": one exchange per session and counts
+/// for a worktree keep the output bounded.
+fn manager_status(projects: &[&Project]) -> Result<serde_json::Value> {
+    let exchanges = list_agent_exchanges(None, RuntimeSessionScope::default())?;
+    let mut output = serde_json::to_value(projects)?;
+    for (project, project_row) in projects
+        .iter()
+        .zip(output.as_array_mut().into_iter().flatten())
+    {
+        // Git runs once per worktree; a few at a time keeps a large workspace quick.
+        let mut work = Vec::new();
+        for worktrees in project.worktrees.chunks(8) {
+            std::thread::scope(|scope| {
+                let jobs = worktrees
+                    .iter()
+                    .map(|worktree| {
+                        scope.spawn(|| {
+                            wsx_core::git::info::work_summary(
+                                &worktree.path,
+                                &project.default_branch,
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                work.extend(jobs.into_iter().map(|job| job.join().ok()));
+            });
+        }
+        let worktree_rows = project_row["worktrees"]
+            .as_array_mut()
+            .into_iter()
+            .flatten();
+        for ((worktree, worktree_row), work) in
+            project.worktrees.iter().zip(worktree_rows).zip(work)
+        {
+            worktree_row["work"] = serde_json::to_value(work)?;
+            let session_rows = worktree_row["sessions"]
+                .as_array_mut()
+                .into_iter()
+                .flatten();
+            for (session, session_row) in worktree.sessions.iter().zip(session_rows) {
+                // The active exchange of the session, or else the one that changed last.
+                let exchange = exchanges
+                    .iter()
+                    .filter(|exchange| exchange.session_id == session.session_id)
+                    .max_by_key(|exchange| (!exchange.is_terminal(), exchange.updated_unix_ms));
+                session_row["exchange"] = serde_json::json!(exchange.map(|exchange| {
+                    serde_json::json!({
+                        "id": exchange.id,
+                        "pane_id": exchange.pane_id,
+                        "state": exchange.state,
+                        "evidence": exchange.evidence,
+                        "round": exchange.round,
+                        "access": exchange.access,
+                        "key": exchange.key,
+                        "updated_unix_ms": exchange.updated_unix_ms,
+                        "deadline_unix_ms": exchange.deadline_unix_ms,
+                    })
+                }));
+            }
+        }
+    }
+    Ok(output)
 }
 
 fn cmd_worktree_create(
