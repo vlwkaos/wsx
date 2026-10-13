@@ -3,10 +3,18 @@
 The terminal title is one row of presentation chrome, not a clickable switcher or another input mode. It shows the project once, then a sliding window grouped by worktree.
 
 ```text
-project  +2  main › ○ build  ◉ audit (pi)   fix › ◐ tests  +5
+project  +2  main › ○ build  ◉ audit (pi) │ fix › ◐ tests  +5
 ```
 
-The project and worktree groups use padded background regions, not literal bars, brackets or borders. Each worktree name appears once before its visible sessions, with a typographic `›`. The current session is brighter and bold. Sessions in the same worktree share their parent's background; overflow counts stay outside groups. User-supplied punctuation remains unchanged.
+Each level has one look, and `ui/theme.rs` gives it one role that the row uses nowhere else:
+
+| Level | Role | Look |
+|---|---|---|
+| Project | `terminal_project` | accent text in a filled chip, once, at the left |
+| Worktree | `terminal_worktree` | accent text on the bar itself with a `›`; a heading, never a chip, never a state icon; bold for the current worktree |
+| Session | `terminal_session` | a chip that always starts with its state icon; brighter and bold for the current session |
+
+A dim rule (`terminal_group_rule`) takes the one cell between two worktree groups, so a second worktree name does not read as one more session. Sessions of one worktree share one unbroken chip background. Overflow counts stay outside groups. User-supplied punctuation remains unchanged. The Terminal footer names the session and group keys only while another session or group exists.
 
 Current identity includes session and the selected pane label when applicable. Known provider identity reserves space before extra name detail. At tiny widths, current identity and position outrank parent context. Only authoritative lifecycle or ordinary foreground-job state supplies indicators.
 
