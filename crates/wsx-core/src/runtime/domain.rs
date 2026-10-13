@@ -356,6 +356,12 @@ pub struct AgentExchange {
     /// and cleared by the next round (docs/agent-orchestration.md "Delivery failure").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
+    /// Caller-chosen key of the request that created this exchange.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// Caller-chosen key of the continuation that started the current round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continue_key: Option<String>,
     pub revision: u64,
 }
 

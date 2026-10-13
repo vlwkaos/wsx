@@ -19,6 +19,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const MAX_AGENT_EXCHANGE_PROMPT_BYTES: usize = 64 * 1024;
 pub const MAX_AGENT_EXCHANGE_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1000;
 pub const MAX_AGENT_EXCHANGE_WRITE_CLAIMS: usize = 32;
+pub const MAX_AGENT_EXCHANGE_KEY_BYTES: usize = 128;
 pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 pub const WSX_PANE_ID_ENV: &str = "WSX_PANE_ID";
 pub const WSX_RUNTIME_GENERATION_ENV: &str = "WSX_RUNTIME_GENERATION";
@@ -38,7 +39,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Revision 27 types a one-line slash command of an exchange as written, without the
 // exchange line (`command`, capability `exchange_command`).
 // Revision 28 publishes when an agent entered its state (`AgentInfo::state_since_unix_ms`).
-pub const DAEMON_REVISION: u32 = 28;
+// Revision 29 writes a prompt to the PTY without holding daemon state, and adds the keyed
+// exchange requests (docs/agent-orchestration.md "Idempotent delivery").
+pub const DAEMON_REVISION: u32 = 29;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -425,6 +428,44 @@ pub enum Request {
         #[serde(default)]
         takeover: bool,
     },
+    // ^ docs/agent-orchestration.md "Idempotent delivery": the same key for the same pane
+    // returns the existing exchange. Separate variants make an older daemon refuse the
+    // request instead of delivering a second time without the key.
+    AgentExchangeCreateKeyed {
+        pane_id: PaneId,
+        prompt: String,
+        timeout_ms: u64,
+        #[serde(default)]
+        access: AgentExchangeAccess,
+        #[serde(default)]
+        write_claims: Vec<PathBuf>,
+        key: String,
+        #[serde(default)]
+        stash_draft: bool,
+        #[serde(default)]
+        command: bool,
+        /// Take the pane from a live terminal controller instead of failing with
+        /// `terminal_busy`. For a person's own action, never for automation.
+        /// See docs/agent-orchestration.md "Terminal control".
+        #[serde(default)]
+        takeover: bool,
+    },
+    AgentExchangeContinueKeyed {
+        exchange_id: AgentExchangeId,
+        expected_revision: u64,
+        prompt: String,
+        timeout_ms: u64,
+        key: String,
+        #[serde(default)]
+        stash_draft: bool,
+        #[serde(default)]
+        command: bool,
+        /// Take the pane from a live terminal controller instead of failing with
+        /// `terminal_busy`. For a person's own action, never for automation.
+        /// See docs/agent-orchestration.md "Terminal control".
+        #[serde(default)]
+        takeover: bool,
+    },
     AgentExchangeGet {
         exchange_id: AgentExchangeId,
         #[serde(default)]
@@ -734,6 +775,8 @@ mod tests {
             delivery_sha256: None,
             native_input_id: None,
             failure: None,
+            key: None,
+            continue_key: None,
             revision: 9,
         };
         let response = Response::AgentExchange {

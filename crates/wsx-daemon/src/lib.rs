@@ -1146,7 +1146,14 @@ struct HandoffTarget {
 }
 
 fn take_ready_handoff(daemon: &Daemon) -> Option<HandoffTarget> {
-    let _mutation = lock(&daemon.mutation_lock);
+    // ^ The accept loop calls this on every pass. A handoff starts between mutations, so
+    // while one runs (a prompt delivery waits for the agent to read its PTY) this pass is
+    // skipped and the loop keeps accepting connections, among them that agent's reports.
+    let _mutation = match daemon.mutation_lock.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return None,
+    };
     let mut state = lock(&daemon.state);
     if state.stopping || state.handoff_in_progress {
         return None;
@@ -2676,7 +2683,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             write_claims,
             command,
             takeover,
-        } => create_agent_exchange_with_draft(
+        } => create_agent_exchange_with(
             daemon,
             pane_id,
             ExchangeInput {
@@ -2687,7 +2694,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             timeout_ms,
             access,
             write_claims,
-            false,
+            ExchangeDelivery::default(),
         ),
         Request::AgentExchangeCreateStashingDraft {
             pane_id,
@@ -2697,7 +2704,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             write_claims,
             command,
             takeover,
-        } => create_agent_exchange_with_draft(
+        } => create_agent_exchange_with(
             daemon,
             pane_id,
             ExchangeInput {
@@ -2708,7 +2715,36 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             timeout_ms,
             access,
             write_claims,
-            true,
+            ExchangeDelivery {
+                stash_draft: true,
+                key: None,
+            },
+        ),
+        Request::AgentExchangeCreateKeyed {
+            pane_id,
+            prompt,
+            timeout_ms,
+            access,
+            write_claims,
+            key,
+            stash_draft,
+            command,
+            takeover,
+        } => create_agent_exchange_with(
+            daemon,
+            pane_id,
+            ExchangeInput {
+                prompt,
+                command,
+                takeover,
+            },
+            timeout_ms,
+            access,
+            write_claims,
+            ExchangeDelivery {
+                stash_draft,
+                key: Some(key),
+            },
         ),
         Request::AgentExchangeContinueStashingDraft {
             exchange_id,
@@ -2717,7 +2753,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             timeout_ms,
             command,
             takeover,
-        } => continue_agent_exchange_with_draft(
+        } => continue_agent_exchange_with(
             daemon,
             exchange_id,
             expected_revision,
@@ -2727,7 +2763,10 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
                 takeover,
             },
             timeout_ms,
-            true,
+            ExchangeDelivery {
+                stash_draft: true,
+                key: None,
+            },
         ),
         Request::AgentExchangeContinue {
             exchange_id,
@@ -2736,7 +2775,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             timeout_ms,
             command,
             takeover,
-        } => continue_agent_exchange_with_draft(
+        } => continue_agent_exchange_with(
             daemon,
             exchange_id,
             expected_revision,
@@ -2746,7 +2785,31 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
                 takeover,
             },
             timeout_ms,
-            false,
+            ExchangeDelivery::default(),
+        ),
+        Request::AgentExchangeContinueKeyed {
+            exchange_id,
+            expected_revision,
+            prompt,
+            timeout_ms,
+            key,
+            stash_draft,
+            command,
+            takeover,
+        } => continue_agent_exchange_with(
+            daemon,
+            exchange_id,
+            expected_revision,
+            ExchangeInput {
+                prompt,
+                command,
+                takeover,
+            },
+            timeout_ms,
+            ExchangeDelivery {
+                stash_draft,
+                key: Some(key),
+            },
         ),
         Request::AgentExchangeGet {
             exchange_id,
@@ -4983,6 +5046,31 @@ fn expire_due_agent_exchanges(daemon: &Daemon, state: &mut State) -> Result<(), 
     Ok(())
 }
 
+/// How one round reaches the agent's editor.
+#[derive(Default)]
+struct ExchangeDelivery {
+    stash_draft: bool,
+    /// ^ docs/agent-orchestration.md "Idempotent delivery": a repeated key returns the
+    /// exchange that the first request made and writes nothing to the PTY.
+    key: Option<String>,
+}
+
+fn validate_exchange_key(key: Option<&str>) -> Result<(), ApiError> {
+    match key {
+        Some(key)
+            if key.is_empty()
+                || key.len() > MAX_AGENT_EXCHANGE_KEY_BYTES
+                || !key.bytes().all(|byte| byte.is_ascii_graphic()) =>
+        {
+            Err(api(
+                "invalid_key",
+                "key must be 1..128 printable ASCII bytes without spaces",
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 fn create_agent_exchange(
     daemon: &Arc<Daemon>,
@@ -4992,7 +5080,7 @@ fn create_agent_exchange(
     access: AgentExchangeAccess,
     write_claims: Vec<PathBuf>,
 ) -> Result<Response, ApiError> {
-    create_agent_exchange_with_draft(
+    create_agent_exchange_with(
         daemon,
         pane_id,
         ExchangeInput {
@@ -5003,25 +5091,41 @@ fn create_agent_exchange(
         timeout_ms,
         access,
         write_claims,
-        false,
+        ExchangeDelivery::default(),
     )
 }
 
-fn create_agent_exchange_with_draft(
+fn create_agent_exchange_with(
     daemon: &Arc<Daemon>,
     pane_id: PaneId,
     input: ExchangeInput,
     timeout_ms: u64,
     access: AgentExchangeAccess,
     write_claims: Vec<PathBuf>,
-    stash_draft: bool,
+    delivery: ExchangeDelivery,
 ) -> Result<Response, ApiError> {
+    let ExchangeDelivery { stash_draft, key } = delivery;
     input.validate()?;
+    validate_exchange_key(key.as_deref())?;
     let timeout_ms = validate_exchange_timeout(timeout_ms)?;
     let operation_lock = terminal_operation_lock(daemon, pane_id);
     let _operation = lock(&operation_lock);
     let mut state = lock(&daemon.state);
     expire_due_agent_exchanges(daemon, &mut state)?;
+    // ^ The first request holds the pane-operation lock until its delivery is recorded,
+    // so a repeat that arrives during a slow delivery waits here and then finds it.
+    if let Some(existing) =
+        key.as_deref().and_then(|key| {
+            state.persisted.agent_exchanges.iter().find(|exchange| {
+                exchange.pane_id == pane_id && exchange.key.as_deref() == Some(key)
+            })
+        })
+    {
+        return Ok(Response::AgentExchange {
+            exchange: existing.clone(),
+            frame: None,
+        });
+    }
     if state.stopping || state.handoff_in_progress {
         return Err(api(
             "daemon_unavailable",
@@ -5141,6 +5245,8 @@ fn create_agent_exchange_with_draft(
         delivery_sha256: None,
         native_input_id: None,
         failure: None,
+        key,
+        continue_key: None,
         revision,
     });
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
@@ -5156,18 +5262,19 @@ fn create_agent_exchange_with_draft(
     let text = input.terminal_text(id, 1, access);
     let delivery_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
     // ^ PTY readers notify through daemon.state between reads. Keep the mutation
-    // and pane-operation fences, but release state while waiting for editor ACK.
+    // and pane-operation fences, but release state while waiting for editor ACK and
+    // while the PTY takes the prompt: an agent that reads slowly must not stop reads.
     drop(state);
     let stashed = if stash_draft {
         stash_claude_draft(&runtime)
     } else {
         Ok(())
     };
-    let mut state = lock(&daemon.state);
     let delivered = stashed.and_then(|()| {
         deliver_agent_exchange(&runtime, &text)
             .map_err(|error| api("terminal_write_failed", error.to_string()))
     });
+    let mut state = lock(&daemon.state);
     let revision = state.revision.saturating_add(1);
     let mut persisted = state.persisted.clone();
     let exchange = persisted
@@ -5207,18 +5314,27 @@ fn continue_agent_exchange(
         command: false,
         takeover: false,
     };
-    continue_agent_exchange_with_draft(daemon, id, expected_revision, input, timeout_ms, false)
+    continue_agent_exchange_with(
+        daemon,
+        id,
+        expected_revision,
+        input,
+        timeout_ms,
+        ExchangeDelivery::default(),
+    )
 }
 
-fn continue_agent_exchange_with_draft(
+fn continue_agent_exchange_with(
     daemon: &Arc<Daemon>,
     id: AgentExchangeId,
     expected_revision: u64,
     input: ExchangeInput,
     timeout_ms: u64,
-    stash_draft: bool,
+    delivery: ExchangeDelivery,
 ) -> Result<Response, ApiError> {
+    let ExchangeDelivery { stash_draft, key } = delivery;
     input.validate()?;
+    validate_exchange_key(key.as_deref())?;
     let timeout_ms = validate_exchange_timeout(timeout_ms)?;
     let pane_id = lock(&daemon.state)
         .persisted
@@ -5237,6 +5353,14 @@ fn continue_agent_exchange_with_draft(
         .find(|exchange| exchange.id == id)
         .cloned()
         .ok_or_else(|| api("not_found", "agent exchange not found"))?;
+    // ^ A repeat carries a newer revision than the first request saw, so the key is
+    // compared before the revision.
+    if key.is_some() && previous.continue_key == key {
+        return Ok(Response::AgentExchange {
+            exchange: previous,
+            frame: None,
+        });
+    }
     expect_revision(previous.revision, expected_revision)?;
     if !previous.can_continue()
         || matches!(
@@ -5294,6 +5418,7 @@ fn continue_agent_exchange_with_draft(
     // ^ A continuation cannot reuse the prior round's native input binding.
     exchange.delivery_sha256 = None;
     exchange.native_input_id = None;
+    exchange.continue_key = key;
     exchange.updated_unix_ms = now;
     exchange.deadline_unix_ms = now.saturating_add(timeout_ms);
     exchange.delivery_revision = revision;
@@ -5316,11 +5441,11 @@ fn continue_agent_exchange_with_draft(
     } else {
         Ok(())
     };
-    let mut state = lock(&daemon.state);
     let delivered = stashed.and_then(|()| {
         deliver_agent_exchange(&runtime, &text)
             .map_err(|error| api("terminal_write_failed", error.to_string()))
     });
+    let mut state = lock(&daemon.state);
     let revision = state.revision.saturating_add(1);
     let mut persisted = state.persisted.clone();
     let exchange = persisted
@@ -11138,6 +11263,8 @@ mod tests {
             delivery_sha256: None,
             native_input_id: None,
             failure: None,
+            key: None,
+            continue_key: None,
             revision: 9,
         };
         assert!(has_writer_claim_conflict(
@@ -11201,6 +11328,8 @@ mod tests {
             delivery_sha256: None,
             native_input_id: None,
             failure: None,
+            key: None,
+            continue_key: None,
             revision: 9,
         };
 
@@ -11342,7 +11471,7 @@ mod tests {
             "terminal_busy"
         );
         assert!(lock(&daemon.state).leases.contains_key(&PaneId(4)));
-        let Response::AgentExchange { exchange, .. } = create_agent_exchange_with_draft(
+        let Response::AgentExchange { exchange, .. } = create_agent_exchange_with(
             &daemon,
             PaneId(4),
             ExchangeInput {
@@ -11353,7 +11482,7 @@ mod tests {
             60_000,
             AgentExchangeAccess::Writer,
             Vec::new(),
-            false,
+            ExchangeDelivery::default(),
         )
         .unwrap() else {
             panic!("expected exchange");
