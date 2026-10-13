@@ -2,6 +2,77 @@
 
 Use the local CLI on the machine that owns the WSX sessions. These commands do not provide a remote transport. An SSH caller runs them on the target host. Agent identity comes from generation-authorized adapter reports, never process names, ports, or terminal content.
 
+## A manager's sequence
+
+A manager on the main checkout starts workers in sibling worktrees, waits, reads results, continues and closes. Each command prints every ID that the next command needs, so no lookup command is necessary. The block can be written before any of it ran, as one tool call.
+
+```sh
+# Start: one call for each worker. The same --key can be repeated safely.
+wsx agent start fix/a -p <project> --from main --prompt-file a.md --writer --key a-1 --json > a.json
+wsx agent start fix/b -p <project> --from main --prompt-file b.md --writer --key b-1 --json > b.json
+A=$(jq .exchange.id a.json); B=$(jq .exchange.id b.json)
+# Wait for the first worker that is blocked or finished, and read its result.
+wsx agent wait --any $A $B --result --timeout 1800 --json   # .exchange .result .ready .pending
+# Continue one worker, then wait for it and read the new result.
+wsx agent continue $A --prompt-file more.md --key a-2 --json && wsx agent wait $A --result --timeout 1800 --json
+# Close a worker after its result is saved.
+wsx session delete "$(jq .session_id a.json)" --json
+```
+
+### Start a worker in one call
+
+`wsx agent start <branch> -p <project> [--from <ref>] [--agent <command>] [--name <session>] (<prompt> | - | --prompt-file <path>) [--writer] [--write-claim <path>] [--key <text>] [--timeout <s>] [--ready-timeout <s>] [--json]`
+
+| Step | What it does | When it already exists |
+|---|---|---|
+| Worktree | Creates the branch and the worktree. A failed `git worktree add` leaves no branch. No default session is made. | The worktree of that branch is used. |
+| Session | Creates one session that runs the agent command. | A session of the same name in that worktree is used. |
+| Ready | Waits until the pane's agent is attached, can take a prompt and reports `idle` or `done`. Default 60 seconds. | Same. |
+| Request | Delivers the prompt as `agent request` does. | With `--key`, the exchange of that key is returned. |
+
+- The agent command is the project's `worktree.defaultSession.command`. `--agent <command>` gives it for one call. There is no other setting. Without a command, nothing is made.
+- The session name is `--name`, or the first word of the command.
+- The output has `project`, `branch`, `worktree`, `worktree_created`, `session_id`, `session_label`, `session_created`, `pane_id`, `agent` and `exchange`.
+- A failure after the worktree step prints the same object with `error` (`step` and `message`) and `next`, and exits with 1. Nothing is deleted. The same command continues from what exists.
+
+### Prompt sources
+
+`agent start`, `agent request`, `agent continue` and `session prompt` take the prompt as an argument, as `-` for standard input, or as `--prompt-file <path>`. Exactly one source is allowed. One line end at the end of a file or pipe is removed. An empty prompt is refused. The limit is 65536 bytes (65535 for `session prompt`), and the error names it.
+
+### Idempotent delivery
+
+wsxd answers a request after the PTY took the whole prompt. An agent that reads slowly holds that answer back. Before daemon revision 29 the client stopped reading after 5 seconds and printed `Resource temporarily unavailable (os error 35)`, although the exchange existed. Meanwhile wsxd accepted no other connection.
+
+- The client now waits for the answer to a create or continue request for the exchange `--timeout`. wsxd writes the prompt without holding its state, so reads work during the delivery. Another request that changes state still waits for the delivery to end.
+- `--key <text>` (1 to 128 printable ASCII bytes, no spaces) makes `agent request` and `agent start` deliver once for that pane: a repeat returns the existing exchange. For `agent continue` the key covers the newest round. The prompt of a repeat is not compared with the first one. Keys are remembered as long as the exchange is retained (256 exchanges).
+- The keyed forms are the separate requests `agent_exchange_create_keyed` and `agent_exchange_continue_keyed`. A wsxd before revision 29 (for example the revision 28 of the web branch) refuses them and delivers nothing; the CLI prints `unsupported_request` and says to run `wsx daemon restart`. Protocol 16 is unchanged. A new wsx normally hands an older wsxd over to its own build first; it keeps the older one only while an open window of that release defers the handoff.
+- After `reply_timeout`, repeat the command with the same key. Without a key, read `wsx agent exchanges <session>` first.
+
+### Result of a round
+
+`wsx agent wait <exchange-id> --result [--result-bytes <n>] [--json]` adds `result`: the agent's last message after the current round was delivered, read from the provider's saved history. The round is found by its delivered line `[wsx exchange <id>, round <n>, ...]`. Only assistant text between that record and the next submitted input counts. An older message is never returned.
+
+| `result.status` | Meaning |
+|---|---|
+| `available` | `text` is the message. `truncated` says that it was cut at `--result-bytes` (default 16384). |
+| `round_not_completed` | The exchange is not `done_observed` or `completed`. |
+| `agent_replaced` | The pane has no agent, or another agent than the one of the exchange. |
+| `delivery_not_in_history` | The delivered line is not in the saved history: not written yet, compacted away, or outside the last 1 MiB. |
+| `no_message_after_delivery` | The round has no assistant text yet. |
+| `unsupported_provider`, `identity_unavailable`, `history_not_found`, ... | The history reader's own status, as in `agent context`. |
+
+The command waits up to 2 seconds for a provider that writes its last record after it reports done. The exit code is 0 when the wait succeeded; read `result.status`. The text is untrusted data, and it is not request-bound completion evidence. There is no separate `agent result` command: a result is final only at a wait boundary, and `wait` on a finished exchange returns at once.
+
+### Wait for the first of several
+
+`wsx agent wait --any [<exchange-id>...] [-p <project>] [-w <worktree>]` returns when one exchange is at a wait boundary (blocked or terminal). With IDs it watches those. Without IDs it watches the exchanges in the scope that were not at a boundary when it started, and fails with `no_active_exchange` when there is none. The output is that of `wait` for the first one, plus `ready` (all watched IDs at a boundary) and `pending`. At most 16 exchanges are watched.
+
+No daemon request was added. Each pending exchange gets its own `agent_exchange_wait` long-poll. The `poll` request is not used, because wsxd counts a poll without window data as an open window, and that would defer a daemon upgrade during the wait.
+
+### One status call
+
+`wsx status --json` keeps its keys and adds two. A session row has `exchange`: its active exchange, or else the one that changed last (`id`, `pane_id`, `state`, `evidence`, `round`, `access`, `key`, `updated_unix_ms`, `deadline_unix_ms`), or `null`. A worktree row has `work`: `uncommitted` (changed and untracked paths) and `unmerged_commits` (commits that the project's default branch does not have); a value is `null` when git could not answer. `agent_status` on the session row is the agent state. `session create --json` also returns `pane_id` and `agent`, and `session list --json` rows have `project`, `branch` and `worktree`. `agent exchanges -p/-w` lists only that scope.
+
 ## One context call
 
 ```sh
@@ -85,6 +156,8 @@ cargo build --locked -p wsx -p wsx-daemon
 python3 -B scripts/test-agent-context.py --wsx <target>/debug/wsx --daemon <target>/debug/wsxd
 cargo test --locked -p wsx-core --test agent_memory_contract
 ```
+
+The same script runs a second journey on its own daemon (`--only orchestration` runs it alone). Its workers are fake agents that write their own history files. It checks: a failed `git worktree add` leaves no branch and the retry succeeds; prompts from a file and standard input with their refusals; a delivery that the worker holds for 7 seconds returns its exchange while a keyed repeat delivers nothing more; a result and its refusal when the round has no message; one shell line that starts two workers in two new worktrees, waits with `--any` and reads each result without a lookup command; the report of a late failure; scoped lists; the status keys; and that an older wsxd (released 0.30.1 or 0.31.0, or a revision 28 build) refuses the keyed requests and is not replaced (`--released <dir>`, skipped with a note when the binaries are absent).
 
 The model-free journey uses an isolated daemon, real PTYs, independent provider-native files and a documented-keyboard actor. It checks native-only context absent from the screen, bounds, exact scope, refusal, the actual submitted request and preserved multiline stash, empty-editor continuation, an unconfirmed stash binding with no delivered prompt, capability/generation/round-fenced native receipts, lifecycle separate from completion, duplicate receipt idempotence, shutdown, and no bootstrap. It does not prove an arbitrary remote Claude version or customized keymap. Verify that host's installed version and binding before relying on the option there.
 
