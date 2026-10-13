@@ -2360,15 +2360,14 @@ impl App {
     }
 
     fn retry_upgrade(&mut self) {
-        let due = self
-            .upgrade
-            .as_ref()
-            .and_then(|gate| gate.retry_at)
-            .is_some_and(|retry_at| retry_at <= Instant::now());
-        if due {
-            if let Some(gate) = self.upgrade.as_mut() {
-                gate.retry_at = None;
-            }
+        let Some(gate) = self.upgrade.as_mut() else {
+            return;
+        };
+        if gate
+            .retry_at
+            .is_some_and(|retry_at| retry_at <= Instant::now())
+        {
+            gate.retry_at = None;
             self.spawn_upgrade_attempt();
         }
     }
