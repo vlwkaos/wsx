@@ -215,4 +215,4 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 scripts/runtime-smoke.py
 ```
 
-Vendored terminal dependency는 `THIRD-PARTY-NOTICES.md`에서 확인할 수 있습니다.
+Vendored terminal dependency와 web client의 browser file은 `THIRD-PARTY-NOTICES.md`에서 확인할 수 있습니다.

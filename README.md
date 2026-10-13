@@ -215,4 +215,4 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 scripts/runtime-smoke.py
 ```
 
-See `THIRD-PARTY-NOTICES.md` for vendored terminal dependencies.
+See `THIRD-PARTY-NOTICES.md` for vendored terminal dependencies and the web client's browser files.

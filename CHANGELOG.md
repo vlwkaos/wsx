@@ -2,24 +2,37 @@
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-14
+
 ### Breaking Changes
 
-- The web client's `GET api/terminal/<session>` and `POST api/terminal/<session>/input` routes are removed with the text-snapshot terminal. `terminal_view` now allows watching the live terminal; `terminal_input` allows typing, resizing the pane and taking control.
-- A web site file names its projects under `[access]`: `projects = "all"` or a list of 1 to 32 absolute paths, with `capabilities` and `agent_command`. The old `[project]` table is refused. The files API and `POST api/sessions` now take a `project` id.
-- The built-in `retro` web theme is removed. A site file with `theme = "retro"`, or a custom theme that extends it, is refused; use `default`.
-- The web client's Activity panel is removed; the inbox replaces it. A site file that lists `"activity"` under `panels` is refused.
-- The web theme contract changed with the new page: 60 tokens (`color-raised`, `color-hairline`, `color-faint`, `color-attention`, `color-ansi-0` to `color-ansi-15`, `font-terminal`, `tracking-*`, `size-row`, `size-bar`, `size-rail`, `size-prose` and others are new; the component color, shadow, `color-border`, `color-sunken`, `color-ok` and `color-focus` tokens are gone) and new component hooks. A custom theme must be updated; the server names the first token it refuses. See `docs/web-themes.md`.
-- `GET api/chat/<session>/history` is replaced by `GET api/chat/<session>/timeline`.
 - `wsx daemon stop` refuses while sessions are running. Scripts that stop a daemon with live sessions must pass `--force`.
 - Rust callers that construct `TuiClientPresence` must provide `follows`, and callers that construct `Request::PrepareHandoff` must provide `restart`. `Capabilities` has the new `daemon_restart` flag, and `DaemonPhase` and `ReplacementBlocker` have an `Unknown` variant. Older JSON without the new fields decodes as before.
+- The web client was not part of a published release. A site made with a development build must follow these changes:
+  - The web client's `GET api/terminal/<session>` and `POST api/terminal/<session>/input` routes are removed with the text-snapshot terminal. `terminal_view` now allows watching the live terminal; `terminal_input` allows typing, resizing the pane and taking control.
+  - A web site file names its projects under `[access]`: `projects = "all"` or a list of 1 to 32 absolute paths, with `capabilities` and `agent_command`. The old `[project]` table is refused. The files API and `POST api/sessions` now take a `project` id.
+  - The built-in `retro` web theme is removed. A site file with `theme = "retro"`, or a custom theme that extends it, is refused; use `default`.
+  - The web client's Activity panel is removed; the inbox replaces it. A site file that lists `"activity"` under `panels` is refused.
+  - The web theme contract changed with the new page: 60 tokens (`color-raised`, `color-hairline`, `color-faint`, `color-attention`, `color-ansi-0` to `color-ansi-15`, `font-terminal`, `tracking-*`, `size-row`, `size-bar`, `size-rail`, `size-prose` and others are new; the component color, shadow, `color-border`, `color-sunken`, `color-ok` and `color-focus` tokens are gone) and new component hooks. A custom theme must be updated; the server names the first token it refuses. See `docs/web-themes.md`.
+  - `GET api/chat/<session>/history` is replaced by `GET api/chat/<session>/timeline`.
 
 ### Features
 
-- Rebuild the web client as an inbox of agent sessions. The home screen lists sessions by what they need: needs you, running (with the current activity and elapsed time), finished (new ones first), then the rest by project. A session has one top row with a Chat or Terminal switch. A phone has a bottom tab bar (Inbox, Projects, Settings); a wide window has a left column. The chat shows the user's messages as blocks and the agent's text plain, folds tool steps into one line, shows a working row with Stop, and keeps the reader's place with a "Jump to latest" button. The page is Preact and htm, vendored, with no build step.
+- Add the hosted web client. `wsx web serve --site <site.toml>` hosts one web site for the projects its site file grants, on a loopback port, for use behind `tailscale serve`. A paired phone or browser can chat with the project's agents, attach files to a prompt, download files the agent produced and see images inline. Optional panels show project files and a live terminal.
+  - One site file per process sets the public origin, optional base path, name, icon, theme, panels, capability bits, media limits and push keys. The file must be owner-only, and unknown fields are refused. A second site, for example a simpler chat for a family member, is the same binary with fewer panels and capability bits.
+  - `wsx web pair` prints a one-time code that pairs one device. The device keeps an `HttpOnly` credential; the server stores only its hash. `wsx web devices` lists and revokes devices. There is no shared token. The server checks the exact `Host` and `Origin`, sends a strict CSP and limits requests per device.
+  - Chat sends through the agent exchange broker and shows the agent's own saved conversation, including Claude's. Terminal output is never read into chat. The page states delivery evidence as it is: a PTY delivery is shown as typed into the terminal, not as accepted by the agent.
+  - A page receives updates over one server-sent event stream and has no polling timer.
+  - Media is stored per site under its SHA-256, with a maximum file size, a total quota with oldest-first eviction, and a time limit. File types are detected from content against an allowlist.
+  - The page is an installable PWA with an offline shell. Web Push is off until a device opts in, per topic: agent needs input, agent finished, agent error. Tapping a notification opens that session.
+  - Styling is a token and component contract. A theme supplies validated tokens and, optionally, component CSS, fonts and icons; the server serves them under content-hash URLs and the CSP stays strict. `default` (light and dark) is built in, and a deployer can supply a theme directory. The PWA manifest colors and icons follow the theme. See `docs/web-themes.md`.
+  - The default deployment is one Tailscale Service hostname per site, served at the root. Every browser URL is relative, so the same build also works at an alt-port root and under a sub-path such as `/app/wsx/`.
+  - The wire protocol stays 16. The web server never starts `wsxd`. See `docs/web-client.md` and `docs/web-deploy.md`. Verified with `scripts/test-web-client.py`; a real push service and a phone are not covered by that script. `scripts/web-real-agent-check.py` runs a real Claude turn and is not part of CI.
+- Make the web client an inbox of agent sessions. The home screen lists sessions by what they need: needs you, running (with the current activity and elapsed time), finished (new ones first), then the rest by project. A session has one top row with a Chat or Terminal switch. A phone has a bottom tab bar (Inbox, Projects, Settings); a wide window has a left column. The chat shows the user's messages as blocks and the agent's text plain, folds tool steps into one line, shows a working row with Stop, and keeps the reader's place with a "Jump to latest" button. The page is Preact and htm, vendored, with no build step. On a phone the page does not zoom on focus or on a double tap.
 - Ship terminal fonts with the web client: JetBrains Mono 2.304 and Symbols Nerd Font Mono 3.4.0. Powerline separators and Nerd Font icons show without an installed font, and operators such as `=>` and `!=` are drawn as ligatures while cells, selection and copied text stay the same. `[terminal] ligatures = false` in the site file turns ligatures off. The terminal's 16 ANSI colors come from the theme.
 - Render the agent's messages in the web chat as markdown: headings, lists, task lists, quotes, tables with a fixed header row, links, and code blocks with a Copy action and colors for 13 languages. A message cannot load a remote resource or add live markup; raw HTML stays text. See `docs/web-client.md` "Markdown".
-- Draw Mermaid diagrams in the web chat. A `mermaid` code block becomes a diagram in the theme's colors; a tap opens it full screen with zoom. The library (1 MB compressed) is downloaded only when the first diagram appears. The page's content security policy is unchanged. A block that does not parse shows its source. See `docs/web-client.md` "Diagrams".
-- Answer a blocked agent from the web chat. With the new `chat_answer` capability the chat shows the dialog the agent drew, with one button per numbered choice and keys for Enter, Esc and the arrows, where the composer was. An answer is bound to the screen it was read from and is refused when the dialog changed. The "needs input" notification opens that sheet. See `docs/web-client.md` "Answering".
+- Draw Mermaid diagrams in the web chat. A `mermaid` code block becomes a diagram in the theme's colors; it is scaled down to the message column, and scrolls sideways only when its text would become too small to read; a tap opens it full screen with zoom. The library (1 MB compressed) is downloaded only when the first diagram appears. The page's content security policy is unchanged. A block that does not parse shows its source. See `docs/web-client.md` "Diagrams".
+- Answer a blocked agent from the web chat. With the new `chat_answer` capability the chat shows the dialog the agent drew, with one button per numbered choice and keys for Enter, Esc and the arrows, where the composer was. An answer is bound to the screen it was read from and is refused when the dialog changed. The "needs input" notification opens that sheet. The docs and the example site file start page sessions with `claude --permission-mode auto`, so only the remaining prompts reach the chat. See `docs/web-client.md` "Answering".
 - Queue web chat messages while the agent works: up to five per session, delivered in order when the agent is ready, kept across a restart of the web server. A delivery that wsxd refuses stays in the queue with the reason until it is retried or removed.
 - Show what the agent is doing in the web chat: the timeline now carries tool calls with their outcome and thinking markers from the agent's own saved conversation, for Claude, Pi, omp and Codex. Tool input, tool output and thinking text are not sent.
 - Let one web site reach several projects, or every project wsx manages. Anything outside the grant answers 404.
@@ -39,7 +52,7 @@
 - Treat a finished session as checked when you leave it. Entering a `done` session already cleared it to idle. A session that finished while you were inside it stayed `done` after you went back to the workspace, so `n` offered it again. Leaving Terminal mode, or switching to another session with a prefix key, now acknowledges that exact done report. A later working then done shows `done` again.
 - State the protocol rule: the protocol number changes only when an older client can no longer talk to the new daemon. Additions use `Capabilities` and the daemon revision. wsxd now answers an unknown request on a mismatched connection with an error instead of closing the connection.
 
-### Fixes
+### Bug Fixes
 
 - See a Claude permission dialog in a fresh session, and for a file. wsxd read only the last 12 rows of the screen, so a new Claude in a tall pane was never reported as "needs input", and it knew only "Do you want to proceed?", not "Do you want to create ...?". Daemon revision 26.
 - End an exchange when its turn was interrupted. After Escape in the agent's terminal, or a denied dialog, the exchange stayed active until its deadline and every later request to that pane waited. It now becomes `interrupted` when the agent is idle again. See `docs/agent-orchestration.md`.
@@ -47,24 +60,18 @@
 - Deliver a request to a freshly started Claude. Its empty editor shows a dimmed suggestion (`Try "..."`), which wsxd refused as a possible draft, so the first message to a new Claude session failed with `editor_unavailable`. The dimmed line now counts as empty.
 - Start a new exchange for the first web chat message after a stop. The web client tried to continue the cancelled exchange, which wsxd refuses.
 
+### Packaging and verification
+
+- Add `scripts/test-web-client.py`: one journey against an isolated wsxd and real web servers, with headless Chrome under `--browser`. `scripts/web-real-agent-check.py` checks a real Claude turn, a permission dialog and a question; it is run by hand.
+- Vendor the browser files with pinned versions and checksums: `scripts/vendor-preact.sh`, `vendor-xterm.sh`, `vendor-fonts.sh`, `vendor-markdown.sh` and `vendor-mermaid.sh`. `THIRD-PARTY-NOTICES.md` lists them with their license texts.
+- Extend `scripts/runtime-smoke.py`, `scripts/test-terminal-context.py` and `scripts/test-ui-state.py` for the raw terminal stream, the upgrade screen, a released-build upgrade, daemon restart, the TUI re-exec and the terminal mode repair.
+- Keep routine test socket paths below the macOS path limit in a long worktree path. `AGENTS.md` and `CLAUDE.md` describe the web crate, the sandboxed Zig build and one in-process test flake.
+
 ## [0.30.1] - 2026-10-12
 
 ### Breaking Changes
 
 - Rust callers that construct `TuiClientPresence` must provide its new `max_protocol` field. Older JSON without the field decodes as a legacy TUI.
-
-### Features
-
-- Add the hosted web client. `wsx web serve --site <site.toml>` hosts one web site for one project on a loopback port, for use behind `tailscale serve`. A paired phone or browser can chat with the project's agents, attach files to a prompt, download files the agent produced and see images inline. Optional panels show project files, the current terminal screen and recent activity.
-  - One site file per process sets the public origin, optional base path, name, icon, theme, panels, capability bits, media limits and push keys. The file must be owner-only, and unknown fields are refused. A second site, for example a simpler chat for a family member, is the same binary with fewer panels and capability bits.
-  - `wsx web pair` prints a one-time code that pairs one device. The device keeps an `HttpOnly` credential; the server stores only its hash. `wsx web devices` lists and revokes devices. There is no shared token. The server checks the exact `Host` and `Origin`, sends a strict CSP and limits requests per device.
-  - Chat sends through the agent exchange broker and shows the agent's own saved conversation, including Claude's. Terminal output is never read into chat. The page states delivery evidence as it is: a PTY delivery is shown as typed into the terminal, not as accepted by the agent.
-  - A page receives updates over one server-sent event stream and has no polling timer.
-  - Media is stored per site under its SHA-256, with a maximum file size, a total quota with oldest-first eviction, and a time limit. File types are detected from content against an allowlist.
-  - The page is an installable PWA with an offline shell. Web Push is off until a device opts in, per topic: agent needs input, agent finished, agent error. Tapping a notification opens that session.
-  - Styling is a token and component contract. A theme supplies validated tokens and, optionally, component CSS, fonts and icons; the server serves them under content-hash URLs and the CSP stays strict. `default` (light and dark) and `retro` (a System 7 look, light only) are built in, and a deployer can supply a theme directory. The PWA manifest colors and icons follow the theme. See `docs/web-themes.md`.
-  - The default deployment is one Tailscale Service hostname per site, served at the root. Every browser URL is relative, so the same build also works at an alt-port root and under a sub-path such as `/app/wsx/`.
-  - No daemon or protocol change. The web server never starts `wsxd`. See `docs/web-client.md` and `docs/web-deploy.md`. Verified with `scripts/test-web-client.py`; a real Claude turn, a real push service and a phone are not covered by that script.
 
 ### Improvements
 
