@@ -84,9 +84,12 @@ export function parseRoute(hash) {
 }
 export function useRoute() {
   const [route, setRoute] = useState(parseRoute(location.hash));
+  const rendered = location.hash;
   useEffect(() => {
     const changed = () => setRoute(parseRoute(location.hash));
     addEventListener("hashchange", changed);
+    // A hash change between this render and this subscription would be missed.
+    if (location.hash !== rendered) changed();
     return () => removeEventListener("hashchange", changed);
   }, []);
   return route;
