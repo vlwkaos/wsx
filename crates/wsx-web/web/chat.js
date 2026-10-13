@@ -3,6 +3,7 @@
 import { api, resolve } from "./api.js";
 import { bytes, elapsed, html, Icon, useCallback, useEffect, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, events, shows, stateOf, state, touch } from "./store.js";
+import { Markdown } from "./markdown.js";
 
 // Unsent text, attachments and the message that is not in the saved conversation
 // yet, per session. Kept outside the view so a route change does not lose them.
@@ -253,14 +254,15 @@ export function Chat({ session }) {
     <div class="chat">
       <div class="log-wrap">
       <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation" tabindex="0">
-        ${data?.checkpoint ? html`<details class="steps"><summary class="steps-summary"><${Icon} name="chevron" />Earlier conversation (summary)</summary><p class="prose">${data.checkpoint}</p></details>`
+        ${data?.checkpoint ? html`<details class="steps"><summary class="steps-summary"><${Icon} name="chevron" />Earlier conversation (summary)</summary><${Markdown} text=${data.checkpoint} /></details>`
           : data?.truncated ? html`<p class="note">Older messages are not shown.</p>` : null}
         ${data && !list.length && !draft.pending ? html`<p class="empty">${EMPTY_WORDS[data.status] ?? "No messages yet."}</p>` : null}
         ${list.map((block, index) => block.steps
           ? html`<${Steps} key=${block.id} items=${block.steps} live=${Boolean(working) && index === list.length - 1} />`
           : html`
             <article key=${block.id} class=${block.kind === "user" ? "message message-user" : "message"} data-kind=${block.kind}>
-              ${block.text && html`<p class="prose">${block.text}</p>`}
+              ${block.text && (block.kind === "user" ? html`<p class="prose">${block.text}</p>`
+                : html`<${Markdown} text=${block.text} files=${block.attachments} />`)}
               <${Attachments} files=${block.attachments} />
               ${block === lastUserBlock && delivery && !draft.pending ? html`<p class="note" role="status">${delivery}</p>` : null}
             </article>`)}

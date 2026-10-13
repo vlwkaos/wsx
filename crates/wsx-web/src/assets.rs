@@ -28,6 +28,7 @@ const FILES: &[(&str, &str, &str)] = &[
     ("projects.js", JS, include_str!("../web/projects.js")),
     ("session.js", JS, include_str!("../web/session.js")),
     ("chat.js", JS, include_str!("../web/chat.js")),
+    ("markdown.js", JS, include_str!("../web/markdown.js")),
     ("files.js", JS, include_str!("../web/files.js")),
     ("settings.js", JS, include_str!("../web/settings.js")),
     ("terminal.js", JS, include_str!("../web/terminal.js")),
@@ -39,6 +40,17 @@ const FILES: &[(&str, &str, &str)] = &[
         include_str!("../web/vendor/preact-hooks.js"),
     ),
     ("htm.js", JS, include_str!("../web/vendor/htm.js")),
+    // Pinned by scripts/vendor-markdown.sh; licenses in web/vendor/markdown-it.LICENSE and highlight.LICENSE.
+    (
+        "markdown-it.js",
+        JS,
+        include_str!("../web/vendor/markdown-it.js"),
+    ),
+    (
+        "highlight.js",
+        JS,
+        include_str!("../web/vendor/highlight.js"),
+    ),
     // Pinned and patched by scripts/vendor-xterm.sh; license in web/vendor/xterm.LICENSE.
     ("xterm.js", JS, include_str!("../web/vendor/xterm.js")),
     (

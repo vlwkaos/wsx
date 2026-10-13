@@ -123,6 +123,18 @@ The page is a set of ES modules served as written: Preact 10.29.7 and htm 3.1.1 
 - The `history` event is the change signal. While an agent works and a page is open, the server compares transcript stamps about every 0.8 seconds, so a new tool line shows within about a second.
 - A blocked agent shows a provider dialog. The chat refuses to send; the answer is given in the terminal panel or on the host.
 
+### Markdown
+
+An agent's message and the summary of an earlier conversation are rendered as CommonMark with GFM tables, strikethrough, task-list marks and autolinks. The person's own messages and waiting messages stay plain text.
+
+- `web/markdown.js` asks markdown-it only for its token list (`html: false`) and builds the page's nodes from it. No HTML string made from a message reaches the DOM, so no sanitizer library is needed: raw HTML in a message is shown as text, and an attribute or a tag can only come from this file.
+- A link is made only for `http`, `https` and `mailto`, and opens in a new tab with `rel="noopener noreferrer"`. Any other scheme and a relative address stay text. Text becomes a link by itself only when it has a scheme, so `main.rs` is not a link.
+- A message cannot load a remote resource. An image is shown only when its file name is one of the files the server already granted for that message ("Media"); any other image is its alt text.
+- A code block scrolls sideways inside itself and has a Copy action. A table scrolls inside its own block and keeps its header row in view. Nothing widens the conversation.
+- Code is colored by highlight.js for rust, typescript, javascript, python, bash, json, toml, yaml, diff, html, css, sql and go. The page reads the highlighter's token tree and uses the theme's role colors (accent, attention, muted, danger), so no color is added to the theme contract. Blocks above 40,000 characters stay uncolored.
+- A message is parsed once per text. A timeline refresh that brings the same text reuses the nodes. Measured in headless Chrome with the processor slowed four times: a 204 KB message with 145 code blocks takes about 0.2 seconds.
+- markdown-it 14.3.2 (125,451 bytes, 44,975 gzip, MIT) and highlight.js 11.11.1 with those 13 grammars (71,996 bytes, 22,705 gzip, BSD-3-Clause) are vendored by `scripts/vendor-markdown.sh` with pinned SHA-512 values. markdown-it is the published browser file, unchanged.
+
 ### Queue and Stop
 
 wsxd allows one active exchange per pane. A message sent while the agent works, or while older messages wait, is kept by the web server instead of failing.
