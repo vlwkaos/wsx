@@ -273,7 +273,8 @@ pub enum AgentCmd {
     /// Deliver a bounded provider-neutral request to an explicit agent session
     Request {
         session: String,
-        prompt: String,
+        #[command(flatten)]
+        prompt: PromptSource,
         #[arg(long, default_value_t = 600)]
         timeout: u64,
         #[arg(long)]
@@ -324,7 +325,8 @@ pub enum AgentCmd {
     /// Deliver a follow-up round to a terminal exchange
     Continue {
         exchange: runtime::AgentExchangeId,
-        prompt: String,
+        #[command(flatten)]
+        prompt: PromptSource,
         /// Stash an idle Claude draft before delivery
         #[arg(long)]
         stash_draft: bool,
@@ -535,6 +537,67 @@ pub enum WorktreeCmd {
     },
 }
 
+/// Exactly one prompt source: the argument, `-` for standard input, or a file.
+#[derive(clap::Args)]
+pub struct PromptSource {
+    /// Prompt text, or `-` to read the prompt from standard input
+    prompt: Option<String>,
+    /// Read the prompt from this file
+    #[arg(long, value_name = "PATH")]
+    prompt_file: Option<PathBuf>,
+}
+
+impl PromptSource {
+    /// Read the prompt and refuse an empty or oversized one before any daemon call.
+    /// ^ One trailing line end of a file or a pipe is not part of the prompt: wsxd adds Enter.
+    fn read(self, limit: usize) -> Result<String> {
+        use std::io::Read;
+        let bounded = |reader: &mut dyn Read, source: &str| -> Result<String> {
+            let mut bytes = Vec::new();
+            // Two bytes past the limit prove an oversized prompt without reading all of it.
+            reader
+                .take(limit as u64 + 2)
+                .read_to_end(&mut bytes)
+                .with_context(|| format!("cannot read the prompt from {source}"))?;
+            let mut text = String::from_utf8(bytes)
+                .map_err(|_| anyhow::anyhow!("the prompt from {source} is not UTF-8 text"))?;
+            if text.ends_with('\n') {
+                text.pop();
+                if text.ends_with('\r') {
+                    text.pop();
+                }
+            }
+            Ok(text)
+        };
+        let prompt = match (self.prompt, self.prompt_file) {
+            (Some(_), Some(_)) => {
+                bail!(
+                    "give one prompt source: an argument, `-` for standard input, or --prompt-file"
+                )
+            }
+            (None, None) => {
+                bail!("a prompt is required: an argument, `-` for standard input, or --prompt-file <path>")
+            }
+            (Some(text), None) if text == "-" => {
+                bounded(&mut std::io::stdin().lock(), "standard input")?
+            }
+            (Some(text), None) => text,
+            (None, Some(path)) => {
+                let mut file = std::fs::File::open(&path)
+                    .with_context(|| format!("cannot open prompt file {}", path.display()))?;
+                bounded(&mut file, &path.display().to_string())?
+            }
+        };
+        if prompt.is_empty() {
+            bail!("the prompt is empty");
+        }
+        if prompt.len() > limit {
+            bail!("the prompt is larger than the limit of {limit} bytes");
+        }
+        Ok(prompt)
+    }
+}
+
 #[derive(Default, clap::Args)]
 pub struct SessionScope {
     /// Select or restrict a session target to one project
@@ -603,7 +666,8 @@ pub enum SessionCmd {
     /// Submit a prompt to a session's primary pane
     Prompt {
         session: String,
-        prompt: String,
+        #[command(flatten)]
+        prompt: PromptSource,
         #[command(flatten)]
         scope: SessionScope,
     },
@@ -700,7 +764,7 @@ pub fn run(cmd: Command) -> Result<()> {
                 session,
                 prompt,
                 scope,
-            } => cmd_session_prompt(&session, &prompt, &scope),
+            } => cmd_session_prompt(&session, prompt, &scope),
             SessionCmd::Peek {
                 session: s,
                 lines,
@@ -1504,7 +1568,7 @@ mod agent_command_tests {
                     scope,
                 }
             }) if session == "reviewer"
-                && prompt == "inspect lifecycle"
+                && prompt.prompt.as_deref() == Some("inspect lifecycle")
                 && write_claims == [std::path::PathBuf::from("/repo/src")]
                 && scope.project.as_deref() == Some("api")
                 && scope.worktree.as_deref() == Some("fix/timeout")
@@ -2695,7 +2759,7 @@ fn agent_exchange_response(
 #[allow(clippy::too_many_arguments)]
 fn cmd_agent_exchange_request(
     selector: &str,
-    prompt: String,
+    prompt: PromptSource,
     timeout: u64,
     writer: bool,
     write_claims: Vec<PathBuf>,
@@ -2703,6 +2767,7 @@ fn cmd_agent_exchange_request(
     json: bool,
     scope: &SessionScope,
 ) -> Result<()> {
+    let prompt = prompt.read(runtime::MAX_AGENT_EXCHANGE_PROMPT_BYTES)?;
     let pane_id = resolve_pane(selector, scope)?;
     let timeout_ms = exchange_timeout_ms(timeout)?;
     let access = if writer {
@@ -2855,11 +2920,12 @@ fn cmd_agent_exchange_wait(
 
 fn cmd_agent_exchange_continue(
     exchange_id: runtime::AgentExchangeId,
-    prompt: String,
+    prompt: PromptSource,
     timeout: u64,
     stash_draft: bool,
     json: bool,
 ) -> Result<()> {
+    let prompt = prompt.read(runtime::MAX_AGENT_EXCHANGE_PROMPT_BYTES)?;
     let current = current_agent_exchange(exchange_id)?;
     let expected_revision = current.revision;
     let timeout_ms = exchange_timeout_ms(timeout)?;
@@ -3950,8 +4016,10 @@ fn cmd_session_send_text(
     send_pane_bytes(pane_id, bytes)
 }
 
-fn cmd_session_prompt(selector: &str, prompt: &str, scope: &SessionScope) -> Result<()> {
-    cmd_session_send_text(selector, prompt, false, scope)
+fn cmd_session_prompt(selector: &str, prompt: PromptSource, scope: &SessionScope) -> Result<()> {
+    // ^ wsxd accepts 64 KiB of terminal input, and Enter is one byte of it.
+    let prompt = prompt.read(runtime::MAX_AGENT_EXCHANGE_PROMPT_BYTES - 1)?;
+    cmd_session_send_text(selector, &prompt, false, scope)
 }
 
 // ^ [[Session Peek]] Reads are bounded projections of authoritative semantic frames.
