@@ -285,20 +285,44 @@ async fn theme_file(State(app): State<Shared>, UrlPath(file): UrlPath<String>) -
         None => Fault::not_found().into_response(),
     }
 }
-async fn asset(UrlPath(name): UrlPath<String>) -> Response {
-    match assets::find(&name) {
-        // A font's name carries its version, so the response never changes.
-        Some((content_type, body, true)) => (
-            [
-                (header::CONTENT_TYPE, content_type),
-                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-            ],
-            body,
-        )
-            .into_response(),
-        Some((content_type, body, false)) => typed(content_type, body),
-        None => Fault::not_found().into_response(),
+async fn asset(UrlPath(name): UrlPath<String>, headers: HeaderMap) -> Response {
+    let Some(asset) = assets::find(&name) else {
+        return Fault::not_found().into_response();
+    };
+    if !asset.pinned {
+        return typed(asset.content_type, asset.body);
     }
+    let mut response = (
+        [
+            (header::CONTENT_TYPE, asset.content_type),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        asset.body,
+    )
+        .into_response();
+    if asset.gzip {
+        // Stored compressed only. Every browser that runs the page accepts gzip.
+        let accepted = headers
+            .get(header::ACCEPT_ENCODING)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value
+                    .split(',')
+                    .any(|coding| coding.trim().starts_with("gzip"))
+            });
+        if !accepted {
+            return Fault::new(
+                406,
+                "gzip_required",
+                "this file is served gzip-compressed only",
+            )
+            .into_response();
+        }
+        let headers = response.headers_mut();
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
+    }
+    response
 }
 
 #[derive(Deserialize)]

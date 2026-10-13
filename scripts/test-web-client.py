@@ -834,7 +834,10 @@ capabilities = ["terminal_view"]
             status, headers, html = owner.request('GET', '/', shape=shape, raw=True)
             assert status == 200 and b'<base href="/app/owner/">' in html, html[:200]
             assert b'Owner &lt;wsx&gt;' in html and b'<wsx>' not in html
-            assert "script-src 'self'" in headers['content-security-policy'] and 'unsafe' not in headers['content-security-policy']
+            # Markdown and diagrams did not loosen the policy: this is the whole header.
+            assert headers['content-security-policy'] == (
+                "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src 'self'; font-src 'self'; "
+                "connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"), headers
             assert headers['x-content-type-options'] == 'nosniff' and headers['x-frame-options'] == 'DENY'
             status, manifest = owner.request('GET', '/manifest.webmanifest', shape=shape)
             assert status == 200 and manifest['id'] == manifest['scope'] == manifest['start_url'] == '/app/owner/'
@@ -842,6 +845,13 @@ capabilities = ["terminal_view"]
             status, headers, worker = owner.request('GET', '/sw.js', shape=shape, raw=True)
             assert status == 200 and headers['content-type'].startswith('text/javascript')
             assert b'"assets/main.js"' in worker and b'__WSX_' not in worker
+            # The diagram library is fetched on first use: not in the shell list, kept afterwards.
+            shell, lazy = (json.loads(re.search(rb'const %s = (\[.*?\]);' % name, worker).group(1)) for name in (b'SHELL', b'LAZY'))
+            assert lazy == ['assets/mermaid-11.17.2.js'] and not set(lazy) & set(shell) and 'assets/markdown-it.js' in shell, (shell, lazy)
+            status, headers, body = owner.request('GET', '/' + lazy[0], shape=shape, raw=True, headers={'Accept-Encoding': 'gzip, br'})
+            assert status == 200 and headers['content-encoding'] == 'gzip' and 'immutable' in headers['cache-control'], headers
+            assert zlib.decompress(body, 31)[:12] == b'"use strict"', body[:20]
+            assert owner.request('GET', '/' + lazy[0], shape=shape)[1]['error']['code'] == 'gzip_required'
             for asset, kind in (('/assets/main.js', 'text/javascript'), ('/assets/app.css', 'text/css'),
                                 ('/' + re.search(r'href="(theme/[0-9a-f]{16}\.css)"', html.decode()).group(1), 'text/css'),
                                 ('/' + manifest['icons'][0]['src'], 'image/png'), ('/' + manifest['icons'][1]['src'], 'image/png')):
@@ -1484,7 +1494,7 @@ capabilities = ["terminal_view"]
             for role, label in (('blocked', 'Fix the login redirect loop on mobile Safari when third-party cookies are blocked'),
                                 ('error', 'api-tests'), ('exited', 'crashed-import'), ('working', 'release notes'),
                                 ('done', 'docs cleanup'), ('long', 'release checklist'), ('idle', 'refactor'),
-                                ('markdown', 'release plan'), ('large', 'full audit')):
+                                ('markdown', 'release plan'), ('large', 'full audit'), ('diagrams', 'architecture')):
                 created = call('session_create', {'worktree_id': worktrees['design'], 'label': label,
                     'command': [sys.executable, str(actor), str(work / (role + '.jsonl')), str(work / (role + '.trace')),
                                 str(design), str(chart), str(outside)], 'rows': 12, 'cols': 100})
@@ -1503,6 +1513,7 @@ capabilities = ["terminal_view"]
                 frames = call('view', {'pane_ids': [pane]})['data']['frames']
                 return bool(frames) and '❯' in ''.join(cell[0] for cell in frames[0]['cells'])
             (work / 'markdown.md').write_text(MARKDOWN_SAMPLE)
+            (work / 'diagrams.md').write_text(DIAGRAM_SAMPLE)
             (work / 'large.md').write_text(('Paragraph with **bold**, `code` and a [link](https://example.com). ' * 20
                                            + '\n\n- item one\n- item two\n\n```rust\nfn main() { println!("x"); }\n```\n\n') * 145)
             for role in shown:
@@ -1512,11 +1523,12 @@ capabilities = ["terminal_view"]
                 wait(lambda: state_of(role) == 'idle' and prompt_shown(role), role + ' agent ready', timeout=20)
             for role, text in (('blocked', 'ask me which option to take'), ('error', 'fail now'), ('exited', 'quit now'),
                                ('working', 'use tool'), ('done', 'tidy the docs'), ('long', 'long talk'),
-                               ('markdown', 'say markdown.md'), ('large', 'say large.md')):
+                               ('markdown', 'say markdown.md'), ('large', 'say large.md'), ('diagrams', 'say diagrams.md')):
                 status, sent = steady(m2, 'POST', '/api/chat/%d/send' % shown[role], {'text': text})
                 assert status == 200, (role, sent)
             for role, expected in (('blocked', 'blocked'), ('error', 'error'), ('exited', 'exited'), ('working', 'working'),
-                                   ('done', 'done'), ('long', 'done'), ('markdown', 'done'), ('large', 'done')):
+                                   ('done', 'done'), ('long', 'done'), ('markdown', 'done'), ('large', 'done'),
+                                   ('diagrams', 'done')):
                 wait(lambda: state_of(role) == expected, role + ' state', timeout=20)
             blocked_items = steady(m2, 'GET', '/api/chat/%d/timeline' % shown['blocked'])[1]
             assert [item['text'] for item in blocked_items['items']] == ['ask me which option to take'], blocked_items

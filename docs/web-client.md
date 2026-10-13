@@ -135,6 +135,18 @@ An agent's message and the summary of an earlier conversation are rendered as Co
 - A message is parsed once per text. A timeline refresh that brings the same text reuses the nodes. Measured in headless Chrome with the processor slowed four times: a 204 KB message with 145 code blocks takes about 0.2 seconds.
 - markdown-it 14.3.2 (125,451 bytes, 44,975 gzip, MIT) and highlight.js 11.11.1 with those 13 grammars (71,996 bytes, 22,705 gzip, BSD-3-Clause) are vendored by `scripts/vendor-markdown.sh` with pinned SHA-512 values. markdown-it is the published browser file, unchanged.
 
+### Diagrams
+
+A fenced block with the language `mermaid` is drawn as a diagram (`web/diagram.js`).
+
+- Mermaid 11.17.2 is vendored by `scripts/vendor-mermaid.sh` (pinned SHA-512, MIT). It is 3,572,508 bytes, stored and served gzip-compressed as `assets/mermaid-11.17.2.js` (975,905 bytes, `Cache-Control: immutable`). A request that does not accept gzip answers 406.
+- The page imports it when the first diagram appears. It is not in the service worker's shell list, so installing the page does not download it. The service worker keeps it after the first use, so a diagram also draws offline from then on.
+- The CSP is unchanged. Mermaid must draw into the page to measure text, and it writes inline styles, which the CSP refuses. Three things replace that: the vendoring step moves the diagram's CSS from a `<style>` element to a constructed style sheet that the page adopts while drawing; while drawing, a `style` attribute that Mermaid sets goes through the CSSOM; and the vendoring step leaves out Mermaid's last DOMPurify pass over the finished SVG, because that pass parses every style attribute and the CSP reports each one.
+- The finished SVG is never inserted as markup. It becomes an image from a `blob:` URL, which `img-src` already allows. An SVG image runs no script, follows no link and makes no request, which is what the left-out pass protected. Mermaid runs with `securityLevel: "strict"` and `htmlLabels: false`; labels are still sanitized by Mermaid.
+- Colors and the font are the theme's tokens, read when the diagram is drawn. A diagram is drawn again when the device changes the scheme. Up to 40 drawn diagrams are kept by scheme and source, so a timeline refresh does not draw again.
+- A diagram a little wider than the column is shown smaller. A much wider one keeps its size and scrolls sideways in its own block. A tap opens it full screen: drag to move, pinch or the two buttons to zoom, Escape or Close to leave. The page itself does not zoom.
+- A block that does not parse, or a source above 20,000 characters, shows its source as a code block with the line "Diagram could not be drawn".
+
 ### Queue and Stop
 
 wsxd allows one active exchange per pane. A message sent while the agent works, or while older messages wait, is kept by the web server instead of failing.
