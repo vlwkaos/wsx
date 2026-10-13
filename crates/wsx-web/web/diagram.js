@@ -108,7 +108,8 @@ function useScheme() {
 }
 
 const ZOOM_STEP = 1.5;
-const MIN_SHOWN_SCALE = 0.75;
+// Diagram text is drawn at the body size; shown smaller than this it is hard to read.
+const MIN_TEXT_PX = 10;
 
 // Full screen: drag to move, pinch or the two buttons to zoom. The page itself never zooms.
 function Viewer({ diagram, onClose }) {
@@ -179,22 +180,41 @@ export function Diagram({ source, fallback }) {
     drawn(source, scheme).then((result) => { if (current) setDiagram(result); });
     return () => { current = false; };
   }, [source, scheme]);
-  // A diagram a little wider than the column is shown smaller; a much wider one keeps its
-  // size, so its text stays readable, and scrolls sideways.
+  // The whole diagram shows first: it is scaled down to the column, never up. Only when
+  // that would make its text smaller than MIN_TEXT_PX does it stay larger and scroll
+  // sideways in its own block, with a fade on the side that holds more.
   const frame = useRef();
   // Safari does not focus a tapped button, so the way back is kept here.
   const opener = useRef();
-  const [fits, setFits] = useState(false);
+  const [scale, setScale] = useState(null);
+  const [more, setMore] = useState("");
+  const edges = () => {
+    const node = frame.current;
+    if (!node) return;
+    setMore([node.scrollLeft > 1 && "start", node.scrollLeft + node.clientWidth < node.scrollWidth - 1 && "end"].filter(Boolean).join(" "));
+  };
   useLayoutEffect(() => {
-    if (frame.current && diagram?.width) setFits(diagram.width * MIN_SHOWN_SCALE <= frame.current.clientWidth);
+    if (!frame.current || !diagram?.width) return undefined;
+    const fit = () => {
+      const readable = Math.min(1, MIN_TEXT_PX / parseFloat(token("font-size-md")));
+      setScale(Math.min(1, Math.max(frame.current.clientWidth / diagram.width, readable)));
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(frame.current);
+    return () => observer.disconnect();
   }, [diagram]);
+  useLayoutEffect(edges, [scale]);
   if (!diagram) return html`<p class="note" role="status">Drawing the diagram…</p>`;
   if (diagram.failed) return html`<div class="diagram-failed">${fallback}<p class="note">Diagram could not be drawn</p></div>`;
   return html`
-    <div class="diagram" ref=${frame} data-fits=${fits ? "" : null}>
-      <button class="diagram-open" type="button" ref=${opener} aria-label="Open the diagram full screen" onClick=${() => setOpen(true)}>
-        <img src=${diagram.url} width=${diagram.width} height=${diagram.height} alt="Diagram" />
-      </button>
+    <div class="diagram">
+      <div class="diagram-scroll" ref=${frame} data-more=${more || null} onScroll=${edges}>
+        <button class="diagram-open" type="button" ref=${opener} aria-label="Open the diagram full screen" onClick=${() => setOpen(true)}>
+          <img src=${diagram.url} alt="Diagram"
+            width=${Math.round(diagram.width * (scale ?? 1))} height=${Math.round(diagram.height * (scale ?? 1))} />
+        </button>
+      </div>
       ${open && html`<${Viewer} diagram=${diagram} onClose=${() => { setOpen(false); opener.current.focus(); }} />`}
     </div>`;
 }
