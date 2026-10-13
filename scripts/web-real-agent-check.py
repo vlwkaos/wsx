@@ -56,7 +56,7 @@ def main():
             client.settimeout(5)
             client.connect(str(path))
             stream = client.makefile('rb')
-            client.sendall(b'{"method":"hello","params":{"protocol":17}}\n')
+            client.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
             stream.readline()
             client.sendall(json.dumps({'method': method, **({'params': params} if params is not None else {})}).encode() + b'\n')
             return json.loads(stream.readline())

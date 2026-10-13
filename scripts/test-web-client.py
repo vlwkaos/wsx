@@ -36,7 +36,7 @@ draft, pending, leaf, sequence = '', b'', None, 0
 def report(state):
  with socket.socket(socket.AF_UNIX) as client:
   client.connect(os.environ['WSX_SOCKET']); stream = client.makefile('rb')
-  client.sendall(b'{"method":"hello","params":{"protocol":17}}\n'); stream.readline()
+  client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
   params = {'pane_id':pane,'runtime_generation':generation,'provider':'claude','state':state,
     'session_ref':{'kind':'id','value':'fixture','transcript_path':str(history)},
     'capabilities':{'prompt':True,'lifecycle':True}}
@@ -466,7 +466,7 @@ def main():
                 client.settimeout(5)
                 client.connect(str(path))
                 stream = client.makefile('rb')
-                client.sendall(b'{"method":"hello","params":{"protocol":17}}\n')
+                client.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
                 stream.readline()
                 request = {'method': method}
                 if params is not None:
@@ -1266,7 +1266,7 @@ capabilities = ["terminal_view"]
             window.settimeout(5)
             window.connect(str(path))
             lines = window.makefile('rb')
-            window.sendall(b'{"method":"hello","params":{"protocol":17}}\n')
+            window.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
             lines.readline()
             window.sendall(json.dumps({'method': 'terminal_subscribe', 'params': {
                 'pane_id': term_pane, 'client_id': 77, 'takeover': True, 'rows': 12, 'cols': 60}}).encode() + b'\n')

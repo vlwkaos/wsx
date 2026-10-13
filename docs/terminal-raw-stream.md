@@ -2,7 +2,7 @@
 
 `wsxd` gives a client that runs its own terminal emulator the bytes the pane's program wrote. The hosted web client uses it for xterm.js (`docs/web-client.md`). The TUI keeps the frame stream (`terminal_subscribe`), which is unchanged.
 
-Protocol 17, daemon revision 23, capability `raw_terminal_stream`.
+Protocol 16 (an added request, no protocol change), daemon revision 23, capability `raw_terminal_stream`. A client reads the capability from `hello` or a snapshot before it subscribes; a daemon without it does not know the request.
 
 ## Request
 

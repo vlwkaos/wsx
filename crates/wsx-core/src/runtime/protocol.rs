@@ -10,7 +10,7 @@ use std::{
 };
 
 // ^ [[Terminal Stream Protocol v3]] Wire-version history and compatibility boundaries.
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 16;
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const MAX_AGENT_EXCHANGE_PROMPT_BYTES: usize = 64 * 1024;
 pub const MAX_AGENT_EXCHANGE_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1000;

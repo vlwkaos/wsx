@@ -76,7 +76,7 @@ function daemon(method, params) {
         resolve(JSON.parse(lines[1]).data);
       }
     });
-    client.write(`{"method":"hello","params":{"protocol":17}}\n${JSON.stringify({ method, params })}\n`);
+    client.write(`{"method":"hello","params":{"protocol":16}}\n${JSON.stringify({ method, params })}\n`);
   });
 }
 // The browser's screen must be the screen wsxd holds, row for row.
@@ -399,7 +399,7 @@ window_.on("data", (chunk) => {
   buffered = parts.pop();
   lines.push(...parts.map((line) => JSON.parse(line)));
 });
-window_.write('{"method":"hello","params":{"protocol":17}}\n');
+window_.write('{"method":"hello","params":{"protocol":16}}\n');
 window_.write(`${JSON.stringify({ method: "terminal_subscribe", params: { pane_id: Number(paneId), client_id: 4242, takeover: true, rows: 24, cols: 80 } })}\n`);
 await until(state("elsewhere"), "the page did not notice that a wsx window took the terminal");
 if (!(await evaluate("document.querySelector('.terminal-notice').textContent.includes('another wsx window')"))) await fail("no 'controlled elsewhere' bar");

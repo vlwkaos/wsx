@@ -29,6 +29,9 @@ pub struct Attach {
     /// `None`: keep the pane's size and let the browser scale its view.
     pub size: Option<(u16, u16)>,
     pub input: bool,
+    /// The daemon's `raw_terminal_stream` capability. An older wsxd of the same
+    /// protocol serves everything else, so only the terminal says it must be upgraded.
+    pub raw_stream: bool,
 }
 
 /// The lease identity of one open page. A page that reconnects keeps it, so wsxd
@@ -93,6 +96,13 @@ fn pump(
     updates: &tokio::sync::mpsc::Sender<Frame>,
     input: tokio::sync::oneshot::Sender<std::sync::mpsc::SyncSender<TerminalClientMessage>>,
 ) {
+    if !attach.raw_stream {
+        let _ = updates.blocking_send(Frame::End(error_frame(
+            "daemon_upgrade_required",
+            "The terminal needs a newer wsx daemon. Upgrade wsx on the host.",
+        )));
+        return;
+    }
     let (rows, cols) = attach.size.unwrap_or((0, 0));
     let stream = match RawTerminalStream::connect_raw(
         &app.client,

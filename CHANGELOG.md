@@ -10,7 +10,6 @@
 - The web client's Activity panel is removed; the inbox replaces it. A site file that lists `"activity"` under `panels` is refused.
 - The web theme contract changed with the new page: 60 tokens (`color-raised`, `color-hairline`, `color-faint`, `color-attention`, `color-ansi-0` to `color-ansi-15`, `font-terminal`, `tracking-*`, `size-row`, `size-bar`, `size-rail`, `size-prose` and others are new; the component color, shadow, `color-border`, `color-sunken`, `color-ok` and `color-focus` tokens are gone) and new component hooks. A custom theme must be updated; the server names the first token it refuses. See `docs/web-themes.md`.
 - `GET api/chat/<session>/history` is replaced by `GET api/chat/<session>/timeline`.
-- The wire protocol is 17. A wsx or script that says `hello` with protocol 16 is refused by the new daemon, apart from the lifecycle requests.
 
 ### Features
 
@@ -21,7 +20,7 @@
 - Let one web site reach several projects, or every project wsx manages. Anything outside the grant answers 404.
 - Show the web client dark by default when its theme has a dark scheme. A device can choose light under Settings. The operating system preference is no longer read.
 - Make the web client's terminal panel a real terminal. It is xterm.js on the pane's own byte stream over a WebSocket, with a key row, paste, an arrow drag pad and touch scrolling on phones, Korean and other IME input, and reconnect after a lost connection. A pane still has one controller: the page shows when a wsx window holds the terminal and takes it only on request. *Fit screen* resizes the pane to the browser; *Host size* scales the view instead. The text-snapshot terminal and its `api/terminal` routes are removed. See `docs/web-client.md`.
-- Add a raw terminal stream to wsxd for clients that run their own emulator: a replay of the current screen, then the PTY bytes, with the same single-writer lease as the TUI stream. Protocol 17, daemon revision 23, capability `raw_terminal_stream`. The TUI's frame stream is unchanged. A protocol-16 TUI defers the upgrade until it quits, as described in `docs/daemon-live-upgrade.md`. See `docs/terminal-raw-stream.md`.
+- Add a raw terminal stream to wsxd for clients that run their own emulator: a replay of the current screen, then the PTY bytes, with the same single-writer lease as the TUI stream. The wire protocol stays 16: the stream is an added request, announced by the capability `raw_terminal_stream` (daemon revision 23). The TUI's frame stream is unchanged, and an open 0.30 TUI does not defer the daemon upgrade. Against a daemon without the capability the web client's terminal panel says that the daemon must be upgraded; the other panels work. A running `wsx web serve` sends client presence with its poll, so it does not defer the upgrade either. See `docs/terminal-raw-stream.md`.
 
 ### Fixes
 

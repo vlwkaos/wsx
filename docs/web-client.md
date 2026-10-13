@@ -1,6 +1,6 @@
 # Hosted web client
 
-`wsx web serve --site <site.toml>` hosts one paired web site: a remote chat with the agents of the granted projects, plus optional files and terminal panels. It is a `wsxd` client like the TUI. It never starts, stops or replaces `wsxd`. The terminal panel needs a `wsxd` with the raw terminal stream (protocol 17, [terminal-raw-stream.md](terminal-raw-stream.md)). Deployment commands are in [web-deploy.md](web-deploy.md).
+`wsx web serve --site <site.toml>` hosts one paired web site: a remote chat with the agents of the granted projects, plus optional files and terminal panels. It is a `wsxd` client like the TUI. It never starts, stops or replaces `wsxd`. The terminal panel needs a `wsxd` that reports the capability `raw_terminal_stream` ([terminal-raw-stream.md](terminal-raw-stream.md)). Against a daemon without it the panel says that the daemon must be upgraded (`daemon_upgrade_required`); chat, files and the inbox work. Deployment commands are in [web-deploy.md](web-deploy.md).
 
 ```sh
 wsx web vapid                          # print a new Web Push key pair for a site file
@@ -136,7 +136,7 @@ wsxd allows one active exchange per pane. A message sent while the agent works, 
 
 ## Live updates
 
-A page opens one `EventSource` (`api/events`) and has no polling timer. Events: `workspace` (projects and session list), `history` (a session's saved conversation changed), `exchange`, `daemon`, `resync`, `revoked`. The server follows `wsxd` with its long-poll. While a page is connected it also compares each transcript file's size and modification time about every two seconds.
+A page opens one `EventSource` (`api/events`) and has no polling timer. Events: `workspace` (projects and session list), `history` (a session's saved conversation changed), `exchange`, `daemon`, `resync`, `revoked`. The server follows `wsxd` with its long-poll and states the protocol it reconnects at, so a running web server does not defer a daemon upgrade (`docs/daemon-live-upgrade.md`). While a page is connected it also compares each transcript file's size and modification time about every two seconds.
 
 ## Media
 

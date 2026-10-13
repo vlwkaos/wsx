@@ -14,7 +14,7 @@ import time
 import weakref
 
 ROOT = Path(__file__).resolve().parents[1]
-PROTOCOL = 17
+PROTOCOL = 16
 # ^ Plugin manifest commands must be absolute even when the scratch root is relative.
 WORK = Path(os.environ.get("WSX_SMOKE_WORK", ROOT / ".work" / "runtime-smoke")).resolve()
 if WORK.exists():

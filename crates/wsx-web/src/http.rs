@@ -892,9 +892,10 @@ async fn terminal_socket(
     if query.takeover && !input {
         return Err(Fault::forbidden("taking control of the terminal"));
     }
-    let pane_id = blocking(|| {
+    let (pane_id, raw_stream) = blocking(|| {
         let snapshot = chat::snapshot(&app.client)?;
-        Ok(chat::target(&snapshot, &app.site.access, session)?.pane.id)
+        let pane_id = chat::target(&snapshot, &app.site.access, session)?.pane.id;
+        Ok((pane_id, snapshot.capabilities.raw_terminal_stream))
     })?;
     let slot = StreamSlot::take(&app, format!("terminal:{}", device.id), "terminals")?;
     if query.client.len() > 32 || !query.client.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -906,6 +907,7 @@ async fn terminal_socket(
         takeover: query.takeover,
         size: (input && query.rows > 0 && query.cols > 0).then_some((query.rows, query.cols)),
         input,
+        raw_stream,
     };
     Ok(upgrade
         .max_message_size(4 * terminal::MAX_INPUT_BYTES)
