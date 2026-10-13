@@ -3565,10 +3565,15 @@ impl App {
         if self.terminal_prefix_pending() {
             hints.push(hint("esc", "cancel"));
         }
+        hints.push(hint(&workspace.to_ascii_lowercase(), "workspace"));
+        // A hint names a key only while the key has a target.
+        if self.context_session_target(1).is_some() {
+            hints.push(hint(self.terminal_session_navigation_label(), "session"));
+        }
+        if adjacent_group(&self.config.ordered_group_keys(), &self.active_group, 1).is_some() {
+            hints.push(hint("{/}", "group"));
+        }
         hints.extend([
-            hint(&workspace.to_ascii_lowercase(), "workspace"),
-            hint(self.terminal_session_navigation_label(), "session"),
-            hint("{/}", "group"),
             crate::ui::IDLE_ITERATION_HINT.to_string(),
             crate::ui::ACTIVE_ITERATION_HINT.to_string(),
             crate::ui::ATTENTION_ITERATION_HINT.to_string(),
@@ -9662,7 +9667,6 @@ mod tests {
             vec![
                 "(alt+g)commands",
                 "(z)workspace",
-                "(h/l)session",
                 "({/})group",
                 crate::ui::IDLE_ITERATION_HINT,
                 crate::ui::ACTIVE_ITERATION_HINT,
@@ -9671,7 +9675,8 @@ mod tests {
                 concat!("(q)", "quit"),
             ]
         );
-        for hint in ["(alt+g)commands", "(z)workspace", "(h/l)session"] {
+        // This project has no session to switch to, so the session hint is absent.
+        for hint in ["(alt+g)commands", "(z)workspace", "({/})group"] {
             assert!(
                 terminal_footer.contains(hint),
                 "missing {hint}: {terminal_footer:?}"
@@ -9700,7 +9705,6 @@ mod tests {
                 "(alt+g)commands",
                 "(esc)cancel",
                 "(z)workspace",
-                "(h/l)session",
                 "({/})group",
                 crate::ui::IDLE_ITERATION_HINT,
                 crate::ui::ACTIVE_ITERATION_HINT,

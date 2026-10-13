@@ -490,15 +490,14 @@ pub fn render_project_preview(frame: &mut Frame, area: Rect, project: &Project) 
     for wt in &project.worktrees {
         let main_mark = if wt.is_main { "* " } else { "  " };
         let sess_count = wt.sessions.len();
-        let activity = if wt
+        // The marker is the session's own state icon: `●` already means a running job.
+        // A blocked session outranks a finished one, as in attention navigation.
+        let activity = wt
             .sessions
             .iter()
-            .any(|s| session_state::derive(s).app_state() == AppSessionState::NeedsAttention)
-        {
-            " ●"
-        } else {
-            ""
-        };
+            .filter(|s| session_state::derive(s).app_state() == AppSessionState::NeedsAttention)
+            .min_by_key(|s| session_state::derive(s) != session_state::SessionHeuristic::Blocked)
+            .map(|s| session_icon(s, 0));
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {}{}", main_mark, wt.display_name()),
@@ -506,13 +505,15 @@ pub fn render_project_preview(frame: &mut Frame, area: Rect, project: &Project) 
             ),
             Span::styled(
                 format!(
-                    "  ({} session{}){}",
+                    "  ({} session{})",
                     sess_count,
                     if sess_count == 1 { "" } else { "s" },
-                    activity
                 ),
                 Style::default().fg(theme::TEXT_MUTED),
             ),
+            activity.map_or_else(Span::default, |(icon, color)| {
+                Span::styled(format!(" {icon}"), Style::default().fg(color))
+            }),
         ]));
     }
 

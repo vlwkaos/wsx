@@ -46,7 +46,6 @@ fn current_state(view: &TerminalTitleView<'_>) -> (&'static str, Color) {
 
 fn chip(
     view: &TerminalTitleView<'_>,
-    worktree: &WorktreeInfo,
     session: &SessionInfo,
     current: bool,
     width: usize,
@@ -59,13 +58,7 @@ fn chip(
     } else {
         session_icon(session, view.animation_frame)
     };
-    let style = if current {
-        theme::terminal_current()
-    } else {
-        theme::terminal_peer().patch(theme::terminal_worktree(
-            worktree.path == view.worktree.path,
-        ))
-    };
+    let style = theme::terminal_session(current);
     if width < 4 {
         return vec![Span::styled(icon, style.fg(color))];
     }
@@ -137,7 +130,8 @@ impl TitleWindow {
             let worktree = &view.project.worktrees[*wi];
             if previous != Some(*wi) {
                 if previous.is_some() {
-                    spans.push(Span::raw(" "));
+                    // The cell between two worktree groups is a rule, not one more gap.
+                    spans.push(Span::styled("│", theme::terminal_group_rule()));
                 }
                 let name = truncate_to_width(worktree.display_name(), self.worktree_width);
                 spans.push(Span::styled(
@@ -148,7 +142,6 @@ impl TitleWindow {
             }
             spans.extend(chip(
                 view,
-                worktree,
                 session,
                 index == self.current,
                 if index == self.current {
@@ -168,7 +161,7 @@ fn title_line(view: &TerminalTitleView<'_>, width: usize) -> Line<'static> {
     }
     if width <= 3 {
         let (icon, color) = current_state(view);
-        return Line::from(Span::styled(icon, theme::terminal_current().fg(color)));
+        return Line::from(Span::styled(icon, theme::terminal_session(true).fg(color)));
     }
     let order: Vec<_> = session_state::context_sessions(view.project).collect();
     let mut spans = Vec::new();
@@ -203,7 +196,7 @@ fn title_line(view: &TerminalTitleView<'_>, width: usize) -> Line<'static> {
             budget = budget.saturating_sub(Line::from(label.as_str()).width());
             spans.push(Span::styled(label, theme::terminal_worktree(true)));
         }
-        spans.extend(chip(view, view.worktree, view.session, true, budget));
+        spans.extend(chip(view, view.session, true, budget));
         spans.push(Span::styled(position, theme::terminal_context()));
         return Line::from(spans);
     }
@@ -369,7 +362,7 @@ mod tests {
             animation_frame: 0,
         };
         for current in [false, true] {
-            let spans = chip(&view, view.worktree, view.session, current, 72);
+            let spans = chip(&view, view.session, current, 72);
             assert_eq!(spans.first().unwrap().content, " ");
             assert_eq!(spans.last().unwrap().content, " ");
             assert!(Line::from(spans).to_string().contains("[build]"));
@@ -465,7 +458,10 @@ mod tests {
         assert!(text.contains("current / logs"), "{text}");
         assert!(!text.contains("(codex)") && !text.contains(":3000"));
         assert!(!text.contains(['[', ']']), "{text}");
-        for background in [theme::terminal_current().bg, theme::terminal_peer().bg] {
+        for background in [
+            theme::terminal_session(true).bg,
+            theme::terminal_session(false).bg,
+        ] {
             assert_ne!(background, theme::terminal_titlebar().bg);
             assert!((3..87).any(|x| Some(buffer[(x, 2)].bg) == background));
         }
