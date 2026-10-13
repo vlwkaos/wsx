@@ -61,6 +61,9 @@ fn observe(app: Arc<App>) {
             target_binary_id,
             target_daemon_revision: runtime::DAEMON_REVISION,
             max_protocol: runtime::PROTOCOL_VERSION,
+            // It cannot re-execute into an installed wsx, and needs no exemption:
+            // it reconnects at the daemon's own protocol.
+            follows: false,
         });
     loop {
         let changed = match app.client.call(&Request::Poll {

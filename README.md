@@ -148,7 +148,9 @@ wsx agent context [session|pane|label] [--metadata-only] --json [-p <project>] [
 wsx agent request|inspect|wait|continue|cancel|exchanges
 wsx plugin list|reload
 wsx runtime status [--json]
-wsx daemon stop|recover
+wsx daemon restart [--json]
+wsx daemon stop [--force] [--json]
+wsx daemon recover
 wsx web serve|pair|devices --site <site.toml>
 wsx web vapid
 ```
@@ -184,9 +186,13 @@ Each routine `--arg` is one direct argv item. wsx never invokes a shell for rout
 
 See [Executable plugins](docs/plugins.md) for the versioned event, Terminal-sidecar, and worktree-review contracts. With a review provider installed, Tab on a worktree opens keyboard-driven file and diff review inside its preview. The [reference Git provider setup](docs/worktree-review.md) does not change the agent terminal.
 
-Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed terminal. Explicit subcommands remain available. `wsx runtime status` and `wsx daemon stop` never start the daemon. Runtime status distinguishes a stopped daemon from one that is running but incompatible, awaiting an upgrade, deferring replacement, or ready. Its lifecycle output includes the daemon version and revision when the daemon supports them.
+Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed terminal. Explicit subcommands remain available. `wsx runtime status`, `wsx daemon restart` and `wsx daemon stop` never start the daemon. Runtime status distinguishes a stopped daemon from one that is running but incompatible, awaiting an upgrade, deferring replacement, or ready. Its lifecycle output includes the daemon version and revision when the daemon supports them.
 
-Handoff-capable wsxd updates wait until other wsx TUI generations detach, then transfer live terminal ownership to the new daemon without restarting shells, agents, foreground jobs, or listening servers. The TUI reports a successful upgrade or the blockers that deferred it. Routine requests similarly replace legacy standalone schedulers with the adjacent wsxd automatically.
+A wsxd update transfers live terminal ownership to the new daemon without restarting shells, agents, foreground jobs, or listening servers. Open wsx windows stay open: a window whose installed `wsx` was replaced re-executes into it in the same terminal and returns to the same session and mode. Only a window of an older release that cannot talk to the new daemon defers the update.
+
+A starting `wsx` that finds an older wsxd upgrades it before it opens. It shows an upgrade screen with both versions and the number of running terminals. When another window defers the update, the screen says which window to quit, and wsx opens by itself when the update is done. `Enter` opens on the old wsxd at once and `q` quits.
+
+`wsx daemon restart` replaces wsxd with the installed build the same way, also when it is the build that is running. Sessions keep running. An older wsxd that cannot do this refuses and stops nothing. `wsx daemon stop` ends the programs in every session, so it refuses while sessions are running and needs `--force`; saved session commands restart on the next launch. See [Daemon live upgrade](docs/daemon-live-upgrade.md). Routine requests similarly replace legacy standalone schedulers with the adjacent wsxd automatically.
 
 ## Runtime and security
 

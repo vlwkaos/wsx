@@ -5,6 +5,7 @@ mod action;
 mod app;
 mod cli;
 mod event;
+mod follow;
 mod repo_scan;
 mod review;
 mod search;
@@ -62,7 +63,11 @@ fn main() -> Result<()> {
             cli::run(cmd)
         }
         // The TUI renders its config-backed shell before background runtime discovery completes.
-        None => run_tui(args.mobile),
+        None => run_tui(
+            args.mobile,
+            args.followed_from
+                .map(|version| (version, args.follow_pane.map(wsx_core::runtime::PaneId))),
+        ),
     }
 }
 
@@ -80,7 +85,10 @@ fn reject_nested_tui(
     Ok(())
 }
 
-fn run_tui(mobile: bool) -> Result<()> {
+fn run_tui(
+    mobile: bool,
+    followed: Option<(String, Option<wsx_core::runtime::PaneId>)>,
+) -> Result<()> {
     let (mut session, mut terminal) = tui::init().context("terminal init failed")?;
     let mut app = match App::new(mobile) {
         Ok(app) => app,
@@ -90,6 +98,9 @@ fn run_tui(mobile: bool) -> Result<()> {
             return Err(error);
         }
     };
+    if let Some((from_version, pane)) = followed {
+        app.resume_after_follow(&from_version, pane);
+    }
     let result = app.run(&mut terminal, &session);
     // Restore before diagnostic I/O and cache flush; Drop retries a failed restoration.
     let restored = session.restore();

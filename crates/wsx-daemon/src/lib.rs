@@ -180,6 +180,7 @@ struct TuiPresenceLease {
     target_binary_id: String,
     target_daemon_revision: u32,
     max_protocol: u32,
+    follows: bool,
     expires_at: Instant,
 }
 
@@ -1679,25 +1680,20 @@ fn serve_client(mut stream: UnixStream, daemon: Arc<Daemon>) -> io::Result<()> {
         let Some(line) = read_bounded_line(&mut reader)? else {
             return Ok(());
         };
-        let request = serde_json::from_str::<Request>(&line).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid request: {error}"),
-            )
-        })?;
-        let response = if matches!(
-            request,
-            Request::Shutdown
+        // ^ docs/daemon-live-upgrade.md: a request this daemon does not know is answered,
+        // never dropped, so a client of another release reads a reason.
+        let response = match serde_json::from_str::<Request>(&line) {
+            Ok(
+                request @ (Request::Shutdown
                 | Request::LifecycleStatus
                 | Request::PrepareReplacement { .. }
-                | Request::PrepareHandoff { .. }
-        ) {
-            handle(&daemon, request)
-        } else {
-            Response::Error(ApiError::new(
+                | Request::PrepareHandoff { .. }),
+            ) => handle(&daemon, request),
+            Ok(_) => Response::Error(ApiError::new(
                 "protocol_mismatch",
                 format!("client {protocol}, daemon {PROTOCOL_VERSION}"),
-            ))
+            )),
+            Err(error) => Response::Error(ApiError::new("invalid_json", error.to_string())),
         };
         return write_response(&mut stream, response);
     }
@@ -2835,6 +2831,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             target_protocol,
             target_daemon_revision,
             executable,
+            restart,
         } => prepare_handoff(
             daemon,
             target_binary_id,
@@ -2842,6 +2839,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             target_protocol,
             target_daemon_revision,
             executable,
+            restart,
         ),
         Request::Shutdown => {
             let mut state = lock(&daemon.state);
@@ -2934,6 +2932,7 @@ fn capabilities() -> Capabilities {
         agent_exchanges: true,
         agent_exchange_bound_receipts: true,
         raw_terminal_stream: true,
+        daemon_restart: true,
     }
 }
 
@@ -3130,6 +3129,7 @@ fn prepare_handoff(
     target_protocol: u32,
     target_daemon_revision: u32,
     executable: PathBuf,
+    restart: bool,
 ) -> Result<Response, ApiError> {
     if target_protocol == 0 || target_daemon_revision < DAEMON_REVISION {
         return Err(api("invalid_request", "handoff target is not newer"));
@@ -3140,9 +3140,12 @@ fn prepare_handoff(
             "handoff target version does not match its identity",
         ));
     }
-    if compare_binary_identities(&target_binary_id, &daemon.binary_id)
-        != Some(std::cmp::Ordering::Greater)
-    {
+    // ^ docs/daemon-live-upgrade.md: only an explicit restart may hand off into this
+    // daemon's own version, including the same file. It never selects an older version.
+    let newer = compare_binary_identities(&target_binary_id, &daemon.binary_id)
+        == Some(std::cmp::Ordering::Greater);
+    let same_version_restart = restart && target_version == WSX_VERSION;
+    if !newer && !same_version_restart {
         return Err(api("invalid_request", "handoff target is not newer"));
     }
     let executable = validate_handoff_executable(&executable, &target_binary_id)
@@ -3204,13 +3207,14 @@ fn validate_handoff_executable(path: &Path, expected_identity: &str) -> io::Resu
 fn handoff_blockers(state: &mut State, _target_binary_id: &str) -> Vec<ReplacementBlocker> {
     expire_tui_presence(state, Instant::now());
     // ^ docs/daemon-live-upgrade.md: a TUI that speaks the target protocol reconnects
-    // to the successor on its own, so only older TUIs must leave first.
+    // to the successor on its own, and a TUI that follows re-executes into the installed
+    // wsx. Only a TUI that can do neither must leave first.
     let target_protocol = state.replacement_protocol.unwrap_or(u32::MAX);
     let another_tui = state.legacy_tui_until.is_some()
         || state
             .tui_clients
             .values()
-            .any(|client| client.max_protocol < target_protocol);
+            .any(|client| client.max_protocol < target_protocol && !client.follows);
     let mut blockers = Vec::new();
     if another_tui {
         blockers.push(ReplacementBlocker::OtherTui);
@@ -3330,6 +3334,7 @@ fn record_tui_presence(state: &mut State, tui: Option<TuiClientPresence>) -> Res
             target_binary_id: tui.target_binary_id,
             target_daemon_revision: tui.target_daemon_revision,
             max_protocol: tui.max_protocol,
+            follows: tui.follows,
             expires_at: now + TUI_PRESENCE_TTL,
         },
     );
@@ -7244,6 +7249,7 @@ mod tests {
                 target_binary_id: "target".into(),
                 target_daemon_revision: DAEMON_REVISION + 1,
                 max_protocol: 0,
+                follows: false,
                 expires_at: Instant::now() + TUI_PRESENCE_TTL,
             },
         );
@@ -7337,6 +7343,7 @@ mod tests {
                 target_binary_id: "0.20.0:1:2:3:10".into(),
                 target_daemon_revision: 0,
                 max_protocol: 0,
+                follows: false,
             }),
         )
         .unwrap();
@@ -7370,6 +7377,7 @@ mod tests {
                 target_binary_id: "0.22.0:1:2:3:10".into(),
                 target_daemon_revision: 0,
                 max_protocol: 0,
+                follows: false,
             }),
         )
         .unwrap();
@@ -7416,6 +7424,7 @@ mod tests {
                 target_binary_id: "0.23.1:4:5:6:30".into(),
                 target_daemon_revision: DAEMON_REVISION + 1,
                 max_protocol: 0,
+                follows: false,
             }),
         )
         .unwrap();
@@ -7460,6 +7469,7 @@ mod tests {
                         target_binary_id: target_binary_id.into(),
                         target_daemon_revision: 0,
                         max_protocol: 0,
+                        follows: false,
                     }),
                 )
                 .is_err(),

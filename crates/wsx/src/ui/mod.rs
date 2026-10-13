@@ -16,6 +16,7 @@ pub mod routine_editor;
 pub mod search_feedback;
 pub mod terminal_title;
 pub mod theme;
+pub mod upgrade;
 pub mod workspace_nav;
 pub mod workspace_tree;
 
@@ -143,6 +144,11 @@ fn render_workspace_header(frame: &mut Frame, area: Rect, app: &App) {
 // ^ [[wsx UI Patterns]] Responsive layout, capability hints, and direct state projection.
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    // ^ docs/daemon-live-upgrade.md: the workspace is not shown on a daemon that is being replaced.
+    if let Some(gate) = app.upgrade_gate() {
+        upgrade::render(frame, area, gate);
+        return;
+    }
     app.is_mobile = app.force_mobile || area.width < 60;
     let is_mobile = app.is_mobile;
     let status = status_bar_view(app);

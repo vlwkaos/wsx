@@ -430,6 +430,8 @@ pub struct Capabilities {
     pub agent_exchanges: bool,
     pub agent_exchange_bound_receipts: bool,
     pub raw_terminal_stream: bool,
+    // ^ docs/daemon-live-upgrade.md: accepts a restart handoff into its own build.
+    pub daemon_restart: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -439,6 +441,9 @@ pub enum DaemonPhase {
     Ready,
     ReplacementPending,
     Stopping,
+    // ^ A newer daemon may report a phase this client does not know.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -476,6 +481,10 @@ pub struct TuiClientPresence {
     // after a live handoff. Zero is a legacy TUI that must leave first.
     #[serde(default)]
     pub max_protocol: u32,
+    // ^ docs/daemon-live-upgrade.md: this TUI replaces its own process with the installed
+    // wsx after a handoff, so a lower `max_protocol` does not defer the handoff.
+    #[serde(default)]
+    pub follows: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -496,6 +505,9 @@ pub enum ReplacementBlocker {
     LegacyDaemon,
     PendingTarget,
     HandoffUnavailable,
+    // ^ A newer daemon may report a blocker this client does not know.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
