@@ -35,12 +35,12 @@ async function shot(name, primary) {
   await capture(`${size[0]}-${name}`);
 }
 // Layout rules of every screen: nothing past the right edge, no raw null, one scroll container
-// (the wide layout's rail is a list of its own and may scroll beside it).
+// (the wide layout's rail is a list of its own, and a tall question sheet is bounded: both may scroll).
 async function sound(label) {
   const seen = await evaluate(`(() => {
-    const free = (node) => node.closest('.crumbs, .terminal-keys, .code, .xterm, .code-block pre, .table-wrap, .diagram');
+    const free = (node) => node.closest('.crumbs, .terminal-keys, .code, .xterm, .code-block pre, .table-wrap, .diagram, .question-screen');
     const wide = [...document.querySelectorAll('#app *')].filter((node) => !free(node) && node.getBoundingClientRect().right > innerWidth + 0.5);
-    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail')
+    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .question')
       && /auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1);
     return { wide: wide.slice(0, 3).map((node) => node.className || node.tagName), scrollers: scrollers.map((node) => node.className),
       raw: /\\b(null|undefined|NaN)\\b/.test(document.querySelector('#app').innerText), page: document.scrollingElement.scrollTop + document.scrollingElement.scrollLeft };
@@ -108,7 +108,7 @@ async function inbox() {
       state: row.querySelector('.row-state').textContent.trim().replace(/\\s+/g, ' '), activity: row.querySelector('.row-activity')?.textContent ?? null,
       clipped: row.querySelector('.row-label').scrollWidth > row.querySelector('.row-label').clientWidth })) ]))`);
   const states = (name) => sections[name].map((row) => row.state.replace(/ ?\d.*$/, "")).sort().join();
-  if (states("Needs you") !== "error,exited,needs input") await fail(`Needs you shows ${JSON.stringify(sections["Needs you"])}`);
+  if (states("Needs you") !== "error,exited,needs input,needs input") await fail(`Needs you shows ${JSON.stringify(sections["Needs you"])}`);
   const running = sections.Running[0];
   if (sections.Running.length !== 1 || running.activity !== "List the files" || !/^working ?\d+[smh]/.test(running.state)) await fail(`Running shows ${JSON.stringify(sections.Running)}`);
   if (running.context !== "design · main · claude") await fail(`the context line is ${running.context}`);
@@ -192,21 +192,44 @@ async function chats() {
   await evaluate("[...document.querySelectorAll('details.steps')].forEach((node) => { node.open = true; })");
   if (!(await count(".step-state[data-tone=danger]")) || !(await count(".step-title"))) await fail("an opened steps line does not list its steps, or a failed call is not marked");
 
-  // Blocked: a persistent row, a way to the terminal, and no sending.
-  await openSession("blocked");
-  await until("!!document.querySelector('.attention') && document.querySelector('.message-user .prose')?.textContent === 'ask me which option to take'", "the blocked row or the sent message did not show");
-  const blocked = await evaluate(`({ row: document.querySelector('.attention').textContent.trim().replace(/\\s+/g, ' '), link: document.querySelector('.attention a').getAttribute('href'),
-    composer: !!document.querySelector('.composer'), filled: document.querySelectorAll('.button-primary').length,
-    under: document.querySelector('.bar-state').getBoundingClientRect().top >= document.querySelector('.bar-label').getBoundingClientRect().bottom - 1,
-    label: Math.round(document.querySelector('.bar-label').getBoundingClientRect().width), state: document.querySelector('.bar-state').textContent })`);
-  // The blocked row stands in for the composer. On a phone the state word is under the label,
-  // so the label has the row's free width.
-  if (!blocked.row.startsWith("Waiting for your answer.") || !blocked.link.endsWith("/terminal") || blocked.composer || blocked.filled
-    || (phone() && (!blocked.under || blocked.label < size[0] - 200)) || blocked.state !== "needs input") {
-    await fail(`the blocked chat is wrong: ${JSON.stringify(blocked)}`);
+  // Blocked: the agent's own dialog stands where the composer was, with a button per
+  // choice. Nothing is preselected or filled: an approval is a deliberate tap.
+  for (const [role, capture, title, choices] of [
+    ["blocked", "chat-question", "Which option should I take for the login redirect?", ["1Keep the session cookie", "2Use a bearer token", "3Ask the server on each request", "4Type something else"]],
+    ["permission", "chat-permission", "Remove the build folder", ["1Yes", "2Yes, and don't ask again for rm commands in this project", "3No, and tell Claude what to do differently (esc)"]],
+  ]) {
+    await openSession(role);
+    await until("!!document.querySelector('.question .question-option')", `the question of the ${role} session did not show`);
+    const asked = await evaluate(`(() => { const sheet = document.querySelector('.question'); const screen = sheet.querySelector('.question-screen');
+      const box = (node) => node.getBoundingClientRect(); const inner = sheet.clientWidth - parseFloat(getComputedStyle(sheet).paddingLeft) - parseFloat(getComputedStyle(sheet).paddingRight);
+      const options = [...sheet.querySelectorAll('.question-option')];
+      return { title: sheet.querySelector('.question-title').textContent, choices: options.map((option) => option.textContent.trim().replace(/\\s+/g, ' ')),
+        heights: options.map((option) => box(option).height), widths: options.map((option) => Math.round(box(option).width - inner)),
+        filled: document.querySelectorAll('.button-primary').length, focused: sheet.contains(document.activeElement) && document.activeElement !== screen,
+        keys: [...sheet.querySelectorAll('.question-keycap')].map((key) => key.getAttribute('aria-label')).join(), capHeights: [...sheet.querySelectorAll('.question-keycap')].map((key) => box(key).height),
+        actions: [...sheet.querySelectorAll('.question-keys .link-action')].map((node) => node.textContent).join(), terminal: sheet.querySelector('.question-keys a').getAttribute('href'),
+        composer: !!document.querySelector('.composer, .attention'), bottom: Math.round(innerHeight - box(sheet).bottom), log: Math.round(box(document.querySelector('.log')).height),
+        screen: { rows: screen.textContent.split('\\n').length, font: getComputedStyle(screen).fontFamily.split(',')[0], space: getComputedStyle(screen).whiteSpace,
+          wide: screen.scrollWidth > screen.clientWidth, cursor: screen.textContent.includes('❯ 1.'), high: box(screen).height },
+        under: box(document.querySelector('.bar-state')).top >= box(document.querySelector('.bar-label')).bottom - 1, state: document.querySelector('.bar-state').textContent }; })()`);
+    if (asked.title !== title || asked.choices.join("|") !== choices.join("|") || asked.heights.some((height) => height < 44) || asked.widths.some((width) => width !== 0)
+      || asked.filled || asked.focused || asked.composer || asked.keys !== "Enter,Escape,Up,Down" || asked.actions !== "Type an answer,Open terminal" || !asked.terminal.endsWith("/terminal")
+      || (phone() && asked.capHeights.some((height) => height < 44))) {
+      await fail(`the question sheet of ${role} is wrong: ${JSON.stringify(asked)}`);
+    }
+    // The agent's rows keep their columns: the block scrolls inside itself, box drawing does not wrap.
+    if (!/JetBrains Mono/.test(asked.screen.font) || asked.screen.space !== "pre" || !asked.screen.cursor || asked.screen.high > 180 || (size[0] === 320 && !asked.screen.wide)) await fail(`the question's screen block is wrong: ${JSON.stringify(asked.screen)}`);
+    if (asked.bottom !== 0 || asked.log < 60 || asked.state !== "needs input" || (phone() && !asked.under)) await fail(`the question sheet is not anchored under a visible conversation: ${JSON.stringify(asked)}`);
+    await sound(`question of ${role}`);
+    await shot(capture);
   }
-  await sound("blocked chat");
-  await shot("chat-blocked");
+  // The free-text field shows only on demand.
+  if (await count(".question-text")) await fail("the answer field shows before it is asked for");
+  await evaluate("[...document.querySelectorAll('.question-keys .link-action')].find((node) => node.textContent === 'Type an answer').click()");
+  await until("document.activeElement?.matches('.question-text input')", "Type an answer did not open a focused field");
+  await steadyOnFocus(".question-text input", "the answer field");
+  await sound("question with the answer field");
+  await shot("chat-permission-typing");
 
   // Empty: one sentence, and the composer ready.
   await openSession("idle");
@@ -408,6 +431,17 @@ await shot("settings-light");
 await go("#/");
 await until("document.querySelectorAll('.row').length >= 8", "the inbox did not open in the light scheme");
 await shot("inbox-light");
+// One answer, by its button: the sheet says Sent until the agent goes on, then the reply shows.
+await openSession("blocked");
+await until("document.querySelectorAll('.question .question-option').length === 4", "the question did not show before answering");
+await evaluate("document.querySelectorAll('.question-option')[1].click()");
+await until("document.querySelector('.question-keys .note')?.textContent === 'Sent'", "the sheet did not say Sent");
+if (!(await evaluate("[...document.querySelectorAll('.question-option, .question-keycap')].every((button) => button.disabled)"))) await fail("an answered question still takes answers");
+await sound("answered question");
+await shot("chat-question-sent");
+await until("!document.querySelector('.question') && [...document.querySelectorAll('.message:not(.message-user) .markdown')].some((node) => node.textContent === 'You chose: Use a bearer token')", "the answer did not reach the agent, or the sheet stayed");
+if (!(await count(".composer"))) await fail("the composer did not return after the answer");
+
 // A drawn diagram follows the scheme, and markdown reads in both.
 await diagrams(true);
 await openSession("markdown");
@@ -471,6 +505,6 @@ await send("Page.reload");
 await until("/Cannot reach the server/.test(document.querySelector('#app')?.textContent ?? '')", "offline shell did not render");
 await shot("offline");
 
-console.log("page at 320x568, 390x844 and 1280x800: inbox with a session in each state, working chat with a running tool and a waiting message, long chat with jump button, blocked, empty chat and its Enter rules, projects, files, settings, light scheme, dialog, reduced motion, base-path requests only, offline shell, empty inbox; no sideways overflow, one scroll container, at most one filled accent control");
+console.log("page at 320x568, 390x844 and 1280x800: inbox with a session in each state, working chat with a running tool and a waiting message, long chat with jump button, markdown answer with table and code, mermaid diagrams drawn as images and full screen, a 200 KB answer, question sheets for a permission dialog and a four-option question and one answer sent, empty chat and its Enter rules, projects, files, settings, light scheme, dialog, reduced motion, base-path requests only, offline shell, empty inbox; no sideways overflow, one scroll container, at most one filled accent control");
 await cleanup();
 process.exit(0);

@@ -701,7 +701,7 @@ fn steps(provider: &str, role: &str, message: &Value) -> Vec<Step> {
 }
 
 /// One line that says what a call does: its description, else its command, else
-/// the file it names, else the tool name.
+/// the file it names, else the first question it asks, else the tool name.
 fn title(name: &str, input: Option<&Value>) -> String {
     let line = match input {
         Some(Value::String(text)) => Some(text.clone()),
@@ -717,6 +717,11 @@ fn title(name: &str, input: Option<&Value>) -> String {
                         .join(" "),
                 ),
                 _ => None,
+            })
+            // A tool that asks the person (Claude's AskUserQuestion): the question itself.
+            .or_else(|| {
+                let question = fields.get("questions")?.get(0)?.get("question")?;
+                question.as_str().map(str::to_owned)
             }),
         _ => None,
     };

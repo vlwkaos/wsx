@@ -48,6 +48,7 @@ private_key = "<base64url>"
 | Capability | Allows | Needs panel |
 |---|---|---|
 | `chat_send` | send and stop messages | chat |
+| `chat_answer` | answer a blocked agent's dialog from the chat with keys; needs `chat_send` | chat |
 | `agent_write` | exchanges are created as `writer` instead of `read-only` | chat |
 | `session_start` | start a new session that runs `agent_command` | chat |
 | `files_read`, `files_write` | browse and read text; replace an existing text file | files |
@@ -121,7 +122,7 @@ The page is a set of ES modules served as written: Preact 10.29.7 and htm 3.1.1 
 - Formats read (checked against real sessions on 2026-10-12): Claude `tool_use`, `tool_result`, `thinking` parts; Pi and omp `toolCall`, `thinking` parts and `toolResult` messages; Codex `function_call`, `custom_tool_call`, their `_output` items and `reasoning`. A Codex result has no error flag, so a Codex call is never `error`.
 - `working` is `null`, or `{since_unix_ms, activity}`. It is set only while wsxd reports the agent as working; the transcript never decides that. `activity` is the title of the running tool, else "Thinking", else "Working". `since_unix_ms` is when this server saw the state begin.
 - The `history` event is the change signal. While an agent works and a page is open, the server compares transcript stamps about every 0.8 seconds, so a new tool line shows within about a second.
-- A blocked agent shows a provider dialog. The chat refuses to send; the answer is given in the terminal panel or on the host.
+- A blocked agent shows a provider dialog. The chat refuses to send a message into it. With `chat_answer` the page shows the dialog and sends keys ("Answering"); without it the answer is given in the terminal panel or on the host.
 
 ### Markdown
 
@@ -146,6 +147,32 @@ A fenced block with the language `mermaid` is drawn as a diagram (`web/diagram.j
 - Colors and the font are the theme's tokens, read when the diagram is drawn. A diagram is drawn again when the device changes the scheme. Up to 40 drawn diagrams are kept by scheme and source, so a timeline refresh does not draw again.
 - A diagram a little wider than the column is shown smaller. A much wider one keeps its size and scrolls sideways in its own block. A tap opens it full screen: drag to move, pinch or the two buttons to zoom, Escape or Close to leave. The page itself does not zoom.
 - A block that does not parse, or a source above 20,000 characters, shows its source as a code block with the line "Diagram could not be drawn".
+
+### Answering
+
+wsxd knows that an agent is blocked, not what it asks. The question is the dialog the agent drew on its terminal. With `chat_answer`, the page shows that dialog and sends the keys the person chooses. No provider dialog is modelled: this works for any agent that wsxd reports as blocked.
+
+- The timeline's `question` is `null` unless the agent is attached and blocked and the site has `chat_answer`. Else it is `{screen, stamp, options, request}`.
+  - `screen`: the pane's screen up to its last written row, as plain text: at most 24 rows and 4 KiB, without control characters. It is read with the daemon's `view` request, like `wsx session peek`. `src/question.rs` is the only code of the web server that reads a screen.
+  - `options`: `[{key, label}]`, one generic rule: a row that starts, after a box edge and an optional cursor mark, with `1.` to `9.` and a label. Only the last list that counts up from 1 is taken, so a numbered list in the agent's earlier text is not offered. Empty when no such list is on the screen.
+  - `request`: `{name, title}` of the tool call that waits, when the saved conversation ends with one. The title is the same line as a step's. For a tool that asks a question (Claude's `AskUserQuestion`) it is the question text.
+  - `stamp`: a hash of `screen`.
+- `POST api/chat/<session>/answer` takes `{stamp, key}`. `key` is `1` to `9`, `enter`, `escape`, `up`, `down`, `tab`, or `text` with a `text` field of at most 2000 characters (typed, then Enter, without control characters).
+- The server refuses unless the site has `chat_answer` (403), the agent is still blocked (409 `not_blocked`), and the screen read at that moment has the same stamp (409 `question_changed`; the page reads the question again). It takes the pane's terminal lease without a takeover for the one write, so it answers 409 `terminal_busy` while a wsx window or a terminal panel holds the pane, like Stop. The lease is taken before the stamp is checked, so nobody types between the check and the write. Answers share the message rate limit.
+- Named keys go through the daemon's key request, so they are encoded for the pane's keyboard mode. Text goes as one write.
+- While a page is open, the server reads the stamp of each blocked session on every poll (about every 0.8 seconds) and raises `history` when it changes, so a dialog answered or moved elsewhere shows on the page.
+- The page puts a question sheet where the composer was: the request title, the screen rows in the terminal font (the block scrolls; box drawing never wraps), one button per choice, then Enter, Esc, the arrows, "Type an answer" and "Open terminal". No choice is preselected or filled. After an answer the sheet says "Sent" and takes no further answer until the screen or the state changes.
+- Limits: a choice is a key press in the agent's dialog, so it means what that dialog means at that moment; the stamp binds it to the screen that was read. wsxd reports "blocked" for Claude (permission dialogs and `AskUserQuestion`) and for agents whose integration reports it. Codex is not reported as blocked, so its dialogs do not reach the chat.
+
+### Sessions without routine prompts
+
+`agent_command` is the whole command line of a session started from the page; every argument is passed on. The intended shape for Claude is:
+
+```toml
+agent_command = ["claude", "--permission-mode", "auto"]
+```
+
+In auto mode a second model, the classifier, reviews Claude's actions instead of the person, so routine edits and commands run without a dialog. The prompts that remain, such as a question to the person or an action the classifier does not decide, arrive in the chat through "Answering". The flag and the mode name were checked against `claude --help` of Claude Code 2.1.296. Claude starts in manual mode instead when auto mode is not available to the account.
 
 ### Queue and Stop
 
@@ -228,4 +255,4 @@ cargo build --locked -p wsx -p wsx-daemon
 python3 -B scripts/test-web-client.py [--browser] [--captures <dir>]
 ```
 
-The model-free journey uses an isolated `wsxd`, PTY fixture agents with their own transcripts, six served sites and `scripts/web-push-fixture.mjs`, a separate receiver that verifies the VAPID signature and decrypts the payload. It opens terminal WebSockets like a browser does: refused upgrades, bytes both ways, every key-row byte, resize, control lost and taken, reconnect, and a watch-only site. `--browser` adds `scripts/web-terminal-check.mjs` and `scripts/web-browser-check.mjs` with an installed Chrome and writes captures to `.work/web-captures/` or `--captures`. The terminal check runs at 390x844 with touch and at 1280x800, compares the browser screen with `wsxd`'s screen row by row, and checks the shipped fonts: Powerline and icon glyphs in one cell, joined operator runs (the same line captured with ligatures on and off must differ), Korean and box drawing on the grid, and a full-width line against `stty size`. The page check captures every screen and state at 320x568, 390x844 and 1280x800 with a slop audit beside each. `scripts/web-real-agent-check.py` is the opt-in real turn: one short Claude or Pi turn in an isolated `wsxd`, for the timeline and Stop. The model-free journey does not prove a real Claude turn, a real push service, a phone, an on-screen keyboard, Safari, or Tailscale.
+The model-free journey uses an isolated `wsxd`, PTY fixture agents with their own transcripts, six served sites and `scripts/web-push-fixture.mjs`, a separate receiver that verifies the VAPID signature and decrypts the payload. It opens terminal WebSockets like a browser does: refused upgrades, bytes both ways, every key-row byte, resize, control lost and taken, reconnect, and a watch-only site. `--browser` adds `scripts/web-terminal-check.mjs` and `scripts/web-browser-check.mjs` with an installed Chrome and writes captures to `.work/web-captures/` or `--captures`. The terminal check runs at 390x844 with touch and at 1280x800, compares the browser screen with `wsxd`'s screen row by row, and checks the shipped fonts: Powerline and icon glyphs in one cell, joined operator runs (the same line captured with ligatures on and off must differ), Korean and box drawing on the grid, and a full-width line against `stty size`. The page check captures every screen and state at 320x568, 390x844 and 1280x800 with a slop audit beside each. `scripts/web-real-agent-check.py` is the opt-in real turn: one short Claude or Pi turn in an isolated `wsxd`, for the timeline and Stop. The journey also covers the answer API (question with screen, choices and waiting tool; refused without the capability, for a stale stamp, an invalid key, a held terminal and an agent that is not blocked; approve, deny, number and text reach the PTY) with a fixture agent that draws a numbered dialog. The page check renders a markdown answer with a table and code, measures a 204 KB answer with the processor slowed four times, draws two Mermaid diagrams and a broken one in both schemes, opens a diagram full screen and zooms it, shows the question sheet for a permission dialog and a four-option question, and answers one. It fails on any console error, which includes a CSP report, and the journey compares the whole CSP header. `scripts/web-real-agent-check.py --scenario answers` is the opt-in real check of answering: a real Claude permission dialog approved by its number, one denied with Escape, an `AskUserQuestion` answered by number, and a stale stamp refused (three model turns). The model-free journey does not prove a real Claude turn, a real push service, a phone, an on-screen keyboard, Safari, or Tailscale.

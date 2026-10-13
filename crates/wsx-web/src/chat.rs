@@ -1,6 +1,7 @@
 //! Chat over the provider-neutral exchange broker and provider-native history.
 //! ^ docs/agent-orchestration.md: PTY delivery is not acceptance, and pane lifecycle
-//! is not request-bound completion. This module never reads terminal output.
+//! is not request-bound completion. This module never reads terminal output; the one
+//! reader of a pane's screen is `question.rs`, for a blocked agent's dialog.
 use crate::{
     media::Media,
     sandbox::Root,
@@ -312,6 +313,20 @@ impl Chat {
                 })
             });
         let exchange = latest_exchange(client, target.pane.id)?;
+        // What a blocked agent asks, for a site that may answer it from the chat.
+        let question = target
+            .pane
+            .agent
+            .as_ref()
+            .filter(|agent| {
+                agent.attached
+                    && agent.state == AgentState::Blocked
+                    && site.allows(Capability::ChatAnswer)
+            })
+            .and_then(|_| {
+                let last = timeline.as_ref().and_then(|timeline| timeline.items.last());
+                crate::question::view(client, target.pane.id, last)
+            });
         Ok(json!({
             "session": session_view(&target),
             "status": timeline.as_ref().map_or("no_agent", |timeline| timeline.status),
@@ -321,6 +336,7 @@ impl Chat {
             "exchange": exchange.as_ref().map(exchange_view),
             "queue": app.queue.list(session).iter().map(|queued| queued_view(queued, media)).collect::<Vec<_>>(),
             "working": working,
+            "question": question,
         }))
     }
 
@@ -429,6 +445,35 @@ impl Chat {
             Err(fault) if busy(&fault) => enqueue(),
             result => result,
         }
+    }
+
+    /// Answer the dialog of a blocked agent with one key or one line of text.
+    pub fn answer(
+        &self,
+        app: &App,
+        session: u64,
+        answer: &crate::question::Answer,
+    ) -> Outcome<Value> {
+        if !app.site.allows(Capability::ChatAnswer) {
+            return Err(Fault::forbidden("answering the agent from the chat"));
+        }
+        let snapshot = snapshot(&app.client)?;
+        let target = target(&snapshot, &app.site.access, session)?;
+        let blocked = target
+            .pane
+            .agent
+            .as_ref()
+            .is_some_and(|agent| agent.attached && agent.state == AgentState::Blocked);
+        if !blocked {
+            return Err(Fault::new(
+                409,
+                "not_blocked",
+                "the agent is not waiting for an answer",
+            ));
+        }
+        let sent = crate::question::answer(&app.client, target.pane.id, answer)?;
+        crate::events::history_changed(app, session);
+        Ok(sent)
     }
 
     /// Remove a waiting message, or let a failed one be delivered again.

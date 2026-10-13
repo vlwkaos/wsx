@@ -49,6 +49,8 @@ fn observe(app: Arc<App>) {
     let mut workspace = String::new();
     // What each working session does now, read again only when its transcript changed.
     let mut activities: HashMap<u64, String> = HashMap::new();
+    // The screen stamp of each blocked session's question, while a page is open.
+    let mut questions: HashMap<u64, Option<String>> = HashMap::new();
     // ^ docs/daemon-live-upgrade.md: wsxd takes a poll without presence for an old TUI
     // and defers every upgrade. This server reconnects by itself, so it says at which
     // protocol. The identity is this executable's; the server never replaces wsxd.
@@ -155,6 +157,18 @@ fn observe(app: Arc<App>) {
                     .insert(session, stamp.clone())
                     .is_some_and(|previous| previous != stamp);
             }
+            // A dialog that changed on the screen is a changed question for the page.
+            if state == AgentState::Blocked
+                && app.events.receiver_count() > 0
+                && app.site.allows(crate::site::Capability::ChatAnswer)
+            {
+                let stamp = crate::question::stamp(&app.client, target.pane.id);
+                history_changed |= questions
+                    .insert(session, stamp.clone())
+                    .is_some_and(|previous| previous != stamp);
+            } else {
+                questions.remove(&session);
+            }
             if state != AgentState::Working {
                 activities.remove(&session);
             } else if history_changed || !activities.contains_key(&session) {
@@ -196,8 +210,11 @@ fn observe(app: Arc<App>) {
             .unwrap_or_else(|lock| lock.into_inner())
             .retain(|session, _| states.contains_key(session));
         watching = app.events.receiver_count() > 0
-            && states.values().any(|state| *state == AgentState::Working);
+            && states
+                .values()
+                .any(|state| matches!(state, AgentState::Working | AgentState::Blocked));
         stamps.retain(|session, _| states.contains_key(session));
+        questions.retain(|session, _| states.contains_key(session));
         first = false;
     }
 }

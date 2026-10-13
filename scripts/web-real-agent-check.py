@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""One real agent turn through the hosted web client (docs/web-client.md "Verification").
+"""Real agent turns through the hosted web client (docs/web-client.md "Verification").
 
-Opt-in: it starts the installed Claude in an isolated wsxd and makes one short model
-turn on the person's own account. It checks what the fixture agents cannot: the
-timeline against the real saved format, and Stop against the real program.
+Opt-in: it starts the installed Claude in an isolated wsxd and makes short model turns
+on the person's own account. It checks what the fixture agents cannot.
+  --scenario turn (default): the timeline against the real saved format, and Stop
+    against the real program. One model turn.
+  --scenario answers: a blocked agent answered from the chat. A permission dialog is
+    approved by its number and another is denied with Escape, a question tool is
+    answered by number, and a stale stamp is refused. Three model turns.
 The agent runs with the person's HOME (its login and its wsx hooks); wsxd, the web
 server and the project are private to this run. The live daemon is never contacted.
 """
@@ -30,7 +34,11 @@ def main():
     parser.add_argument('--daemon', type=Path, default=ROOT / 'target/debug/wsxd')
     parser.add_argument('--agent', nargs='+', default=['claude', '--model', 'haiku'],
                         help='the agent command line: claude or pi, with its wsx integration installed')
+    parser.add_argument('--scenario', choices=['turn', 'answers'], default='turn')
     args = parser.parse_args()
+    if args.scenario == 'answers' and Path(args.agent[0]).name == 'claude' and '--permission-mode' not in args.agent:
+        # The scenario needs the dialogs: no mode that answers them by itself.
+        args.agent += ['--permission-mode', 'manual']
     wsx, wsxd = args.wsx.resolve(), args.daemon.resolve()
     agent = shutil.which(args.agent[0])
     assert agent, args.agent[0] + ' is not installed'
@@ -124,7 +132,7 @@ public_origin = "http://127.0.0.1:{port}"
 panels = ["chat", "terminal"]
 [access]
 projects = ["{project}"]
-capabilities = ["chat_send", "agent_write", "terminal_view", "terminal_input"]
+capabilities = ["chat_send", "chat_answer", "agent_write", "terminal_view", "terminal_input"]
 ''')
         site_file.chmod(0o600)
         processes.append(subprocess.Popen([str(wsx), 'web', 'serve', '--site', str(site_file)], env=env, cwd=project,
@@ -146,6 +154,70 @@ capabilities = ["chat_send", "agent_write", "terminal_view", "terminal_input"]
 
         def timeline():
             return site.request('GET', chat + '/timeline')[1]
+
+        if args.scenario == 'answers':
+            def question():
+                return timeline().get('question')
+
+            def answer(stamp, key):
+                return site.request('POST', chat + '/answer', {'stamp': stamp, 'key': key})
+
+            def ask(text, tool):
+                wait(lambda: agent_state() in ('idle', 'done'), 'the agent to be ready', timeout=60)
+                status, sent = site.request('POST', chat + '/send', {'text': text})
+                assert status == 200, sent
+                asked = wait(lambda: (lambda now: now if now and now['options'] else None)(question()),
+                             'a dialog with numbered choices for ' + tool, timeout=120)
+                assert asked['request'] and asked['request']['name'] == tool, asked['request']
+                return asked
+
+            def settled():
+                return wait(lambda: agent_state() in ('idle', 'done') and timeline(), 'the turn to end', timeout=120)
+
+            # 1. A permission dialog, approved by its number. A stale stamp is refused first.
+            asked = ask('Create the file approved.txt with the Write tool. Its content is the one word: yes. Do nothing else.', 'Write')
+            facts['permission'] = {'request': asked['request'], 'options': asked['options'], 'rows': len(asked['screen'])}
+            assert asked['options'][0]['key'] == '1' and asked['options'][0]['label'].lower().startswith('yes'), asked['options']
+            stale = answer('0' * 32, '1')
+            assert stale[0] == 409 and stale[1]['error']['code'] == 'question_changed', stale
+            time.sleep(1)
+            assert not (project / 'approved.txt').exists(), 'a refused answer reached the agent'
+            assert answer(asked['stamp'], '1')[0] == 200
+            wait(lambda: (project / 'approved.txt').exists(), 'the approved file to be written', timeout=60)
+            settled()
+            facts['approved'] = True
+            # 2. Another permission dialog, denied with Escape.
+            asked = ask('Create the file denied.txt with the Write tool. Its content is the one word: no. Do nothing else.', 'Write')
+            assert answer(asked['stamp'], 'escape')[0] == 200
+            wait(lambda: agent_state() != 'blocked', 'the dialog to close after Escape', timeout=30)
+            time.sleep(2)
+            assert not (project / 'denied.txt').exists(), 'a denied file was written'
+            facts['denied'] = agent_state()
+            # 3. A question tool, answered by the number of one choice.
+            asked = ask('Use the AskUserQuestion tool to ask me one question: "Which color do you prefer?" with exactly the options '
+                        'Red, Green and Blue. After I answer, reply with only the word I chose.', 'AskUserQuestion')
+            facts['question'] = {'request': asked['request'], 'options': asked['options']}
+            assert 'color' in asked['request']['title'].lower(), asked['request']
+            green = next(option for option in asked['options'] if option['label'].lower().startswith('green'))
+            assert answer(asked['stamp'], green['key'])[0] == 200
+            # Some versions show a review step with its own numbered list before they go on.
+            deadline = time.monotonic() + 60
+            while agent_state() == 'blocked' and time.monotonic() < deadline:
+                now = question()
+                if now and now['stamp'] != asked['stamp'] and any('submit' in option['label'].lower() for option in now['options']):
+                    submit = next(option for option in now['options'] if 'submit' in option['label'].lower())
+                    answer(now['stamp'], submit['key'])
+                    facts['question']['review_step'] = True
+                    asked = now
+                time.sleep(0.5)
+            final = settled()
+            replies = [item['text'] for item in final['items'] if item['kind'] == 'assistant' and item.get('text')]
+            facts['reply'] = replies[-1][:80]
+            assert 'green' in replies[-1].lower(), replies[-1]
+            assert final['question'] is None
+            success = True
+            print(json.dumps({'result': 'PASS', 'scenario': 'answers', 'model_calls': 3, **facts}, indent=1))
+            return
 
         # One turn: a tool call, then output long enough to stop in the middle.
         status, sent = site.request('POST', chat + '/send', {
@@ -184,6 +256,11 @@ capabilities = ["chat_send", "agent_write", "terminal_view", "terminal_input"]
         success = True
     finally:
         if 'pane' in locals() and not success:
+            print('agent pane: ' + json.dumps({key: value for key, value in next(p for p in call('snapshot')['data']['panes'] if p['id'] == pane).items() if key in ('title', 'agent', 'exited')}, ensure_ascii=False), file=sys.stderr)
+            try:
+                print('timeline: ' + json.dumps({key: timeline().get(key) for key in ('exchange', 'queue', 'working', 'question')})[:1500], file=sys.stderr)
+            except Exception as error:
+                print('timeline unavailable: %r' % error, file=sys.stderr)
             print('agent screen:\n' + '\n'.join(line.rstrip() for line in [screen(pane)[i:i + 120] for i in range(0, 4800, 120)] if line.strip()), file=sys.stderr)
         for process in reversed(processes):
             if process.poll() is None:

@@ -64,6 +64,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/chat/{session}/timeline", get(timeline))
             .route("/api/chat/{session}/send", post(send))
             .route("/api/chat/{session}/cancel", post(cancel))
+            .route("/api/chat/{session}/answer", post(answer))
             .route("/api/chat/{session}/queue/{id}", delete(queue_remove))
             .route("/api/chat/{session}/queue/{id}/retry", post(queue_retry))
             .route("/api/media", put(media_put))
@@ -625,6 +626,27 @@ async fn cancel(
 ) -> Outcome<Json<Value>> {
     need(&app, Panel::Chat)?;
     blocking(|| app.chat.cancel(&app.client, &app.site, session).map(Json))
+}
+
+async fn answer(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    UrlPath(session): UrlPath<u64>,
+    Json(input): Json<crate::question::Answer>,
+) -> Outcome<Json<Value>> {
+    need(&app, Panel::Chat)?;
+    // The same budget as messages: an answer is also typed into the agent.
+    if !app
+        .limiter
+        .allow(&format!("send:{}", device.id), 10.0, 20.0)
+    {
+        return Err(Fault::new(
+            429,
+            "rate_limited",
+            "too many messages; wait a moment",
+        ));
+    }
+    blocking(|| app.chat.answer(&app, session, &input).map(Json))
 }
 
 fn media_fault(error: MediaError) -> Fault {

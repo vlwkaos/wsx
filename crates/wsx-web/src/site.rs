@@ -22,6 +22,8 @@ pub enum Panel {
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
     ChatSend,
+    /// Answer a blocked agent's dialog with keys (docs/web-client.md "Answering").
+    ChatAnswer,
     AgentWrite,
     SessionStart,
     FilesRead,
@@ -37,7 +39,9 @@ impl Capability {
     /// The panel that must be enabled for this capability to be reachable.
     fn panel(self) -> Option<Panel> {
         match self {
-            Self::ChatSend | Self::AgentWrite | Self::SessionStart => Some(Panel::Chat),
+            Self::ChatSend | Self::ChatAnswer | Self::AgentWrite | Self::SessionStart => {
+                Some(Panel::Chat)
+            }
             Self::FilesRead | Self::FilesWrite => Some(Panel::Files),
             Self::TerminalView | Self::TerminalInput => Some(Panel::Terminal),
             Self::MediaUpload | Self::MediaDownload | Self::Push => None,
@@ -259,6 +263,10 @@ impl Site {
         ensure!(
             !has(Capability::AgentWrite) || has(Capability::ChatSend),
             "agent_write needs chat_send"
+        );
+        ensure!(
+            !has(Capability::ChatAnswer) || has(Capability::ChatSend),
+            "chat_answer needs chat_send"
         );
         ensure!(
             has(Capability::SessionStart) != file.access.agent_command.is_empty(),
