@@ -283,6 +283,26 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as incompatible:
     incompatible.sendall(json.dumps({"method": "snapshot"}).encode() + b"\n")
     rejected = recv_line(incompatible)
     assert rejected["type"] == "error" and rejected["data"]["code"] == "protocol_mismatch", rejected
+# docs/daemon-live-upgrade.md: a request from a later release is answered, not dropped,
+# and an unknown field in a known request is ignored.
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as later_release:
+    later_release.settimeout(5)
+    later_release.connect(str(SOCKET))
+    later_release.sendall(json.dumps({"method": "hello", "params": {"protocol": 999}}).encode() + b"\n")
+    assert recv_line(later_release)["type"] == "hello"
+    later_release.sendall(json.dumps({"method": "request_of_a_later_release", "params": {"value": 1}}).encode() + b"\n")
+    unknown = recv_line(later_release)
+    assert unknown["type"] == "error" and unknown["data"]["code"] == "invalid_json", unknown
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as same_protocol:
+    same_protocol.settimeout(5)
+    same_protocol.connect(str(SOCKET))
+    same_protocol.sendall(json.dumps({"method": "hello", "params": {"protocol": PROTOCOL, "field_of_a_later_release": True}}).encode() + b"\n")
+    assert recv_line(same_protocol)["type"] == "hello"
+    same_protocol.sendall(json.dumps({"method": "request_of_a_later_release"}).encode() + b"\n")
+    unknown = recv_line(same_protocol)
+    assert unknown["type"] == "error" and unknown["data"]["code"] == "invalid_json", unknown
+    same_protocol.sendall(json.dumps({"method": "lifecycle_status"}).encode() + b"\n")
+    assert recv_line(same_protocol)["type"] == "lifecycle", "the connection must survive an unknown request"
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as lifecycle_client:
     lifecycle_client.settimeout(5)
     lifecycle_client.connect(str(SOCKET))
@@ -1036,14 +1056,26 @@ assert recovered.stdout, recovered
 snapshot = call("snapshot")["data"]
 assert next(item for item in snapshot["sessions"] if item["id"] == recovery_session_id)
 
+# docs/daemon-live-upgrade.md: a stop ends running programs, so live sessions need --force.
+live_before_stop = call("lifecycle_status")["data"]
+assert live_before_stop["live_runtimes"] > 0, live_before_stop
+guarded = subprocess.run(
+    [str(WSX), "daemon", "stop", "--json"], env=env, check=False, capture_output=True, text=True,
+)
+assert guarded.returncode != 0, guarded
+guarded_report = json.loads(guarded.stdout)
+assert guarded_report["stopped"] is False and guarded_report["live_sessions"] > 0, guarded_report
+assert "wsx daemon restart" in guarded.stderr and "--force" in guarded.stderr, guarded.stderr
+assert call("lifecycle_status")["data"]["epoch"] == live_before_stop["epoch"], "a refused stop changed wsxd"
 stopped = subprocess.run(
-    [str(WSX), "daemon", "stop"],
+    [str(WSX), "daemon", "stop", "--force"],
     env=env,
     check=True,
     capture_output=True,
     text=True,
 )
 assert "saved session commands restart on next launch" in stopped.stdout, stopped.stdout
+assert "programs in its sessions ended" in stopped.stdout, stopped.stdout
 wait_socket_stopped()
 
 process = start()

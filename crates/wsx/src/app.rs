@@ -96,6 +96,7 @@ enum RuntimeResult {
         result: Result<runtime::Snapshot>,
     },
     Frame(Result<(u64, runtime::TerminalFrame)>),
+    FollowCheck(Option<crate::follow::Target>),
     PluginView {
         generation: u64,
         plugin_id: String,
@@ -790,6 +791,26 @@ fn replacement_blocker_label(blocker: runtime::ReplacementBlocker) -> &'static s
         runtime::ReplacementBlocker::LegacyDaemon => "a legacy daemon",
         runtime::ReplacementBlocker::PendingTarget => "another pending upgrade",
         runtime::ReplacementBlocker::HandoffUnavailable => "unavailable live handoff",
+        runtime::ReplacementBlocker::Unknown => "a blocker this wsx does not know",
+    }
+}
+
+// ^ docs/daemon-live-upgrade.md: say what the user can do, not only what blocks.
+pub(crate) fn replacement_wait_reason(blockers: &[runtime::ReplacementBlocker]) -> String {
+    let other_tui = blockers.contains(&runtime::ReplacementBlocker::OtherTui);
+    let rest = blockers
+        .iter()
+        .filter(|blocker| **blocker != runtime::ReplacementBlocker::OtherTui)
+        .map(|blocker| replacement_blocker_label(*blocker))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match (other_tui, rest.is_empty()) {
+        (true, true) => "Quit the other wsx window (an older version).".into(),
+        (true, false) => {
+            format!("Quit the other wsx window (an older version). Also waiting for: {rest}.")
+        }
+        (false, false) => format!("Waiting for: {rest}."),
+        (false, true) => "Waiting for the running wsxd.".into(),
     }
 }
 
@@ -804,7 +825,7 @@ pub(crate) fn runtime_availability_notice(
         )),
         runtime::Availability::LegacyCompatible => Some((
             NoticeLevel::Warning,
-            "Legacy wsxd is still running\nAutomatic upgrade is unavailable; use `wsx daemon stop` when live sessions can restart"
+            "Legacy wsxd is still running\nAutomatic upgrade is unavailable; `wsx daemon stop --force` ends its sessions and lets the next wsx start the new daemon"
                 .into(),
         )),
         runtime::Availability::NewerDaemon { daemon_version }
@@ -836,19 +857,27 @@ pub(crate) fn runtime_availability_notice(
             live_runtimes,
             blockers,
         } => {
-            let blockers = if blockers.is_empty() {
-                "an unknown lifecycle blocker".into()
+            let reason = replacement_wait_reason(blockers);
+            // Only a daemon without live handoff reports work in its sessions as a blocker.
+            let restarts_sessions = blockers.iter().any(|blocker| {
+                matches!(
+                    blocker,
+                    runtime::ReplacementBlocker::WorkingAgent
+                        | runtime::ReplacementBlocker::ListenerScanPending
+                        | runtime::ReplacementBlocker::ForegroundJob
+                        | runtime::ReplacementBlocker::ListeningPort
+                        | runtime::ReplacementBlocker::LegacyDaemon
+                )
+            });
+            let safety = if restarts_sessions {
+                format!("This older wsxd restarts its {live_runtimes} live session(s) when it upgrades, so it waits.")
             } else {
-                blockers
-                    .iter()
-                    .map(|blocker| replacement_blocker_label(*blocker))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                format!("Sessions keep running ({live_runtimes} live). The upgrade then continues by itself.")
             };
             Some((
                 NoticeLevel::Warning,
                 format!(
-                    "Runtime upgrade deferred\nRunning wsxd {daemon_version}; target {target_version}\nBlocked by: {blockers}\nProtected live runtimes: {live_runtimes}"
+                    "Upgrade from wsxd {daemon_version} to {target_version} is waiting\n{reason}\n{safety}"
                 ),
             ))
         }
@@ -960,6 +989,11 @@ pub struct App {
     pending_terminal_entry: Option<PendingTerminalEntry>,
     pending_terminal_resume: Option<PendingTerminalResume>,
     last_stream_reattach: Option<Instant>,
+    // ^ docs/daemon-live-upgrade.md: this TUI re-executes into a replaced install.
+    installed: Option<crate::follow::Installed>,
+    follow_check_pending: bool,
+    follow_target: Option<crate::follow::Target>,
+    follow_resume_pane: Option<runtime::PaneId>,
     suspend_detector: SuspendDetector,
     terminal_escape_chord: EscapeSequence,
     terminal_sidebar_override: Option<TerminalSidebar>,
@@ -1159,6 +1193,10 @@ impl App {
             pending_terminal_entry: None,
             pending_terminal_resume: None,
             last_stream_reattach: None,
+            installed: crate::follow::Installed::capture(),
+            follow_check_pending: false,
+            follow_target: None,
+            follow_resume_pane: None,
             suspend_detector: SuspendDetector::new(),
             terminal_escape_chord,
             terminal_sidebar_override: None,
@@ -1646,6 +1684,10 @@ impl App {
             // Drain async results every iteration so they're never blocked by UI events.
             self.drain_async_results();
             self.reconnect_terminal_after_resume(terminal);
+            self.follow_installed_wsx(terminal)?;
+            if let Err(error) = self.resume_followed_terminal(terminal) {
+                self.set_error(format!("Terminal resume failed: {error}"));
+            }
 
             if self.needs_redraw {
                 self.ensure_flat();
@@ -1959,6 +2001,10 @@ impl App {
                     self.apply_resume_refresh(generation, result)
                 }
                 RuntimeResult::Frame(frame) => self.apply_runtime_frame(frame),
+                RuntimeResult::FollowCheck(target) => {
+                    self.follow_check_pending = false;
+                    self.follow_target = target;
+                }
                 RuntimeResult::PluginView {
                     generation,
                     plugin_id,
@@ -2214,7 +2260,124 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Show where this process came from and return to the terminal that was open.
+    pub fn resume_after_follow(&mut self, from_version: &str, pane: Option<runtime::PaneId>) {
+        self.follow_resume_pane = pane;
+        self.set_notice(
+            NoticeLevel::Success,
+            format!(
+                "wsx {from_version} became wsx {} with the upgraded wsxd\nSessions kept running",
+                runtime::WSX_VERSION
+            ),
+        );
+    }
+
+    fn resume_followed_terminal(&mut self, terminal: &mut Tui) -> Result<()> {
+        // The first authoritative snapshot restores the cursor from the cache.
+        if self.startup_availability_pending {
+            return Ok(());
+        }
+        let Some(pane_id) = self.follow_resume_pane.take() else {
+            return Ok(());
+        };
+        self.ensure_flat();
+        let target = self
+            .cached_flat
+            .iter()
+            .enumerate()
+            .find_map(|(index, entry)| match *entry {
+                FlatEntry::Session {
+                    project_idx,
+                    worktree_idx,
+                    session_idx,
+                } => self
+                    .workspace
+                    .session(project_idx, worktree_idx, session_idx)
+                    .filter(|session| session.pane_id == pane_id)
+                    .map(|_| (index, project_idx, worktree_idx, session_idx)),
+                _ => None,
+            });
+        let Some((index, project_idx, worktree_idx, session_idx)) = target else {
+            self.set_warning("The terminal that was open is no longer listed");
+            return Ok(());
+        };
+        self.tree_selected = index;
+        self.update_scroll();
+        self.switch_terminal_session(project_idx, worktree_idx, session_idx, terminal)
+    }
+
+    // ^ docs/daemon-live-upgrade.md: checked when the daemon connection changes and on
+    // the slow tick. The file check is local; the daemon question runs off this thread.
+    fn spawn_follow_check(&mut self) {
+        if self.follow_check_pending || self.follow_target.is_some() {
+            return;
+        }
+        let Some((path, identity)) = self.installed.as_ref().and_then(|wsx| wsx.replaced()) else {
+            return;
+        };
+        self.follow_check_pending = true;
+        let client = self.runtime_client.clone();
+        let tx = self.runtime_tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(RuntimeResult::FollowCheck(crate::follow::target(
+                &client, path, identity,
+            )));
+        });
+    }
+
+    // Unsent input, a pending operation or a half-typed prefix would be lost by a new process.
+    fn follow_is_safe_now(&self) -> bool {
+        matches!(self.mode, Mode::Workspace | Mode::Terminal { .. })
+            && self.pending_terminal_entry.is_none()
+            && !self.terminal_escape_chord.is_pending()
+            && self.jobs.is_empty()
+            && self.pending_deletions.is_empty()
+            && self.pending_session_kills.is_empty()
+            && self.pending_session_orders.is_empty()
+    }
+
+    fn follow_installed_wsx(&mut self, terminal: &mut Tui) -> Result<()> {
+        if self.follow_target.is_none() || !self.follow_is_safe_now() {
+            return Ok(());
+        }
+        // The new process restores the cursor from the cache.
+        let saved = self.persist_state(true);
+        let (Some(target), Some(installed)) = (self.follow_target.take(), self.installed.as_ref())
+        else {
+            return Ok(());
+        };
+        let pane = match self.mode {
+            Mode::Terminal { pane_id } => Some(pane_id),
+            _ => None,
+        };
+        let mobile = self.force_mobile;
+        // Shell modes first: a failed exec then returns to this TUI.
+        let exec = saved.and_then(|()| {
+            tui::with_raw_mode_disabled(terminal, || -> Result<()> {
+                Err(installed.exec(mobile, pane).into())
+            })
+        });
+        let failure = match exec {
+            Err(error) if error.is::<tui::TerminalModeError>() => return Err(error),
+            Err(error) => error,
+            Ok(()) => return Ok(()),
+        };
+        let daemon_version = target.daemon_version.clone();
+        if let Some(installed) = self.installed.as_mut() {
+            installed.refuse(target);
+        }
+        self.force_terminal_redraw = true;
+        self.set_warning(format!(
+            "Could not switch to the installed wsx for wsxd {daemon_version}; this window keeps wsx {}\n{failure}",
+            runtime::WSX_VERSION
+        ));
+        Ok(())
+    }
+
     fn apply_runtime_event(&mut self, signal: runtime::EventSignal) {
+        if !matches!(signal, runtime::EventSignal::Dirty) {
+            self.spawn_follow_check();
+        }
         match signal {
             runtime::EventSignal::Dirty => self.spawn_runtime_session_refresh(),
             runtime::EventSignal::Connected(availability) => {
@@ -2413,6 +2576,7 @@ impl App {
             self.collapse_stale_projects();
             self.recompute_visible();
             self.write_cache_if_dirty();
+            self.spawn_follow_check();
             self.spawn_background_runtime_refresh();
             self.spawn_routine_refresh();
         }
@@ -2785,7 +2949,12 @@ impl App {
         if self._runtime_monitor.is_some() {
             return;
         }
-        match runtime::EventMonitor::start(self.runtime_client.clone()) {
+        let monitor = if self.installed.is_some() {
+            runtime::EventMonitor::start_following(self.runtime_client.clone())
+        } else {
+            runtime::EventMonitor::start(self.runtime_client.clone())
+        };
+        match monitor {
             Ok((monitor, receiver)) => {
                 self._runtime_monitor = Some(monitor);
                 self.runtime_event_rx = receiver;
@@ -6896,6 +7065,10 @@ mod tests {
             pending_terminal_entry: None,
             pending_terminal_resume: None,
             last_stream_reattach: None,
+            installed: None,
+            follow_check_pending: false,
+            follow_target: None,
+            follow_resume_pane: None,
             suspend_detector: SuspendDetector::new(),
             terminal_escape_chord,
             terminal_sidebar_override: None,
@@ -10438,12 +10611,12 @@ mod tests {
         })
         .unwrap();
         assert_eq!(deferred.0, NoticeLevel::Warning);
+        assert!(deferred.1.contains("is waiting"), "{}", deferred.1);
         assert!(
-            deferred.1.contains("Runtime upgrade deferred"),
+            deferred.1.contains("Quit the other wsx window"),
             "{}",
             deferred.1
         );
-        assert!(deferred.1.contains("another wsx TUI"), "{}", deferred.1);
         assert!(deferred.1.contains("4"), "{}", deferred.1);
 
         let legacy = runtime_availability_notice(&runtime::Availability::LegacyCompatible).unwrap();

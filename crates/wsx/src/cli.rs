@@ -29,6 +29,11 @@ pub struct Args {
     /// Portrait/mobile mode: full-width tree, no preview panel
     #[arg(long)]
     pub mobile: bool,
+    // ^ docs/daemon-live-upgrade.md: set by an older TUI that re-executed into this binary.
+    #[arg(long, hide = true, value_name = "VERSION")]
+    pub followed_from: Option<String>,
+    #[arg(long, hide = true, requires = "followed_from", value_name = "PANE_ID")]
+    pub follow_pane: Option<u64>,
 }
 
 #[derive(Subcommand)]
@@ -112,6 +117,10 @@ impl Command {
             Command::Plugin { subcommand } => {
                 matches!(subcommand, PluginCmd::List { json: true })
             }
+            Command::Daemon { subcommand } => matches!(
+                subcommand,
+                DaemonCmd::Stop { json: true, .. } | DaemonCmd::Restart { json: true }
+            ),
             _ => false,
         }
     }
@@ -314,8 +323,19 @@ pub enum RuntimeCmd {
 
 #[derive(Subcommand)]
 pub enum DaemonCmd {
-    /// Gracefully stop wsxd; saved session commands restart on next launch
-    Stop,
+    /// Stop wsxd and end the programs running in its sessions; saved session commands restart on next launch
+    Stop {
+        /// Stop even when sessions are running
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace wsxd with the installed build; sessions, shells and agents keep running
+    Restart {
+        #[arg(long)]
+        json: bool,
+    },
     /// Clear the shared crash budget and explicitly recover wsxd
     Recover,
 }
@@ -793,7 +813,8 @@ pub fn run(cmd: Command) -> Result<()> {
             RuntimeCmd::Status { json } => cmd_runtime_status(json),
         },
         Command::Daemon { subcommand } => match subcommand {
-            DaemonCmd::Stop => cmd_daemon_stop(),
+            DaemonCmd::Stop { force, json } => cmd_daemon_stop(force, json),
+            DaemonCmd::Restart { json } => cmd_daemon_restart(json),
             DaemonCmd::Recover => cmd_daemon_recover(),
         },
         Command::Routine { subcommand } => cmd_routine(subcommand),
@@ -1710,7 +1731,10 @@ mod daemon_command_tests {
         assert!(matches!(
             args.command,
             Some(Command::Daemon {
-                subcommand: DaemonCmd::Stop
+                subcommand: DaemonCmd::Stop {
+                    force: false,
+                    json: false
+                }
             })
         ));
     }
@@ -2857,9 +2881,113 @@ fn cmd_plugin_reload() -> Result<()> {
     }
 }
 
-fn cmd_daemon_stop() -> Result<()> {
-    runtime::Client::local().shutdown()?;
-    println!("wsxd stopped; saved session commands restart on next launch");
+// ^ docs/daemon-live-upgrade.md: a stop ends every running program, so it needs `--force`
+// while sessions are live. `None` means the daemon cannot report what it runs.
+fn sessions_a_stop_would_end(client: &runtime::Client) -> Result<Option<usize>> {
+    Ok(match client.status()? {
+        runtime::DaemonStatus::Missing => Some(0),
+        runtime::DaemonStatus::Compatible => match client.call(&runtime::Request::Snapshot)? {
+            runtime::Response::Snapshot(snapshot) => Some(
+                snapshot
+                    .sessions
+                    .iter()
+                    .filter(|session| {
+                        snapshot
+                            .panes
+                            .iter()
+                            .any(|pane| pane.session_id == session.id && !pane.exited)
+                    })
+                    .count(),
+            ),
+            runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
+            _ => bail!("wsxd returned an unexpected snapshot response"),
+        },
+        runtime::DaemonStatus::Incompatible { lifecycle, .. } => {
+            lifecycle.map(|status| status.live_runtimes)
+        }
+    })
+}
+
+fn cmd_daemon_stop(force: bool, json: bool) -> Result<()> {
+    let client = runtime::Client::local();
+    let live = if force {
+        None
+    } else {
+        match sessions_a_stop_would_end(&client)? {
+            Some(0) => None,
+            live => Some(live),
+        }
+    };
+    if let Some(live) = live {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({"stopped": false, "reason": "live_sessions", "live_sessions": live})
+            );
+        }
+        let count = live.map_or("an unknown number of".to_string(), |live| live.to_string());
+        bail!(
+            "wsxd not stopped: {count} running session(s) would end. `wsx daemon restart` keeps them running. Use `wsx daemon stop --force` to end them."
+        );
+    }
+    client.shutdown()?;
+    if json {
+        println!("{}", serde_json::json!({"stopped": true}));
+    } else {
+        println!(
+            "wsxd stopped and the programs in its sessions ended; saved session commands restart on next launch"
+        );
+    }
+    Ok(())
+}
+
+fn cmd_daemon_restart(json: bool) -> Result<()> {
+    let outcome = runtime::restart_daemon()?;
+    let (state, live_runtimes, message) = match &outcome {
+        runtime::DaemonRestart::NotRunning => (
+            "not_running",
+            0,
+            "wsxd is not running; the next wsx command starts it".to_string(),
+        ),
+        runtime::DaemonRestart::Restarted { live_runtimes } => (
+            "restarted",
+            *live_runtimes,
+            format!(
+                "wsxd restarted as {}; {live_runtimes} running terminal(s) kept",
+                runtime::WSX_VERSION
+            ),
+        ),
+        runtime::DaemonRestart::Deferred {
+            live_runtimes,
+            blockers,
+        } => (
+            "deferred",
+            *live_runtimes,
+            format!(
+                "wsxd restart is waiting. {} Sessions keep running. The restart then continues by itself.",
+                crate::app::replacement_wait_reason(blockers)
+            ),
+        ),
+        runtime::DaemonRestart::Unsupported { daemon_version } => (
+            "unsupported",
+            0,
+            format!(
+                "wsxd {daemon_version} cannot restart into the same build without ending its sessions; nothing was stopped."
+            ),
+        ),
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"state": state, "live_runtimes": live_runtimes, "message": message})
+        );
+    }
+    if matches!(outcome, runtime::DaemonRestart::Unsupported { .. }) {
+        bail!(message);
+    }
+    if !json {
+        println!("{message}");
+    }
     Ok(())
 }
 

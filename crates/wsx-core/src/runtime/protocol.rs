@@ -10,6 +10,10 @@ use std::{
 };
 
 // ^ [[Terminal Stream Protocol v3]] Wire-version history and compatibility boundaries.
+// ^ docs/daemon-live-upgrade.md: this number changes only when an older client can no longer
+// talk to the new daemon. A new request, field or event is additive: it is announced by
+// `Capabilities` or the daemon revision, decodes with a default, and leaves this number alone.
+// Every open TUI of the previous number must leave or re-execute before a handoff can finish.
 pub const PROTOCOL_VERSION: u32 = 16;
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const MAX_AGENT_EXCHANGE_PROMPT_BYTES: usize = 64 * 1024;
@@ -23,7 +27,8 @@ pub const ROUTINE_DAEMON_ARG: &str = "__wsx_routine_daemon";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ^ Receipt expiry and final PTY drain are daemon-owned runtime behavior.
 // UI-only releases continue to reuse wsxd. See docs/agent-orchestration.md and docs/terminal-exit-ordering.md.
-pub const DAEMON_REVISION: u32 = 22;
+// Revision 23: equal-build restart handoff and the "follows" TUI rule (docs/daemon-live-upgrade.md).
+pub const DAEMON_REVISION: u32 = 23;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -437,6 +442,10 @@ pub enum Request {
         target_protocol: u32,
         target_daemon_revision: u32,
         executable: PathBuf,
+        // ^ docs/daemon-live-upgrade.md: `wsx daemon restart` may target the running build.
+        // A daemon without `Capabilities::daemon_restart` ignores the field and refuses an equal build.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        restart: bool,
     },
     Shutdown,
 }
@@ -604,6 +613,7 @@ mod tests {
         assert!(!capabilities.daemon_revision_coordination);
         assert!(!capabilities.agent_exchanges);
         assert!(!capabilities.agent_exchange_bound_receipts);
+        assert!(!capabilities.daemon_restart);
     }
 
     #[test]
@@ -838,6 +848,7 @@ mod tests {
             target_protocol: PROTOCOL_VERSION,
             target_daemon_revision: DAEMON_REVISION,
             executable: "/usr/local/bin/wsxd".into(),
+            restart: false,
         };
         let encoded = serde_json::to_string(&handoff).unwrap();
         assert_eq!(serde_json::from_str::<Request>(&encoded).unwrap(), handoff);

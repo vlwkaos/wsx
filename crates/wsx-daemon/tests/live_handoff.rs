@@ -10,8 +10,9 @@ use std::{
 };
 use wsx_core::runtime::{
     binary_identity, AgentCapabilities, AgentState, Client, EventMonitor, EventSignal, PaneId,
-    ProjectSpec, Request, Response, TerminalClientMessage, TerminalServerMessage, TerminalStream,
-    TerminalUpdate, WorktreeSpec, DAEMON_REVISION, PROTOCOL_VERSION, WSX_VERSION,
+    ProjectSpec, ReplacementBlocker, ReplacementDisposition, Request, Response,
+    TerminalClientMessage, TerminalServerMessage, TerminalStream, TerminalUpdate,
+    TuiClientPresence, WorktreeSpec, DAEMON_REVISION, PROTOCOL_VERSION, WSX_VERSION,
 };
 
 static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
@@ -31,9 +32,14 @@ impl Fixture {
         let sequence = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
         // ^ Keep both canonical and handoff socket names below macOS SUN_LEN,
         // including when the repository itself is an isolated candidate worktree.
+        // The process ID and sequence make the name unique; the clock part stays short.
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../.work/s")
-            .join(format!("h{:x}{nonce:x}{sequence:x}", std::process::id()));
+            .join(format!(
+                "h{:x}{:x}{sequence:x}",
+                std::process::id(),
+                nonce & 0xffff_ffff
+            ));
         fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -255,6 +261,7 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
                 target_protocol: PROTOCOL_VERSION + 1,
                 target_daemon_revision: DAEMON_REVISION,
                 executable: rejected_binary,
+                restart: false,
             })
             .unwrap(),
         Response::Replacement { .. }
@@ -306,6 +313,7 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
             target_protocol: PROTOCOL_VERSION,
             target_daemon_revision: DAEMON_REVISION,
             executable: target_binary,
+            restart: false,
         })
         .unwrap();
     assert!(
@@ -568,6 +576,7 @@ fn daemon_handoff_restores_a_legacy_sized_history_cohort() {
             target_protocol: PROTOCOL_VERSION,
             target_daemon_revision: DAEMON_REVISION,
             executable: target_binary,
+            restart: false,
         })
         .unwrap();
     assert!(matches!(response, Response::Replacement { .. }));
@@ -604,6 +613,145 @@ fn daemon_handoff_restores_a_legacy_sized_history_cohort() {
             *pid
         );
     }
+    client.shutdown().unwrap();
+    wait_for_socket_removal(&fixture.socket);
+}
+
+// docs/daemon-live-upgrade.md: an explicit restart hands off into the running build, a TUI
+// that follows does not defer it, and a deferred handoff continues when the blocker leaves.
+#[test]
+fn restart_into_the_same_build_waits_only_for_a_tui_that_cannot_follow() {
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_wsxd"));
+    let mut fixture = Fixture::new();
+    fixture.source = Some(fixture.command(&binary).spawn().unwrap());
+    wait_for_socket(&fixture.socket);
+    let client = Client::new(fixture.socket.clone());
+    let worktree = std::env::current_dir().unwrap();
+    client
+        .call(&Request::SynchronizeProjects {
+            projects: vec![ProjectSpec {
+                path: worktree.clone(),
+                name: "restart".into(),
+                worktrees: vec![WorktreeSpec {
+                    path: worktree,
+                    branch: "test".into(),
+                }],
+            }],
+        })
+        .unwrap();
+    let worktree_id = match client.call(&Request::Snapshot).unwrap() {
+        Response::Snapshot(snapshot) => snapshot.worktrees[0].id,
+        response => panic!("unexpected snapshot response: {response:?}"),
+    };
+    client
+        .call(&Request::SessionCreate {
+            worktree_id,
+            label: "live".into(),
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf 'pid=[%s]\\n' $$; while IFS= read -r line; do printf 'echo:%s:pid=[%s]\\n' \"$line\" $$; done".into(),
+            ],
+            initial_input: None,
+            rows: 12,
+            cols: 60,
+        })
+        .unwrap();
+    let (pane, revision) = match client.call(&Request::Snapshot).unwrap() {
+        Response::Snapshot(snapshot) => (snapshot.panes[0].id, snapshot.revision),
+        response => panic!("unexpected snapshot response: {response:?}"),
+    };
+    let stream = TerminalStream::connect(&client, pane, 100, true, 12, 60).unwrap();
+    let pid = reported_pid(&frame_text(&stream, "pid=["));
+    let old_epoch = stream.epoch();
+    drop(stream);
+
+    let identity = binary_identity(&binary).unwrap();
+    let handoff = |restart| Request::PrepareHandoff {
+        target_binary_id: identity.clone(),
+        target_version: WSX_VERSION.into(),
+        target_protocol: PROTOCOL_VERSION,
+        target_daemon_revision: DAEMON_REVISION,
+        executable: binary.clone(),
+        restart,
+    };
+    assert!(
+        matches!(
+            client.call(&handoff(false)).unwrap(),
+            Response::Error(error) if error.code == "invalid_request"
+        ),
+        "an upgrade request must not select the running build"
+    );
+
+    // Both TUIs are older than the target protocol. Only one of them follows.
+    let presence = |instance_id, follows| Request::Poll {
+        after_revision: revision,
+        timeout_ms: 0,
+        tui: Some(TuiClientPresence {
+            instance_id,
+            version: WSX_VERSION.into(),
+            target_binary_id: identity.clone(),
+            target_daemon_revision: DAEMON_REVISION,
+            max_protocol: PROTOCOL_VERSION - 1,
+            follows,
+        }),
+    };
+    assert!(matches!(
+        client.call(&presence(1, true)).unwrap(),
+        Response::Events { .. }
+    ));
+    assert!(matches!(
+        client.call(&presence(2, false)).unwrap(),
+        Response::Events { .. }
+    ));
+    let deferred = client.call(&handoff(true)).unwrap();
+    assert!(
+        matches!(
+            &deferred,
+            Response::Replacement {
+                disposition: ReplacementDisposition::Deferred,
+                blockers,
+                ..
+            } if blockers == &[ReplacementBlocker::OtherTui]
+        ),
+        "a TUI that cannot follow must defer the restart: {deferred:?}"
+    );
+
+    // The TUI that cannot follow quits: its presence expires. The following TUI keeps
+    // renewing its presence, which lasts three seconds, until the successor answers.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut following_tui_renewed = Instant::now();
+    loop {
+        if matches!(client.call(&presence(1, true)), Ok(Response::Events { .. })) {
+            following_tui_renewed = Instant::now();
+        }
+        if let Ok(Response::Lifecycle(status)) = client.call(&Request::LifecycleStatus) {
+            if status.epoch != old_epoch {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the deferred restart did not continue by itself: {}",
+            fs::read_to_string(fixture.root.join("daemon.log")).unwrap_or_default()
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        following_tui_renewed.elapsed() < Duration::from_secs(2),
+        "the restart must proceed while the following TUI is still attached"
+    );
+
+    let restarted = TerminalStream::connect(&client, pane, 101, true, 12, 60).unwrap();
+    restarted
+        .try_send(TerminalClientMessage::Input(b"after\n".to_vec()))
+        .unwrap();
+    let output = frame_text(&restarted, "echo:after:pid=[");
+    assert_eq!(
+        reported_pid(&output[output.find("echo:after").unwrap()..]),
+        pid
+    );
+    drop(restarted);
     client.shutdown().unwrap();
     wait_for_socket_removal(&fixture.socket);
 }
