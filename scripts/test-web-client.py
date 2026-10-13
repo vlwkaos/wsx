@@ -32,7 +32,7 @@ history, trace, project = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), 
 pane = int(os.environ['WSX_PANE_ID']); generation = os.environ['WSX_RUNTIME_GENERATION']
 trace.with_suffix('.pid').write_text(str(os.getpid()))
 tty.setraw(0)
-draft, pending, leaf, sequence = '', b'', None, 0
+draft, pending, leaf, sequence, dialog = '', b'', None, 0, None
 def report(state):
  with socket.socket(socket.AF_UNIX) as client:
   client.connect(os.environ['WSX_SOCKET']); stream = client.makefile('rb')
@@ -43,6 +43,9 @@ def report(state):
   client.sendall(json.dumps({'method':'agent_report','params':params}).encode()+b'\n')
   assert json.loads(stream.readline())['type'] == 'ack'
 def paint():
+ if dialog:
+  # A provider dialog owns the screen until it is answered.
+  sys.stdout.write('\x1b[?2004h\x1b[2J\x1b[H'+'\r\n'.join(dialog)); sys.stdout.flush(); return
  rows = os.get_terminal_size().lines
  sys.stdout.write('\x1b[?2004h\x1b]2;✳ fixture\x07\x1b[2J\x1b['+str(max(1,rows-2))+';1H❯ '+draft+'\x1b[J')
  sys.stdout.flush()
@@ -97,7 +100,43 @@ def turn(text):
  elif 'quit now' in body:
   report('working'); os._exit(3)
  elif 'ask me' in body:
-  report('blocked'); return
+  # A dialog as a provider draws it: numbered choices, a cursor mark, answered with keys.
+  global dialog
+  call = 'ask-'+str(sequence + 1)
+  if 'permission' in body:
+   record('assistant', [{'type':'tool_use','id':call,'name':'Bash','input':{'command':'rm -rf build','description':'Remove the build folder'}}])
+   head = ['╭──────────────────────────────────────────────╮', '│ Bash command                                 │',
+     '│   rm -rf build                               │', '│   Remove the build folder                    │',
+     '╰──────────────────────────────────────────────╯', ' Do you want to proceed?']
+   choices = ['Yes', "Yes, and don't ask again for rm commands in this project", 'No, and tell Claude what to do differently (esc)']
+  else:
+   question = 'Which option should I take for the login redirect?'
+   choices = ['Keep the session cookie', 'Use a bearer token', 'Ask the server on each request', 'Type something else']
+   record('assistant', [{'type':'tool_use','id':call,'name':'AskUserQuestion','input':{'questions':[{'question':question,
+     'options':[{'label':choice} for choice in choices]}]}}])
+   head = [' 1. An earlier list in the answer', ' 2. is not a choice', '', ' ' + question]
+  cursor = 0
+  def draw():
+   global dialog
+   dialog = head + [(' ❯ ' if index == cursor else '   ') + '%d. %s' % (index + 1, choice) for index, choice in enumerate(choices)] + ['', ' Esc to cancel']
+   paint()
+  draw(); report('blocked')
+  while True:
+   data = os.read(0, 4096)
+   with trace.with_suffix('.answers').open('a') as out: out.write(json.dumps({'keys': data.hex()})+'\n')
+   if data in (b'\x1b[A', b'\x1bOA'): cursor = (cursor - 1) % len(choices); draw()
+   elif data in (b'\x1b[B', b'\x1bOB'): cursor = (cursor + 1) % len(choices); draw()
+   elif data == b'\x03': dialog = None; paint(); report('idle'); return
+   elif data == b'\x1b': answer = 'cancelled'; break
+   elif data == b'\r': answer = choices[cursor]; break
+   elif data.isdigit() and 1 <= int(data) <= len(choices): answer = choices[int(data) - 1]; break
+   elif len(data) > 1 and data.endswith(b'\r'): answer = 'typed: ' + data[:-1].decode(); break
+  # The dialog stays while the provider handles the answer.
+  if 'slowly' in body: time.sleep(2.5)
+  dialog = None
+  record('user', [{'type':'tool_result','tool_use_id':call,'is_error':answer == 'cancelled','content':answer}])
+  record('assistant', 'You chose: ' + answer)
+  paint()
  elif 'fail' in body:
   report('error'); return
  else:
@@ -711,7 +750,7 @@ public_origin = "{service_origin}"
 panels = ["chat"]
 [access]
 projects = ["{project}", "{(work / 'project3').resolve()}"]
-capabilities = ["chat_send", "session_start", "media_upload", "media_download"]
+capabilities = ["chat_send", "chat_answer", "session_start", "media_upload", "media_download"]
 agent_command = ["/bin/sh"]
 [media]
 max_file_bytes = 4096
@@ -729,7 +768,7 @@ public_origin = "http://127.0.0.1:{ports['m2']}"
 panels = ["chat", "files", "terminal"]
 [access]
 projects = ["{(work / 'design').resolve()}"]
-capabilities = ["chat_send", "session_start", "files_read", "files_write", "terminal_view", "terminal_input", "media_upload", "media_download"]
+capabilities = ["chat_send", "chat_answer", "session_start", "files_read", "files_write", "terminal_view", "terminal_input", "media_upload", "media_download"]
 agent_command = ["/bin/sh"]
 '''),
             'bare': site_file('bare', f'''id = "bare"
@@ -1458,6 +1497,83 @@ capabilities = ["terminal_view"]
         assert family.request('GET', '/' + uploaded['url'])[0] == 404  # media stores are per site
         ok('site B: capability denial for files, terminal, push, session start; other project invisible')
 
+        # --- Answering a blocked agent from the chat: the dialog the agent drew, and keys.
+        settle('owner')
+        def question(site):
+            return steady(site, 'GET', chat + '/timeline')[1]['question']
+        def answer(site, stamp, key, **extra):
+            return steady(site, 'POST', chat + '/answer', dict({'stamp': stamp, 'key': key}, **extra))
+        def answers():
+            file = work / 'owner.answers'
+            return [bytes.fromhex(json.loads(line)['keys']) for line in file.read_text().splitlines()] if file.exists() else []
+        def last_text():
+            return [item.get('text') for item in steady(root, 'GET', chat + '/timeline')[1]['items']][-1]
+        def ask(text):
+            settle('owner')
+            assert steady(root, 'POST', chat + '/send', {'text': text})[0] == 200
+            return wait(lambda: question(root), 'question for ' + text)
+        root_events = Events(root)
+        streams.append(root_events)
+        asked = ask('ask me for permission')
+        assert asked['request'] == {'name': 'Bash', 'title': 'Remove the build folder'}, asked
+        assert [option['key'] for option in asked['options']] == ['1', '2', '3'], asked
+        assert asked['options'][0]['label'] == 'Yes' and asked['options'][2]['label'] == 'No, and tell Claude what to do differently (esc)', asked
+        assert any('rm -rf build' in row for row in asked['screen']) and asked['screen'][0].startswith('╭') and len(asked['screen']) <= 24, asked
+        assert re.fullmatch('[0-9a-f]{32}', asked['stamp']) and not re.search(r'[\x00-\x1f\x7f]', ''.join(asked['screen'])), asked
+        # A site without chat_answer learns nothing of the screen and cannot answer.
+        assert question(owner) is None
+        refused = answer(owner, asked['stamp'], '1')
+        assert refused[0] == 403 and refused[1]['error']['code'] == 'capability_denied', refused
+        assert steady(root, 'POST', '/api/chat/%d/answer' % sessions['family'], {'stamp': asked['stamp'], 'key': '1'})[0] == 404  # another project's session
+        for bad in ({'key': '0'}, {'key': 'text'}, {'key': '1', 'text': 'x'}, {'key': 'text', 'text': ' \x07 '}, {'key': 'text', 'text': 'x' * 2001}, {'key': 'F1'}):
+            refused = steady(root, 'POST', chat + '/answer', dict({'stamp': asked['stamp']}, **bad))
+            assert refused[0] == 400 and refused[1]['error']['code'] == 'invalid_answer', (bad, refused)
+        # The answer is bound to the screen it was read from.
+        refused = answer(root, '0' * 32, '1')
+        assert refused[0] == 409 and refused[1]['error']['code'] == 'question_changed', refused
+        # While another client holds the pane, the answer is refused like Stop.
+        owner_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == sessions['owner'])
+        assert call('terminal_acquire', {'pane_id': owner_pane, 'client_id': 6, 'takeover': False})['type'] == 'ack'
+        refused = answer(root, asked['stamp'], '1')
+        assert refused[0] == 409 and refused[1]['error']['code'] == 'terminal_busy', refused
+        assert answers() == []
+        # A dialog that changes on the screen is a changed question: the page is told, the old stamp is stale.
+        del root_events.seen[:]
+        assert call('terminal_input', {'pane_id': owner_pane, 'client_id': 6, 'bytes': list(b'\x1b[B')})['type'] == 'ack'
+        assert call('terminal_release', {'pane_id': owner_pane, 'client_id': 6})['type'] == 'ack'
+        root_events.expect('history', lambda data: data['session_id'] == sessions['owner'], timeout=5)
+        moved = question(root)
+        assert moved['stamp'] != asked['stamp'] and any(row.startswith(' ❯ 2.') for row in moved['screen']), moved
+        refused = answer(root, asked['stamp'], '1')
+        assert refused[0] == 409 and refused[1]['error']['code'] == 'question_changed', refused
+        # A key from the page moves the cursor back; then the dialog is approved by its number.
+        assert answer(root, moved['stamp'], 'up') == (200, {'sent': True})
+        back = wait(lambda: (lambda now: now and now['stamp'] == asked['stamp'] and now)(question(root)), 'cursor back on the first choice')
+        assert answer(root, back['stamp'], '1') == (200, {'sent': True})
+        wait(lambda: last_text() == 'You chose: Yes', 'approved by number')
+        assert answers()[0] == b'\x1b[B' and answers()[1] in (b'\x1b[A', b'\x1bOA') and answers()[2:] == [b'1'], answers()
+        wait(lambda: question(root) is None, 'the question ends with the blocked state')
+        refused = answer(root, back['stamp'], '1')
+        assert refused[0] == 409 and refused[1]['error']['code'] == 'not_blocked', refused
+        # Denied with Escape.
+        asked = ask('ask me for permission')
+        assert answer(root, asked['stamp'], 'escape')[0] == 200
+        wait(lambda: last_text() == 'You chose: cancelled', 'denied with Escape')
+        assert answers()[-1] == b'\x1b', answers()
+        # A question tool: its question is the heading, and only the dialog's own list is offered.
+        asked = ask('ask me which way')
+        assert asked['request'] == {'name': 'AskUserQuestion', 'title': 'Which option should I take for the login redirect?'}, asked
+        assert [(option['key'], option['label']) for option in asked['options']] == [
+            ('1', 'Keep the session cookie'), ('2', 'Use a bearer token'), ('3', 'Ask the server on each request'), ('4', 'Type something else')], asked
+        assert answer(root, asked['stamp'], '3')[0] == 200
+        wait(lambda: last_text() == 'You chose: Ask the server on each request', 'answered by number')
+        # Typed text and Enter arrive as one write, without control characters.
+        asked = ask('ask me which way')
+        assert answer(root, asked['stamp'], 'text', text='neither,\x1b wait')[0] == 200
+        wait(lambda: last_text() == 'You chose: typed: neither, wait', 'typed answer')
+        assert answers()[-1] == b'neither, wait\r', answers()
+        ok('answer: question with screen, choices and waiting tool; refused without the capability, for a stale stamp, an invalid key, a held terminal and an agent that is not blocked; approve, deny, number and text reach the PTY')
+
         # --- Optional real browser, on both sites, before any device is revoked.
         if args.browser:
             args.captures.mkdir(parents=True, exist_ok=True)
@@ -1492,6 +1608,7 @@ capabilities = ["terminal_view"]
             m2.cookie = m2_cookie.split(';')[0]
             shown = {}
             for role, label in (('blocked', 'Fix the login redirect loop on mobile Safari when third-party cookies are blocked'),
+                                ('permission', 'clean build'),
                                 ('error', 'api-tests'), ('exited', 'crashed-import'), ('working', 'release notes'),
                                 ('done', 'docs cleanup'), ('long', 'release checklist'), ('idle', 'refactor'),
                                 ('markdown', 'release plan'), ('large', 'full audit'), ('diagrams', 'architecture')):
@@ -1521,17 +1638,19 @@ capabilities = ["terminal_view"]
                     continue
                 # The agent reports idle just before it paints its prompt; wsxd types only into a visible editor.
                 wait(lambda: state_of(role) == 'idle' and prompt_shown(role), role + ' agent ready', timeout=20)
-            for role, text in (('blocked', 'ask me which option to take'), ('error', 'fail now'), ('exited', 'quit now'),
+            for role, text in (('blocked', 'ask me which option to take, slowly'), ('permission', 'ask me for permission'),
+                               ('error', 'fail now'), ('exited', 'quit now'),
                                ('working', 'use tool'), ('done', 'tidy the docs'), ('long', 'long talk'),
                                ('markdown', 'say markdown.md'), ('large', 'say large.md'), ('diagrams', 'say diagrams.md')):
                 status, sent = steady(m2, 'POST', '/api/chat/%d/send' % shown[role], {'text': text})
                 assert status == 200, (role, sent)
-            for role, expected in (('blocked', 'blocked'), ('error', 'error'), ('exited', 'exited'), ('working', 'working'),
+            for role, expected in (('blocked', 'blocked'), ('permission', 'blocked'), ('error', 'error'), ('exited', 'exited'), ('working', 'working'),
                                    ('done', 'done'), ('long', 'done'), ('markdown', 'done'), ('large', 'done'),
                                    ('diagrams', 'done')):
                 wait(lambda: state_of(role) == expected, role + ' state', timeout=20)
             blocked_items = steady(m2, 'GET', '/api/chat/%d/timeline' % shown['blocked'])[1]
-            assert [item['text'] for item in blocked_items['items']] == ['ask me which option to take'], blocked_items
+            assert [item.get('text') for item in blocked_items['items']] == ['ask me which option to take, slowly', None], blocked_items
+            assert len(blocked_items['question']['options']) == 4, blocked_items
             queued = steady(m2, 'POST', '/api/chat/%d/send' % shown['working'], {'text': 'Also mention the new terminal in the notes'})
             assert 'queued' in queued[1], queued
             bare = sites['bare']
@@ -1590,6 +1709,8 @@ capabilities = ["terminal_view"]
         events.expect('workspace', lambda data: data['sessions'][0]['agent']['state'] == 'idle')
         interrupt.drop()
         lease_free(sessions['owner'])
+        # A turn a person interrupted ends its exchange: the next message is not held back.
+        wait(lambda: steady(owner, 'GET', chat + '/timeline')[1]['exchange']['state'] == 'interrupted', 'interrupted exchange')
         # "error" was not consented to: the state change happens, no push is sent.
         settle('owner')
         owner.request('POST', chat + '/send', {'text': 'fail now'})

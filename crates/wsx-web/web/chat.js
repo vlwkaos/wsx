@@ -27,7 +27,7 @@ const DELIVERY_WORDS = {
   cancelled: "Stopped.",
   cancel_requested: "Stopping…",
   expired: "The agent did not finish in time.",
-  interrupted: "The agent went away before it finished.",
+  interrupted: "The turn was interrupted.",
   target_exited: "The agent's program exited.",
   target_replaced: "The agent's program was replaced.",
 };
@@ -178,6 +178,65 @@ function Composer({ session, working, onSent }) {
     </div>`;
 }
 
+const ANSWER_KEYS = [["enter", "Enter", "Enter"], ["escape", "Esc", "Escape"], ["up", "↑", "Up"], ["down", "↓", "Down"]];
+
+// A blocked agent's own dialog, as it is on its screen, and the keys that answer it.
+// ^ No choice is marked or filled: an approval must be a deliberate tap. An answer is
+// bound to the screen it was read from; the server refuses it when the dialog changed.
+function Question({ session, question, onAnswered }) {
+  const [sent, setSent] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const [error, setError] = useState("");
+  const field = useRef();
+  const waiting = busy || sent === question.stamp;
+  const answer = async (key, text) => {
+    if (waiting) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`api/chat/${session.id}/answer`, { method: "POST", json: { stamp: question.stamp, key, ...(text === undefined ? {} : { text }) } });
+      setSent(question.stamp);
+      setTyping(false);
+    } catch (failure) {
+      setError(failure.code === "question_changed" ? "The question changed. Read it again." : failure.message);
+    }
+    setBusy(false);
+    onAnswered();
+  };
+  const submit = (event) => {
+    event.preventDefault();
+    const text = field.current.value.trim();
+    if (text) answer("text", text);
+  };
+  useEffect(() => { if (typing) field.current.focus(); }, [typing]);
+  return html`
+    <section class="question" aria-label="The agent asks">
+      ${question.request && html`<h2 class="question-title">${question.request.title}</h2>`}
+      <pre class="question-screen" tabindex="0" aria-label="The agent's screen">${question.screen.join("\n")}</pre>
+      ${question.options.length ? html`
+        <div class="question-options">
+          ${question.options.map((option) => html`
+            <button key=${option.key} class="button question-option" type="button" disabled=${waiting} onClick=${() => answer(option.key)}>
+              <span class="question-key">${option.key}</span><span class="question-label">${option.label}</span>
+            </button>`)}
+        </div>` : null}
+      ${typing && html`
+        <form class="question-text" onSubmit=${submit}>
+          <input class="input" ref=${field} type="text" maxlength="2000" aria-label="Answer" autocomplete="off" disabled=${waiting} />
+          <button class="button" type="submit" disabled=${waiting}>Send</button>
+        </form>`}
+      ${error && html`<p class="error" role="alert">${error}</p>`}
+      <div class="question-keys">
+        ${sent === question.stamp ? html`<span class="note" role="status">Sent</span>` : null}
+        ${ANSWER_KEYS.map(([key, label, name]) => html`
+          <button key=${key} class="button question-keycap" type="button" aria-label=${name} disabled=${waiting} onClick=${() => answer(key)}>${label}</button>`)}
+        <button class="link-action" type="button" aria-expanded=${typing} onClick=${() => setTyping(!typing)}>Type an answer</button>
+        ${shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${session.id}/terminal`}>Open terminal</a>`}
+      </div>
+    </section>`;
+}
+
 export function Chat({ session }) {
   const id = session.id;
   const [data, setData] = useState(null);
@@ -245,8 +304,8 @@ export function Chat({ session }) {
   const list = blocks(items);
   const delivery = data?.exchange && !working ? DELIVERY_WORDS[data.exchange.state]
     ?? (data.exchange.evidence === "intent_persisted" && data.exchange.active ? "Saved, not delivered to the agent yet." : null) : null;
-  // A blocked agent takes its answer in the terminal: the blocked row replaces the composer.
-  // The draft stays for when the agent is ready again.
+  // A blocked agent shows its question where the composer was, or, on a site that may not
+  // answer from the chat, a row that leads to the terminal. The draft stays for later.
   const blocked = status.key === "blocked";
   const lastUserBlock = list.findLast?.((block) => block.kind === "user");
 
@@ -293,7 +352,8 @@ export function Chat({ session }) {
                 onClick=${() => act(`queue/${queued.id}`, "DELETE")}>Remove</button>
             </li>`)}
         </ul>` : null}
-      ${blocked ? html`
+      ${blocked && data?.question ? html`<${Question} session=${session} question=${data.question} onAnswered=${load} />`
+      : blocked ? html`
         <div class="attention" role="status">
           <span>Waiting for your answer.</span>
           ${shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`}
