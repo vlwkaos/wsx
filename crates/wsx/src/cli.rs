@@ -315,9 +315,13 @@ pub enum AgentCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Wait for one exchange revision or terminal lifecycle state
+    /// Wait until one exchange, or with --any the first of several, is blocked or finished
     Wait {
-        exchange: runtime::AgentExchangeId,
+        exchanges: Vec<runtime::AgentExchangeId>,
+        /// Return the first of the named exchanges, or of the active ones in -p/-w, that
+        /// reaches a wait boundary
+        #[arg(long)]
+        any: bool,
         #[arg(long, default_value_t = 60)]
         timeout: u64,
         #[arg(long)]
@@ -331,6 +335,8 @@ pub enum AgentCmd {
         result_bytes: u32,
         #[arg(long)]
         json: bool,
+        #[command(flatten)]
+        scope: SessionScope,
     },
     /// Deliver a follow-up round to a terminal exchange
     Continue {
@@ -913,18 +919,22 @@ pub fn run(cmd: Command) -> Result<()> {
                 json,
             } => cmd_agent_exchange_inspect(exchange, frame, json),
             AgentCmd::Wait {
-                exchange,
+                exchanges,
+                any,
                 timeout,
                 frame,
                 result,
                 result_bytes,
                 json,
+                scope,
             } => cmd_agent_exchange_wait(
-                exchange,
+                exchanges,
+                any,
                 timeout,
                 frame,
                 result.then_some(result_bytes as usize),
                 json,
+                &scope,
             ),
             AgentCmd::Continue {
                 exchange,
@@ -2737,14 +2747,21 @@ fn print_agent_exchange(
     frame: Option<&runtime::TerminalFrame>,
     json: bool,
 ) -> Result<()> {
-    print_agent_exchange_with(exchange, frame, None, json)
+    print_agent_exchange_with(exchange, frame, None, None, json)
 }
 
-/// `result` is the value of `exchange_result`; its key is absent when it was not asked for.
+/// The watched exchanges of a `wait --any`, by whether they are at a wait boundary.
+struct WatchedExchanges {
+    ready: Vec<runtime::AgentExchangeId>,
+    pending: Vec<runtime::AgentExchangeId>,
+}
+
+/// `result` is the value of `exchange_result`. A key is absent when it was not asked for.
 fn print_agent_exchange_with(
     exchange: &runtime::AgentExchange,
     frame: Option<&runtime::TerminalFrame>,
     result: Option<serde_json::Value>,
+    watched: Option<&WatchedExchanges>,
     json: bool,
 ) -> Result<()> {
     if json {
@@ -2758,6 +2775,10 @@ fn print_agent_exchange_with(
         });
         if let Some(result) = result {
             output["result"] = result;
+        }
+        if let Some(watched) = watched {
+            output["ready"] = serde_json::json!(watched.ready);
+            output["pending"] = serde_json::json!(watched.pending);
         }
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
@@ -2783,8 +2804,22 @@ fn print_agent_exchange_with(
                 ),
             }
         }
+        if let Some(watched) = watched {
+            println!("ready: {}", exchange_ids(&watched.ready));
+            println!("pending: {}", exchange_ids(&watched.pending));
+        }
     }
     Ok(())
+}
+
+fn exchange_ids(ids: &[runtime::AgentExchangeId]) -> String {
+    if ids.is_empty() {
+        return "none".into();
+    }
+    ids.iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The agent's final message of the exchange's current round, or the reason none can be named.
@@ -3052,15 +3087,37 @@ fn fetch_agent_exchange(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_agent_exchange_wait(
-    exchange_id: runtime::AgentExchangeId,
+    exchanges: Vec<runtime::AgentExchangeId>,
+    any: bool,
     timeout: u64,
     frame: bool,
     result_bytes: Option<usize>,
     json: bool,
+    scope: &SessionScope,
 ) -> Result<()> {
     let timeout_ms = exchange_timeout_ms(timeout)?;
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let (exchange_id, watched) = if any {
+        let watched = wait_any_agent_exchange(exchanges, scope, deadline)?;
+        (watched.ready[0], Some(watched))
+    } else {
+        let [exchange_id] = exchanges[..] else {
+            bail!("wait takes one exchange; add --any for the first of several or of a -p/-w scope")
+        };
+        if scope.project.is_some() || scope.worktree.is_some() {
+            bail!("-p and -w select exchanges only with --any");
+        }
+        wait_agent_exchange(exchange_id, deadline)?;
+        (exchange_id, None)
+    };
+    let (exchange, frame) = fetch_agent_exchange(exchange_id, frame)?;
+    let result = result_bytes.map(|bytes| exchange_result(&exchange, bytes));
+    print_agent_exchange_with(&exchange, frame.as_ref(), result, watched.as_ref(), json)
+}
+
+fn wait_agent_exchange(exchange_id: runtime::AgentExchangeId, deadline: Instant) -> Result<()> {
     let mut exchange = current_agent_exchange(exchange_id)?;
     while !exchange.is_wait_boundary() {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -3087,9 +3144,91 @@ fn cmd_agent_exchange_wait(
             _ => bail!("wsxd returned an unexpected agent exchange response"),
         };
     }
-    let (exchange, frame) = fetch_agent_exchange(exchange_id, frame)?;
-    let result = result_bytes.map(|bytes| exchange_result(&exchange, bytes));
-    print_agent_exchange_with(&exchange, frame.as_ref(), result, json)
+    Ok(())
+}
+
+/// The most exchanges that one `wait --any` watches: each one holds a connection to wsxd.
+const MAX_WATCHED_EXCHANGES: usize = 16;
+
+/// Wait until one of the named exchanges, or one that was active in the scope at the
+/// start, is at a wait boundary. `ready` is then not empty.
+/// ^ docs/agent-orchestration.md "Wait for the first of several": no daemon request is
+/// added. Each pending exchange gets its own `agent_exchange_wait` long-poll, which wsxd
+/// answers when that exchange changes. `poll` is not used: wsxd counts a poll without
+/// TUI data as an open TUI, and that would defer a daemon upgrade during the wait.
+fn wait_any_agent_exchange(
+    named: Vec<runtime::AgentExchangeId>,
+    requested: &SessionScope,
+    deadline: Instant,
+) -> Result<WatchedExchanges> {
+    let snapshot = ops::runtime_snapshot()?;
+    let config = requested
+        .worktree
+        .as_ref()
+        .map(|_| load_config())
+        .transpose()?;
+    let scope = runtime_session_scope(&snapshot, requested, config.as_ref())?;
+    let mut watched = named;
+    if watched.is_empty() {
+        watched = list_agent_exchanges(None, scope)?
+            .iter()
+            .filter(|exchange| !exchange.is_wait_boundary())
+            .map(|exchange| exchange.id)
+            .collect();
+        if watched.is_empty() {
+            bail!("no_active_exchange: no exchange in the requested scope waits for its agent");
+        }
+    }
+    if watched.len() > MAX_WATCHED_EXCHANGES {
+        bail!("too_many_exchanges: wait --any watches at most {MAX_WATCHED_EXCHANGES} exchanges");
+    }
+    let sort = || -> Result<WatchedExchanges> {
+        let exchanges = list_agent_exchanges(None, scope)?;
+        let mut sorted = WatchedExchanges {
+            ready: Vec::new(),
+            pending: Vec::new(),
+        };
+        for id in &watched {
+            let Some(exchange) = exchanges.iter().find(|exchange| exchange.id == *id) else {
+                bail!("not_found: exchange {id} is not retained in the requested scope");
+            };
+            if exchange.is_wait_boundary() {
+                sorted.ready.push(*id);
+            } else {
+                sorted.pending.push(*id);
+            }
+        }
+        Ok(sorted)
+    };
+    let sorted = sort()?;
+    if !sorted.ready.is_empty() {
+        return Ok(sorted);
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    for id in sorted.pending {
+        let sender = sender.clone();
+        // A watcher that is still waiting ends with this process.
+        std::thread::spawn(move || {
+            let _ = sender.send(wait_agent_exchange(id, deadline));
+        });
+    }
+    drop(sender);
+    let first = receiver
+        .recv()
+        .context("exchange watchers ended without an answer")?;
+    let sorted = sort()?;
+    match first {
+        Err(error) if sorted.ready.is_empty() => {
+            if error.to_string().starts_with("wait_timeout") {
+                bail!(
+                    "wait_timeout: no exchange of {} is at a wait boundary",
+                    exchange_ids(&sorted.pending)
+                );
+            }
+            Err(error)
+        }
+        _ => Ok(sorted),
+    }
 }
 
 fn cmd_agent_exchange_continue(
@@ -3150,8 +3289,6 @@ fn cmd_agent_exchange_cancel(exchange_id: runtime::AgentExchangeId, json: bool) 
 }
 
 /// Retained exchanges of one session or pane, or of the requested project and worktree.
-/// ^ wsxd filters by pane only. A scope without a session is applied here, on the
-/// project and worktree IDs that every exchange carries.
 fn scoped_agent_exchanges(
     selector: Option<&str>,
     requested: &SessionScope,
@@ -3170,6 +3307,15 @@ fn scoped_agent_exchanges(
             pane_id = Some(resolve_session_in_snapshot(&snapshot, selector, scope)?.pane_id);
         }
     }
+    list_agent_exchanges(pane_id, scope)
+}
+
+/// ^ wsxd filters by pane only. A scope without a session is applied here, on the
+/// project and worktree IDs that every exchange carries.
+fn list_agent_exchanges(
+    pane_id: Option<runtime::PaneId>,
+    scope: RuntimeSessionScope,
+) -> Result<Vec<runtime::AgentExchange>> {
     match runtime::Client::local().call(&runtime::Request::AgentExchangeList { pane_id })? {
         runtime::Response::AgentExchanges(mut exchanges) => {
             exchanges.retain(|exchange| {
