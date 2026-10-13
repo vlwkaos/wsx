@@ -9,7 +9,7 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc, thread, time::Duration};
-use wsx_core::runtime::{AgentState, Request, Response};
+use wsx_core::runtime::{self, AgentState, Request, Response, TuiClientPresence};
 
 // Below the runtime client's 5 s read timeout.
 const POLL_MS: u64 = 2_000;
@@ -49,11 +49,24 @@ fn observe(app: Arc<App>) {
     let mut workspace = String::new();
     // What each working session does now, read again only when its transcript changed.
     let mut activities: HashMap<u64, String> = HashMap::new();
+    // ^ docs/daemon-live-upgrade.md: wsxd takes a poll without presence for an old TUI
+    // and defers every upgrade. This server reconnects by itself, so it says at which
+    // protocol. The identity is this executable's; the server never replaces wsxd.
+    let presence = std::env::current_exe()
+        .and_then(|path| runtime::binary_identity(&path))
+        .ok()
+        .map(|target_binary_id| TuiClientPresence {
+            instance_id: runtime::new_client_id(),
+            version: runtime::WSX_VERSION.to_string(),
+            target_binary_id,
+            target_daemon_revision: runtime::DAEMON_REVISION,
+            max_protocol: runtime::PROTOCOL_VERSION,
+        });
     loop {
         let changed = match app.client.call(&Request::Poll {
             after_revision: revision,
             timeout_ms: if watching { WORKING_POLL_MS } else { POLL_MS },
-            tui: None,
+            tui: presence.clone(),
         }) {
             Ok(Response::Events {
                 revision: next,

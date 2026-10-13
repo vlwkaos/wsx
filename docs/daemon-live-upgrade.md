@@ -11,6 +11,8 @@ Each TUI poll carries `TuiClientPresence.max_protocol`, the newest protocol that
 
 Such a TUI cannot talk to the successor, so it must quit first. A TUI at or above the target protocol stays attached.
 
+The daemon reads every `poll` this way, so a long-lived client that is not a TUI must send presence too. `wsx web serve` sends it with its own protocol (`crates/wsx-web/src/events.rs`): it reconnects by itself and does not defer a handoff.
+
 The running daemon applies its own rule. A daemon older than revision 22 still waits for every TUI to quit, so the first upgrade to this release needs that once.
 
 ## Transition marker

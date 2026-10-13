@@ -89,7 +89,7 @@ def run_scenario(args, tmux, wsx, wsxd, work):
             client.settimeout(5)
             client.connect(str(daemon_socket))
             stream = client.makefile("rb")
-            client.sendall(b'{"method":"hello","params":{"protocol":17}}\n')
+            client.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
             assert json.loads(stream.readline())["type"] == "hello"
             request = {"method": method}
             if params is not None:

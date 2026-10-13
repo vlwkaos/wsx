@@ -27,7 +27,7 @@ leaf, sequence, idle_chrome = 'answer', 0, True
 def report(state):
  with socket.socket(socket.AF_UNIX) as client:
   client.connect(os.environ['WSX_SOCKET']); stream = client.makefile('rb')
-  client.sendall(b'{"method":"hello","params":{"protocol":17}}\n'); stream.readline()
+  client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
   params = {'pane_id':pane,'runtime_generation':generation,'provider':provider,'state':state,
     'session_ref':{'kind':'id','value':'fixture','transcript_path':str(history)},
     'capabilities':{'prompt':True,'lifecycle':True,'exchange_receipts':receipt_capable}}
@@ -118,7 +118,7 @@ def main():
         def call(method, params=None):
             with socket.socket(socket.AF_UNIX) as client:
                 client.settimeout(5); client.connect(str(path)); stream = client.makefile('rb')
-                client.sendall(b'{"method":"hello","params":{"protocol":17}}\n'); stream.readline()
+                client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
                 request = {'method':method}
                 if params is not None: request['params'] = params
                 client.sendall(json.dumps(request).encode()+b'\n')
