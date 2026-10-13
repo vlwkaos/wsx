@@ -40,7 +40,11 @@ struct IsolatedInstall {
 
 impl IsolatedInstall {
     fn new() -> Self {
-        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        // Socket paths under this root must stay below macOS SUN_LEN, so drop the `..` parts.
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("resolve the repository root");
         let root = repository.join("target").join(format!(
             "routine-it-{}-{}",
             std::process::id(),
