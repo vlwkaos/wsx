@@ -15,7 +15,7 @@ libc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
-wsx-core = { path = "../wsx-core", version = "=0.30.1" }
+wsx-core = { path = "../wsx-core", version = "=0.31.0-rc.1" }
 
 # docs/web-client.md lists why each of these is here.
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "json", "query", "ws"] }
