@@ -14,9 +14,11 @@ theme = "default"
 [access]
 projects = "all"                  # every project wsx manages; or a list: ["/Users/vlwkaos/ws/wsx"]
 capabilities = [
-  "chat_send", "agent_write", "session_start",
+  "chat_send", "chat_answer", "agent_write", "session_start",
   "files_read", "files_write",
   "terminal_view", "terminal_input",
   "media_upload", "media_download",
 ]
-agent_command = ["claude"]
+# A session started from the page. In auto mode Claude's classifier reviews routine actions
+# instead of a person; the prompts that remain arrive in the chat (chat_answer).
+agent_command = ["claude", "--permission-mode", "auto"]
