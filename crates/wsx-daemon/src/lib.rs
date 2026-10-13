@@ -4874,8 +4874,11 @@ impl ExchangeInput {
             AgentExchangeAccess::ReadOnly => "read-only",
             AgentExchangeAccess::Writer => "writer",
         };
+        // ^ wsx_core::runtime::agent_exchange_envelope_start: `agent wait --result` finds
+        // the round in the agent's history by this line.
         format!(
-            "[wsx exchange {id}, round {round}, {access}]\n{}",
+            "{}{access}]\n{}",
+            agent_exchange_envelope_start(id, round),
             self.prompt
         )
     }

@@ -97,6 +97,17 @@ pub struct Timeline {
     pub truncated: bool,
 }
 
+/// The agent's last message after one submitted input.
+#[derive(Debug, Serialize)]
+pub struct Reply {
+    pub source: &'static str,
+    /// `available`, or the reason why no message can be named.
+    pub status: &'static str,
+    pub path: Option<PathBuf>,
+    pub text: Option<String>,
+    pub truncated: bool,
+}
+
 /// Reuse one bounded store inventory per provider during multi-agent discovery.
 #[derive(Default)]
 pub struct Reader {
@@ -140,6 +151,62 @@ impl Reader {
                 truncated: status == "output_limit",
             },
         }
+    }
+
+    /// The last assistant message after the newest submitted input that contains `marker`.
+    /// ^ docs/agent-orchestration.md "Result of a round": a message from before that input
+    /// is never returned. An input that is not in the history, or has no message after it,
+    /// is a status, not an older message.
+    pub fn read_reply(
+        &mut self,
+        provider: &str,
+        reference: Option<&AgentSessionRef>,
+        marker: &str,
+        bytes: usize,
+    ) -> Reply {
+        let mut reply = Reply {
+            source: "provider_native_persisted_history",
+            status: "available",
+            path: None,
+            text: None,
+            truncated: false,
+        };
+        let loaded = match self.load(provider, reference, bytes) {
+            Ok(loaded) => loaded,
+            Err((status, path)) => {
+                reply.status = status;
+                reply.path = path;
+                return reply;
+            }
+        };
+        let submitted = |node: &Node| node.role == "user" && !node.meta && !node.text.is_empty();
+        let nodes = &loaded.nodes;
+        reply.path = Some(loaded.path.clone());
+        let Some(start) = nodes
+            .iter()
+            .rposition(|node| submitted(node) && node.text.contains(marker))
+        else {
+            reply.status = "delivery_not_in_history";
+            return reply;
+        };
+        // The round ends where the next input was submitted.
+        let end = nodes[start + 1..]
+            .iter()
+            .position(submitted)
+            .map_or(nodes.len(), |offset| start + 1 + offset);
+        match nodes[start + 1..end]
+            .iter()
+            .rev()
+            .find(|node| node.role == "assistant" && !node.text.is_empty())
+        {
+            Some(node) => {
+                let text = clip(&node.text, bytes);
+                reply.truncated = text.len() < node.text.len();
+                reply.text = Some(text);
+            }
+            None => reply.status = "no_message_after_delivery",
+        }
+        reply
     }
 
     fn load(
