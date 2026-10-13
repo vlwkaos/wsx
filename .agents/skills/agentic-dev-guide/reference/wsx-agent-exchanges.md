@@ -2,6 +2,25 @@
 
 Use this playbook when one agent coordinates bounded work with another wsx-managed agent. wsxd transports and records exchanges; the parent still owns decomposition, synthesis, permissions, rounds, and the final write.
 
+## 0. The whole sequence in one tool call
+
+To start work in a sibling worktree, write the sequence once. Every command prints the IDs that the next one needs. Do not add status, list or peek calls between them.
+
+```sh
+wsx agent start <branch> -p <project> --from main --prompt-file task.md --writer --key <key-1> --json > w.json
+X=$(jq .exchange.id w.json)
+wsx agent wait $X --result --timeout <seconds> --json        # .exchange.state, .result.status, .result.text
+wsx agent continue $X --prompt-file more.md --key <key-2> --json && wsx agent wait $X --result --timeout <seconds> --json
+wsx session delete "$(jq .session_id w.json)" --json         # after the result is saved
+```
+
+- Several workers: one `agent start` each, then `wsx agent wait --any $A $B --result --json`. Read `ready` and `pending`, and call it again with the pending IDs.
+- `agent start` creates the worktree, one agent session and the request. Its agent command is the project's `worktree.defaultSession.command`, or `--agent <command>`. On a failure it prints what exists and `next`; repeat the same command with the same `--key`.
+- A prompt is an argument, `-` for standard input, or `--prompt-file <path>`.
+- `--key` makes a repeat return the existing exchange, so a lost reply is never a second delivery.
+- `result.status` other than `available` means that no result can be named yet. Never take an older message or a terminal frame as the result.
+- `wsx status --json` gives the agent state, the exchange and the uncommitted or unmerged work of every worktree in one call, when the IDs were lost.
+
 ## 1. Act before discovering
 
 When the request, `WSX_PANE_ID`, or a fresh command result supplies an exact session or pane, call `wsx agent request` directly. Do not preflight with status, session lists, exchange lists, inspect, peek, or help.
@@ -31,7 +50,8 @@ Omit fields that add no decision value. Do not include internal reasoning, broad
 
 Parse the JSON response once and retain its exchange ID, round, state, evidence, and deadline. Never list to reconfirm a fresh ID.
 
-- Use `wsx agent wait <exchange-id> --timeout <seconds> --json` when the parent can block until Blocked or terminal state.
+- Use `wsx agent wait <exchange-id> --result --timeout <seconds> --json` when the parent can block until Blocked or terminal state. `--result` adds the agent's final message of that round from its saved history.
+- Use `wsx agent wait --any <id>... --result --json` to block on several workers with one call.
 - Use `wsx agent inspect <exchange-id> --json` only for a nonblocking progress decision.
 - Add `--frame` only when the bounded terminal fallback is needed.
 

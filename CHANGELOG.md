@@ -4,13 +4,25 @@
 
 ### Breaking Changes
 
+- Rust callers that construct `AgentExchange` must provide `key` and `continue_key`, and `Request` has the new variants `AgentExchangeCreateKeyed` and `AgentExchangeContinueKeyed`. Older JSON without the new fields decodes as before.
 - Rust callers that construct `Request::AgentExchangeCreate`, `AgentExchangeCreateStashingDraft`, `AgentExchangeContinue` or `AgentExchangeContinueStashingDraft` must provide `command` (`false` keeps the exchange line) and `takeover` (`false` keeps `terminal_busy`); `AgentExchangeCancel` must provide `takeover` too. `Capabilities` has the new `exchange_command` flag. Older JSON without the new fields decodes as before.
 - Rust callers that construct `AgentExchange` must provide `failure` (`None` for a delivered round). Older JSON without it decodes as `None`.
 - Rust callers that construct `AgentInfo` must provide `state_since_unix_ms`. Older JSON without it decodes as `None`.
 - `wsx_core::integration::memory::Timeline` has no `checkpoint` field: the newest compaction summary is an `ItemKind::Summary` item in `items`, and the web timeline API no longer sends `checkpoint`. Claude's fixed words around a summary are removed from its text, also in `wsx agent context`.
 
+### Added
+
+- Add `wsx agent start <branch> -p <project>`: one call that creates the worktree when it is missing, creates one session that runs the agent, waits until the agent can take a prompt, delivers the request and prints the worktree, session, pane and exchange together. The agent command is the project's `worktree.defaultSession.command`, or `--agent <command>` for one call. A worktree, a session of the same name and an exchange of the same `--key` are used when they exist. A late failure prints what exists and what to run next, and deletes nothing. See `docs/agent-orchestration.md`.
+- Add `wsx agent wait --result`: the agent's final message of the exchange's current round, read from the provider's saved history after the delivered request. When that message cannot be named, `result.status` says why; an older message is never returned.
+- Add `wsx agent wait --any [<exchange>...] [-p] [-w]`: one blocking call for several workers. It returns the first exchange that is blocked or finished, with the `ready` and `pending` IDs.
+- Add `--key <text>` to `agent request`, `agent continue` and `agent start`. The same key for the same pane returns the existing exchange instead of a second delivery. A wsxd before daemon revision 29 refuses the keyed requests; the protocol stays 16.
+- Take a prompt from a file or standard input: `agent start`, `agent request`, `agent continue` and `session prompt` accept `--prompt-file <path>` and `-`. Exactly one source is allowed, an empty prompt is refused, and the error names the size limit.
+
 ### Fixed
 
+- Return the exchange of a slow delivery. `wsx agent request` failed with `Resource temporarily unavailable (os error 35)` although the exchange existed, when the agent took more than 5 seconds to read the prompt from its terminal. Until then wsxd also accepted no other connection. The client now waits for the exchange timeout, wsxd writes the prompt without holding its state, and its accept loop no longer waits for a running change. Daemon revision 29.
+- Leave no branch after a failed worktree creation. When `git worktree add` failed, the new branch stayed, and the retry of `wsx worktree create <branch> --from <ref>` was refused with "already exists; omit --from". The branch that the failed call made is removed while it still points at its start commit. A branch that existed before is never removed.
+- Apply `-p` and `-w` to `wsx agent exchanges` without a session. The scope was ignored, and exchanges of other projects were listed.
 - Claude: after a compaction wsx showed the agent idle while it still worked. Claude starts its session again after every compaction, also an automatic one inside a turn, and the hook reported that start as idle. The turn ended early, and the web chat delivered the next message into a busy editor. Claude integration 22 skips that start, and reports `/compact` as working, then done, by its own compaction events. A message sent during `/compact` now waits for it. Run `wsx agent install claude`, then restart Claude when it is idle.
 - Web chat after a Claude compaction: the answer Claude kept through the compaction now shows after the summary, `/compact` shows as typed instead of in tags, and its "Compacted" output is left out.
 - Web chat: Claude Code 2.1.300 writes a background-task notice (`<task-notification>…`) in the person's name, and the chat showed it as a message the person wrote. The timeline now leaves out a Claude record with `promptSource: "system"`.
@@ -24,6 +36,8 @@
 
 ### Changed
 
+- Give a manager one status call. `wsx status --json` adds `exchange` to each session (its active exchange, or else the last one, with state, evidence and round) and `work` to each worktree (the number of uncommitted paths and of commits that the default branch does not have). Existing keys are unchanged.
+- Return every identity from one call. `wsx session create --json` adds `pane_id` and `agent`, and `wsx session list --json` rows add `project`, `branch` and `worktree`.
 - Web: "New session" on the inbox, the projects list and each worktree heading is now a + icon with a 44 px hit area. Its name and tooltip say "New session in <project or branch>". The empty inbox keeps the words "Start one".
 - `wsx web pair`, `wsx web devices` and `wsx web serve` no longer need `--site`. With no site named they use the only site file in `~/.config/wsx/web/` (or `$XDG_CONFIG_HOME/wsx/web/`); with none they say how to make one, and with several they list them. A site can also be named by its id or file name, for example `wsx web pair wsx`.
 - Web: a project in Projects opens its worktrees and their sessions, and each session opens from there. Back returns to the screen a session or a project was opened from, and switching Chat and Terminal no longer adds a step to Back.
