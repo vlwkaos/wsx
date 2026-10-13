@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -88,6 +89,364 @@ while True:
    draft += char.decode(errors='replace'); paint()
 '''
 
+# A worker for the orchestration journey: a prompt-capable agent that writes each
+# submitted prompt and its reply to a provider-native history file. It is named after
+# the worktree it runs in. `no-reply` in a prompt leaves the reply out, `hold` keeps the
+# turn at work until a `<name>.release` file exists, and a `<name>.stall` file holds its
+# first read for that many seconds.
+WORKER = r'''
+import json, os, pathlib, signal, socket, sys, time, tty
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+root = pathlib.Path(sys.argv[1]); name = pathlib.Path.cwd().name
+history, trace, stall = root / (name+'.jsonl'), root / (name+'.trace'), root / (name+'.stall')
+pane = int(os.environ['WSX_PANE_ID']); generation = os.environ['WSX_RUNTIME_GENERATION']
+(root / (name+'.pid')).write_text(str(os.getpid()))
+def report(state):
+ with socket.socket(socket.AF_UNIX) as client:
+  client.connect(os.environ['WSX_SOCKET']); stream = client.makefile('rb')
+  client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
+  params = {'pane_id':pane,'runtime_generation':generation,'provider':'claude','state':state,
+    'session_ref':{'kind':'id','value':'fixture','transcript_path':str(history)},
+    'capabilities':{'prompt':True,'lifecycle':True}}
+  client.sendall(json.dumps({'method':'agent_report','params':params}).encode()+b'\n')
+  assert json.loads(stream.readline())['type'] == 'ack'
+def record(role, entry, parent, text):
+ with history.open('a') as out:
+  out.write(json.dumps({'type':role,'uuid':entry,'parentUuid':parent,'sessionId':'fixture',
+    'message':{'content':text}})+'\n')
+tty.setraw(0)
+sys.stdout.write('\x1b[?2004h'); sys.stdout.flush()
+record('assistant', 'before', None, 'an older message that is not a result')
+draft, pending, leaf, turn = '', b'', 'before', 0
+report('idle')
+if stall.exists(): time.sleep(float(stall.read_text())); stall.unlink()
+while True:
+ pending += os.read(0,65536)
+ while pending:
+  if pending.startswith(b'\x1b[200~'):
+   end = pending.find(b'\x1b[201~')
+   if end < 0: break
+   draft += pending[6:end].decode(); pending = pending[end+6:]; continue
+  if pending.startswith(b'\x1b') and len(pending) < 6: break
+  char, pending = pending[:1], pending[1:]
+  if char != b'\r': draft += char.decode(errors='replace'); continue
+  with trace.open('a') as out: out.write(json.dumps({'received':draft})+'\n')
+  turn += 1; report('working')
+  record('user', 'u'+str(turn), leaf, draft); leaf = 'u'+str(turn)
+  while 'hold' in draft and not (root / (name+'.release')).exists(): time.sleep(0.02)
+  if 'no-reply' not in draft:
+   record('assistant', 'a'+str(turn), leaf, 'result of '+name+': '+draft.splitlines()[-1]); leaf = 'a'+str(turn)
+  draft = ''; report('done')
+'''
+
+
+def rpc(path, method, params=None):
+    with socket.socket(socket.AF_UNIX) as client:
+        client.settimeout(5); client.connect(str(path)); stream = client.makefile('rb')
+        client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
+        request = {'method':method}
+        if params is not None: request['params'] = params
+        client.sendall(json.dumps(request).encode()+b'\n')
+        return json.loads(stream.readline())
+
+
+def until(test, label, seconds=5):
+    deadline = time.monotonic()+seconds
+    while time.monotonic() < deadline:
+        if test(): return
+        time.sleep(0.02)
+    raise RuntimeError(label+' timeout')
+
+
+def orchestration(wsx, wsxd, released):
+    '''A manager starts workers in new worktrees, waits and reads results: docs/agent-orchestration.md.'''
+    work = ROOT / '.work' / ('ao-' + str(os.getpid()))
+    work.parent.mkdir(exist_ok=True)
+    work.mkdir(mode=0o700, exist_ok=False)
+    daemons, success, started = [], False, time.monotonic()
+    repos = work / 'repos'
+    try:
+        for name in ('home','state','repos','run'):
+            (work / name).mkdir(mode=0o700)
+        config = (work / 'home/Library/Application Support/wsx' if sys.platform == 'darwin' else work / 'config/wsx')
+        config.mkdir(parents=True)
+        (config / 'config-v2.toml').write_text('resume_agents_on_restore = false\n' + ''.join(
+            '[[projects]]\nname = "%s"\npath = %s\n' % (name, json.dumps(str(repos / name))) for name in ('fixture','other')))
+        path = work / 'state/wsx/wsx.sock'
+        env = {'HOME':str(work / 'home'),'XDG_CONFIG_HOME':str(work / 'config'),'XDG_STATE_HOME':str(work / 'state'),
+               'XDG_CACHE_HOME':str(work / 'cache'),'WSX_SOCKET':str(path),'WSX_DAEMON_BIN':str(wsxd),
+               'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','SHELL':'/bin/sh','TERM':'xterm-256color','LANG':'en_US.UTF-8',
+               'GIT_AUTHOR_NAME':'fixture','GIT_AUTHOR_EMAIL':'fixture@example.invalid',
+               'GIT_COMMITTER_NAME':'fixture','GIT_COMMITTER_EMAIL':'fixture@example.invalid'}
+        def git(repo, *args, ok=True):
+            result = subprocess.run(['git','-C',str(repo),*args],env=env,capture_output=True,text=True,timeout=10)
+            assert not ok or result.returncode == 0, result.stderr
+            return result
+        for name in ('fixture','other'):
+            subprocess.run(['git','init','-q','-b','main',str(repos / name)],env=env,check=True,timeout=5)
+            git(repos / name,'commit','-q','--allow-empty','-m','start')
+        worker = work / 'worker.py'; worker.write_text(WORKER)
+        agent = '%s %s %s' % (sys.executable, worker, work / 'run')
+        def cli(*args, ok=True, stdin=None, seconds=20, cwd=work, binary=wsx, env=env):
+            result = subprocess.run([str(binary),*map(str,args)],env=env,cwd=cwd,input=stdin,capture_output=True,text=True,timeout=seconds)
+            assert ok is None or (result.returncode == 0) == ok, (args, result.stdout, result.stderr)
+            return result
+        def received(name):
+            file = work / 'run' / (name+'.trace')
+            return [json.loads(line)['received'] for line in file.read_text().splitlines()] if file.exists() else []
+        def exchange(exchange_id):
+            return rpc(path,'agent_exchange_get',{'exchange_id':exchange_id})['data']['exchange']
+        def at_boundary(exchange_id):
+            return exchange(exchange_id)['state'] == 'done_observed'
+        daemons.append(subprocess.Popen([str(wsxd)],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL))
+        until(path.exists,'daemon')
+
+        # A failed `git worktree add` leaves no branch, so the same command works again.
+        fixture = repos / 'fixture'
+        git(fixture,'branch','kept','main')
+        repos.chmod(0o500)
+        try:
+            refused = cli('worktree','create','w/retry','--from','main','--json','-p','fixture',ok=False)
+            assert 'git worktree add' in refused.stderr, refused.stderr
+            assert git(fixture,'show-ref','--verify','--quiet','refs/heads/w/retry',ok=False).returncode != 0, 'failed creation left its branch'
+            cli('worktree','create','kept','--json','-p','fixture',ok=False)
+            git(fixture,'show-ref','--verify','--quiet','refs/heads/kept')
+        finally:
+            repos.chmod(0o700)
+        retried = json.loads(cli('worktree','create','w/retry','--from','main','--json','-p','fixture').stdout)
+        assert retried['branch'] == 'w/retry' and Path(retried['worktree']).is_dir() and retried['pane_id']
+
+        # One call returns every identity of a new session, and a list row says where it is.
+        scope = ('-p','fixture','-w','w/retry')
+        def ready(pane_id):
+            pane = next(pane for pane in rpc(path,'snapshot')['data']['panes'] if pane['id'] == pane_id)
+            return pane['agent'] and pane['agent']['state'] in ('idle','done')
+        session = json.loads(cli('session','create','--name','worker','--command',agent,'--json',*scope).stdout)
+        assert session['pane_id'] and session['branch'] == 'w/retry' and 'agent' in session
+        until(lambda: ready(session['pane_id']),'worker agent')
+        row = next(row for row in json.loads(cli('session','list','--json','-p','fixture').stdout)
+                   if row['session_id'] == session['session_id'])
+        assert (row['project'],row['branch'],row['worktree']) == ('fixture','w/retry',retried['worktree'])
+
+        # A prompt comes from an argument, a file or standard input: exactly one, never empty.
+        retry = 'fixture-w-retry'
+        prompt_file = work / 'prompt.txt'; prompt_file.write_text('from a file\nsecond line\n')
+        first = json.loads(cli('agent','request','worker','--prompt-file',prompt_file,'--json',*scope).stdout)['exchange']
+        until(lambda: len(received(retry)) == 1,'file prompt')
+        assert received(retry)[0] == '[wsx exchange %d, round 1, read-only]\nfrom a file\nsecond line' % first['id']
+        until(lambda: at_boundary(first['id']),'file prompt done')
+        cli('agent','continue',first['id'],'-','--json',stdin='from standard input\n')
+        until(lambda: len(received(retry)) == 2,'standard input prompt')
+        assert received(retry)[1].endswith(', round 2, read-only]\nfrom standard input')
+        until(lambda: at_boundary(first['id']),'standard input prompt done')
+        large = work / 'large.txt'; large.write_text('x' * 65537)
+        for refused, reason in [(('agent','request','worker','-'),'empty'),
+                (('agent','request','worker'),'prompt is required'),
+                (('agent','request','worker','two','--prompt-file',prompt_file),'one prompt source'),
+                (('agent','request','worker','--prompt-file',large),'65536 bytes'),
+                (('agent','continue',first['id'],'--prompt-file',large),'65536 bytes'),
+                (('agent','continue',first['id'],'--prompt-file',work / 'absent.txt'),'cannot open'),
+                (('session','prompt','worker','--prompt-file',large),'65535 bytes')]:
+            assert reason in cli(*refused,*(scope if refused[1] != 'continue' else ()),ok=False,stdin='').stderr, refused
+        assert len(received(retry)) == 2 and exchange(first['id'])['round'] == 2, 'a refused prompt reached the agent'
+        cli('session','prompt','worker','--prompt-file',prompt_file,*scope)
+        until(lambda: len(received(retry)) == 3,'session prompt from a file')
+        assert received(retry)[2] == 'from a file\nsecond line'
+
+        # A delivery that takes longer than the ordinary reply limit still returns its exchange.
+        slow = json.loads(cli('worktree','create','w/slow','--from','main','--json','-p','fixture').stdout)
+        (work / 'run/fixture-w-slow.stall').write_text('7')
+        scope = ('-p','fixture','-w','w/slow')
+        session = json.loads(cli('session','create','--name','worker','--command',agent,'--json',*scope).stdout)
+        until(lambda: ready(session['pane_id']),'slow worker agent')
+        prompt_file.write_text('slow delivery\n' + 'y' * 16000)
+        keyed = ('agent','request','worker','--prompt-file',prompt_file,'--key','slow-1','--json',*scope)
+        revision = rpc(path,'snapshot')['data']['revision']
+        first_call = subprocess.Popen([str(wsx),*map(str,keyed)],env=env,cwd=work,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        # The worker holds its first read for 7 seconds. wsxd still answers a read meanwhile.
+        # A repeat with the same key, sent while the first delivery is still in the PTY,
+        # must return that exchange and deliver nothing.
+        until(lambda: rpc(path,'snapshot')['data']['revision'] > revision,'intent of the slow delivery')
+        began = time.monotonic()
+        repeat = json.loads(cli(*keyed,seconds=40).stdout)['exchange']
+        stdout, stderr = first_call.communicate(timeout=40)
+        assert first_call.returncode == 0, stderr
+        slow_exchange = json.loads(stdout)['exchange']
+        assert time.monotonic() - began > 3, 'the worker did not hold the delivery'
+        assert slow_exchange['id'] == repeat['id'] and slow_exchange['key'] == 'slow-1'
+        assert slow_exchange['state'] == 'delivered' and slow_exchange['evidence'] == 'pty_delivery'
+        slow_name = 'fixture-w-slow'
+        until(lambda: at_boundary(slow_exchange['id']),'slow delivery done',10)
+        assert json.loads(cli(*keyed).stdout)['exchange']['id'] == slow_exchange['id']
+        assert [text.splitlines()[1] for text in received(slow_name)] == ['slow delivery'], 'a keyed repeat delivered again'
+        follow_up = ('agent','continue',slow_exchange['id'],'keyed follow up','--key','slow-2','--json')
+        rounds = [json.loads(cli(*follow_up).stdout)['exchange'] for _ in range(2)]
+        assert [item['round'] for item in rounds] == [2,2] and rounds[1]['continue_key'] == 'slow-2'
+        until(lambda: at_boundary(slow_exchange['id']),'keyed follow up done')
+        assert len(received(slow_name)) == 2 and received(slow_name)[1].endswith('\nkeyed follow up')
+        assert 'invalid_key' in cli('agent','request','worker','refused','--key','has space','--json',*scope,ok=False).stderr
+        assert len(received(slow_name)) == 2
+
+        # The result of a round is the agent's last message after that round was delivered.
+        answer = json.loads(cli('agent','wait',slow_exchange['id'],'--result','--json').stdout)
+        assert answer['exchange']['state'] == 'done_observed' and answer['exchange']['round'] == 2
+        assert answer['result']['status'] == 'available' and answer['result']['round'] == 2
+        assert answer['result']['text'] == 'result of fixture-w-slow: keyed follow up' and not answer['result']['truncated']
+        clipped = json.loads(cli('agent','wait',slow_exchange['id'],'--result','--result-bytes','6','--json').stdout)['result']
+        assert clipped['text'] == 'result' and clipped['truncated']
+        # A round with no message after its delivery has no result. The message of the
+        # round before it is in the same history and must not be returned.
+        cli('agent','continue',slow_exchange['id'],'no-reply for this round','--json')
+        until(lambda: len(received(slow_name)) == 3 and at_boundary(slow_exchange['id']),'round without a reply')
+        refused = json.loads(cli('agent','wait',slow_exchange['id'],'--result','--json').stdout)
+        assert refused['exchange']['round'] == 3 and refused['result']['status'] == 'no_message_after_delivery'
+        assert refused['result']['text'] is None and 'keyed follow up' not in json.dumps(refused['result'])
+        assert 'result unavailable: no_message_after_delivery' in cli('agent','wait',slow_exchange['id'],'--result').stdout
+        assert 'result' not in json.loads(cli('agent','wait',slow_exchange['id'],'--json').stdout)
+
+        # A manager starts two workers in two new worktrees with one shell line, waits for the
+        # first that finishes and reads each result. It calls no lookup command: every ID comes
+        # from the output of the command before it.
+        (work / 'one.txt').write_text('task one\n'); (work / 'two.txt').write_text('task two\n')
+        manager = '''
+id() { /usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["exchange"]["id"])' "$1"; }
+"$WSX" agent start w/a -p fixture --from main --agent "$AGENT" --name worker --prompt-file one.txt --key a1 --json > a.json &&
+"$WSX" agent start w/b -p fixture --from main --agent "$AGENT" --name worker --prompt-file two.txt --key b1 --writer --json > b.json &&
+A=$(id a.json) && B=$(id b.json) &&
+"$WSX" agent wait --any $A $B --result --timeout 30 --json > first.json &&
+for X in $A $B; do "$WSX" agent wait $X --result --timeout 30 --json > result-$X.json || exit 1; done
+'''
+        assert not any(word in manager for word in ('list','status','context','exchanges','inspect','peek'))
+        line = subprocess.run(['/bin/sh','-c',manager],env=dict(env,WSX=str(wsx),AGENT=agent),cwd=work,capture_output=True,text=True,timeout=120)
+        assert line.returncode == 0, line.stderr
+        started_a, started_b = (json.loads((work / name).read_text()) for name in ('a.json','b.json'))
+        for start, branch, name, task in [(started_a,'w/a','fixture-w-a','task one'),(started_b,'w/b','fixture-w-b','task two')]:
+            assert start['project'] == 'fixture' and start['branch'] == branch and start['agent'] == 'claude'
+            assert Path(start['worktree']).name == name and Path(start['worktree']).is_dir()
+            assert start['worktree_created'] and start['session_created'] and start['session_label'] == 'worker'
+            assert start['session_id'] and start['pane_id'] == start['exchange']['pane_id'] and 'error' not in start
+            answer = json.loads((work / ('result-%d.json' % start['exchange']['id'])).read_text())
+            assert answer['result']['status'] == 'available' and answer['result']['text'] == 'result of %s: %s' % (name, task)
+            assert [text.splitlines()[-1] for text in received(name)] == [task]
+            # The agent session is the only session of the new worktree.
+            rows = [row for row in json.loads(cli('session','list','--json','-p','fixture').stdout) if row['branch'] == branch]
+            assert [row['session_id'] for row in rows] == [start['session_id']], rows
+        assert started_b['exchange']['access'] == 'writer' and started_a['exchange']['key'] == 'a1'
+        first = json.loads((work / 'first.json').read_text())
+        both = {started_a['exchange']['id'], started_b['exchange']['id']}
+        assert first['exchange']['id'] in first['ready'] and set(first['ready']) | set(first['pending']) == both
+        assert first['result']['status'] == 'available'
+        # The same command with the same key uses what exists and delivers nothing.
+        again = json.loads(cli('agent','start','w/a','-p','fixture','--from','main','--agent',agent,'--name','worker',
+            '--prompt-file',work / 'one.txt','--key','a1','--json').stdout)
+        assert again['exchange']['id'] == started_a['exchange']['id'] and again['session_id'] == started_a['session_id']
+        assert not again['worktree_created'] and not again['session_created'] and len(received('fixture-w-a')) == 1
+
+        # A late failure reports what exists and deletes nothing.
+        late = cli('agent','start','w/late','-p','fixture','--agent','cat','late task','--ready-timeout','2','--json',ok=False)
+        report = json.loads(late.stdout)
+        assert report['error']['step'] == 'ready' and 'agent_not_ready' in report['error']['message']
+        assert report['worktree_created'] and report['session_created'] and report['pane_id'] and report['exchange'] is None
+        assert 'session peek %d' % report['session_id'] in report['next'] and Path(report['worktree']).is_dir()
+        assert "stopped at step 'ready'" in late.stderr
+        # Without a command there is nothing to start, and nothing is made.
+        assert 'no agent command' in cli('agent','start','w/none','-p','fixture','no command','--json',ok=False).stderr
+        assert git(fixture,'show-ref','--verify','--quiet','refs/heads/w/none',ok=False).returncode != 0
+
+        # The project's own default session command starts the agent when --agent is absent.
+        (repos / 'other/wsx.config.yml').write_text('worktree:\n  defaultSession:\n    enabled: true\n    command: %s\n' % json.dumps(agent))
+        other = json.loads(cli('agent','start','main','-p','other','--name','worker','hold the result','--json').stdout)
+        assert not other['worktree_created'] and other['session_created'] and other['worktree'] == str(repos / 'other')
+        # -p and -w restrict the exchange list.
+        listed = lambda *scope: {item['id'] for item in json.loads(cli('agent','exchanges','--json',*scope).stdout)}
+        assert listed('-p','other') == {other['exchange']['id']}
+        assert listed('-p','fixture','-w','w/a') == {started_a['exchange']['id']}
+        assert other['exchange']['id'] not in listed('-p','fixture') and other['exchange']['id'] in listed()
+        cli('agent','exchanges','-p','absent','--json',ok=False)
+        # One status call gives a manager the agent state, the exchange and the work of a worktree.
+        (Path(started_a['worktree']) / 'draft.txt').write_text('not committed\n')
+        git(started_b['worktree'],'commit','-q','--allow-empty','-m','work of b')
+        status = json.loads(cli('status','--json').stdout)
+        tree = lambda project, branch: next(worktree for item in status if item['name'] == project
+                                            for worktree in item['worktrees'] if worktree['branch'] == branch)
+        assert tree('fixture','w/a')['work'] == {'uncommitted':1,'unmerged_commits':0}
+        assert tree('fixture','w/b')['work'] == {'uncommitted':0,'unmerged_commits':1}
+        done = tree('fixture','w/a')['sessions'][0]
+        assert done['agent_status'] == 'done' and done['exchange']['id'] == started_a['exchange']['id']
+        assert done['exchange']['state'] == 'done_observed' and done['exchange']['key'] == 'a1'
+        held = tree('other','main')['sessions'][0]
+        assert held['agent_status'] == 'working' and held['exchange']['id'] == other['exchange']['id']
+        assert held['exchange']['state'] == 'working_observed' and held['exchange']['round'] == 1
+        shell = next(session for session in tree('fixture','w/retry')['sessions'] if session['session_id'] == retried['session_id'])
+        assert shell['exchange'] is None
+        # `wait --any` with a scope watches the exchanges that are active in it.
+        assert 'wait_timeout' in cli('agent','wait','--any','-p','other','--timeout','1','--json',ok=False).stderr
+        waiting = subprocess.Popen([str(wsx),'agent','wait','--any','-p','other','--result','--timeout','30','--json'],
+            env=env,cwd=work,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        # The scope form watches what is active when it starts, so let it start before the release.
+        time.sleep(1); assert waiting.poll() is None, 'the scoped wait returned before a boundary'
+        (work / 'run/other.release').touch()
+        stdout, stderr = waiting.communicate(timeout=40)
+        assert waiting.returncode == 0, stderr
+        scoped = json.loads(stdout)
+        assert scoped['exchange']['id'] == other['exchange']['id'] and scoped['pending'] == []
+        assert scoped['result']['text'] == 'result of other: hold the result'
+        assert 'no_active_exchange' in cli('agent','wait','--any','-p','other','--json',ok=False).stderr
+        assert 'one exchange' in cli('agent','wait',started_a['exchange']['id'],started_b['exchange']['id'],'--json',ok=False).stderr
+
+        # An older wsxd (0.30.1, or a revision 28 build) refuses the keyed requests and
+        # delivers nothing for them.
+        # A new wsx hands an older wsxd over to its own build first. It keeps the older one
+        # only while an open TUI of that release defers the handoff, as the polls here do.
+        if (released / 'wsx').is_file() and (released / 'wsxd').is_file():
+            (work / 'old').mkdir(mode=0o700); (work / 'old-state').mkdir(mode=0o700)
+            for name in ('wsx','wsxd'): shutil.copy2(released / name, work / 'old' / name)
+            old_path = work / 'old-state/wsx/wsx.sock'
+            old_env = dict(env,XDG_STATE_HOME=str(work / 'old-state'),WSX_SOCKET=str(old_path),WSX_DAEMON_BIN=str(work / 'old/wsxd'))
+            daemons.append(subprocess.Popen([str(work / 'old/wsxd')],env=old_env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL))
+            until(old_path.exists,'released daemon')
+            old_epoch = rpc(old_path,'snapshot')['data']['epoch']
+            legacy = repos / 'legacy'
+            subprocess.run(['git','init','-q','-b','main',str(legacy)],env=env,check=True,timeout=5)
+            assert rpc(old_path,'synchronize_projects',{'projects':[{'name':'legacy','path':str(legacy),
+                'worktrees':[{'path':str(legacy),'branch':'main'}]}]})['type'] == 'ack'
+            created = rpc(old_path,'session_create',{'worktree_id':rpc(old_path,'snapshot')['data']['worktrees'][0]['id'],
+                'label':'worker','command':[sys.executable,str(worker),str(work / 'run')],'rows':12,'cols':100})
+            old_pane = next(session['focused_pane'] for session in rpc(old_path,'snapshot')['data']['sessions'] if session['id'] == created['data']['id'])
+            until(lambda: next(pane for pane in rpc(old_path,'snapshot')['data']['panes'] if pane['id'] == old_pane)['agent'],'worker on the released daemon')
+            def old_cli(*args, ok=True):
+                assert rpc(old_path,'poll',{'after_revision':0,'timeout_ms':0})['type'] == 'events'
+                return cli(*args,ok=ok,env=old_env)
+            refused = old_cli('agent','request',old_pane,'keyed on an old daemon','--key','old-1','--json',ok=False)
+            assert 'unsupported_request' in refused.stderr and 'wsx daemon restart' in refused.stderr, refused.stderr
+            assert not received('legacy') and rpc(old_path,'agent_exchange_list',{})['data'] == []
+            plain = json.loads(old_cli('agent','request',old_pane,'plain on an old daemon','--json').stdout)['exchange']
+            until(lambda: len(received('legacy')) == 1 and rpc(old_path,'agent_exchange_get',{'exchange_id':plain['id']})['data']['exchange']['state'] == 'done_observed','plain request on the released daemon')
+            refused = old_cli('agent','continue',plain['id'],'keyed follow up','--key','old-2','--json',ok=False)
+            assert 'unsupported_request' in refused.stderr, refused.stderr
+            assert len(received('legacy')) == 1 and rpc(old_path,'agent_exchange_get',{'exchange_id':plain['id']})['data']['exchange']['round'] == 1
+            assert rpc(old_path,'snapshot')['data']['epoch'] == old_epoch, 'the older wsxd was replaced'
+            skipped = []
+        else:
+            skipped = ['older binaries not found at %s: the old-daemon refusal was not checked' % released]
+        success = True
+    finally:
+        repos.chmod(0o700)
+        for daemon in daemons:
+            if daemon.poll() is None:
+                daemon.terminate()
+                try: daemon.wait(timeout=5)
+                except subprocess.TimeoutExpired: daemon.kill(); daemon.wait(timeout=3)
+        # A worker ignores the hangup of its closed PTY so that it can finish a write.
+        # Its PID file names a process that only this journey started.
+        for record in (work / 'run').glob('*.pid'):
+            try: os.kill(int(record.read_text()),signal.SIGKILL)
+            except ProcessLookupError: pass
+        if success: shutil.rmtree(work)
+        else: print('diagnostics retained at '+str(work),file=sys.stderr)
+    print(json.dumps({'result':'PASS','seconds':round(time.monotonic()-started,2),'model_calls':0,'skipped':skipped,
+        'journey':'worktree retry without a leftover branch, session identities, prompt from file and standard input, slow delivery, once-per-key request and continuation, result of a round and its refusal, one-line manager with agent start and wait --any, late failure report, scoped exchanges, manager status, released-daemon refusal'}))
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -95,10 +454,18 @@ def main():
     parser.add_argument('--daemon', type=Path, default=ROOT / 'target/debug/wsxd')
     parser.add_argument('--inspection-legacy-wsx', type=Path,
                         help='optional real older wsx binary for reporter-version observation')
+    parser.add_argument('--only', choices=('context','orchestration'),
+                        help='run one journey instead of both')
+    parser.add_argument('--released', type=Path, default=Path('/opt/homebrew/Cellar/wsx/0.30.1/bin'),
+                        help='directory of an older wsx and wsxd (0.30.1, or a revision 28 build) for the old-daemon refusal')
     args = parser.parse_args()
     wsx, wsxd = args.wsx.resolve(), args.daemon.resolve()
     if not wsx.is_file() or not wsxd.is_file() or wsx.parent != wsxd.parent:
         raise RuntimeError('build adjacent wsx/wsxd first')
+    if args.only != 'context':
+        orchestration(wsx, wsxd, args.released)
+    if args.only == 'orchestration':
+        return
     work = ROOT / '.work' / ('ac-' + str(os.getpid()))
     work.parent.mkdir(exist_ok=True)
     work.mkdir(mode=0o700, exist_ok=False)
@@ -115,20 +482,8 @@ def main():
                'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','SHELL':'/bin/sh','TERM':'xterm-256color','LANG':'en_US.UTF-8'}
         subprocess.run(['git','init','-q','-b','main',str(work / 'project')],env=env,check=True,timeout=5)
         actor = work / 'actor.py'; actor.write_text(ACTOR)
-        def call(method, params=None):
-            with socket.socket(socket.AF_UNIX) as client:
-                client.settimeout(5); client.connect(str(path)); stream = client.makefile('rb')
-                client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
-                request = {'method':method}
-                if params is not None: request['params'] = params
-                client.sendall(json.dumps(request).encode()+b'\n')
-                return json.loads(stream.readline())
-        def wait(test, label):
-            deadline = time.monotonic()+5
-            while time.monotonic() < deadline:
-                if test(): return
-                time.sleep(0.02)
-            raise RuntimeError(label+' timeout')
+        def call(method, params=None): return rpc(path, method, params)
+        wait = until
         def cli(*args, ok=True):
             result = subprocess.run([str(wsx),*map(str,args)],env=env,cwd=work / 'project',capture_output=True,text=True,timeout=8)
             if ok: assert result.returncode == 0, result.stderr
