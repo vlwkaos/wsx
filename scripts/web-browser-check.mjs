@@ -12,7 +12,7 @@ const [mode, siteUrl, code, ...rest] = process.argv.slice(2);
 const [emptyUrl, emptyCode, sessionsJson, captures, auditPath] = mode === "tour" ? rest : [null, null, "{}", ...rest];
 const ids = JSON.parse(sessionsJson);
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = await launch({
-  captures, prefix: "", timeoutSeconds: mode === "tour" ? 260 : 100,
+  captures, prefix: "", timeoutSeconds: mode === "tour" ? 420 : 100,
 });
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
@@ -34,12 +34,13 @@ async function shot(name, primary) {
   }
   await capture(`${size[0]}-${name}`);
 }
-// Layout rules of every screen: nothing past the right edge, no raw null, one scroll container.
+// Layout rules of every screen: nothing past the right edge, no raw null, one scroll container
+// (the wide layout's rail is a list of its own and may scroll beside it).
 async function sound(label) {
   const seen = await evaluate(`(() => {
-    const free = (node) => node.closest('.crumbs, .terminal-keys, .code, .xterm');
+    const free = (node) => node.closest('.crumbs, .terminal-keys, .code, .xterm, .code-block pre, .table-wrap');
     const wide = [...document.querySelectorAll('#app *')].filter((node) => !free(node) && node.getBoundingClientRect().right > innerWidth + 0.5);
-    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node)
+    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail')
       && /auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1);
     return { wide: wide.slice(0, 3).map((node) => node.className || node.tagName), scrollers: scrollers.map((node) => node.className),
       raw: /\\b(null|undefined|NaN)\\b/.test(document.querySelector('#app').innerText), page: document.scrollingElement.scrollTop + document.scrollingElement.scrollLeft };
@@ -234,9 +235,79 @@ async function chats() {
     await pause(200);
     if ((await value()) !== "line one" || (await count(".message"))) await fail("Enter during an IME composition sent the message");
     await key("Enter", 13, { text: "\r" });
-    await until("[...document.querySelectorAll('.message:not(.message-user) .prose')].some((node) => node.textContent === 'echo: line one')", "Enter did not send, or the reply did not arrive");
+    await until("[...document.querySelectorAll('.message:not(.message-user) .markdown')].some((node) => node.textContent === 'echo: line one')", "Enter did not send, or the reply did not arrive");
     if ((await value()) !== "") await fail("the field kept its text after sending");
   }
+}
+
+// An agent's answer is markdown: built as nodes from the parser's tokens, never as HTML.
+async function markdown() {
+  await openSession("markdown");
+  await until("!!document.querySelector('.markdown table') && !!document.querySelector('.code-block .tok-keyword')", "the markdown answer did not render");
+  const seen = await evaluate(`(() => { const root = document.querySelector('.message:not(.message-user) .markdown');
+    const all = (selector) => [...root.querySelectorAll(selector)];
+    const size = (selector) => parseFloat(getComputedStyle(root.querySelector(selector)).fontSize);
+    const pre = root.querySelector('.code-block pre'); const wrap = root.querySelector('.table-wrap');
+    return { h1: root.querySelector('h1').textContent, sizes: [size('h1'), size('h2'), size('h3'), size('h4'), parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--font-size-title'))],
+      marks: ['strong', 'em', 's', 'blockquote', 'ol ul ol', 'hr'].map((selector) => all(selector).length),
+      starts: all('ol').map((list) => list.start), tasks: all('li.task input').map((box) => [box.checked, box.disabled]),
+      links: all('a').map((link) => [link.getAttribute('href'), link.target, link.rel]),
+      live: all('img, b, script, iframe, [onerror], [style]').length, alt: all('.image-alt').map((node) => node.textContent),
+      raw: root.innerText.includes('<b>Raw HTML stays text</b>') && root.innerText.includes('[script link](javascript:alert(1))') && root.innerText.includes('a local link stay'),
+      code: { font: getComputedStyle(pre.querySelector('code')).fontFamily.split(',')[0], scrolls: pre.scrollWidth > pre.clientWidth, language: root.querySelector('.code-language').textContent,
+        radius: getComputedStyle(root.querySelector('.code-block')).borderRadius, copy: all('.code-head button').map((button) => button.textContent).join() },
+      table: { head: all('th').map((cell) => cell.textContent).join(), sticky: getComputedStyle(root.querySelector('th')).position, scrolls: wrap.scrollWidth > wrap.clientWidth,
+        right: getComputedStyle(all('td')[2]).textAlign },
+      user: document.querySelector('.message-user .prose').textContent, plain: !document.querySelector('.message-user .markdown'),
+      remote: performance.getEntriesByType('resource').filter((entry) => !entry.name.startsWith(location.origin)).map((entry) => entry.name) }; })()`);
+  const [h1, h2, h3, h4, title] = seen.sizes;
+  if (seen.h1 !== "Release plan" || !(title > h1 && h1 > h2 && h2 > h3 && h3 > h4) || seen.marks.some((count) => !count)) await fail(`markdown headings or marks are wrong: ${JSON.stringify(seen)}`);
+  if (seen.starts.join() !== "1,1,1" && seen.starts.join() !== "1,1") await fail(`ordered lists start at ${seen.starts}`);
+  if (JSON.stringify(seen.tasks) !== "[[true,true],[false,true]]") await fail(`task marks are ${JSON.stringify(seen.tasks)}`);
+  // Only http, https and mailto become links; a link opens in a new tab and tells the target nothing.
+  if (seen.links.length !== 3 || !seen.links.every(([href, target, rel]) => /^https:\/\/example\.com\//.test(href) && target === "_blank" && rel === "noopener noreferrer")) await fail(`links are ${JSON.stringify(seen.links)}`);
+  if (seen.live || !seen.raw || seen.alt.join() !== "A remote picture" || seen.remote.length) await fail(`a message produced live markup or a remote request: ${JSON.stringify(seen)}`);
+  if (!/JetBrains Mono/.test(seen.code.font) || !seen.code.scrolls || seen.code.language !== "rust" || seen.code.copy !== "Copy,Copy") await fail(`the code block is wrong: ${JSON.stringify(seen.code)}`);
+  if (seen.table.head !== "Part,Change,Files,Tests,Bytes,Status" || seen.table.sticky !== "sticky" || seen.table.right !== "right" || (phone() && !seen.table.scrolls)) await fail(`the table is wrong: ${JSON.stringify(seen.table)}`);
+  if (seen.user !== "say markdown.md" || !seen.plain) await fail("the person's message is not plain text");
+  await evaluate("document.querySelector('.log').scrollTop = 0");
+  await sound("markdown answer");
+  await shot("chat-markdown");
+  await evaluate("document.querySelector('.table-wrap').scrollIntoView({ block: 'center' })");
+  await sound("markdown table");
+  await shot("chat-markdown-table");
+  // Copy says what happened. Headless Chrome may refuse the clipboard; both answers are words.
+  await evaluate("document.querySelector('.code-head button').click()");
+  await until("/^(Copied|Copy failed)$/.test(document.querySelector('.code-head button').textContent)", "Copy did not answer");
+}
+
+// A 200 KB answer on a slow phone: one parse, measured with the processor slowed four times.
+async function largeAnswer() {
+  await openSession("large");
+  await until("document.querySelectorAll('.markdown .code-block').length > 100", "the large answer did not render");
+  await send("Emulation.setCPUThrottlingRate", { rate: 4 });
+  const cost = await evaluate(`(async () => {
+    const { Markdown } = await import(new URL('assets/markdown.js', document.baseURI));
+    const { render, html } = await import(new URL('assets/lib.js', document.baseURI));
+    const data = await (await fetch(new URL('api/chat/${ids.large}/timeline', document.baseURI))).json();
+    const text = data.items.findLast((item) => item.kind === 'assistant').text;
+    const host = document.createElement('div');
+    host.className = 'message';
+    document.querySelector('.log').append(host);
+    let started = performance.now();
+    render(html\`<\${Markdown} text=\${text} />\`, host);
+    host.getBoundingClientRect();
+    const first = performance.now() - started;
+    started = performance.now();
+    render(html\`<\${Markdown} text=\${text} />\`, host);
+    const again = performance.now() - started;
+    render(null, host);
+    host.remove();
+    return { bytes: new TextEncoder().encode(text).length, first: Math.round(first), again: Math.round(again * 10) / 10 };
+  })()`);
+  await send("Emulation.setCPUThrottlingRate", { rate: 1 });
+  if (cost.bytes < 200_000 || cost.first > 1500 || cost.again > 20) await fail(`a large answer is too slow: ${JSON.stringify(cost)}`);
+  console.log(`large answer at ${size[0]} px, processor slowed 4 times: ${JSON.stringify(cost)}`);
 }
 
 async function others() {
@@ -269,8 +340,13 @@ for (const next of SIZES) {
   await resize(next);
   await inbox();
   await chats();
+  await markdown();
   await others();
 }
+await resize(SIZES[1]);
+await largeAnswer();
+await go("#/settings");
+await until("!!document.querySelector('input[name=scheme]')", "settings did not reopen after the large answer");
 
 // Once, at 390 px: the device's light choice, the dialog, reduced motion, the installed shell.
 await resize(SIZES[1]);

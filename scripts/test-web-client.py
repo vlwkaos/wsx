@@ -91,6 +91,9 @@ def turn(text):
    record('assistant', [{'type':'thinking','thinking':'private','signature':'x'}] + calls)
    record('user', [{'type':'tool_result','tool_use_id':call['id'],'is_error':index == 7,'content':'ok'} for call in calls])
    record('assistant', 'Step %d covers the build, the tests and the notes.\nIt has %d checks.\n\n%s' % (index, index % 4 + 1, 'W' * 300 if index == 12 else 'Nothing unusual was found.'))
+ elif body.startswith('say '):
+  # An answer written by the test, for the markdown and diagram checks.
+  record('assistant', trace.with_name(body[4:].strip()).read_text())
  elif 'quit now' in body:
   report('working'); os._exit(3)
  elif 'ask me' in body:
@@ -121,6 +124,92 @@ while True:
    report('idle')
   else:
    draft += char.decode(errors='replace'); paint()
+'''
+
+# An answer with every markdown form the page renders, and one with diagrams.
+MARKDOWN_SAMPLE = r'''# Release plan
+
+The build is **ready** and the notes are *almost* done. ~~The old plan~~ is gone.
+Run `cargo nextest run --workspace --locked` first, then read [the guide](https://example.com/guide)
+or https://example.com/changelog. A [script link](javascript:alert(1)) and a [local link](docs/web-client.md) stay text.
+
+## Steps
+
+1. Build both binaries
+   - `wsx`
+   - `wsxd`
+     1. debug
+     2. release
+2. Run the journey
+
+- [x] Vendor the parser
+- [ ] Draw the diagrams
+
+> A quote with `code` in it.
+> It has two lines.
+
+### Code
+
+```rust
+// The answer is checked against the screen that was read.
+fn answer(stamp: &str, key: Key) -> Result<(), Fault> {
+    let screen = read_screen()?; // a very long line follows so that the block must scroll sideways inside itself and never widen the page
+    if hash(&screen) != stamp { return Err(Fault::new(409, "question_changed", "the question changed")); }
+    Ok(())
+}
+```
+
+```
+plain block without a language
+```
+
+| Part | Change | Files | Tests | Bytes | Status |
+|------|--------|------:|------:|------:|:------:|
+| 1 | Markdown in answers | 6 | 14 | 197447 | done |
+| 2 | Mermaid diagrams | 4 | 9 | 3572661 | done |
+| 3 | Answer a blocked agent from chat | 7 | 21 | 0 | open |
+
+<b>Raw HTML stays text</b> <img src="https://example.com/x.png" onerror="alert(1)">
+
+![A remote picture](https://example.com/remote.png)
+
+---
+
+#### Small heading
+
+WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW
+'''
+
+DIAGRAM_SAMPLE = r'''The page talks to wsxd through the web server:
+
+```mermaid
+flowchart LR
+  A[Browser page] -->|WebSocket| B(wsx web serve)
+  B --> C{wsxd}
+  C -->|PTY bytes| D[Agent pane]
+  C --> E[(State)]
+```
+
+An answer is checked against the screen:
+
+```mermaid
+sequenceDiagram
+  participant P as Page
+  participant S as Server
+  participant D as wsxd
+  P->>S: POST answer {stamp, key}
+  S->>D: view, then terminal_input
+  D-->>S: ack
+  S-->>P: 200 sent
+  Note over P,S: A stale stamp answers 409
+```
+
+This one is broken:
+
+```mermaid
+flowchart LR
+  A -->
+```
 '''
 
 # A terminal fixture: raw mode, records every input byte, answers with its hex
@@ -1394,7 +1483,8 @@ capabilities = ["terminal_view"]
             shown = {}
             for role, label in (('blocked', 'Fix the login redirect loop on mobile Safari when third-party cookies are blocked'),
                                 ('error', 'api-tests'), ('exited', 'crashed-import'), ('working', 'release notes'),
-                                ('done', 'docs cleanup'), ('long', 'release checklist'), ('idle', 'refactor')):
+                                ('done', 'docs cleanup'), ('long', 'release checklist'), ('idle', 'refactor'),
+                                ('markdown', 'release plan'), ('large', 'full audit')):
                 created = call('session_create', {'worktree_id': worktrees['design'], 'label': label,
                     'command': [sys.executable, str(actor), str(work / (role + '.jsonl')), str(work / (role + '.trace')),
                                 str(design), str(chart), str(outside)], 'rows': 12, 'cols': 100})
@@ -1412,15 +1502,21 @@ capabilities = ["terminal_view"]
                 pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == shown[role])
                 frames = call('view', {'pane_ids': [pane]})['data']['frames']
                 return bool(frames) and '❯' in ''.join(cell[0] for cell in frames[0]['cells'])
-            for role in ('blocked', 'error', 'exited', 'working', 'done', 'long', 'idle'):
+            (work / 'markdown.md').write_text(MARKDOWN_SAMPLE)
+            (work / 'large.md').write_text(('Paragraph with **bold**, `code` and a [link](https://example.com). ' * 20
+                                           + '\n\n- item one\n- item two\n\n```rust\nfn main() { println!("x"); }\n```\n\n') * 145)
+            for role in shown:
+                if role == 'shell':
+                    continue
                 # The agent reports idle just before it paints its prompt; wsxd types only into a visible editor.
                 wait(lambda: state_of(role) == 'idle' and prompt_shown(role), role + ' agent ready', timeout=20)
             for role, text in (('blocked', 'ask me which option to take'), ('error', 'fail now'), ('exited', 'quit now'),
-                               ('working', 'use tool'), ('done', 'tidy the docs'), ('long', 'long talk')):
+                               ('working', 'use tool'), ('done', 'tidy the docs'), ('long', 'long talk'),
+                               ('markdown', 'say markdown.md'), ('large', 'say large.md')):
                 status, sent = steady(m2, 'POST', '/api/chat/%d/send' % shown[role], {'text': text})
                 assert status == 200, (role, sent)
             for role, expected in (('blocked', 'blocked'), ('error', 'error'), ('exited', 'exited'), ('working', 'working'),
-                                   ('done', 'done'), ('long', 'done')):
+                                   ('done', 'done'), ('long', 'done'), ('markdown', 'done'), ('large', 'done')):
                 wait(lambda: state_of(role) == expected, role + ' state', timeout=20)
             blocked_items = steady(m2, 'GET', '/api/chat/%d/timeline' % shown['blocked'])[1]
             assert [item['text'] for item in blocked_items['items']] == ['ask me which option to take'], blocked_items
@@ -1440,7 +1536,7 @@ capabilities = ["terminal_view"]
                                      bare.origin + bare.base + '/',
                                      cli('web', 'pair', '--site', files['bare']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                      json.dumps(shown), str(page_captures), str(audit) if audit.exists() else ''],
-                                    capture_output=True, text=True, timeout=280)
+                                    capture_output=True, text=True, timeout=440)
             assert result.returncode == 0, result.stdout + result.stderr
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
             wait(lambda: steady(m2, 'GET', '/api/chat/%d/timeline' % shown['idle'])[1]['items'][-1].get('text') == 'echo: line one', 'browser turn')
