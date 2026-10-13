@@ -2158,14 +2158,7 @@ fn cmd_worktree_create(
     let session_id = created.session.as_ref().map(|(session_id, _)| *session_id);
     if json {
         // ^ A lookup failure must not hide the worktree that already exists.
-        let pane_id = session_id.and_then(|session_id| {
-            ops::runtime_snapshot()
-                .ok()?
-                .sessions
-                .iter()
-                .find(|session| session.id == session_id)
-                .map(|session| session.focused_pane)
-        });
+        let pane_id = session_id.and_then(|session_id| created_session_pane(session_id).0);
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -2190,6 +2183,29 @@ fn cmd_worktree_create(
 
 fn created_session_line(session_id: runtime::SessionId) -> String {
     format!("session:  {session_id}")
+}
+
+/// The pane of a session that was just created, and its agent when one already reported.
+/// ^ Best effort: the session exists even when this second read fails.
+fn created_session_pane(
+    session_id: runtime::SessionId,
+) -> (Option<runtime::PaneId>, Option<String>) {
+    let Ok(snapshot) = ops::runtime_snapshot() else {
+        return (None, None);
+    };
+    let pane_id = snapshot
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id)
+        .map(|session| session.focused_pane);
+    let agent = snapshot
+        .panes
+        .iter()
+        .find(|pane| Some(pane.id) == pane_id)
+        .and_then(|pane| pane.agent.as_ref())
+        .filter(|agent| agent.attached)
+        .map(|agent| agent.provider.clone());
+    (pane_id, agent)
 }
 
 fn cmd_worktree_delete(branch: &str, project_name: Option<&str>) -> Result<()> {
@@ -3769,10 +3785,13 @@ fn cmd_session_create(
         command,
     )?;
     if json {
+        let (pane_id, agent) = created_session_pane(session_id);
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "session_id": session_id,
+                "pane_id": pane_id,
+                "agent": agent,
                 "label": label,
                 "project": project.name,
                 "worktree": worktree.path,
