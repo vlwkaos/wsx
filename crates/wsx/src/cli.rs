@@ -322,6 +322,13 @@ pub enum AgentCmd {
         timeout: u64,
         #[arg(long)]
         frame: bool,
+        /// Add the agent's final message of this round from its saved history
+        #[arg(long)]
+        result: bool,
+        /// Largest result text in bytes
+        #[arg(long, default_value_t = 16384, requires = "result",
+              value_parser = clap::value_parser!(u32).range(1..=65536))]
+        result_bytes: u32,
         #[arg(long)]
         json: bool,
     },
@@ -909,8 +916,16 @@ pub fn run(cmd: Command) -> Result<()> {
                 exchange,
                 timeout,
                 frame,
+                result,
+                result_bytes,
                 json,
-            } => cmd_agent_exchange_wait(exchange, timeout, frame, json),
+            } => cmd_agent_exchange_wait(
+                exchange,
+                timeout,
+                frame,
+                result.then_some(result_bytes as usize),
+                json,
+            ),
             AgentCmd::Continue {
                 exchange,
                 prompt,
@@ -2722,18 +2737,29 @@ fn print_agent_exchange(
     frame: Option<&runtime::TerminalFrame>,
     json: bool,
 ) -> Result<()> {
+    print_agent_exchange_with(exchange, frame, None, json)
+}
+
+/// `result` is the value of `exchange_result`; its key is absent when it was not asked for.
+fn print_agent_exchange_with(
+    exchange: &runtime::AgentExchange,
+    frame: Option<&runtime::TerminalFrame>,
+    result: Option<serde_json::Value>,
+    json: bool,
+) -> Result<()> {
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "exchange": exchange,
-                "fallback": frame.map(|frame| serde_json::json!({
-                    "kind": "terminal_frame",
-                    "text": terminal_frame_text(frame),
-                    "frame_revision": frame.revision,
-                })),
-            }))?
-        );
+        let mut output = serde_json::json!({
+            "exchange": exchange,
+            "fallback": frame.map(|frame| serde_json::json!({
+                "kind": "terminal_frame",
+                "text": terminal_frame_text(frame),
+                "frame_revision": frame.revision,
+            })),
+        });
+        if let Some(result) = result {
+            output["result"] = result;
+        }
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!(
             "exchange {} round {}: {:?}",
@@ -2748,8 +2774,69 @@ fn print_agent_exchange(
                 println!("terminal frame (fallback):\n{text}");
             }
         }
+        if let Some(result) = result {
+            match result["text"].as_str() {
+                Some(text) => println!("result (round {}):\n{text}", exchange.round),
+                None => println!(
+                    "result unavailable: {}",
+                    result["status"].as_str().unwrap_or_default()
+                ),
+            }
+        }
     }
     Ok(())
+}
+
+/// The agent's final message of the exchange's current round, or the reason none can be named.
+/// ^ docs/agent-orchestration.md "Result of a round": the round is found in the provider's
+/// saved history by the envelope line that wsxd delivered. Text from before that line is
+/// never a result.
+fn exchange_result(exchange: &runtime::AgentExchange, bytes: usize) -> serde_json::Value {
+    let unavailable = |status: &str| serde_json::json!({ "status": status, "round": exchange.round, "text": null });
+    if !matches!(
+        exchange.state,
+        runtime::AgentExchangeState::DoneObserved | runtime::AgentExchangeState::Completed
+    ) {
+        return unavailable("round_not_completed");
+    }
+    let Ok(snapshot) = ops::runtime_snapshot() else {
+        return unavailable("daemon_unavailable");
+    };
+    let Some(agent) = snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.id == exchange.pane_id)
+        .and_then(|pane| pane.agent.as_ref())
+        .filter(|agent| agent.id == exchange.agent_id)
+    else {
+        return unavailable("agent_replaced");
+    };
+    let marker = runtime::agent_exchange_envelope_start(exchange.id, exchange.round);
+    // A provider may write its last record a moment after its agent reports done.
+    let flushed_by = Instant::now() + Duration::from_secs(2);
+    loop {
+        let reply = wsx_core::integration::memory::Reader::default().read_reply(
+            &agent.provider,
+            agent.session_ref.as_ref(),
+            &marker,
+            bytes,
+        );
+        let may_follow = matches!(
+            reply.status,
+            "delivery_not_in_history" | "no_message_after_delivery"
+        );
+        if !may_follow || Instant::now() >= flushed_by {
+            return serde_json::json!({
+                "status": reply.status,
+                "round": exchange.round,
+                "text": reply.text,
+                "truncated": reply.truncated,
+                "source": reply.source,
+                "path": reply.path,
+            });
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn agent_exchange_response(
@@ -2943,22 +3030,23 @@ fn cmd_agent_exchange_inspect(
     frame: bool,
     json: bool,
 ) -> Result<()> {
-    agent_exchange_response(
-        runtime::Client::local().call(&runtime::Request::AgentExchangeGet {
-            exchange_id,
-            include_frame: frame,
-        })?,
-        json,
-    )?;
-    Ok(())
+    let (exchange, frame) = fetch_agent_exchange(exchange_id, frame)?;
+    print_agent_exchange(&exchange, frame.as_ref(), json)
 }
 
 fn current_agent_exchange(exchange_id: runtime::AgentExchangeId) -> Result<runtime::AgentExchange> {
+    Ok(fetch_agent_exchange(exchange_id, false)?.0)
+}
+
+fn fetch_agent_exchange(
+    exchange_id: runtime::AgentExchangeId,
+    include_frame: bool,
+) -> Result<(runtime::AgentExchange, Option<runtime::TerminalFrame>)> {
     match runtime::Client::local().call(&runtime::Request::AgentExchangeGet {
         exchange_id,
-        include_frame: false,
+        include_frame,
     })? {
-        runtime::Response::AgentExchange { exchange, .. } => Ok(exchange),
+        runtime::Response::AgentExchange { exchange, frame } => Ok((exchange, frame)),
         runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
         _ => bail!("wsxd returned an unexpected agent exchange response"),
     }
@@ -2968,6 +3056,7 @@ fn cmd_agent_exchange_wait(
     exchange_id: runtime::AgentExchangeId,
     timeout: u64,
     frame: bool,
+    result_bytes: Option<usize>,
     json: bool,
 ) -> Result<()> {
     let timeout_ms = exchange_timeout_ms(timeout)?;
@@ -2998,7 +3087,9 @@ fn cmd_agent_exchange_wait(
             _ => bail!("wsxd returned an unexpected agent exchange response"),
         };
     }
-    cmd_agent_exchange_inspect(exchange_id, frame, json)
+    let (exchange, frame) = fetch_agent_exchange(exchange_id, frame)?;
+    let result = result_bytes.map(|bytes| exchange_result(&exchange, bytes));
+    print_agent_exchange_with(&exchange, frame.as_ref(), result, json)
 }
 
 fn cmd_agent_exchange_continue(

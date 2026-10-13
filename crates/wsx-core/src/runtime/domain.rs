@@ -365,6 +365,13 @@ pub struct AgentExchange {
     pub revision: u64,
 }
 
+/// The start of the line that wsxd puts before the prompt of one round.
+/// ^ docs/agent-orchestration.md "Result of a round": wsxd writes it and the result reader
+/// finds the round by it in the provider's saved history, so both use this one function.
+pub fn agent_exchange_envelope_start(id: AgentExchangeId, round: u32) -> String {
+    format!("[wsx exchange {id}, round {round}, ")
+}
+
 impl AgentExchange {
     /// ^ docs/agent-orchestration.md: a bound native request retains ownership until its own result.
     pub fn is_terminal(&self) -> bool {
