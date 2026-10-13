@@ -38,7 +38,7 @@ async function shot(name, primary) {
 // (the wide layout's rail is a list of its own and may scroll beside it).
 async function sound(label) {
   const seen = await evaluate(`(() => {
-    const free = (node) => node.closest('.crumbs, .terminal-keys, .code, .xterm, .code-block pre, .table-wrap');
+    const free = (node) => node.closest('.crumbs, .terminal-keys, .code, .xterm, .code-block pre, .table-wrap, .diagram');
     const wide = [...document.querySelectorAll('#app *')].filter((node) => !free(node) && node.getBoundingClientRect().right > innerWidth + 0.5);
     const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail')
       && /auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1);
@@ -281,6 +281,56 @@ async function markdown() {
   await until("/^(Copied|Copy failed)$/.test(document.querySelector('.code-head button').textContent)", "Copy did not answer");
 }
 
+// A mermaid block is drawn by the lazily loaded library and shown as an image; the page's
+// CSP stays as it is, and a block that does not parse shows its source.
+async function diagrams(light = false) {
+  await openSession("diagrams");
+  await until("document.querySelectorAll('.diagram img').length === 2 && !!document.querySelector('.diagram-failed .code-block')", "the diagrams did not draw");
+  const seen = await evaluate(`(async () => { const images = [...document.querySelectorAll('.diagram img')];
+    await Promise.all(images.map((image) => image.decode()));
+    const frame = document.querySelector('.diagram');
+    const cache = await caches.open((await caches.keys())[0]);
+    return { sources: images.map((image) => image.src.slice(0, 5)), natural: images.map((image) => [image.naturalWidth, image.naturalHeight]),
+      inline: document.querySelectorAll('.markdown svg, .markdown style, .markdown [style]').length,
+      scrolls: frame.scrollWidth > frame.clientWidth, fits: frame.hasAttribute('data-fits'), shown: Math.round(images[0].getBoundingClientRect().width),
+      column: frame.clientWidth, failed: document.querySelector('.diagram-failed').textContent.includes('Diagram could not be drawn'),
+      source: document.querySelector('.diagram-failed pre').textContent, left: document.querySelectorAll('body > :not(#app):not(noscript):not(script)').length,
+      sheets: document.adoptedStyleSheets.length, kept: !!(await cache.match('assets/mermaid-11.17.2.js')),
+      shell: (await cache.keys()).length }; })()`);
+  if (seen.sources.join() !== "blob:,blob:" || seen.natural.some(([width, height]) => width < 200 || height < 100) || seen.inline) await fail(`a diagram is not a drawn image: ${JSON.stringify(seen)}`);
+  // Wider than the column: shown smaller when it stays readable, else at its size with a sideways scroll.
+  if (seen.fits ? seen.shown > seen.column : !seen.scrolls) await fail(`a wide diagram neither fits nor scrolls in its own block: ${JSON.stringify(seen)}`);
+  if (!seen.failed || !seen.source.includes("A -->") || seen.left || seen.sheets) await fail(`the broken diagram or the page after drawing is wrong: ${JSON.stringify(seen)}`);
+  if (!seen.kept) await fail("the service worker did not keep the diagram library after its first use");
+  await sound("diagrams");
+  await evaluate("document.querySelector('.log').scrollTop = 0");
+  await shot(light ? "chat-diagrams-light" : "chat-diagrams");
+  await evaluate("document.querySelector('.diagram-failed').scrollIntoView({ block: 'end' })");
+  await shot(light ? "chat-diagram-broken-light" : "chat-diagram-broken");
+  if (light) return;
+  // Full screen: opened by a tap, zoomed by a pinch (touch) or the buttons, closed by Escape.
+  await evaluate("document.querySelector('.diagram-open').click()");
+  await until("!!document.querySelector('dialog.viewer[open] img')", "the full-screen diagram did not open");
+  const width = () => evaluate("document.querySelector('.viewer img').getBoundingClientRect().width");
+  const fitted = await width();
+  if (fitted > size[0] + 0.5) await fail(`the full-screen diagram does not fit at first: ${fitted}`);
+  if (phone()) {
+    const points = (gap) => [{ x: size[0] / 2 - gap, y: 300, id: 1 }, { x: size[0] / 2 + gap, y: 300, id: 2 }];
+    await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: points(30) });
+    await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: points(60) });
+    await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: points(90) });
+    await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  } else {
+    await evaluate("document.querySelector('.viewer [aria-label=\"Zoom in\"]').click()");
+  }
+  await until(`document.querySelector('.viewer img').getBoundingClientRect().width > ${fitted * 1.4}`, "the full-screen diagram did not zoom");
+  if ((await evaluate("visualViewport.scale")) !== 1) await fail("the page itself zoomed");
+  await shot("chat-diagram-full");
+  await key("Escape", 27);
+  await until("!document.querySelector('dialog.viewer')", "Escape did not close the full-screen diagram");
+  if (!(await evaluate("document.activeElement.classList.contains('diagram-open')"))) await fail("focus did not return to the diagram");
+}
+
 // A 200 KB answer on a slow phone: one parse, measured with the processor slowed four times.
 async function largeAnswer() {
   await openSession("large");
@@ -341,6 +391,7 @@ for (const next of SIZES) {
   await inbox();
   await chats();
   await markdown();
+  await diagrams();
   await others();
 }
 await resize(SIZES[1]);
@@ -357,6 +408,12 @@ await shot("settings-light");
 await go("#/");
 await until("document.querySelectorAll('.row').length >= 8", "the inbox did not open in the light scheme");
 await shot("inbox-light");
+// A drawn diagram follows the scheme, and markdown reads in both.
+await diagrams(true);
+await openSession("markdown");
+await until("!!document.querySelector('.markdown table')", "the markdown answer did not render in the light scheme");
+await evaluate("document.querySelector('.log').scrollTop = 0");
+await shot("chat-markdown-light");
 await go("#/settings");
 await until("!!document.querySelector('input[name=scheme]')", "settings did not reopen");
 await evaluate("document.querySelector('input[name=scheme][value=dark]').click()");

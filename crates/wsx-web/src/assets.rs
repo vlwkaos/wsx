@@ -29,6 +29,7 @@ const FILES: &[(&str, &str, &str)] = &[
     ("session.js", JS, include_str!("../web/session.js")),
     ("chat.js", JS, include_str!("../web/chat.js")),
     ("markdown.js", JS, include_str!("../web/markdown.js")),
+    ("diagram.js", JS, include_str!("../web/diagram.js")),
     ("files.js", JS, include_str!("../web/files.js")),
     ("settings.js", JS, include_str!("../web/settings.js")),
     ("terminal.js", JS, include_str!("../web/terminal.js")),
@@ -96,17 +97,40 @@ const FONTS: &[(&str, &str, &[u8])] = &[
     ),
 ];
 
-/// A page file: its type, its bytes, and whether its name pins its content.
-pub fn find(name: &str) -> Option<(&'static str, &'static [u8], bool)> {
+// ^ docs/web-client.md "Diagrams": pinned and patched by scripts/vendor-mermaid.sh, license
+// in web/vendor/mermaid.LICENSE. Stored gzip-compressed and served that way. The page
+// asks for it when a message holds a diagram; it is not part of the offline shell.
+pub const MERMAID: &str = "mermaid-11.17.2.js";
+const MERMAID_GZIP: &[u8] = include_bytes!("../web/vendor/mermaid.js.gz");
+
+pub struct Asset {
+    pub content_type: &'static str,
+    pub body: &'static [u8],
+    /// The name carries the version, so the response never changes.
+    pub pinned: bool,
+    /// The body is gzip-compressed and is sent as it is.
+    pub gzip: bool,
+}
+
+pub fn find(name: &str) -> Option<Asset> {
+    let asset = |content_type, body, pinned, gzip| Asset {
+        content_type,
+        body,
+        pinned,
+        gzip,
+    };
+    if name == MERMAID {
+        return Some(asset(JS, MERMAID_GZIP, true, true));
+    }
     let text = FILES
         .iter()
         .find(|(file, _, _)| *file == name)
-        .map(|(_, content_type, body)| (*content_type, body.as_bytes(), false));
+        .map(|(_, content_type, body)| asset(content_type, body.as_bytes(), false, false));
     text.or_else(|| {
         FONTS
             .iter()
             .find(|(file, _, _)| *file == name)
-            .map(|(_, content_type, body)| (*content_type, *body, true))
+            .map(|(_, content_type, body)| asset(content_type, body, true, false))
     })
 }
 
@@ -175,6 +199,10 @@ impl Assets {
         let service_worker = include_str!("../web/sw.js")
             .replace("__WSX_CACHE__", &format!("wsx-{}-{version}", site.id))
             .replace("__WSX_SHELL__", &json!(shell).to_string())
+            .replace(
+                "__WSX_LAZY__",
+                &json!([format!("assets/{MERMAID}")]).to_string(),
+            )
             .replace("__WSX_ICON__", &format!("theme/{}", theme.icon_192));
         Self {
             index,

@@ -2,6 +2,9 @@
 // cache name and file list; every URL is relative to this file's own location.
 const CACHE = "__WSX_CACHE__";
 const SHELL = __WSX_SHELL__;
+// Large files a page asks for only when it needs them. Not downloaded at install;
+// kept after the first use, so a diagram also draws offline from then on.
+const LAZY = __WSX_LAZY__;
 const scope = self.registration.scope;
 
 self.addEventListener("install", (event) => {
@@ -22,8 +25,8 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET" || !url.href.startsWith(scope)) return;
   const path = url.href.slice(scope.length).split(/[?#]/)[0];
-  if (!SHELL.includes(path === "" ? "./" : path)) return;
   const key = path === "" ? "./" : path;
+  if (!SHELL.includes(key) && !LAZY.includes(key)) return;
   event.respondWith(
     fetch(event.request)
       .then((response) => {

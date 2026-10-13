@@ -7,6 +7,7 @@ import hljs from "./highlight.js";
 import { resolve } from "./api.js";
 import { h } from "./preact.js";
 import { html, useMemo, useState } from "./lib.js";
+import { Diagram } from "./diagram.js";
 
 const parser = globalThis.markdownit({ html: false, linkify: true });
 // Only text with a scheme becomes a link: `main.rs` and `notes.io` are file names here.
@@ -138,7 +139,8 @@ function blocks(tokens, files) {
       }
     } else if (token.type === "fence" || token.type === "code_block") {
       const language = token.info?.trim().split(/\s+/)[0] ?? "";
-      push(html`<${Code} source=${token.content.replace(/\n$/, "")} language=${language} />`);
+      const code = html`<${Code} source=${token.content.replace(/\n$/, "")} language=${language} />`;
+      push(language.toLowerCase() === "mermaid" ? html`<${Diagram} source=${token.content} fallback=${code} />` : code);
     } else if (token.type === "hr") {
       push(html`<hr />`);
     } else {
