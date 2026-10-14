@@ -167,7 +167,9 @@ async function inbox() {
   if (new Set(running.looks).size !== 3) await fail(`project, separator and worktree share a look: ${running.looks}`);
   if (sections.Sessions.find((row) => row.state === "idle")?.work !== "fix/login") await fail(`a row under its project heading repeats the project: ${JSON.stringify(sections.Sessions)}`);
   if (!sections.Finished.some((row) => /^done new$/.test(row.state))) await fail(`Finished marks nothing as new: ${JSON.stringify(sections.Finished)}`);
-  if (states("Sessions") !== "idle,shell") await fail(`Sessions shows ${JSON.stringify(sections.Sessions)}`);
+  // The inbox is agent work: the shell is only under its worktree in Projects.
+  if (states("Sessions") !== "idle") await fail(`Sessions shows ${JSON.stringify(sections.Sessions)}`);
+  if (await count(`.scroll a[href^="#/s/${ids.shell}/"]`)) await fail("the inbox lists the shell session");
   if (!sections["Needs you"].some((row) => row.clipped)) await fail("the long session label is not truncated with an ellipsis");
   // Opening a finished session and coming back moves no row, though it is no longer new.
   if (size === SIZES[0]) {
@@ -543,18 +545,23 @@ async function others() {
   const projectHash = await evaluate("location.hash");
   await sound("project");
   await shot("project");
+  // A shell is marked as one and opens on the terminal, with no chat to switch to.
+  const shellRow = await evaluate(`(() => { const link = document.querySelector('.worktree a[href^="#/s/${ids.shell}/"]'); const row = link?.closest('.row');
+    return row && { href: link.getAttribute('href'), context: row.querySelector('.row-context')?.textContent, state: row.querySelector('.row-state').textContent.trim() }; })()`);
+  if (shellRow?.href !== `#/s/${ids.shell}/terminal` || shellRow.context !== "shell" || shellRow.state !== "open") await fail(`the shell row is wrong: ${JSON.stringify(shellRow)}`);
+  await evaluate(`document.querySelector('.worktree a[href^="#/s/${ids.shell}/"]').click()`);
+  await until("!!document.querySelector('.terminal-mount')", "the shell did not open on its terminal");
+  if (await count(".switch, .chat")) await fail("the shell offers a chat");
+  await evaluate("document.querySelector('.bar a.icon-button').click()");
+  await until(`location.hash === ${JSON.stringify(projectHash)} && !!document.querySelector('.worktree')`, "Back from the shell did not return to the project");
   await evaluate("[...document.querySelectorAll('.worktree')][1].querySelector('.row-link').click()");
   await until(`location.hash === '#/s/${ids.idle}/chat' && !!document.querySelector('.session .bar-label')`, "the session did not open from its project");
   if ((await evaluate("document.querySelector('.bar a.icon-button').getAttribute('aria-label')")) !== "Back to design") await fail("the session's back control does not lead to its project");
-  await evaluate("document.querySelector('.bar a.icon-button').click()");
-  await until(`location.hash === ${JSON.stringify(projectHash)} && !!document.querySelector('.worktree')`, "Back did not return to the project");
   // Chat and Terminal are views of one screen: switching adds no step to Back.
-  await evaluate(`[...document.querySelectorAll('.worktree .row-link')].find((node) => node.getAttribute('href') === '#/s/${ids.shell}/chat').click()`);
-  await until(`location.hash === '#/s/${ids.shell}/chat'`, "the shell session did not open from its project");
   await evaluate("document.querySelector('.switch a:not([aria-current])').click()");
-  await until(`location.hash === '#/s/${ids.shell}/terminal' && !!document.querySelector('.terminal-mount')`, "the terminal view did not open");
+  await until(`location.hash === '#/s/${ids.idle}/terminal' && !!document.querySelector('.terminal-mount')`, "the terminal view did not open");
   await evaluate("document.querySelector('.switch a:not([aria-current])').click()");
-  await until(`location.hash === '#/s/${ids.shell}/chat' && !document.querySelector('.terminal-mount')`, "the chat view did not reopen");
+  await until(`location.hash === '#/s/${ids.idle}/chat' && !document.querySelector('.terminal-mount')`, "the chat view did not reopen");
   await evaluate("document.querySelector('.bar a.icon-button').click()");
   await until(`location.hash === ${JSON.stringify(projectHash)} && !!document.querySelector('.worktree')`, "Back after Chat and Terminal did not return to the project");
   await evaluate("document.querySelector('.bar a.icon-button').click()");
