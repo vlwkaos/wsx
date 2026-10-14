@@ -312,6 +312,22 @@ async function markdown() {
   if (!/JetBrains Mono/.test(seen.code.font) || !seen.code.scrolls || seen.code.language !== "rust" || seen.code.copy !== "Copy,Copy") await fail(`the code block is wrong: ${JSON.stringify(seen.code)}`);
   if (seen.table.head !== "Part,Change,Files,Tests,Bytes,Status" || seen.table.sticky !== "sticky" || seen.table.right !== "right" || (phone() && !seen.table.scrolls)) await fail(`the table is wrong: ${JSON.stringify(seen.table)}`);
   if (seen.user !== "say markdown.md" || !seen.plain) await fail("the person's message is not plain text");
+  // Prose keeps its reading width; a table or a code block may take the width of the
+  // conversation minus the gutter, centered on the reading column, and no wider.
+  const blocks = await evaluate(`(() => { const box = (node) => node.getBoundingClientRect();
+    const root = document.querySelector('.message:not(.message-user) .markdown'); const log = box(document.querySelector('.log-wrap'));
+    const column = box(root); const gutter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--space-4'));
+    const of = (node) => { const b = box(node); return { left: b.left, right: b.right, width: b.width }; };
+    return { column: of(root), inner: [log.left + gutter, log.right - gutter], paragraph: of(root.querySelector('p')),
+      code: [...root.querySelectorAll(':scope > .code-block')].map(of), table: of(root.querySelector(':scope > .table-wrap')) }; })()`);
+  const centered = (block) => Math.abs((block.left + block.right) / 2 - (blocks.column.left + blocks.column.right) / 2) <= 1;
+  const inside = (block) => block.left >= blocks.inner[0] - 1 && block.right <= blocks.inner[1] + 1;
+  const [longCode, plainCode] = blocks.code;
+  if (blocks.paragraph.width > blocks.column.width + 1 || ![longCode, plainCode, blocks.table].every((block) => inside(block) && centered(block) && block.width >= blocks.column.width - 1)
+    || Math.abs(longCode.width - (blocks.inner[1] - blocks.inner[0])) > 1 || Math.abs(plainCode.width - blocks.column.width) > 1
+    || (!phone() && longCode.width <= blocks.column.width + 100)) {
+    await fail(`wide blocks do not use the conversation's width: ${JSON.stringify(blocks)}`);
+  }
   // The end of the conversation stands clear of the composer.
   await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
   await until("!document.querySelector('.jump')", "the log did not reach its end");
@@ -349,6 +365,11 @@ async function diagrams(light = false) {
       sheets: document.adoptedStyleSheets.length, kept: !!(await cache.match('assets/mermaid-11.17.2.js')),
       shell: (await cache.keys()).length }; })()`);
   if (seen.sources.join() !== "blob:,blob:" || seen.natural.some(([width, height]) => width < 200 || height < 100) || seen.inline) await fail(`a diagram is not a drawn image: ${JSON.stringify(seen)}`);
+  // A diagram's box is the conversation's width minus the gutter, wider than the reading column on a wide screen.
+  const box = await evaluate(`(() => { const gutter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--space-4'));
+    return { frame: document.querySelector('.diagram-scroll').getBoundingClientRect().width, inner: document.querySelector('.log-wrap').getBoundingClientRect().width - 2 * gutter,
+      column: document.querySelector('.message:not(.message-user) .markdown').getBoundingClientRect().width }; })()`);
+  if (Math.abs(box.frame - box.inner) > 1 || (!phone() && box.frame <= box.column + 100)) await fail(`the diagram box is not the conversation's width: ${JSON.stringify(box)}`);
   // The whole diagram shows first: scaled down to the column, never up, with its shape kept.
   // Only where its text would fall under 10 px does it stay wider and scroll, with a fade
   // on the side that holds more.
@@ -514,6 +535,11 @@ for (const next of [SIZES[1], SIZES[2]]) {
   await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
   await until("!document.querySelector('.jump')", "the log did not reach its end in the light scheme");
   await shot("chat-end-light");
+  await evaluate("document.querySelector('.table-wrap').scrollIntoView({ block: 'center' })");
+  await shot("chat-markdown-table-light");
+  await openSession("diagrams");
+  await until("document.querySelectorAll('.diagram img').length === 2", "the diagrams did not draw in the light scheme");
+  await shot("chat-diagrams-light");
 }
 await resize(SIZES[1]);
 // One answer, by its button: the sheet says Sent until the agent goes on, then the reply shows.
