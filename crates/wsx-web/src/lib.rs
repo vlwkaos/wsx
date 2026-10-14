@@ -75,9 +75,9 @@ impl App {
     }
 }
 
-/// `wsx web serve --site <file>`: run until SIGINT or SIGTERM.
-pub fn serve(site_file: &Path) -> Result<()> {
-    let site = site::Site::load(site_file)?;
+/// `wsx web serve [<site>]`: run until SIGINT or SIGTERM.
+pub fn serve(named: Option<&str>) -> Result<()> {
+    let site = site::Site::load(&site::Site::resolve(named)?)?;
     let app = Arc::new(App {
         devices: devices::Devices::open(&site.state_dir)?,
         media: media::Media::open(&site.state_dir, site.media.clone())?,
@@ -146,11 +146,13 @@ pub fn serve(site_file: &Path) -> Result<()> {
         })
 }
 
-/// `wsx web pair --site <file>`: print a one-time pairing code.
-pub fn pair(site_file: &Path) -> Result<()> {
-    let site = site::Site::load(site_file)?;
+/// `wsx web pair [<site>]`: print a one-time pairing code.
+pub fn pair(named: Option<&str>) -> Result<()> {
+    let file = site::Site::resolve(named)?;
+    let site = site::Site::load(&file)?;
     let code = devices::Devices::open(&site.state_dir)?.create_pairing()?;
     println!("pairing code for '{}': {code}", site.id);
+    println!("site file {}", file.display());
     println!(
         "open {}{} on the device and enter it within 10 minutes",
         site.public.origin,
@@ -159,9 +161,9 @@ pub fn pair(site_file: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `wsx web devices --site <file> [--revoke <id>] [--json]`.
-pub fn devices(site_file: &Path, revoke: Option<&str>, json: bool) -> Result<()> {
-    let site = site::Site::load(site_file)?;
+/// `wsx web devices [<site>] [--revoke <id>] [--json]`.
+pub fn devices(named: Option<&str>, revoke: Option<&str>, json: bool) -> Result<()> {
+    let site = site::Site::load(&site::Site::resolve(named)?)?;
     let devices = devices::Devices::open(&site.state_dir)?;
     if let Some(id) = revoke {
         anyhow::ensure!(devices.revoke(id)?, "no paired device has id {id}");

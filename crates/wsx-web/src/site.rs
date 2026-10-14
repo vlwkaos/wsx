@@ -223,6 +223,49 @@ impl Site {
         Self::validate(file)
     }
 
+    /// The site file a command names: a path, a site name in the site folder, or,
+    /// with nothing named, the only site file there (docs/web-client.md "Site file").
+    /// ^ The site folder is the one owner of "which site". A running server is
+    /// not asked: its state folder is named by the id that is being looked for.
+    pub fn resolve(named: Option<&str>) -> Result<PathBuf> {
+        if let Some(path) = named.filter(|value| value.contains('/') || value.ends_with(".toml")) {
+            return Ok(PathBuf::from(path));
+        }
+        let folder = site_folder().context("HOME is not set, so the site folder is unknown")?;
+        let sites = list_folder(&folder)?;
+        let matches: Vec<&Listed> = match named {
+            Some(name) => sites
+                .iter()
+                .filter(|site| site.stem == name || site.id.as_deref() == Some(name))
+                .collect(),
+            None => sites.iter().collect(),
+        };
+        match (matches.as_slice(), named) {
+            ([only], _) => Ok(only.path.clone()),
+            ([], None) => bail!(
+                "no site file in {}\nmake one: mkdir -p {0} && cp docs/examples/wsx.site.toml {0}/wsx.toml && chmod 600 {0}/wsx.toml\nor name one with --site <file>",
+                folder.display()
+            ),
+            ([], Some(name)) => bail!(
+                "no site named {name:?} in {}{}",
+                folder.display(),
+                describe(&sites)
+            ),
+            (_, None) => bail!(
+                "{} site files in {}; name one by its site name or with --site <file>:{}",
+                matches.len(),
+                folder.display(),
+                describe(&sites)
+            ),
+            (_, Some(name)) => bail!(
+                "{} site files in {} are named {name:?}; use --site <file>:{}",
+                matches.len(),
+                folder.display(),
+                describe(matches)
+            ),
+        }
+    }
+
     fn validate(file: SiteFile) -> Result<Self> {
         ensure!(
             slug(&file.id, 32),
@@ -396,6 +439,77 @@ impl Site {
     pub fn cookie_name(&self) -> String {
         format!("wsx_web_{}", self.id.replace('-', "_"))
     }
+}
+
+/// `${XDG_CONFIG_HOME:-$HOME/.config}/wsx/web`, like the plugin folder.
+fn site_folder() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .map(|root| root.join("wsx/web"))
+}
+
+/// A `*.toml` regular file of the site folder and the id it declares, if readable.
+struct Listed {
+    path: PathBuf,
+    stem: String,
+    id: Option<String>,
+}
+
+fn list_folder(folder: &Path) -> Result<Vec<Listed>> {
+    #[derive(Deserialize)]
+    struct Head {
+        id: Option<String>,
+    }
+    let entries = match fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot list {}", folder.display()))
+        }
+    };
+    let mut sites = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        let Some(stem) = path
+            .extension()
+            .filter(|extension| *extension == "toml")
+            .and(path.file_stem())
+            .and_then(|stem| stem.to_str())
+        else {
+            continue;
+        };
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        // ^ Only the id is read here; the chosen file is checked in full by `load`.
+        let id = (metadata.len() <= 64 * 1024)
+            .then(|| fs::read_to_string(&path).ok())
+            .flatten()
+            .and_then(|text| toml::from_str::<Head>(&text).ok())
+            .and_then(|head| head.id);
+        sites.push(Listed {
+            stem: stem.to_owned(),
+            path,
+            id,
+        });
+    }
+    sites.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(sites)
+}
+
+fn describe<'a>(sites: impl IntoIterator<Item = &'a Listed>) -> String {
+    sites
+        .into_iter()
+        .map(|site| {
+            let id = site.id.as_deref().unwrap_or("(no readable id)");
+            format!("\n  {id:<16} {}", site.path.display())
+        })
+        .collect()
 }
 
 fn unique<T: PartialEq>(items: &[T]) -> bool {

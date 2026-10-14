@@ -1,15 +1,17 @@
 # Hosted web client
 
-`wsx web serve --site <site.toml>` hosts one paired web site: a remote chat with the agents of the granted projects, plus optional files and terminal panels. It is a `wsxd` client like the TUI. It never starts, stops or replaces `wsxd`. The terminal panel needs a `wsxd` that reports the capability `raw_terminal_stream` ([terminal-raw-stream.md](terminal-raw-stream.md)). Against a daemon without it the panel says that the daemon must be upgraded (`daemon_upgrade_required`); chat, files and the inbox work. Deployment commands are in [web-deploy.md](web-deploy.md).
+`wsx web serve [<site>]` hosts one paired web site: a remote chat with the agents of the granted projects, plus optional files and terminal panels. It is a `wsxd` client like the TUI. It never starts, stops or replaces `wsxd`. The terminal panel needs a `wsxd` that reports the capability `raw_terminal_stream` ([terminal-raw-stream.md](terminal-raw-stream.md)). Against a daemon without it the panel says that the daemon must be upgraded (`daemon_upgrade_required`); chat, files and the inbox work. Deployment commands are in [web-deploy.md](web-deploy.md).
 
 ```sh
 wsx web vapid                          # print a new Web Push key pair for a site file
-wsx web serve   --site <site.toml>     # serve on 127.0.0.1:<port> until SIGINT or SIGTERM
-wsx web pair    --site <site.toml>     # print a one-time pairing code (10 minutes, one use)
-wsx web devices --site <site.toml> [--revoke <id>] [--json]
+wsx web serve   [<site>]               # serve on 127.0.0.1:<port> until SIGINT or SIGTERM
+wsx web pair    [<site>]               # print a one-time pairing code (10 minutes, one use)
+wsx web devices [<site>] [--revoke <id>] [--json]
 ```
 
 ## Site file
+
+`<site>` (or `--site <site>`) is a site file path, or a site name: the `id` or the file name without `.toml` of a file in the site folder, `${XDG_CONFIG_HOME:-$HOME/.config}/wsx/web/`. A value with a `/` or ending in `.toml` is a path. With no `<site>`, the only `*.toml` file of the site folder is used; with none the command says how to make one, and with two or more it lists them by id and file and asks for one. The site folder is the only place a command looks: a running server is not asked, because its state folder is named by the id being looked for. `wsx web pair` prints the site id, the site file and the URL the code is for.
 
 One site per process. The file must be a regular file owned by the user with mode `600`. Unknown fields are refused.
 

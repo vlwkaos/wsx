@@ -93,9 +93,10 @@ The service name appears in public Certificate Transparency logs when its certif
 ## 4. Pair a device
 
 ```sh
-wsx web pair --site ~/.config/wsx/web/wsx.toml      # prints XXXXX-XXXXX, valid 10 minutes, one use
-wsx web devices --site ~/.config/wsx/web/wsx.toml
-wsx web devices --site ~/.config/wsx/web/wsx.toml --revoke <id>
+wsx web pair                 # the only site in ~/.config/wsx/web/; prints XXXXX-XXXXX, valid 10 minutes, one use
+wsx web pair wsx             # with several sites: a site id or file name
+wsx web devices
+wsx web devices --revoke <id>
 ```
 
 Open the public URL on the device, enter the code, then use the browser's "Add to Home Screen" or "Install". On iPhone, notifications work only from the installed app.

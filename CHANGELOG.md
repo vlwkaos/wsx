@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `wsx web pair`, `wsx web devices` and `wsx web serve` no longer need `--site`. With no site named they use the only site file in `~/.config/wsx/web/` (or `$XDG_CONFIG_HOME/wsx/web/`); with none they say how to make one, and with several they list them. A site can also be named by its id or file name, for example `wsx web pair wsx`.
+
 ## [0.31.0] - 2026-10-14
 
 ### Breaking Changes

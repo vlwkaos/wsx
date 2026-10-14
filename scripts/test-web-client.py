@@ -812,6 +812,32 @@ capabilities = ["terminal_view"]
             assert expected in refused.stderr, (label, refused.stderr)
         ok('site file: mode, unknown field, panel/capability mismatch and an invalid project grant refused')
 
+        # Without --site the site folder decides: none, the only one, or a name.
+        folder = work / 'config/wsx/web'
+        folder.mkdir(parents=True, exist_ok=True)
+        refused = cli('web', 'pair', expect=1)
+        assert 'no site file in ' + str(folder) in refused.stderr and 'chmod 600' in refused.stderr, refused.stderr
+        solo_text = files['bare'].read_text().replace('id = "bare"', 'id = "solo"')
+        (folder / 'wsx.toml').write_text(solo_text)
+        (folder / 'wsx.toml').chmod(0o600)
+        paired = cli('web', 'pair').stdout.splitlines()
+        assert paired[0].startswith("pairing code for 'solo': ") and paired[1] == 'site file %s' % (folder / 'wsx.toml'), paired
+        assert paired[2].startswith('open http://127.0.0.1:%d/ ' % ports['bare']), paired
+        (folder / 'family.toml').write_text(solo_text.replace('id = "solo"', 'id = "duo"'))
+        (folder / 'family.toml').chmod(0o600)
+        (folder / 'notes.txt').write_text('not a site\n')
+        refused = cli('web', 'pair', expect=1)
+        assert '2 site files in ' in refused.stderr, refused.stderr
+        assert 'duo' in refused.stderr and str(folder / 'family.toml') in refused.stderr and str(folder / 'wsx.toml') in refused.stderr, refused.stderr
+        assert cli('web', 'pair', 'duo').stdout.startswith("pairing code for 'duo': ")
+        assert cli('web', 'pair', 'wsx').stdout.startswith("pairing code for 'solo': ")
+        assert cli('web', 'devices', 'solo', '--json').stdout.strip() == '[]'
+        refused = cli('web', 'pair', 'nope', expect=1)
+        assert 'no site named "nope"' in refused.stderr and 'solo' in refused.stderr, refused.stderr
+        for name in ('wsx.toml', 'family.toml', 'notes.txt'):
+            (folder / name).unlink()
+        ok('pair without --site: none says how to make one, one is used, two are listed, a site name or file picks one')
+
         # A theme is deployer data that ends up in a page under a strict CSP, so
         # every part of it is validated before the server starts.
         def refuse_theme(label, spec, expected):
