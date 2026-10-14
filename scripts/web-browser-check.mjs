@@ -240,6 +240,10 @@ async function chats() {
   }
   console.log(`chat column at ${size[0]} px: ${JSON.stringify(column)}`);
   await sound("working chat");
+  // The working row is the end of the log: the same clear gap follows it.
+  await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
+  const workingGap = await evaluate("document.querySelector('.log-wrap').getBoundingClientRect().bottom - document.querySelector('.working').getBoundingClientRect().bottom");
+  if (workingGap < 63.5) await fail(`the working row is ${workingGap} px from the end of the log`);
   await shot("chat-working", ".composer .button-primary");
 
   // A long conversation: opens at its end; scrolled up, a jump button shows.
@@ -254,6 +258,10 @@ async function chats() {
   if (!long.steps.every((line) => /^\d+ steps?: [A-Z]/.test(line)) || long.user > 86) await fail(`steps or the user message are wrong: ${JSON.stringify(long)}`);
   await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight / 2; log.dispatchEvent(new Event('scroll')); })()");
   await until("!!document.querySelector('.jump')", "no jump button after scrolling up");
+  // The jump button sits inside the conversation, at the height of the end gap.
+  const jump = await evaluate(`(() => { const wrap = document.querySelector('.log-wrap').getBoundingClientRect(); const jump = document.querySelector('.jump').getBoundingClientRect();
+    return { above: wrap.bottom - jump.bottom, height: jump.height, gap: parseFloat(getComputedStyle(document.querySelector('.log')).paddingBottom) }; })()`);
+  if (jump.above < 0 || jump.above + jump.height > jump.gap) await fail(`the jump button is not inside the end gap: ${JSON.stringify(jump)}`);
   await sound("long chat scrolled up");
   await shot("chat-long-scrolled");
   await evaluate("document.querySelector('.jump').click()");
@@ -384,7 +392,7 @@ async function markdown() {
   await until("!document.querySelector('.jump')", "the log did not reach its end");
   const gap = await evaluate(`document.querySelector('.composer').getBoundingClientRect().top
     - [...document.querySelectorAll('.log > *')].at(-1).getBoundingClientRect().bottom`);
-  if (gap < 31.5) await fail(`the last message is ${gap} px from the composer`);
+  if (gap < 63.5) await fail(`the last message is ${gap} px from the composer`);
   await sound("markdown answer at its end");
   await shot("chat-end");
   await evaluate("document.querySelector('.log').scrollTop = 0");
