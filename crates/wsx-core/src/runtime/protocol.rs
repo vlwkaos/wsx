@@ -35,7 +35,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Revision 26 reads an agent's screen up to its last written row, so a dialog of a fresh
 // Claude is seen, takes Claude's file permission dialogs ("Do you want to create ...?") as blocked,
 // and ends an exchange as interrupted when its agent is idle again after it was seen at work.
-pub const DAEMON_REVISION: u32 = 26;
+// Revision 27 types a one-line slash command of an exchange as written, without the
+// exchange line (`command`, capability `exchange_command`).
+pub const DAEMON_REVISION: u32 = 27;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -367,6 +369,11 @@ pub enum Request {
         access: AgentExchangeAccess,
         #[serde(default)]
         write_claims: Vec<PathBuf>,
+        /// Type `prompt`, one slash-command line, as written without the exchange
+        /// line. Only for a daemon with `Capabilities::exchange_command`; an older
+        /// daemon ignores it. See docs/agent-orchestration.md "Commands".
+        #[serde(default)]
+        command: bool,
     },
     /// Separate variants fail closed on older daemons instead of silently
     /// ignoring a destructive editor policy. See docs/agent-orchestration.md.
@@ -378,18 +385,24 @@ pub enum Request {
         access: AgentExchangeAccess,
         #[serde(default)]
         write_claims: Vec<PathBuf>,
+        #[serde(default)]
+        command: bool,
     },
     AgentExchangeContinueStashingDraft {
         exchange_id: AgentExchangeId,
         expected_revision: u64,
         prompt: String,
         timeout_ms: u64,
+        #[serde(default)]
+        command: bool,
     },
     AgentExchangeContinue {
         exchange_id: AgentExchangeId,
         expected_revision: u64,
         prompt: String,
         timeout_ms: u64,
+        #[serde(default)]
+        command: bool,
     },
     AgentExchangeGet {
         exchange_id: AgentExchangeId,
@@ -654,6 +667,7 @@ mod tests {
         assert!(!capabilities.agent_exchange_bound_receipts);
         assert!(!capabilities.raw_terminal_stream);
         assert!(!capabilities.daemon_restart);
+        assert!(!capabilities.exchange_command);
     }
 
     #[test]

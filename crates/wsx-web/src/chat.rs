@@ -549,6 +549,18 @@ impl Chat {
         let snapshot = snapshot(client)?;
         let target = target(&snapshot, &site.access, session)?;
         let agent = attached_agent(&target)?;
+        // ^ docs/web-client.md "Commands": a message that is one of the agent's commands
+        // is typed as written, because an agent runs a command only at the start of its input.
+        let command = attachments.is_empty()
+            && prompt.starts_with('/')
+            && crate::commands::list(&agent.provider, target.worktree).has_command(&prompt);
+        if command && !snapshot.capabilities.exchange_command {
+            return Err(Fault::new(
+                409,
+                "daemon_upgrade_required",
+                "wsxd must be upgraded before the chat can run a command",
+            ));
+        }
         let previous = latest_exchange(client, target.pane.id)?;
         let access = if site.allows(Capability::AgentWrite) {
             AgentExchangeAccess::Writer
@@ -581,12 +593,14 @@ impl Chat {
                 expected_revision: exchange.revision,
                 prompt,
                 timeout_ms: EXCHANGE_TIMEOUT_MS,
+                command,
             },
             Some(exchange) => Request::AgentExchangeContinue {
                 exchange_id: exchange.id,
                 expected_revision: exchange.revision,
                 prompt,
                 timeout_ms: EXCHANGE_TIMEOUT_MS,
+                command,
             },
             None => {
                 if stash {
@@ -596,6 +610,7 @@ impl Chat {
                         timeout_ms: EXCHANGE_TIMEOUT_MS,
                         access,
                         write_claims: Vec::new(),
+                        command,
                     }
                 } else {
                     Request::AgentExchangeCreate {
@@ -604,6 +619,7 @@ impl Chat {
                         timeout_ms: EXCHANGE_TIMEOUT_MS,
                         access,
                         write_claims: Vec::new(),
+                        command,
                     }
                 }
             }
@@ -616,6 +632,29 @@ impl Chat {
                 "unexpected exchange response",
             )),
         }
+    }
+
+    /// The `/` list of a session's agent: names and one-line descriptions only.
+    pub fn commands(&self, client: &Client, site: &Site, session: u64) -> Outcome<Value> {
+        if !site.allows(Capability::ChatSend) {
+            return Err(Fault::forbidden("sending messages"));
+        }
+        let snapshot = snapshot(client)?;
+        let target = target(&snapshot, &site.access, session)?;
+        let provider = target
+            .pane
+            .agent
+            .as_ref()
+            .map_or("", |agent| agent.provider.as_str());
+        let listing = crate::commands::list(provider, target.worktree);
+        Ok(json!({
+            "provider": provider,
+            "listed": listing.listed,
+            "commands": listing.commands,
+            "truncated": listing.truncated,
+            "skipped": listing.skipped,
+            "runs": snapshot.capabilities.exchange_command,
+        }))
     }
 
     pub fn cancel(&self, client: &Client, site: &Site, session: u64) -> Outcome<Value> {

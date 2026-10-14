@@ -42,7 +42,7 @@ async function sound(label) {
   const seen = await evaluate(`(() => {
     const free = (node) => node.closest('.crumbs, .terminal-keys, .code, .xterm, .code-block pre, .table-wrap, .diagram, .question-screen');
     const wide = [...document.querySelectorAll('#app *')].filter((node) => !free(node) && node.getBoundingClientRect().right > innerWidth + 0.5);
-    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .question')
+    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .question, .slash')
       && /auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1);
     return { wide: wide.slice(0, 3).map((node) => node.className || node.tagName), scrollers: scrollers.map((node) => node.className),
       raw: /\\b(null|undefined|NaN)\\b/.test(document.querySelector('#app').innerText), page: document.scrollingElement.scrollTop + document.scrollingElement.scrollLeft };
@@ -66,6 +66,9 @@ async function steadyOnFocus(selector, label) {
 const go = (hash) => evaluate(`location.hash = ${JSON.stringify(hash)}`);
 const text = (selector) => evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].map((node) => node.textContent.trim().replace(/\\s+/g, ' '))`);
 const count = (selector) => evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length`);
+// Type into the composer as an input event does.
+const typeInto = (value) => evaluate(`(() => { const field = document.querySelector('.composer-field'); field.focus();
+  field.value = ${JSON.stringify(value)}; field.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 async function key(name, keyCode, options = {}) {
   await send("Input.dispatchKeyEvent", { type: "keyDown", key: name, code: name, windowsVirtualKeyCode: keyCode, ...options });
   await send("Input.dispatchKeyEvent", { type: "keyUp", key: name, code: name, windowsVirtualKeyCode: keyCode, ...options });
@@ -586,6 +589,12 @@ for (const next of [SIZES[1], SIZES[2]]) {
   await openSession("diagrams");
   await until("document.querySelectorAll('.diagram img').length === 2", "the diagrams did not draw in the light scheme");
   await shot("chat-diagrams-light");
+  await openSession("long");
+  await until("document.querySelectorAll('.message').length > 4 && !!document.querySelector('.composer-field:not([disabled])')", "the conversation or the composer is not ready in the light scheme");
+  await typeInto("/");
+  await until("document.querySelectorAll('.slash-option').length === 6", "the / list did not open in the light scheme");
+  await shot("chat-commands-light");
+  await typeInto("");
 }
 await resize(SIZES[1]);
 // One answer, by its button: the sheet says Sent until the agent goes on, then the reply shows.
@@ -625,6 +634,42 @@ await openSession("working");
 await until("!!document.querySelector('.pulse')", "the working row did not show");
 if ((await evaluate("getComputedStyle(document.querySelector('.pulse')).animationName")) !== "none") await fail("reduced motion is not respected");
 await send("Emulation.setEmulatedMedia", { features: [] });
+
+// Slash commands: `/` opens the agent's list, typing filters it, the arrows move, Escape
+// closes, Tab or a tap picks. One pick is sent, and the agent gets exactly "/compact".
+for (const next of [SIZES[1], SIZES[2]]) {
+  await resize(next);
+  await openSession("long");
+  await until("document.querySelectorAll('.message').length > 4 && !!document.querySelector('.composer-field:not([disabled])')", "the conversation or the composer is not ready for a command");
+  await typeInto("/");
+  await until("document.querySelectorAll('.slash-option').length === 6", "the / list did not open");
+  const names = await text(".slash-name");
+  for (const expected of ["/compact", "/clear", "/review-diff", "/deploy-notes", "/zebra", "/fixture:hello"]) {
+    if (!names.includes(expected)) await fail(`the / list lacks ${expected}: ${names}`);
+  }
+  if (names[0] !== "/compact" || (await evaluate("document.querySelector('.slash-option[aria-selected=true] .slash-source').textContent")) !== "built-in") await fail(`the / list does not start with the built-ins: ${names}`);
+  const field = () => evaluate("(() => { const node = document.querySelector('.composer-field'); return [node.getAttribute('aria-expanded'), node.getAttribute('aria-activedescendant'), node.value]; })()");
+  await key("ArrowDown", 40);
+  if ((await field()).slice(0, 2).join() !== "true,slash-1") await fail(`ArrowDown did not move in the list: ${await field()}`);
+  await sound("command list");
+  await shot("chat-commands");
+  await key("Escape", 27);
+  await until("!document.querySelector('.slash')", "Escape did not close the list");
+  if ((await field())[2] !== "/") await fail("Escape changed the text");
+  await typeInto("/com");
+  await until("document.querySelectorAll('.slash-option').length === 1", "/com did not filter the list");
+  if ((await text(".slash-name")).join() !== "/compact") await fail(`/com shows ${await text(".slash-name")}`);
+  await shot("chat-commands-filtered");
+  if (phone()) await evaluate("document.querySelector('.slash-option').click()");
+  else await key("Tab", 9);
+  await until("document.querySelector('.composer-field').value === '/compact ' && !document.querySelector('.slash')", "picking did not fill /compact");
+  if (phone()) {
+    await evaluate("document.querySelector('.composer .button-primary').click()");
+    await until("[...document.querySelectorAll('.message:not(.message-user) .markdown')].some((node) => node.textContent === 'echo: /compact')", "the agent did not answer /compact");
+  } else {
+    await typeInto("");
+  }
+}
 
 // Sub-path surfaces as the browser resolved them.
 const facts = await evaluate(`(async () => {

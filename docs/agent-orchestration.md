@@ -43,6 +43,12 @@ This assumes a Claude version, editor layout and keymap supporting the documente
 
 Separate `agent_exchange_*_stashing_draft` request variants make old daemons reject the option instead of silently ignoring a destructive input policy. Protocol 16 remains unchanged; daemon revision 17 fences draft delivery and stable reporter publication in the non-web 0.29.0 candidate. Claude adapter version 18 adds prompt capability, native path reports and removed-reporter recovery. Update the integration and restart that agent to load it; live panes are not rewritten.
 
+## Commands
+
+An agent runs a slash command (`/compact`) only when it is the start of its input, and every round normally starts with the line `[wsx exchange N, round R, access]`. A create or continue request with `command: true` types its prompt as written, without that line. wsxd accepts it only for one line of at most 256 bytes that starts with `/` and a letter or digit; anything else is `invalid_prompt`. A daemon that does this reports the capability `exchange_command` (daemon revision 27). An older daemon ignores the field, so a client must check the capability before it sends a command.
+
+A command round is an ordinary exchange round: it has an id, a round number, a deadline, writer claims, cancellation, the `pty_delivery` evidence and the state observed from the pane's lifecycle. What it gives up is correlation: the agent cannot tell which exchange the line belongs to, so an adapter that binds native turns by the envelope (Pi) does not bind it, and the round never reaches `request_bound`. `/clear` and `/new` start a new provider conversation; the session follows the transcript the agent's hooks report next. The CLI does not send commands; the web chat does (`docs/web-client.md` "Commands").
+
 ## Native request-bound receipts
 
 Adapters can submit the existing daemon receipt through a machine-facing command:

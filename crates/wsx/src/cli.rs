@@ -2701,6 +2701,7 @@ fn cmd_agent_exchange_request(
             timeout_ms,
             access,
             write_claims,
+            command: false,
         }
     } else {
         runtime::Request::AgentExchangeCreate {
@@ -2709,6 +2710,7 @@ fn cmd_agent_exchange_request(
             timeout_ms,
             access,
             write_claims,
+            command: false,
         }
     };
     agent_exchange_response(runtime::Client::local().call(&request)?, json)?;
@@ -2849,6 +2851,7 @@ fn cmd_agent_exchange_continue(
             expected_revision,
             prompt,
             timeout_ms,
+            command: false,
         }
     } else {
         runtime::Request::AgentExchangeContinue {
@@ -2856,6 +2859,7 @@ fn cmd_agent_exchange_continue(
             expected_revision,
             prompt,
             timeout_ms,
+            command: false,
         }
     };
     agent_exchange_response(runtime::Client::local().call(&request)?, json)?;

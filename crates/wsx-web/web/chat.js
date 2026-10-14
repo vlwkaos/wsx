@@ -91,6 +91,49 @@ function blocks(items) {
   return result;
 }
 
+// The agent's commands for the `/` list, read once per session while the page is open.
+const commandLists = new Map();
+function loadCommands(id) {
+  if (!commandLists.has(id)) {
+    commandLists.set(id, api(`api/chat/${id}/commands`).catch((failure) => {
+      commandLists.delete(id);
+      throw failure;
+    }));
+  }
+  return commandLists.get(id);
+}
+
+// While the field holds only `/` and a partial name: the commands that match it, names
+// that start with it first. `null` when no list applies.
+function matching(listing, text) {
+  const typed = /^\/(\S*)$/.exec(text);
+  if (!listing || !typed) return null;
+  const query = typed[1].toLowerCase();
+  const starts = listing.commands.filter((command) => command.name.toLowerCase().startsWith(query));
+  const within = listing.commands.filter((command) => !starts.includes(command) && command.name.toLowerCase().includes(query));
+  return [...starts, ...within];
+}
+
+const SOURCE_WORDS = { builtin: "built-in", project: "project", user: "yours", plugin: "plugin" };
+
+// The `/` list above the composer row: a listbox that the field controls. A pointer
+// press does not move focus, so the on-screen keyboard stays open.
+const CommandList = ({ listing, matches, active, onPick, onHover }) => html`
+  <div class="slash">
+    <ul class="slash-list" id="slash-list" role="listbox" aria-label="Commands">
+      ${matches.map((command, index) => html`
+        <li key=${command.name} id=${`slash-${index}`} class="slash-option" role="option" aria-selected=${index === active}
+          onPointerDown=${(event) => event.preventDefault()} onPointerEnter=${() => onHover(index)} onClick=${() => onPick(command)}>
+          <span class="slash-name">/${command.name}</span>
+          <span class="slash-description">${command.description}</span>
+          <span class="slash-source">${SOURCE_WORDS[command.source]}</span>
+        </li>`)}
+    </ul>
+    ${!matches.length && html`<p class="note slash-note">No command starts with that.</p>`}
+    ${!listing.listed && html`<p class="note slash-note">Only the built-in commands of ${listing.provider || "this agent"} are listed.</p>`}
+    ${!listing.runs && html`<p class="note slash-note">wsx on the host must be upgraded to run a command from here.</p>`}
+  </div>`;
+
 function Composer({ session, working, onSent }) {
   const draft = draftFor(session.id);
   const [, renew] = useState(0);
@@ -99,6 +142,31 @@ function Composer({ session, working, onSent }) {
   const field = useRef();
   const picker = useRef();
   const ready = Boolean(session.agent?.attached && session.agent.prompt) && !session.exited;
+  const [listing, setListing] = useState(null);
+  const [active, setActive] = useState(0);
+  // Escape closes the list until the text changes.
+  const [closed, setClosed] = useState(null);
+  const matches = closed === draft.text ? null : matching(listing, draft.text);
+  const listOpen = Boolean(matches) && ready;
+  useEffect(() => {
+    if (!ready || !can("chat_send") || !draft.text.startsWith("/") || listing) return undefined;
+    let current = true;
+    loadCommands(session.id).then((value) => { if (current) setListing(value); }, () => {});
+    return () => { current = false; };
+  }, [session.id, ready, draft.text.startsWith("/")]);
+  useLayoutEffect(() => { if (listOpen) document.getElementById(`slash-${active}`)?.scrollIntoView({ block: "nearest" }); }, [active, listOpen]);
+  const changed = (text) => {
+    draft.text = text;
+    setActive(0);
+    renew((count) => count + 1);
+  };
+  const pick = (command) => {
+    const text = `/${command.name} `;
+    field.current.value = text;
+    changed(text);
+    field.current.focus();
+    field.current.setSelectionRange(text.length, text.length);
+  };
 
   // The field grows with its text, up to six lines.
   const grow = () => {
@@ -148,9 +216,28 @@ function Composer({ session, working, onSent }) {
     }
   };
   const keydown = (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (listOpen) {
+      const move = { ArrowDown: 1, ArrowUp: -1 }[event.key];
+      if (move && matches.length) {
+        event.preventDefault();
+        setActive((active + move + matches.length) % matches.length);
+        return;
+      }
+      if ((event.key === "Tab" || event.key === "Enter") && !event.shiftKey && matches[active]) {
+        event.preventDefault();
+        pick(matches[active]);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setClosed(draft.text);
+        return;
+      }
+    }
     // On a hardware keyboard Enter sends and Shift+Enter is a newline. On a touch
     // keyboard Enter is a newline. A key that belongs to an IME composition never sends.
-    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229 || touch()) return;
+    if (event.key !== "Enter" || event.shiftKey || touch()) return;
     event.preventDefault();
     send();
   };
@@ -165,14 +252,16 @@ function Composer({ session, working, onSent }) {
             </li>`)}
         </ul>` : null}
       ${error && html`<p class="error" role="alert">${error}</p>`}
+      ${listOpen && html`<${CommandList} listing=${listing} matches=${matches} active=${active} onPick=${pick} onHover=${setActive} />`}
       <div class="composer-row">
         ${can("media_upload") && html`
           <button class="icon-button" type="button" aria-label="Attach files" onClick=${() => picker.current.click()}><${Icon} name="attach" /></button>
           <input type="file" multiple hidden ref=${picker} onChange=${(event) => upload([...event.target.files])} />`}
         <textarea class="composer-field" ref=${field} rows="1" aria-label="Message"
           placeholder=${ready ? "Message" : "Cannot receive messages"}
-          disabled=${!ready}
-          onInput=${() => { draft.text = field.current.value; grow(); }} onKeyDown=${keydown}></textarea>
+          disabled=${!ready} role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
+          aria-controls=${listOpen ? "slash-list" : null} aria-activedescendant=${listOpen && matches.length ? `slash-${active}` : null}
+          onInput=${() => { changed(field.current.value); grow(); }} onKeyDown=${keydown}></textarea>
         <button class="button button-primary" type="button" disabled=${busy || !ready} onClick=${send}>${working ? "Queue" : "Send"}</button>
       </div>
     </div>`;

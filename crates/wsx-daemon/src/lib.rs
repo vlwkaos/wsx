@@ -2650,17 +2650,27 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             timeout_ms,
             access,
             write_claims,
-        } => create_agent_exchange(daemon, pane_id, prompt, timeout_ms, access, write_claims),
+            command,
+        } => create_agent_exchange_with_draft(
+            daemon,
+            pane_id,
+            ExchangeInput { prompt, command },
+            timeout_ms,
+            access,
+            write_claims,
+            false,
+        ),
         Request::AgentExchangeCreateStashingDraft {
             pane_id,
             prompt,
             timeout_ms,
             access,
             write_claims,
+            command,
         } => create_agent_exchange_with_draft(
             daemon,
             pane_id,
-            prompt,
+            ExchangeInput { prompt, command },
             timeout_ms,
             access,
             write_claims,
@@ -2671,11 +2681,12 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             expected_revision,
             prompt,
             timeout_ms,
+            command,
         } => continue_agent_exchange_with_draft(
             daemon,
             exchange_id,
             expected_revision,
-            prompt,
+            ExchangeInput { prompt, command },
             timeout_ms,
             true,
         ),
@@ -2684,7 +2695,15 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             expected_revision,
             prompt,
             timeout_ms,
-        } => continue_agent_exchange(daemon, exchange_id, expected_revision, prompt, timeout_ms),
+            command,
+        } => continue_agent_exchange_with_draft(
+            daemon,
+            exchange_id,
+            expected_revision,
+            ExchangeInput { prompt, command },
+            timeout_ms,
+            false,
+        ),
         Request::AgentExchangeGet {
             exchange_id,
             include_frame,
@@ -2933,6 +2952,7 @@ fn capabilities() -> Capabilities {
         agent_exchange_bound_receipts: true,
         raw_terminal_stream: true,
         daemon_restart: true,
+        exchange_command: true,
     }
 }
 
@@ -4558,6 +4578,8 @@ fn agent_clear(
     Ok(Response::Ack { revision })
 }
 
+const MAX_EXCHANGE_COMMAND_BYTES: usize = 256;
+
 fn validate_exchange_prompt(prompt: &str) -> Result<(), ApiError> {
     if prompt.is_empty() || prompt.len() > MAX_AGENT_EXCHANGE_PROMPT_BYTES {
         return Err(api("invalid_prompt", "prompt must be 1..65536 bytes"));
@@ -4696,17 +4718,51 @@ fn has_writer_claim_conflict(exchanges: &[AgentExchange], claims: &[PathBuf]) ->
     })
 }
 
-fn exchange_terminal_input(
-    id: AgentExchangeId,
-    round: u32,
-    access: AgentExchangeAccess,
-    prompt: &str,
-) -> String {
-    let access = match access {
-        AgentExchangeAccess::ReadOnly => "read-only",
-        AgentExchangeAccess::Writer => "writer",
-    };
-    format!("[wsx exchange {id}, round {round}, {access}]\n{prompt}")
+/// What one exchange round types into the agent's terminal.
+struct ExchangeInput {
+    prompt: String,
+    /// A one-line slash command, typed as written (docs/agent-orchestration.md "Commands").
+    command: bool,
+}
+
+impl ExchangeInput {
+    fn validate(&self) -> Result<(), ApiError> {
+        validate_exchange_prompt(&self.prompt)?;
+        // ^ An agent runs a command only at the start of its input, so a command round
+        // carries no exchange line. It must be one short line that names a command.
+        if self.command
+            && (self.prompt.len() > MAX_EXCHANGE_COMMAND_BYTES
+                || self.prompt.contains(['\n', '\t'])
+                || !self.prompt.starts_with('/')
+                || !self.prompt[1..]
+                    .starts_with(|character: char| character.is_ascii_alphanumeric()))
+        {
+            return Err(api(
+                "invalid_prompt",
+                "a command must be one line of at most 256 bytes that starts with /name",
+            ));
+        }
+        Ok(())
+    }
+
+    fn terminal_text(
+        &self,
+        id: AgentExchangeId,
+        round: u32,
+        access: AgentExchangeAccess,
+    ) -> String {
+        if self.command {
+            return self.prompt.clone();
+        }
+        let access = match access {
+            AgentExchangeAccess::ReadOnly => "read-only",
+            AgentExchangeAccess::Writer => "writer",
+        };
+        format!(
+            "[wsx exchange {id}, round {round}, {access}]\n{}",
+            self.prompt
+        )
+    }
 }
 
 // ^ Provider-specific editor protocol, never agent identity or completion.
@@ -4870,6 +4926,7 @@ fn expire_due_agent_exchanges(daemon: &Daemon, state: &mut State) -> Result<(), 
     Ok(())
 }
 
+#[cfg(test)]
 fn create_agent_exchange(
     daemon: &Arc<Daemon>,
     pane_id: PaneId,
@@ -4881,7 +4938,10 @@ fn create_agent_exchange(
     create_agent_exchange_with_draft(
         daemon,
         pane_id,
-        prompt,
+        ExchangeInput {
+            prompt,
+            command: false,
+        },
         timeout_ms,
         access,
         write_claims,
@@ -4892,13 +4952,13 @@ fn create_agent_exchange(
 fn create_agent_exchange_with_draft(
     daemon: &Arc<Daemon>,
     pane_id: PaneId,
-    prompt: String,
+    input: ExchangeInput,
     timeout_ms: u64,
     access: AgentExchangeAccess,
     write_claims: Vec<PathBuf>,
     stash_draft: bool,
 ) -> Result<Response, ApiError> {
-    validate_exchange_prompt(&prompt)?;
+    input.validate()?;
     let timeout_ms = validate_exchange_timeout(timeout_ms)?;
     let operation_lock = terminal_operation_lock(daemon, pane_id);
     let _operation = lock(&operation_lock);
@@ -5040,14 +5100,14 @@ fn create_agent_exchange_with_draft(
         id.0,
     );
 
-    let input = exchange_terminal_input(id, 1, access, &prompt);
-    let delivery_sha256 = format!("{:x}", Sha256::digest(input.as_bytes()));
+    let text = input.terminal_text(id, 1, access);
+    let delivery_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
     // ^ PTY readers notify through daemon.state between reads. Keep the mutation
     // and pane-operation fences, but release state while waiting for editor ACK.
     drop(state);
     let stashed = !stash_draft || stash_claude_draft(&runtime).is_ok();
     let mut state = lock(&daemon.state);
-    let delivered = stashed && deliver_agent_exchange(&runtime, &input).is_ok();
+    let delivered = stashed && deliver_agent_exchange(&runtime, &text).is_ok();
     let revision = state.revision.saturating_add(1);
     let mut persisted = state.persisted.clone();
     let exchange = persisted
@@ -5081,6 +5141,7 @@ fn create_agent_exchange_with_draft(
     })
 }
 
+#[cfg(test)]
 fn continue_agent_exchange(
     daemon: &Arc<Daemon>,
     id: AgentExchangeId,
@@ -5088,18 +5149,22 @@ fn continue_agent_exchange(
     prompt: String,
     timeout_ms: u64,
 ) -> Result<Response, ApiError> {
-    continue_agent_exchange_with_draft(daemon, id, expected_revision, prompt, timeout_ms, false)
+    let input = ExchangeInput {
+        prompt,
+        command: false,
+    };
+    continue_agent_exchange_with_draft(daemon, id, expected_revision, input, timeout_ms, false)
 }
 
 fn continue_agent_exchange_with_draft(
     daemon: &Arc<Daemon>,
     id: AgentExchangeId,
     expected_revision: u64,
-    prompt: String,
+    input: ExchangeInput,
     timeout_ms: u64,
     stash_draft: bool,
 ) -> Result<Response, ApiError> {
-    validate_exchange_prompt(&prompt)?;
+    input.validate()?;
     let timeout_ms = validate_exchange_timeout(timeout_ms)?;
     let pane_id = lock(&daemon.state)
         .persisted
@@ -5194,13 +5259,13 @@ fn continue_agent_exchange_with_draft(
         "agent_exchange.continued",
         id.0,
     );
-    let input = exchange_terminal_input(id, next_round, previous.access, &prompt);
-    let delivery_sha256 = format!("{:x}", Sha256::digest(input.as_bytes()));
+    let text = input.terminal_text(id, next_round, previous.access);
+    let delivery_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
     // ^ Match initial delivery: a fragmented PTY frame must complete its callbacks.
     drop(state);
     let stashed = !stash_draft || stash_claude_draft(&runtime).is_ok();
     let mut state = lock(&daemon.state);
-    let delivered = stashed && deliver_agent_exchange(&runtime, &input).is_ok();
+    let delivered = stashed && deliver_agent_exchange(&runtime, &text).is_ok();
     let revision = state.revision.saturating_add(1);
     let mut persisted = state.persisted.clone();
     let exchange = persisted

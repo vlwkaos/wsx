@@ -1107,6 +1107,67 @@ capabilities = ["terminal_view"]
         assert owner.request('POST', '/api/chat/999999/send', {'text': 'nope'})[0] == 404
         ok('SSE stream and chat: delivery evidence, native history, continuation, bad input')
 
+        # --- Slash commands: the agent's list from a fake Claude home, and one command
+        # typed as written. A session of its own, on the read-only root site.
+        claude = work / 'home/.claude'
+        for name, text in (('review-diff', '---\nname: review-diff\ndescription: "Review the staged diff"\n---\nBODY-SECRET\n'),
+                           ('deploy-notes', '---\ndescription: >\n  Write the deploy\n  notes for a release\n---\nBODY-SECRET\n'),
+                           ('zebra', '# Zebra stripes a table\n\nBODY-SECRET\n'),
+                           ('broken', '---\nname: broken\ndescription: the frontmatter never closes\nBODY-SECRET\n')):
+            (claude / 'skills' / name).mkdir(parents=True)
+            (claude / 'skills' / name / 'SKILL.md').write_text(text)
+        plugin = work / 'plugin-fixture'
+        (plugin / 'skills/hello').mkdir(parents=True)
+        (plugin / 'skills/hello/SKILL.md').write_text('---\nname: hello\ndescription: Say hello\n---\nBODY-SECRET\n')
+        (claude / 'plugins').mkdir()
+        (claude / 'plugins/installed_plugins.json').write_text(json.dumps({'version': 2, 'plugins': {
+            'fixture@local': [{'scope': 'user', 'installPath': str(plugin)}], 'off@local': [{'scope': 'user', 'installPath': str(plugin)}]}}))
+        (claude / 'settings.json').write_text(json.dumps({'enabledPlugins': {'fixture@local': True, 'off@local': False}}))
+        third_root = (work / 'project3').resolve()
+        (third_root / '.claude/commands').mkdir(parents=True)
+        (third_root / '.claude/commands/ship.md').write_text('---\ndescription: Ship the release\n---\nBODY-SECRET\n')
+        created = call('session_create', {'worktree_id': worktrees['project3'], 'label': 'commands',
+            'command': [sys.executable, str(actor), str(work / 'commands.jsonl'), str(work / 'commands.trace'),
+                        str(third_root), str(chart), str(outside)], 'rows': 12, 'cols': 100})
+        assert created['type'] == 'created', created
+        commands_session = sessions['commands'] = created['data']['id']
+        commands_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == commands_session)
+        wait(lambda: next(p for p in call('snapshot')['data']['panes'] if p['id'] == commands_pane)['agent'], 'commands agent')
+        status, listing = steady(root, 'GET', '/api/chat/%d/commands' % commands_session)
+        assert status == 200 and listing['provider'] == 'claude' and listing['listed'] and listing['runs'], listing
+        names = [(item['name'], item['source']) for item in listing['commands']]
+        assert names == [('compact', 'builtin'), ('clear', 'builtin'), ('ship', 'project'), ('deploy-notes', 'user'),
+                         ('review-diff', 'user'), ('zebra', 'user'), ('fixture:hello', 'plugin')], names
+        described = {item['name']: item['description'] for item in listing['commands']}
+        assert described['deploy-notes'] == 'Write the deploy notes for a release' and described['review-diff'] == 'Review the staged diff'
+        assert described['zebra'] == 'Zebra stripes a table' and listing['skipped'] == 1 and not listing['truncated'], listing
+        assert 'BODY-SECRET' not in json.dumps(listing), 'a file body left the server'
+        assert steady(sites['viewer'], 'GET', '/api/chat/%d/commands' % commands_session)[0] in (401, 403, 404)
+        assert steady(root, 'GET', '/api/chat/999999/commands')[0] == 404
+        # wsxd types a command as written only when it is one short /name line.
+        for prompt in ('/compact\nsecond line', 'compact', '/ compact', '/' + 'x' * 300):
+            refused = call('agent_exchange_create', {'pane_id': commands_pane, 'prompt': prompt, 'timeout_ms': 60000, 'command': True})
+            assert refused['type'] == 'error' and refused['data']['code'] == 'invalid_prompt', (prompt, refused)
+        assert traces('commands') == []
+        # A listed command is typed as written: no exchange line before it.
+        status, exchange = root.request('POST', '/api/chat/%d/send' % commands_session, {'text': '/compact'})
+        assert status == 200 and exchange['access'] == 'read_only', exchange
+        assert wait(lambda: traces('commands'), 'command delivery') == ['/compact']
+        settle('commands')
+        # Text that only looks like a command keeps the exchange line, and so does a command with a second line.
+        for text in ('/usr/bin is the folder', '/compact\nthen this'):
+            before = len(traces('commands'))
+            status, sent = root.request('POST', '/api/chat/%d/send' % commands_session, {'text': text})
+            assert status == 200, sent
+            received = wait(lambda: len(traces('commands')) > before and traces('commands')[-1], 'enveloped delivery')
+            # Sent at once or queued behind the previous turn: either way it arrives with the exchange line.
+            assert received.startswith('[wsx exchange ') and received.endswith(']\n' + text), received
+            settle('commands')
+        session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == commands_session)
+        assert call('session_close', {'session_id': commands_session, 'expected_revision': session['revision']})['type'] == 'ack'
+        shutil.rmtree(third_root / '.claude')
+        ok('commands: built-ins, project, user and plugin skills with one-line descriptions, a malformed file skipped, no file body; /compact typed as written, other text keeps the exchange line')
+
         # --- Media: upload, attach to a prompt, agent-produced files, sniffing.
         photo = png(20, 5)
         digest = hashlib.sha256(photo).hexdigest()
@@ -1710,6 +1771,8 @@ capabilities = ["terminal_view"]
             assert result.returncode == 0, result.stdout + result.stderr
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
             wait(lambda: steady(m2, 'GET', '/api/chat/%d/timeline' % shown['idle'])[1]['items'][-1].get('text') == 'echo: line one', 'browser turn')
+            # The command picked in the browser reached the agent as typed.
+            assert traces('long')[-1] == '/compact', traces('long')
 
             # A paired page reloads, with its service worker, before and after a server restart.
             # The page asks for the restart with a file and waits for the answer file.

@@ -432,6 +432,8 @@ pub struct Capabilities {
     pub raw_terminal_stream: bool,
     // ^ docs/daemon-live-upgrade.md: accepts a restart handoff into its own build.
     pub daemon_restart: bool,
+    // ^ docs/agent-orchestration.md "Commands": types a one-line slash command as written.
+    pub exchange_command: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

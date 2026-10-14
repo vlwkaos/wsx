@@ -63,6 +63,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/sessions", post(session_start))
             .route("/api/chat/{session}/timeline", get(timeline))
             .route("/api/chat/{session}/send", post(send))
+            .route("/api/chat/{session}/commands", get(commands))
             .route("/api/chat/{session}/cancel", post(cancel))
             .route("/api/chat/{session}/answer", post(answer))
             .route("/api/chat/{session}/queue/{id}", delete(queue_remove))
@@ -567,6 +568,15 @@ async fn timeline(
 ) -> Outcome<Json<Value>> {
     need(&app, Panel::Chat)?;
     blocking(|| app.chat.timeline(&app, session).map(Json))
+}
+
+async fn commands(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(session): UrlPath<u64>,
+) -> Outcome<Json<Value>> {
+    need(&app, Panel::Chat)?;
+    blocking(|| app.chat.commands(&app.client, &app.site, session).map(Json))
 }
 
 #[derive(Deserialize)]
