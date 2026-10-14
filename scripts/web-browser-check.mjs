@@ -402,6 +402,37 @@ async function others() {
   if (project.row !== "design" || !/^\d+ sessions$/.test(project.count) || project.actions !== "Files,New session") await fail(`the projects screen is wrong: ${JSON.stringify(project)}`);
   await sound("projects");
   await shot("projects");
+  // A project opens its worktrees and their sessions; a session opens from there, and
+  // Back leads to the project, then to the list.
+  const listed = await evaluate("location.hash");
+  await evaluate("document.querySelector('.row-open').click()");
+  await until("!!document.querySelector('.worktree')", "the project screen did not open");
+  const tree = await evaluate(`[...document.querySelectorAll('.worktree')].map((section) => ({ name: section.querySelector('.group-name').textContent,
+    rows: [...section.querySelectorAll('.row-label')].map((node) => node.textContent), start: !!section.querySelector('.group-head .link-action') }))`);
+  if (tree.length !== 2 || tree[0].name !== "main · main checkout" || tree[1].name !== "fix/login"
+    || tree[1].rows.join() !== "refactor" || tree[0].rows.length < 10 || !tree.every((worktree) => worktree.start)) {
+    await fail(`the project screen is wrong: ${JSON.stringify(tree)}`);
+  }
+  if ((await text(".bar-label")).join() !== "design") await fail("the project screen does not name its project");
+  const projectHash = await evaluate("location.hash");
+  await sound("project");
+  await shot("project");
+  await evaluate("[...document.querySelectorAll('.worktree')][1].querySelector('.row-link').click()");
+  await until(`location.hash === '#/s/${ids.idle}/chat' && !!document.querySelector('.session .bar-label')`, "the session did not open from its project");
+  if ((await evaluate("document.querySelector('.bar a.icon-button').getAttribute('aria-label')")) !== "Back to design") await fail("the session's back control does not lead to its project");
+  await evaluate("document.querySelector('.bar a.icon-button').click()");
+  await until(`location.hash === ${JSON.stringify(projectHash)} && !!document.querySelector('.worktree')`, "Back did not return to the project");
+  // Chat and Terminal are views of one screen: switching adds no step to Back.
+  await evaluate(`[...document.querySelectorAll('.worktree .row-link')].find((node) => node.getAttribute('href') === '#/s/${ids.shell}/chat').click()`);
+  await until(`location.hash === '#/s/${ids.shell}/chat'`, "the shell session did not open from its project");
+  await evaluate("document.querySelector('.switch a:not([aria-current])').click()");
+  await until(`location.hash === '#/s/${ids.shell}/terminal' && !!document.querySelector('.terminal-mount')`, "the terminal view did not open");
+  await evaluate("document.querySelector('.switch a:not([aria-current])').click()");
+  await until(`location.hash === '#/s/${ids.shell}/chat' && !document.querySelector('.terminal-mount')`, "the chat view did not reopen");
+  await evaluate("document.querySelector('.bar a.icon-button').click()");
+  await until(`location.hash === ${JSON.stringify(projectHash)} && !!document.querySelector('.worktree')`, "Back after Chat and Terminal did not return to the project");
+  await evaluate("document.querySelector('.bar a.icon-button').click()");
+  await until(`location.hash === ${JSON.stringify(listed)} && !!document.querySelector('.row-open')`, "Back did not return to the projects");
   await evaluate("document.querySelector('.row-actions a').click()");
   await until("[...document.querySelectorAll('.files .row-label')].some((node) => node.textContent === 'README.md')", "the files screen did not list the project");
   await evaluate("[...document.querySelectorAll('.files .row-link')].find((node) => node.textContent.trim() === 'README.md').click()");

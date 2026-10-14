@@ -6,10 +6,12 @@ import { can, isNew, sessionLink, shows, stateOf, useStore } from "./store.js";
 
 // One session. Left: a state mark. Middle: label over "project · branch · provider",
 // and for a working session what it does. Right: the state word and, while working, the time.
-export function SessionRow({ session, now, current }) {
+// In a worktree's list (`place` "worktree") the heading names the project and worktree.
+export function SessionRow({ session, now, current, place }) {
   const status = stateOf(session);
   const fresh = status.group === "finished" && isNew(session);
-  const context = [session.project.name, session.branch, session.agent?.provider].filter(Boolean).join(" · ");
+  const context = [place !== "worktree" && session.project.name, place !== "worktree" && session.branch, session.agent?.provider]
+    .filter(Boolean).join(" · ");
   return html`
     <li class="row">
       <a class="row-link" href=${sessionLink(session)} aria-current=${current ? "page" : null}>
@@ -27,7 +29,8 @@ export function SessionRow({ session, now, current }) {
     </li>`;
 }
 
-export function NewSession({ project, label = "New session" }) {
+// Starts a session in `worktree`, or in the project's main checkout without one.
+export function NewSession({ project, worktree, label = "New session" }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   if (!can("session_start")) return null;
@@ -35,7 +38,7 @@ export function NewSession({ project, label = "New session" }) {
     setBusy(true);
     setError("");
     try {
-      const created = await api("api/sessions", { method: "POST", json: { project: project.id, label: "chat" } });
+      const created = await api("api/sessions", { method: "POST", json: { project: project.id, worktree: worktree?.id, label: "chat" } });
       location.hash = `#/s/${created.session_id}/${shows("chat") ? "chat" : "terminal"}`;
     } catch (failure) {
       setError(failure.message);
@@ -44,7 +47,7 @@ export function NewSession({ project, label = "New session" }) {
   };
   return html`
     <button class="link-action" type="button" disabled=${busy} onClick=${create}
-      aria-label=${`New session in ${project.name}`}>${label}</button>
+      aria-label=${`New session in ${project.name}${worktree ? ` ${worktree.branch}` : ""}`}>${label}</button>
     ${error && html`<span class="error" role="alert">${error}</span>`}`;
 }
 

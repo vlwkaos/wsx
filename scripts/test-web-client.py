@@ -562,7 +562,7 @@ def main():
         checks.append(label)
 
     try:
-        for name in ('home', 'state', 'project', 'project2', 'project3', 'design', 'bare'):
+        for name in ('home', 'state', 'project', 'project2', 'project3', 'design', 'design-login', 'bare'):
             (work / name).mkdir(mode=0o700)
         config = (work / 'home/Library/Application Support/wsx' if sys.platform == 'darwin' else work / 'config/wsx')
         config.mkdir(parents=True)
@@ -639,8 +639,10 @@ def main():
         daemon = subprocess.Popen([str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         processes.append(daemon)
         wait(path.exists, 'daemon')
+        # The browser's project has a second worktree, so its project screen shows two.
         assert call('synchronize_projects', {'projects': [
-            {'name': name, 'path': str(work / name), 'worktrees': [{'path': str(work / name), 'branch': 'main'}]}
+            {'name': name, 'path': str(work / name), 'worktrees': [{'path': str(work / name), 'branch': 'main'}]
+             + ([{'path': str(work / 'design-login'), 'branch': 'fix/login'}] if name == 'design' else [])}
             for name in ('project', 'project2', 'project3', 'design', 'bare')]})['type'] == 'ack'
         worktrees = {Path(item['path']).name: item['id'] for item in call('snapshot')['data']['worktrees']}
         projects = {item['name']: item['id'] for item in call('snapshot')['data']['projects']}
@@ -1643,7 +1645,7 @@ capabilities = ["terminal_view"]
                                 ('error', 'api-tests'), ('exited', 'crashed-import'), ('working', 'release notes'),
                                 ('done', 'docs cleanup'), ('long', 'release checklist'), ('idle', 'refactor'),
                                 ('markdown', 'release plan'), ('large', 'full audit'), ('diagrams', 'architecture')):
-                created = call('session_create', {'worktree_id': worktrees['design'], 'label': label,
+                created = call('session_create', {'worktree_id': worktrees['design-login' if role == 'idle' else 'design'], 'label': label,
                     'command': [sys.executable, str(actor), str(work / (role + '.jsonl')), str(work / (role + '.trace')),
                                 str(design), str(chart), str(outside)], 'rows': 12, 'cols': 100})
                 assert created['type'] == 'created', created

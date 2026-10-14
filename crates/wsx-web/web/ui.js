@@ -1,6 +1,6 @@
 // Notices, the confirmation dialog, and the device's light or dark choice.
-import { html, useEffect, useState } from "./lib.js";
-import { useStore } from "./store.js";
+import { html, Icon, useEffect, useState } from "./lib.js";
+import { backTarget, goBack, parseRoute, state, useStore } from "./store.js";
 
 // A theme with a dark scheme is dark unless this device chose light (docs/web-themes.md).
 const SCHEME_KEY = "wsx-scheme";
@@ -80,4 +80,19 @@ export function confirmDialog({ title, text, confirm, danger = false }) {
     document.body.append(dialog);
     dialog.showModal();
   });
+}
+
+// The back control of a screen's top row: to the screen it was opened from, else `fallback`.
+export function Back({ fallback }) {
+  const target = backTarget(fallback);
+  const route = parseRoute(target);
+  const project = state.projects.find((candidate) => candidate.id === route.id)?.name ?? "project";
+  const names = {
+    inbox: "inbox", projects: "projects", settings: "settings", project, files: `files of ${project}`,
+    session: state.sessions.find((candidate) => candidate.id === route.id)?.label ?? "session",
+  };
+  return html`
+    <a class="icon-button" href=${target} aria-label=${`Back to ${names[route.screen]}`} onClick=${goBack}>
+      <${Icon} name="back" />
+    </a>`;
 }

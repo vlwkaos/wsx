@@ -85,13 +85,15 @@ The page is a set of ES modules served as written: Preact 10.29.7 and htm 3.1.1 
 | Route | Screen |
 |---|---|
 | `#/` | Inbox: sessions by what they need. *Needs you* (blocked, error, exited agent), *Running* (with the activity line and elapsed time), *Finished* (unseen first, marked "new"), then the remaining sessions by project. A section with no session is not shown. |
-| `#/projects` | Every granted project, with *Files* and *New session* where granted |
+| `#/projects` | Every granted project with its session count, *Files* and *New session* where granted. The project's name opens it |
+| `#/p/<project>` | One project: a heading per worktree (the main checkout first) with *New session* for that worktree, and its sessions as in the inbox; a worktree with no session says so |
 | `#/s/<session>/chat`, `#/s/<session>/terminal` | One session. The top row has back, the label with the state in words, and a Chat or Terminal switch with the granted panels |
 | `#/p/<project>/files` | The files of one project |
 | `#/settings` | Appearance, notifications, this device |
 
+- Back in a top row returns to the screen the reader came from, as the browser's back does: each history entry of the page records its depth and the route before it. A screen opened from outside the page (a link or a notification) goes back to its parent: a session to the inbox, a project to the projects, files to their project. Switching Chat and Terminal replaces the history entry, so it adds no step to Back.
 - A phone shows Inbox, Projects and Settings over a bottom tab bar. A session owns the full height and has no tab bar. At 900 px and wider the inbox or the project list is a 300 px left column and the bar is gone.
-- The `workspace` event gives each session `state_since_unix_ms` and, for a working agent, `activity`. "new" is per device: the browser keeps the `state_since_unix_ms` it last saw for a session (`localStorage`) and sets it when that session's chat opens.
+- The `workspace` event gives each session its `worktree` id, `state_since_unix_ms` and, for a working agent, `activity`. "new" is per device: the browser keeps the `state_since_unix_ms` it last saw for a session (`localStorage`) and sets it when that session's chat opens.
 - When `wsxd` is unavailable the page says so, drops the session list it had, and recovers by itself.
 - Chat: one scroll container between the top row and the composer. New items do not move a reader who is more than 80 px from the end; a "Jump to latest" button appears instead. Tool and thinking items between two messages fold into one line. The working row has the activity, the elapsed time and Stop; the step that runs now is shown there only, and the list above it holds finished steps. While the agent is blocked, a row with "Open terminal" stands in place of the composer. On a wide screen the conversation, the waiting messages and the composer share one centered column of `size-prose`. Enter sends on a hardware keyboard and is a newline on a touch device; nothing is sent during IME composition. A draft, its attachments and a pending message survive a route change.
 

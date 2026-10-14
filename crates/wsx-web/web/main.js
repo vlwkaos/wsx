@@ -3,11 +3,11 @@
 // Wide (900 px and more): a left rail with the inbox or the projects, the rest beside it.
 import { api, openEvents } from "./api.js";
 import { html, render, useEffect, useState } from "./lib.js";
-import { events, shows, state, update, useRoute, useStore } from "./store.js";
+import { events, shows, state, trackHistory, update, useRoute, useStore } from "./store.js";
 import { applyScheme, Notices } from "./ui.js";
 import { Pair } from "./pair.js";
 import { Inbox } from "./inbox.js";
-import { Projects } from "./projects.js";
+import { Project, Projects } from "./projects.js";
 import { Session } from "./session.js";
 import { Files } from "./files.js";
 import { Settings } from "./settings.js";
@@ -53,6 +53,7 @@ const Tabs = ({ current, rail }) => html`
 function Screen({ route }) {
   if (route.screen === "session") return html`<${Session} key=${route.id} id=${route.id} tab=${route.tab} />`;
   if (route.screen === "files") return html`<${Files} key=${route.id} project=${route.id} />`;
+  if (route.screen === "project") return html`<${Project} key=${route.id} id=${route.id} />`;
   if (route.screen === "settings") return html`<${Settings} />`;
   if (route.screen === "projects") return html`<${Projects} />`;
   return html`<${Inbox} />`;
@@ -66,7 +67,8 @@ function App() {
   useEffect(() => {
     const titles = { inbox: "Inbox", projects: "Projects", settings: "Settings", files: "Files" };
     const session = route.screen === "session" && state.sessions.find((candidate) => candidate.id === route.id);
-    document.title = `${session ? session.label : titles[route.screen] ?? "Session"} - ${state.site.name}`;
+    const project = route.screen === "project" && state.projects.find((candidate) => candidate.id === route.id);
+    document.title = `${session ? session.label : project ? project.name : titles[route.screen] ?? "Session"} - ${state.site.name}`;
   });
   if (!wide) {
     return html`
@@ -77,7 +79,7 @@ function App() {
       </div>`;
   }
   // The rail keeps the list the main area was reached from.
-  const list = route.screen === "projects" || route.screen === "files" ? "projects" : "inbox";
+  const list = ["projects", "project", "files"].includes(route.screen) ? "projects" : "inbox";
   return html`
     <div class="app" data-wide>
       <aside class="rail">
@@ -130,4 +132,5 @@ async function boot() {
 
 applyScheme();
 followViewport();
+trackHistory();
 boot();
