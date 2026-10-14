@@ -18,6 +18,7 @@ mod terminal;
 mod theme;
 
 use anyhow::{Context, Result};
+use std::future::IntoFuture;
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
@@ -25,6 +26,9 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+
+/// How long open event streams and terminals may keep a stopping server.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 pub(crate) struct App {
     site: site::Site,
@@ -131,8 +135,11 @@ pub fn serve(named: Option<&str>) -> Result<()> {
                     tokio::task::block_in_place(|| sweeper.media.sweep());
                 }
             });
-            axum::serve(listener, http::router(app))
-                .with_graceful_shutdown(async {
+            // ^ Graceful shutdown waits for every open connection, and an event stream or a
+            // terminal never ends by itself: after the signal they get a short grace period.
+            let (stopping, mut stopped) = tokio::sync::watch::channel(false);
+            let serve =
+                axum::serve(listener, http::router(app)).with_graceful_shutdown(async move {
                     let mut terminate =
                         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
                             .expect("install SIGTERM handler");
@@ -140,8 +147,16 @@ pub fn serve(named: Option<&str>) -> Result<()> {
                         _ = tokio::signal::ctrl_c() => {}
                         _ = terminate.recv() => {}
                     }
-                })
-                .await?;
+                    let _ = stopping.send(true);
+                });
+            let grace = async move {
+                let _ = stopped.wait_for(|stopping| *stopping).await;
+                tokio::time::sleep(SHUTDOWN_GRACE).await;
+            };
+            tokio::select! {
+                result = serve.into_future() => result?,
+                _ = grace => eprintln!("wsx web: closed the open streams at shutdown"),
+            }
             Ok(())
         })
 }

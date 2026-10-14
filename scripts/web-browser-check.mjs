@@ -9,7 +9,9 @@ import path from "node:path";
 import { launch } from "./web-cdp.mjs";
 
 const [mode, siteUrl, code, ...rest] = process.argv.slice(2);
-const [emptyUrl, emptyCode, sessionsJson, captures, auditPath] = mode === "tour" ? rest : [null, null, "{}", ...rest];
+//   restart <site-url> <code> <capture-dir> <signal-dir> [slop-audit.js]   (the caller restarts the server)
+const [emptyUrl, emptyCode, sessionsJson, captures, auditPath] = mode === "tour" ? rest
+  : mode === "restart" ? [null, null, "{}", rest[0], rest[2]] : [null, null, "{}", ...rest];
 const ids = JSON.parse(sessionsJson);
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = await launch({
   captures, prefix: "", timeoutSeconds: mode === "tour" ? 420 : 100,
@@ -82,6 +84,50 @@ async function resize(next) {
   size = next;
   await viewport(...next);
   await pause(250);
+}
+
+// The page's root holds the app and nothing else: index.html's "Loading…" placeholder,
+// the pairing form and the error page are gone once the app runs.
+async function alone(label) {
+  await until("!!document.querySelector('.app')", `${label}: the app did not open`);
+  const roots = await evaluate("[...document.querySelector('#app').children].map((node) => node.tagName.toLowerCase() + '.' + node.className)");
+  if (roots.join() !== "div.app" || (await count(".pair"))) await fail(`${label}: the page root holds ${JSON.stringify(roots)}`);
+  await sound(label);
+}
+
+if (mode === "restart") {
+  const signals = rest[1];
+  await resize(SIZES[1]);
+  await pair(siteUrl, code);
+  await alone("after pairing");
+  await evaluate("navigator.serviceWorker.ready.then(() => true)");
+  await until("!!navigator.serviceWorker.controller", "the service worker does not control the page");
+  await send("Page.reload");
+  await alone("a reload of a paired page");
+  await go("#/projects");
+  await until("!!document.querySelector('.row-open')", "the projects did not open");
+  await send("Page.reload");
+  await alone("a reload on another screen");
+  await shot("reload");
+  fs.writeFileSync(path.join(signals, "request"), "restart\n");
+  for (let attempt = 0; !fs.existsSync(path.join(signals, "done")); attempt++) {
+    if (attempt > 600) await fail("the server was not restarted");
+    await pause(100);
+  }
+  await send("Page.reload");
+  await alone("a reload after a server restart");
+  await shot("reload-after-restart");
+  for (const next of [SIZES[2]]) {
+    await resize(next);
+    await send("Page.reload");
+    await alone("a wide reload after a server restart");
+  }
+  // The restart cuts the open event stream once; the page reconnects by itself.
+  const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/ERR_INCOMPLETE_CHUNKED_ENCODING \S+\/api\/events$/.test(problem));
+  if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
+  console.log("paired page reloaded with its service worker, on two screens, after a server restart and wide: the app alone in the page root");
+  await cleanup();
+  process.exit(0);
 }
 
 if (mode === "down") {
