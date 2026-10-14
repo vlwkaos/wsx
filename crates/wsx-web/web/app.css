@@ -330,6 +330,11 @@ div.steps .steps-summary { cursor: default; }
 /* The attach icon, not its touch target, starts at the column edge. */
 .composer-row > .icon-button:first-child { margin-left: calc(-1 * var(--space-3)); }
 .composer .button { height: var(--size-control); }
+/* A phone: the field has the whole first line; attach and Send share the line below it,
+   Send at the right edge. A wide window keeps one line. */
+.app:not([data-wide]) .composer-row { flex-wrap: wrap; align-items: center; }
+.app:not([data-wide]) .composer-field { order: -1; flex-basis: 100%; }
+.app:not([data-wide]) .composer .button { margin-left: auto; }
 /* A blocked agent takes its answer in the terminal: this row stands where the composer was. */
 .attention {
   min-height: calc(var(--size-control) + 2 * var(--space-2)); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
