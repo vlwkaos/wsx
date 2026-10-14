@@ -21,7 +21,7 @@ use wsx_core::{
     runtime::{
         AgentExchange, AgentExchangeAccess, AgentExchangeEvidence, AgentExchangeState,
         AgentSessionRefKind, AgentState, Client, Pane, PaneId, Project, Request, Response,
-        SessionId, Snapshot,
+        SessionId, Snapshot, WorktreeId,
     },
 };
 
@@ -96,6 +96,7 @@ pub struct Target<'a> {
     pub label: &'a str,
     pub pane: &'a Pane,
     pub worktree: &'a Path,
+    pub worktree_id: WorktreeId,
     pub branch: &'a str,
 }
 
@@ -145,6 +146,7 @@ pub fn targets<'a>(snapshot: &'a Snapshot, access: &Access) -> Vec<Target<'a>> {
                 label: &session.label,
                 pane,
                 worktree: &worktree.path,
+                worktree_id: worktree.id,
                 branch: &worktree.branch,
             })
         })
@@ -163,6 +165,7 @@ pub fn session_view(target: &Target) -> Value {
         "id": target.session_id,
         "label": target.label,
         "project": { "id": target.project.id, "name": target.project.name },
+        "worktree": target.worktree_id,
         "branch": target.branch,
         "pane_id": target.pane.id,
         "exited": target.pane.exited,

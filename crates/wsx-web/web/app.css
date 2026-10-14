@@ -81,7 +81,9 @@ p, h1, h2 { margin: 0; }
   text-align: left; text-decoration: none; background: none; border: 0; cursor: pointer;
 }
 div.row-link { cursor: default; }
-a.row-link:active, button.row-link:active, .row-link[aria-current="page"] { background: var(--color-raised); }
+a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row-link[aria-current="page"] { background: var(--color-raised); }
+/* A row whose text opens it while its actions stay buttons: the text is the link. */
+.row-open { align-self: stretch; justify-content: center; text-decoration: none; cursor: pointer; }
 /* A row with a state mark: its text, and so its hairline, starts after the mark. */
 .row:has(.mark) { --row-inset: calc(var(--space-4) + var(--space-1) * 1.5 + var(--space-3)); }
 .row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -104,6 +106,11 @@ a.row-link:active, button.row-link:active, .row-link[aria-current="page"] { back
 [data-tone="danger"]:not(.mark) { color: var(--color-danger); }
 .group-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-4) 0; }
 .group-name { font-size: var(--font-size-sm); color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* One project: a heading per worktree, its sessions under it. */
+.worktree + .worktree { margin-top: var(--space-3); }
+.worktree .group-name { font-size: var(--font-size-sm); font-weight: inherit; }
+.worktree .group-branch { font-size: var(--font-size-md); font-weight: var(--font-weight-medium); color: var(--color-text); }
+.worktree > .note { padding: var(--space-1) var(--space-4); }
 
 /* Hook: .button, .button-primary, .button-danger, .link-action, .icon-button, .input.
    One filled accent control at most is visible on a screen. */

@@ -1,8 +1,8 @@
 // Files: browse one granted project; edit text when the site allows it.
 import { api } from "./api.js";
-import { html, Icon, useEffect, useState } from "./lib.js";
+import { html, useEffect, useState } from "./lib.js";
 import { can, useStore } from "./store.js";
-import { toast } from "./ui.js";
+import { Back, toast } from "./ui.js";
 
 function Editor({ project, path, text }) {
   const [original, setOriginal] = useState(text);
@@ -76,7 +76,7 @@ export function Files({ project }) {
   return html`
     <div class="page files">
       <header class="bar">
-        <a class="icon-button" href="#/projects" aria-label="Back to projects"><${Icon} name="back" /></a>
+        <${Back} fallback=${`#/p/${project}`} />
         <nav class="crumbs" aria-label="Folder path">
           <button class="link-action" type="button" onClick=${() => open("", false)}>${name}</button>
           ${parts.map((part, index) => {

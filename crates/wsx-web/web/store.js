@@ -74,11 +74,11 @@ export function markSeen(session) {
   try { localStorage.setItem(SEEN_KEY, JSON.stringify(kept)); } catch { /* a private window shows "new" again */ }
 }
 
-// Routes: #/ (inbox), #/projects, #/settings, #/s/<id>/chat|terminal, #/p/<id>/files.
+// Routes: #/ (inbox), #/projects, #/settings, #/s/<id>/chat|terminal, #/p/<id>, #/p/<id>/files.
 export function parseRoute(hash) {
   const [, first = "", second, third] = hash.split("/");
   if (first === "s" && Number(second)) return { screen: "session", id: Number(second), tab: third === "terminal" ? "terminal" : "chat" };
-  if (first === "p" && Number(second)) return { screen: "files", id: Number(second) };
+  if (first === "p" && Number(second)) return { screen: third === "files" ? "files" : "project", id: Number(second) };
   if (first === "projects" || first === "settings") return { screen: first };
   return { screen: "inbox" };
 }
@@ -93,4 +93,41 @@ export function useRoute() {
     return () => removeEventListener("hashchange", changed);
   }, []);
   return route;
+}
+
+// ^ Back returns to the screen the reader came from. Each history entry of this page
+// records its depth and the hash before it; an entry opened from outside (a link or a
+// notification) has depth 0, so Back goes to its fallback instead of leaving the page.
+let depth = 0;
+export function trackHistory() {
+  const known = history.state?.wsx ? history.state : { wsx: true, depth: 0, from: null };
+  depth = known.depth;
+  history.replaceState(known, "");
+  addEventListener("hashchange", (event) => {
+    if (history.state?.wsx) {
+      depth = history.state.depth;
+      return;
+    }
+    depth += 1;
+    history.replaceState({ wsx: true, depth, from: new URL(event.oldURL).hash || "#/" }, "");
+  });
+}
+// The hash of this page's previous history entry, if there is one.
+const previous = () => (depth > 0 && history.state?.from) || null;
+// The screen Back leads to: the previous entry of this page, else `fallback`.
+export const backTarget = (fallback) => previous() ?? fallback;
+export function goBack(event) {
+  if (previous()) {
+    event.preventDefault();
+    history.back();
+  }
+}
+// Switch a view of the same screen (Chat or Terminal) without a new history entry,
+// so Back still leads to where the screen was opened from.
+export function replaceRoute(event, hash) {
+  event.preventDefault();
+  if (location.hash === hash) return;
+  const oldURL = location.href;
+  history.replaceState(history.state, "", hash);
+  dispatchEvent(new HashChangeEvent("hashchange", { oldURL, newURL: location.href }));
 }

@@ -1,7 +1,8 @@
 // A session owns the full height: one top row (back, label with its state in words,
 // Chat | Terminal), then the chat or the terminal.
-import { html, Icon, useEffect, useRef } from "./lib.js";
-import { can, markSeen, sessionLink, shows, stateOf, useStore } from "./store.js";
+import { html, useEffect, useRef } from "./lib.js";
+import { can, markSeen, replaceRoute, sessionLink, shows, stateOf, useStore } from "./store.js";
+import { Back } from "./ui.js";
 import { Chat } from "./chat.js";
 import { terminalView } from "./terminal.js";
 
@@ -23,7 +24,7 @@ export function Session({ id, tab }) {
   if (!session) {
     return html`
       <div class="page">
-        <header class="bar"><a class="icon-button" href="#/" aria-label="Back to inbox"><${Icon} name="back" /></a></header>
+        <header class="bar"><${Back} fallback="#/" /></header>
         <p class="empty">${!store.daemon ? "wsx is not running on the host." : store.loaded ? "This session is closed." : "Loading…"}</p>
       </div>`;
   }
@@ -31,7 +32,7 @@ export function Session({ id, tab }) {
   return html`
     <div class="page session">
       <header class="bar">
-        <a class="icon-button" href="#/" aria-label="Back to inbox"><${Icon} name="back" /></a>
+        <${Back} fallback="#/" />
         <div class="bar-title">
           <span class="bar-label">${session.label}</span>
           <span class="bar-state" data-tone=${status.tone}>${status.word}</span>
@@ -40,7 +41,8 @@ export function Session({ id, tab }) {
         ${tabs.length > 1 && html`
           <nav class="switch" aria-label="View">
             ${tabs.map((name) => html`
-              <a key=${name} href=${sessionLink(session, name)} aria-current=${active === name ? "page" : null}>
+              <a key=${name} href=${sessionLink(session, name)} aria-current=${active === name ? "page" : null}
+                onClick=${(event) => replaceRoute(event, sessionLink(session, name))}>
                 ${name === "chat" ? "Chat" : "Terminal"}</a>`)}
           </nav>`}
       </header>
