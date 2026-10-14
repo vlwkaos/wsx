@@ -423,7 +423,7 @@ export function Chat({ session }) {
           <div class="working" role="status">
             <span class="pulse" aria-hidden="true"></span>
             <span class="working-activity">${working.activity}</span>
-            <span class="time">${elapsed(now - working.since_unix_ms)}</span>
+            ${working.since_unix_ms != null && html`<span class="time">${elapsed(now - working.since_unix_ms)}</span>`}
             ${can("chat_send") && html`<button class="link-action" type="button" onClick=${() => act("cancel")}>Stop</button>`}
           </div>`}
       </div>

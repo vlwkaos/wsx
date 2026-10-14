@@ -5,11 +5,13 @@
 ### Breaking Changes
 
 - Rust callers that construct `Request::AgentExchangeCreate`, `AgentExchangeCreateStashingDraft`, `AgentExchangeContinue` or `AgentExchangeContinueStashingDraft` must provide `command` (`false` keeps the exchange line). `Capabilities` has the new `exchange_command` flag. Older JSON without the new fields decodes as before.
+- Rust callers that construct `AgentInfo` must provide `state_since_unix_ms`. Older JSON without it decodes as `None`.
 
 ### Fixed
 
 - Web: after a reload of a paired device, the "Loading…" placeholder stayed beside the app and took half of the screen. The page now removes it before the app starts.
 - `wsx web serve` did not exit on SIGTERM or SIGINT while a page held an event stream or a terminal. Open streams now get two seconds, then the server exits.
+- Web: the working time of every session counted from the start of `wsx web serve`, and a restart of the server made each finished session "new" again. wsxd (daemon revision 28) now records when an agent entered its state, and the web client shows that time.
 
 ### Changed
 

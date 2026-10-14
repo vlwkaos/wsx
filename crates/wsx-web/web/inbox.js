@@ -29,7 +29,7 @@ export function SessionRow({ session, now, current, place }) {
         </span>
         <span class="row-state" data-tone=${status.tone}>
           <span>${status.word}${fresh ? html`${" "}<span class="new">new</span>` : null}</span>
-          ${status.key === "working" && html`<span class="time">${elapsed(now - session.state_since_unix_ms)}</span>`}
+          ${status.key === "working" && session.state_since_unix_ms != null && html`<span class="time">${elapsed(now - session.state_since_unix_ms)}</span>`}
         </span>
       </a>
     </li>`;

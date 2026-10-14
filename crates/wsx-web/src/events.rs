@@ -130,14 +130,9 @@ fn observe(app: Arc<App>) {
                 .as_ref()
                 .filter(|agent| agent.attached)
                 .map_or(AgentState::Unknown, |agent| agent.state);
-            let previous = states.insert(session, state);
-            let mut history_changed = previous.is_some_and(|previous| previous != state);
-            if previous != Some(state) {
-                app.states
-                    .lock()
-                    .unwrap_or_else(|lock| lock.into_inner())
-                    .insert(session, (state, crate::devices::now_unix_ms()));
-            }
+            let mut history_changed = states
+                .insert(session, state)
+                .is_some_and(|previous| previous != state);
             // A transition is the only trigger: the first sight of a session, or a
             // server restart, never notifies.
             if history_changed && !first {
@@ -180,15 +175,12 @@ fn observe(app: Arc<App>) {
                 self::history_changed(app, session);
             }
         }
-        // The session list, with when each state began and what a working agent does.
+        // The session list, with what a working agent does.
         let sessions: Vec<Value> = targets
             .iter()
             .map(|target| {
-                let session = target.session_id.0;
                 let mut view = session_view(target);
-                let state = states.get(&session).copied().unwrap_or_default();
-                view["state_since_unix_ms"] = json!(app.state_since(session, state));
-                view["activity"] = json!(activities.get(&session));
+                view["activity"] = json!(activities.get(&target.session_id.0));
                 view
             })
             .collect();
@@ -205,10 +197,6 @@ fn observe(app: Arc<App>) {
         app.queue.retain(&alive);
         activities.retain(|session, _| alive.contains(session));
         states.retain(|session, _| targets.iter().any(|target| target.session_id.0 == *session));
-        app.states
-            .lock()
-            .unwrap_or_else(|lock| lock.into_inner())
-            .retain(|session, _| states.contains_key(session));
         watching = app.events.receiver_count() > 0
             && states
                 .values()

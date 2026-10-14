@@ -1260,8 +1260,8 @@ capabilities = ["terminal_view"]
             assert finished['items'][-1]['tool']['status'] == ('error' if broken else 'ok'), finished['items'][-1]
             assert 'tool output text' not in json.dumps(finished)
             assert finished['working']['activity'] == 'Working'
-            # One start time for the whole turn (a read just ahead of the observer may differ by a moment).
-            assert abs(finished['working']['since_unix_ms'] - running['working']['since_unix_ms']) < 1000, (finished['working'], running['working'])
+            # One start time for the whole turn.
+            assert finished['working']['since_unix_ms'] == running['working']['since_unix_ms'], (finished['working'], running['working'])
             open_gate('answer')
             answered = wait(lambda: (lambda data: data if data['items'][-1]['kind'] == 'assistant' and data['working'] is None else None)(timeline()), 'answer and done')
             assert answered['items'][-1]['text'] == 'Listed the files.' and answered['items'][-1]['tool'] is None
@@ -1278,6 +1278,10 @@ capabilities = ["terminal_view"]
 
         assert send('use tool')[0] == 200
         wait(lambda: timeline()['working'], 'working turn')
+        # wsxd says when the turn began, not this server.
+        began = timeline()['working']['since_unix_ms']
+        owner_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == sessions['owner'])
+        assert began == next(p for p in call('snapshot')['data']['panes'] if p['id'] == owner_pane)['agent']['state_since_unix_ms']
         del events.seen[:]
         status, first = send('queued one')
         assert status == 200 and first['queued']['text'] == 'queued one' and first['queued']['failed'] is None, first
@@ -1306,6 +1310,10 @@ capabilities = ["terminal_view"]
         wait(lambda: up(owner), 'restarted web server')
         events = Events(owner)
         streams.append(events)
+        # A restarted server keeps the turn's start time, in the chat and in the session list.
+        assert timeline()['working']['since_unix_ms'] == began
+        rows = events.expect('workspace')['sessions']
+        assert next(row for row in rows if row['id'] == sessions['owner'])['state_since_unix_ms'] == began, rows
         assert [item['text'] for item in timeline()['queue']] == ['queued one', 'queued two']
         open_gate('result')
         open_gate('answer')
@@ -1318,7 +1326,6 @@ capabilities = ["terminal_view"]
         wait(lambda: timeline()['working'], 'working turn')
         failing = send('held back')[1]['queued']['id']
         send('after the refusal')
-        owner_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == sessions['owner'])
         assert call('terminal_acquire', {'pane_id': owner_pane, 'client_id': 6, 'takeover': False})['type'] == 'ack'
         open_gate('result')
         open_gate('answer')
@@ -1331,7 +1338,7 @@ capabilities = ["terminal_view"]
         wait(lambda: delivered()[-2:] == ['held back', 'after the refusal'], 'retried queue delivered in order', timeout=20)
         wait(lambda: timeline()['queue'] == [] and timeline()['working'] is None, 'queue drained')
         settle('owner')
-        ok('queue: waits while the agent works, in order, limit of five, removal, survives a server restart, failed delivery keeps its reason and stops the queue until retried')
+        ok('queue: waits while the agent works, in order, limit of five, removal, survives a server restart with the turn\'s wsxd start time, failed delivery keeps its reason and stops the queue until retried')
 
         # --- Stop: the turn ends, the exchange is cancelled, and a waiting message goes next.
         assert send('use tool')[0] == 200
