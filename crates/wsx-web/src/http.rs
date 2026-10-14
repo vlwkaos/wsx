@@ -561,13 +561,32 @@ async fn session_start(
     })
 }
 
+/// `from` and `at`: the id and time of an item the page has. The answer then starts at
+/// that item when it is still there (docs/web-client.md "Timeline").
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TimelineQuery {
+    from: Option<String>,
+    at: Option<u64>,
+}
+
 async fn timeline(
     State(app): State<Shared>,
     Paired(_): Paired,
     UrlPath(session): UrlPath<u64>,
+    Query(query): Query<TimelineQuery>,
 ) -> Outcome<Json<Value>> {
     need(&app, Panel::Chat)?;
-    blocking(|| app.chat.timeline(&app, session).map(Json))
+    let from = query.from.zip(query.at);
+    blocking(|| {
+        app.chat
+            .timeline(
+                &app,
+                session,
+                from.as_ref().map(|(id, at)| (id.as_str(), *at)),
+            )
+            .map(Json)
+    })
 }
 
 async fn commands(

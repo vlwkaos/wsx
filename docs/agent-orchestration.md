@@ -108,6 +108,12 @@ These source changes require a new WSX installation and updated integrations bef
 - Without `takeover`, a cancel is refused with `terminal_busy` while a writable terminal lease exists on the pane ("Terminal control").
 - A cancelled exchange cannot be continued. The next request starts a new exchange.
 
+## Delivery failure
+
+A round that is not delivered ends in `delivery_failed` with `failure` set to `code: message`, for example `editor_stash_unconfirmed: prompt was not sent because fresh empty input was not observed` or `terminal_write_failed: …`. The next round clears it. Before daemon revision 28 the reason was not kept.
+
+`scripts/web-real-agent-check.py --scenario draft` checks a real Claude: a typed line in the editor is stashed (Claude 2.1.300 then shows `❯ Try "…"` dimmed, which counts as emptied, "Claude's empty editor"), the message is delivered, and Claude puts the line back after the turn.
+
 ## Terminal control
 
 An exchange types into the pane, so a live writable terminal lease (a wsx window or a web terminal) blocks it with `terminal_busy`. The create, continue and cancel requests take an optional `takeover` (default `false`). With `takeover`, wsxd takes the pane from that controller after every other check passes, the way `terminal_subscribe` with a takeover does. The displaced stream ends with `lease_transferred`, so a wsx window says "Terminal control moved to another wsx instance" and returns to Workspace, and a web terminal shows "Control moved to another wsx window." Neither takes the pane back by itself.

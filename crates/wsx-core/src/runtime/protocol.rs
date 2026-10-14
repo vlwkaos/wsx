@@ -733,6 +733,7 @@ mod tests {
             delivery_revision: 8,
             delivery_sha256: None,
             native_input_id: None,
+            failure: None,
             revision: 9,
         };
         let response = Response::AgentExchange {

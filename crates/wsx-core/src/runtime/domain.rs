@@ -352,6 +352,10 @@ pub struct AgentExchange {
     /// Adapter-observed native input identity accepted for this exact delivery round.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_input_id: Option<String>,
+    /// Why this round was not delivered, as `code: message`. Set with `DeliveryFailed`
+    /// and cleared by the next round (docs/agent-orchestration.md "Delivery failure").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
     pub revision: u64,
 }
 
