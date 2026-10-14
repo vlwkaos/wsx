@@ -261,7 +261,7 @@ export function terminalView(mount, current, tools) {
           if (RETRYABLE.has(message.code)) retryLater("wsx is restarting on the host. Reconnecting…");
           else {
             setState("failed");
-            say(message.message, ["Try again", () => connect()]);
+            say(message.message, ["Try again", () => connect({ takeover: canType })]);
           }
           break;
       }
@@ -460,7 +460,9 @@ export function terminalView(mount, current, tools) {
     // A phone that wakes up or regains its network reconnects at once.
     listen(window, "online", () => { if (state === "reconnecting") connect(); });
     listen(document, "visibilitychange", () => { if (!document.hidden && state === "reconnecting") connect(); });
-    connect();
+    // ^ Opening the terminal is the person's action, so it takes the pane from a wsx
+    // window. A reconnect never does, or two clients would take it back and forth.
+    connect({ takeover: canType });
   }
 
   updateSizeToggle();

@@ -417,6 +417,19 @@ if (lines.find((line) => line.type === "error")?.data.code !== "lease_transferre
 window_.destroy();
 await until(`document.querySelectorAll('.xterm-rows > div').length === ${rows}`, "taking control did not restore this screen's size");
 
+// Opening the terminal is the person's own action: it takes the pane from a wsx window.
+const holder = net.connect(daemonSocket);
+let holderText = "";
+holder.on("data", (chunk) => { holderText += chunk; });
+holder.write('{"method":"hello","params":{"protocol":16}}\n');
+holder.write(`${JSON.stringify({ method: "terminal_subscribe", params: { pane_id: Number(paneId), client_id: 4243, takeover: true, rows: 24, cols: 80 } })}\n`);
+await until(state("elsewhere"), "the page did not notice the second wsx window");
+await open(390, 844, 2);
+for (let attempt = 0; attempt < 50 && !holderText.includes('"lease_transferred"'); attempt++) await pause(100);
+if (!holderText.includes('"lease_transferred"')) await fail("opening the terminal did not take the pane from the wsx window");
+holder.destroy();
+await until(`document.querySelectorAll('.xterm-rows > div').length === ${rows}`, "opening the terminal did not restore this screen's size");
+
 // Rotated: the same view refits to the landscape viewport.
 await send("Emulation.setDeviceMetricsOverride", { width: 844, height: 390, deviceScaleFactor: 2, mobile: true });
 await until(`document.querySelectorAll('.xterm-rows > div').length < ${rows}`, "the terminal did not refit after rotating");
@@ -464,6 +477,6 @@ await capture("desktop-korean");
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 
-console.log("terminal: phone 390x844 and desktop 1280x800; edge to edge, 256 and true colour under the strict CSP, one query answer, key row bytes and repeat, drag pad, touch scroll in three modes, Korean composition, keyboard viewport, host size, reconnect with replay, control lost and taken");
+console.log("terminal: phone 390x844 and desktop 1280x800; edge to edge, 256 and true colour under the strict CSP, one query answer, key row bytes and repeat, drag pad, touch scroll in three modes, Korean composition, keyboard viewport, host size, reconnect with replay, control lost and taken back, opening takes it from a wsx window");
 await cleanup();
 process.exit(0);

@@ -37,7 +37,7 @@ wsx agent request <exact-target> '<outcome and constraints>' --stash-draft --jso
 wsx agent continue <exchange-id> '<focused follow-up>' --stash-draft --json
 ```
 
-`--stash-draft` is an explicit Claude editor policy. It requires an attached idle/done prompt-capable Claude target, visible idle editor chrome, no active writable lease, and the existing exchange/generation/claim fences. It never answers a blocked permission dialog or interrupts Working. For nonempty input it sends Claude's documented Ctrl+S once, then requires a fresh empty-editor observation within 500 ms before pasting the request and pressing Enter. An empty editor is untouched because Ctrl+S there would restore the stash. Claude's Ctrl+S can restore the prior draft later.
+`--stash-draft` is an explicit Claude editor policy. It requires an attached idle/done prompt-capable Claude target, visible idle editor chrome, no active writable lease (unless the request takes over, see "Terminal control"), and the existing exchange/generation/claim fences. It never answers a blocked permission dialog or interrupts Working. For nonempty input it sends Claude's documented Ctrl+S once, then requires a fresh empty-editor observation within 500 ms before pasting the request and pressing Enter. An empty editor is untouched because Ctrl+S there would restore the stash. Claude's Ctrl+S can restore the prior draft later.
 
 This assumes a Claude version, editor layout and keymap supporting the documented stash binding. Blank first lines do not hide multiline drafts. Ambiguous placeholder UI or a missing visible prompt is refused rather than guessed. Unsupported or unconfirmed preparation withholds the prompt; inspect the returned original exchange, not a new duplicate. Intent is persisted before editor effects. Delivery failure remains `intent_persisted`; successful delivery is still only `pty_delivery`, never acceptance or request-bound completion. Standard request/continuation semantics remain unchanged without this option.
 
@@ -105,8 +105,16 @@ These source changes require a new WSX installation and updated integrations bef
 | others | Ctrl+C | not checked |
 
 - The exchange becomes `cancelled` when the agent is seen to stop working. Claude has no interrupt hook, so the cancel asks for a new reading of Claude's screen; a state read from the screen settles the exchange like a reported state does. Before revision 24 that reading was never requested and its result never reached the exchange, so the exchange stayed in `cancel_requested`.
-- A cancel is refused with `terminal_busy` while a writable terminal lease exists on the pane.
+- Without `takeover`, a cancel is refused with `terminal_busy` while a writable terminal lease exists on the pane ("Terminal control").
 - A cancelled exchange cannot be continued. The next request starts a new exchange.
+
+## Terminal control
+
+An exchange types into the pane, so a live writable terminal lease (a wsx window or a web terminal) blocks it with `terminal_busy`. The create, continue and cancel requests take an optional `takeover` (default `false`). With `takeover`, wsxd takes the pane from that controller after every other check passes, the way `terminal_subscribe` with a takeover does. The displaced stream ends with `lease_transferred`, so a wsx window says "Terminal control moved to another wsx instance" and returns to Workspace, and a web terminal shows "Control moved to another wsx window." Neither takes the pane back by itself.
+
+- Only a person's own action sets `takeover`: the web chat's send, continue and Stop. The newest person wins the pane; nobody is told it is occupied.
+- `wsx agent request`, `continue`, `cancel`, `wsx session prompt` and `send-text` never take over. They serve automation, and an orchestrating agent must not take the pane from a person who types in it.
+- A daemon before revision 28 ignores `takeover` and still answers `terminal_busy`.
 
 ## Interrupted turn
 

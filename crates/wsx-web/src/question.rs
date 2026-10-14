@@ -183,24 +183,17 @@ impl Answer {
 /// Send one answer to a blocked agent's pane. The caller checked the grant, the
 /// capability and that the agent is blocked.
 /// ^ The lease comes first, so nobody else types between the check of the stamp and the
-/// write. Without a takeover it fails while a terminal, a wsx window or the page's own
-/// terminal panel holds the pane, like Stop.
+/// write. It takes the pane from a terminal or a wsx window that holds it: answering is
+/// the person's own action, and the displaced controller says that control moved.
 pub fn answer(client: &Client, pane: PaneId, answer: &Answer) -> Outcome<Value> {
     let keys = answer.keys()?;
     let client_id = runtime::new_client_id();
     match client.call(&Request::TerminalAcquire {
         pane_id: pane,
         client_id,
-        takeover: false,
+        takeover: true,
     }) {
         Ok(Response::Ack { .. }) => {}
-        Ok(Response::Error(error)) if error.code == "terminal_busy" => {
-            return Err(Fault::new(
-                409,
-                "terminal_busy",
-                "a terminal controls this session; answer there or close it",
-            ))
-        }
         Ok(Response::Error(error)) => {
             return Err(Fault::new(
                 409,

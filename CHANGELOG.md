@@ -4,7 +4,7 @@
 
 ### Breaking Changes
 
-- Rust callers that construct `Request::AgentExchangeCreate`, `AgentExchangeCreateStashingDraft`, `AgentExchangeContinue` or `AgentExchangeContinueStashingDraft` must provide `command` (`false` keeps the exchange line). `Capabilities` has the new `exchange_command` flag. Older JSON without the new fields decodes as before.
+- Rust callers that construct `Request::AgentExchangeCreate`, `AgentExchangeCreateStashingDraft`, `AgentExchangeContinue` or `AgentExchangeContinueStashingDraft` must provide `command` (`false` keeps the exchange line) and `takeover` (`false` keeps `terminal_busy`); `AgentExchangeCancel` must provide `takeover` too. `Capabilities` has the new `exchange_command` flag. Older JSON without the new fields decodes as before.
 - Rust callers that construct `AgentInfo` must provide `state_since_unix_ms`. Older JSON without it decodes as `None`.
 - `wsx_core::integration::memory::Timeline` has no `checkpoint` field: the newest compaction summary is an `ItemKind::Summary` item in `items`, and the web timeline API no longer sends `checkpoint`. Claude's fixed words around a summary are removed from its text, also in `wsx agent context`.
 
@@ -21,6 +21,7 @@
 - Web inbox: a session row shows its project and worktree first, then the session's label and provider, each with its own look. Finished sessions are sorted newest first, so opening one and coming back no longer moves rows. The end of the chat keeps a clear gap (64 px) above the composer.
 - Web chat: typing `/` lists the agent's commands, filtered as you type: built-ins (compact, clear or new, per provider) and, for Claude, the skills and commands of the project, the user and enabled plugins. A picked command is typed into the agent as written. wsxd (daemon revision 27) can deliver a one-line slash command of an exchange without the exchange line; the web server checks the new `exchange_command` capability first.
 - Web: a shell session (no agent) opens on the terminal and has no chat tab. The inbox lists agent sessions only; shells stay in Projects under their worktree, marked `shell`. A shell in which an agent starts becomes a chat.
+- The newest person wins a session. A web chat message, Stop or answer takes the pane from a wsx window or a web terminal that holds it, instead of failing with `terminal_busy`; opening the web terminal takes it too, and Ctrl+C on a selected session in a wsx window. The displaced window says that control moved and does not take it back by itself. A reconnect never takes over, and CLI exchanges (`wsx agent request`) still never take the pane. Needs wsxd daemon revision 28.
 - Web chat on a phone: the text field has the whole first line of the composer; attach and Send are on the line below it, Send at the right.
 - Web chat: a compacted conversation shows the start of its summary, open, where the compaction happened, with "Show full summary" for the rest. Claude's fixed preamble is not shown.
 - Web chat: tables, code blocks and Mermaid diagrams may use the width of the conversation instead of the reading column, so a wide table or diagram is no longer squeezed; prose keeps its reading width.
