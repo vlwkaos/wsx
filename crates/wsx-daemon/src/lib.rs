@@ -5140,6 +5140,7 @@ fn create_agent_exchange_with_draft(
         delivery_revision: revision,
         delivery_sha256: None,
         native_input_id: None,
+        failure: None,
         revision,
     });
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
@@ -5157,9 +5158,16 @@ fn create_agent_exchange_with_draft(
     // ^ PTY readers notify through daemon.state between reads. Keep the mutation
     // and pane-operation fences, but release state while waiting for editor ACK.
     drop(state);
-    let stashed = !stash_draft || stash_claude_draft(&runtime).is_ok();
+    let stashed = if stash_draft {
+        stash_claude_draft(&runtime)
+    } else {
+        Ok(())
+    };
     let mut state = lock(&daemon.state);
-    let delivered = stashed && deliver_agent_exchange(&runtime, &text).is_ok();
+    let delivered = stashed.and_then(|()| {
+        deliver_agent_exchange(&runtime, &text)
+            .map_err(|error| api("terminal_write_failed", error.to_string()))
+    });
     let revision = state.revision.saturating_add(1);
     let mut persisted = state.persisted.clone();
     let exchange = persisted
@@ -5168,8 +5176,11 @@ fn create_agent_exchange_with_draft(
         .find(|exchange| exchange.id == id)
         .expect("new exchange remains persisted");
     // ^ docs/agent-orchestration.md: only successful PTY delivery publishes this round's input digest.
-    exchange.delivery_sha256 = delivered.then_some(delivery_sha256);
-    exchange.state = if delivered {
+    exchange.delivery_sha256 = delivered.is_ok().then_some(delivery_sha256);
+    exchange.failure = delivered
+        .err()
+        .map(|error| format!("{}: {}", error.code, error.message));
+    exchange.state = if exchange.failure.is_none() {
         exchange.evidence = AgentExchangeEvidence::PtyDelivery;
         AgentExchangeState::Delivered
     } else {
@@ -5310,9 +5321,16 @@ fn continue_agent_exchange_with_draft(
     let delivery_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
     // ^ Match initial delivery: a fragmented PTY frame must complete its callbacks.
     drop(state);
-    let stashed = !stash_draft || stash_claude_draft(&runtime).is_ok();
+    let stashed = if stash_draft {
+        stash_claude_draft(&runtime)
+    } else {
+        Ok(())
+    };
     let mut state = lock(&daemon.state);
-    let delivered = stashed && deliver_agent_exchange(&runtime, &text).is_ok();
+    let delivered = stashed.and_then(|()| {
+        deliver_agent_exchange(&runtime, &text)
+            .map_err(|error| api("terminal_write_failed", error.to_string()))
+    });
     let revision = state.revision.saturating_add(1);
     let mut persisted = state.persisted.clone();
     let exchange = persisted
@@ -5320,8 +5338,11 @@ fn continue_agent_exchange_with_draft(
         .iter_mut()
         .find(|exchange| exchange.id == id)
         .unwrap();
-    exchange.delivery_sha256 = delivered.then_some(delivery_sha256);
-    exchange.state = if delivered {
+    exchange.delivery_sha256 = delivered.is_ok().then_some(delivery_sha256);
+    exchange.failure = delivered
+        .err()
+        .map(|error| format!("{}: {}", error.code, error.message));
+    exchange.state = if exchange.failure.is_none() {
         exchange.evidence = AgentExchangeEvidence::PtyDelivery;
         AgentExchangeState::Delivered
     } else {
@@ -11113,6 +11134,7 @@ mod tests {
             delivery_revision: 8,
             delivery_sha256: None,
             native_input_id: None,
+            failure: None,
             revision: 9,
         };
         assert!(has_writer_claim_conflict(
@@ -11175,6 +11197,7 @@ mod tests {
             delivery_revision: 8,
             delivery_sha256: None,
             native_input_id: None,
+            failure: None,
             revision: 9,
         };
 

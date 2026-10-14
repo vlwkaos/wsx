@@ -202,6 +202,7 @@ pub fn exchange_view(exchange: &AgentExchange) -> Value {
         "delivery": delivery,
         "access": exchange.access,
         "active": !exchange.is_terminal(),
+        "failure": exchange.failure,
         "updated_unix_ms": exchange.updated_unix_ms,
     })
 }
@@ -262,7 +263,11 @@ impl Chat {
 
     /// The typed timeline of the provider's saved conversation, the latest exchange
     /// for the pane, and what the agent is doing now (docs/web-client.md "Timeline").
-    pub fn timeline(&self, app: &App, session: u64) -> Outcome<Value> {
+    /// `from` is the id and time of an item the page has. When that item is still in
+    /// the timeline the answer starts there and names it in `from`: everything before
+    /// it is unchanged on the page. A record without its own id is named by position,
+    /// so the time must match too.
+    pub fn timeline(&self, app: &App, session: u64, from: Option<(&str, u64)>) -> Outcome<Value> {
         let (client, site, media) = (&app.client, &app.site, &app.media);
         let snapshot = snapshot(client)?;
         let target = target(&snapshot, &site.access, session)?;
@@ -279,9 +284,16 @@ impl Chat {
                 TIMELINE_BYTES,
             )
         });
+        let start = from.and_then(|(id, at)| {
+            timeline
+                .iter()
+                .flat_map(|timeline| &timeline.items)
+                .position(|item| item.id == id && item.at_unix_ms == Some(at))
+        });
         let items: Vec<Value> = timeline
             .iter()
             .flat_map(|timeline| &timeline.items)
+            .skip(start.unwrap_or(0))
             .map(|item| {
                 let (text, attachments) = match (&item.text, item.kind) {
                     (Some(text), ItemKind::User) => {
@@ -338,6 +350,7 @@ impl Chat {
             "status": timeline.as_ref().map_or("no_agent", |timeline| timeline.status),
             "truncated": timeline.as_ref().is_some_and(|timeline| timeline.truncated),
             "items": items,
+            "from": start.and(from).map(|(id, _)| id),
             "exchange": exchange.as_ref().map(exchange_view),
             "queue": app.queue.list(session).iter().map(|queued| queued_view(queued, media)).collect::<Vec<_>>(),
             "working": working,
@@ -527,6 +540,15 @@ impl Chat {
             &queued.text,
             &queued.attachments,
         ) {
+            // ^ wsxd answers a failed delivery with the exchange, not an error. The
+            // message must stay, failed with the reason, or it is lost without a word.
+            Ok(exchange) if exchange["state"] == "delivery_failed" => {
+                let reason = exchange["failure"]
+                    .as_str()
+                    .unwrap_or("not delivered to the agent");
+                app.queue.fail(session, queued.id, reason);
+                true
+            }
             Ok(_) => app.queue.remove(session, queued.id),
             // Not at a wait boundary yet: try again on the next change.
             Err(fault) if busy(&fault) => false,

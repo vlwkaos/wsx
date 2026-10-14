@@ -5,11 +5,14 @@
 ### Breaking Changes
 
 - Rust callers that construct `Request::AgentExchangeCreate`, `AgentExchangeCreateStashingDraft`, `AgentExchangeContinue` or `AgentExchangeContinueStashingDraft` must provide `command` (`false` keeps the exchange line) and `takeover` (`false` keeps `terminal_busy`); `AgentExchangeCancel` must provide `takeover` too. `Capabilities` has the new `exchange_command` flag. Older JSON without the new fields decodes as before.
+- Rust callers that construct `AgentExchange` must provide `failure` (`None` for a delivered round). Older JSON without it decodes as `None`.
 - Rust callers that construct `AgentInfo` must provide `state_since_unix_ms`. Older JSON without it decodes as `None`.
 - `wsx_core::integration::memory::Timeline` has no `checkpoint` field: the newest compaction summary is an `ItemKind::Summary` item in `items`, and the web timeline API no longer sends `checkpoint`. Claude's fixed words around a summary are removed from its text, also in `wsx agent context`.
 
 ### Fixed
 
+- A chat message to a Claude that showed its dimmed next-prompt suggestion, or whose typed text it had just stashed, was not delivered (`delivery_failed`), and the page did not say so. wsxd (daemon revision 28) now takes any fully dimmed editor line as empty. A failed round keeps its reason in the exchange's new `failure`; the page shows it on the sent message with Retry, and a waiting message whose delivery fails stays in the queue with that reason instead of being dropped.
+- Web chat: a file showed nothing while it uploaded, so Send could go without it. Each file now shows as "Uploading…" and Send waits. The draft, its files and a message that was not delivered are kept after a reload.
 - Web: after a reload of a paired device, the "Loading…" placeholder stayed beside the app and took half of the screen. The page now removes it before the app starts.
 - `wsx web serve` did not exit on SIGTERM or SIGINT while a page held an event stream or a terminal. Open streams now get two seconds, then the server exits.
 - Web: the working time of every session counted from the start of `wsx web serve`, and a restart of the server made each finished session "new" again. wsxd (daemon revision 28) now records when an agent entered its state, and the web client shows that time.
@@ -22,6 +25,8 @@
 - Web chat: typing `/` lists the agent's commands, filtered as you type: built-ins (compact, clear or new, per provider) and, for Claude, the skills and commands of the project, the user and enabled plugins. A picked command is typed into the agent as written. wsxd (daemon revision 27) can deliver a one-line slash command of an exchange without the exchange line; the web server checks the new `exchange_command` capability first.
 - Web: a shell session (no agent) opens on the terminal and has no chat tab. The inbox lists agent sessions only; shells stay in Projects under their worktree, marked `shell`. A shell in which an agent starts becomes a chat.
 - The newest person wins a session. A web chat message, Stop or answer takes the pane from a wsx window or a web terminal that holds it, instead of failing with `terminal_busy`; opening the web terminal takes it too, and Ctrl+C on a selected session in a wsx window. The displaced window says that control moved and does not take it back by itself. A reconnect never takes over, and CLI exchanges (`wsx agent request`) still never take the pane. Needs wsxd daemon revision 28.
+- Web chat while an agent writes: each change read the whole timeline again (about 215 KB on a long conversation). The page now reads from its last turn (`?from=&at=` on the timeline) and one read at a time; each read is about 16 KB.
+- Web chat: an image larger than 2000 px is made smaller in the browser before it is uploaded (JPEG, or PNG when smaller).
 - Web chat on a phone: the text field has the whole first line of the composer; attach and Send are on the line below it, Send at the right.
 - Web chat: a compacted conversation shows the start of its summary, open, where the compaction happened, with "Show full summary" for the rest. Claude's fixed preamble is not shown.
 - Web chat: tables, code blocks and Mermaid diagrams may use the width of the conversation instead of the reading column, so a wide table or diagram is no longer squeezed; prose keeps its reading width.

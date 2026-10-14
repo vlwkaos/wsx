@@ -16,6 +16,7 @@ from pathlib import Path
 import shutil
 import socket
 import struct
+import urllib.parse
 import subprocess
 import sys
 import threading
@@ -85,9 +86,14 @@ class Stopped(Exception): pass
 def gate(name):
  # The test opens each gate, so it can read the timeline between two records.
  # Ctrl+C while the turn waits here ends the turn, as an interrupt does in a real agent.
+ # Other keys go into the editor, as a person types the next line while Claude works.
+ global draft
  while not trace.with_suffix('.'+name).exists():
-  if select.select([0],[],[],0.02)[0] and b'\x03' in os.read(0,4096):
-   report('idle'); raise Stopped()
+  if select.select([0],[],[],0.02)[0]:
+   data = os.read(0,4096)
+   if b'\x03' in data:
+    report('idle'); raise Stopped()
+   draft += data.decode(errors='replace'); paint()
  trace.with_suffix('.'+name).unlink()
 def turn(text):
  with trace.open('a') as out: out.write(json.dumps({'received':text})+'\n')
@@ -118,6 +124,16 @@ def turn(text):
    record('assistant', [{'type':'thinking','thinking':'private','signature':'x'}] + calls)
    record('user', [{'type':'tool_result','tool_use_id':call['id'],'is_error':index == 7,'content':'ok'} for call in calls])
    record('assistant', 'Step %d covers the build, the tests and the notes.\nIt has %d checks.\n\n%s' % (index, index % 4 + 1, 'W' * 300 if index == 12 else 'Nothing unusual was found.'))
+ elif body.startswith('stream '):
+  # A turn as Claude saves it while it works: a record about every quarter second,
+  # text blocks with code, and now and then a tool call and its result.
+  for index in range(int(body.split()[1])):
+   record('assistant', 'Part %d: the parser keeps **every** field.\n\n```python\nprint(%d)\n```' % (index, index))
+   if index % 4 == 3:
+    record('assistant', [{'type':'tool_use','id':'stream-%d' % index,'name':'Read','input':{'description':'Read part %d' % index}}])
+    record('user', [{'type':'tool_result','tool_use_id':'stream-%d' % index,'content':'ok'}])
+   time.sleep(0.25)
+  record('assistant', 'The stream is done.')
  elif body.startswith('say '):
   # An answer written by the test, for the markdown and diagram checks.
   record('assistant', trace.with_name(body[4:].strip()).read_text())
@@ -1448,7 +1464,41 @@ capabilities = ["terminal_view"]
         wait(lambda: delivered()[-2:] == ['held back', 'after the refusal'], 'retried queue delivered in order', timeout=20)
         wait(lambda: timeline()['queue'] == [] and timeline()['working'] is None, 'queue drained')
         settle('owner')
-        ok('queue: waits while the agent works, in order, limit of five, removal, survives a server restart with the turn\'s wsxd start time, sent past a wsx window that is told control moved, failed delivery keeps its reason and stops the queue until retried')
+        # A delivery that fails is kept with wsxd's reason, never dropped. The person typed a
+        # line in the agent's editor while it worked; this fixture, unlike Claude, cannot stash it.
+        assert send('use tool')[0] == 200
+        wait(lambda: timeline()['working'], 'working turn')
+        stuck = send('after the typed line')[1]['queued']['id']
+
+        def type_in_pane(data):
+            assert call('terminal_acquire', {'pane_id': owner_pane, 'client_id': 6, 'takeover': False})['type'] == 'ack'
+            assert call('terminal_input', {'pane_id': owner_pane, 'client_id': 6, 'bytes': list(data)})['type'] == 'ack'
+            assert call('terminal_release', {'pane_id': owner_pane, 'client_id': 6})['type'] == 'ack'
+        type_in_pane(b'unsent line')
+        open_gate('result')
+        open_gate('answer')
+        failed = wait(lambda: (lambda queue: queue if queue and queue[0]['failed'] else None)(timeline()['queue']), 'failed delivery kept', timeout=15)
+        assert failed[0]['id'] == stuck and failed[0]['failed'].startswith('editor_stash_unconfirmed'), failed
+        assert timeline()['exchange']['failure'].startswith('editor_stash_unconfirmed'), timeline()['exchange']
+        # The person sends the line from the terminal; the retry then goes through.
+        type_in_pane(b'\r')
+        wait(lambda: delivered()[-1].startswith('unsent line'), 'the typed line sent from the terminal')
+        settle('owner')
+        assert steady(owner, 'POST', chat + '/queue/%d/retry' % stuck, {})[0] == 200
+        wait(lambda: delivered()[-1] == 'after the typed line', 'retried after the typed line', timeout=20)
+        wait(lambda: timeline()['queue'] == [] and timeline()['exchange']['failure'] is None, 'delivered without a failure')
+        settle('owner')
+        # A page asks from the start of its last turn and gets only what follows it.
+        full = timeline()
+        turn = [item for item in full['items'] if item['kind'] == 'user'][-1]
+        part = steady(owner, 'GET', chat + '/timeline?from=%s&at=%d' % (urllib.parse.quote(turn['id']), turn['at_unix_ms']))[1]
+        assert part['from'] == turn['id'] and part['items'] == full['items'][full['items'].index(turn):], part
+        assert len(json.dumps(part)) < len(json.dumps(full)) / 2, (len(json.dumps(part)), len(json.dumps(full)))
+        # An item the server no longer has, or a different record under that id: the full timeline.
+        for query in ('from=gone&at=1', 'from=%s&at=%d' % (urllib.parse.quote(turn['id']), turn['at_unix_ms'] + 1)):
+            stale = steady(owner, 'GET', chat + '/timeline?' + query)[1]
+            assert stale['from'] is None and stale['items'] == full['items'], query
+        ok('queue: waits while the agent works, in order, limit of five, removal, survives a server restart with the turn\'s wsxd start time, sent past a wsx window that is told control moved, failed delivery or a refusal keeps its reason and stops the queue until retried, partial timeline from the last turn')
 
         # --- Stop: the turn ends, the exchange is cancelled, and a waiting message goes next.
         assert send('use tool')[0] == 200
@@ -1874,6 +1924,12 @@ capabilities = ["terminal_view"]
             assert len(blocked_items['question']['options']) == 4, blocked_items
             queued = steady(m2, 'POST', '/api/chat/%d/send' % shown['working'], {'text': 'Also mention the new terminal in the notes'})
             assert 'queued' in queued[1], queued
+            # A person's unsent line waits in the done agent's editor; this fixture cannot stash it,
+            # so a message from the page is not delivered and says why.
+            done_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == shown['done'])
+            assert call('terminal_acquire', {'pane_id': done_pane, 'client_id': 6, 'takeover': False})['type'] == 'ack'
+            assert call('terminal_input', {'pane_id': done_pane, 'client_id': 6, 'bytes': list(b'unsent line')})['type'] == 'ack'
+            assert call('terminal_release', {'pane_id': done_pane, 'client_id': 6})['type'] == 'ack'
             bare = sites['bare']
             _, bare_cookie = pair(bare, 'bare')
             bare.cookie = bare_cookie.split(';')[0]
@@ -1890,6 +1946,10 @@ capabilities = ["terminal_view"]
                                      json.dumps(shown), str(page_captures), str(audit) if audit.exists() else ''],
                                     capture_output=True, text=True, timeout=440)
             assert result.returncode == 0, result.stdout + result.stderr
+            # The measurements, for the record (docs/web-client.md "Live updates").
+            for line in result.stdout.splitlines():
+                if 'processor slowed' in line or line.startswith('photo of'):
+                    print(line, file=sys.stderr)
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
             wait(lambda: steady(m2, 'GET', '/api/chat/%d/timeline' % shown['idle'])[1]['items'][-1].get('text') == 'echo: line one', 'browser turn')
             # The command picked in the browser reached the agent as typed.

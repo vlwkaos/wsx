@@ -5,13 +5,77 @@ import { bytes, elapsed, html, Icon, useCallback, useEffect, useLayoutEffect, us
 import { can, events, shows, stateOf, state, touch } from "./store.js";
 import { Markdown } from "./markdown.js";
 
-// Unsent text, attachments and the message that is not in the saved conversation
-// yet, per session. Kept outside the view so a route change does not lose them.
+// Unsent text, attachments, files that still upload and the message that is not in the
+// saved conversation yet, per session. Kept outside the view so a route change does not
+// lose them. Text, uploaded attachments and a message that was not delivered are also kept
+// on this device, so a reload or a phone that drops the page loses nothing without a word.
 const drafts = new Map();
+const DRAFTS_KEY = "wsx-drafts";
+function stored() {
+  try { return JSON.parse(localStorage.getItem(DRAFTS_KEY)) ?? {}; } catch { return {}; }
+}
 const draftFor = (id) => {
-  if (!drafts.has(id)) drafts.set(id, { text: "", attachments: [], pending: null });
+  if (!drafts.has(id)) {
+    const saved = stored()[id];
+    drafts.set(id, { text: saved?.text ?? "", attachments: saved?.attachments ?? [], uploads: [], pending: saved?.pending ?? null });
+  }
   return drafts.get(id);
 };
+function keepDraft(id) {
+  const all = stored();
+  const { text, attachments } = drafts.get(id);
+  // Only a message that was not delivered: a delivered one may never match the saved text.
+  const pending = drafts.get(id).pending?.failure != null ? drafts.get(id).pending : null;
+  if (text || attachments.length || pending) all[id] = { text, attachments, pending };
+  else delete all[id];
+  try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(all)); } catch { /* a private window keeps the draft in memory only */ }
+}
+
+// ^ Owner's rule: a photo's long edge is at most 2000 px, as JPEG, and a PNG (a screenshot)
+// stays PNG when that is smaller. Anything that fails, or is not smaller, keeps the original.
+const LONG_EDGE = 2000;
+async function shrink(file) {
+  if (!/^image\/(png|jpeg|webp|heic|heif)$/.test(file.type)) return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, LONG_EDGE / Math.max(bitmap.width, bitmap.height));
+    const encode = (type, background) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(bitmap.width * scale);
+      canvas.height = Math.round(bitmap.height * scale);
+      const context = canvas.getContext("2d");
+      // JPEG has no transparency: what was transparent becomes white, not black.
+      if (background) { context.fillStyle = background; context.fillRect(0, 0, canvas.width, canvas.height); }
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      return new Promise((done) => canvas.toBlob(done, type, 0.85));
+    };
+    const jpeg = await encode("image/jpeg", "#fff");
+    const png = file.type === "image/png" ? await encode("image/png") : null;
+    bitmap.close();
+    const best = png && (!jpeg || png.size <= jpeg.size) ? png : jpeg;
+    if (!best || best.size >= file.size) return file;
+    const stem = file.name.replace(/\.[^.]*$/, "") || "image";
+    return new File([best], `${stem}.${best.type === "image/png" ? "png" : "jpg"}`, { type: best.type });
+  } catch {
+    return file;
+  }
+}
+
+// Send one message. A delivered one waits as pending until the saved conversation shows
+// it; a failed delivery keeps wsxd's reason there, with Retry.
+async function post(id, text, attachments) {
+  const answer = await api(`api/chat/${id}/send`, {
+    method: "POST", json: { text, attachments: attachments.map((item) => item.hash) },
+  });
+  if (!answer.queued) {
+    draftFor(id).pending = { text, attachments, exchange: answer.id, round: answer.round,
+      failure: answer.state === "delivery_failed" ? answer.failure ?? "" : null };
+  }
+  return answer;
+}
+
+// The most items the server sends (crates/wsx-web/src/chat.rs TIMELINE_ITEMS).
+const TIMELINE_ITEMS = 400;
 
 const EMPTY_WORDS = {
   no_agent: "No agent runs in this session.",
@@ -179,6 +243,7 @@ function Composer({ session, working, onSent }) {
   useLayoutEffect(() => { if (listOpen) document.getElementById(`slash-${active}`)?.scrollIntoView({ block: "nearest" }); }, [active, listOpen]);
   const changed = (text) => {
     draft.text = text;
+    keepDraft(session.id);
     setActive(0);
     renew((count) => count + 1);
   };
@@ -201,17 +266,15 @@ function Composer({ session, working, onSent }) {
 
   const send = async () => {
     const body = field.current.value.trim();
-    if (busy || !ready || (!body && !draft.attachments.length)) return;
+    if (busy || !ready || draft.uploads.length || (!body && !draft.attachments.length)) return;
     setBusy(true);
     setError("");
     try {
-      const answer = await api(`api/chat/${session.id}/send`, {
-        method: "POST", json: { text: body, attachments: draft.attachments.map((item) => item.hash) },
-      });
       // A queued message shows in the queue; a delivered one waits for the saved conversation.
-      if (!answer.queued) draft.pending = { text: body, attachments: draft.attachments };
+      const answer = await post(session.id, body, draft.attachments);
       draft.text = "";
       draft.attachments = [];
+      keepDraft(session.id);
       field.current.value = "";
       grow();
       onSent(answer);
@@ -224,16 +287,22 @@ function Composer({ session, working, onSent }) {
   const upload = async (files) => {
     picker.current.value = "";
     setError("");
-    for (const item of files) {
+    // Every file shows at once as uploading, and Send waits until all are in.
+    draft.uploads.push(...files);
+    renew((count) => count + 1);
+    for (const original of files) {
+      const item = await shrink(original);
       if (item.size > state.site.max_file_bytes) {
         setError(`${item.name} is larger than ${bytes(state.site.max_file_bytes)}.`);
-        continue;
+      } else {
+        try {
+          draft.attachments.push(await api("api/media", { method: "PUT", query: { name: item.name }, body: item }));
+          keepDraft(session.id);
+        } catch (failure) {
+          setError(`${item.name}: ${failure.message}`);
+        }
       }
-      try {
-        draft.attachments.push(await api("api/media", { method: "PUT", query: { name: item.name }, body: item }));
-      } catch (failure) {
-        setError(`${item.name}: ${failure.message}`);
-      }
+      draft.uploads = draft.uploads.filter((other) => other !== original);
       renew((count) => count + 1);
     }
   };
@@ -265,13 +334,14 @@ function Composer({ session, working, onSent }) {
   };
   return html`
     <div class="composer">
-      ${draft.attachments.length ? html`
+      ${draft.attachments.length || draft.uploads.length ? html`
         <ul class="chips" aria-label="Files to send">
           ${draft.attachments.map((item) => html`
             <li key=${item.hash}><span>${item.name} (${bytes(item.size)})</span>
               <button class="link-action" type="button" aria-label=${`Remove ${item.name}`}
-                onClick=${() => { draft.attachments = draft.attachments.filter((other) => other !== item); renew((count) => count + 1); }}>Remove</button>
+                onClick=${() => { draft.attachments = draft.attachments.filter((other) => other !== item); keepDraft(session.id); renew((count) => count + 1); }}>Remove</button>
             </li>`)}
+          ${draft.uploads.map((item) => html`<li data-uploading><span>${item.name}</span><span class="note" role="status">Uploading…</span></li>`)}
         </ul>` : null}
       ${error && html`<p class="error" role="alert">${error}</p>`}
       ${listOpen && html`<${CommandList} listing=${listing} matches=${matches} active=${active} onPick=${pick} onHover=${setActive} />`}
@@ -284,7 +354,7 @@ function Composer({ session, working, onSent }) {
           disabled=${!ready} role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
           aria-controls=${listOpen ? "slash-list" : null} aria-activedescendant=${listOpen && matches.length ? `slash-${active}` : null}
           onInput=${() => { changed(field.current.value); grow(); }} onKeyDown=${keydown}></textarea>
-        <button class="button button-primary" type="button" disabled=${busy || !ready} onClick=${send}>${working ? "Queue" : "Send"}</button>
+        <button class="button button-primary" type="button" disabled=${busy || !ready || draft.uploads.length > 0} onClick=${send}>${working ? "Queue" : "Send"}</button>
       </div>
     </div>`;
 }
@@ -356,18 +426,41 @@ export function Chat({ session }) {
   const log = useRef();
   const atEnd = useRef(true);
   const generation = useRef(0);
+  // The timeline the page shows, one request at a time, and whether a change came during it.
+  const shown = useRef(null);
+  const loading = useRef(false);
+  const again = useRef(false);
   const draft = draftFor(id);
 
+  // ^ While an agent writes, a change comes several times a second. Each one used to fetch
+  // the whole timeline (about 200 KB on a long conversation). Now the page asks from the
+  // start of its last turn; the server sends the full timeline only when that item is gone.
   const load = useCallback(async () => {
-    const mine = ++generation.current;
+    if (loading.current) {
+      again.current = true;
+      return;
+    }
+    loading.current = true;
+    const mine = generation.current;
     try {
-      const next = await api(`api/chat/${id}/timeline`);
-      // A slower earlier answer must not replace a newer one.
-      if (mine !== generation.current) return;
-      setData(next);
-      setFailure("");
+      do {
+        again.current = false;
+        const known = shown.current;
+        const turn = known?.items.findLast((item) => item.kind === "user" && item.at_unix_ms != null);
+        const next = await api(`api/chat/${id}/timeline`, { query: turn ? { from: turn.id, at: turn.at_unix_ms } : undefined });
+        if (mine !== generation.current) return;
+        if (next.from != null) {
+          const kept = known.items.findIndex((item) => item.id === next.from);
+          next.items = known.items.slice(0, kept).concat(next.items).slice(-TIMELINE_ITEMS);
+        }
+        shown.current = next;
+        setData(next);
+        setFailure("");
+      } while (again.current);
     } catch (error) {
       if (mine === generation.current) setFailure(error.message);
+    } finally {
+      if (mine === generation.current) loading.current = false;
     }
   }, [id]);
   useEffect(() => {
@@ -376,7 +469,11 @@ export function Chat({ session }) {
     events.addEventListener("history", changed);
     events.addEventListener("exchange", changed);
     return () => {
+      // An answer for the session that was left is dropped, and the next one starts fresh.
       generation.current += 1;
+      shown.current = null;
+      loading.current = false;
+      again.current = false;
       events.removeEventListener("history", changed);
       events.removeEventListener("exchange", changed);
     };
@@ -409,7 +506,10 @@ export function Chat({ session }) {
   const items = data?.items ?? [];
   const lastUser = items.filter((item) => item.kind === "user").at(-1);
   // The saved conversation now holds the sent message: stop showing it as pending.
-  if (draft.pending && lastUser?.text === draft.pending.text) draft.pending = null;
+  if (draft.pending && lastUser?.text === draft.pending.text) {
+    draft.pending = null;
+    keepDraft(id);
+  }
   const working = data?.working ?? null;
   const now = useNow(Boolean(working));
   const list = blocks(items);
@@ -419,6 +519,20 @@ export function Chat({ session }) {
   // answer from the chat, a row that leads to the terminal. The draft stays for later.
   const blocked = status.key === "blocked";
   const lastUserBlock = list.findLast?.((block) => block.kind === "user");
+  const pending = draft.pending;
+  const latest = data?.exchange;
+  const notDelivered = pending && (latest?.id === pending.exchange && latest.round === pending.round
+    ? (latest.state === "delivery_failed" ? latest.failure ?? "" : null) : pending.failure);
+  const retry = async () => {
+    try {
+      await post(id, pending.text, pending.attachments);
+      keepDraft(id);
+      setFailure("");
+    } catch (error) {
+      setFailure(error.message);
+    }
+    load();
+  };
 
   return html`
     <div class="chat">
@@ -440,6 +554,9 @@ export function Chat({ session }) {
           <article class="message message-user" data-pending>
             ${draft.pending.text && html`<p class="prose">${draft.pending.text}</p>`}
             <${Attachments} files=${draft.pending.attachments} />
+            ${notDelivered != null && html`
+              <p class="error" role="alert">Not delivered to the agent${notDelivered ? `: ${notDelivered}` : ""}.</p>
+              <button class="link-action" type="button" onClick=${retry}>Retry</button>`}
           </article>`}
         ${working && html`
           <div class="working" role="status">

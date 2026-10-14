@@ -750,6 +750,103 @@ for (const next of [SIZES[1], SIZES[2]]) {
   }
 }
 
+// A turn that writes on a long conversation, on a slow phone: what the page pays for each
+// change while the agent works (docs/web-client.md "Live updates").
+await resize(SIZES[1]);
+await openSession("large");
+await until("document.querySelectorAll('.markdown .code-block').length > 100", "the large conversation did not render");
+await send("Performance.enable");
+const metric = async (name) => (await send("Performance.getMetrics")).metrics.find((item) => item.name === name).value;
+await evaluate(`(async () => {
+  const { events } = await import(new URL('assets/store.js', document.baseURI));
+  window.__events = {};
+  for (const type of ["history", "exchange", "workspace"]) events.addEventListener(type, () => { window.__events[type] = (window.__events[type] ?? 0) + 1; });
+  performance.setResourceTimingBufferSize(10000);
+  window.__streamStart = performance.now();
+  window.__longTasks = 0;
+  new PerformanceObserver((list) => { window.__longTasks += list.getEntries().length; }).observe({ type: "longtask" });
+})()`);
+await send("Emulation.setCPUThrottlingRate", { rate: 4 });
+const busyBefore = await metric("TaskDuration");
+const started = Date.now();
+await evaluate(`fetch(new URL('api/chat/${ids.large}/send', document.baseURI), { method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ text: 'stream 80' }) }).then((r) => r.status)`);
+await until("[...document.querySelectorAll('.message .markdown')].some((node) => node.textContent === 'The stream is done.')", "the streamed turn did not finish on the page", 900);
+const seconds = (Date.now() - started) / 1000;
+const busy = (await metric("TaskDuration")) - busyBefore;
+const stream = await evaluate(`(() => {
+  const during = performance.getEntriesByType('resource').filter((entry) => entry.startTime > window.__streamStart);
+  const loads = during.filter((entry) => entry.name.includes('/timeline'));
+  const events = during.filter((entry) => entry.name.includes('/api/events')).length;
+  const sum = (values) => values.reduce((total, value) => total + value, 0);
+  return { loads: loads.length, bytes: Math.round(sum(loads.map((entry) => entry.encodedBodySize)) / Math.max(1, loads.length)),
+    serverMs: Math.round(sum(loads.map((entry) => entry.responseStart - entry.requestStart)) / Math.max(1, loads.length)),
+    longTasks: window.__longTasks, events: window.__events, streams: events };
+})()`);
+await send("Emulation.setCPUThrottlingRate", { rate: 1 });
+Object.assign(stream, { seconds: Math.round(seconds), busyShare: Math.round((busy / seconds) * 100) / 100,
+  busyPerLoadMs: Math.round((busy * 1000) / Math.max(1, stream.loads)) });
+console.log(`streamed turn on a 200 KB conversation at 390 px, processor slowed 4 times: ${JSON.stringify(stream)}`);
+if (stream.bytes > 65_536) await fail(`each change still fetches the whole timeline: ${JSON.stringify(stream)}`);
+
+// A message the agent did not get says so where it was sent, with wsxd's reason, and
+// can be sent again. The done agent holds an unsent line it cannot stash.
+await openSession("done");
+await until("!!document.querySelector('.composer-field:not([disabled])')", "the done session's composer is not ready");
+await typeInto("Please check the notes");
+await evaluate("document.querySelector('.composer .button-primary').click()");
+const notDelivered = "document.querySelector('.message[data-pending] .error')?.textContent ?? ''";
+await until(`${notDelivered}.startsWith('Not delivered to the agent: editor_stash_unconfirmed')`, "a failed delivery did not say so on the sent message");
+await sound("message not delivered");
+await shot("chat-not-delivered");
+const round = () => evaluate(`fetch(new URL('api/chat/${ids.done}/timeline', document.baseURI)).then((r) => r.json()).then((data) => data.exchange.round)`);
+const before = await round();
+await evaluate("[...document.querySelectorAll('.message[data-pending] button')].find((button) => button.textContent === 'Retry').click()");
+await until(`fetch(new URL('api/chat/${ids.done}/timeline', document.baseURI)).then((r) => r.json()).then((data) => data.exchange.round === ${before + 1})`, "Retry did not send the message again");
+await until(`${notDelivered}.startsWith('Not delivered')`, "the retried message did not keep its reason");
+
+// Files: each shows at once while it uploads and Send waits; a photo larger than 2000 px
+// is made smaller before it leaves the phone; the draft is still there after a reload.
+await send("Network.emulateNetworkConditions", { offline: false, latency: 100, downloadThroughput: 1_000_000, uploadThroughput: 40_000 });
+await typeInto("kept after a reload");
+const original = await evaluate(`(async () => {
+  const canvas = Object.assign(document.createElement('canvas'), { width: 3000, height: 2000 });
+  const context = canvas.getContext('2d');
+  for (let x = 0; x < 3000; x += 50) for (let y = 0; y < 2000; y += 50) {
+    context.fillStyle = 'hsl(' + ((x * 7 + y * 13) % 360) + ' 60% 50%)';
+    context.fillRect(x, y, 50, 50);
+  }
+  const blob = await new Promise((done) => canvas.toBlob(done, 'image/png'));
+  const input = document.querySelector('.composer input[type=file]');
+  const files = new DataTransfer();
+  files.items.add(new File([blob], 'IMG_0001.png', { type: 'image/png' }));
+  input.files = files.files;
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  return blob.size;
+})()`);
+await until("!!document.querySelector('.chips [data-uploading]')", "the file did not show while it uploads");
+if (!(await evaluate("document.querySelector('.composer .button-primary').disabled"))) await fail("Send is not disabled while a file uploads");
+await shot("chat-uploading");
+await until("!document.querySelector('.chips [data-uploading]') && document.querySelectorAll('.chips li').length === 1", "the upload did not finish", 600);
+await send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+const sent = await evaluate(`(async () => {
+  const attachment = JSON.parse(localStorage.getItem('wsx-drafts'))['${ids.done}'].attachments[0];
+  const picture = await createImageBitmap(await (await fetch(new URL(attachment.url, document.baseURI))).blob());
+  return { name: attachment.name, size: attachment.size, edge: Math.max(picture.width, picture.height) };
+})()`);
+if (sent.edge !== 2000 || sent.size >= original || !/^IMG_0001\.(jpg|png)$/.test(sent.name)) await fail(`the photo was not made smaller: ${JSON.stringify({ original, ...sent })}`);
+await send("Page.reload");
+await until("!!document.querySelector('.composer-field:not([disabled])')", "the done session did not reopen after a reload");
+await until(`${notDelivered}.startsWith('Not delivered')`, "the message that was not delivered is gone after a reload");
+const kept = await evaluate("({ text: document.querySelector('.composer-field').value, files: [...document.querySelectorAll('.chips li span:first-child')].map((node) => node.textContent) })");
+if (kept.text !== "kept after a reload" || kept.files.length !== 1 || !kept.files[0].startsWith(sent.name)) await fail(`the draft was lost in a reload: ${JSON.stringify(kept)}`);
+// Leave no draft behind: removing the file and the text forgets it on this device too.
+await evaluate("document.querySelector('.chips button').click()");
+await typeInto("");
+const left = await evaluate(`(JSON.parse(localStorage.getItem('wsx-drafts')) ?? {})['${ids.done}']`);
+if (left?.text || left?.attachments.length) await fail(`an emptied draft was kept on the device: ${JSON.stringify(left)}`);
+console.log(`photo of ${original} bytes and 3000 px sent as ${sent.size} bytes and ${sent.edge} px`);
+
 // Sub-path surfaces as the browser resolved them.
 const facts = await evaluate(`(async () => {
   const registration = await navigator.serviceWorker.ready;

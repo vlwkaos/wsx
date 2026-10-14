@@ -8,6 +8,9 @@ on the person's own account. It checks what the fixture agents cannot.
   --scenario answers: a blocked agent answered from the chat. A permission dialog is
     approved by its number and another is denied with Escape, a question tool is
     answered by number, and a stale stamp is refused. Three model turns.
+  --scenario draft: after a turn Claude suggests the next prompt, dimmed, in its empty
+    editor; then a person's unsent line waits there. A chat message is delivered both times,
+    and the line is put back, not sent. Three model turns.
 The agent runs with the person's HOME (its login and its wsx hooks); wsxd, the web
 server and the project are private to this run. The live daemon is never contacted.
 """
@@ -34,7 +37,7 @@ def main():
     parser.add_argument('--daemon', type=Path, default=ROOT / 'target/debug/wsxd')
     parser.add_argument('--agent', nargs='+', default=['claude', '--model', 'haiku'],
                         help='the agent command line: claude or pi, with its wsx integration installed')
-    parser.add_argument('--scenario', choices=['turn', 'answers'], default='turn')
+    parser.add_argument('--scenario', choices=['turn', 'answers', 'draft'], default='turn')
     args = parser.parse_args()
     if args.scenario == 'answers' and Path(args.agent[0]).name == 'claude' and '--permission-mode' not in args.agent:
         # The scenario needs the dialogs: no mode that answers them by itself.
@@ -154,6 +157,66 @@ capabilities = ["chat_send", "chat_answer", "agent_write", "terminal_view", "ter
 
         def timeline():
             return site.request('GET', chat + '/timeline')[1]
+
+        if args.scenario == 'draft':
+            assert claude, 'the draft scenario needs Claude'
+
+            def editor():
+                """The lowest editor row: its text after the prompt mark, and whether all of it is dim."""
+                frames = call('view', {'pane_ids': [pane]})['data']['frames']
+                cols = frames[0]['cols']
+                rows = [frames[0]['cells'][index:index + cols] for index in range(0, len(frames[0]['cells']), cols)]
+                for row in reversed(rows):
+                    text = ''.join(cell[0] for cell in row).strip()
+                    if text.startswith('❯'):
+                        typed = [cell for cell in row if cell[0].strip() and cell[0] != '❯']
+                        return text[1:].strip(), bool(typed) and all(cell[3] & 16 for cell in typed)
+                return None, False
+
+            def reply(word):
+                return wait(lambda: (lambda data: data if agent_state() in ('idle', 'done') and any(
+                    item['kind'] == 'assistant' and word in (item['text'] or '').lower() for item in data['items']) else None)(timeline()),
+                    'the reply ' + word, timeout=120)
+
+            # 1. The owner's case: after a turn Claude suggests the next prompt, dimmed, in the
+            # empty editor. A chat message must still be delivered.
+            # Claude suggests only into a focused terminal: report focus as a terminal does.
+            type_keys(pane, b'\x1b[I')
+            # A turn with an obvious next step, so Claude has something to suggest.
+            assert site.request('POST', chat + '/send', {'text': 'Write a file todo.txt that lists three small tasks for this '
+                                'project, one per line. Do not do the tasks. When the file is written, reply with only the word: ping.'})[0] == 200
+            reply('ping')
+            # ^ Claude decides itself whether to show one: on 2026-10-15 it generated a suggestion
+            # in this isolated pane but did not draw it. Then this step is reported, not passed.
+            try:
+                suggestion = wait(lambda: (lambda line: line if line[0] and line[1] else None)(editor()),
+                                  'a dimmed prompt suggestion after the turn', timeout=60)
+            except AssertionError:
+                suggestion = None
+            facts['suggestion'] = suggestion and suggestion[0]
+            if suggestion:
+                status, sent = site.request('POST', chat + '/send', {'text': 'Reply with only the word: pong.'})
+                facts['send_over_suggestion'] = {'status': status, 'state': sent.get('state'), 'failure': sent.get('failure')}
+                assert status == 200 and sent['state'] != 'delivery_failed', sent
+                reply('pong')
+            # 2. A line the person typed and never sent: it is stashed, not sent with the message.
+            draft = 'commit the scout skill in dotfiles'
+            type_keys(pane, draft.encode())
+            wait(lambda: draft in screen(pane), 'the typed line in the editor', timeout=10)
+            status, sent = site.request('POST', chat + '/send', {'text': 'Reply with only the word: heron.'})
+            facts['send'] = {'status': status, 'state': sent.get('state'), 'failure': sent.get('failure')}
+            facts['screen_after_send'] = [line.rstrip() for line in [screen(pane)[i:i + 120] for i in range(0, 4800, 120)] if line.strip()][-6:]
+            assert status == 200 and sent['state'] != 'delivery_failed', sent
+            final = wait(lambda: (lambda data: data if agent_state() in ('idle', 'done') and any(
+                item['kind'] == 'assistant' and 'heron' in (item['text'] or '').lower() for item in data['items']) else None)(timeline()),
+                'the reply to the chat message', timeout=120)
+            facts['exchange'] = final['exchange']['state']
+            assert draft not in ''.join(item['text'] or '' for item in final['items']), 'the unsent line was sent with the message'
+            # Claude keeps the stashed line and puts it back in the editor after the turn.
+            facts['draft_restored'] = bool(wait(lambda: draft in screen(pane), 'the line back in the editor', timeout=20))
+            success = True
+            print(json.dumps({'result': 'PASS', 'scenario': 'draft', 'model_calls': 3, **facts}, indent=1))
+            return
 
         if args.scenario == 'answers':
             def question():

@@ -86,8 +86,8 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
     return result.value;
   }
   // Poll the page from here; the page itself has no timers to wait on.
-  async function until(expression, label) {
-    for (let attempt = 0; attempt < 100; attempt++) {
+  async function until(expression, label, attempts = 100) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
       if (await evaluate(expression).catch(() => false)) return;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
