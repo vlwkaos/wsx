@@ -445,9 +445,7 @@ fn prepare_recovery_attempts(
         // It remains detached until the replacement runtime reports its own generation.
         if launch.resume_key.is_some() {
             if let Some(agent) = pane.agent.as_mut() {
-                agent.attached = false;
-                agent.state = AgentState::Unknown;
-                agent.presence_id = None;
+                detach_agent(agent);
             }
         } else {
             pane.agent = None;
@@ -1493,9 +1491,7 @@ fn expire_agent_presence(daemon: &Daemon, now: Instant) {
         else {
             continue;
         };
-        agent.attached = false;
-        agent.state = AgentState::Unknown;
-        agent.presence_id = None;
+        detach_agent(agent);
         pane.revision = revision;
         observe_agent_exchange(
             &mut state.persisted,
@@ -3907,9 +3903,7 @@ fn restart_session(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Re
         // ^ A saved identity only authorizes a resume plan; the replacement runtime must report its own generation.
         let agent = if launch.resume_key.is_some() {
             agent.map(|mut agent| {
-                agent.attached = false;
-                agent.state = AgentState::Unknown;
-                agent.presence_id = None;
+                detach_agent(&mut agent);
                 agent
             })
         } else {
@@ -4397,11 +4391,18 @@ fn agent_report_with_attachment(
     } else {
         AgentState::Unknown
     };
+    // A report of the state the agent is already in keeps when that state began.
+    let state_since_unix_ms = previous_agent
+        .as_ref()
+        .filter(|previous| previous.id == agent_id && previous.state == reported_state)
+        .and_then(|previous| previous.state_since_unix_ms)
+        .unwrap_or_else(unix_time_millis);
     let revision = state.revision.saturating_add(1);
     persisted.panes[pane_index].agent = Some(AgentInfo {
         id: agent_id,
         provider,
         state: reported_state,
+        state_since_unix_ms: Some(state_since_unix_ms),
         attached,
         presence_id: presence_id.clone(),
         conversation_id,
@@ -5711,6 +5712,21 @@ fn expect_runtime_generation(
     }
 }
 
+/// Ends an agent's attachment: its runtime is gone or has not yet confirmed itself.
+fn detach_agent(agent: &mut AgentInfo) {
+    agent.attached = false;
+    set_agent_state(agent, AgentState::Unknown);
+    agent.presence_id = None;
+}
+
+/// Sets an agent's state; a changed state records when it began.
+fn set_agent_state(agent: &mut AgentInfo, state: AgentState) {
+    if agent.state != state || agent.state_since_unix_ms.is_none() {
+        agent.state = state;
+        agent.state_since_unix_ms = Some(unix_time_millis());
+    }
+}
+
 fn unix_time_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -5897,9 +5913,7 @@ fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
     let revision = state.revision;
     pane.exited = true;
     if let Some(agent) = pane.agent.as_mut() {
-        agent.attached = false;
-        agent.state = AgentState::Unknown;
-        agent.presence_id = None;
+        detach_agent(agent);
     }
     pane.revision = revision;
     terminate_agent_exchanges(
@@ -5992,11 +6006,13 @@ fn apply_claude_terminal_observation(
 
     let revision = state.revision.saturating_add(1);
     let mut persisted = state.persisted.clone();
-    persisted.panes[pane_index]
-        .agent
-        .as_mut()
-        .expect("validated Claude agent must remain present")
-        .state = effective;
+    set_agent_state(
+        persisted.panes[pane_index]
+            .agent
+            .as_mut()
+            .expect("validated Claude agent must remain present"),
+        effective,
+    );
     persisted.panes[pane_index].revision = revision;
     if effective == AgentState::Working {
         let project_index = project_index_for_pane(&persisted, pane_id)?;
@@ -8856,6 +8872,7 @@ mod tests {
                 id: AgentInstanceId(6),
                 provider: "claude".into(),
                 state: AgentState::Working,
+                state_since_unix_ms: None,
                 attached: true,
                 presence_id: None,
                 conversation_id: Some("/absolute/retained-conversation".into()),

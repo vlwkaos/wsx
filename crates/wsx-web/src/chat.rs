@@ -169,6 +169,8 @@ pub fn session_view(target: &Target) -> Value {
         "branch": target.branch,
         "pane_id": target.pane.id,
         "exited": target.pane.exited,
+        // ^ wsxd's time, so a restart of this server does not reset it (null before revision 28).
+        "state_since_unix_ms": target.pane.agent.as_ref().and_then(|agent| agent.state_since_unix_ms),
         "agent": target.pane.agent.as_ref().map(|agent| json!({
             "provider": agent.provider,
             "state": agent.state,
@@ -308,10 +310,10 @@ impl Chat {
             .agent
             .as_ref()
             .filter(|agent| agent.attached && agent.state == AgentState::Working)
-            .map(|_| {
+            .map(|agent| {
                 let activity = activity_of(timeline.iter().flat_map(|timeline| &timeline.items));
                 json!({
-                    "since_unix_ms": app.state_since(session, AgentState::Working),
+                    "since_unix_ms": agent.state_since_unix_ms,
                     "activity": activity,
                 })
             });

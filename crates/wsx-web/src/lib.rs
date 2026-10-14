@@ -47,26 +47,9 @@ pub(crate) struct App {
     /// Latest workspace event, replayed first on every new stream.
     workspace: Mutex<Option<events::Message>>,
     streams: Mutex<HashMap<String, usize>>,
-    /// Per session: the agent state the observer last saw and when it began (Unix ms).
-    states: Mutex<HashMap<u64, (wsx_core::runtime::AgentState, u64)>>,
 }
 
 impl App {
-    /// When the session's agent entered `state`, as the observer saw it. Only the
-    /// observer records states, in snapshot order; a request that is ahead of it
-    /// by a moment gets the present time.
-    fn state_since(&self, session: u64, state: wsx_core::runtime::AgentState) -> u64 {
-        match self
-            .states
-            .lock()
-            .unwrap_or_else(|lock| lock.into_inner())
-            .get(&session)
-        {
-            Some((seen, since)) if *seen == state => *since,
-            _ => devices::now_unix_ms(),
-        }
-    }
-
     /// The pinned root of a granted project. The caller checked the grant.
     fn root(&self, project: &Path) -> std::io::Result<Arc<sandbox::Root>> {
         let path = std::fs::canonicalize(project)?;
@@ -101,7 +84,6 @@ pub fn serve(named: Option<&str>) -> Result<()> {
         events: tokio::sync::broadcast::channel(256).0,
         workspace: Mutex::new(None),
         streams: Mutex::new(HashMap::new()),
-        states: Mutex::new(HashMap::new()),
         site,
     });
     tokio::runtime::Builder::new_multi_thread()

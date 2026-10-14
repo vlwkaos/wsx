@@ -37,7 +37,8 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // and ends an exchange as interrupted when its agent is idle again after it was seen at work.
 // Revision 27 types a one-line slash command of an exchange as written, without the
 // exchange line (`command`, capability `exchange_command`).
-pub const DAEMON_REVISION: u32 = 27;
+// Revision 28 publishes when an agent entered its state (`AgentInfo::state_since_unix_ms`).
+pub const DAEMON_REVISION: u32 = 28;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 

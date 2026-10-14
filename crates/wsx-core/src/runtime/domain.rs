@@ -238,6 +238,9 @@ pub struct AgentInfo {
     pub id: AgentInstanceId,
     pub provider: String,
     pub state: AgentState,
+    /// When `state` began, as wsxd saw it (Unix ms). Daemons before revision 28 omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_since_unix_ms: Option<u64>,
     #[serde(default = "default_attached")]
     pub attached: bool,
     /// Opt-in resident adapter identity; absent for event-only integrations.
