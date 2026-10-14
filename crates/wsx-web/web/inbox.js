@@ -4,21 +4,27 @@ import { api } from "./api.js";
 import { elapsed, html, useNow, useState } from "./lib.js";
 import { can, isNew, sessionLink, shows, stateOf, useStore } from "./store.js";
 
-// One session. Left: a state mark. Middle: label over "project · branch · provider",
-// and for a working session what it does. Right: the state word and, while working, the time.
-// In a worktree's list (`place` "worktree") the heading names the project and worktree.
+// One session. Left: a state mark. Middle: the work first, project › worktree, then the
+// session and its provider, and for a working session what it does. Right: the state
+// word and, while working, the time. Each level has one look (docs/web-client.md "Screens").
+// `place` drops what a heading above already names: "project" (the inbox's project
+// groups) or "worktree" (a project's worktree list).
 export function SessionRow({ session, now, current, place }) {
   const status = stateOf(session);
   const fresh = status.group === "finished" && isNew(session);
-  const context = [place !== "worktree" && session.project.name, place !== "worktree" && session.branch, session.agent?.provider]
-    .filter(Boolean).join(" · ");
+  const branch = session.branch || "detached";
+  let identity;
+  if (place === "worktree") identity = html`<span class="row-session-name">${session.label}</span>`;
+  else if (place === "project") identity = html`<span class="row-worktree">${branch}</span>`;
+  else identity = html`<span class="row-project">${session.project.name}</span><span class="row-sep" aria-hidden="true">›</span><span class="row-worktree">${branch}</span>`;
+  const context = [place !== "worktree" && session.label, session.agent?.provider].filter(Boolean).join(" · ");
   return html`
     <li class="row">
       <a class="row-link" href=${sessionLink(session)} aria-current=${current ? "page" : null}>
         <span class="mark" data-tone=${status.tone} aria-hidden="true"></span>
         <span class="row-main">
-          <span class="row-label">${session.label}</span>
-          <span class="row-context">${context}</span>
+          <span class="row-work">${identity}</span>
+          ${context && html`<span class="row-context">${context}</span>`}
           ${status.key === "working" && session.activity && html`<span class="row-activity">${session.activity}</span>`}
         </span>
         <span class="row-state" data-tone=${status.tone}>
@@ -58,10 +64,12 @@ export function Inbox({ rail }) {
   const sessions = store.sessions;
   const now = useNow(sessions.some((session) => stateOf(session).key === "working"));
   const currentId = Number(location.hash.split("/")[2]) || null;
-  const row = (session) => html`<${SessionRow} key=${session.id} session=${session} now=${now} current=${rail && session.id === currentId} />`;
+  const row = (session, place) => html`<${SessionRow} key=${session.id} session=${session} now=${now} current=${rail && session.id === currentId} place=${place} />`;
   const grouped = (group) => sessions.filter((session) => stateOf(session).group === group);
-  // Unseen finished sessions come first.
-  const finished = grouped("finished").sort((left, right) => Number(isNew(right)) - Number(isNew(left)));
+  // ^ The newest finish first, by when the session reached its state. Seeing a session
+  // never changes that time, so opening one and coming back moves no row.
+  const finished = grouped("finished").sort((left, right) =>
+    right.state_since_unix_ms - left.state_since_unix_ms || left.id - right.id);
   const rest = grouped("rest");
   const projects = store.projects.filter((project) => rest.some((session) => session.project.id === project.id));
   let body;
@@ -82,7 +90,7 @@ export function Inbox({ rail }) {
         return list.length ? html`
           <section key=${group} aria-label=${title}>
             <h2 class="label">${title}</h2>
-            <ul class="rows">${list.map(row)}</ul>
+            <ul class="rows">${list.map((session) => row(session))}</ul>
           </section>` : null;
       })}
       ${projects.length ? html`
@@ -91,7 +99,7 @@ export function Inbox({ rail }) {
           ${projects.map((project) => html`
             <div class="group" key=${project.id}>
               <div class="group-head"><span class="group-name">${project.name}</span><${NewSession} project=${project} /></div>
-              <ul class="rows">${rest.filter((session) => session.project.id === project.id).map(row)}</ul>
+              <ul class="rows">${rest.filter((session) => session.project.id === project.id).map((session) => row(session, "project"))}</ul>
             </div>`)}
         </section>` : null}`;
   }
