@@ -3,7 +3,7 @@
 // Wide (900 px and more): a left rail with the inbox or the projects, the rest beside it.
 import { api, openEvents } from "./api.js";
 import { html, render, useEffect, useState } from "./lib.js";
-import { events, shows, state, trackHistory, update, useRoute, useStore } from "./store.js";
+import { events, noteBuild, shows, state, trackHistory, update, useRoute, useStore } from "./store.js";
 import { applyScheme, Notices } from "./ui.js";
 import { Pair } from "./pair.js";
 import { Inbox } from "./inbox.js";
@@ -98,9 +98,13 @@ function App() {
 }
 
 function start(session) {
-  update({ site: session.site, device: session.device });
+  update({ site: session.site, device: session.device, build: session.build });
+  noteBuild(session.build?.id);
   openEvents({
-    workspace: (data) => update({ projects: data.projects, sessions: data.sessions, loaded: true, daemon: true }),
+    workspace: (data) => {
+      update({ projects: data.projects, sessions: data.sessions, loaded: true, daemon: true });
+      noteBuild(data.build);
+    },
     history: (data) => events.dispatchEvent(new CustomEvent("history", { detail: data })),
     exchange: (data) => events.dispatchEvent(new CustomEvent("exchange", { detail: data })),
     daemon: (data) => update(data.available ? { daemon: true } : { daemon: false, sessions: [], projects: [], loaded: true }),

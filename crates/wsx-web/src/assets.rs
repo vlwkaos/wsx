@@ -138,7 +138,14 @@ pub struct Assets {
     pub index: String,
     pub manifest: String,
     pub service_worker: String,
+    /// The digest of every shell byte. Module URLs carry it (`assets/<build>/main.js`), so
+    /// no cache serves an old module beside a new one, and a page compares it with the
+    /// server's to offer a reload (docs/web-client.md "Build").
+    pub build: String,
 }
+
+/// The git commit the binary was built from, when it was built from git (build.rs).
+pub const COMMIT: Option<&str> = option_env!("WSX_BUILD_COMMIT");
 
 fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
@@ -175,6 +182,18 @@ impl Assets {
             ],
         })
         .to_string();
+        // The cache name and the module path change whenever any shell byte changes, so
+        // an old cache is dropped. Theme files are named by their content hash, so the
+        // index covers them. The index is digested before the build is written into it.
+        let mut digest = Sha256::new();
+        for part in [&index, &manifest] {
+            digest.update(part.as_bytes());
+        }
+        for (_, _, body) in FILES {
+            digest.update(body.as_bytes());
+        }
+        let build = hex(&digest.finalize()[..6]);
+        let index = index.replace("__WSX_BUILD__", &build);
         // Offline shell: the page, the manifest, the scripts, and every theme file
         // except the large icon.
         let mut shell = vec!["./".to_owned(), "manifest.webmanifest".to_owned()];
@@ -185,29 +204,24 @@ impl Assets {
                 .filter(|file| file.name != theme.icon_512)
                 .map(|file| format!("theme/{}", file.name)),
         );
-        shell.extend(FILES.iter().map(|(name, _, _)| format!("assets/{name}")));
-        // The cache name changes whenever any shell byte changes, so an old cache is dropped.
-        // Theme files are named by their content hash, so the index covers them.
-        let mut digest = Sha256::new();
-        for part in [&index, &manifest] {
-            digest.update(part.as_bytes());
-        }
-        for (_, _, body) in FILES {
-            digest.update(body.as_bytes());
-        }
-        let version = hex(&digest.finalize()[..6]);
+        shell.extend(
+            FILES
+                .iter()
+                .map(|(name, _, _)| format!("assets/{build}/{name}")),
+        );
         let service_worker = include_str!("../web/sw.js")
-            .replace("__WSX_CACHE__", &format!("wsx-{}-{version}", site.id))
+            .replace("__WSX_CACHE__", &format!("wsx-{}-{build}", site.id))
             .replace("__WSX_SHELL__", &json!(shell).to_string())
             .replace(
                 "__WSX_LAZY__",
-                &json!([format!("assets/{MERMAID}")]).to_string(),
+                &json!([format!("assets/{build}/{MERMAID}")]).to_string(),
             )
             .replace("__WSX_ICON__", &format!("theme/{}", theme.icon_192));
         Self {
             index,
             manifest,
             service_worker,
+            build,
         }
     }
 }

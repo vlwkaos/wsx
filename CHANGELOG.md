@@ -28,6 +28,7 @@
 - Web chat while an agent writes: each change read the whole timeline again (about 215 KB on a long conversation). The page now reads from its last turn (`?from=&at=` on the timeline) and one read at a time; each read is about 16 KB.
 - Web chat: an image larger than 2000 px is made smaller in the browser before it is uploaded (JPEG, or PNG when smaller).
 - Web terminal on a phone: Enter is at the right edge of the second row, with `^J` (a new line) left of it, instead of at the end of the scrolling key row. Neither repeats when held.
+- Web: Settings shows the wsx version, the commit it was built from, the page files' build id and when the server started. When the server runs another build, the page offers "A new version of this page is ready" with Reload and never reloads by itself. Modules load from `assets/<build>/`, so no cache serves an old module beside a new one.
 - Web chat on a phone: the text field has the whole first line of the composer; attach and Send are on the line below it, Send at the right.
 - Web chat: a compacted conversation shows the start of its summary, open, where the compaction happened, with "Show full summary" for the rest. Claude's fixed preamble is not shown.
 - Web chat: tables, code blocks and Mermaid diagrams may use the width of the conversation instead of the reading column, so a wide table or diagram is no longer squeezed; prose keeps its reading width.

@@ -49,11 +49,13 @@ let library;
 // xterm.js is loaded only when a terminal opens; a chat-only visit never fetches it.
 function loadLibrary() {
   library ??= new Promise((done, failed) => {
-    add(document.head, h("link", { rel: "stylesheet", href: resolve("assets/xterm.css") }));
-    add(document.head, h("link", { rel: "stylesheet", href: resolve("assets/terminal-fonts.css") }));
+    // From this module's own build path (docs/web-client.md "Build").
+    const asset = (name) => new URL(name, import.meta.url).href;
+    add(document.head, h("link", { rel: "stylesheet", href: asset("xterm.css") }));
+    add(document.head, h("link", { rel: "stylesheet", href: asset("terminal-fonts.css") }));
     const next = ([name, ...rest]) => {
       if (!name) return done();
-      const script = h("script", { src: resolve(`assets/${name}`) });
+      const script = h("script", { src: asset(name) });
       script.onload = () => next(rest);
       script.onerror = () => { library = undefined; failed(new Error("Cannot load the terminal. Check the connection.")); };
       add(document.head, script);

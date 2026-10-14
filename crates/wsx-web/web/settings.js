@@ -1,7 +1,7 @@
 // Settings: this device's appearance, its notification consent and its pairing.
 import { api } from "./api.js";
 import { html, useEffect, useState } from "./lib.js";
-import { can, state } from "./store.js";
+import { can, pageBuild, reloadForBuild, state } from "./store.js";
 import { confirmDialog, hasDarkScheme, scheme, setScheme } from "./ui.js";
 
 const TOPICS = [
@@ -98,6 +98,21 @@ export function Settings() {
             </div>
           </section>`}
         ${can("push") && html`<${Push} />`}
+        ${state.build && html`
+          <section aria-label="Version">
+            <h2 class="label">Version</h2>
+            <dl class="facts">
+              <dt>wsx</dt><dd>${state.build.version}</dd>
+              <dt>Build</dt><dd><code>${state.build.commit ?? state.build.id}</code></dd>
+              ${state.build.commit && html`<dt>Page files</dt><dd><code>${state.build.id}</code></dd>`}
+              <dt>Server started</dt><dd>${new Date(state.build.started_unix * 1000).toLocaleString()}</dd>
+            </dl>
+            ${state.build.id !== pageBuild && html`
+              <div class="actions">
+                <span class="muted">This page is still the older version <code>${pageBuild}</code>.</span>
+                <button class="button" type="button" onClick=${reloadForBuild}>Reload</button>
+              </div>`}
+          </section>`}
         <section aria-label="This device">
           <h2 class="label">This device</h2>
           <p class="muted device">Paired as "${state.device.name}" (device ${state.device.id}).</p>
