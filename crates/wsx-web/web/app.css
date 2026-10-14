@@ -387,11 +387,15 @@ div.steps .steps-summary { cursor: default; }
 }
 .file-body .actions { border-top: var(--border-width) solid var(--color-hairline); }
 
-/* Hook: .options, .pair-form, .sheet, .notice — settings, pairing, dialog, notices. */
+/* Hook: .options, .facts, .pair-form, .sheet, .notice — settings, pairing, dialog, notices. */
 .options { display: flex; flex-direction: column; }
 .option { min-height: var(--size-control); padding: 0 var(--space-4); display: flex; align-items: center; gap: var(--space-3); }
 .option input { accent-color: var(--color-accent); }
 .device { padding: 0 var(--space-4); font-size: var(--font-size-sm); }
+/* Version facts: the label left, the value beside it. */
+.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-4); margin: 0; padding: 0 var(--space-4); font-size: var(--font-size-sm); }
+.facts dt { color: var(--color-muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
 .pair { justify-content: center; padding: var(--space-4); }
 .pair-form { width: 100%; max-width: calc(var(--size-rail) * 1.2); margin: 0 auto; display: flex; flex-direction: column; gap: var(--space-4); }
 .pair-form .title { padding: 0; }
@@ -408,6 +412,7 @@ div.steps .steps-summary { cursor: default; }
 .sheet-actions { justify-content: flex-end; padding: var(--space-4) 0 0; }
 .notices { flex: 0 0 auto; }
 .notice { padding: var(--space-2) var(--space-4); font-size: var(--font-size-sm); background: var(--color-surface); border-bottom: var(--border-width) solid var(--color-hairline); }
+.notice-build { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 
 /* Hook: .terminal, .terminal-notice, .terminal-key, .terminal-pad — the live terminal.
    It fills the session below the top row, edge to edge, and is dark in either scheme

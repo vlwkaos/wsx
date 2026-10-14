@@ -184,9 +184,11 @@ fn observe(app: Arc<App>) {
                 view
             })
             .collect();
+        // The build lets a page of an older build offer a reload (docs/web-client.md "Build").
         let view = json!({
             "projects": chat::projects_view(&snapshot, &app.site.access),
             "sessions": sessions,
+            "build": app.assets.build,
         });
         let text = view.to_string();
         if text != workspace {

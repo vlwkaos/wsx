@@ -55,6 +55,7 @@ pub fn router(app: Shared) -> Router {
             .route("/sw.js", get(service_worker))
             .route("/theme/{file}", get(theme_file))
             .route("/assets/{name}", get(asset))
+            .route("/assets/{build}/{name}", get(built_asset))
             .route("/media/{file}", get(media_get))
             .route("/api/pair", post(pair))
             .route("/api/session", get(session))
@@ -287,6 +288,7 @@ async fn theme_file(State(app): State<Shared>, UrlPath(file): UrlPath<String>) -
         None => Fault::not_found().into_response(),
     }
 }
+/// `assets/<name>`: what a page of a build before the build path asks for.
 async fn asset(UrlPath(name): UrlPath<String>, headers: HeaderMap) -> Response {
     let Some(asset) = assets::find(&name) else {
         return Fault::not_found().into_response();
@@ -294,6 +296,27 @@ async fn asset(UrlPath(name): UrlPath<String>, headers: HeaderMap) -> Response {
     if !asset.pinned {
         return typed(asset.content_type, asset.body);
     }
+    immutable(asset, &headers)
+}
+
+/// `assets/<build>/<name>`: the files of this build, which never change under that path,
+/// and the pinned files under any build. An open page of an older build gets 404 for a
+/// module it loads late: its "New version" control reloads it (docs/web-client.md "Build").
+async fn built_asset(
+    State(app): State<Shared>,
+    UrlPath((build, name)): UrlPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    match assets::find(&name) {
+        Some(asset) if asset.pinned || build == app.assets.build => immutable(asset, &headers),
+        Some(_) => {
+            Fault::new(404, "old_build", "this page is an older version; reload it").into_response()
+        }
+        None => Fault::not_found().into_response(),
+    }
+}
+
+fn immutable(asset: assets::Asset, headers: &HeaderMap) -> Response {
     let mut response = (
         [
             (header::CONTENT_TYPE, asset.content_type),
@@ -393,6 +416,12 @@ async fn session(State(app): State<Shared>, Paired(device): Paired) -> Json<Valu
             "terminal": { "ligatures": app.site.terminal_ligatures },
         },
         "device": { "id": device.id, "name": device.name },
+        "build": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": assets::COMMIT,
+            "id": app.assets.build,
+            "started_unix": app.started_unix,
+        },
     }))
 }
 

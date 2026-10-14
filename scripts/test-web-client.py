@@ -1104,10 +1104,19 @@ capabilities = ["terminal_view"]
             assert [icon['sizes'] for icon in manifest['icons']] == ['192x192', '512x512']
             status, headers, worker = owner.request('GET', '/sw.js', shape=shape, raw=True)
             assert status == 200 and headers['content-type'].startswith('text/javascript')
-            assert b'"assets/main.js"' in worker and b'__WSX_' not in worker
+            # Module URLs carry the build: assets/<build>/main.js in the page and the shell list.
+            build = re.search(rb'src="assets/([0-9a-f]{12})/main\.js"', html).group(1).decode()
+            assert ('"assets/%s/main.js"' % build).encode() in worker and b'__WSX_' not in worker
+            assert ('wsx-owner-%s' % build).encode() in worker
             # The diagram library is fetched on first use: not in the shell list, kept afterwards.
             shell, lazy = (json.loads(re.search(rb'const %s = (\[.*?\]);' % name, worker).group(1)) for name in (b'SHELL', b'LAZY'))
-            assert lazy == ['assets/mermaid-11.17.2.js'] and not set(lazy) & set(shell) and 'assets/markdown-it.js' in shell, (shell, lazy)
+            assert lazy == ['assets/%s/mermaid-11.17.2.js' % build] and not set(lazy) & set(shell) and 'assets/%s/markdown-it.js' % build in shell, (shell, lazy)
+            # This build's files never change under its path; another build's are refused, pinned files are not.
+            status, headers, body = owner.request('GET', '/assets/%s/main.js' % build, shape=shape, raw=True)
+            assert status == 200 and 'immutable' in headers['cache-control'] and headers['content-type'].startswith('text/javascript'), headers
+            assert owner.request('GET', '/assets/000000000000/main.js', shape=shape)[1]['error']['code'] == 'old_build'
+            assert owner.request('GET', '/assets/000000000000/JetBrainsMono-2.304-Regular.woff2', shape=shape, raw=True)[0] == 200
+            assert owner.request('GET', '/assets/%s/nothing.js' % build, shape=shape)[0] == 404
             status, headers, body = owner.request('GET', '/' + lazy[0], shape=shape, raw=True, headers={'Accept-Encoding': 'gzip, br'})
             assert status == 200 and headers['content-encoding'] == 'gzip' and 'immutable' in headers['cache-control'], headers
             assert zlib.decompress(body, 31)[:12] == b'"use strict"', body[:20]
@@ -1250,6 +1259,10 @@ capabilities = ["terminal_view"]
         streams.append(events)
         first = events.expect('workspace')
         assert [item['id'] for item in first['sessions']] == [sessions['owner']], first
+        # The build: this wsx, the commit it was built from, the page files' id and the server's start.
+        built = owner.request('GET', '/api/session')[1]['build']
+        assert built['id'] == build == first['build'] and built['version'] == cli('--version').stdout.split()[1], (built, first['build'])
+        assert (built['commit'] is None or re.fullmatch('[0-9a-f]{7,}', built['commit'])) and built['started_unix'] <= time.time(), built
         # Both granted projects are listed, with their worktrees; the ungranted one is not.
         assert [(p['id'], p['name']) for p in first['projects']] == [(projects['project'], 'project'), (projects['project3'], 'project3')], first
         assert first['projects'][0]['worktrees'] == [{'id': worktrees['project'], 'branch': 'main', 'main': True}]
@@ -2096,6 +2109,8 @@ capabilities = ["terminal_view"]
                     stopped = time.monotonic() - started
                     # Open streams get a two-second grace period, then the server ends.
                     assert stopped < 4, 'wsx web serve took %.1f s to stop' % stopped
+                    # Another build of the same site: a new name changes the page files.
+                    files['m2'].write_text(files['m2'].read_text().replace('name = "wsx"', 'name = "wsx next"', 1))
                     serve('m2')
                     wait(lambda: up(m2), 'm2 server restarted')
                     (signals / 'done').write_text('%.2f\n' % stopped)

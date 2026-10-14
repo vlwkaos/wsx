@@ -206,6 +206,12 @@ wsxd allows one active exchange per pane. A message sent while the agent works, 
 - A queue belongs to one site. Another site's queue for the same session is not visible.
 - Stop (`POST api/chat/<session>/cancel`) asks wsxd to interrupt the turn ([agent-orchestration.md](agent-orchestration.md) "Cancel"). Like a send, it takes the pane from a terminal that holds it ([agent-orchestration.md](agent-orchestration.md) "Terminal control"). After a stop, waiting messages are delivered as usual; a cancelled exchange is not continued, the next message starts a new one.
 
+## Build
+
+- The build id is the digest of the page files (the index, the manifest and every module). The page loads its modules from `assets/<build>/`, and they import each other relatively, so a browser or proxy cache never serves an old module beside a new one. Those files are cached for good. Under another build id a module answers 404 `old_build`; the pinned fonts and the diagram library are served under any build. `assets/<name>` still answers for a page that was opened before the build path existed.
+- `api/session` sends `build`: `version` (wsx), `commit` (the git commit the binary was built from, or `null` for a build without git), `id` and `started_unix`. Settings shows them under "Version". The commit is `HEAD` when the binary was built; changes not committed then are not in it, but they change the page files' id.
+- The `workspace` event carries `build`, and a new event stream gets it first. When it differs from the page's own build, the page shows "A new version of this page is ready" with **Reload**. It never reloads by itself, so nothing typed is lost; a draft is also kept on the device. Reload asks the service worker for the new files, waits at most 3 s, and reloads.
+
 ## Live updates
 
 A page opens one `EventSource` (`api/events`) and has no polling timer. Events: `workspace` (projects and session list), `history` (a session's saved conversation changed), `exchange`, `daemon`, `resync`, `revoked`. The server follows `wsxd` with its long-poll and states the protocol it reconnects at, so a running web server does not defer a daemon upgrade (`docs/daemon-live-upgrade.md`). While a page is connected it also compares each transcript file's size and modification time about every two seconds.

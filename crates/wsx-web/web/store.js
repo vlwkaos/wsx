@@ -11,7 +11,26 @@ export const state = {
   loaded: false,
   daemon: true,
   online: true,
+  // The server's build when it differs from this page's: the page offers a reload.
+  newBuild: null,
+  // wsx version, commit, build id and server start, from api/session.
+  build: null,
 };
+
+// ^ This page's build: the path segment its modules were loaded from, assets/<build>/.
+export const pageBuild = new URL(import.meta.url).pathname.split("/").at(-2);
+export function noteBuild(build) {
+  if (build && build !== pageBuild && build !== state.newBuild) update({ newBuild: build });
+}
+// The service worker fetches the new files first, so an offline reload still has them;
+// then the page reloads. Drafts are kept on the device (chat.js), so nothing typed is lost.
+export async function reloadForBuild() {
+  try {
+    const registration = await navigator.serviceWorker?.getRegistration();
+    await Promise.race([registration?.update(), new Promise((done) => setTimeout(done, 3000))]);
+  } catch { /* an update that fails still reloads from the network */ }
+  location.reload();
+}
 const listeners = new Set();
 let version = 0;
 export function update(patch) {

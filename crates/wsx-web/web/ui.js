@@ -1,6 +1,6 @@
 // Notices, the confirmation dialog, and the device's light or dark choice.
 import { html, Icon, useEffect, useState } from "./lib.js";
-import { backTarget, goBack, parseRoute, state, useStore } from "./store.js";
+import { backTarget, goBack, parseRoute, reloadForBuild, state, useStore } from "./store.js";
 
 // A theme with a dark scheme is dark unless this device chose light (docs/web-themes.md).
 const SCHEME_KEY = "wsx-scheme";
@@ -46,6 +46,8 @@ export function Notices() {
   return html`
     <div class="notices" role="status" aria-live="polite">
       ${!store.online && html`<p class="notice" data-tone="attention">Connection lost. Reconnecting…</p>`}
+      ${store.newBuild && html`<p class="notice notice-build"><span>A new version of this page is ready.</span>
+        <button class="link-action" type="button" onClick=${reloadForBuild}>Reload</button></p>`}
       ${toasts.map((entry) => html`<p class="notice">${entry.text}</p>`)}
     </div>`;
 }

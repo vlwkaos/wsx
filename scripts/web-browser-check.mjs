@@ -112,11 +112,41 @@ if (mode === "restart") {
   await send("Page.reload");
   await alone("a reload on another screen");
   await shot("reload");
+  // A draft in a chat, then the server comes back as another build (docs/web-client.md "Build").
+  await go("#/");
+  const finished = "[...document.querySelectorAll('.row')].find((row) => /^done/.test(row.querySelector('.row-state')?.textContent.trim() ?? ''))";
+  await until(`!!${finished}`, "no finished session in the inbox");
+  const chatLink = await evaluate(`${finished}.querySelector('a').getAttribute('href')`);
+  await go(chatLink);
+  await until("!!document.querySelector('.composer-field:not([disabled])')", "the finished session's composer did not open");
+  await typeInto("typed before the new build");
+  const buildA = await evaluate("new URL(document.querySelector('script[type=module]').src).pathname.split('/').at(-2)");
   fs.writeFileSync(path.join(signals, "request"), "restart\n");
   for (let attempt = 0; !fs.existsSync(path.join(signals, "done")); attempt++) {
     if (attempt > 600) await fail("the server was not restarted");
     await pause(100);
   }
+  // The page says so once and does not reload by itself: the draft stays in the field.
+  await until("!!document.querySelector('.notice-build button')", "the page did not offer the new build", 300);
+  if ((await evaluate("document.querySelector('.composer-field').value")) !== "typed before the new build") await fail("the offer of a new build took the draft");
+  await sound("new build offered");
+  await shot("new-build");
+  const buildB = (await evaluate("fetch('api/session').then((r) => r.json())")).build.id;
+  if (buildB === buildA) await fail(`the server came back as the same build ${buildA}`);
+  await evaluate("document.querySelector('.notice-build button').click()");
+  await until(`new URL(document.querySelector('script[type=module]')?.src ?? location.href).pathname.includes('/${buildB}/') && !!document.querySelector('.app')`, "Reload did not load the new build", 300);
+  if (await count(".notice-build")) await fail("the new build still offers a reload");
+  if ((await evaluate("document.querySelector('.composer-field')?.value")) !== "typed before the new build") await fail("the draft did not survive the reload");
+  await go("#/settings");
+  await until("!!document.querySelector('.facts')", "Settings shows no version");
+  const facts = await evaluate("Object.fromEntries([...document.querySelectorAll('.facts dt')].map((dt) => [dt.textContent, dt.nextElementSibling.textContent]))");
+  const shown = facts["Page files"] ?? facts.Build;
+  if (!/^\d+\.\d+\.\d+/.test(facts.wsx) || shown !== buildB || !facts["Server started"] || await count(".settings .actions .muted code")) await fail(`Settings does not show build ${buildB}: ${JSON.stringify(facts)}`);
+  await shot("settings-version");
+  // Leave no draft for the later checks.
+  await go(chatLink);
+  await until("!!document.querySelector('.composer-field:not([disabled])')", "the chat did not reopen");
+  await typeInto("");
   await send("Page.reload");
   await alone("a reload after a server restart");
   await shot("reload-after-restart");
@@ -472,7 +502,7 @@ async function diagrams(light = false) {
       column: frame.clientWidth, more: [...document.querySelectorAll('.diagram-scroll')].map((node) => node.dataset.more ?? ''),
       mask: getComputedStyle(frame).maskImage || getComputedStyle(frame).webkitMaskImage, failed: document.querySelector('.diagram-failed').textContent.includes('Diagram could not be drawn'),
       source: document.querySelector('.diagram-failed pre').textContent, left: document.querySelectorAll('body > :not(#app):not(noscript):not(script)').length,
-      sheets: document.adoptedStyleSheets.length, kept: !!(await cache.match('assets/mermaid-11.17.2.js')),
+      sheets: document.adoptedStyleSheets.length, kept: !!(await cache.match(new URL('mermaid-11.17.2.js', document.querySelector('script[type=module]').src).href)),
       shell: (await cache.keys()).length }; })()`);
   if (seen.sources.join() !== "blob:,blob:" || seen.natural.some(([width, height]) => width < 200 || height < 100) || seen.inline) await fail(`a diagram is not a drawn image: ${JSON.stringify(seen)}`);
   // A diagram's box is the conversation's width minus the gutter, wider than the reading column on a wide screen.
@@ -529,8 +559,8 @@ async function largeAnswer() {
   await until("document.querySelectorAll('.markdown .code-block').length > 100", "the large answer did not render");
   await send("Emulation.setCPUThrottlingRate", { rate: 4 });
   const cost = await evaluate(`(async () => {
-    const { Markdown } = await import(new URL('assets/markdown.js', document.baseURI));
-    const { render, html } = await import(new URL('assets/lib.js', document.baseURI));
+    const { Markdown } = await import(new URL('markdown.js', document.querySelector('script[type=module]').src));
+    const { render, html } = await import(new URL('lib.js', document.querySelector('script[type=module]').src));
     const data = await (await fetch(new URL('api/chat/${ids.large}/timeline', document.baseURI))).json();
     const text = data.items.findLast((item) => item.kind === 'assistant').text;
     const host = document.createElement('div');
@@ -758,7 +788,7 @@ await until("document.querySelectorAll('.markdown .code-block').length > 100", "
 await send("Performance.enable");
 const metric = async (name) => (await send("Performance.getMetrics")).metrics.find((item) => item.name === name).value;
 await evaluate(`(async () => {
-  const { events } = await import(new URL('assets/store.js', document.baseURI));
+  const { events } = await import(new URL('store.js', document.querySelector('script[type=module]').src));
   window.__events = {};
   for (const type of ["history", "exchange", "workspace"]) events.addEventListener(type, () => { window.__events[type] = (window.__events[type] ?? 0) + 1; });
   performance.setResourceTimingBufferSize(10000);
