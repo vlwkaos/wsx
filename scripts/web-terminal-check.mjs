@@ -241,7 +241,8 @@ if (frame.bar > 48 || frame.barTop !== 0 || frame.tabbar) await fail(`the sessio
 if (frame.page !== "rgb(10, 11, 13)" || frame.surface !== "rgb(10, 11, 13)" || frame.key !== "rgb(26, 29, 34)") await fail(`the frame is not dark: ${JSON.stringify(frame)}`);
 if (frame.keyHeight !== 36 || frame.pad !== 36) await fail(`key row buttons are not 36 px: ${JSON.stringify(frame)}`);
 if (frame.scrolled !== 0 || frame.first !== "Esc" || frame.more !== "end") await fail(`the key row does not start at Esc with a fade at its end: ${JSON.stringify(frame)}`);
-if (frame.switch !== "Chat,Terminal*" || !/^Fit screen/.test(frame.toggle) || frame.toggleText !== "") await fail(`the top row's switch or size toggle is wrong: ${JSON.stringify(frame)}`);
+// ^ This session is a shell: it has no chat, so there is nothing to switch to.
+if (frame.switch !== "" || !/^Fit screen/.test(frame.toggle) || frame.toggleText !== "") await fail(`the top row's switch or size toggle is wrong: ${JSON.stringify(frame)}`);
 
 const stage = await box(".terminal-stage");
 if (stage.x !== 0 || stage.width !== 390) await fail(`terminal is not edge to edge on the phone: ${JSON.stringify(stage)}`);

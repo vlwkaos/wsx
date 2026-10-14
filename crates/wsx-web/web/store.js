@@ -48,16 +48,18 @@ const STATES = {
   idle: { word: "idle", group: "rest", tone: "muted" },
   unknown: { word: "not connected", group: "rest", tone: "muted" },
 };
+// A session without an agent is a shell: no inbox group, no chat.
+export const isAgent = (session) => Boolean(session.agent);
 export function stateOf(session) {
-  if (session.exited) return { key: "exited", word: "exited", group: session.agent ? "needs" : "rest", tone: session.agent ? "danger" : "muted" };
-  if (!session.agent) return { key: "shell", word: "shell", group: "rest", tone: "muted" };
+  if (session.exited) return { key: "exited", word: "exited", group: session.agent ? "needs" : null, tone: session.agent ? "danger" : "muted" };
+  if (!session.agent) return { key: "shell", word: "open", group: null, tone: "muted" };
   const key = session.agent.attached ? session.agent.state : "unknown";
   return { key, ...(STATES[key] ?? STATES.unknown) };
 }
 
-// The screen a session opens on: chat when the site has it, else the terminal.
+// The screen a session opens on: chat for an agent when the site has it, else the terminal.
 export const sessionLink = (session, tab) =>
-  `#/s/${session.id}/${tab ?? (shows("chat") ? "chat" : "terminal")}`;
+  `#/s/${session.id}/${tab ?? (isAgent(session) && shows("chat") ? "chat" : "terminal")}`;
 
 // "Seen" is per device: the state a session had when its chat was last opened here.
 const SEEN_KEY = "wsx-seen";

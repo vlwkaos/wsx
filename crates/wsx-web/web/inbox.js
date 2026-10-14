@@ -2,7 +2,7 @@
 // listed by what they need: your answer, nothing yet, a look, or nothing at all.
 import { api } from "./api.js";
 import { elapsed, html, useNow, useState } from "./lib.js";
-import { can, isNew, sessionLink, shows, stateOf, useStore } from "./store.js";
+import { can, isAgent, isNew, sessionLink, shows, stateOf, useStore } from "./store.js";
 
 // One session. Left: a state mark. Middle: the work first, project › worktree, then the
 // session and its provider, and for a working session what it does. Right: the state
@@ -17,7 +17,7 @@ export function SessionRow({ session, now, current, place }) {
   if (place === "worktree") identity = html`<span class="row-session-name">${session.label}</span>`;
   else if (place === "project") identity = html`<span class="row-worktree">${branch}</span>`;
   else identity = html`<span class="row-project">${session.project.name}</span><span class="row-sep" aria-hidden="true">›</span><span class="row-worktree">${branch}</span>`;
-  const context = [place !== "worktree" && session.label, session.agent?.provider].filter(Boolean).join(" · ");
+  const context = [place !== "worktree" && session.label, session.agent?.provider ?? "shell"].filter(Boolean).join(" · ");
   return html`
     <li class="row">
       <a class="row-link" href=${sessionLink(session)} aria-current=${current ? "page" : null}>
@@ -61,7 +61,8 @@ const SECTIONS = [["needs", "Needs you"], ["running", "Running"], ["finished", "
 
 export function Inbox({ rail }) {
   const store = useStore();
-  const sessions = store.sessions;
+  // The inbox is agent work; shells are listed under their worktree in Projects.
+  const sessions = store.sessions.filter(isAgent);
   const now = useNow(sessions.some((session) => stateOf(session).key === "working"));
   const currentId = Number(location.hash.split("/")[2]) || null;
   const row = (session, place) => html`<${SessionRow} key=${session.id} session=${session} now=${now} current=${rail && session.id === currentId} place=${place} />`;
@@ -77,6 +78,8 @@ export function Inbox({ rail }) {
     body = html`<p class="empty">wsx is not running on the host. Sessions return when it starts.</p>`;
   } else if (!store.loaded) {
     body = html`<p class="empty">Loading…</p>`;
+  } else if (!sessions.length && store.sessions.length) {
+    body = html`<p class="empty">No agent session. Shells are in <a class="link-action" href="#/projects">Projects</a>.</p>`;
   } else if (!sessions.length) {
     body = html`
       <p class="empty">No session is open.

@@ -1,7 +1,7 @@
 // A session owns the full height: one top row (back, label with its state in words,
 // Chat | Terminal), then the chat or the terminal.
 import { html, useEffect, useRef } from "./lib.js";
-import { can, markSeen, replaceRoute, sessionLink, shows, stateOf, useStore } from "./store.js";
+import { can, isAgent, markSeen, replaceRoute, sessionLink, shows, stateOf, useStore } from "./store.js";
 import { Back } from "./ui.js";
 import { Chat } from "./chat.js";
 import { terminalView } from "./terminal.js";
@@ -18,7 +18,8 @@ export function Session({ id, tab }) {
   const store = useStore();
   const tools = useRef();
   const session = store.sessions.find((candidate) => candidate.id === id);
-  const tabs = [shows("chat") && "chat", shows("terminal") && can("terminal_view") && "terminal"].filter(Boolean);
+  // A shell has no chat; it becomes one when an agent starts in it.
+  const tabs = [session && isAgent(session) && shows("chat") && "chat", shows("terminal") && can("terminal_view") && "terminal"].filter(Boolean);
   const active = tabs.includes(tab) ? tab : tabs[0];
   useEffect(() => { if (session && active === "chat") markSeen(session); });
   if (!session) {
@@ -46,8 +47,8 @@ export function Session({ id, tab }) {
                 ${name === "chat" ? "Chat" : "Terminal"}</a>`)}
           </nav>`}
       </header>
-      ${active === "terminal"
-        ? html`<${Terminal} key="terminal" session=${id} tools=${tools} />`
-        : html`<${Chat} key="chat" session=${session} />`}
+      ${active === "terminal" ? html`<${Terminal} key="terminal" session=${id} tools=${tools} />`
+        : active === "chat" ? html`<${Chat} key="chat" session=${session} />`
+        : html`<p class="empty">This session is a shell, and this site does not show terminals.</p>`}
     </div>`;
 }
