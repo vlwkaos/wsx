@@ -21,6 +21,7 @@
 - Web inbox: a session row shows its project and worktree first, then the session's label and provider, each with its own look. Finished sessions are sorted newest first, so opening one and coming back no longer moves rows. The end of the chat keeps a clear gap (64 px) above the composer.
 - Web chat: typing `/` lists the agent's commands, filtered as you type: built-ins (compact, clear or new, per provider) and, for Claude, the skills and commands of the project, the user and enabled plugins. A picked command is typed into the agent as written. wsxd (daemon revision 27) can deliver a one-line slash command of an exchange without the exchange line; the web server checks the new `exchange_command` capability first.
 - Web: a shell session (no agent) opens on the terminal and has no chat tab. The inbox lists agent sessions only; shells stay in Projects under their worktree, marked `shell`. A shell in which an agent starts becomes a chat.
+- Web chat on a phone: the text field has the whole first line of the composer; attach and Send are on the line below it, Send at the right.
 - Web chat: a compacted conversation shows the start of its summary, open, where the compaction happened, with "Show full summary" for the rest. Claude's fixed preamble is not shown.
 - Web chat: tables, code blocks and Mermaid diagrams may use the width of the conversation instead of the reading column, so a wide table or diagram is no longer squeezed; prose keeps its reading width.
 

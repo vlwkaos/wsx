@@ -246,6 +246,28 @@ async function chats() {
   if (workingGap < 63.5) await fail(`the working row is ${workingGap} px from the end of the log`);
   await shot("chat-working", ".composer .button-primary");
 
+  // A phone gives the text field its own line, then attach and Send; a wide window has one line.
+  const composer = async () => evaluate(`(() => { const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+    const row = box('.composer-row'), field = box('.composer-field'), send = box('.composer .button'), attach = box('.composer-row > .icon-button');
+    return { row: row.width, field: field.width, below: Math.round(send.top - field.bottom), line: Math.abs((attach.top + attach.bottom) / 2 - (send.top + send.bottom) / 2),
+      attach: [attach.width, attach.height], send: [send.width, send.height], sendRight: Math.round(row.right - send.right), attachLeft: Math.round(attach.left - row.left) }; })()`);
+  const layout = await composer();
+  if (phone() ? Math.abs(layout.field - layout.row) > 1 || layout.below < 0 || layout.line > 1 || layout.sendRight !== 0 || layout.attachLeft > 0
+      || Math.min(...layout.attach, layout.send[1]) < 44
+    : layout.below >= 0) {
+    await fail(`the composer layout is wrong at ${size[0]} px: ${JSON.stringify(layout)}`);
+  }
+  if (size === SIZES[1]) {
+    await openSession("idle");
+    await until("!!document.querySelector('.composer-field:not([disabled])') && !!document.querySelector('.log .message, .log .empty')", "the idle composer is not ready");
+    await shot("composer");
+    await typeInto("Check the login redirect on Safari.\nThen the cookie settings.\nThen write the notes.");
+    const typed = await composer();
+    if (Math.abs(typed.field - typed.row) > 1 || typed.below < 0 || typed.line > 1) await fail(`three lines break the composer: ${JSON.stringify(typed)}`);
+    await shot("composer-text");
+    await typeInto("");
+  }
+
   // A long conversation: opens at its end; scrolled up, a jump button shows.
   await openSession("long");
   await until("document.querySelectorAll('.message').length > 40", "the long conversation did not load");
@@ -641,6 +663,14 @@ for (const next of [SIZES[1], SIZES[2]]) {
   await until("document.querySelectorAll('.slash-option').length === 6", "the / list did not open in the light scheme");
   await shot("chat-commands-light");
   await typeInto("");
+  if (next === SIZES[1]) {
+    await openSession("idle");
+    await until("!!document.querySelector('.composer-field:not([disabled])') && !!document.querySelector('.log .message, .log .empty')", "the idle composer is not ready in the light scheme");
+    await shot("composer-light");
+    await typeInto("Check the login redirect on Safari.\nThen the cookie settings.\nThen write the notes.");
+    await shot("composer-text-light");
+    await typeInto("");
+  }
 }
 await resize(SIZES[1]);
 // One answer, by its button: the sheet says Sent until the agent goes on, then the reply shows.
@@ -697,6 +727,9 @@ for (const next of [SIZES[1], SIZES[2]]) {
   const field = () => evaluate("(() => { const node = document.querySelector('.composer-field'); return [node.getAttribute('aria-expanded'), node.getAttribute('aria-activedescendant'), node.value]; })()");
   await key("ArrowDown", 40);
   if ((await field()).slice(0, 2).join() !== "true,slash-1") await fail(`ArrowDown did not move in the list: ${await field()}`);
+  // The list stands above the text field, on a phone too.
+  const above = await evaluate("document.querySelector('.composer-field').getBoundingClientRect().top - document.querySelector('.slash').getBoundingClientRect().bottom");
+  if (above < 0) await fail(`the / list covers the text field: ${above}`);
   await sound("command list");
   await shot("chat-commands");
   await key("Escape", 27);
