@@ -89,6 +89,13 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .row-label, .row-context, .row-activity { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-label { font-weight: var(--font-weight-medium); }
+/* The work a session row is for: project › worktree, each with its own look; the session under it. */
+.row-work { display: flex; align-items: baseline; gap: var(--space-1); min-width: 0; }
+.row-work > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-project { flex: 0 1 auto; font-weight: var(--font-weight-medium); }
+.row-sep { flex: 0 0 auto; color: var(--color-faint); }
+.row-worktree { flex: 0 1 auto; }
+.row-session-name { font-weight: var(--font-weight-medium); }
 .row-context, .row-activity { font-size: var(--font-size-sm); color: var(--color-muted); }
 .row-state {
   flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end;
@@ -175,6 +182,8 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
   flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
   padding-inline: var(--column-inset);
+  /* The end of the conversation stands clear of the composer, like a paragraph break. */
+  padding-bottom: calc(var(--space-4) * 2);
 }
 .log:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
 .message { max-width: var(--size-prose); min-width: 0; }
@@ -283,7 +292,7 @@ div.steps .steps-summary { cursor: default; }
 .queued-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-muted); }
 .queued-reason { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Opaque, with a hairline on top, so the end of the conversation is visible. */
-.composer, .attention { flex: 0 0 auto; padding: var(--space-2) var(--column-inset); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
+.composer, .attention { flex: 0 0 auto; padding: var(--space-3) var(--column-inset); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
 .composer-row { display: flex; align-items: flex-end; gap: var(--space-1); }
 /* The attach icon, not its touch target, starts at the column edge. */
 .composer-row > .icon-button:first-child { margin-left: calc(-1 * var(--space-3)); }

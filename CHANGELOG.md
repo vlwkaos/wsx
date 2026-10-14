@@ -6,6 +6,7 @@
 
 - `wsx web pair`, `wsx web devices` and `wsx web serve` no longer need `--site`. With no site named they use the only site file in `~/.config/wsx/web/` (or `$XDG_CONFIG_HOME/wsx/web/`); with none they say how to make one, and with several they list them. A site can also be named by its id or file name, for example `wsx web pair wsx`.
 - Web: a project in Projects opens its worktrees and their sessions, and each session opens from there. Back returns to the screen a session or a project was opened from, and switching Chat and Terminal no longer adds a step to Back.
+- Web inbox: a session row shows its project and worktree first, then the session's label and provider, each with its own look. Finished sessions are sorted newest first, so opening one and coming back no longer moves rows. The end of the chat keeps a clear gap above the composer.
 
 ## [0.31.0] - 2026-10-14
 

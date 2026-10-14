@@ -104,17 +104,36 @@ async function inbox() {
   const labels = await text(".label");
   if (labels.join() !== "Needs you,Running,Finished,Sessions") await fail(`inbox sections are ${labels}`);
   const sections = await evaluate(`Object.fromEntries([...document.querySelectorAll('section')].map((section) => [section.getAttribute('aria-label'),
-    [...section.querySelectorAll('.row')].map((row) => ({ label: row.querySelector('.row-label').textContent, context: row.querySelector('.row-context').textContent,
+    [...section.querySelectorAll('.row')].map((row) => ({ work: [...row.querySelector('.row-work').children].map((node) => node.textContent).join(' '),
+      session: row.querySelector('.row-context')?.textContent ?? null,
       state: row.querySelector('.row-state').textContent.trim().replace(/\\s+/g, ' '), activity: row.querySelector('.row-activity')?.textContent ?? null,
-      clipped: row.querySelector('.row-label').scrollWidth > row.querySelector('.row-label').clientWidth })) ]))`);
+      clipped: row.querySelector('.row-context').scrollWidth > row.querySelector('.row-context').clientWidth,
+      looks: [...row.querySelector('.row-work').children].map((node) => getComputedStyle(node).fontWeight + ' ' + getComputedStyle(node).color) })) ]))`);
   const states = (name) => sections[name].map((row) => row.state.replace(/ ?\d.*$/, "")).sort().join();
   if (states("Needs you") !== "error,exited,needs input,needs input") await fail(`Needs you shows ${JSON.stringify(sections["Needs you"])}`);
   const running = sections.Running[0];
   if (sections.Running.length !== 1 || running.activity !== "List the files" || !/^working ?\d+[smh]/.test(running.state)) await fail(`Running shows ${JSON.stringify(sections.Running)}`);
-  if (running.context !== "design · main · claude") await fail(`the context line is ${running.context}`);
+  // The work first, project › worktree, each with its own look; the session under it.
+  if (running.work !== "design › main" || running.session !== "release notes · claude") await fail(`the running row reads ${JSON.stringify(running)}`);
+  if (new Set(running.looks).size !== 3) await fail(`project, separator and worktree share a look: ${running.looks}`);
+  if (sections.Sessions.find((row) => row.state === "idle")?.work !== "fix/login") await fail(`a row under its project heading repeats the project: ${JSON.stringify(sections.Sessions)}`);
   if (!sections.Finished.some((row) => /^done new$/.test(row.state))) await fail(`Finished marks nothing as new: ${JSON.stringify(sections.Finished)}`);
   if (states("Sessions") !== "idle,shell") await fail(`Sessions shows ${JSON.stringify(sections.Sessions)}`);
   if (!sections["Needs you"].some((row) => row.clipped)) await fail("the long session label is not truncated with an ellipsis");
+  // Opening a finished session and coming back moves no row, though it is no longer new.
+  if (size === SIZES[0]) {
+    const order = () => evaluate("[...document.querySelectorAll('.scroll .row-link')].map((node) => node.getAttribute('href')).join()");
+    const before = await order();
+    const opened = await evaluate(`(() => { const link = [...document.querySelectorAll('section[aria-label=Finished] .row-link')].find((node) => node.querySelector('.new'));
+      link.click(); return link.getAttribute('href'); })()`);
+    await until(`location.hash === ${JSON.stringify(opened)} && !!document.querySelector('.session .bar-label')`, "the finished session did not open");
+    await until(`${JSON.stringify(opened.split("/")[2])} in JSON.parse(localStorage.getItem('wsx-seen') ?? '{}')`, "opening the chat did not record the session as seen");
+    await evaluate("document.querySelector('.bar a.icon-button').click()");
+    await until("location.hash === '#/' && document.querySelectorAll('.row').length >= 8", "Back did not return to the inbox");
+    const after = await order();
+    if (after !== before) await fail(`rows moved after a finished session was seen: ${before} then ${after}`);
+    if (await evaluate(`!!document.querySelector('.scroll .row-link[href="${opened}"] .new')`)) await fail("the seen session is still new");
+  }
   if (!phone() && Math.round(await evaluate("document.querySelector('.rail').getBoundingClientRect().width")) !== 300) await fail("the rail is not 300 px wide");
   if ((await text(".group-name")).join() !== "design" || !(await count(".group-head .link-action"))) await fail("the Sessions group lacks its project or its New session action");
   // The elapsed time of a working session counts on the page.
@@ -293,6 +312,14 @@ async function markdown() {
   if (!/JetBrains Mono/.test(seen.code.font) || !seen.code.scrolls || seen.code.language !== "rust" || seen.code.copy !== "Copy,Copy") await fail(`the code block is wrong: ${JSON.stringify(seen.code)}`);
   if (seen.table.head !== "Part,Change,Files,Tests,Bytes,Status" || seen.table.sticky !== "sticky" || seen.table.right !== "right" || (phone() && !seen.table.scrolls)) await fail(`the table is wrong: ${JSON.stringify(seen.table)}`);
   if (seen.user !== "say markdown.md" || !seen.plain) await fail("the person's message is not plain text");
+  // The end of the conversation stands clear of the composer.
+  await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
+  await until("!document.querySelector('.jump')", "the log did not reach its end");
+  const gap = await evaluate(`document.querySelector('.composer').getBoundingClientRect().top
+    - [...document.querySelectorAll('.log > *')].at(-1).getBoundingClientRect().bottom`);
+  if (gap < 31.5) await fail(`the last message is ${gap} px from the composer`);
+  await sound("markdown answer at its end");
+  await shot("chat-end");
   await evaluate("document.querySelector('.log').scrollTop = 0");
   await sound("markdown answer");
   await shot("chat-markdown");
@@ -408,7 +435,7 @@ async function others() {
   await evaluate("document.querySelector('.row-open').click()");
   await until("!!document.querySelector('.worktree')", "the project screen did not open");
   const tree = await evaluate(`[...document.querySelectorAll('.worktree')].map((section) => ({ name: section.querySelector('.group-name').textContent,
-    rows: [...section.querySelectorAll('.row-label')].map((node) => node.textContent), start: !!section.querySelector('.group-head .link-action') }))`);
+    rows: [...section.querySelectorAll('.row-work')].map((node) => node.textContent), start: !!section.querySelector('.group-head .link-action') }))`);
   if (tree.length !== 2 || tree[0].name !== "main · main checkout" || tree[1].name !== "fix/login"
     || tree[1].rows.join() !== "refactor" || tree[0].rows.length < 10 || !tree.every((worktree) => worktree.start)) {
     await fail(`the project screen is wrong: ${JSON.stringify(tree)}`);
@@ -470,9 +497,25 @@ await evaluate("document.querySelector('input[name=scheme][value=light]').click(
 if ((await evaluate("getComputedStyle(document.body).backgroundColor")) !== "rgb(247, 247, 248)" || (await evaluate("document.documentElement.dataset.scheme")) !== "light") await fail("choosing light did not change the scheme");
 await sound("settings in the light scheme");
 await shot("settings-light");
-await go("#/");
-await until("document.querySelectorAll('.row').length >= 8", "the inbox did not open in the light scheme");
-await shot("inbox-light");
+// The changed views in the light scheme, at the phone and the wide size.
+for (const next of [SIZES[1], SIZES[2]]) {
+  await resize(next);
+  await go("#/");
+  await until("document.querySelectorAll('.row').length >= 8", "the inbox did not open in the light scheme");
+  await shot("inbox-light");
+  await go("#/projects");
+  await until("!!document.querySelector('.row-open')", "the projects did not open in the light scheme");
+  await shot("projects-light");
+  await evaluate("document.querySelector('.row-open').click()");
+  await until("!!document.querySelector('.worktree')", "the project did not open in the light scheme");
+  await shot("project-light");
+  await openSession("markdown");
+  await until("!!document.querySelector('.markdown table')", "the markdown answer did not render in the light scheme");
+  await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
+  await until("!document.querySelector('.jump')", "the log did not reach its end in the light scheme");
+  await shot("chat-end-light");
+}
+await resize(SIZES[1]);
 // One answer, by its button: the sheet says Sent until the agent goes on, then the reply shows.
 await openSession("blocked");
 await until("document.querySelectorAll('.question .question-option').length === 4", "the question did not show before answering");
