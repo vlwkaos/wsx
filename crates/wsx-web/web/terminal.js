@@ -8,8 +8,11 @@ import { can, state as store, touch as touchDevice } from "./store.js";
 const KEYS = [
   ["Esc", "\x1b", "Escape"], ["Tab", "\t", "Tab"], ["^C", "\x03", "Control C"], ["^V", "\x16", "Control V"],
   ["^A", "\x01", "Control A"], ["D", "d", "D"], ["^Z", "\x1a", "Control Z"], ["^R", "\x12", "Control R"],
-  ["^L", "\x0c", "Control L"], ["⌫", "\x7f", "Backspace"], ["^J", "\x0a", "Control J"], ["Enter", "\r", "Enter"],
+  ["^L", "\x0c", "Control L"], ["⌫", "\x7f", "Backspace"],
 ];
+// ^ Owner's rule: Enter sits at the right edge of the second row, under the thumb, with ^J
+// (a new line) just left of it. Neither repeats when held: one press is one line.
+const LINE_KEYS = [["^J", "\x0a", "Control J, new line"], ["Enter", "\r", "Enter"]];
 const REPEAT_MS = 80;
 const ARROW_STEP = 18; // pixels of drag per arrow key
 const TOUCH_SCROLL_STEP = 28; // pixels of touch movement per line
@@ -276,17 +279,18 @@ export function terminalView(mount, current, tools) {
     let repeat = 0;
     const stop = () => { clearInterval(repeat); repeat = 0; };
     // preventDefault on pointerdown keeps focus, and the on-screen keyboard, on the terminal.
+    const keyButton = ([label, sequence, name], repeats) => h("button", {
+      type: "button", tabIndex: -1, class: "terminal-key", "aria-label": name,
+      onpointerdown: (event) => {
+        event.preventDefault();
+        stop();
+        sendText(sequence);
+        if (repeats) repeat = setInterval(() => sendText(sequence), REPEAT_MS);
+      },
+      onpointerup: stop, onpointerleave: stop, onpointercancel: stop,
+    }, label);
     const row = h("div", { class: "terminal-keys", role: "group", "aria-label": "Terminal keys" },
-      KEYS.map(([label, sequence, name]) => h("button", {
-        type: "button", tabIndex: -1, class: "terminal-key", "aria-label": name,
-        onpointerdown: (event) => {
-          event.preventDefault();
-          stop();
-          sendText(sequence);
-          repeat = setInterval(() => sendText(sequence), REPEAT_MS);
-        },
-        onpointerup: stop, onpointerleave: stop, onpointercancel: stop,
-      }, label)));
+      KEYS.map((key) => keyButton(key, true)));
     // A fade marks each edge of the row that has more keys.
     const mark = () => {
       const more = [];
@@ -336,7 +340,8 @@ export function terminalView(mount, current, tools) {
     }, "← ↑ ↓ →");
     return h("div", { class: "terminal-controls" }, row,
       h("div", { class: "terminal-tools" },
-        h("div", {}, typeof navigator.clipboard?.readText === "function" ? paste : null), pad, h("div", { "aria-hidden": "true" })));
+        h("div", {}, typeof navigator.clipboard?.readText === "function" ? paste : null), pad,
+        h("div", { class: "terminal-line-keys", role: "group", "aria-label": "Line keys" }, LINE_KEYS.map((key) => keyButton(key, false)))));
   }
 
   // Wheel report to a program that tracks the mouse. xterm.js has no public call for it.
