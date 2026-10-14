@@ -302,6 +302,22 @@ div.steps .steps-summary { cursor: default; }
 /* Opaque, with a hairline on top, so the end of the conversation is visible. */
 .composer, .attention { flex: 0 0 auto; padding: var(--space-3) var(--column-inset); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
 .composer-row { display: flex; align-items: flex-end; gap: var(--space-1); }
+/* The `/` list: one row per command, the name in the terminal font, the active row raised. */
+.slash { margin-bottom: var(--space-2); }
+.slash-list {
+  list-style: none; margin: 0; padding: 0; max-height: calc(var(--size-key) * 5.5); overflow-y: auto;
+  overscroll-behavior: contain; border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
+  background: var(--color-bg); scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent;
+}
+.slash-option {
+  min-height: var(--size-key); padding: var(--space-1) var(--space-3); display: flex; align-items: baseline; gap: var(--space-3);
+  cursor: pointer; font-size: var(--font-size-sm);
+}
+.slash-option[aria-selected="true"] { background: var(--color-raised); }
+.slash-name { flex: 0 0 auto; font-family: var(--font-terminal); color: var(--color-text); }
+.slash-description { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-muted); }
+.slash-source { flex: 0 0 auto; color: var(--color-faint); font-size: var(--font-size-label); }
+.slash-note { padding: var(--space-1) 0 0; }
 /* The attach icon, not its touch target, starts at the column edge. */
 .composer-row > .icon-button:first-child { margin-left: calc(-1 * var(--space-3)); }
 .composer .button { height: var(--size-control); }

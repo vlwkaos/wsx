@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Rust callers that construct `Request::AgentExchangeCreate`, `AgentExchangeCreateStashingDraft`, `AgentExchangeContinue` or `AgentExchangeContinueStashingDraft` must provide `command` (`false` keeps the exchange line). `Capabilities` has the new `exchange_command` flag. Older JSON without the new fields decodes as before.
+
 ### Fixed
 
 - Web: after a reload of a paired device, the "Loading…" placeholder stayed beside the app and took half of the screen. The page now removes it before the app starts.
@@ -12,6 +16,7 @@
 - `wsx web pair`, `wsx web devices` and `wsx web serve` no longer need `--site`. With no site named they use the only site file in `~/.config/wsx/web/` (or `$XDG_CONFIG_HOME/wsx/web/`); with none they say how to make one, and with several they list them. A site can also be named by its id or file name, for example `wsx web pair wsx`.
 - Web: a project in Projects opens its worktrees and their sessions, and each session opens from there. Back returns to the screen a session or a project was opened from, and switching Chat and Terminal no longer adds a step to Back.
 - Web inbox: a session row shows its project and worktree first, then the session's label and provider, each with its own look. Finished sessions are sorted newest first, so opening one and coming back no longer moves rows. The end of the chat keeps a clear gap above the composer.
+- Web chat: typing `/` lists the agent's commands, filtered as you type: built-ins (compact, clear or new, per provider) and, for Claude, the skills and commands of the project, the user and enabled plugins. A picked command is typed into the agent as written. wsxd (daemon revision 27) can deliver a one-line slash command of an exchange without the exchange line; the web server checks the new `exchange_command` capability first.
 - Web chat: tables, code blocks and Mermaid diagrams may use the width of the conversation instead of the reading column, so a wide table or diagram is no longer squeezed; prose keeps its reading width.
 
 ## [0.31.0] - 2026-10-14

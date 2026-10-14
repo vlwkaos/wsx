@@ -182,6 +182,16 @@ agent_command = ["claude", "--permission-mode", "auto"]
 
 In auto mode a second model, the classifier, reviews Claude's actions instead of the person, so routine edits and commands run without a dialog. The prompts that remain, such as a question to the person or an action the classifier does not decide, arrive in the chat through "Answering". The flag and the mode name were checked against `claude --help` of Claude Code 2.1.296. Claude starts in manual mode instead when auto mode is not available to the account.
 
+### Commands
+
+Typing `/` at the start of the composer opens the agent's commands above the field. Typing filters it: names that start with the text first, then names that contain it. The arrows move, Tab or Enter picks (on a touch screen a tap), Escape closes it until the text changes. A pick fills the field with `/name ` and sends nothing.
+
+- `GET api/chat/<session>/commands` answers `{provider, listed, commands, truncated, skipped, runs}`; each command is `{name, description, source}` with `source` `builtin`, `project`, `user` or `plugin`. It needs `chat_send` (403 without it).
+- Built-ins, from each provider's own documentation: Claude `compact`, `clear` (Claude Code commands reference; `/new` and `/reset` are aliases of `/clear`); Codex `compact`, `new` (Codex CLI slash commands); Pi `compact`, `new` (Pi 1.1.0 `docs/slash-commands.md`). Other providers have none listed.
+- Claude (`listed: true`) adds skills (`skills/<name>/SKILL.md`) and commands (`commands/<name>.md`, one folder level as `folder:name`) from the session worktree's `.claude/`, from `$CLAUDE_CONFIG_DIR` or `~/.claude/`, and from each enabled plugin (`plugins/installed_plugins.json`, `enabledPlugins` in the settings) as `plugin:name`. The project's command wins over a user's of the same name. Other providers answer `listed: false`, and the list says that only built-ins are shown.
+- Only the name and one line of description leave the server: frontmatter `name` and `description` (a folded block joined), else the first line of the text, folded to at most 160 characters. Bounds: 200 commands (`truncated`), 512 entries per folder, 64 plugins, the first 8 KiB of a file, 256 KiB of a settings file, names of at most 64 bytes of letters, digits, `-`, `_`, `.` and `:`. A file with unterminated frontmatter, invalid UTF-8 or an invalid name is counted in `skipped`.
+- Sending: a message without attachments whose one line starts with a listed `/name` is sent with `command: true`, so wsxd types it as written ([agent-orchestration.md](agent-orchestration.md) "Commands"). Any other text, such as `/usr/bin is the folder` or a command with a second line, keeps the exchange line. Against a daemon without `exchange_command` the server answers 409 `daemon_upgrade_required` (`runs: false`, and the list says so). A command sent while the agent works waits in the queue like any message.
+
 ### Queue and Stop
 
 wsxd allows one active exchange per pane. A message sent while the agent works, or while older messages wait, is kept by the web server instead of failing.

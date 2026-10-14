@@ -5,6 +5,7 @@
 
 mod assets;
 mod chat;
+mod commands;
 mod devices;
 mod events;
 mod http;
