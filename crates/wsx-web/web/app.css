@@ -330,11 +330,34 @@ div.steps .steps-summary { cursor: default; }
 /* The attach icon, not its touch target, starts at the column edge. */
 .composer-row > .icon-button:first-child { margin-left: calc(-1 * var(--space-3)); }
 .composer .button { height: var(--size-control); }
-/* A phone: the field has the whole first line; attach and Send share the line below it,
-   Send at the right edge. A wide window keeps one line. */
-.app:not([data-wide]) .composer-row { flex-wrap: wrap; align-items: center; }
-.app:not([data-wide]) .composer-field { order: -1; flex-basis: 100%; }
-.app:not([data-wide]) .composer .button { margin-left: auto; }
+.send-mark { display: none; }
+/* A phone, compact like the owner's reference (the Claude iOS app): a one-line field on
+   top, then a short row with attach at the left and a round Send at the right. Each control
+   is still 44 px wide. A wide window keeps one line with a text Send. */
+.app:not([data-wide]) .composer { padding-top: var(--space-2); padding-bottom: var(--space-2); }
+.app:not([data-wide]) .composer-row { flex-wrap: wrap; align-items: center; row-gap: var(--space-1); }
+.app:not([data-wide]) .composer-field { order: -1; flex-basis: 100%; min-height: 0; padding: var(--space-1) var(--space-2); }
+.app:not([data-wide]) .composer-row > .icon-button { height: var(--size-key); }
+.app:not([data-wide]) .composer .composer-send {
+  margin-left: auto; width: var(--size-control); height: var(--size-key); min-height: 0; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center; background: none;
+}
+.app:not([data-wide]) .send-mark {
+  width: var(--size-key); height: var(--size-key); display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: var(--color-accent); color: var(--color-accent-text);
+}
+.app:not([data-wide]) .send-text { display: none; }
+/* The `/` list on a phone: the name and its source, then the description on one muted line.
+   With the keyboard up, or on a short screen, it keeps to 3.5 rows so the conversation shows. */
+.app:not([data-wide]) .slash-list { max-height: calc(var(--size-control) * 5.5); }
+.app:not([data-wide]) .slash-option {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name source" "description description";
+  align-items: baseline; gap: 0 var(--space-3); min-height: var(--size-control);
+}
+.app:not([data-wide]) .slash-name { grid-area: name; }
+.app:not([data-wide]) .slash-source { grid-area: source; }
+.app:not([data-wide]) .slash-description { grid-area: description; }
+body[data-short] .app:not([data-wide]) .slash-list { max-height: calc(var(--size-control) * 3.5); }
 /* A blocked agent takes its answer in the terminal: this row stands where the composer was. */
 .attention {
   min-height: calc(var(--size-control) + 2 * var(--space-2)); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);

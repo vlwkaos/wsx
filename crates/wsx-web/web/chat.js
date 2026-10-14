@@ -204,6 +204,25 @@ const SOURCE_WORDS = { builtin: "built-in", project: "project", user: "yours", p
 
 // The `/` list above the composer row: a listbox that the field controls. A pointer
 // press does not move focus, so the on-screen keyboard stays open.
+// ^ iOS shows its form bar (previous, next, Done) above the keyboard; the arrows go to other
+// form fields on the page. While the composer has the focus, no other field takes part.
+// The bar itself belongs to WebKit and stays (https://bugs.webkit.org/show_bug.cgi?id=251787).
+const OTHER_FIELDS = "input, select, textarea:not(.composer-field)";
+function isolate() {
+  for (const node of document.querySelectorAll(OTHER_FIELDS)) {
+    if (node.hasAttribute("data-tab-index")) continue;
+    node.dataset.tabIndex = node.getAttribute("tabindex") ?? "";
+    node.tabIndex = -1;
+  }
+}
+function release() {
+  for (const node of document.querySelectorAll("[data-tab-index]")) {
+    if (node.dataset.tabIndex === "") node.removeAttribute("tabindex");
+    else node.setAttribute("tabindex", node.dataset.tabIndex);
+    delete node.dataset.tabIndex;
+  }
+}
+
 const CommandList = ({ listing, matches, active, onPick, onHover }) => html`
   <div class="slash">
     <ul class="slash-list" id="slash-list" role="listbox" aria-label="Commands">
@@ -263,6 +282,8 @@ function Composer({ session, working, onSent }) {
     node.style.height = `${Math.min(node.scrollHeight, line * 6 + (node.offsetHeight - node.clientHeight))}px`;
   };
   useLayoutEffect(() => { field.current.value = draft.text; grow(); }, [session.id]);
+  // A composer that goes away with the focus gives the other fields back.
+  useEffect(() => release, []);
 
   const send = async () => {
     const body = field.current.value.trim();
@@ -348,13 +369,17 @@ function Composer({ session, working, onSent }) {
       <div class="composer-row">
         ${can("media_upload") && html`
           <button class="icon-button" type="button" aria-label="Attach files" onClick=${() => picker.current.click()}><${Icon} name="attach" /></button>
-          <input type="file" multiple hidden ref=${picker} onChange=${(event) => upload([...event.target.files])} />`}
+          <input type="file" multiple hidden tabIndex="-1" ref=${picker} onChange=${(event) => upload([...event.target.files])} />`}
         <textarea class="composer-field" ref=${field} rows="1" aria-label="Message"
           placeholder=${ready ? "Message" : "Cannot receive messages"}
           disabled=${!ready} role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
           aria-controls=${listOpen ? "slash-list" : null} aria-activedescendant=${listOpen && matches.length ? `slash-${active}` : null}
-          onInput=${() => { changed(field.current.value); grow(); }} onKeyDown=${keydown}></textarea>
-        <button class="button button-primary" type="button" disabled=${busy || !ready || draft.uploads.length > 0} onClick=${send}>${working ? "Queue" : "Send"}</button>
+          onInput=${() => { changed(field.current.value); grow(); }} onKeyDown=${keydown}
+          onFocus=${isolate} onBlur=${release}></textarea>
+        <button class="button button-primary composer-send" type="button" aria-label=${working ? "Queue" : "Send"}
+          disabled=${busy || !ready || draft.uploads.length > 0} onClick=${send}>
+          <span class="send-mark" aria-hidden="true"><${Icon} name="send" /></span><span class="send-text">${working ? "Queue" : "Send"}</span>
+        </button>
       </div>
     </div>`;
 }

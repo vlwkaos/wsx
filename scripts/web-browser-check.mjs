@@ -265,7 +265,7 @@ async function chats() {
       radius: [getComputedStyle(document.querySelector('.composer .button')).borderRadius, getComputedStyle(document.querySelector('.message-user')).borderRadius],
       chars: Math.round((log.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)) / parseFloat(getComputedStyle(document.documentElement).fontSize || 16)) }; })()`);
   if (column.steps !== column.left || column.user !== column.right || column.send !== column.right || column.queued !== column.left
-    || column.height !== 44 || column.radius[0] !== column.radius[1] || column.field < column.left) {
+    || column.height !== (phone() ? 36 : 44) || column.radius[0] !== column.radius[1] || column.field < column.left) {
     await fail(`the chat is not one column, or the send button is not a 44 px control: ${JSON.stringify(column)}`);
   }
   console.log(`chat column at ${size[0]} px: ${JSON.stringify(column)}`);
@@ -280,16 +280,21 @@ async function chats() {
   const composer = async () => evaluate(`(() => { const box = (selector) => document.querySelector(selector).getBoundingClientRect();
     const row = box('.composer-row'), field = box('.composer-field'), send = box('.composer .button'), attach = box('.composer-row > .icon-button');
     return { row: row.width, field: field.width, below: Math.round(send.top - field.bottom), line: Math.abs((attach.top + attach.bottom) / 2 - (send.top + send.bottom) / 2),
-      attach: [attach.width, attach.height], send: [send.width, send.height], sendRight: Math.round(row.right - send.right), attachLeft: Math.round(attach.left - row.left) }; })()`);
+      attach: [attach.width, attach.height], send: [send.width, send.height], sendRight: Math.round(row.right - send.right), attachLeft: Math.round(attach.left - row.left),
+      height: Math.round(box('.composer').height), round: getComputedStyle(document.querySelector('.send-mark')).borderRadius }; })()`);
   const layout = await composer();
   if (phone() ? Math.abs(layout.field - layout.row) > 1 || layout.below < 0 || layout.line > 1 || layout.sendRight !== 0 || layout.attachLeft > 0
-      || Math.min(...layout.attach, layout.send[1]) < 44
+      || Math.min(layout.attach[0], layout.send[0]) < 44 || Math.min(layout.attach[1], layout.send[1]) < 36 || layout.round !== "50%"
     : layout.below >= 0) {
     await fail(`the composer layout is wrong at ${size[0]} px: ${JSON.stringify(layout)}`);
   }
   if (size === SIZES[1]) {
     await openSession("idle");
     await until("!!document.querySelector('.composer-field:not([disabled])') && !!document.querySelector('.log .message, .log .empty')", "the idle composer is not ready");
+    const empty = await composer();
+    // Compact like the reference: an empty composer of at most 96 px.
+    if (empty.height > 96) await fail(`the empty phone composer is ${empty.height} px high`);
+    console.log(`empty phone composer at 390 px: ${empty.height} px, attach ${empty.attach.join("x")}, send ${empty.send.join("x")}`);
     await shot("composer");
     await typeInto("Check the login redirect on Safari.\nThen the cookie settings.\nThen write the notes.");
     const typed = await composer();
@@ -779,6 +784,56 @@ for (const next of [SIZES[1], SIZES[2]]) {
     await typeInto("");
   }
 }
+
+// The `/` list with the keyboard up (the visual viewport shrinks, the layout viewport does not)
+// and on a short screen: at most 3.5 rows of a name and a muted description, part of the
+// conversation in view, and the composer at the bottom of what is visible.
+const keyboard = (height) => evaluate(`(() => {
+  const viewport = window.visualViewport;
+  delete viewport.height;
+  if (${height} !== null) Object.defineProperty(viewport, "height", { configurable: true, get: () => ${height} });
+  viewport.dispatchEvent(new Event("resize"));
+})()`);
+async function commandsAbove(label) {
+  await openSession("long");
+  await until("document.querySelectorAll('.message').length > 4 && !!document.querySelector('.composer-field:not([disabled])')", `${label}: the composer is not ready`);
+  await typeInto("/");
+  await until("document.querySelectorAll('.slash-option').length === 6", `${label}: the / list did not open`);
+  const seen = await evaluate(`(() => { const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+    return { list: Math.round(box('.slash-list').height), row: Math.round(box('.slash-option').height), log: Math.round(box('.log-wrap').height),
+      composer: Math.round(box('.composer').bottom), visible: Math.round(visualViewport.offsetTop + visualViewport.height), scrolled: document.scrollingElement.scrollTop,
+      below: Math.round(box('.slash-option .slash-description').top - box('.slash-option .slash-name').bottom) }; })()`);
+  if (seen.list > seen.row * 3.5 + 2 || seen.log < 60 || Math.abs(seen.composer - seen.visible) > 1 || seen.scrolled !== 0 || seen.below < 0) {
+    await fail(`${label}: the / list does not fit above the keyboard: ${JSON.stringify(seen)}`);
+  }
+  console.log(`/ list ${label}: ${JSON.stringify(seen)}`);
+  // While the composer has the focus no other form field takes part in iOS's previous and
+  // next arrows; after it, every field has its own tab order again.
+  const others = "[...document.querySelectorAll('input, select, textarea')].filter((node) => node !== document.querySelector('.composer-field'))";
+  if (!(await evaluate(`document.activeElement === document.querySelector('.composer-field') && ${others}.every((node) => node.tabIndex === -1)`))) {
+    await fail(`${label}: another form field can take the focus from the composer`);
+  }
+  await evaluate("document.querySelector('.composer-field').blur()");
+  if (await evaluate(`${others}.some((node) => node.hasAttribute('data-tab-index'))`)) await fail(`${label}: the other fields did not get their tab order back`);
+  await evaluate("document.querySelector('.composer-field').focus()");
+}
+await resize(SIZES[1]);
+await keyboard(420);
+await commandsAbove("with the keyboard up at 390x844");
+await shot("chat-commands-keyboard");
+await evaluate("document.documentElement.dataset.scheme = 'light'");
+await shot("chat-commands-keyboard-light");
+await evaluate("delete document.documentElement.dataset.scheme");
+await typeInto("");
+await keyboard(null);
+await resize([390, 420, 2]);
+await commandsAbove("on a 390x420 screen");
+await shot("chat-commands-short");
+await evaluate("document.documentElement.dataset.scheme = 'light'");
+await shot("chat-commands-short-light");
+await evaluate("delete document.documentElement.dataset.scheme");
+await typeInto("");
+await resize(SIZES[1]);
 
 // A turn that writes on a long conversation, on a slow phone: what the page pays for each
 // change while the agent works (docs/web-client.md "Live updates").
