@@ -98,19 +98,18 @@ pub enum Command {
 pub enum WebCmd {
     /// Serve one site on its loopback port until interrupted
     Serve {
-        /// Owner-only site file
-        #[arg(long)]
-        site: PathBuf,
+        #[command(flatten)]
+        site: WebSite,
     },
     /// Print a one-time code that pairs one device with the site
     Pair {
-        #[arg(long)]
-        site: PathBuf,
+        #[command(flatten)]
+        site: WebSite,
     },
     /// List paired devices, or revoke one
     Devices {
-        #[arg(long)]
-        site: PathBuf,
+        #[command(flatten)]
+        site: WebSite,
         /// Device ID to revoke
         #[arg(long)]
         revoke: Option<String>,
@@ -119,6 +118,23 @@ pub enum WebCmd {
     },
     /// Print a new Web Push key pair for a site file
     Vapid,
+}
+
+/// Which site a `wsx web` command is for (docs/web-client.md "Site file").
+#[derive(clap::Args)]
+pub struct WebSite {
+    /// Owner-only site file, or a site name in ~/.config/wsx/web/; omit it when that folder has one site
+    #[arg(value_name = "SITE")]
+    name: Option<String>,
+    /// Same as SITE
+    #[arg(long = "site", value_name = "SITE", conflicts_with = "name")]
+    flag: Option<String>,
+}
+
+impl WebSite {
+    fn named(&self) -> Option<&str> {
+        self.flag.as_deref().or(self.name.as_deref())
+    }
 }
 
 impl Command {
@@ -851,10 +867,10 @@ pub fn run(cmd: Command) -> Result<()> {
         },
         Command::Routine { subcommand } => cmd_routine(subcommand),
         Command::Web { subcommand } => match subcommand {
-            WebCmd::Serve { site } => wsx_web::serve(&site),
-            WebCmd::Pair { site } => wsx_web::pair(&site),
+            WebCmd::Serve { site } => wsx_web::serve(site.named()),
+            WebCmd::Pair { site } => wsx_web::pair(site.named()),
             WebCmd::Devices { site, revoke, json } => {
-                wsx_web::devices(&site, revoke.as_deref(), json)
+                wsx_web::devices(site.named(), revoke.as_deref(), json)
             }
             WebCmd::Vapid => wsx_web::vapid(),
         },
