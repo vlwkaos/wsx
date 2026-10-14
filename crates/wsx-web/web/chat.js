@@ -76,6 +76,28 @@ function Steps({ items, live }) {
     </details>`;
 }
 
+// A compaction summary, where the conversation was compacted. Its start stays open, so
+// a session continued after a compaction still says what it is about.
+function Summary({ id, text }) {
+  const body = useRef();
+  const [open, setOpen] = useState(false);
+  const [long, setLong] = useState(false);
+  useLayoutEffect(() => {
+    if (!open) setLong(body.current.scrollHeight > body.current.clientHeight + 1);
+  }, [text, open]);
+  return html`
+    <section class="summary" aria-labelledby=${`${id}-label`}>
+      <p class="summary-label" id=${`${id}-label`}>Summary of the earlier conversation</p>
+      <div class="summary-body" id=${`${id}-body`} ref=${body} data-clamped=${!open && long ? "" : undefined} data-open=${open ? "" : undefined}>
+        <${Markdown} text=${text} />
+      </div>
+      ${(long || open) && html`
+        <button class="link-action" type="button" aria-expanded=${open} aria-controls=${`${id}-body`} onClick=${() => setOpen(!open)}>
+          ${open ? "Show less" : "Show full summary"}
+        </button>`}
+    </section>`;
+}
+
 // Messages as they are, with each run of steps between them as one block.
 function blocks(items) {
   const result = [];
@@ -402,11 +424,11 @@ export function Chat({ session }) {
     <div class="chat">
       <div class="log-wrap">
       <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation" tabindex="0">
-        ${data?.checkpoint ? html`<details class="steps"><summary class="steps-summary"><${Icon} name="chevron" />Earlier conversation (summary)</summary><${Markdown} text=${data.checkpoint} /></details>`
-          : data?.truncated ? html`<p class="note">Older messages are not shown.</p>` : null}
+        ${data?.truncated && html`<p class="note">Older messages are not shown.</p>`}
         ${data && !list.length && !draft.pending ? html`<p class="empty">${EMPTY_WORDS[data.status] ?? "No messages yet."}</p>` : null}
         ${list.map((block, index) => block.steps
           ? html`<${Steps} key=${block.id} items=${block.steps} live=${Boolean(working) && index === list.length - 1} />`
+          : block.kind === "summary" ? html`<${Summary} key=${block.id} id=${`summary-${block.id}`} text=${block.text} />`
           : html`
             <article key=${block.id} class=${block.kind === "user" ? "message message-user" : "message"} data-kind=${block.kind}>
               ${block.text && (block.kind === "user" ? html`<p class="prose">${block.text}</p>`

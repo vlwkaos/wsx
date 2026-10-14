@@ -288,6 +288,7 @@ impl Chat {
                         let (text, attachments) = sent_message(text, media);
                         (Some(text), attachments)
                     }
+                    (Some(text), ItemKind::Summary) => (Some(text.clone()), Vec::new()),
                     (Some(text), _) => {
                         let files = root
                             .as_ref()
@@ -336,7 +337,6 @@ impl Chat {
             "session": session_view(&target),
             "status": timeline.as_ref().map_or("no_agent", |timeline| timeline.status),
             "truncated": timeline.as_ref().is_some_and(|timeline| timeline.truncated),
-            "checkpoint": timeline.and_then(|timeline| timeline.checkpoint),
             "items": items,
             "exchange": exchange.as_ref().map(exchange_view),
             "queue": app.queue.list(session).iter().map(|queued| queued_view(queued, media)).collect::<Vec<_>>(),

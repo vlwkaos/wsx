@@ -29,6 +29,8 @@ ACTOR = r'''
 import json, os, pathlib, select, signal, socket, sys, time, tty
 signal.signal(signal.SIGHUP, signal.SIG_IGN)
 history, trace, project = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+# Claude unless the test asks for Pi, whose records chain by id and parentId.
+provider = os.environ.get('WSX_FIXTURE_PROVIDER', 'claude')
 pane = int(os.environ['WSX_PANE_ID']); generation = os.environ['WSX_RUNTIME_GENERATION']
 trace.with_suffix('.pid').write_text(str(os.getpid()))
 tty.setraw(0)
@@ -37,7 +39,7 @@ def report(state):
  with socket.socket(socket.AF_UNIX) as client:
   client.connect(os.environ['WSX_SOCKET']); stream = client.makefile('rb')
   client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
-  params = {'pane_id':pane,'runtime_generation':generation,'provider':'claude','state':state,
+  params = {'pane_id':pane,'runtime_generation':generation,'provider':provider,'state':state,
     'session_ref':{'kind':'id','value':'fixture','transcript_path':str(history)},
     'capabilities':{'prompt':True,'lifecycle':True}}
   client.sendall(json.dumps({'method':'agent_report','params':params}).encode()+b'\n')
@@ -49,14 +51,35 @@ def paint():
  rows = os.get_terminal_size().lines
  sys.stdout.write('\x1b[?2004h\x1b]2;✳ fixture\x07\x1b[2J\x1b['+str(max(1,rows-2))+';1H❯ '+draft+'\x1b[J')
  sys.stdout.flush()
-def record(kind, content):
+def record(kind, content, **extra):
  global leaf, sequence
  sequence += 1; entry = kind+'-'+str(sequence)
  stamp = time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime()) + '.%03dZ' % (time.time() % 1 * 1000)
- with history.open('a') as out:
-  out.write(json.dumps({'type':kind,'uuid':entry,'parentUuid':leaf,'sessionId':'fixture','timestamp':stamp,
-    'message':{'role':kind,'content':content}})+'\n')
+ if provider == 'pi':
+  line = {'type':'message','id':entry,'parentId':leaf,'timestamp':stamp,'message':{'role':kind,'content':content}}
+ else:
+  line = {'type':kind,'uuid':entry,'parentUuid':leaf,'sessionId':'fixture','timestamp':stamp,'message':{'role':kind,'content':content}}
+ line.update(extra)
+ with history.open('a') as out: out.write(json.dumps(line)+'\n')
  leaf = entry
+def compact():
+ # A compaction as each provider saves it (real transcripts, 2026-10): Claude starts a new
+ # chain at a boundary record and wraps the summary in fixed words; Pi keeps the chain.
+ global leaf, sequence
+ summary = '## Goal\nFix the login redirect loop on mobile Safari.\n\n' + '\n'.join('- Step %d of the fix is done.' % index for index in range(1, 13))
+ if provider == 'pi':
+  sequence += 1; entry = 'compaction-'+str(sequence)
+  with history.open('a') as out: out.write(json.dumps({'type':'compaction','id':entry,'parentId':leaf,'summary':summary})+'\n')
+  leaf = entry
+  return
+ sequence += 1; boundary = 'boundary-'+str(sequence)
+ with history.open('a') as out:
+  out.write(json.dumps({'type':'system','subtype':'compact_boundary','uuid':boundary,'parentUuid':None,'logicalParentUuid':leaf,
+    'sessionId':'fixture','content':'Conversation compacted'})+'\n')
+ leaf = boundary
+ record('user', 'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n'
+   + summary + '\n\nIf you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /home/fixture/.claude/projects/x.jsonl\n'
+   + 'Continue the conversation from where it left off without asking the user any further questions.', isCompactSummary=True, isVisibleInTranscriptOnly=True)
 class Stopped(Exception): pass
 def gate(name):
  # The test opens each gate, so it can read the timeline between two records.
@@ -97,6 +120,8 @@ def turn(text):
  elif body.startswith('say '):
   # An answer written by the test, for the markdown and diagram checks.
   record('assistant', trace.with_name(body[4:].strip()).read_text())
+ elif 'compact now' in body:
+  compact()
  elif 'quit now' in body:
   report('working'); os._exit(3)
  elif 'ask me' in body:
@@ -1168,6 +1193,35 @@ capabilities = ["terminal_view"]
         shutil.rmtree(third_root / '.claude')
         ok('commands: built-ins, project, user and plugin skills with one-line descriptions, a malformed file skipped, no file body; /compact typed as written, other text keeps the exchange line')
 
+        # --- Compaction: the summary is one item where the conversation was compacted, without Claude's fixed words.
+        for provider, expected in (('claude', ['summary', 'user', 'assistant']),
+                                   ('pi', ['user', 'assistant', 'user', 'summary', 'user', 'assistant'])):
+            name = 'compact-' + provider
+            created = call('session_create', {'worktree_id': worktrees['project3'], 'label': name,
+                'command': ['/usr/bin/env', 'WSX_FIXTURE_PROVIDER=' + provider, sys.executable, str(actor), str(work / (name + '.jsonl')),
+                            str(work / (name + '.trace')), str(third_root), str(chart), str(outside)], 'rows': 12, 'cols': 100})
+            assert created['type'] == 'created', created
+            sessions[name] = created['data']['id']
+            pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == sessions[name])
+            wait(lambda: (next(p for p in call('snapshot')['data']['panes'] if p['id'] == pane)['agent'] or {}).get('provider') == provider, name + ' agent')
+            for text in ('hello there', 'compact now', 'after the compaction'):
+                settle(name)
+                before = len(traces(name))
+                status, sent = steady(root, 'POST', '/api/chat/%d/send' % sessions[name], {'text': text})
+                assert status == 200, sent
+                wait(lambda: len(traces(name)) > before, name + ' delivery')
+            settle(name)
+            status, compacted = steady(root, 'GET', '/api/chat/%d/timeline' % sessions[name])
+            assert status == 200 and 'checkpoint' not in compacted, compacted
+            assert [item['kind'] for item in compacted['items']] == expected, compacted['items']
+            summary = next(item for item in compacted['items'] if item['kind'] == 'summary')
+            assert summary['text'].startswith('## Goal\nFix the login redirect loop') and summary['text'].endswith('- Step 12 of the fix is done.'), summary
+            assert summary['attachments'] == [] and summary['id'], summary
+            assert compacted['items'][-1]['text'] == 'echo: after the compaction', compacted['items'][-1]
+            session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == sessions[name])
+            assert call('session_close', {'session_id': sessions[name], 'expected_revision': session['revision']})['type'] == 'ack'
+        ok('compaction: the summary is one item where it happened (Claude: first, Pi: in place), Claude\'s preamble, closing instructions and transcript path removed')
+
         # --- Media: upload, attach to a prompt, agent-produced files, sniffing.
         photo = png(20, 5)
         digest = hashlib.sha256(photo).hexdigest()
@@ -1718,7 +1772,8 @@ capabilities = ["terminal_view"]
                                 ('permission', 'clean build'),
                                 ('error', 'api-tests'), ('exited', 'crashed-import'), ('working', 'release notes'),
                                 ('done', 'docs cleanup'), ('long', 'release checklist'), ('idle', 'refactor'),
-                                ('markdown', 'release plan'), ('large', 'full audit'), ('diagrams', 'architecture')):
+                                ('markdown', 'release plan'), ('large', 'full audit'), ('diagrams', 'architecture'),
+                                ('compacted', 'login fix')):
                 created = call('session_create', {'worktree_id': worktrees['design-login' if role == 'idle' else 'design'], 'label': label,
                     'command': [sys.executable, str(actor), str(work / (role + '.jsonl')), str(work / (role + '.trace')),
                                 str(design), str(chart), str(outside)], 'rows': 12, 'cols': 100})
@@ -1748,13 +1803,17 @@ capabilities = ["terminal_view"]
             for role, text in (('blocked', 'ask me which option to take, slowly'), ('permission', 'ask me for permission'),
                                ('error', 'fail now'), ('exited', 'quit now'),
                                ('working', 'use tool'), ('done', 'tidy the docs'), ('long', 'long talk'),
-                               ('markdown', 'say markdown.md'), ('large', 'say large.md'), ('diagrams', 'say diagrams.md')):
+                               ('markdown', 'say markdown.md'), ('large', 'say large.md'), ('diagrams', 'say diagrams.md'),
+                               ('compacted', 'compact now')):
                 status, sent = steady(m2, 'POST', '/api/chat/%d/send' % shown[role], {'text': text})
                 assert status == 200, (role, sent)
             for role, expected in (('blocked', 'blocked'), ('permission', 'blocked'), ('error', 'error'), ('exited', 'exited'), ('working', 'working'),
                                    ('done', 'done'), ('long', 'done'), ('markdown', 'done'), ('large', 'done'),
-                                   ('diagrams', 'done')):
+                                   ('diagrams', 'done'), ('compacted', 'done')):
                 wait(lambda: state_of(role) == expected, role + ' state', timeout=20)
+            # A session continued after its compaction: the summary, then a short exchange.
+            assert steady(m2, 'POST', '/api/chat/%d/send' % shown['compacted'], {'text': 'What is left to do?'})[0] == 200
+            wait(lambda: steady(m2, 'GET', '/api/chat/%d/timeline' % shown['compacted'])[1]['items'][-1].get('text') == 'echo: What is left to do?', 'compacted turn')
             blocked_items = steady(m2, 'GET', '/api/chat/%d/timeline' % shown['blocked'])[1]
             assert [item.get('text') for item in blocked_items['items']] == ['ask me which option to take, slowly', None], blocked_items
             assert len(blocked_items['question']['options']) == 4, blocked_items

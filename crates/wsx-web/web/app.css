@@ -269,6 +269,15 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .message[data-pending] { color: var(--color-muted); }
 .attachments { list-style: none; margin: var(--space-2) 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); font-size: var(--font-size-sm); }
 .attachments img { display: block; max-width: 100%; max-height: calc(var(--size-rail) * 0.8); border-radius: var(--radius-key); }
+/* Hook: .summary — a compaction summary. The label says what it is; a hairline at the start
+   keeps it apart from the agent's messages. Closed, it shows about eight lines. */
+.summary { max-width: var(--size-prose); min-width: 0; padding-inline-start: var(--space-3); border-inline-start: var(--border-width) solid var(--color-hairline); }
+.summary-label { margin: 0 0 var(--space-1); font-size: var(--font-size-sm); color: var(--color-muted); }
+.summary-body:not([data-open]) { max-height: calc(8 * var(--font-size-md) * var(--line-height-prose)); overflow: hidden; }
+.summary-body[data-clamped] {
+  -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent);
+  mask-image: linear-gradient(to bottom, black 70%, transparent);
+}
 .steps { font-size: var(--font-size-sm); color: var(--color-muted); max-width: var(--size-prose); }
 .steps-summary { display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; overflow-wrap: anywhere; }
 .steps-summary::-webkit-details-marker { display: none; }

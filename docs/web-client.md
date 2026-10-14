@@ -113,20 +113,22 @@ The page is a set of ES modules served as written: Preact 10.29.7 and htm 3.1.1 
 
 ### Timeline
 
-`GET api/chat/<session>/timeline` answers `{session, status, truncated, checkpoint, items, exchange, queue, working}`.
+`GET api/chat/<session>/timeline` answers `{session, status, truncated, items, exchange, queue, working}`.
 
 | Item field | Content |
 |---|---|
 | `id` | stable between reads: the record id, or the tool call id |
-| `kind` | `user`, `assistant`, `tool`, `thinking` |
+| `kind` | `user`, `assistant`, `tool`, `thinking`, `summary` |
 | `at_unix_ms` | the record's own time, when it has one |
-| `text`, `attachments` | for `user` and `assistant` items |
+| `text`, `attachments` | for `user` and `assistant` items; `text` for a `summary` |
 | `tool` | `{name, title, status}` for a `tool` item; `status` is `running`, `ok` or `error` |
 
 - One parser, two projections: `Reader::read` (messages, used by `wsx agent context`) and `Reader::read_timeline` come from the same parsed records. Bounds: the last 1 MiB of the file, 4096 records, then the newest 400 items and 256 KiB.
 - `title` is one line from the call's input: its `description`, else `command`, else `file_path` or `path`, else the tool name, at most 120 characters. The input itself, the tool result and the text of a thinking part are never sent. A `thinking` item says only that thinking happened.
 - A call with no result is `running` only in the last turn (after the newest message a person wrote). An older call without a result is `ok`.
 - Records are untrusted: ids and names are clipped and control characters removed.
+- Compaction: the newest summary is one `summary` item where the compaction happened (Pi keeps the earlier records in the same file; Claude starts a new chain, so its summary is first). A summary older than the kept items is the first item. It keeps up to half the byte budget. Claude's fixed words around it ("This session is being continued from a previous conversation … Summary:" and the closing "If you need specific details from before compaction …" instructions, which name a local transcript path) are removed. Pi's summary starts with its content; a Codex `compacted` record seen on 2026-10-15 had no text.
+- The page shows a summary as "Summary of the earlier conversation" with a line at its start, open for about eight lines; "Show full summary" opens the rest.
 - Formats read (checked against real sessions on 2026-10-12): Claude `tool_use`, `tool_result`, `thinking` parts; Pi and omp `toolCall`, `thinking` parts and `toolResult` messages; Codex `function_call`, `custom_tool_call`, their `_output` items and `reasoning`. A Codex result has no error flag, so a Codex call is never `error`.
 - `working` is `null`, or `{since_unix_ms, activity}`. It is set only while wsxd reports the agent as working; the transcript never decides that. `activity` is the title of the running tool, else "Thinking", else "Working". `since_unix_ms` is when wsxd saw the state begin, or `null` with an older wsxd.
 - The `history` event is the change signal. While an agent works and a page is open, the server compares transcript stamps about every 0.8 seconds, so a new tool line shows within about a second.

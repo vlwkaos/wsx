@@ -396,6 +396,35 @@ async function markdown() {
   await until("/^(Copied|Copy failed)$/.test(document.querySelector('.code-head button').textContent)", "Copy did not answer");
 }
 
+// A compacted conversation: the start of its summary is open, marked as a summary, and
+// the rest opens and closes with one control.
+async function summary(light = false) {
+  await openSession("compacted");
+  await until("!!document.querySelector('.summary .markdown h2') && document.querySelectorAll('.message').length === 2", "the compacted conversation did not render");
+  const closed = await evaluate(`(() => { const body = document.querySelector('.summary-body'); const button = document.querySelector('.summary button');
+    return { first: document.querySelector('.log > :not(.note)').className, label: document.querySelector('.summary-label').textContent,
+      heading: body.querySelector('h2').textContent, height: body.clientHeight, full: body.scrollHeight, clamped: body.hasAttribute('data-clamped'),
+      line: parseFloat(getComputedStyle(body).lineHeight), button: button?.textContent.trim(), expanded: button?.getAttribute('aria-expanded'),
+      text: body.textContent }; })()`);
+  if (closed.first !== "summary" || closed.label !== "Summary of the earlier conversation" || closed.heading !== "Goal"
+    || !closed.clamped || closed.full <= closed.height || closed.height < closed.line * 6 || closed.height > closed.line * 9
+    || closed.button !== "Show full summary" || closed.expanded !== "false" || /continued from a previous|If you need specific/.test(closed.text)) {
+    await fail(`the summary does not open at its start: ${JSON.stringify(closed)}`);
+  }
+  await sound("compacted conversation");
+  await shot(light ? "chat-summary-light" : "chat-summary");
+  if (light) return;
+  await evaluate("document.querySelector('.summary button').click()");
+  await until("document.querySelector('.summary button').getAttribute('aria-expanded') === 'true'", "Show full summary did not open it");
+  const open = await evaluate(`(() => { const body = document.querySelector('.summary-body');
+    return { height: body.clientHeight, full: body.scrollHeight, button: document.querySelector('.summary button').textContent.trim(),
+      last: [...body.querySelectorAll('li')].at(-1)?.textContent }; })()`);
+  if (open.full > open.height + 1 || open.button !== "Show less" || open.last !== "Step 12 of the fix is done.") await fail(`the full summary is not shown: ${JSON.stringify(open)}`);
+  await shot("chat-summary-open");
+  await evaluate("document.querySelector('.summary button').click()");
+  await until("document.querySelector('.summary-body').hasAttribute('data-clamped')", "Show less did not close the summary");
+}
+
 // A mermaid block is drawn by the lazily loaded library and shown as an image; the page's
 // CSP stays as it is, and a block that does not parse shows its source.
 async function diagrams(light = false) {
@@ -553,6 +582,7 @@ for (const next of SIZES) {
   await inbox();
   await chats();
   await markdown();
+  await summary();
   await diagrams();
   await others();
 }
@@ -589,6 +619,7 @@ for (const next of [SIZES[1], SIZES[2]]) {
   await openSession("diagrams");
   await until("document.querySelectorAll('.diagram img').length === 2", "the diagrams did not draw in the light scheme");
   await shot("chat-diagrams-light");
+  await summary(true);
   await openSession("long");
   await until("document.querySelectorAll('.message').length > 4 && !!document.querySelector('.composer-field:not([disabled])')", "the conversation or the composer is not ready in the light scheme");
   await typeInto("/");

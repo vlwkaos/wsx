@@ -91,9 +91,9 @@ pub struct Timeline {
     pub source: &'static str,
     pub status: &'static str,
     pub path: Option<PathBuf>,
+    /// Oldest first. The newest compaction summary is an item where the compaction
+    /// happened, or the first item when it is older than the items kept.
     pub items: Vec<Item>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub checkpoint: Option<String>,
     pub truncated: bool,
 }
 
@@ -137,7 +137,6 @@ impl Reader {
                 status,
                 path,
                 items: Vec::new(),
-                checkpoint: None,
                 truncated: status == "output_limit",
             },
         }
@@ -438,28 +437,43 @@ fn timeline_of(loaded: Loaded, count: usize, budget: usize) -> Timeline {
             last_turn = position;
         }
     }
+    let item_id = |position: usize, suffix: String| {
+        let id = nodes[position].id.as_deref().map_or_else(
+            || format!("r{position}{suffix}"),
+            |id| format!("{}{suffix}", clean(id, MAX_ITEM_ID)),
+        );
+        clean(&id, MAX_ITEM_ID + 8)
+    };
+    // The newest summary keeps half the budget, so a long conversation never hides it.
     let summary = nodes
         .iter()
-        .rev()
-        .find(|node| node.role == "summary" && !node.text.is_empty());
-    let checkpoint = summary.and_then(|node| {
+        .rposition(|node| node.role == "summary" && !node.text.is_empty());
+    let mut checkpoint = summary.and_then(|position| {
+        let node = &nodes[position];
         let text = clip(&node.text, budget / 2);
         truncated |= text.len() < node.text.len();
-        (!text.is_empty()).then_some(text)
+        (!text.is_empty()).then(|| Item {
+            id: item_id(position, String::new()),
+            kind: ItemKind::Summary,
+            at_unix_ms: node.at_unix_ms,
+            text: Some(text),
+            tool: None,
+        })
     });
-    let mut remaining = budget - checkpoint.as_ref().map_or(0, String::len);
+    let mut remaining = budget
+        - checkpoint
+            .as_ref()
+            .and_then(|item| item.text.as_ref())
+            .map_or(0, String::len);
     let mut items = Vec::new();
     'nodes: for (position, node) in nodes.iter().enumerate().rev() {
         if node.role == "summary" {
+            if Some(position) == summary {
+                items.extend(checkpoint.take());
+            }
             continue;
         }
-        let name = |suffix: String| {
-            let id = node.id.as_deref().map_or_else(
-                || format!("r{position}{suffix}"),
-                |id| format!("{}{suffix}", clean(id, MAX_ITEM_ID)),
-            );
-            clean(&id, MAX_ITEM_ID + 8)
-        };
+        let name = |suffix: String| item_id(position, suffix);
         // Newest first here, so a record's steps go in before its text.
         for (index, step) in node.steps.iter().enumerate().rev() {
             let (kind, id, tool) = match step {
@@ -517,17 +531,18 @@ fn timeline_of(loaded: Loaded, count: usize, budget: usize) -> Timeline {
             tool: None,
         });
     }
+    // A summary older than the kept items still comes first.
+    items.extend(checkpoint);
     items.reverse();
     Timeline {
         source: "provider_native_persisted_history",
-        status: if items.is_empty() && checkpoint.is_none() {
+        status: if items.is_empty() {
             "no_readable_messages"
         } else {
             "available"
         },
         path: Some(path),
         items,
-        checkpoint,
         truncated: truncated || malformed,
     }
 }
@@ -556,6 +571,21 @@ struct Node {
     meta: bool,
     steps: Vec<Step>,
 }
+/// Claude's fixed words around a compaction summary, as its transcripts (2.x) write them.
+const CLAUDE_SUMMARY_START: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n";
+const CLAUDE_SUMMARY_END: &str =
+    "\n\nIf you need specific details from before compaction (like exact code snippets";
+
+/// The summary itself: the instructions to the model around it, which also name a local
+/// transcript path, are not part of what the conversation was about.
+fn claude_summary(text: &str) -> String {
+    let text = text.strip_prefix(CLAUDE_SUMMARY_START).unwrap_or(text);
+    let text = text
+        .rfind(CLAUDE_SUMMARY_END)
+        .map_or(text, |end| &text[..end]);
+    text.trim().to_owned()
+}
+
 fn node(provider: &str, record: &Value) -> Option<Node> {
     let kind = record.get("type")?.as_str()?;
     let message = if provider == "codex" {
@@ -597,6 +627,8 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned()
+    } else if summary {
+        claude_summary(&content_text(message.get("content")))
     } else if visible {
         content_text(message.get("content"))
     } else {
