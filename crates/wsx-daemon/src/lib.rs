@@ -4859,8 +4859,9 @@ fn claude_editor(observation: &AgentTerminalObservation) -> Option<&str> {
 }
 
 // ^ docs/agent-orchestration.md: an empty Claude editor shows a suggestion such as
-// `❯ Try "fix typecheck errors"`. Claude draws it dimmed; text a person typed is not.
-// Only the editor line of the frame, dimmed as a whole, counts as empty.
+// `❯ Try "fix typecheck errors"` or, after a turn, a next prompt in plain words
+// (Claude 2.1.300). Claude draws it dimmed; text a person typed is not. Only the
+// editor line of the frame, dimmed as a whole, counts as empty, whatever its words.
 fn claude_suggestion(runtime: &TerminalRuntime, observation: &AgentTerminalObservation) -> bool {
     if claude_status::classify(&observation.title, &observation.text)
         != Some(claude_status::TerminalEvidence::Idle)
@@ -4886,7 +4887,7 @@ fn claude_suggestion(runtime: &TerminalRuntime, observation: &AgentTerminalObser
         .rev()
         .find(|row| input(row).is_some());
     editor.is_some_and(|row| {
-        input(row).is_some_and(|input| input.starts_with("Try \""))
+        input(row).is_some_and(|input| !input.is_empty())
             && row
                 .iter()
                 .filter(|cell| !cell.symbol.trim().is_empty() && cell.symbol != "❯")
@@ -4935,7 +4936,10 @@ fn stash_claude_draft(runtime: &TerminalRuntime) -> Result<(), ApiError> {
         let after = runtime
             .agent_observation()
             .map_err(|_| api("editor_unavailable", "cannot observe stashed Claude editor"))?;
-        if after.revision > before.revision && claude_editor(&after) == Some("") {
+        // ^ The emptied editor may show Claude's dimmed suggestion again.
+        if after.revision > before.revision
+            && (claude_editor(&after) == Some("") || claude_suggestion(runtime, &after))
+        {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(10));
