@@ -177,7 +177,8 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
    and has the body font size, so the percentage and the ch unit mean the same in all. */
 .chat { --column-inset: max(var(--space-4), calc((100% - var(--size-prose)) / 2)); }
 .chat, .log-wrap { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
-.log-wrap { position: relative; }
+/* The conversation's width, for blocks that leave the reading column (.markdown below). */
+.log-wrap { position: relative; container-type: inline-size; }
 .log {
   flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
@@ -189,7 +190,14 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .message { max-width: var(--size-prose); min-width: 0; }
 /* Hook: .markdown, .code-block, .table-wrap — the agent's text as markdown.
    Wide content scrolls inside its own block; nothing widens the conversation. */
-.markdown { min-width: 0; line-height: var(--line-height-prose); overflow-wrap: anywhere; }
+.markdown { min-width: 0; line-height: var(--line-height-prose); overflow-wrap: anywhere; display: flex; flex-direction: column; }
+/* Prose keeps its reading width. A table, a code block or a diagram may be as wide as the
+   conversation minus the gutter, centered on the reading column (a centered flex item
+   overflows both sides alike); wider content scrolls inside its own block. */
+.markdown > :is(.code-block, .table-wrap, .diagram-failed) {
+  align-self: center; width: max-content; min-width: 100%; max-width: calc(100cqi - 2 * var(--space-4));
+}
+.markdown > .diagram { align-self: center; width: calc(100cqi - 2 * var(--space-4)); min-width: 100%; }
 .markdown :where(p, ul, ol, blockquote, pre, h1, h2, h3, h4, h5, h6, hr, table) { margin: 0; }
 .markdown > * + * { margin-top: var(--space-3); }
 .markdown :is(li, blockquote) > * + * { margin-top: var(--space-2); }
@@ -227,7 +235,7 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .tok-title { font-weight: var(--font-weight-medium); }
 /* Hook: .diagram, .viewer — a drawn diagram, and the same diagram full screen. */
 .diagram-scroll { overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent; }
-.diagram-open { display: block; padding: 0; border: 0; background: none; cursor: zoom-in; }
+.diagram-open { display: block; width: fit-content; margin-inline: auto; padding: 0; border: 0; background: none; cursor: zoom-in; }
 .diagram img, .viewer img { display: block; max-width: none; border-radius: 0; }
 .diagram-failed > * + * { margin-top: var(--space-1); }
 .viewer {
