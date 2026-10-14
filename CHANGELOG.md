@@ -27,6 +27,7 @@
 - The newest person wins a session. A web chat message, Stop or answer takes the pane from a wsx window or a web terminal that holds it, instead of failing with `terminal_busy`; opening the web terminal takes it too, and Ctrl+C on a selected session in a wsx window. The displaced window says that control moved and does not take it back by itself. A reconnect never takes over, and CLI exchanges (`wsx agent request`) still never take the pane. Needs wsxd daemon revision 28.
 - Web chat while an agent writes: each change read the whole timeline again (about 215 KB on a long conversation). The page now reads from its last turn (`?from=&at=` on the timeline) and one read at a time; each read is about 16 KB.
 - Web chat: an image larger than 2000 px is made smaller in the browser before it is uploaded (JPEG, or PNG when smaller).
+- Web terminal on a phone: Enter is at the right edge of the second row, with `^J` (a new line) left of it, instead of at the end of the scrolling key row. Neither repeats when held.
 - Web chat on a phone: the text field has the whole first line of the composer; attach and Send are on the line below it, Send at the right.
 - Web chat: a compacted conversation shows the start of its summary, open, where the compaction happened, with "Show full summary" for the rest. Claude's fixed preamble is not shown.
 - Web chat: tables, code blocks and Mermaid diagrams may use the width of the conversation instead of the reading column, so a wide table or diagram is no longer squeezed; prose keeps its reading width.

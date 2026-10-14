@@ -53,7 +53,7 @@ const type = (text) => send("Input.insertText", { text });
 const enter = () => key("Enter", 13, "\r");
 // One press and release of a key-row button, shorter than its repeat interval.
 const press = (label) => evaluate(`(() => {
-  const button = [...document.querySelectorAll('.terminal-keys .terminal-key')].find((b) => b.textContent === ${JSON.stringify(label)});
+  const button = [...document.querySelectorAll('.terminal-controls .terminal-key')].find((b) => b.textContent === ${JSON.stringify(label)});
   button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
   button.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
 })()`);
@@ -248,7 +248,18 @@ const stage = await box(".terminal-stage");
 if (stage.x !== 0 || stage.width !== 390) await fail(`terminal is not edge to edge on the phone: ${JSON.stringify(stage)}`);
 if (!(await evaluate("document.documentElement.scrollWidth <= innerWidth"))) await fail("phone terminal overflows sideways");
 if ((await evaluate("getComputedStyle(document.querySelector('.xterm-rows')).fontSize")) !== "11px") await fail("phone font is not 11 px");
-if ((await evaluate("document.querySelectorAll('.terminal-keys .terminal-key').length")) !== 12) await fail("key row does not have 12 keys");
+if ((await evaluate("document.querySelectorAll('.terminal-keys .terminal-key').length")) !== 10) await fail("key row does not have 10 keys");
+// Enter at the right edge of the second row, ^J just left of it, on Paste's line.
+const lineKeys = await evaluate(`(() => {
+  const box = (node) => node.getBoundingClientRect();
+  const [newline, enter] = document.querySelectorAll('.terminal-line-keys .terminal-key');
+  const paste = [...document.querySelectorAll('.terminal-tools .terminal-key')].find((button) => button.textContent === 'Paste');
+  return { labels: [newline.textContent, enter.textContent].join(), right: innerWidth - box(enter).right, gap: box(enter).left - box(newline).right,
+    top: box(enter).top, newlineTop: box(newline).top, pasteTop: paste ? box(paste).top : null, pasteLeft: paste ? box(paste).left : null,
+    width: box(enter).width, height: box(enter).height, row: [...document.querySelectorAll('.terminal-keys .terminal-key')].map((key) => key.textContent).join() };
+})()`);
+if (lineKeys.labels !== "^J,Enter" || lineKeys.right > 4.5 || lineKeys.gap !== 4 || lineKeys.top !== lineKeys.newlineTop || lineKeys.height !== 36 || lineKeys.width < 36
+  || (lineKeys.pasteTop !== null && (lineKeys.pasteTop !== lineKeys.top || lineKeys.pasteLeft > 4.5)) || /\^J|Enter/.test(lineKeys.row)) await fail(`^J and Enter are not at the right of the second row: ${JSON.stringify(lineKeys)}`);
 const attributes = await evaluate(`(() => { const t = document.querySelector('.xterm-helper-textarea');
   return ['autocomplete', 'autocorrect', 'autocapitalize', 'spellcheck'].map((name) => t.getAttribute(name)).join(','); })()`);
 if (attributes !== "off,off,off,false") await fail(`textarea attributes are ${attributes}`);
@@ -264,8 +275,8 @@ if (steady.font < 16 || steady.scale !== 1 || steady.left !== 0 || steady.stage 
 await tap(".terminal-stage");
 await until("document.activeElement?.classList.contains('xterm-helper-textarea')", "a tap did not focus the terminal");
 await type("./colors");
-await tap(".terminal-keys .terminal-key:last-child"); // Enter
-await until(screenHas("truecolor-end"), "the Enter key of the key row did not run the command");
+await tap(".terminal-line-keys .terminal-key:last-child"); // Enter
+await until(screenHas("truecolor-end"), "the Enter key did not run the command");
 if (!(await evaluate("document.activeElement?.classList.contains('xterm-helper-textarea')"))) await fail("a key-row tap took the focus from the terminal");
 // 256 colours come from the theme stylesheet, truecolour from a cell style: both need the CSP-safe patch.
 const colors = await evaluate(`(() => {
@@ -344,13 +355,19 @@ await evaluate(`[...document.querySelectorAll('.terminal-keys .terminal-key')].f
 await pause(450);
 await evaluate(`[...document.querySelectorAll('.terminal-keys .terminal-key')].find((b) => b.textContent === '^A')
   .dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))`);
+// A held Enter is one Enter.
+const enterKey = "document.querySelector('.terminal-line-keys .terminal-key:last-child')";
+await evaluate(`${enterKey}.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }))`);
+await pause(450);
+await evaluate(`${enterKey}.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))`);
 await type("Q");
 await until(screenHas("keys-done"), "the key recorder did not finish");
 const typed = fs.readFileSync(keysTrace).toString("latin1");
 const expected = "\x1b\t\x03\x16\x01d\x1a\x12\x0c\x7f\n\r\x7f";
 if (!typed.startsWith(expected)) await fail(`key row sent ${JSON.stringify(typed)}`);
-const repeats = typed.slice(expected.length, -1);
+const repeats = typed.slice(expected.length, -2);
 if (!/^\x01{4,8}$/.test(repeats)) await fail(`a key held for 450 ms sent ${JSON.stringify(repeats)}; expected one press and a repeat every 80 ms`);
+if (typed.slice(-2, -1) !== "\r" || typed.slice(expected.length).split("\r").length !== 2) await fail(`a held Enter sent ${JSON.stringify(typed.slice(expected.length))}; expected one Enter`);
 
 // The on-screen keyboard as iOS shows it: the visual viewport shrinks, the layout viewport does not.
 // The key row's bottom edge is the keyboard's top edge, and the pane is refit to what is left.
@@ -365,6 +382,9 @@ await keyboard(508);
 await run("stty size", `${fewer} `);
 await sameAsDaemon("after the keyboard resize");
 await capture("phone-keyboard-open");
+await evaluate("document.documentElement.dataset.scheme = 'light'");
+await capture("phone-keyboard-open-light");
+await evaluate("delete document.documentElement.dataset.scheme");
 
 // Host size: the pane keeps its size and the screen is scaled to show it.
 await evaluate("document.querySelector('.terminal-size').click()");
@@ -439,6 +459,10 @@ await capture("phone-landscape");
 // The smallest phone, 320x568: nothing scrolls sideways, and the keyboard leaves a usable screen.
 await open(320, 568, 2);
 if (!(await evaluate("document.querySelector('.bar').scrollWidth <= innerWidth"))) await fail("the top row overflows sideways at 320 px");
+const narrow = await evaluate(`(() => { const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+  return { enter: innerWidth - box('.terminal-line-keys .terminal-key:last-child').right, pad: box('.terminal-pad').width,
+    padLeft: box('.terminal-pad').left, padRight: box('.terminal-pad').right, keys: box('.terminal-line-keys').left }; })()`);
+if (narrow.enter < 0 || narrow.enter > 4.5 || narrow.padRight > narrow.keys || narrow.pad < 100) await fail(`the second row does not fit at 320 px: ${JSON.stringify(narrow)}`);
 await aboveKeyboard(568, 0, "320x568");
 await capture("phone-320");
 await keyboard(315);

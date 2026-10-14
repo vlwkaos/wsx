@@ -457,11 +457,14 @@ div.steps .steps-summary { cursor: default; }
   font-size: var(--font-size-sm); user-select: none; -webkit-user-select: none; cursor: pointer;
 }
 .terminal-key[data-failed] { color: var(--color-danger); }
+/* Paste at the left, the pad in the middle, ^J and Enter at the right edge. The side cells
+   take what their keys need, so at 320 px nothing leaves the row. */
 .terminal-tools {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center;
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
   gap: var(--space-1); padding: 0 var(--space-1) var(--space-1);
 }
+.terminal-line-keys { display: flex; justify-content: flex-end; gap: var(--space-1); }
 .terminal-pad {
-  width: calc(var(--size-key) * 4); padding: 0; display: flex; align-items: center; justify-content: center;
+  justify-self: center; width: min(100%, calc(var(--size-key) * 4)); padding: 0; display: flex; align-items: center; justify-content: center;
   touch-action: none; cursor: crosshair;
 }
