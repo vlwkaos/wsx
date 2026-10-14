@@ -2702,6 +2702,7 @@ fn cmd_agent_exchange_request(
             access,
             write_claims,
             command: false,
+            takeover: false,
         }
     } else {
         runtime::Request::AgentExchangeCreate {
@@ -2711,6 +2712,7 @@ fn cmd_agent_exchange_request(
             access,
             write_claims,
             command: false,
+            takeover: false,
         }
     };
     agent_exchange_response(runtime::Client::local().call(&request)?, json)?;
@@ -2852,6 +2854,7 @@ fn cmd_agent_exchange_continue(
             prompt,
             timeout_ms,
             command: false,
+            takeover: false,
         }
     } else {
         runtime::Request::AgentExchangeContinue {
@@ -2860,6 +2863,7 @@ fn cmd_agent_exchange_continue(
             prompt,
             timeout_ms,
             command: false,
+            takeover: false,
         }
     };
     agent_exchange_response(runtime::Client::local().call(&request)?, json)?;
@@ -2872,6 +2876,7 @@ fn cmd_agent_exchange_cancel(exchange_id: runtime::AgentExchangeId, json: bool) 
         runtime::Client::local().call(&runtime::Request::AgentExchangeCancel {
             exchange_id,
             expected_revision: current.revision,
+            takeover: false,
         })?,
         json,
     )?;

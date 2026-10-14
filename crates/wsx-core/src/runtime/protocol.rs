@@ -375,6 +375,11 @@ pub enum Request {
         /// daemon ignores it. See docs/agent-orchestration.md "Commands".
         #[serde(default)]
         command: bool,
+        /// Take the pane from a live terminal controller instead of failing with
+        /// `terminal_busy`. For a person's own action, never for automation.
+        /// See docs/agent-orchestration.md "Terminal control".
+        #[serde(default)]
+        takeover: bool,
     },
     /// Separate variants fail closed on older daemons instead of silently
     /// ignoring a destructive editor policy. See docs/agent-orchestration.md.
@@ -388,6 +393,11 @@ pub enum Request {
         write_claims: Vec<PathBuf>,
         #[serde(default)]
         command: bool,
+        /// Take the pane from a live terminal controller instead of failing with
+        /// `terminal_busy`. For a person's own action, never for automation.
+        /// See docs/agent-orchestration.md "Terminal control".
+        #[serde(default)]
+        takeover: bool,
     },
     AgentExchangeContinueStashingDraft {
         exchange_id: AgentExchangeId,
@@ -396,6 +406,11 @@ pub enum Request {
         timeout_ms: u64,
         #[serde(default)]
         command: bool,
+        /// Take the pane from a live terminal controller instead of failing with
+        /// `terminal_busy`. For a person's own action, never for automation.
+        /// See docs/agent-orchestration.md "Terminal control".
+        #[serde(default)]
+        takeover: bool,
     },
     AgentExchangeContinue {
         exchange_id: AgentExchangeId,
@@ -404,6 +419,11 @@ pub enum Request {
         timeout_ms: u64,
         #[serde(default)]
         command: bool,
+        /// Take the pane from a live terminal controller instead of failing with
+        /// `terminal_busy`. For a person's own action, never for automation.
+        /// See docs/agent-orchestration.md "Terminal control".
+        #[serde(default)]
+        takeover: bool,
     },
     AgentExchangeGet {
         exchange_id: AgentExchangeId,
@@ -439,6 +459,11 @@ pub enum Request {
     AgentExchangeCancel {
         exchange_id: AgentExchangeId,
         expected_revision: u64,
+        /// Take the pane from a live terminal controller instead of failing with
+        /// `terminal_busy`. For a person's own action, never for automation.
+        /// See docs/agent-orchestration.md "Terminal control".
+        #[serde(default)]
+        takeover: bool,
     },
     PluginList,
     PluginReload,
@@ -683,6 +708,7 @@ mod tests {
                 pane_id: PaneId(4),
                 access: AgentExchangeAccess::ReadOnly,
                 write_claims,
+                takeover: false,
                 ..
             } if write_claims.is_empty()
         ));

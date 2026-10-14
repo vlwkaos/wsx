@@ -6,6 +6,7 @@ Web Push receiver. Nothing here touches the user's daemon, Tailscale or network.
 """
 import argparse
 import base64
+import contextlib
 import hashlib
 import http.client
 import json
@@ -660,6 +661,34 @@ def main():
             wait(lambda: call('terminal_acquire', {'pane_id': pane, 'client_id': 6, 'takeover': False})['type'] == 'ack',
                  'terminal lease released')
             assert call('terminal_release', {'pane_id': pane, 'client_id': 6})['type'] == 'ack'
+
+        @contextlib.contextmanager
+        def wsx_window(pane):
+            """A wsx window in Terminal mode: it holds the pane's lease and reads its frames.
+            Yields the messages it got; a displaced window gets an error and its stream ends."""
+            with socket.socket(socket.AF_UNIX) as link:
+                link.settimeout(10)
+                link.connect(str(path))
+                lines = link.makefile('rb')
+                link.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
+                lines.readline()
+                link.sendall(json.dumps({'method': 'terminal_subscribe', 'params': {
+                    'pane_id': pane, 'client_id': 77, 'takeover': False, 'rows': 12, 'cols': 100}}).encode() + b'\n')
+                assert json.loads(lines.readline())['type'] == 'ack'
+                seen = []
+
+                def read():
+                    try:
+                        for line in lines:
+                            seen.append(json.loads(line))
+                    except (OSError, ValueError):
+                        pass
+                threading.Thread(target=read, daemon=True).start()
+                yield seen
+
+        def told_control_moved(seen):
+            moved = wait(lambda: [m for m in seen if m['type'] == 'error'], 'the wsx window is displaced')
+            assert moved[0]['data']['code'] == 'lease_transferred', moved
 
         daemon = subprocess.Popen([str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         processes.append(daemon)
@@ -1375,35 +1404,61 @@ capabilities = ["terminal_view"]
         wait(lambda: messages(owner, sessions['owner'])['messages'][-1]['text'] == 'echo: queued two', 'queued turn')
         assert timeline()['queue'] == [] and not queue_file.exists() or json.loads(queue_file.read_text())['sessions'] == {}
         settle('owner')
+        # The newest person wins: a wsx window holds the pane, a message from the page still
+        # goes through, the window is told that control moved, and nobody holds the pane after.
+        with wsx_window(owner_pane) as seen:
+            assert send('typed over the window')[0] == 200
+            told_control_moved(seen)
+            wait(lambda: delivered()[-1] == 'typed over the window', 'message typed past the window')
+        lease_free(sessions['owner'])
+        settle('owner')
         # A delivery the daemon refuses stays in the queue with the daemon's words and stops the queue.
-        assert send('use tool')[0] == 200
+        # wsxd lets one writer exchange be active in a worktree. A read-only turn came last, so the
+        # page starts a new writer exchange, and a writer on a second agent there refuses it.
+        created = call('session_create', {'worktree_id': worktrees['project'], 'label': 'helper chat',
+            'command': [sys.executable, str(actor), str(work / 'helper.jsonl'), str(work / 'helper.trace'),
+                        str(work / 'project'), str(chart), str(outside)], 'rows': 12, 'cols': 100})
+        assert created['type'] == 'created', created
+        sessions['helper'] = created['data']['id']
+        helper_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == sessions['helper'])
+        wait(lambda: next(p for p in call('snapshot')['data']['panes'] if p['id'] == helper_pane)['agent'], 'helper agent report')
+        settle('helper')
+        turn = call('agent_exchange_create', {'pane_id': owner_pane, 'prompt': 'use tool', 'timeout_ms': 60000})
+        assert turn['type'] == 'agent_exchange', turn
         wait(lambda: timeline()['working'], 'working turn')
         failing = send('held back')[1]['queued']['id']
         send('after the refusal')
-        assert call('terminal_acquire', {'pane_id': owner_pane, 'client_id': 6, 'takeover': False})['type'] == 'ack'
+        writer = call('agent_exchange_create', {'pane_id': helper_pane, 'prompt': 'use tool', 'timeout_ms': 60000, 'access': 'writer'})
+        assert writer['type'] == 'agent_exchange', writer
         open_gate('result')
         open_gate('answer')
         failed = wait(lambda: (lambda queue: queue if queue and queue[0]['failed'] else None)(timeline()['queue']), 'failed delivery', timeout=10)
-        assert failed[0]['id'] == failing and 'terminal_busy' in failed[0]['failed'] and failed[1]['failed'] is None, failed
-        call('terminal_release', {'pane_id': owner_pane, 'client_id': 6})
+        assert failed[0]['id'] == failing and 'write_claim_conflict' in failed[0]['failed'] and failed[1]['failed'] is None, failed
         time.sleep(1.5)
         assert [item['text'] for item in timeline()['queue']] == ['held back', 'after the refusal'] and delivered()[-1] == 'use tool'
+        # The other writer finishes; a retry goes through.
+        (work / 'helper.result').write_text('')
+        (work / 'helper.answer').write_text('')
+        wait(lambda: next(item for item in call('agent_exchange_list', {'pane_id': helper_pane})['data']
+                          if item['id'] == writer['data']['exchange']['id'])['state'] in ('done_observed', 'completed'), 'helper writer finished', timeout=20)
+        helper_id = sessions.pop('helper')
+        helper = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == helper_id)
+        assert call('session_close', {'session_id': helper['id'], 'expected_revision': helper['revision']})['type'] == 'ack'
         assert steady(owner, 'POST', chat + '/queue/%d/retry' % failing, {})[0] == 200
         wait(lambda: delivered()[-2:] == ['held back', 'after the refusal'], 'retried queue delivered in order', timeout=20)
         wait(lambda: timeline()['queue'] == [] and timeline()['working'] is None, 'queue drained')
         settle('owner')
-        ok('queue: waits while the agent works, in order, limit of five, removal, survives a server restart with the turn\'s wsxd start time, failed delivery keeps its reason and stops the queue until retried')
+        ok('queue: waits while the agent works, in order, limit of five, removal, survives a server restart with the turn\'s wsxd start time, sent past a wsx window that is told control moved, failed delivery keeps its reason and stops the queue until retried')
 
         # --- Stop: the turn ends, the exchange is cancelled, and a waiting message goes next.
         assert send('use tool')[0] == 200
         wait(lambda: timeline()['working'], 'working turn')
         send('after the stop')
-        assert call('terminal_acquire', {'pane_id': owner_pane, 'client_id': 6, 'takeover': False})['type'] == 'ack'
-        status, refused = steady(owner, 'POST', chat + '/cancel', {})
-        assert status == 409 and 'terminal_busy' in refused['error']['message'], refused
-        call('terminal_release', {'pane_id': owner_pane, 'client_id': 6})
-        status, stopping = steady(owner, 'POST', chat + '/cancel', {})
-        assert status == 200 and stopping['state'] == 'cancel_requested', stopping
+        # A wsx window that holds the pane does not block Stop: Stop takes the pane.
+        with wsx_window(owner_pane) as seen:
+            status, stopping = steady(owner, 'POST', chat + '/cancel', {})
+            assert status == 200 and stopping['state'] == 'cancel_requested', stopping
+            told_control_moved(seen)
         # The stopped exchange ends as cancelled. It is not continued: the waiting message starts a new one.
         def stopped_state():
             listed = call('agent_exchange_list', {'pane_id': owner_pane})['data']
@@ -1414,7 +1469,7 @@ capabilities = ["terminal_view"]
         assert timeline()['exchange']['id'] != stopping['id']
         wait(lambda: messages(owner, sessions['owner'])['messages'][-1]['text'] == 'echo: after the stop', 'turn after the stop')
         settle('owner')
-        ok('stop: refused while a terminal holds the pane, then the turn ends, the exchange is cancelled and the queue continues')
+        ok('stop: taken from a wsx window that holds the pane, the turn ends, the exchange is cancelled and the queue continues')
         assert not any(item['name'] in ('.env', 'api-token.txt', 'config') for item in
                        (work / 'state/wsx/web/owner/media/index.json').exists() and json.loads((work / 'state/wsx/web/owner/media/index.json').read_text()) or [])
         ok('media: upload, content hash URL, immutable cache, range, sniff allowlist, prompt attachment, agent file, no symlink or traversal')
@@ -1687,11 +1742,8 @@ capabilities = ["terminal_view"]
         # The answer is bound to the screen it was read from.
         refused = answer(root, '0' * 32, '1')
         assert refused[0] == 409 and refused[1]['error']['code'] == 'question_changed', refused
-        # While another client holds the pane, the answer is refused like Stop.
         owner_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == sessions['owner'])
         assert call('terminal_acquire', {'pane_id': owner_pane, 'client_id': 6, 'takeover': False})['type'] == 'ack'
-        refused = answer(root, asked['stamp'], '1')
-        assert refused[0] == 409 and refused[1]['error']['code'] == 'terminal_busy', refused
         assert answers() == []
         # A dialog that changes on the screen is a changed question: the page is told, the old stamp is stale.
         del root_events.seen[:]
@@ -1702,8 +1754,11 @@ capabilities = ["terminal_view"]
         assert moved['stamp'] != asked['stamp'] and any(row.startswith(' ❯ 2.') for row in moved['screen']), moved
         refused = answer(root, asked['stamp'], '1')
         assert refused[0] == 409 and refused[1]['error']['code'] == 'question_changed', refused
-        # A key from the page moves the cursor back; then the dialog is approved by its number.
-        assert answer(root, moved['stamp'], 'up') == (200, {'sent': True})
+        # A key from the page moves the cursor back, past a wsx window that holds the pane;
+        # then the dialog is approved by its number.
+        with wsx_window(owner_pane) as seen:
+            assert answer(root, moved['stamp'], 'up') == (200, {'sent': True})
+            told_control_moved(seen)
         back = wait(lambda: (lambda now: now and now['stamp'] == asked['stamp'] and now)(question(root)), 'cursor back on the first choice')
         assert answer(root, back['stamp'], '1') == (200, {'sent': True})
         wait(lambda: last_text() == 'You chose: Yes', 'approved by number')
@@ -1733,7 +1788,7 @@ capabilities = ["terminal_view"]
         # push, or the "finished" of this turn is the first notification there.
         events.expect('workspace', lambda data: any(
             item['id'] == sessions['owner'] and item['agent']['state'] == 'done' for item in data['sessions']))
-        ok('answer: question with screen, choices and waiting tool; refused without the capability, for a stale stamp, an invalid key, a held terminal and an agent that is not blocked; approve, deny, number and text reach the PTY')
+        ok('answer: question with screen, choices and waiting tool; refused without the capability, for a stale stamp, an invalid key and an agent that is not blocked; a held terminal is taken; approve, deny, number and text reach the PTY')
 
         # --- Optional real browser, on both sites, before any device is revoked.
         if args.browser:

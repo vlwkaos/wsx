@@ -4261,14 +4261,15 @@ impl App {
 
     fn send_terminal_bytes_once(&self, pane_id: runtime::PaneId, bytes: Vec<u8>) -> Result<()> {
         // ^ A one-shot Workspace action must never share identity with a live or
-        // reconnecting Terminal stream, whose lease has a separate incarnation.
+        // reconnecting Terminal stream, whose lease has a separate incarnation. A key
+        // press is explicit, so it takes the pane from another controller.
         let client_id = runtime::new_client_id();
         match self
             .runtime_client
             .call(&runtime::Request::TerminalAcquire {
                 pane_id,
                 client_id,
-                takeover: false,
+                takeover: TerminalControlIntent::Explicit.takeover(),
             })? {
             runtime::Response::Ack { .. } => {}
             runtime::Response::Error(error) => anyhow::bail!("{}: {}", error.code, error.message),

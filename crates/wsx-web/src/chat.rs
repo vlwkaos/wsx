@@ -576,6 +576,8 @@ impl Chat {
         // Continue only the same pane and agent identity; wsxd rechecks the generation.
         // An exchange keeps the access it was created with, so one that another site
         // or the owner's CLI opened with different access is not continued from here.
+        // ^ A person sent this message, so every request takes the pane from a terminal
+        // or a wsx window that holds it (`takeover`). The CLI does not.
         let request = match previous.filter(|exchange| {
             // wsxd does not continue a cancelled exchange or one whose pane is gone:
             // the next message starts a new one.
@@ -596,6 +598,7 @@ impl Chat {
                 prompt,
                 timeout_ms: EXCHANGE_TIMEOUT_MS,
                 command,
+                takeover: true,
             },
             Some(exchange) => Request::AgentExchangeContinue {
                 exchange_id: exchange.id,
@@ -603,6 +606,7 @@ impl Chat {
                 prompt,
                 timeout_ms: EXCHANGE_TIMEOUT_MS,
                 command,
+                takeover: true,
             },
             None => {
                 if stash {
@@ -613,6 +617,7 @@ impl Chat {
                         access,
                         write_claims: Vec::new(),
                         command,
+                        takeover: true,
                     }
                 } else {
                     Request::AgentExchangeCreate {
@@ -622,6 +627,7 @@ impl Chat {
                         access,
                         write_claims: Vec::new(),
                         command,
+                        takeover: true,
                     }
                 }
             }
@@ -673,6 +679,7 @@ impl Chat {
             &Request::AgentExchangeCancel {
                 exchange_id: exchange.id,
                 expected_revision: exchange.revision,
+                takeover: true,
             },
         )? {
             Response::AgentExchange { exchange, .. } => Ok(exchange_view(&exchange)),

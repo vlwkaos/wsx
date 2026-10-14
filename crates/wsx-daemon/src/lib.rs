@@ -2132,6 +2132,34 @@ fn record_transferred_stream(state: &mut State, stream: StreamLease) {
     state.transferred_streams.push_back(stream);
 }
 
+/// An exchange types into the pane, so a live terminal controller blocks it. With
+/// `takeover`, a person's own action, it takes the pane instead: the controller's stream
+/// ends with `lease_transferred`, as after `acquire_terminal_lease` with a takeover. The
+/// caller holds the pane operation lock, so no controller can come back before the write.
+fn take_terminal_lease(state: &mut State, pane_id: PaneId, takeover: bool) -> Result<(), ApiError> {
+    let Some(lease) = state
+        .leases
+        .get(&pane_id)
+        .copied()
+        .filter(|lease| lease.expires_at > Instant::now())
+    else {
+        return Ok(());
+    };
+    if !takeover {
+        return Err(api("terminal_busy", "pane has another writable controller"));
+    }
+    state.leases.remove(&pane_id);
+    record_transferred_stream(
+        state,
+        StreamLease {
+            pane_id,
+            client_id: lease.client_id,
+            generation: lease.generation,
+        },
+    );
+    Ok(())
+}
+
 fn terminal_stream_lease_error(
     state: &State,
     stream: StreamLease,
@@ -2647,10 +2675,15 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             access,
             write_claims,
             command,
+            takeover,
         } => create_agent_exchange_with_draft(
             daemon,
             pane_id,
-            ExchangeInput { prompt, command },
+            ExchangeInput {
+                prompt,
+                command,
+                takeover,
+            },
             timeout_ms,
             access,
             write_claims,
@@ -2663,10 +2696,15 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             access,
             write_claims,
             command,
+            takeover,
         } => create_agent_exchange_with_draft(
             daemon,
             pane_id,
-            ExchangeInput { prompt, command },
+            ExchangeInput {
+                prompt,
+                command,
+                takeover,
+            },
             timeout_ms,
             access,
             write_claims,
@@ -2678,11 +2716,16 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             prompt,
             timeout_ms,
             command,
+            takeover,
         } => continue_agent_exchange_with_draft(
             daemon,
             exchange_id,
             expected_revision,
-            ExchangeInput { prompt, command },
+            ExchangeInput {
+                prompt,
+                command,
+                takeover,
+            },
             timeout_ms,
             true,
         ),
@@ -2692,11 +2735,16 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             prompt,
             timeout_ms,
             command,
+            takeover,
         } => continue_agent_exchange_with_draft(
             daemon,
             exchange_id,
             expected_revision,
-            ExchangeInput { prompt, command },
+            ExchangeInput {
+                prompt,
+                command,
+                takeover,
+            },
             timeout_ms,
             false,
         ),
@@ -2744,7 +2792,8 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
         Request::AgentExchangeCancel {
             exchange_id,
             expected_revision,
-        } => cancel_agent_exchange(daemon, exchange_id, expected_revision),
+            takeover,
+        } => cancel_agent_exchange(daemon, exchange_id, expected_revision, takeover),
         Request::PluginList => Ok(Response::Plugins(lock(&daemon.state).plugins.clone())),
         Request::PluginReload => {
             let mut state = lock(&daemon.state);
@@ -4724,6 +4773,9 @@ struct ExchangeInput {
     prompt: String,
     /// A one-line slash command, typed as written (docs/agent-orchestration.md "Commands").
     command: bool,
+    /// Take the pane from a live terminal controller (docs/agent-orchestration.md
+    /// "Terminal control").
+    takeover: bool,
 }
 
 impl ExchangeInput {
@@ -4942,6 +4994,7 @@ fn create_agent_exchange(
         ExchangeInput {
             prompt,
             command: false,
+            takeover: false,
         },
         timeout_ms,
         access,
@@ -4970,13 +5023,6 @@ fn create_agent_exchange_with_draft(
             "daemon_unavailable",
             "wsxd cannot start an exchange during shutdown or handoff",
         ));
-    }
-    if state
-        .leases
-        .get(&pane_id)
-        .is_some_and(|lease| lease.expires_at > Instant::now())
-    {
-        return Err(api("terminal_busy", "pane has another writable controller"));
     }
     let pane = state
         .persisted
@@ -5054,6 +5100,7 @@ fn create_agent_exchange_with_draft(
     if stash_draft {
         validate_draft_target(agent, &runtime)?;
     }
+    take_terminal_lease(&mut state, pane_id, input.takeover)?;
     let revision = state.revision.saturating_add(1);
     let now = unix_time_millis();
     let mut persisted = state.persisted.clone();
@@ -5153,6 +5200,7 @@ fn continue_agent_exchange(
     let input = ExchangeInput {
         prompt,
         command: false,
+        takeover: false,
     };
     continue_agent_exchange_with_draft(daemon, id, expected_revision, input, timeout_ms, false)
 }
@@ -5199,13 +5247,6 @@ fn continue_agent_exchange_with_draft(
         ));
     }
     expect_runtime_generation(&state, pane_id, Some(&previous.runtime_generation))?;
-    if state
-        .leases
-        .get(&pane_id)
-        .is_some_and(|lease| lease.expires_at > Instant::now())
-    {
-        return Err(api("terminal_busy", "pane has another writable controller"));
-    }
     let runtime = state
         .runtimes
         .get(&pane_id)
@@ -5233,6 +5274,7 @@ fn continue_agent_exchange_with_draft(
         .round
         .checked_add(1)
         .ok_or_else(|| api("round_exhausted", "exchange round space exhausted"))?;
+    take_terminal_lease(&mut state, pane_id, input.takeover)?;
     let revision = state.revision.saturating_add(1);
     let now = unix_time_millis();
     let mut persisted = state.persisted.clone();
@@ -5604,6 +5646,7 @@ fn cancel_agent_exchange(
     daemon: &Arc<Daemon>,
     id: AgentExchangeId,
     expected_revision: u64,
+    takeover: bool,
 ) -> Result<Response, ApiError> {
     let pane_id = lock(&daemon.state)
         .persisted
@@ -5630,13 +5673,6 @@ fn cancel_agent_exchange(
         ));
     }
     expect_runtime_generation(&state, pane_id, Some(&exchange.runtime_generation))?;
-    if state
-        .leases
-        .get(&pane_id)
-        .is_some_and(|lease| lease.expires_at > Instant::now())
-    {
-        return Err(api("terminal_busy", "pane has another writable controller"));
-    }
     let runtime = state
         .runtimes
         .get(&pane_id)
@@ -5658,6 +5694,7 @@ fn cancel_agent_exchange(
                 && (agent.capabilities.escape_interrupts
                     || matches!(agent.provider.as_str(), "pi" | "omp"))
         });
+    take_terminal_lease(&mut state, pane_id, takeover)?;
     runtime
         .write(if escape { b"\x1b" } else { b"\x03" })
         .map_err(terminal_api)?;
@@ -10528,7 +10565,7 @@ mod tests {
         );
         assert_eq!(listed_agent_exchange(&daemon, blocked.id), blocked);
         assert_eq!(
-            cancel_agent_exchange(&daemon, blocked.id, delivered.revision)
+            cancel_agent_exchange(&daemon, blocked.id, delivered.revision, false)
                 .unwrap_err()
                 .code,
             "revision_conflict"
@@ -10553,7 +10590,7 @@ mod tests {
         let Response::AgentExchange {
             exchange: cancelling,
             ..
-        } = cancel_agent_exchange(&daemon, continued.id, continued.revision).unwrap()
+        } = cancel_agent_exchange(&daemon, continued.id, continued.revision, false).unwrap()
         else {
             panic!("expected cancellation request");
         };
@@ -10589,7 +10626,7 @@ mod tests {
         let Response::AgentExchange {
             exchange: cancelling,
             ..
-        } = cancel_agent_exchange(&daemon, exchange.id, exchange.revision).unwrap()
+        } = cancel_agent_exchange(&daemon, exchange.id, exchange.revision, false).unwrap()
         else {
             panic!("expected cancellation request");
         };
@@ -10961,7 +10998,7 @@ mod tests {
             .runtime_generations
             .insert(PaneId(4), "0000000000000002:0000000000000002".into());
         assert_eq!(
-            cancel_agent_exchange(&daemon, exchange.id, exchange.revision)
+            cancel_agent_exchange(&daemon, exchange.id, exchange.revision, false)
                 .unwrap_err()
                 .code,
             "stale_runtime"
@@ -10972,7 +11009,7 @@ mod tests {
         let Response::AgentExchange {
             exchange: cancelling,
             ..
-        } = cancel_agent_exchange(&daemon, exchange.id, exchange.revision).unwrap()
+        } = cancel_agent_exchange(&daemon, exchange.id, exchange.revision, false).unwrap()
         else {
             panic!("expected cancellation");
         };
@@ -11250,7 +11287,7 @@ mod tests {
     }
 
     #[test]
-    fn exchange_respects_terminal_lease_and_cold_recovery_interrupts_delivery() {
+    fn exchange_takes_terminal_lease_only_on_takeover_and_cold_recovery_interrupts_delivery() {
         let (daemon, path, runtime, _) = exchange_test_daemon();
         let worktree_path = lock(&daemon.state).persisted.worktrees[0].path.clone();
         lock(&daemon.state).leases.insert(
@@ -11274,18 +11311,38 @@ mod tests {
             .code,
             "terminal_busy"
         );
-        lock(&daemon.state).leases.clear();
-        let Response::AgentExchange { exchange, .. } = create_agent_exchange(
+        assert!(lock(&daemon.state).leases.contains_key(&PaneId(4)));
+        let Response::AgentExchange { exchange, .. } = create_agent_exchange_with_draft(
             &daemon,
             PaneId(4),
-            "persist me".into(),
+            ExchangeInput {
+                prompt: "persist me".into(),
+                command: false,
+                takeover: true,
+            },
             60_000,
             AgentExchangeAccess::Writer,
             Vec::new(),
+            false,
         )
         .unwrap() else {
             panic!("expected exchange");
         };
+        let displaced = StreamLease {
+            pane_id: PaneId(4),
+            client_id: 99,
+            generation: 1,
+        };
+        {
+            let state = lock(&daemon.state);
+            assert!(!state.leases.contains_key(&PaneId(4)));
+            assert_eq!(
+                terminal_stream_lease_error(&state, displaced, Instant::now())
+                    .unwrap()
+                    .code,
+                "lease_transferred"
+            );
+        }
         assert_eq!(exchange.write_claims, [worktree_path]);
         let restored = load_state(&path).unwrap();
         assert_eq!(
