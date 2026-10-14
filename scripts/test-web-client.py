@@ -2078,7 +2078,7 @@ capabilities = ["terminal_view"]
             assert result.returncode == 0, result.stdout + result.stderr
             # The measurements, for the record (docs/web-client.md "Live updates").
             for line in result.stdout.splitlines():
-                if 'processor slowed' in line or line.startswith('photo of'):
+                if 'processor slowed' in line or line.startswith(('photo of', 'empty phone composer', '/ list')):
                     print(line, file=sys.stderr)
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
             wait(lambda: steady(m2, 'GET', '/api/chat/%d/timeline' % shown['idle'])[1]['items'][-1].get('text') == 'echo: line one', 'browser turn')

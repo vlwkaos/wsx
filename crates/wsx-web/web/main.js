@@ -28,6 +28,7 @@ function useWide() {
 // ^ iOS Safari and an installed PWA keep the layout viewport when the keyboard opens:
 // only the visual viewport shrinks, and it can move down the page. The page is pinned
 // to the visual viewport, so a composer or key row sits on the keyboard's top edge.
+const SHORT_HEIGHT = 560;
 function followViewport() {
   const viewport = window.visualViewport;
   if (!viewport) return;
@@ -38,6 +39,9 @@ function followViewport() {
     // The keyboard covers the bottom safe area, so its inset must not stay as a gap.
     const keyboard = viewport.scale <= 1.01 && document.documentElement.clientHeight - viewport.height > 120;
     document.body.toggleAttribute("data-keyboard", keyboard);
+    // Little visible height, with the keyboard up or on a short screen: the `/` list keeps
+    // to fewer rows so the conversation stays in view (docs/web-client.md "Commands").
+    document.body.toggleAttribute("data-short", viewport.height < SHORT_HEIGHT);
   };
   viewport.addEventListener("resize", changed);
   viewport.addEventListener("scroll", changed);
