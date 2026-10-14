@@ -18,22 +18,36 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
     process.exit(2);
   }
 
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "wsx-web-chrome-"));
+  // In the run's folder when test-web-client.py runs this, so its next run can remove it
+  // even when this process was killed.
+  const profile = fs.mkdtempSync(path.join(process.env.WSX_TEST_WORK ?? os.tmpdir(), "wsx-web-chrome-"));
   const browser = spawn(chrome, [
     "--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`,
     "--no-first-run", "--no-default-browser-check", "--disable-extensions", "about:blank",
   ], { stdio: ["ignore", "ignore", "pipe"] });
   // Chrome still writes its profile while it exits: wait for it, then remove the profile.
-  const cleanup = async () => {
-    const exited = new Promise((resolve) => browser.once("exit", resolve));
-    browser.kill();
-    await exited;
+  // Once only, whichever way this process ends.
+  let cleaned;
+  const cleanup = () => cleaned ??= (async () => {
+    if (browser.exitCode === null && browser.signalCode === null) {
+      const exited = new Promise((resolve) => browser.once("exit", resolve));
+      browser.kill();
+      await exited;
+    }
     try {
       fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     } catch (error) {
       console.error(`could not remove ${profile}: ${error.code}`);
     }
+  })();
+  const end = (reason) => async (detail) => {
+    console.error(`FAIL: ${reason}${detail instanceof Error ? `: ${detail.stack}` : ""}`);
+    await cleanup();
+    process.exit(1);
   };
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.once(signal, end(`stopped by ${signal}`));
+  process.once("uncaughtException", end("uncaught exception"));
+  process.once("unhandledRejection", end("unhandled rejection"));
   const fail = async (message) => {
     console.error(`FAIL: ${message}`);
     await cleanup();

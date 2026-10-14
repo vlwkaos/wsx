@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -45,6 +46,9 @@ def main():
     wsx, wsxd = args.wsx.resolve(), args.daemon.resolve()
     agent = shutil.which(args.agent[0])
     assert agent, args.agent[0] + ' is not installed'
+    journey.sweep()
+    # A SIGTERM (a tool timeout) still runs the cleanup.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     work = ROOT / '.work' / ('real-' + str(os.getpid()))
     work.parent.mkdir(exist_ok=True)
     work.mkdir(mode=0o700)
@@ -91,7 +95,7 @@ def main():
         call('terminal_release', {'pane_id': pane, 'client_id': 9})
 
     try:
-        daemon = subprocess.Popen([str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        daemon = journey.start(work, [str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         processes.append(daemon)
         wait(path.exists, 'daemon')
         assert call('synchronize_projects', {'projects': [
@@ -138,7 +142,7 @@ projects = ["{project}"]
 capabilities = ["chat_send", "chat_answer", "agent_write", "terminal_view", "terminal_input"]
 ''')
         site_file.chmod(0o600)
-        processes.append(subprocess.Popen([str(wsx), 'web', 'serve', '--site', str(site_file)], env=env, cwd=project,
+        processes.append(journey.start(work, [str(wsx), 'web', 'serve', '--site', str(site_file)], env=env, cwd=project,
                                           stdout=subprocess.DEVNULL, stderr=(work / 'web.log').open('w')))
         site = journey.Site(port, '')
 
@@ -325,13 +329,8 @@ capabilities = ["chat_send", "chat_answer", "agent_write", "terminal_view", "ter
             except Exception as error:
                 print('timeline unavailable: %r' % error, file=sys.stderr)
             print('agent screen:\n' + '\n'.join(line.rstrip() for line in [screen(pane)[i:i + 120] for i in range(0, 4800, 120)] if line.strip()), file=sys.stderr)
-        for process in reversed(processes):
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
+        for process in reversed(journey.STARTED):
+            journey.stop(process)
         if success:
             shutil.rmtree(work)
         else:

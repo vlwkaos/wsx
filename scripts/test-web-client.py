@@ -14,6 +14,7 @@ import os
 import re
 from pathlib import Path
 import shutil
+import signal
 import socket
 import struct
 import urllib.parse
@@ -406,6 +407,117 @@ def png(size, shade):
             + chunk(b'IDAT', zlib.compress(raw, 0)) + chunk(b'IEND', b''))
 
 
+# ^ A run can be killed with SIGKILL (a tool timeout), and then no cleanup runs. So every
+# helper gets its own process group, recorded in the run's work folder, and the next run
+# ends whatever a dead run left (docs/web-client.md "Verification").
+RECORD = 'processes'
+STARTED = []
+
+
+def start(work, args, **options):
+    """Start a helper in its own process group and record it. Chrome started by a Node
+    check stays in the check's group."""
+    process = subprocess.Popen(args, start_new_session=True, **options)
+    STARTED.append(process)
+    with (work / RECORD).open('a') as out:
+        out.write('%d\t%s\n' % (process.pid, ' '.join(map(str, args))))
+    return process
+
+
+def stop(process, grace=5):
+    """SIGTERM to the helper's group, then SIGKILL to what is left."""
+    for signal_number, wait_seconds in ((signal.SIGTERM, grace), (signal.SIGKILL, 3)):
+        try:
+            os.killpg(process.pid, signal_number)
+        except ProcessLookupError:
+            break
+        try:
+            process.wait(timeout=wait_seconds)
+        except subprocess.TimeoutExpired:
+            continue
+        # The leader ended; members of its group, such as Chrome, may not have.
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            break
+
+
+def finish(process, timeout):
+    """Wait for a check; one that runs too long is stopped with its whole group."""
+    try:
+        out, err = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        stop(process, grace=2)
+        out, err = process.communicate()
+        err = (err or '') + '\ntimed out after %d s' % timeout
+    return subprocess.CompletedProcess(process.args, process.returncode, out, err)
+
+
+def check(work, args, timeout, **options):
+    """Run a Node check in its own group. Its Chrome profile goes into the run's folder."""
+    options.setdefault('stderr', subprocess.PIPE)
+    return finish(start(work, args, stdout=subprocess.PIPE, text=True,
+                        env=dict(os.environ, WSX_TEST_WORK=str(work)), **options), timeout)
+
+
+def sweep():
+    """End the processes of earlier runs in this checkout that died before their cleanup,
+    and remove their Chrome profiles. A process is ended only when its group is in the
+    run's record and its command is the recorded one, or its command names the run's folder."""
+    listing = subprocess.run(['ps', '-axo', 'pid=,pgid=,command='], capture_output=True, text=True, timeout=10).stdout
+    running = []
+    for line in listing.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            running.append((int(parts[0]), int(parts[1]), parts[2]))
+    ended = []
+    for folder in (ROOT / '.work').glob('*-*'):
+        prefix, _, owner = folder.name.partition('-')
+        if prefix not in ('web', 'real') or not owner.isdigit() or int(owner) == os.getpid():
+            continue
+        try:
+            os.kill(int(owner), 0)
+            continue  # that run is still going
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            continue
+        record = folder / RECORD
+        groups = {}
+        if record.exists():
+            for line in record.read_text().splitlines():
+                group, _, command = line.partition('\t')
+                if group.isdigit():
+                    groups[int(group)] = command
+        targets = [pid for pid, group, command in running if pid != os.getpid()
+                   and (str(folder) in command or (group in groups and command == groups[group]))]
+        ended.extend(targets)
+        for signal_number in (signal.SIGTERM, signal.SIGKILL):
+            for pid in targets:
+                try:
+                    os.kill(pid, signal_number)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            deadline = time.monotonic() + 3
+            while targets and time.monotonic() < deadline:
+                targets = [pid for pid in targets if alive(pid)]
+                time.sleep(0.05)
+        for profile in folder.glob('wsx-web-chrome-*'):
+            shutil.rmtree(profile, ignore_errors=True)
+        record.unlink(missing_ok=True)
+    return ended
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
 def free_port():
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0))
@@ -593,6 +705,11 @@ def main():
         raise RuntimeError('build adjacent wsx/wsxd first')
     node = shutil.which('node')
     assert node, 'Node is required for the independent Web Push receiver'
+    left = sweep()
+    if left:
+        print('ended %d processes of earlier runs that were killed' % len(left), file=sys.stderr)
+    # A SIGTERM (a tool or CI timeout) still runs the cleanup below.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     # Short path: the Unix socket must fit macOS SUN_LEN.
     work = ROOT / '.work' / ('web-' + str(os.getpid()))
     work.parent.mkdir(exist_ok=True)
@@ -706,7 +823,7 @@ def main():
             moved = wait(lambda: [m for m in seen if m['type'] == 'error'], 'the wsx window is displaced')
             assert moved[0]['data']['code'] == 'lease_transferred', moved
 
-        daemon = subprocess.Popen([str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        daemon = start(work, [str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         processes.append(daemon)
         wait(path.exists, 'daemon')
         # The browser's project has a second worktree, so its project screen shows two.
@@ -726,7 +843,7 @@ def main():
             sessions[name] = created['data']['id']
         wait(lambda: all(pane['agent'] for pane in call('snapshot')['data']['panes']), 'agent reports')
 
-        push = subprocess.Popen([node, str(ROOT / 'scripts/web-push-fixture.mjs'), str(work / 'push.jsonl')],
+        push = start(work, [node, str(ROOT / 'scripts/web-push-fixture.mjs'), str(work / 'push.jsonl')],
                                 stdout=subprocess.PIPE, text=True)
         processes.append(push)
         receiver = json.loads(push.stdout.readline())
@@ -952,7 +1069,7 @@ capabilities = ["terminal_view"]
         servers = {}
 
         def serve(name):
-            process = subprocess.Popen([str(wsx), 'web', 'serve', '--site', str(files[name])], env=env,
+            process = start(work, [str(wsx), 'web', 'serve', '--site', str(files[name])], env=env,
                                        cwd=project, stdout=subprocess.DEVNULL, stderr=(work / (name + '.log')).open('a'))
             processes.append(process)
             servers[name] = process
@@ -1404,7 +1521,7 @@ capabilities = ["terminal_view"]
         events.connection.sock.shutdown(socket.SHUT_RDWR)
         owner_process.terminate()
         owner_process.wait(timeout=5)
-        processes.append(subprocess.Popen([str(wsx), 'web', 'serve', '--site', str(files['owner'])], env=env, cwd=project,
+        processes.append(start(work, [str(wsx), 'web', 'serve', '--site', str(files['owner'])], env=env, cwd=project,
                                           stdout=subprocess.DEVNULL, stderr=(work / 'owner.log').open('a')))
         wait(lambda: up(owner), 'restarted web server')
         events = Events(owner)
@@ -1856,9 +1973,9 @@ capabilities = ["terminal_view"]
             shell_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == shell)
             code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
             args.captures.mkdir(parents=True, exist_ok=True)
-            result = subprocess.run([node, str(ROOT / 'scripts/web-terminal-check.mjs'), owner.origin + owner.base + '/',
-                                     code, str(shell), str(args.captures), str(path), str(shell_pane), str(tools / 'keys.trace')],
-                                    capture_output=True, text=True, timeout=200)
+            result = check(work, [node, str(ROOT / 'scripts/web-terminal-check.mjs'), owner.origin + owner.base + '/',
+                                  code, str(shell), str(args.captures), str(path), str(shell_pane), str(tools / 'keys.trace')],
+                           timeout=200)
             assert result.returncode == 0, result.stdout + result.stderr
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
             session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == shell)
@@ -1939,12 +2056,12 @@ capabilities = ["terminal_view"]
             assert [p['name'] for p in empty['projects']] == ['bare'] and empty['sessions'] == [], empty
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             page_captures = args.captures
-            result = subprocess.run([node, str(ROOT / 'scripts/web-browser-check.mjs'), 'tour', m2.origin + m2.base + '/',
-                                     cli('web', 'pair', '--site', files['m2']).stdout.splitlines()[0].rsplit(' ', 1)[1],
-                                     bare.origin + bare.base + '/',
-                                     cli('web', 'pair', '--site', files['bare']).stdout.splitlines()[0].rsplit(' ', 1)[1],
-                                     json.dumps(shown), str(page_captures), str(audit) if audit.exists() else ''],
-                                    capture_output=True, text=True, timeout=440)
+            result = check(work, [node, str(ROOT / 'scripts/web-browser-check.mjs'), 'tour', m2.origin + m2.base + '/',
+                                  cli('web', 'pair', '--site', files['m2']).stdout.splitlines()[0].rsplit(' ', 1)[1],
+                                  bare.origin + bare.base + '/',
+                                  cli('web', 'pair', '--site', files['bare']).stdout.splitlines()[0].rsplit(' ', 1)[1],
+                                  json.dumps(shown), str(page_captures), str(audit) if audit.exists() else ''],
+                           timeout=440)
             assert result.returncode == 0, result.stdout + result.stderr
             # The measurements, for the record (docs/web-client.md "Live updates").
             for line in result.stdout.splitlines():
@@ -1959,12 +2076,13 @@ capabilities = ["terminal_view"]
             # The page asks for the restart with a file and waits for the answer file.
             signals = work / 'restart'
             signals.mkdir()
-            check = subprocess.Popen([node, str(ROOT / 'scripts/web-browser-check.mjs'), 'restart', m2.origin + m2.base + '/',
+            restart = start(work, [node, str(ROOT / 'scripts/web-browser-check.mjs'), 'restart', m2.origin + m2.base + '/',
                                       cli('web', 'pair', '--site', files['m2']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                       str(page_captures), str(signals), str(audit) if audit.exists() else ''],
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                     env=dict(os.environ, WSX_TEST_WORK=str(work)))
             deadline = time.monotonic() + 120
-            while check.poll() is None and time.monotonic() < deadline:
+            while restart.poll() is None and time.monotonic() < deadline:
                 if (signals / 'request').exists() and not (signals / 'done').exists():
                     old = servers['m2']
                     old.terminate()
@@ -1982,8 +2100,9 @@ capabilities = ["terminal_view"]
                     wait(lambda: up(m2), 'm2 server restarted')
                     (signals / 'done').write_text('%.2f\n' % stopped)
                 time.sleep(0.1)
-            output = check.communicate(timeout=10)[0] if check.poll() is not None else (check.kill() or 'timed out')
-            assert check.returncode == 0, output
+            ended = finish(restart, timeout=10)
+            output = ended.stdout + (ended.stderr or '')
+            assert ended.returncode == 0, output
             ok('real browser, ' + output.strip().splitlines()[-1] + ' (server stopped %s s after SIGTERM)' % (signals / 'done').read_text().strip())
 
         # --- Web Push with explicit device consent, to the local receiver.
@@ -2083,10 +2202,10 @@ capabilities = ["terminal_view"]
         time.sleep(1.5)
         assert not path.exists(), 'wsx web started a daemon'
         if args.browser:
-            result = subprocess.run([node, str(ROOT / 'scripts/web-browser-check.mjs'), 'down', m2.origin + m2.base + '/',
-                                     cli('web', 'pair', '--site', files['m2']).stdout.splitlines()[0].rsplit(' ', 1)[1],
-                                     str(page_captures), str(audit) if audit.exists() else ''],
-                                    capture_output=True, text=True, timeout=120)
+            result = check(work, [node, str(ROOT / 'scripts/web-browser-check.mjs'), 'down', m2.origin + m2.base + '/',
+                                  cli('web', 'pair', '--site', files['m2']).stdout.splitlines()[0].rsplit(' ', 1)[1],
+                                  str(page_captures), str(audit) if audit.exists() else ''],
+                           timeout=120)
             assert result.returncode == 0, result.stdout + result.stderr
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
         ok('daemon stop: reported on the stream, API says unavailable, no daemon started')
@@ -2097,14 +2216,9 @@ capabilities = ["terminal_view"]
                 stream.connection.close()
             except Exception:
                 pass
-        for process in reversed(processes):
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=3)
+        # Every helper, a check that was still running too.
+        for process in reversed(STARTED):
+            stop(process)
         if path is not None and path.exists():
             assert path.lstat().st_uid == os.getuid(), 'private socket changed owner'
         for record in work.glob('*.pid'):
