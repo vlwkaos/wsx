@@ -19,7 +19,7 @@ Without this flag, existing history behavior is unchanged. Defaults: eight candi
 
 | Source | Projection |
 |---|---|
-| Claude | Adapter-reported `transcript_path`; user/assistant text from complete records on the latest persisted UUID parent chain, plus the latest available compaction checkpoint |
+| Claude | Adapter-reported `transcript_path`; user/assistant text from complete records on the latest persisted UUID parent chain, plus the latest available compaction checkpoint, without Claude's fixed preamble and closing instructions |
 | Pi/OMP | Reported session-file path; persisted message/compaction parent chain |
 | Codex | Reported or exact-ID store file; response-item text and compaction records, without duplicate event messages |
 | Other providers | Explicit `unsupported_provider`, not inferred screen history |
