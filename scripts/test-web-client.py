@@ -879,10 +879,16 @@ capabilities = ["terminal_view"]
         ok('theme: unknown name, token injection, unknown token, URL in CSS, oversized CSS and font, path escape, symlink, wrong icon refused')
 
         sites = {}
-        for name in files:
+        servers = {}
+
+        def serve(name):
             process = subprocess.Popen([str(wsx), 'web', 'serve', '--site', str(files[name])], env=env,
-                                       cwd=project, stdout=subprocess.DEVNULL, stderr=(work / (name + '.log')).open('w'))
+                                       cwd=project, stdout=subprocess.DEVNULL, stderr=(work / (name + '.log')).open('a'))
             processes.append(process)
+            servers[name] = process
+
+        for name in files:
+            serve(name)
             sites[name] = Site(ports[name], {'owner': '/app/owner', 'family': '/app/family', 'm2': '/app/m2'}.get(name, ''),
                                service_origin if name == 'root' else None)
 
@@ -1704,6 +1710,37 @@ capabilities = ["terminal_view"]
             assert result.returncode == 0, result.stdout + result.stderr
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
             wait(lambda: steady(m2, 'GET', '/api/chat/%d/timeline' % shown['idle'])[1]['items'][-1].get('text') == 'echo: line one', 'browser turn')
+
+            # A paired page reloads, with its service worker, before and after a server restart.
+            # The page asks for the restart with a file and waits for the answer file.
+            signals = work / 'restart'
+            signals.mkdir()
+            check = subprocess.Popen([node, str(ROOT / 'scripts/web-browser-check.mjs'), 'restart', m2.origin + m2.base + '/',
+                                      cli('web', 'pair', '--site', files['m2']).stdout.splitlines()[0].rsplit(' ', 1)[1],
+                                      str(page_captures), str(signals), str(audit) if audit.exists() else ''],
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            deadline = time.monotonic() + 120
+            while check.poll() is None and time.monotonic() < deadline:
+                if (signals / 'request').exists() and not (signals / 'done').exists():
+                    old = servers['m2']
+                    old.terminate()
+                    started = time.monotonic()
+                    try:
+                        old.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        old.kill()
+                        old.wait(timeout=3)
+                        raise AssertionError('wsx web serve did not stop within 10 s of SIGTERM while a page was open')
+                    stopped = time.monotonic() - started
+                    # Open streams get a two-second grace period, then the server ends.
+                    assert stopped < 4, 'wsx web serve took %.1f s to stop' % stopped
+                    serve('m2')
+                    wait(lambda: up(m2), 'm2 server restarted')
+                    (signals / 'done').write_text('%.2f\n' % stopped)
+                time.sleep(0.1)
+            output = check.communicate(timeout=10)[0] if check.poll() is not None else (check.kill() or 'timed out')
+            assert check.returncode == 0, output
+            ok('real browser, ' + output.strip().splitlines()[-1] + ' (server stopped %s s after SIGTERM)' % (signals / 'done').read_text().strip())
 
         # --- Web Push with explicit device consent, to the local receiver.
         status, info = owner.request('GET', '/api/push')

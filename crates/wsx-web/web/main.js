@@ -109,14 +109,22 @@ function start(session) {
     down: () => update({ online: false }),
     up: () => update({ online: true }),
   });
-  render(html`<${App} />`, document.getElementById("app"));
+  // ^ index.html's "Loading…" placeholder is not Preact's: a first render adopts an
+  // existing child only of the same element type, and the app's root is a div, so the
+  // placeholder would stay beside the app and take half of the screen.
+  const root = document.getElementById("app");
+  root.replaceChildren();
+  render(html`<${App} />`, root);
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js", { scope: "./" }).catch(() => {});
 }
 
 async function boot() {
   const root = document.getElementById("app");
+  // Only the session request decides between the app, pairing and the error page: a
+  // fault inside the started app must not draw a second screen beside it.
+  let session;
   try {
-    start(await api("api/session"));
+    session = await api("api/session");
   } catch (error) {
     if (error.status === 401) {
       render(html`<${Pair} onPaired=${() => { render(null, root); boot(); }} />`, root);
@@ -127,7 +135,9 @@ async function boot() {
           <button class="button" type="button" onClick=${() => location.reload()}>Try again</button>
         </main>`, root);
     }
+    return;
   }
+  start(session);
 }
 
 applyScheme();

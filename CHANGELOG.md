@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Web: after a reload of a paired device, the "Loading…" placeholder stayed beside the app and took half of the screen. The page now removes it before the app starts.
+- `wsx web serve` did not exit on SIGTERM or SIGINT while a page held an event stream or a terminal. Open streams now get two seconds, then the server exits.
+
 ### Changed
 
 - `wsx web pair`, `wsx web devices` and `wsx web serve` no longer need `--site`. With no site named they use the only site file in `~/.config/wsx/web/` (or `$XDG_CONFIG_HOME/wsx/web/`); with none they say how to make one, and with several they list them. A site can also be named by its id or file name, for example `wsx web pair wsx`.
