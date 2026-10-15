@@ -140,7 +140,11 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 }
 .icon-button[aria-pressed="true"] { color: var(--color-text); }
 @media (pointer: coarse) {
-  .link-action { min-height: var(--size-control); display: inline-flex; align-items: center; }
+  /* A short word such as Stop still gets a 44 px wide hit area; its text stays in place. */
+  .link-action {
+    min-height: var(--size-control); display: inline-flex; align-items: center;
+    padding-inline: var(--space-2); margin-inline: calc(-1 * var(--space-2));
+  }
 }
 .input {
   width: 100%; min-height: var(--size-control); padding: 0 var(--space-3);
@@ -249,6 +253,7 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
   border-bottom: var(--border-width) solid var(--color-hairline);
 }
 .viewer-bar .time { min-width: 5ch; text-align: center; font-size: var(--font-size-sm); }
+.viewer-bar .button { min-width: var(--size-control); }
 .viewer-stage { flex: 1; min-height: 0; overflow: auto; display: flex; touch-action: none; cursor: grab; }
 .viewer-stage img { margin: auto; flex: 0 0 auto; }
 /* A table keeps its header row in view while it scrolls both ways in its own block. */
@@ -279,7 +284,12 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
   mask-image: linear-gradient(to bottom, black 70%, transparent);
 }
 .steps { font-size: var(--font-size-sm); color: var(--color-muted); max-width: var(--size-prose); }
-.steps-summary { display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; overflow-wrap: anywhere; }
+/* The hit area is 44 px high; the row still draws at its text height. */
+.steps-summary {
+  display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; overflow-wrap: anywhere;
+  padding-block: calc((var(--size-control) - var(--font-size-sm) * var(--line-height)) / 2);
+  margin-block: calc((var(--font-size-sm) * var(--line-height) - var(--size-control)) / 2);
+}
 .steps-summary::-webkit-details-marker { display: none; }
 .steps[open] > .steps-summary .icon { transform: rotate(90deg); }
 div.steps .steps-summary { cursor: default; }
@@ -298,7 +308,7 @@ div.steps .steps-summary { cursor: default; }
 @keyframes pulse { 50% { opacity: var(--opacity-disabled); } }
 .jump {
   position: absolute; bottom: var(--space-3); left: 50%; transform: translateX(-50%);
-  min-height: var(--size-key); padding: 0 var(--space-3); display: inline-flex; align-items: center; gap: var(--space-1);
+  min-height: var(--size-control); padding: 0 var(--space-3); display: inline-flex; align-items: center; gap: var(--space-1);
   border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
   background: var(--color-raised); color: var(--color-text); font-size: var(--font-size-sm); cursor: pointer; white-space: nowrap;
 }
@@ -315,13 +325,14 @@ div.steps .steps-summary { cursor: default; }
 /* Opaque, with a hairline on top, so the end of the conversation is visible. */
 .composer, .attention { flex: 0 0 auto; padding: var(--space-3) var(--column-inset); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
 .composer-row { display: flex; align-items: flex-end; gap: var(--space-1); }
-/* The `/` list: one row per command, the name in the terminal font, the active row raised. */
-.slash { margin-bottom: var(--space-2); }
-.slash-list {
-  list-style: none; margin: 0; padding: 0; max-height: calc(var(--size-key) * 5.5); overflow-y: auto;
+/* The `/` list: one row per command, the name in the terminal font, the active row raised.
+   Its notes are muted single lines at the end of the same box, not between it and the field. */
+.slash {
+  margin-bottom: var(--space-2); max-height: calc(var(--size-key) * 5.5); overflow-y: auto;
   overscroll-behavior: contain; border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
   background: var(--color-bg); scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent;
 }
+.slash-list { list-style: none; margin: 0; padding: 0; }
 .slash-option {
   min-height: var(--size-key); padding: var(--space-1) var(--space-3); display: flex; align-items: baseline; gap: var(--space-3);
   cursor: pointer; font-size: var(--font-size-sm);
@@ -330,21 +341,31 @@ div.steps .steps-summary { cursor: default; }
 .slash-name { flex: 0 0 auto; font-family: var(--font-terminal); color: var(--color-text); }
 .slash-description { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-muted); }
 .slash-source { flex: 0 0 auto; color: var(--color-faint); font-size: var(--font-size-label); }
-.slash-note { padding: var(--space-1) 0 0; }
+.slash-note {
+  margin: 0; padding: var(--space-1) var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 /* The attach icon, not its touch target, starts at the column edge. */
 .composer-row > .icon-button:first-child { margin-left: calc(-1 * var(--space-3)); }
 .composer .button { height: var(--size-control); }
 .send-mark { display: none; }
-/* A phone, compact like the owner's reference (the Claude iOS app): a one-line field on
-   top, then a short row with attach at the left and a round Send at the right. Each control
-   is still 44 px wide. A wide window keeps one line with a text Send. */
-.app:not([data-wide]) .composer { padding-top: var(--space-2); padding-bottom: var(--space-2); }
-.app:not([data-wide]) .composer-row { flex-wrap: wrap; align-items: center; row-gap: var(--space-1); }
+/* A phone, like the owner's reference (the Claude iOS app): one rounded card inset by the
+   gutter, with the one-line field on top and a short row inside it, attach at the left and a
+   round Send at the right. The row draws 36 px; each control's hit area is 44 by 44. A wide
+   window keeps one bar with a text Send. */
+.app:not([data-wide]) .composer { padding: var(--space-1) var(--space-4) var(--space-2); background: none; border-top: 0; }
+.app:not([data-wide]) .composer-row {
+  flex-wrap: wrap; align-items: center; row-gap: var(--space-1); padding: 0 var(--space-1);
+  background: var(--color-surface); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-sheet);
+}
+.app:not([data-wide]) .composer:focus-within .composer-row { border-color: var(--color-accent); }
+.app:not([data-wide]) .composer-row > .icon-button:first-child { margin-left: 0; }
 .app:not([data-wide]) .composer-input { order: -1; flex-basis: 100%; }
 .app:not([data-wide]) .composer-field, .app:not([data-wide]) .composer-mirror { min-height: 0; padding: var(--space-1) var(--space-2); }
-.app:not([data-wide]) .composer-row > .icon-button { height: var(--size-key); }
+.app:not([data-wide]) .composer-row > .icon-button,
+.app:not([data-wide]) .composer .composer-send { height: var(--size-control); margin-block: calc((var(--size-key) - var(--size-control)) / 2); }
 .app:not([data-wide]) .composer .composer-send {
-  margin-left: auto; width: var(--size-control); height: var(--size-key); min-height: 0; padding: 0;
+  margin-left: auto; width: var(--size-control); min-height: 0; padding: 0;
   display: inline-flex; align-items: center; justify-content: center; background: none;
 }
 .app:not([data-wide]) .send-mark {
@@ -354,7 +375,7 @@ div.steps .steps-summary { cursor: default; }
 .app:not([data-wide]) .send-text { display: none; }
 /* The `/` list on a phone: the name and its source, then the description on one muted line.
    With the keyboard up, or on a short screen, it keeps to 3.5 rows so the conversation shows. */
-.app:not([data-wide]) .slash-list { max-height: calc(var(--size-control) * 5.5); }
+.app:not([data-wide]) .slash { max-height: calc(var(--size-control) * 5.5); }
 .app:not([data-wide]) .slash-option {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name source" "description description";
   align-items: baseline; gap: 0 var(--space-3); min-height: var(--size-control);
@@ -362,7 +383,7 @@ div.steps .steps-summary { cursor: default; }
 .app:not([data-wide]) .slash-name { grid-area: name; }
 .app:not([data-wide]) .slash-source { grid-area: source; }
 .app:not([data-wide]) .slash-description { grid-area: description; }
-body[data-short] .app:not([data-wide]) .slash-list { max-height: calc(var(--size-control) * 3.5); }
+body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-control) * 3.5); }
 /* A blocked agent takes its answer in the terminal: this row stands where the composer was. */
 .attention {
   min-height: calc(var(--size-control) + 2 * var(--space-2)); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);

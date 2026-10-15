@@ -5,6 +5,7 @@
 //   down <site-url> <code> <capture-dir> [slop-audit.js]     (wsxd is stopped)
 // Each capture is saved with the slop audit of /ui-view-standards beside it.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { launch } from "./web-cdp.mjs";
 
@@ -18,6 +19,9 @@ const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = aw
 });
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
+// The phone layout audit of the ui-view-standards skill (reference/MOBILE.md), when installed.
+const mobilePath = process.env.WSX_MOBILE_AUDIT ?? path.join(os.homedir(), ".claude/skills/ui-view-standards/scripts/mobile-audit.js");
+const mobileSource = fs.existsSync(mobilePath) ? fs.readFileSync(mobilePath, "utf8") : null;
 const SIZES = [[320, 568, 2], [390, 844, 2], [1280, 800, 1]];
 let size = SIZES[0];
 const phone = () => size[0] < 600;
@@ -33,6 +37,19 @@ async function shot(name, primary) {
     if (audit.horizontalOverflow) await fail(`${label} overflows sideways`);
     if (audit.primaryAction.filledInViewport > 1) await fail(`${label} shows ${audit.primaryAction.filledInViewport} filled accent controls: ${JSON.stringify(audit.primaryAction.filled)}`);
     if (primary && !audit.primaryAction.inFirstViewport) await fail(`${label}: the primary action is not in view`);
+  }
+  // On a phone: no sideways scroll, no field that makes iOS zoom, and no other field in the
+  // way of iOS's previous and next arrows while the composer has the focus. The rest is printed.
+  if (mobileSource && phone()) {
+    await evaluate("globalThis.MOBILE_AUDIT_GUTTER = 16");
+    const mobile = await evaluate(mobileSource);
+    fs.writeFileSync(path.join(captures, `${size[0]}-${name}.mobile.json`), JSON.stringify(mobile, null, 1));
+    if (mobile.horizontalOverflow) await fail(`${label}: the page scrolls sideways (mobile audit)`);
+    if (mobile.zoomingFields.count) await fail(`${label}: a field makes iOS zoom: ${JSON.stringify(mobile.zoomingFields.items)}`);
+    if (mobile.focusedField?.startsWith("textarea.composer-field") && mobile.otherFocusableFields?.count) {
+      await fail(`${label}: other fields can take the focus from the composer: ${JSON.stringify(mobile.otherFocusableFields.items)}`);
+    }
+    console.log(`mobile audit ${name} at ${mobile.viewport.join("x")}: contentShare ${mobile.contentShare}, smallTargets ${mobile.smallTargets.count} ${JSON.stringify(mobile.smallTargets.items.map((item) => `${item.label || item.el} ${item.size.join("x")}`))}, tinyText ${mobile.tinyText.count}, outsideGutter ${mobile.outsideGutter.count}`);
   }
   await capture(`${size[0]}-${name}`);
 }
@@ -264,8 +281,10 @@ async function chats() {
       height: document.querySelector('.composer .button').getBoundingClientRect().height, control: document.querySelector('.composer-field').getBoundingClientRect().height,
       radius: [getComputedStyle(document.querySelector('.composer .button')).borderRadius, getComputedStyle(document.querySelector('.message-user')).borderRadius],
       chars: Math.round((log.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)) / parseFloat(getComputedStyle(document.documentElement).fontSize || 16)) }; })()`);
-  if (column.steps !== column.left || column.user !== column.right || column.send !== column.right || column.queued !== column.left
-    || column.height !== (phone() ? 36 : 44) || column.radius[0] !== column.radius[1] || column.field < column.left) {
+  // On a phone Send sits inside the composer card, one border and one space-1 from its edge.
+  if (column.steps !== column.left || column.user !== column.right || column.queued !== column.left
+    || (phone() ? column.right - column.send < 0 || column.right - column.send > 6 : column.send !== column.right)
+    || column.height !== 44 || column.radius[0] !== column.radius[1] || column.field < column.left) {
     await fail(`the chat is not one column, or the send button is not a 44 px control: ${JSON.stringify(column)}`);
   }
   console.log(`chat column at ${size[0]} px: ${JSON.stringify(column)}`);
@@ -283,8 +302,11 @@ async function chats() {
       attach: [attach.width, attach.height], send: [send.width, send.height], sendRight: Math.round(row.right - send.right), attachLeft: Math.round(attach.left - row.left),
       height: Math.round(box('.composer').height), round: getComputedStyle(document.querySelector('.send-mark')).borderRadius }; })()`);
   const layout = await composer();
-  if (phone() ? Math.abs(layout.field - layout.row) > 1 || layout.below < 0 || layout.line > 1 || layout.sendRight !== 0 || layout.attachLeft > 0
-      || Math.min(layout.attach[0], layout.send[0]) < 44 || Math.min(layout.attach[1], layout.send[1]) < 36 || layout.round !== "50%"
+  // On a phone the row is the composer card: the field spans it, attach and Send sit at its
+  // edges inside its border and space-1, and every control's hit area is 44 by 44.
+  if (phone() ? layout.row - layout.field > 12 || layout.below < 0 || layout.line > 1 || layout.sendRight < 0 || layout.sendRight > 6
+      || layout.attachLeft < 0 || layout.attachLeft > 6
+      || Math.min(...layout.attach, ...layout.send) < 44 || layout.round !== "50%"
     : layout.below >= 0) {
     await fail(`the composer layout is wrong at ${size[0]} px: ${JSON.stringify(layout)}`);
   }
@@ -295,10 +317,13 @@ async function chats() {
     // Compact like the reference: an empty composer of at most 96 px.
     if (empty.height > 96) await fail(`the empty phone composer is ${empty.height} px high`);
     console.log(`empty phone composer at 390 px: ${empty.height} px, attach ${empty.attach.join("x")}, send ${empty.send.join("x")}`);
+    // The field is short; a tap anywhere on the card outside its buttons focuses it.
+    await evaluate("document.activeElement?.blur(); document.querySelector('.composer-row').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }))");
+    if (!(await evaluate("document.activeElement === document.querySelector('.composer-field')"))) await fail("a tap on the composer card did not focus the field");
     await shot("composer");
     await typeInto("Check the login redirect on Safari.\nThen the cookie settings.\nThen write the notes.");
     const typed = await composer();
-    if (Math.abs(typed.field - typed.row) > 1 || typed.below < 0 || typed.line > 1) await fail(`three lines break the composer: ${JSON.stringify(typed)}`);
+    if (typed.row - typed.field > 12 || typed.below < 0 || typed.line > 1) await fail(`three lines break the composer: ${JSON.stringify(typed)}`);
     await shot("composer-text");
     await typeInto("");
   }
@@ -816,13 +841,23 @@ const keyboard = (height) => evaluate(`(() => {
   if (${height} !== null) Object.defineProperty(viewport, "height", { configurable: true, get: () => ${height} });
   viewport.dispatchEvent(new Event("resize"));
 })()`);
-async function commandsAbove(label) {
+async function commandsAbove(label, tag) {
   await openSession("long");
   await until("document.querySelectorAll('.message').length > 4 && !!document.querySelector('.composer-field:not([disabled])')", `${label}: the composer is not ready`);
+  // The conversation with the keyboard up and nothing typed yet.
+  await typeInto("");
+  await shot(`chat-typing-${tag}`);
+  // A note of the list is one muted line at the end of the list's own box.
+  await typeInto("/zzz");
+  await until("!!document.querySelector('.slash-note')", `${label}: no note for a filter without matches`);
+  const note = await evaluate(`(() => { const box = (node) => node.getBoundingClientRect(); const note = document.querySelector('.slash-note'), list = document.querySelector('.slash');
+    return { inside: list.contains(note), lines: Math.round(box(note).height / parseFloat(getComputedStyle(note).lineHeight)),
+      between: box(document.querySelector('.composer-row')).top - box(list).bottom }; })()`);
+  if (!note.inside || note.lines !== 1 || note.between > 9) await fail(`${label}: the list's note is not one line inside the list: ${JSON.stringify(note)}`);
   await typeInto("/");
   await until("document.querySelectorAll('.slash-option').length === 6", `${label}: the / list did not open`);
   const seen = await evaluate(`(() => { const box = (selector) => document.querySelector(selector).getBoundingClientRect();
-    return { list: Math.round(box('.slash-list').height), row: Math.round(box('.slash-option').height), log: Math.round(box('.log-wrap').height),
+    return { list: Math.round(box('.slash').height), row: Math.round(box('.slash-option').height), log: Math.round(box('.log-wrap').height),
       composer: Math.round(box('.composer').bottom), visible: Math.round(visualViewport.offsetTop + visualViewport.height), scrolled: document.scrollingElement.scrollTop,
       below: Math.round(box('.slash-option .slash-description').top - box('.slash-option .slash-name').bottom) }; })()`);
   if (seen.list > seen.row * 3.5 + 2 || seen.log < 60 || Math.abs(seen.composer - seen.visible) > 1 || seen.scrolled !== 0 || seen.below < 0) {
@@ -841,7 +876,7 @@ async function commandsAbove(label) {
 }
 await resize(SIZES[1]);
 await keyboard(420);
-await commandsAbove("with the keyboard up at 390x844");
+await commandsAbove("with the keyboard up at 390x844", "keyboard");
 await shot("chat-commands-keyboard");
 await evaluate("document.documentElement.dataset.scheme = 'light'");
 await shot("chat-commands-keyboard-light");
@@ -860,7 +895,7 @@ if (after.body !== after.screen || after.tabs !== after.screen || after.keyboard
 await shot("inbox-after-keyboard");
 await keyboard(null);
 await resize([390, 420, 2]);
-await commandsAbove("on a 390x420 screen");
+await commandsAbove("on a 390x420 screen", "short");
 await shot("chat-commands-short");
 await evaluate("document.documentElement.dataset.scheme = 'light'");
 await shot("chat-commands-short-light");
