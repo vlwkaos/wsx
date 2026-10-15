@@ -777,6 +777,28 @@ for (const next of [SIZES[1], SIZES[2]]) {
   if (phone()) await evaluate("document.querySelector('.slash-option').click()");
   else await key("Tab", 9);
   await until("document.querySelector('.composer-field').value === '/compact ' && !document.querySelector('.slash')", "picking did not fill /compact");
+  // The picked command is one token in the accent colour, over the field's own text.
+  const token = await evaluate(`(() => { const token = document.querySelector('.composer-token'); const field = document.querySelector('.composer-field');
+    const probe = Object.assign(document.createElement('span'), { style: 'color: var(--color-accent)' }); document.body.append(probe);
+    const accent = getComputedStyle(probe).color; probe.remove();
+    return { text: token?.textContent, color: token && getComputedStyle(token).color, accent, field: getComputedStyle(field).color,
+      offset: token ? Math.round(token.getBoundingClientRect().left - field.getBoundingClientRect().left - parseFloat(getComputedStyle(field).paddingLeft)) : null }; })()`);
+  if (token.text !== "/compact" || token.color !== token.accent || token.field !== "rgba(0, 0, 0, 0)" || token.offset !== 0) await fail(`the picked command is not a token: ${JSON.stringify(token)}`);
+  if (phone()) {
+    await shot("chat-command-token");
+    await evaluate("document.documentElement.dataset.scheme = 'light'");
+    await shot("chat-command-token-light");
+    await evaluate("delete document.documentElement.dataset.scheme");
+  } else {
+    // Backspace right after the token removes the whole command; the rest stays plain text.
+    await typeInto("/compact keep the notes");
+    await evaluate("document.querySelector('.composer-field').setSelectionRange(8, 8)");
+    await key("Backspace", 8);
+    const left = await evaluate("({ value: document.querySelector('.composer-field').value, token: !!document.querySelector('.composer-token') })");
+    if (left.value !== " keep the notes" || left.token) await fail(`Backspace after the token left ${JSON.stringify(left)}`);
+    await typeInto("/compactly");
+    if (await count(".composer-token")) await fail("a word that only starts like a command became a token");
+  }
   if (phone()) {
     await evaluate("document.querySelector('.composer .button-primary').click()");
     await until("[...document.querySelectorAll('.message:not(.message-user) .markdown')].some((node) => node.textContent === 'echo: /compact')", "the agent did not answer /compact");

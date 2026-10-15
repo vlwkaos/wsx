@@ -340,7 +340,8 @@ div.steps .steps-summary { cursor: default; }
    is still 44 px wide. A wide window keeps one line with a text Send. */
 .app:not([data-wide]) .composer { padding-top: var(--space-2); padding-bottom: var(--space-2); }
 .app:not([data-wide]) .composer-row { flex-wrap: wrap; align-items: center; row-gap: var(--space-1); }
-.app:not([data-wide]) .composer-field { order: -1; flex-basis: 100%; min-height: 0; padding: var(--space-1) var(--space-2); }
+.app:not([data-wide]) .composer-input { order: -1; flex-basis: 100%; }
+.app:not([data-wide]) .composer-field, .app:not([data-wide]) .composer-mirror { min-height: 0; padding: var(--space-1) var(--space-2); }
 .app:not([data-wide]) .composer-row > .icon-button { height: var(--size-key); }
 .app:not([data-wide]) .composer .composer-send {
   margin-left: auto; width: var(--size-control); height: var(--size-key); min-height: 0; padding: 0;
@@ -393,6 +394,14 @@ body[data-short] .app:not([data-wide]) .slash-list { max-height: calc(var(--size
 .question-keys .note { padding: 0; color: var(--color-accent); }
 .question-keys a.link-action { margin-left: auto; }
 .question :disabled { opacity: var(--opacity-disabled); }
+/* The field and, behind it, the mirror that colours a command token: same box and text. */
+.composer-input { position: relative; flex: 1; min-width: 0; display: flex; }
+.composer-mirror {
+  position: absolute; inset: 0; padding: var(--space-3) var(--space-2); overflow: hidden; pointer-events: none;
+  font-size: var(--font-size-field); line-height: var(--line-height); white-space: pre-wrap; overflow-wrap: break-word;
+}
+.composer-token { color: var(--color-accent); }
+.composer-input[data-token] .composer-field { color: transparent; caret-color: var(--color-text); }
 .composer-field {
   flex: 1; min-width: 0; min-height: var(--size-control); padding: var(--space-3) var(--space-2);
   border: 0; background: none; resize: none; line-height: var(--line-height); outline: none;
