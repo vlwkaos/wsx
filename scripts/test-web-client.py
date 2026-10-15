@@ -180,6 +180,12 @@ def turn(text):
   record('user', [{'type':'tool_result','tool_use_id':call,'is_error':answer == 'cancelled','content':answer}])
   record('assistant', 'You chose: ' + answer)
   paint()
+ elif 'slow editor' in body:
+  # Claude reports the end of a turn, then draws its idle editor a moment later.
+  time.sleep(1)
+  record('assistant', 'Done, slowly.')
+  sys.stdout.write('\x1b[2J'); sys.stdout.flush()
+  report('done'); time.sleep(3); paint(); return
  elif 'fail' in body:
   report('error'); return
  else:
@@ -1578,9 +1584,9 @@ capabilities = ["terminal_view"]
         assert writer['type'] == 'agent_exchange', writer
         open_gate('result')
         open_gate('answer')
-        failed = wait(lambda: (lambda queue: queue if queue and queue[0]['failed'] else None)(timeline()['queue']), 'failed delivery', timeout=10)
-        assert failed[0]['id'] == failing and 'write_claim_conflict' in failed[0]['failed'] and failed[1]['failed'] is None, failed
-        time.sleep(1.5)
+        # A failed message does not hold back the next one; here the next meets the same writer.
+        failed = wait(lambda: (lambda queue: queue if len(queue) == 2 and all(item['failed'] for item in queue) else None)(timeline()['queue']), 'failed delivery', timeout=10)
+        assert failed[0]['id'] == failing and all('write_claim_conflict' in item['failed'] for item in failed), failed
         assert [item['text'] for item in timeline()['queue']] == ['held back', 'after the refusal'] and delivered()[-1] == 'use tool'
         # The other writer finishes; a retry goes through.
         (work / 'helper.result').write_text('')
@@ -1591,6 +1597,8 @@ capabilities = ["terminal_view"]
         helper = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == helper_id)
         assert call('session_close', {'session_id': helper['id'], 'expected_revision': helper['revision']})['type'] == 'ack'
         assert steady(owner, 'POST', chat + '/queue/%d/retry' % failing, {})[0] == 200
+        wait(lambda: delivered()[-1] == 'held back', 'retried message delivered', timeout=20)
+        assert steady(owner, 'POST', chat + '/queue/%d/retry' % failed[1]['id'], {})[0] == 200
         wait(lambda: delivered()[-2:] == ['held back', 'after the refusal'], 'retried queue delivered in order', timeout=20)
         wait(lambda: timeline()['queue'] == [] and timeline()['working'] is None, 'queue drained')
         settle('owner')
@@ -1618,6 +1626,47 @@ capabilities = ["terminal_view"]
         wait(lambda: delivered()[-1] == 'after the typed line', 'retried after the typed line', timeout=20)
         wait(lambda: timeline()['queue'] == [] and timeline()['exchange']['failure'] is None, 'delivered without a failure')
         settle('owner')
+        # Claude draws its editor idle a moment after the turn ends. wsxd says "not yet"
+        # (editor_unavailable) meanwhile; the waiting message goes once the editor shows.
+        assert send('slow editor')[0] == 200
+        wait(lambda: timeline()['working'], 'slow editor turn')
+        slow = send('after the slow editor')[1]['queued']['id']
+        seen = []
+        wait(lambda: seen.append([item.get('failed') for item in timeline()['queue']]) or delivered()[-1] == 'after the slow editor',
+             'the message after a slow editor', timeout=20)
+        assert not any(any(reasons) for reasons in seen), seen
+        assert all(item['id'] != slow for item in timeline()['queue'])
+        settle('owner')
+        # A message that fails does not hold back the next one; it stays with its reason.
+        # Its attachment expires while it waits (the root site keeps media for 4 s).
+        assert send('use tool')[0] == 200
+        wait(lambda: timeline()['working'], 'working turn')
+
+        def via_root(text, **extra):
+            return steady(root, 'POST', chat + '/send', dict({'text': text}, **extra))
+
+        def root_queue():
+            return steady(root, 'GET', chat + '/timeline')[1]['queue']
+        status, note = root.request('PUT', '/api/media?name=note.txt', b'a short note\n')
+        assert status == 200, note
+        status, waiting = via_root('read the note', attachments=[note['hash']])
+        assert status == 200 and 'queued' in waiting, (status, waiting)
+        expired = waiting['queued']['id']
+        assert 'queued' in via_root('after the note')[1]
+        time.sleep(5)
+        open_gate('result')
+        open_gate('answer')
+        wait(lambda: delivered()[-1] == 'after the note', 'the message after a failed one', timeout=20)
+        stuck = root_queue()
+        assert [item['id'] for item in stuck] == [expired] and stuck[0]['failed'].startswith('an attachment expired'), stuck
+        settle('owner')
+        # A new message to an idle agent goes at once past the failed one.
+        status, direct = via_root('past the stuck one')
+        assert status == 200 and 'queued' not in direct, direct
+        wait(lambda: delivered()[-1] == 'past the stuck one', 'a new message past the failed one')
+        assert [item['id'] for item in root_queue()] == [expired]
+        assert steady(root, 'DELETE', chat + '/queue/%d' % expired)[0] == 200
+        settle('owner')
         # A page asks from the start of its last turn and gets only what follows it.
         full = timeline()
         turn = [item for item in full['items'] if item['kind'] == 'user'][-1]
@@ -1628,7 +1677,7 @@ capabilities = ["terminal_view"]
         for query in ('from=gone&at=1', 'from=%s&at=%d' % (urllib.parse.quote(turn['id']), turn['at_unix_ms'] + 1)):
             stale = steady(owner, 'GET', chat + '/timeline?' + query)[1]
             assert stale['from'] is None and stale['items'] == full['items'], query
-        ok('queue: waits while the agent works, in order, limit of five, removal, survives a server restart with the turn\'s wsxd start time, sent past a wsx window that is told control moved, failed delivery or a refusal keeps its reason and stops the queue until retried, partial timeline from the last turn')
+        ok('queue: waits while the agent works, in order, limit of five, removal, survives a server restart with the turn\'s wsxd start time, sent past a wsx window that is told control moved, failed delivery or a refusal keeps its reason without holding back later messages, an editor drawn idle late is waited for, partial timeline from the last turn')
 
         # --- Stop: the turn ends, the exchange is cancelled, and a waiting message goes next.
         assert send('use tool')[0] == 200
@@ -2054,12 +2103,22 @@ capabilities = ["terminal_view"]
             assert len(blocked_items['question']['options']) == 4, blocked_items
             queued = steady(m2, 'POST', '/api/chat/%d/send' % shown['working'], {'text': 'Also mention the new terminal in the notes'})
             assert 'queued' in queued[1], queued
-            # A person's unsent line waits in the done agent's editor; this fixture cannot stash it,
-            # so a message from the page is not delivered and says why.
+            # The done agent: a message waits while it works, and a person types a line in its
+            # editor meanwhile. This fixture cannot stash the line, so the waiting message and
+            # a later one from the page are not delivered, and the page says why.
+            done_chat = '/api/chat/%d' % shown['done']
+            assert steady(m2, 'POST', done_chat + '/send', {'text': 'use tool'})[0] == 200
+            wait(lambda: state_of('done') == 'working', 'done agent working')
+            assert 'queued' in steady(m2, 'POST', done_chat + '/send', {'text': 'Please also update the changelog'})[1]
             done_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == shown['done'])
             assert call('terminal_acquire', {'pane_id': done_pane, 'client_id': 6, 'takeover': False})['type'] == 'ack'
             assert call('terminal_input', {'pane_id': done_pane, 'client_id': 6, 'bytes': list(b'unsent line')})['type'] == 'ack'
             assert call('terminal_release', {'pane_id': done_pane, 'client_id': 6})['type'] == 'ack'
+            for gate in ('result', 'answer'):
+                (work / ('done.' + gate)).write_text('')
+            wait(lambda: (lambda queue: queue and queue[0]['failed'])(steady(m2, 'GET', done_chat + '/timeline')[1]['queue']),
+                 'the waiting message of the done agent failed', timeout=20)
+            wait(lambda: state_of('done') == 'done', 'done agent finished again')
             bare = sites['bare']
             _, bare_cookie = pair(bare, 'bare')
             bare.cookie = bare_cookie.split(';')[0]

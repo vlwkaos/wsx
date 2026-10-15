@@ -307,7 +307,11 @@ div.steps .steps-summary { cursor: default; }
 .queued { display: flex; align-items: center; gap: var(--space-3); min-height: var(--size-key); font-size: var(--font-size-sm); }
 .queued + .queued { border-top: var(--border-width) solid var(--color-hairline); }
 .queued-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-muted); }
-.queued-reason { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A message that was not delivered: its reason on a line of its own, in the danger colour,
+   so it is not missed on a phone. Later messages go past it. */
+.queued[data-failed] { flex-wrap: wrap; padding: var(--space-2) 0; row-gap: 0; }
+.queued[data-failed] .queued-text { color: var(--color-text); }
+.queued-reason { flex: 1 0 100%; margin: 0; color: var(--color-danger); overflow-wrap: anywhere; }
 /* Opaque, with a hairline on top, so the end of the conversation is visible. */
 .composer, .attention { flex: 0 0 auto; padding: var(--space-3) var(--column-inset); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
 .composer-row { display: flex; align-items: flex-end; gap: var(--space-1); }

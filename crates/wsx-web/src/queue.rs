@@ -21,9 +21,14 @@ pub struct Queued {
     /// Media hashes, as the page sent them.
     pub attachments: Vec<String>,
     pub at_unix_ms: u64,
-    /// Why the delivery failed, in the daemon's words. The queue waits while this is set.
+    /// Why the delivery failed, in the daemon's words. A failed message stays in its place
+    /// until Retry or Remove; later messages are delivered past it.
     #[serde(default)]
     pub failed: Option<String>,
+    /// Since when wsxd says "not yet" (the agent is not at a wait boundary). Not saved: a
+    /// restarted server starts the wait again.
+    #[serde(skip)]
+    pub waiting_since_unix_ms: Option<u64>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -86,6 +91,7 @@ impl Queue {
                 attachments: attachments.to_vec(),
                 at_unix_ms: now_unix_ms(),
                 failed: None,
+                waiting_since_unix_ms: None,
             };
             stored
                 .sessions
@@ -104,7 +110,30 @@ impl Queue {
 
     /// Let a failed message be delivered again.
     pub fn retry(&self, session: u64, id: u64) -> bool {
-        self.edit(session, id, |queue, index| queue[index].failed = None)
+        self.edit(session, id, |queue, index| {
+            queue[index].failed = None;
+            queue[index].waiting_since_unix_ms = None;
+        })
+    }
+
+    /// wsxd said "not yet" for this message. Returns since when it says so.
+    pub fn not_yet(&self, session: u64, id: u64) -> u64 {
+        let mut since = now_unix_ms();
+        self.edit(session, id, |queue, index| {
+            since = *queue[index].waiting_since_unix_ms.get_or_insert(since);
+        });
+        since
+    }
+
+    /// Whether a message waits for an agent that is not at a wait boundary yet: the
+    /// observer then looks again soon, because the editor may turn idle with no change.
+    pub fn waiting(&self) -> bool {
+        let stored = self.stored.lock().unwrap_or_else(|lock| lock.into_inner());
+        stored
+            .sessions
+            .values()
+            .flatten()
+            .any(|queued| queued.waiting_since_unix_ms.is_some() && queued.failed.is_none())
     }
 
     pub fn fail(&self, session: u64, id: u64, reason: &str) {
@@ -126,12 +155,12 @@ impl Queue {
         })
     }
 
-    /// The next message to deliver: the oldest one, unless it failed.
+    /// The next message to deliver: the oldest one that did not fail. A failed message
+    /// does not hold back the ones after it (docs/web-client.md "Queue and Stop").
     pub fn next(&self, session: u64) -> Option<Queued> {
         self.list(session)
             .into_iter()
-            .next()
-            .filter(|queued| queued.failed.is_none())
+            .find(|queued| queued.failed.is_none())
     }
 
     /// Forget the queues of sessions that no longer exist in the grant.

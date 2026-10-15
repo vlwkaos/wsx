@@ -889,10 +889,26 @@ if (stream.bytes > 65_536) await fail(`each change still fetches the whole timel
 // can be sent again. The done agent holds an unsent line it cannot stash.
 await openSession("done");
 await until("!!document.querySelector('.composer-field:not([disabled])')", "the done session's composer is not ready");
+// A waiting message that was not delivered: by the composer, its reason in words on a line
+// of its own in the danger colour, with Retry and Remove.
+await until("!!document.querySelector('.queued[data-failed] .queued-reason')", "the failed waiting message does not show");
+const stuck = await evaluate(`(() => { const row = document.querySelector('.queued[data-failed]'); const reason = row.querySelector('.queued-reason');
+  const box = (node) => node.getBoundingClientRect();
+  return { reason: reason.textContent, color: getComputedStyle(reason).color, danger: getComputedStyle(document.documentElement).getPropertyValue('--color-danger').trim(),
+    actions: [...row.querySelectorAll('button')].map((button) => button.textContent).join(), own: box(reason).top >= box(row.querySelector('.queued-text')).bottom - 1,
+    whole: reason.scrollWidth <= reason.clientWidth, above: box(row).bottom <= box(document.querySelector('.composer')).top + 1 }; })()`);
+// A delivered message of the conversation never reads as not delivered.
+if (await evaluate("[...document.querySelectorAll('.log .message-user:not([data-pending]) .note')].some((note) => note.textContent.includes('Not delivered'))")) await fail("a delivered message says it was not delivered");
+if (stuck.reason !== "Not delivered to the agent: prompt was not sent because fresh empty input was not observed" || stuck.actions !== "Retry,Remove"
+  || !stuck.own || !stuck.whole || !stuck.above) await fail(`the failed waiting message is easy to miss: ${JSON.stringify(stuck)}`);
+await shot("chat-queue-failed");
+await evaluate("document.documentElement.dataset.scheme = 'light'");
+await shot("chat-queue-failed-light");
+await evaluate("delete document.documentElement.dataset.scheme");
 await typeInto("Please check the notes");
 await evaluate("document.querySelector('.composer .button-primary').click()");
 const notDelivered = "document.querySelector('.message[data-pending] .error')?.textContent ?? ''";
-await until(`${notDelivered}.startsWith('Not delivered to the agent: editor_stash_unconfirmed')`, "a failed delivery did not say so on the sent message");
+await until(`${notDelivered}.startsWith('Not delivered to the agent: prompt was not sent because fresh empty input was not observed')`, "a failed delivery did not say so on the sent message");
 await sound("message not delivered");
 await shot("chat-not-delivered");
 const round = () => evaluate(`fetch(new URL('api/chat/${ids.done}/timeline', document.baseURI)).then((r) => r.json()).then((data) => data.exchange.round)`);
