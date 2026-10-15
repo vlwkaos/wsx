@@ -1,7 +1,7 @@
 // Inbox: the home screen. Agent state is the first thing to read, so sessions are
 // listed by what they need: your answer, nothing yet, a look, or nothing at all.
 import { api } from "./api.js";
-import { elapsed, html, useNow, useState } from "./lib.js";
+import { elapsed, html, Icon, useNow, useState } from "./lib.js";
 import { can, isAgent, isNew, sessionLink, shows, stateOf, useStore } from "./store.js";
 
 // One session. Left: a state mark. Middle: the work first, project › worktree, then the
@@ -36,10 +36,13 @@ export function SessionRow({ session, now, current, place }) {
 }
 
 // Starts a session in `worktree`, or in the project's main checkout without one.
-export function NewSession({ project, worktree, label = "New session" }) {
+// A + icon; with `label`, a text action inside a sentence ("Start one").
+export function NewSession({ project, worktree, label }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   if (!can("session_start")) return null;
+  // ^ The name says what the + does: a session, not a project or a worktree.
+  const name = `New session in ${worktree ? worktree.branch || "detached" : project.name}`;
   const create = async () => {
     setBusy(true);
     setError("");
@@ -52,8 +55,9 @@ export function NewSession({ project, worktree, label = "New session" }) {
     setBusy(false);
   };
   return html`
-    <button class="link-action" type="button" disabled=${busy} onClick=${create}
-      aria-label=${`New session in ${project.name}${worktree ? ` ${worktree.branch}` : ""}`}>${label}</button>
+    ${label
+      ? html`<button class="link-action" type="button" disabled=${busy} onClick=${create} aria-label=${name}>${label}</button>`
+      : html`<button class="icon-button new-session" type="button" disabled=${busy} onClick=${create} aria-label=${name} title=${name}><${Icon} name="plus" /></button>`}
     ${error && html`<span class="error" role="alert">${error}</span>`}`;
 }
 

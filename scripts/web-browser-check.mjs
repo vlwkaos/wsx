@@ -233,7 +233,7 @@ async function inbox() {
     if (await evaluate(`!!document.querySelector('.scroll .row-link[href="${opened}"] .new')`)) await fail("the seen session is still new");
   }
   if (!phone() && Math.round(await evaluate("document.querySelector('.rail').getBoundingClientRect().width")) !== 300) await fail("the rail is not 300 px wide");
-  if ((await text(".group-name")).join() !== "design" || !(await count(".group-head .link-action"))) await fail("the Sessions group lacks its project or its New session action");
+  if ((await text(".group-name")).join() !== "design" || !(await count(".group-head .new-session"))) await fail("the Sessions group lacks its project or its New session action");
   // The elapsed time of a working session counts on the page.
   const before = await text("section[aria-label=Running] .time");
   await pause(1200);
@@ -616,8 +616,8 @@ async function others() {
   await go("#/projects");
   await until("!!document.querySelector('.row-actions')", "the projects screen did not open");
   const project = await evaluate(`(() => { const row = document.querySelector('.row-actions').closest('.row');
-    return { row: row.querySelector('.row-label').textContent, count: row.querySelector('.row-context').textContent, actions: [...row.querySelectorAll('.row-actions > *')].map((n) => n.textContent).join() }; })()`);
-  if (project.row !== "design" || !/^\d+ sessions$/.test(project.count) || project.actions !== "Files,New session") await fail(`the projects screen is wrong: ${JSON.stringify(project)}`);
+    return { row: row.querySelector('.row-label').textContent, count: row.querySelector('.row-context').textContent, actions: [...row.querySelectorAll('.row-actions > *')].map((n) => n.matches('.new-session') ? n.getAttribute('aria-label') : n.textContent).join() }; })()`);
+  if (project.row !== "design" || !/^\d+ sessions$/.test(project.count) || project.actions !== "Files,New session in design") await fail(`the projects screen is wrong: ${JSON.stringify(project)}`);
   await sound("projects");
   await shot("projects");
   // A project opens its worktrees and their sessions; a session opens from there, and
@@ -626,14 +626,18 @@ async function others() {
   await evaluate("document.querySelector('.row-open').click()");
   await until("!!document.querySelector('.worktree')", "the project screen did not open");
   const tree = await evaluate(`[...document.querySelectorAll('.worktree')].map((section) => ({ name: section.querySelector('.group-name').textContent,
-    rows: [...section.querySelectorAll('.row-work')].map((node) => node.textContent), start: !!section.querySelector('.group-head .link-action') }))`);
+    rows: [...section.querySelectorAll('.row-work')].map((node) => node.textContent), start: section.querySelector('.group-head .new-session')?.getAttribute('aria-label') }))`);
   if (tree.length !== 2 || tree[0].name !== "main · main checkout" || tree[1].name !== "fix/login"
-    || tree[1].rows.join() !== "refactor" || tree[0].rows.length < 10 || !tree.every((worktree) => worktree.start)) {
+    || tree[1].rows.join() !== "refactor" || tree[0].rows.length < 10 || tree.map((worktree) => worktree.start).join() !== "New session in main,New session in fix/login") {
     await fail(`the project screen is wrong: ${JSON.stringify(tree)}`);
   }
   if ((await text(".bar-label")).join() !== "design") await fail("the project screen does not name its project");
   const projectHash = await evaluate("location.hash");
   await sound("project");
+  // Each + names what it starts, has a 44 px hit area, and takes no more height than a line of text.
+  const plus = await evaluate(`[...document.querySelectorAll('.worktree .new-session')].map((button) => { const box = button.getBoundingClientRect(), head = button.parentElement.getBoundingClientRect();
+    return { title: button.title === button.getAttribute('aria-label'), size: [Math.round(box.width), Math.round(box.height)], head: Math.round(head.height), right: Math.round(innerWidth - box.right), word: button.textContent.trim() }; })`);
+  if (!plus.length || plus.some((button) => !button.title || button.size.join() !== "44,44" || button.head > 40 || button.right !== 4 || button.word)) await fail(`a New session + is wrong: ${JSON.stringify(plus)}`);
   await shot("project");
   // A shell is marked as one and opens on the terminal, with no chat to switch to.
   const shellRow = await evaluate(`(() => { const link = document.querySelector('.worktree a[href^="#/s/${ids.shell}/"]'); const row = link?.closest('.row');
