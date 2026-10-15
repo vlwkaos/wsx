@@ -86,8 +86,8 @@ The page is a set of ES modules served as written: Preact 10.29.7 and htm 3.1.1 
 | Route | Screen |
 |---|---|
 | `#/` | Inbox: sessions by what they need. *Needs you* (blocked, error, exited agent), *Running* (with the activity line and elapsed time), *Finished* (the newest finish first, unseen ones marked "new"), then the remaining agent sessions by project. A section with no session is not shown. Shells are not listed: the inbox is agent work. |
-| `#/projects` | Every granted project with its session count, *Files* and *New session* where granted. The project's name opens it |
-| `#/p/<project>` | One project: a heading per worktree (the main checkout first) with *New session* for that worktree, and its sessions as in the inbox; a worktree with no session says so |
+| `#/projects` | Every granted project with its session count, *Files* and a *+* (its name is "New session in <project>") where granted. The project's name opens it |
+| `#/p/<project>` | One project: a heading per worktree (the main checkout first) with a *+* ("New session in <branch>") for that worktree, and its sessions as in the inbox; a worktree with no session says so |
 | `#/s/<session>/chat`, `#/s/<session>/terminal` | One session. The top row has back, the label with the state in words, and a Chat or Terminal switch with the granted panels. A shell (a session with no agent, open or exited) has no chat: it opens on the terminal, and gains the chat when an agent reports in it |
 | `#/p/<project>/files` | The files of one project |
 | `#/settings` | Appearance, notifications, this device |

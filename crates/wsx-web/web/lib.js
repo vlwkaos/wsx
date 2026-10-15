@@ -13,6 +13,7 @@ const ICONS = {
   attach: "M14.5 9.5 9 15a3 3 0 0 1-4.2-4.2l6-6a2 2 0 0 1 2.8 2.8l-5.7 5.7a1 1 0 0 1-1.4-1.4L11 7.4",
   down: "M10 4v12M5 11l5 5 5-5",
   send: "M10 16V4M5 9l5-5 5 5",
+  plus: "M10 4.5v11M4.5 10h11",
 };
 // A line icon. The control around it carries the accessible name.
 export const Icon = ({ name }) => html`

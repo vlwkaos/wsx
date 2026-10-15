@@ -139,6 +139,12 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
   border: 0; border-radius: var(--radius-control); background: none; color: var(--color-muted); cursor: pointer;
 }
 .icon-button[aria-pressed="true"] { color: var(--color-text); }
+/* New session: a + beside a heading or a row. The 44 px hit area takes no more height than
+   the text it replaced, and the + lines up with the right gutter. */
+.new-session { margin-block: calc(-1 * var(--space-3)); margin-right: calc(-1 * var(--space-3)); }
+.new-session:focus-visible { color: var(--color-text); }
+@media (hover: hover) { .new-session:hover { color: var(--color-text); background: var(--color-raised); } }
+.new-session:active:not(:disabled) { color: var(--color-accent); }
 @media (pointer: coarse) {
   /* A short word such as Stop still gets a 44 px wide hit area; its text stays in place. */
   .link-action {
