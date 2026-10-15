@@ -26,25 +26,43 @@ function useWide() {
 }
 
 // ^ iOS Safari and an installed PWA keep the layout viewport when the keyboard opens:
-// only the visual viewport shrinks, and it can move down the page. The page is pinned
-// to the visual viewport, so a composer or key row sits on the keyboard's top edge.
+// only the visual viewport shrinks, and it can move down the page. While a field takes
+// typing, the page is pinned to the visual viewport, so a composer or key row sits on the
+// keyboard's top edge. Otherwise the page is the full screen (100dvh): iOS does not always
+// tell the page that the keyboard closed (a route change, a return from the background, a
+// page from the back-forward cache), and a pinned page then kept half the screen empty.
 const SHORT_HEIGHT = 560;
+const TYPING = "textarea, select, [contenteditable=''], [contenteditable=true], input:not([type]), "
+  + "input[type=text], input[type=search], input[type=email], input[type=url], input[type=tel], input[type=password], input[type=number]";
 function followViewport() {
   const viewport = window.visualViewport;
   if (!viewport) return;
   const changed = () => {
     const style = document.documentElement.style;
-    style.setProperty("--viewport-height", `${viewport.height}px`);
-    style.setProperty("--viewport-top", `${viewport.offsetTop}px`);
+    const typing = !!document.activeElement?.matches(TYPING);
+    if (typing) {
+      style.setProperty("--viewport-height", `${viewport.height}px`);
+      style.setProperty("--viewport-top", `${viewport.offsetTop}px`);
+    } else {
+      style.removeProperty("--viewport-height");
+      style.removeProperty("--viewport-top");
+    }
     // The keyboard covers the bottom safe area, so its inset must not stay as a gap.
-    const keyboard = viewport.scale <= 1.01 && document.documentElement.clientHeight - viewport.height > 120;
+    const keyboard = typing && viewport.scale <= 1.01 && document.documentElement.clientHeight - viewport.height > 120;
     document.body.toggleAttribute("data-keyboard", keyboard);
     // Little visible height, with the keyboard up or on a short screen: the `/` list keeps
     // to fewer rows so the conversation stays in view (docs/web-client.md "Commands").
     document.body.toggleAttribute("data-short", viewport.height < SHORT_HEIGHT);
   };
+  // The focus has moved only after focusout, and the keyboard closes over about 300 ms.
+  const settle = () => { setTimeout(changed, 0); setTimeout(changed, 400); };
   viewport.addEventListener("resize", changed);
   viewport.addEventListener("scroll", changed);
+  window.addEventListener("resize", changed);
+  window.addEventListener("pageshow", changed);
+  document.addEventListener("visibilitychange", changed);
+  document.addEventListener("focusin", changed);
+  document.addEventListener("focusout", settle);
   changed();
 }
 

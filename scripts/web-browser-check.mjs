@@ -825,6 +825,17 @@ await evaluate("document.documentElement.dataset.scheme = 'light'");
 await shot("chat-commands-keyboard-light");
 await evaluate("delete document.documentElement.dataset.scheme");
 await typeInto("");
+// Pinned to the visual viewport only while a field takes typing. iOS may not report that the
+// keyboard closed: the visual viewport still says 420 px, but the inbox has the full screen.
+const bodyHeight = "Math.round(document.body.getBoundingClientRect().height)";
+if ((await evaluate(bodyHeight)) !== 420) await fail(`the page is not on the keyboard while typing: ${await evaluate(bodyHeight)} px`);
+await evaluate("document.activeElement.blur()");
+await go("#/");
+await until("document.querySelectorAll('.row').length > 0", "the inbox did not open after typing");
+await pause(500);
+const after = await evaluate(`({ body: ${bodyHeight}, screen: innerHeight, tabs: Math.round(document.querySelector('.tabbar').getBoundingClientRect().bottom), keyboard: document.body.hasAttribute('data-keyboard') })`);
+if (after.body !== after.screen || after.tabs !== after.screen || after.keyboard) await fail(`the inbox keeps the keyboard's height: ${JSON.stringify(after)}`);
+await shot("inbox-after-keyboard");
 await keyboard(null);
 await resize([390, 420, 2]);
 await commandsAbove("on a 390x420 screen");

@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Web on a phone: from time to time half of the inbox stayed empty. The page kept the height it had while the keyboard was up when iOS did not report that the keyboard closed. It now follows the keyboard only while a field that takes typing has the focus.
 - A chat message to a Claude that showed its dimmed next-prompt suggestion, or whose typed text it had just stashed, was not delivered (`delivery_failed`), and the page did not say so. wsxd (daemon revision 28) now takes any fully dimmed editor line as empty. A failed round keeps its reason in the exchange's new `failure`; the page shows it on the sent message with Retry, and a waiting message whose delivery fails stays in the queue with that reason instead of being dropped.
 - Web chat: a file showed nothing while it uploaded, so Send could go without it. Each file now shows as "Uploading…" and Send waits. The draft, its files and a message that was not delivered are kept after a reload.
 - Web: after a reload of a paired device, the "Loading…" placeholder stayed beside the app and took half of the screen. The page now removes it before the app starts.

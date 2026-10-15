@@ -465,6 +465,8 @@ const narrow = await evaluate(`(() => { const box = (selector) => document.query
 if (narrow.enter < 0 || narrow.enter > 4.5 || narrow.padRight > narrow.keys || narrow.pad < 100) await fail(`the second row does not fit at 320 px: ${JSON.stringify(narrow)}`);
 await aboveKeyboard(568, 0, "320x568");
 await capture("phone-320");
+// The keyboard opens for a focused terminal: the page is pinned to the visual viewport only then.
+await focusTerminal();
 await keyboard(315);
 await pause(300);
 await aboveKeyboard(315, 0, "keyboard open at 320x568");
