@@ -246,9 +246,9 @@ const CommandList = ({ listing, matches, active, onPick, onHover }) => html`
           <span class="slash-source">${SOURCE_WORDS[command.source]}</span>
         </li>`)}
     </ul>
-    ${!matches.length && html`<p class="note slash-note">No command starts with that.</p>`}
-    ${!listing.listed && html`<p class="note slash-note">Only the built-in commands of ${listing.provider || "this agent"} are listed.</p>`}
-    ${!listing.runs && html`<p class="note slash-note">wsx on the host must be upgraded to run a command from here.</p>`}
+    ${!matches.length && html`<p class="slash-note">No command starts with that.</p>`}
+    ${!listing.listed && html`<p class="slash-note">Only the built-in commands of ${listing.provider || "this agent"} are listed.</p>`}
+    ${!listing.runs && html`<p class="slash-note">Upgrade wsx on the host to run commands from here.</p>`}
   </div>`;
 
 function Composer({ session, working, onSent }) {
@@ -291,6 +291,12 @@ function Composer({ session, working, onSent }) {
   };
 
   // The field grows with its text, up to six lines.
+  // A tap anywhere on the composer card, outside its buttons, puts the caret in the field.
+  const focusField = (event) => {
+    if (event.target.closest("button, textarea, input") || !ready) return;
+    event.preventDefault();
+    field.current.focus();
+  };
   const grow = () => {
     const node = field.current;
     node.style.height = "auto";
@@ -392,7 +398,7 @@ function Composer({ session, working, onSent }) {
         </ul>` : null}
       ${error && html`<p class="error" role="alert">${error}</p>`}
       ${listOpen && html`<${CommandList} listing=${listing} matches=${matches} active=${active} onPick=${pick} onHover=${setActive} />`}
-      <div class="composer-row">
+      <div class="composer-row" onPointerDown=${focusField}>
         ${can("media_upload") && html`
           <button class="icon-button" type="button" aria-label="Attach files" onClick=${() => picker.current.click()}><${Icon} name="attach" /></button>
           <input type="file" multiple hidden tabIndex="-1" ref=${picker} onChange=${(event) => upload([...event.target.files])} />`}

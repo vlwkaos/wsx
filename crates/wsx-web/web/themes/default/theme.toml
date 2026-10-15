@@ -48,7 +48,7 @@ font-mono = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
 font-terminal = "'JetBrains Mono', 'Symbols Nerd Font Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
 font-size-md = "15px"
 font-size-sm = "13px"
-font-size-label = "11px"
+font-size-label = "12px"
 font-size-title = "22px"
 # Text fields on a touch device. iOS zooms the page when a focused field is below 16px.
 font-size-field = "16px"
