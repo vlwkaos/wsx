@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Web chat: Claude Code 2.1.300 writes a background-task notice (`<task-notification>…`) in the person's name, and the chat showed it as a message the person wrote. The timeline now leaves out a Claude record with `promptSource: "system"`.
 - Web chat: a message that failed (for example while Claude's editor was not drawn idle yet, right after a turn) held back every later message, so new messages seemed ignored. `editor_unavailable` and other "not yet" refusals now keep the message waiting for up to 30 s. A failed message no longer holds back later ones; it stays above the composer with its reason, Retry and Remove.
 - Web on a phone: from time to time half of the inbox stayed empty. The page kept the height it had while the keyboard was up when iOS did not report that the keyboard closed. It now follows the keyboard only while a field that takes typing has the focus.
 - A chat message to a Claude that showed its dimmed next-prompt suggestion, or whose typed text it had just stashed, was not delivered (`delivery_failed`), and the page did not say so. wsxd (daemon revision 28) now takes any fully dimmed editor line as empty. A failed round keeps its reason in the exchange's new `failure`; the page shows it on the sent message with Retry, and a waiting message whose delivery fails stays in the queue with that reason instead of being dropped.

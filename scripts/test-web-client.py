@@ -98,7 +98,8 @@ def gate(name):
  trace.with_suffix('.'+name).unlink()
 def turn(text):
  with trace.open('a') as out: out.write(json.dumps({'received':text})+'\n')
- record('user', text)
+ # The person's prompt as Claude Code 2.1.300 marks it; other turns keep the older record without the field.
+ record('user', text, **({'promptSource':'typed'} if 'task notice' in text else {}))
  report('working')
  body = text.split('\n',1)[1] if text.startswith('[wsx exchange ') else text
  if 'make chart' in body:
@@ -140,6 +141,11 @@ def turn(text):
   record('assistant', trace.with_name(body[4:].strip()).read_text())
  elif 'compact now' in body:
   compact()
+ elif 'task notice' in body:
+  # Claude Code 2.1.300 writes a background-task notice in the person's name and marks it as its own.
+  record('user', '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Background command "Run the tests" completed (exit code 0)</summary>\n</task-notification>',
+    promptSource='system', origin={'kind':'task-notification'}, turnOrigin='task_notification')
+  record('assistant', 'The tests passed.')
  elif 'quit now' in body:
   report('working'); os._exit(3)
  elif 'ask me' in body:
@@ -1399,6 +1405,16 @@ capabilities = ["terminal_view"]
             assert summary['text'].startswith('## Goal\nFix the login redirect loop') and summary['text'].endswith('- Step 12 of the fix is done.'), summary
             assert summary['attachments'] == [] and summary['id'], summary
             assert compacted['items'][-1]['text'] == 'echo: after the compaction', compacted['items'][-1]
+            if provider == 'claude':
+                # A background-task notice is Claude's own record, not a message the person wrote.
+                settle(name)
+                before = len(traces(name))
+                assert steady(root, 'POST', '/api/chat/%d/send' % sessions[name], {'text': 'task notice'})[0] == 200
+                wait(lambda: len(traces(name)) > before, name + ' task notice')
+                settle(name)
+                items = steady(root, 'GET', '/api/chat/%d/timeline' % sessions[name])[1]['items']
+                assert [(item['kind'], item.get('text')) for item in items[-2:]] == [('user', 'task notice'), ('assistant', 'The tests passed.')], items
+                assert not any('task-notification' in (item.get('text') or '') for item in items), items
             session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == sessions[name])
             assert call('session_close', {'session_id': sessions[name], 'expected_revision': session['revision']})['type'] == 'ack'
         ok('compaction: the summary is one item where it happened (Claude: first, Pi: in place), Claude\'s preamble, closing instructions and transcript path removed')

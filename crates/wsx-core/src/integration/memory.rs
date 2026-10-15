@@ -658,9 +658,13 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
             .get("timestamp")
             .and_then(Value::as_u64)
             .or_else(|| unix_ms(record.get("timestamp")?.as_str()?)),
-        // Claude also writes its own interruption notice in the person's name.
+        // Claude also writes its own interruption notice in the person's name, and
+        // (2.1.300) a background-task notice with `promptSource: "system"`. A prompt the
+        // person gave is `typed`, `suggestion_accepted`, `queued` or `sdk`.
         meta: record.get("isMeta").and_then(Value::as_bool) == Some(true)
-            || (role == "user" && text_is_notice),
+            || (role == "user" && text_is_notice)
+            || (provider == "claude"
+                && record.get("promptSource").and_then(Value::as_str) == Some("system")),
         steps,
     })
 }
