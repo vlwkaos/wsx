@@ -11,6 +11,13 @@ on the person's own account. It checks what the fixture agents cannot.
   --scenario draft: after a turn Claude suggests the next prompt, dimmed, in its empty
     editor; then a person's unsent line waits there. A chat message is delivered both times,
     and the line is put back, not sent. Three model turns.
+  --scenario compact: Claude compacts its conversation by /compact, and a message sent while it
+    compacts waits, then is answered. Claude runs this build's wsx hooks, installed in the run's
+    own home, and not the person's user settings. Every hook event and wsxd's state are recorded;
+    no turn may show idle before its end. Four model turns, one summary. Claude 2.1.300 did not
+    compact by itself here (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=10, CLAUDE_CODE_AUTO_COMPACT_WINDOW
+    of 60k and 70k, autoCompactEnabled): a compaction inside a turn is checked with the real
+    hooks in scripts/test-agent-context.py.
 The agent runs with the person's HOME (its login and its wsx hooks); wsxd, the web
 server and the project are private to this run. The live daemon is never contacted.
 """
@@ -38,7 +45,7 @@ def main():
     parser.add_argument('--daemon', type=Path, default=ROOT / 'target/debug/wsxd')
     parser.add_argument('--agent', nargs='+', default=['claude', '--model', 'haiku'],
                         help='the agent command line: claude or pi, with its wsx integration installed')
-    parser.add_argument('--scenario', choices=['turn', 'answers', 'draft'], default='turn')
+    parser.add_argument('--scenario', choices=['turn', 'answers', 'draft', 'compact'], default='turn')
     args = parser.parse_args()
     if args.scenario == 'answers' and Path(args.agent[0]).name == 'claude' and '--permission-mode' not in args.agent:
         # The scenario needs the dialogs: no mode that answers them by itself.
@@ -101,8 +108,30 @@ def main():
         assert call('synchronize_projects', {'projects': [
             {'name': 'real', 'path': str(project), 'worktrees': [{'path': str(project), 'branch': 'main'}]}]})['type'] == 'ack'
         snapshot = call('snapshot')['data']
+        command = ['/usr/bin/env', 'HOME=' + os.environ['HOME'], agent, *args.agent[1:]]
+        hooks = work / 'hooks.jsonl'
+        if args.scenario == 'compact':
+            # This build's wsx hooks, from its installer, pointed at the run's own home.
+            (work / 'home/.claude').mkdir(mode=0o700)
+            subprocess.run([str(wsx), 'agent', 'install', 'claude'], env=env, check=True, capture_output=True, timeout=10)
+            installed = json.loads((work / 'home/.claude/settings.json').read_text())['hooks']
+            for entries in installed.values():
+                for entry in entries:
+                    for hook in entry['hooks']:
+                        assert hook['command'].startswith('wsx_hook_root='), hook['command']
+                        hook['command'] = 'wsx_hook_root=%s;%s' % (json.dumps(str(work / 'home/.claude')), hook['command'].split(';', 1)[1])
+            # Each hook event as Claude sends it.
+            record = ("/usr/bin/python3 -c \"import json,sys,time; d=json.load(sys.stdin); open(sys.argv[1],'a').write(json.dumps("
+                      "{'t': time.time(), 'event': d.get('hook_event_name'), 'source': d.get('source'), 'trigger': d.get('trigger'), "
+                      "'prompt': (d.get('prompt') or '')[:40]}) + chr(10))\" '%s'" % hooks)
+            events = ('SessionStart', 'UserPromptSubmit', 'PreCompact', 'PostCompact', 'Stop', 'StopFailure')
+            for event in events:
+                installed.setdefault(event, []).append({'matcher': '*', 'hooks': [{'type': 'command', 'command': record}]})
+            (work / 'hooks.json').write_text(json.dumps({'hooks': installed}))
+            # ^ The person's user settings hold their installed wsx hooks; leave them out.
+            command += ['--setting-sources', 'project,local', '--settings', str(work / 'hooks.json')]
         created = call('session_create', {'worktree_id': snapshot['worktrees'][0]['id'], 'label': 'real agent',
-            'command': ['/usr/bin/env', 'HOME=' + os.environ['HOME'], agent, *args.agent[1:]], 'rows': 40, 'cols': 120})
+            'command': command, 'rows': 40, 'cols': 120})
         assert created['type'] == 'created', created
         session = created['data']['id']
         pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == session)
@@ -220,6 +249,74 @@ capabilities = ["chat_send", "chat_answer", "agent_write", "terminal_view", "ter
             facts['draft_restored'] = bool(wait(lambda: draft in screen(pane), 'the line back in the editor', timeout=20))
             success = True
             print(json.dumps({'result': 'PASS', 'scenario': 'draft', 'model_calls': 3, **facts}, indent=1))
+            return
+
+        if args.scenario == 'compact':
+            assert claude, 'the compact scenario needs Claude'
+            # wsxd's reported state, every change, on the same clock as the hook events.
+            states, watching = [], [True]
+
+            def watch():
+                while watching[0]:
+                    try:
+                        now = agent_state()
+                    except Exception:
+                        now = 'unreadable'
+                    if not states or states[-1][1] != now:
+                        states.append((time.time(), now))
+                    time.sleep(0.1)
+            import threading
+            threading.Thread(target=watch, daemon=True).start()
+
+            def events():
+                return [json.loads(line) for line in hooks.read_text().splitlines()] if hooks.exists() else []
+
+            def turn(text, label):
+                wait(lambda: agent_state() in ('idle', 'done'), 'the agent to be ready for ' + label, timeout=180)
+                start = time.time()
+                status, sent = site.request('POST', chat + '/send', {'text': text})
+                assert status == 200, sent
+                wait(lambda: any(event['event'] in ('Stop', 'StopFailure') and event['t'] > start for event in events())
+                     or (text == '/compact' and any(event['event'] == 'SessionStart' and event['t'] > start for event in events())),
+                     'the end of ' + label, timeout=300)
+                time.sleep(3)
+                return start
+
+            def story(start):
+                merged = sorted([(event['t'], 'hook ' + ' '.join(str(value) for value in (event['event'], event['source'], event['trigger'], event['prompt']) if value))
+                                 for event in events() if event['t'] >= start] + [(at, 'wsxd ' + str(state)) for at, state in states if at >= start])
+                return ['%6.1f %s' % (at - start, line) for at, line in merged]
+
+            marks = {}
+            marks['first'] = turn('Read note.txt with the Read tool and reply with only the word in it.', 'the first turn')
+            marks['second'] = turn('Count from 1 to 30 in words, one per line, then run the Bash command `ls` and reply with only: listed.', 'the second turn')
+            marks['third'] = turn('Reply with only the word: owl.', 'the third turn')
+            # /compact, and a message sent while Claude compacts: it waits, then is answered.
+            wait(lambda: agent_state() in ('idle', 'done'), 'the agent to be ready for /compact', timeout=180)
+            marks['manual'] = time.time()
+            assert site.request('POST', chat + '/send', {'text': '/compact'})[0] == 200
+            wait(lambda: agent_state() == 'working', 'the agent to work on /compact', timeout=30)
+            status, waiting = site.request('POST', chat + '/send', {'text': 'Reply with only the word: lark.'})
+            assert status == 200 and 'queued' in waiting, waiting
+            after = wait(lambda: (lambda data: data if agent_state() in ('idle', 'done') and any(
+                item['kind'] == 'assistant' and 'lark' in (item['text'] or '').lower() for item in data['items']) else None)(timeline()),
+                'the answer to the message sent during /compact', timeout=300)
+            time.sleep(2)
+            watching[0] = False
+            for name, start in marks.items():
+                facts[name] = story(start)
+            # Nothing here interrupts a turn, so wsxd never goes from working to idle: each
+            # turn and the compaction end in done.
+            sequence = [state for at, state in states if at >= marks['first']]
+            assert not any(left == 'working' and right == 'idle' for left, right in zip(sequence, sequence[1:])), sequence
+            hooks_seen = events()
+            assert any(event['event'] == 'PostCompact' and event['trigger'] == 'manual' for event in hooks_seen), hooks_seen
+            facts['timeline'] = [(item['kind'], (item.get('text') or (item.get('tool') or {}).get('title') or '')[:50]) for item in after['items']]
+            facts['exchange'] = after['exchange']['state']
+            facts['auto_compactions'] = sum(event['event'] == 'PreCompact' and event['trigger'] == 'auto' for event in hooks_seen)
+            assert after['items'][0]['kind'] == 'summary' and not any('<command-' in (item['text'] or '') or 'local-command' in (item['text'] or '') for item in after['items']), facts['timeline']
+            success = True
+            print(json.dumps({'result': 'PASS', 'scenario': 'compact', 'model_calls': 5, **facts}, indent=1))
             return
 
         if args.scenario == 'answers':

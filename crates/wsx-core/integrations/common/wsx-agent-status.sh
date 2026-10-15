@@ -34,6 +34,7 @@ input="$(cat 2>/dev/null || true)"
 conversation=""
 prompt_id=""
 transcript=""
+compaction=""
 if command -v python3 >/dev/null 2>&1; then
   if ! metadata="$(printf '%s' "$input" | WSX_PROVIDER="@PROVIDER@" python3 -c 'import json,os,sys
 try:
@@ -43,7 +44,11 @@ try:
  conversation=next((d[k] for k in ("session_id","conversation_id","conversationId","sessionId") if isinstance(d.get(k),str)),"")
  prompt=d.get("prompt_id","")
  transcript=d.get("transcript_path","") if os.environ.get("WSX_PROVIDER") == "claude" else ""
- values=[conversation,prompt if isinstance(prompt,str) else "",transcript if isinstance(transcript,str) else ""]
+ # A compaction that no person asked for with /compact: the session start after any compaction,
+ # and the compaction events of an automatic one (Claude Code 2.1.300 sends "trigger").
+ compaction=os.environ.get("WSX_PROVIDER") == "claude" and (d.get("source") == "compact"
+  or (d.get("hook_event_name") in ("PreCompact","PostCompact") and d.get("trigger") != "manual"))
+ values=[conversation,prompt if isinstance(prompt,str) else "",transcript if isinstance(transcript,str) else "","1" if compaction else ""]
  if any("|" in value or any(ord(c)<32 for c in value) for value in values): raise SystemExit(1)
  print("|".join(values))
 except (TypeError, ValueError): pass' 2>/dev/null)"; then
@@ -53,7 +58,16 @@ except (TypeError, ValueError): pass' 2>/dev/null)"; then
   conversation="${metadata%%|*}"
   remainder="${metadata#*|}"
   prompt_id="${remainder%%|*}"
-  transcript="${remainder#*|}"
+  remainder="${remainder#*|}"
+  transcript="${remainder%%|*}"
+  compaction="${remainder#*|}"
+fi
+# ^ docs/agent-reporting.md "Claude compaction": Claude starts its session again after every
+# compaction, also an automatic one inside a turn. That start must not end the turn; only the
+# person's /compact is reported, by its own PreCompact and PostCompact.
+if [ "$compaction" = "1" ]; then
+  inspect_report 0 compaction_skipped
+  exit 0
 fi
 if [ "$action" = "heartbeat" ]; then
   [ "@PROVIDER@" = "claude" ] && [ -n "$prompt_id" ] || exit 0
