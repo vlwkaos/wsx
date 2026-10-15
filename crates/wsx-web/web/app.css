@@ -358,20 +358,23 @@ div.steps .steps-summary { cursor: default; }
 /* A phone, like the owner's reference (the Claude iOS app): one rounded card inset by the
    gutter, with the one-line field on top and a short row inside it, attach at the left and a
    round Send at the right. The row draws 36 px; each control's hit area is 44 by 44. A wide
-   window keeps one bar with a text Send. */
-.app:not([data-wide]) .composer { padding: var(--space-1) var(--space-4) var(--space-2); background: none; border-top: 0; }
+   window keeps one bar with a text Send.
+   One inner inset (space-2) on every side: the field's text, the paperclip, and the circle's
+   right and bottom gaps. Each hit area reaches past the inset into the padding. */
+.app:not([data-wide]) .composer { padding: var(--space-1) var(--space-4); background: none; border-top: 0; }
 .app:not([data-wide]) .composer-row {
-  flex-wrap: wrap; align-items: center; row-gap: var(--space-1); padding: 0 var(--space-1);
+  flex-wrap: wrap; align-items: center; row-gap: 0; padding: var(--space-2);
   background: var(--color-surface); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-sheet);
 }
 .app:not([data-wide]) .composer:focus-within .composer-row { border-color: var(--color-accent); }
-.app:not([data-wide]) .composer-row > .icon-button:first-child { margin-left: 0; }
+/* The paperclip is drawn 12 px inside its 44 px button: it lines up with the field's text. */
+.app:not([data-wide]) .composer-row > .icon-button:first-child { margin-left: calc(-1 * var(--space-3)); }
 .app:not([data-wide]) .composer-input { order: -1; flex-basis: 100%; }
-.app:not([data-wide]) .composer-field, .app:not([data-wide]) .composer-mirror { min-height: 0; padding: var(--space-1) var(--space-2); }
+.app:not([data-wide]) .composer-field, .app:not([data-wide]) .composer-mirror { min-height: 0; padding: 0; }
 .app:not([data-wide]) .composer-row > .icon-button,
 .app:not([data-wide]) .composer .composer-send { height: var(--size-control); margin-block: calc((var(--size-key) - var(--size-control)) / 2); }
 .app:not([data-wide]) .composer .composer-send {
-  margin-left: auto; width: var(--size-control); min-height: 0; padding: 0;
+  margin-left: auto; margin-right: calc((var(--size-key) - var(--size-control)) / 2); width: var(--size-control); min-height: 0; padding: 0;
   display: inline-flex; align-items: center; justify-content: center; background: none;
 }
 .app:not([data-wide]) .send-mark {

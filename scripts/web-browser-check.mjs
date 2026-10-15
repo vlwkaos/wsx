@@ -53,6 +53,11 @@ async function shot(name, primary) {
   }
   await capture(`${size[0]}-${name}`);
 }
+// The composer enlarged three times, to judge its insets and the round Send.
+async function zoom(name) {
+  const box = await evaluate("(({ x, y, width, height }) => ({ x, y, width, height }))(document.querySelector('.composer').getBoundingClientRect())");
+  await capture(`${size[0]}-${name}-zoom`, { ...box, scale: 3 });
+}
 // Layout rules of every screen: nothing past the right edge, no raw null, one scroll container
 // (the wide layout's rail is a list of its own, and a tall question sheet is bounded: both may scroll).
 async function sound(label) {
@@ -298,14 +303,17 @@ async function chats() {
   // A phone gives the text field its own line, then attach and Send; a wide window has one line.
   const composer = async () => evaluate(`(() => { const box = (selector) => document.querySelector(selector).getBoundingClientRect();
     const row = box('.composer-row'), field = box('.composer-field'), send = box('.composer .button'), attach = box('.composer-row > .icon-button');
-    return { row: row.width, field: field.width, below: Math.round(send.top - field.bottom), line: Math.abs((attach.top + attach.bottom) / 2 - (send.top + send.bottom) / 2),
-      attach: [attach.width, attach.height], send: [send.width, send.height], sendRight: Math.round(row.right - send.right), attachLeft: Math.round(attach.left - row.left),
-      height: Math.round(box('.composer').height), round: getComputedStyle(document.querySelector('.send-mark')).borderRadius }; })()`);
+    return { row: row.width, field: field.width, below: Math.round(send.top - field.bottom), circleBelow: Math.round(box('.send-mark').top - field.bottom), line: Math.abs((attach.top + attach.bottom) / 2 - (send.top + send.bottom) / 2),
+      attach: [attach.width, attach.height], send: [send.width, send.height],
+      height: Math.round(box('.composer').height), round: getComputedStyle(document.querySelector('.send-mark')).borderRadius,
+      // The card's inner insets: the field's text, the paperclip, and the circle's right and bottom gaps.
+      ...(() => { const edge = parseFloat(getComputedStyle(document.querySelector('.composer-row')).borderLeftWidth), mark = box('.send-mark'), clip = box('.composer-row > .icon-button svg');
+        const text = field.left + parseFloat(getComputedStyle(document.querySelector('.composer-field')).paddingLeft);
+        return { insets: [text - row.left, clip.left - row.left, field.top - row.top, row.right - mark.right, row.bottom - mark.bottom].map((gap) => Math.round(gap - edge)) }; })() }; })()`);
   const layout = await composer();
-  // On a phone the row is the composer card: the field spans it, attach and Send sit at its
-  // edges inside its border and space-1, and every control's hit area is 44 by 44.
-  if (phone() ? layout.row - layout.field > 12 || layout.below < 0 || layout.line > 1 || layout.sendRight < 0 || layout.sendRight > 6
-      || layout.attachLeft < 0 || layout.attachLeft > 6
+  // On a phone the row is the composer card: one 8 px inset on every side (the field's text,
+  // the paperclip, the circle's right and bottom gaps), and every hit area is 44 by 44.
+  if (phone() ? layout.insets.some((gap) => gap !== 8) || layout.circleBelow < 0 || layout.line > 1
       || Math.min(...layout.attach, ...layout.send) < 44 || layout.round !== "50%"
     : layout.below >= 0) {
     await fail(`the composer layout is wrong at ${size[0]} px: ${JSON.stringify(layout)}`);
@@ -314,17 +322,19 @@ async function chats() {
     await openSession("idle");
     await until("!!document.querySelector('.composer-field:not([disabled])') && !!document.querySelector('.log .message, .log .empty')", "the idle composer is not ready");
     const empty = await composer();
-    // Compact like the reference: an empty composer of at most 96 px.
-    if (empty.height > 96) await fail(`the empty phone composer is ${empty.height} px high`);
+    // Compact like the reference: an empty composer of at most 87 px.
+    if (empty.height > 87) await fail(`the empty phone composer is ${empty.height} px high`);
     console.log(`empty phone composer at 390 px: ${empty.height} px, attach ${empty.attach.join("x")}, send ${empty.send.join("x")}`);
     // The field is short; a tap anywhere on the card outside its buttons focuses it.
     await evaluate("document.activeElement?.blur(); document.querySelector('.composer-row').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }))");
     if (!(await evaluate("document.activeElement === document.querySelector('.composer-field')"))) await fail("a tap on the composer card did not focus the field");
     await shot("composer");
+    await zoom("composer");
     await typeInto("Check the login redirect on Safari.\nThen the cookie settings.\nThen write the notes.");
     const typed = await composer();
-    if (typed.row - typed.field > 12 || typed.below < 0 || typed.line > 1) await fail(`three lines break the composer: ${JSON.stringify(typed)}`);
+    if (typed.insets.some((gap) => gap !== 8) || typed.circleBelow < 0 || typed.line > 1) await fail(`three lines break the composer: ${JSON.stringify(typed)}`);
     await shot("composer-text");
+    await zoom("composer-text");
     await typeInto("");
   }
 
@@ -731,8 +741,10 @@ for (const next of [SIZES[1], SIZES[2]]) {
     await openSession("idle");
     await until("!!document.querySelector('.composer-field:not([disabled])') && !!document.querySelector('.log .message, .log .empty')", "the idle composer is not ready in the light scheme");
     await shot("composer-light");
+    await zoom("composer-light");
     await typeInto("Check the login redirect on Safari.\nThen the cookie settings.\nThen write the notes.");
     await shot("composer-text-light");
+    await zoom("composer-text-light");
     await typeInto("");
   }
 }
