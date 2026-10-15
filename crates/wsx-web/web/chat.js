@@ -229,6 +229,12 @@ function release() {
   }
 }
 
+// The command a field starts with, as `/name`, when the agent lists it.
+function tokenOf(listing, text) {
+  const name = /^\/([^\s/]+)(?=\s|$)/.exec(text)?.[1];
+  return name && listing?.commands.some((command) => command.name === name) ? `/${name}` : null;
+}
+
 const CommandList = ({ listing, matches, active, onPick, onHover }) => html`
   <div class="slash">
     <ul class="slash-list" id="slash-list" role="listbox" aria-label="Commands">
@@ -251,6 +257,7 @@ function Composer({ session, working, onSent }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const field = useRef();
+  const mirror = useRef();
   const picker = useRef();
   const ready = Boolean(session.agent?.attached && session.agent.prompt) && !session.exited;
   const [listing, setListing] = useState(null);
@@ -258,6 +265,9 @@ function Composer({ session, working, onSent }) {
   // Escape closes the list until the text changes.
   const [closed, setClosed] = useState(null);
   const matches = closed === draft.text ? null : matching(listing, draft.text);
+  // ^ A listed command at the start of the field shows as one token in the accent colour
+  // (an overlay behind the transparent field); the text the agent gets is unchanged.
+  const token = tokenOf(listing, draft.text);
   const listOpen = Boolean(matches) && ready;
   useEffect(() => {
     if (!ready || !can("chat_send") || !draft.text.startsWith("/") || listing) return undefined;
@@ -353,6 +363,16 @@ function Composer({ session, working, onSent }) {
         return;
       }
     }
+    // Backspace right after the token removes the whole command.
+    const node = field.current;
+    if (event.key === "Backspace" && token && node.selectionStart === token.length && node.selectionEnd === token.length) {
+      event.preventDefault();
+      node.value = draft.text.slice(token.length);
+      node.setSelectionRange(0, 0);
+      changed(node.value);
+      grow();
+      return;
+    }
     // On a hardware keyboard Enter sends and Shift+Enter is a newline. On a touch
     // keyboard Enter is a newline. A key that belongs to an IME composition never sends.
     if (event.key !== "Enter" || event.shiftKey || touch()) return;
@@ -376,12 +396,16 @@ function Composer({ session, working, onSent }) {
         ${can("media_upload") && html`
           <button class="icon-button" type="button" aria-label="Attach files" onClick=${() => picker.current.click()}><${Icon} name="attach" /></button>
           <input type="file" multiple hidden tabIndex="-1" ref=${picker} onChange=${(event) => upload([...event.target.files])} />`}
+        <div class="composer-input" data-token=${token ? "" : null}>
+        ${token && html`<div class="composer-mirror" ref=${mirror} aria-hidden="true"><span class="composer-token">${token}</span>${draft.text.slice(token.length)}${"\u200b"}</div>`}
         <textarea class="composer-field" ref=${field} rows="1" aria-label="Message"
+          onScroll=${() => { if (mirror.current) mirror.current.scrollTop = field.current.scrollTop; }}
           placeholder=${ready ? "Message" : "Cannot receive messages"}
           disabled=${!ready} role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
           aria-controls=${listOpen ? "slash-list" : null} aria-activedescendant=${listOpen && matches.length ? `slash-${active}` : null}
           onInput=${() => { changed(field.current.value); grow(); }} onKeyDown=${keydown}
           onFocus=${isolate} onBlur=${release}></textarea>
+        </div>
         <button class="button button-primary composer-send" type="button" aria-label=${working ? "Queue" : "Send"}
           disabled=${busy || !ready || draft.uploads.length > 0} onClick=${send}>
           <span class="send-mark" aria-hidden="true"><${Icon} name="send" /></span><span class="send-text">${working ? "Queue" : "Send"}</span>
