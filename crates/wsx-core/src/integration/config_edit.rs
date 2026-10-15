@@ -229,6 +229,9 @@ pub(crate) fn json_config(
                 ("PostToolUse", "working"),
                 ("PostToolUseFailure", "working"),
                 ("Stop", "done"),
+                // ^ /compact has no prompt and no Stop; the script reports only a manual one.
+                ("PreCompact", "working"),
+                ("PostCompact", "done"),
             ];
             for (event, _) in events {
                 remove_nested_actions(hooks, event, target, actions);

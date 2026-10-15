@@ -178,7 +178,7 @@ def main():
             or not integration.isdigit() or len(integration) > 10
             or int(integration) > 4294967295 or version(build) == "unknown"):
         return
-    if reason not in {"reported", "no_pane", "metadata_skipped", "stale_runtime",
+    if reason not in {"reported", "no_pane", "metadata_skipped", "compaction_skipped", "stale_runtime",
                       "pane_not_found", "daemon_unreachable", "report_failed"}:
         reason = "report_failed"
     if not protected(ROOT, directory=True):
@@ -195,7 +195,7 @@ def main():
         "pane": "unknown", "runtime_generation": "present" if os.environ.get("WSX_RUNTIME_GENERATION") else "missing",
         "child_session_marker": "present" if "CLAUDE_CODE_CHILD_SESSION" in os.environ else "absent",
         "force_persistence_marker": "present" if "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE" in os.environ else "absent",
-        "report_attempted": reason not in ("no_pane", "metadata_skipped"),
+        "report_attempted": reason not in ("no_pane", "metadata_skipped", "compaction_skipped"),
         "report_exit": int(status), "error_code": None,
         "reporter_version_observed": "unknown", "daemon_version_observed": "unknown",
         "daemon_revision_observed": None, "agent_launch_version": "unknown",

@@ -53,7 +53,24 @@ not require daemon handoff to finish; missing or unsafe candidates still fail ex
 
 ## Claude and Codex opt-in inspection
 
-Claude integration 21 and Codex integration 15 save bounded, opt-in metadata for successful and failed reports in a private journal without changing report authority. See [hook inspection](claude-inspection.md), including the private-marker activation path for existing sessions and the limits of launch-version inference. Install the selected provider with `wsx agent install claude` or `wsx agent install codex`; installation does not rewrite a running agent environment or prove its loaded hook configuration changed. These diagnostics do not establish that a reported hook failure is fixed.
+Claude integration 22 and Codex integration 15 save bounded, opt-in metadata for successful and failed reports in a private journal without changing report authority. See [hook inspection](claude-inspection.md), including the private-marker activation path for existing sessions and the limits of launch-version inference. Install the selected provider with `wsx agent install claude` or `wsx agent install codex`; installation does not rewrite a running agent environment or prove its loaded hook configuration changed. These diagnostics do not establish that a reported hook failure is fixed.
+
+## Claude compaction
+
+Claude Code fires `SessionStart` with `source: "compact"` after every compaction: the person's `/compact`, an automatic one at the context limit, which can come inside a turn, and one after a long idle time. Reporting it as `idle` ended an open turn early: wsxd showed the agent idle while Claude still worked, the exchange ended, and the chat delivered the next message into a busy editor. Claude integration 22 (`wsx-agent-status.sh`) does this instead:
+
+| Hook input (Claude Code 2.1.300) | Report |
+|---|---|
+| `SessionStart`, `source: "compact"` | none: the turn, or the done state, goes on |
+| `PreCompact`, `trigger: "manual"` (`/compact`) | `working` |
+| `PostCompact`, `trigger: "manual"` | `done` |
+| `PreCompact` or `PostCompact` of an automatic compaction | none |
+| `SessionStart` from `startup`, `resume`, `clear` | `idle`, as before |
+
+- `/compact` has no `UserPromptSubmit` and no `Stop` (seen with Claude Code 2.1.300). Its `PostCompact` ends it, so its exchange ends `done_observed`, and a message sent while Claude compacts waits in the web queue until then.
+- The script decides, not the hook matchers, so an older copy of the managed hook command that still calls the same script is also fixed. `PostCompact` must exist: a Claude without it stays `working` after `/compact` until the next turn ends.
+- Other providers are unchanged.
+- An installed integration 21 shows as outdated. Run `wsx agent install claude`, then restart Claude when it is idle so that it loads the new hook configuration.
 
 ## Pi native exchange observer
 
@@ -65,3 +82,5 @@ Pi integration 20 keeps lifecycle-only behavior without Pygmalion's Goal Run own
 - `node scripts/test-pi-agent-status.mjs` exercises Pi lifecycle events with a removed legacy path.
 - The daemon reporter test checks publication, aborted handoff, old-target removal and unsafe targets.
 - Isolated runtime scenarios verify actual reporting and live handoff without replacing pane processes.
+- `scripts/test-agent-context.py` runs the installed Claude hooks for a compaction inside a turn, a `/compact` and a session start against a real wsxd.
+- `scripts/web-real-agent-check.py --scenario compact` runs a real Claude with this build's hooks: `/compact`, and a message sent while it compacts.

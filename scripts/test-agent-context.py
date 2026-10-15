@@ -259,12 +259,12 @@ def main():
         claude_env = dict(env,WSX_PANE_ID=str(claude),WSX_RUNTIME_GENERATION=generation,
                           WSX_AGENT_REPORT_BIN=str(wsx),CLAUDE_CODE_CHILD_SESSION=private,
                           CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=private)
-        def claude_hook(state, extra=None, missing_generation=False):
+        def claude_hook(state, extra=None, missing_generation=False, fields=None, command=None):
             selected = dict(claude_env,**(extra or {}))
             if missing_generation: selected.pop('WSX_RUNTIME_GENERATION')
-            return subprocess.run(['/bin/sh','-c',claude_commands[state]],
+            return subprocess.run(['/bin/sh','-c',command or claude_commands[state]],
                 input=json.dumps({'session_id':'fixture','transcript_path':str(work / 'claude.jsonl'),
-                                  'prompt':private*8192,'credential':private}),
+                                  'prompt':private*8192,'credential':private,**(fields or {})}),
                 env=selected,capture_output=True,text=True,timeout=5)
         def claude_agent():
             return next(pane for pane in call('snapshot')['data']['panes'] if pane['id'] == claude)['agent']
@@ -286,6 +286,27 @@ def main():
         quiet = claude_hook('done')
         assert quiet.returncode == 0 and quiet.stderr == '' and claude_agent()['state'] == 'done'
         assert not journal.exists(), 'disabled inspection created a journal'
+        # Claude starts its session again after every compaction (SessionStart, source "compact"),
+        # also an automatic one inside a turn (real transcripts and hooks, Claude Code 2.1.300).
+        # Only the person's /compact is reported: working, then done. Every installed command
+        # of an event runs, as Claude runs them.
+        def hook_states(steps):
+            seen = []
+            for event, fields in steps:
+                for entry in claude_config['hooks'][event]:
+                    # Claude does not wait for an async hook (the heartbeat).
+                    for hook in (hook for hook in entry['hooks'] if not hook.get('async')):
+                        result = claude_hook(None, command=hook['command'], fields={'hook_event_name':event, **fields})
+                        assert result.returncode == 0 and result.stderr == '', (event, result.stderr)
+                seen.append(claude_agent()['state'])
+            return seen
+        assert hook_states([('UserPromptSubmit', {'prompt_id':'turn-1'}),
+                            ('PreCompact', {'trigger':'auto'}), ('SessionStart', {'source':'compact'}), ('PostCompact', {'trigger':'auto'}),
+                            ('Stop', {}),
+                            ('PreCompact', {'trigger':'manual'}), ('SessionStart', {'source':'compact'}), ('PostCompact', {'trigger':'manual'}),
+                            ('PreCompact', {'trigger':'auto'}), ('SessionStart', {'source':'compact'}), ('PostCompact', {'trigger':'auto'}),
+                            ('SessionStart', {'source':'startup'})]) == ['working', 'working', 'working', 'working', 'done',
+                                                                         'working', 'working', 'done', 'done', 'done', 'done', 'idle']
         marker = work / 'home/.claude/hooks/wsx-inspect-enabled'
         marker.touch(mode=0o600)
         acknowledged = claude_hook('idle')

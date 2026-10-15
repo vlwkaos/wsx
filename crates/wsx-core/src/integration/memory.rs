@@ -325,6 +325,9 @@ fn read_file(
     if provider != "codex" {
         // Keep only the branch that ends at the newest record.
         let mut keep = vec![false; nodes.len()];
+        // Records a Claude compaction kept, and the summary they follow.
+        let mut moved = Vec::new();
+        let mut anchor = None;
         if !nodes.is_empty() {
             let index: HashMap<_, _> = nodes
                 .iter()
@@ -333,6 +336,7 @@ fn read_file(
                 .collect();
             let mut current = Some(nodes.len() - 1);
             let mut seen = HashSet::new();
+            let mut segment_end: Option<&str> = None;
             while let Some(position) = current {
                 let node = &nodes[position];
                 if let Some(id) = node.id.as_deref() {
@@ -342,7 +346,24 @@ fn read_file(
                     }
                 }
                 keep[position] = true;
-                current = node.parent.as_deref().and_then(|id| {
+                if segment_end.is_some() {
+                    moved.push(position);
+                }
+                if segment_end.is_some() && node.id.as_deref() == segment_end {
+                    break;
+                }
+                // ^ Claude 2.1.300: a compaction boundary starts a new chain, and its
+                // `preservedSegment` names the newest old records the model still has,
+                // after the summary. The walk goes on from the last of them to the first.
+                let next = match (&node.preserved, segment_end) {
+                    (Some(preserved), None) => {
+                        segment_end = Some(&preserved.head);
+                        anchor = index.get(preserved.anchor.as_str()).copied();
+                        Some(preserved.tail.as_str())
+                    }
+                    _ => node.parent.as_deref(),
+                };
+                current = next.and_then(|id| {
                     let next = index.get(id).copied();
                     if next.is_none() {
                         truncated = true
@@ -351,8 +372,25 @@ fn read_file(
                 });
             }
         }
-        let mut kept = keep.into_iter();
-        nodes.retain(|_| kept.next().unwrap_or(false));
+        // Branch records in file order, with the kept records right after their summary.
+        moved.reverse();
+        let mut slots: Vec<Option<Node>> = nodes.into_iter().map(Some).collect();
+        let mut order = Vec::new();
+        for (position, kept) in keep.iter().enumerate() {
+            if *kept && !moved.contains(&position) {
+                order.push(position);
+                if Some(position) == anchor {
+                    order.extend(&moved);
+                }
+            }
+        }
+        if anchor.is_none_or(|anchor| !keep[anchor]) {
+            truncated |= !moved.is_empty();
+        }
+        nodes = order
+            .into_iter()
+            .filter_map(|position| slots[position].take())
+            .collect();
     }
     Ok(Loaded {
         path: path.into(),
@@ -570,6 +608,15 @@ struct Node {
     /// A record the provider wrote for itself in the person's name.
     meta: bool,
     steps: Vec<Step>,
+    /// A Claude compaction boundary that kept the newest records: the ids of the first
+    /// and last kept record, and of the summary they follow.
+    preserved: Option<Preserved>,
+}
+
+struct Preserved {
+    head: String,
+    tail: String,
+    anchor: String,
 }
 /// Claude's fixed words around a compaction summary, as its transcripts (2.x) write them.
 const CLAUDE_SUMMARY_START: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n";
@@ -643,7 +690,26 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
     if provider != "codex" && record.get(key).and_then(Value::as_str).is_none() {
         return None;
     }
-    let text_is_notice = provider == "claude" && text.starts_with("[Request interrupted by user");
+    let text_is_notice = provider == "claude"
+        && (text.starts_with("[Request interrupted by user")
+            || text.starts_with("<local-command-stdout>")
+            || text.starts_with("<local-command-stderr>"));
+    // ^ A slash command Claude ran itself is saved in tags: show it as the person typed it.
+    let text = match command_line(provider, role, &text) {
+        Some(line) => line,
+        None => text,
+    };
+    let preserved = (provider == "claude")
+        .then(|| record.get("compactMetadata")?.get("preservedSegment"))
+        .flatten()
+        .and_then(|segment| {
+            let id = |key| Some(segment.get(key)?.as_str()?.to_owned());
+            Some(Preserved {
+                head: id("headUuid")?,
+                tail: id("tailUuid")?,
+                anchor: id("anchorUuid")?,
+            })
+        });
     // A codex record has no id of its own; its payload does.
     let id = record.get(key).or_else(|| message.get("id"));
     Some(Node {
@@ -658,7 +724,8 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
             .get("timestamp")
             .and_then(Value::as_u64)
             .or_else(|| unix_ms(record.get("timestamp")?.as_str()?)),
-        // Claude also writes its own interruption notice in the person's name, and
+        // Claude also writes its own interruption notice and a command's output in the
+        // person's name, and
         // (2.1.300) a background-task notice with `promptSource: "system"`. A prompt the
         // person gave is `typed`, `suggestion_accepted`, `queued` or `sdk`.
         meta: record.get("isMeta").and_then(Value::as_bool) == Some(true)
@@ -666,7 +733,30 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
             || (provider == "claude"
                 && record.get("promptSource").and_then(Value::as_str) == Some("system")),
         steps,
+        preserved,
     })
+}
+
+/// `/name args` from Claude's saved form of a slash command:
+/// `<command-name>/name</command-name> <command-message>…</command-message> <command-args>args</command-args>`.
+fn command_line(provider: &str, role: &str, text: &str) -> Option<String> {
+    if provider != "claude" || role != "user" {
+        return None;
+    }
+    let inner = |tag: &str| {
+        let start = text.find(&format!("<{tag}>"))? + tag.len() + 2;
+        let end = start + text[start..].find(&format!("</{tag}>"))?;
+        Some(text[start..end].trim())
+    };
+    let name = text
+        .starts_with("<command-name>")
+        .then(|| inner("command-name"))??;
+    Some(
+        match inner("command-args").filter(|args| !args.is_empty()) {
+            Some(args) => format!("{name} {args}"),
+            None => name.to_owned(),
+        },
+    )
 }
 
 // ^ Record shapes read from real sessions on 2026-10-12 (docs/web-client.md "Timeline"):

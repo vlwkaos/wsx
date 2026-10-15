@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- Claude: after a compaction wsx showed the agent idle while it still worked. Claude starts its session again after every compaction, also an automatic one inside a turn, and the hook reported that start as idle. The turn ended early, and the web chat delivered the next message into a busy editor. Claude integration 22 skips that start, and reports `/compact` as working, then done, by its own compaction events. A message sent during `/compact` now waits for it. Run `wsx agent install claude`, then restart Claude when it is idle.
+- Web chat after a Claude compaction: the answer Claude kept through the compaction now shows after the summary, `/compact` shows as typed instead of in tags, and its "Compacted" output is left out.
 - Web chat: Claude Code 2.1.300 writes a background-task notice (`<task-notification>…`) in the person's name, and the chat showed it as a message the person wrote. The timeline now leaves out a Claude record with `promptSource: "system"`.
 - Web chat: a message that failed (for example while Claude's editor was not drawn idle yet, right after a turn) held back every later message, so new messages seemed ignored. `editor_unavailable` and other "not yet" refusals now keep the message waiting for up to 30 s. A failed message no longer holds back later ones; it stays above the composer with its reason, Retry and Remove.
 - Web on a phone: from time to time half of the inbox stayed empty. The page kept the height it had while the keyboard was up when iOS did not report that the keyboard closed. It now follows the keyboard only while a field that takes typing has the focus.
