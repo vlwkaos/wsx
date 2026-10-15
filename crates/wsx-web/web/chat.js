@@ -74,6 +74,10 @@ async function post(id, text, attachments) {
   return answer;
 }
 
+// wsxd's reason without its code: "editor_unavailable: Claude input editor is not visibly
+// idle" reads "Claude input editor is not visibly idle".
+const inWords = (reason) => reason.replace(/^[a-z_]+: /, "");
+
 // The most items the server sends (crates/wsx-web/src/chat.rs TIMELINE_ITEMS).
 const TIMELINE_ITEMS = 400;
 
@@ -86,8 +90,10 @@ const EMPTY_WORDS = {
   no_readable_messages: "No messages yet.",
 };
 // Exchange states where the last sent message did not go the expected way.
+// What the latest exchange says under the last message of the conversation. A failed
+// delivery is not here: that message never reached the conversation, so the pending message
+// or the waiting one says it.
 const DELIVERY_WORDS = {
-  delivery_failed: "Not delivered to the agent.",
   cancelled: "Stopped.",
   cancel_requested: "Stopping…",
   expired: "The agent did not finish in time.",
@@ -580,7 +586,7 @@ export function Chat({ session }) {
             ${draft.pending.text && html`<p class="prose">${draft.pending.text}</p>`}
             <${Attachments} files=${draft.pending.attachments} />
             ${notDelivered != null && html`
-              <p class="error" role="alert">Not delivered to the agent${notDelivered ? `: ${notDelivered}` : ""}.</p>
+              <p class="error" role="alert">Not delivered to the agent${notDelivered ? `: ${inWords(notDelivered)}` : ""}.</p>
               <button class="link-action" type="button" onClick=${retry}>Retry</button>`}
           </article>`}
         ${working && html`
@@ -597,12 +603,12 @@ export function Chat({ session }) {
       ${data?.queue?.length ? html`
         <ul class="queue" aria-label="Messages waiting for the agent">
           ${data.queue.map((queued) => html`
-            <li key=${queued.id} class="queued">
+            <li key=${queued.id} class="queued" data-failed=${queued.failed ? "" : null}>
               <span class="queued-text">${queued.text || `${queued.attachments.length} files`}</span>
-              ${queued.failed && html`<span class="queued-reason" data-tone="danger">${queued.failed}</span>`}
               ${queued.failed && html`<button class="link-action" type="button" onClick=${() => act(`queue/${queued.id}/retry`)}>Retry</button>`}
               <button class="link-action" type="button" aria-label=${`Remove waiting message: ${queued.text.slice(0, 40)}`}
                 onClick=${() => act(`queue/${queued.id}`, "DELETE")}>Remove</button>
+              ${queued.failed && html`<p class="queued-reason" role="alert">Not delivered to the agent: ${inWords(queued.failed)}</p>`}
             </li>`)}
         </ul>` : null}
       ${blocked && data?.question ? html`<${Question} session=${session} question=${data.question} onAnswered=${load} />`

@@ -70,7 +70,12 @@ fn observe(app: Arc<App>) {
     loop {
         let changed = match app.client.call(&Request::Poll {
             after_revision: revision,
-            timeout_ms: if watching { WORKING_POLL_MS } else { POLL_MS },
+            // A message that waits for an editor to turn idle is tried again soon.
+            timeout_ms: if watching || app.queue.waiting() {
+                WORKING_POLL_MS
+            } else {
+                POLL_MS
+            },
             tui: presence.clone(),
         }) {
             Ok(Response::Events {

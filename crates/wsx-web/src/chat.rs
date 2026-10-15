@@ -455,7 +455,8 @@ impl Chat {
             crate::events::history_changed(app, session);
             Ok(json!({ "queued": queued_view(&queued, media) }))
         };
-        if agent.state == AgentState::Working || !app.queue.list(session).is_empty() {
+        // A failed message does not hold back a new one; a waiting one goes first.
+        if agent.state == AgentState::Working || app.queue.next(session).is_some() {
             return enqueue();
         }
         match self.send(client, site, media, session, text, attachments) {
@@ -550,8 +551,16 @@ impl Chat {
                 true
             }
             Ok(_) => app.queue.remove(session, queued.id),
-            // Not at a wait boundary yet: try again on the next change.
-            Err(fault) if busy(&fault) => false,
+            // Not at a wait boundary yet, such as Claude's editor that is drawn idle a moment
+            // after the turn ends: try again soon, and fail with the reason after a while.
+            Err(fault) if busy(&fault) => {
+                let since = app.queue.not_yet(session, queued.id);
+                if crate::devices::now_unix_ms().saturating_sub(since) < NOT_YET_MS {
+                    return false;
+                }
+                app.queue.fail(session, queued.id, &fault.2);
+                true
+            }
             Err(fault) => {
                 app.queue.fail(session, queued.id, &fault.2);
                 true
@@ -742,10 +751,22 @@ pub fn activity(target: &Target) -> String {
     activity_of(timeline.iter().flat_map(|timeline| &timeline.items))
 }
 
-/// Whether the daemon refused because the agent or its exchange is still in a turn.
+/// How long a queued message waits for an agent that is not at a wait boundary yet.
+const NOT_YET_MS: u64 = 30_000;
+
+/// Whether wsxd refused because the agent is not at a wait boundary yet: still in a turn,
+/// an editor not drawn idle yet, or wsxd being replaced. The same message may go later.
 fn busy(fault: &Fault) -> bool {
     fault.1 == "daemon_refused"
-        && (fault.2.starts_with("agent_busy") || fault.2.starts_with("exchange_busy"))
+        && [
+            "agent_busy",
+            "exchange_busy",
+            "editor_unavailable",
+            "daemon_unavailable",
+            "daemon_replacing",
+        ]
+        .iter()
+        .any(|code| fault.2.starts_with(&format!("{code}:")))
 }
 
 /// The agent a message may go to. A blocked agent shows a provider dialog: pasted
