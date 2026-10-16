@@ -2418,7 +2418,7 @@ def task_journey(args):
         raise AssertionError(label + ' timeout')
 
     try:
-        home, state, project, other, bin_dir = (work / name for name in ('h', 's', 'demo', 'other', 'bin'))
+        home, state, project, other, bin_dir = (work / name for name in ('h', 's', 'demo', 'ui', 'bin'))
         for folder in (home, state, project, other, bin_dir):
             folder.mkdir(mode=0o700)
         project, other = project.resolve(), other.resolve()
@@ -2468,6 +2468,16 @@ def task_journey(args):
         wait_state(1, 'blocked')
         wait_state(2, 'ready')
         wait_state(3, 'ready')
+        if args.browser:
+            # The same store in the second project (`ui`; a short name keeps manager.sock within sun_path), for the page: the browser acts on it.
+            for prompt in ('NEEDS Bash(make:*) WORK m.txt', 'WORK a.txt HV', 'WORK b.txt', 'NEEDS Bash(make:*) WORK n.txt'):
+                js('task', 'new', prompt, '-p', 'ui')
+            for n, state_name in ((1, 'blocked'), (2, 'ready'), (3, 'ready'), (4, 'blocked')):
+                wait(lambda: js('task', 'show', n, '-p', 'ui')['state'] == state_name, 'ui #%d' % n)
+            # a1 lands #3, a2 discards #4: both wait for the owner.
+            js('task', 'say', 'RUN wsx task land 3 -p ui --json\nRUN wsx task close 4 --discard -p ui --json', '-p', 'ui')
+            wait(lambda: len(json.loads(cli('task', 'ledger', '-p', 'ui').stdout)['approvals'] or []) == 2,
+                 'approval requests in ui', timeout=30)
 
         push = start(work, [node, str(ROOT / 'scripts/web-push-fixture.mjs'), str(work / 'push.jsonl')],
                      stdout=subprocess.PIPE, text=True)
@@ -2528,7 +2538,7 @@ service_origins = ["{push_origin}"]
         everything = steady(owner, 'GET', '/api/tasks')[1]
         assert sorted(item['project'] for item in everything) == sorted(ids.values()), everything
         detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
-        assert detail['state'] == 'ready' and detail['actions'] == ['verify', 'land', 'add'], detail['actions']
+        assert detail['state'] == 'ready' and detail['actions'] == ['verify', 'add'], detail['actions']
         assert detail['result']['human_verify'] == [{'check': 'open the file', 'pass_if': 'it has text'}]
         for heading in ('## Asked', '## Summary', '## Decisions', '## Changes', '## Evidence', '## Human Verify', '## Left open'):
             assert heading in detail['report'], (heading, detail['report'][:400])
@@ -2571,7 +2581,14 @@ service_origins = ["{push_origin}"]
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         kinds = [(item['kind'], item.get('task')) for item in overview['needs']]
         assert kinds == [('land', 3), ('land', 1), ('done', 2)], kinds  # oldest first within a kind
-        ok('actions: verify (fail needs a note), land refused then landed, allow resumes, add reaches the worker')
+        # A steer reaches the running turn.
+        assert js('task', 'new', 'SLOW WORK s.txt', '-p', 'demo')['id'] == 4
+        wait_state(4, 'working')
+        status, body = act(4, 'steer', {'text': 'steer words'})
+        assert status == 200, body
+        wait(lambda: 'steer words' in (work / 'fake-claude.trace').read_text(), 'steer reached the turn')
+        wait_state(4, 'ready')
+        ok('actions: verify (fail needs a note), land refused then landed, allow resumes, add reaches the worker, steer reaches the turn')
 
         # --- The manager: say starts it, the reply arrives in the chat, events follow.
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS'})
@@ -2606,7 +2623,7 @@ service_origins = ["{push_origin}"]
         assert steady(owner, 'POST', '/api/tasks/%d/approvals/a2/maybe' % demo, {})[0] == 404
         assert task_state(1) == 'ready'
         since = steady(owner, 'GET', '/api/tasks/%d/since?after=1' % demo)[1]
-        assert since['tasks']['landed'] == [2, 3] and since['tasks']['started'] == [1, 2, 3] and since['replies'] >= 3, since
+        assert since['tasks']['landed'] == [2, 3] and since['tasks']['started'] == [1, 2, 3, 4] and since['replies'] >= 3, since
         ok('manager: say starts it, reply in the chat, approve runs once and records the outcome, deny with a note, since')
 
         # --- Refusals: the capability and the grant come from the site file only.
@@ -2616,12 +2633,21 @@ service_origins = ["{push_origin}"]
             status, refused = steady(viewer, method, route, body)
             assert status == 403 and refused['error']['code'] == 'capability_denied', (route, refused)
         assert steady(viewer, 'GET', '/api/tasks/%d' % demo)[0] == 200
-        assert steady(viewer, 'GET', '/api/tasks/%d' % ids['other'])[0] == 404
-        assert steady(viewer, 'GET', '/api/tasks/%d/t/1' % ids['other'])[0] == 404
+        assert steady(viewer, 'GET', '/api/tasks/%d' % ids['ui'])[0] == 404
+        assert steady(viewer, 'GET', '/api/tasks/%d/t/1' % ids['ui'])[0] == 404
         assert steady(viewer, 'GET', '/api/tasks/%d/t/1' % demo)[1]['actions'] == []
         for route in ('/api/tasks', '/api/tasks/%d' % demo, '/api/tasks/%d/chat' % demo):
             assert steady(plain, 'GET', route)[0] == 403, route
         ok('refusals: task_act and task_view per site, ungranted project 404, actions hidden without task_act')
+        if args.browser:
+            args.captures.mkdir(parents=True, exist_ok=True)
+            audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
+            browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
+            result = check(work, [node, str(ROOT / 'scripts/web-tasks-check.mjs'), owner.origin + '/', browser_code,
+                                  str(ids['ui']), str(args.captures), str(audit) if audit.exists() else ''], timeout=300)
+            assert result.returncode == 0, result.stdout + result.stderr
+            ok('real browser, ' + result.stdout.strip().splitlines()[-1])
+
         success = True
     finally:
         for process in reversed(STARTED):

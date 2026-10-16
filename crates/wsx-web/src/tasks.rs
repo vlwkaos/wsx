@@ -33,8 +33,6 @@ const CHAT_ENTRIES: usize = 200;
 const TIMELINE_ENTRIES: usize = 300;
 const MAX_REPORT_BYTES: u64 = 1024 * 1024;
 const MAX_TOOL_BYTES: usize = 256;
-// The same limits as the CLI: a pr landing pushes and calls gh before the host answers.
-const LAND_TIMEOUT: Duration = Duration::from_secs(300);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A granted project and its task store.
@@ -270,12 +268,12 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     summary["verification"] = view::verification_value(&log, record.revision);
     summary["approvals"] = json!(approvals);
     summary["actions"] = if can_act {
-        json!(actions(
-            record.state,
-            human_verify
-                .as_array()
-                .is_some_and(|items| !items.is_empty())
-        ))
+        // ^ A revision with a pass needs no verdict; a new revision brings the buttons back.
+        let unverified = human_verify
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+            && !task::passed(&log, record.revision);
+        json!(actions(record.state, unverified))
     } else {
         json!([])
     };
@@ -283,11 +281,12 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
 }
 
 /// The actions a task's state allows. The host still decides; this only picks buttons.
-fn actions(state: TaskState, has_checks: bool) -> Vec<&'static str> {
+fn actions(state: TaskState, unverified: bool) -> Vec<&'static str> {
     match state {
         TaskState::Starting | TaskState::Working | TaskState::Checking => vec!["steer", "add"],
         TaskState::Blocked => vec!["add", "allow"],
-        TaskState::Ready if has_checks => vec!["verify", "land", "add"],
+        // ^ The host refuses to land a revision whose Human Verify items have no pass.
+        TaskState::Ready if unverified => vec!["verify", "add"],
         TaskState::Ready => vec!["land", "add"],
         TaskState::Failed | TaskState::Conflict | TaskState::Stopped => vec!["add"],
         TaskState::InReview => vec!["land", "add"],
@@ -459,7 +458,7 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
     }
     let dir = open_task(scope, task)?;
     let timeout = if matches!(request, HostRequest::Land { .. }) {
-        LAND_TIMEOUT
+        owner::LAND_TIMEOUT
     } else {
         owner::HOST_TIMEOUT
     };

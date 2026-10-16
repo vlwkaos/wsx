@@ -2,11 +2,17 @@
 // their sessions; Files and New session stay on each row.
 import { html, useNow } from "./lib.js";
 import { can, shows, stateOf, useStore } from "./store.js";
+import { needing } from "./tasks.js";
 import { NewSession, SessionRow } from "./inbox.js";
 import { Back } from "./ui.js";
 
 const counted = (count) => (count === 1 ? "1 session" : `${count} sessions`);
-const filesLink = (project) => shows("files") && can("files_read") && html`
+// How many task items wait for the owner in a project, after its session count.
+const waiting = (store, project) => {
+  const count = can("task_view") ? needing(project.id, store.tasks[project.id]).length : 0;
+  return count ? ` · ${count} ${count === 1 ? "needs" : "need"} you` : "";
+};
+export const filesLink = (project) => shows("files") && can("files_read") && html`
   <a class="link-action" href=${`#/p/${project.id}/files`} aria-label=${`Files of ${project.name}`}>Files</a>`;
 
 export function Projects({ rail }) {
@@ -25,7 +31,7 @@ export function Projects({ rail }) {
             <div class="row-link" aria-current=${rail && Number(open) === project.id ? "page" : null}>
               <a class="row-main row-open" href=${`#/p/${project.id}`}>
                 <span class="row-label">${project.name}</span>
-                <span class="row-context">${counted(count(project))}</span>
+                <span class="row-context">${counted(count(project))}${waiting(store, project)}</span>
               </a>
               <span class="row-actions">
                 ${filesLink(project)}
@@ -42,8 +48,11 @@ export function Projects({ rail }) {
     </div>`;
 }
 
+// A project's sessions, from the manager's top row (#/p/<id>/sessions).
+export const ProjectSessions = ({ id }) => html`<${Project} id=${id} back=${`#/p/${id}`} />`;
+
 // One project: its worktrees, main checkout first, each with its sessions.
-export function Project({ id }) {
+export function Project({ id, back = "#/projects" }) {
   const store = useStore();
   const project = store.projects.find((candidate) => candidate.id === id);
   const sessions = project ? store.sessions.filter((session) => session.project.id === id) : [];
@@ -51,7 +60,7 @@ export function Project({ id }) {
   if (!project) {
     return html`
       <div class="page">
-        <header class="bar"><${Back} fallback="#/projects" /></header>
+        <header class="bar"><${Back} fallback=${back} /></header>
         <p class="empty">${!store.daemon ? "wsx is not running on the host." : store.loaded ? "This project is not available." : "Loading…"}</p>
       </div>`;
   }
@@ -59,7 +68,7 @@ export function Project({ id }) {
   return html`
     <div class="page">
       <header class="bar">
-        <${Back} fallback="#/projects" />
+        <${Back} fallback=${back} />
         <div class="bar-title">
           <span class="bar-label">${project.name}</span>
           <span class="bar-state">${counted(sessions.length)}</span>

@@ -15,6 +15,8 @@ export const state = {
   newBuild: null,
   // wsx version, commit, build id and server start, from api/session.
   build: null,
+  // Each granted project's task overview by project id, with task_view (docs/web-client.md "Tasks").
+  tasks: {},
 };
 
 // ^ This page's build: the path segment its modules were loaded from, assets/<build>/.
@@ -95,11 +97,30 @@ export function markSeen(session) {
   try { localStorage.setItem(SEEN_KEY, JSON.stringify(kept)); } catch { /* a private window shows "new" again */ }
 }
 
-// Routes: #/ (inbox), #/projects, #/settings, #/s/<id>/chat|terminal, #/p/<id>, #/p/<id>/files.
+// "Done, not seen" is per device: the time a landed task was last opened here, by `<project>/<task>`.
+const TASK_SEEN_KEY = "wsx-task-seen";
+function tasksSeen() {
+  try { return JSON.parse(localStorage.getItem(TASK_SEEN_KEY)) ?? {}; } catch { return {}; }
+}
+export const taskSeen = (project, task, since) => (tasksSeen()[`${project}/${task}`] ?? 0) >= since;
+export function markTaskSeen(project, task, since) {
+  const known = tasksSeen();
+  if ((known[`${project}/${task}`] ?? 0) >= since) return;
+  known[`${project}/${task}`] = since;
+  // The oldest go first, so the record stays small.
+  const kept = Object.fromEntries(Object.entries(known).sort((left, right) => right[1] - left[1]).slice(0, 200));
+  try { localStorage.setItem(TASK_SEEN_KEY, JSON.stringify(kept)); } catch { /* a private window shows it again */ }
+}
+
+// Routes: #/ (inbox), #/projects, #/settings, #/s/<id>/chat|terminal, #/p/<id> (the manager with
+// task_view, else the sessions), #/p/<id>/sessions, #/p/<id>/files, #/p/<id>/t/<task>.
 export function parseRoute(hash) {
-  const [, first = "", second, third] = hash.split("/");
+  const [, first = "", second, third, fourth] = hash.split("/");
   if (first === "s" && Number(second)) return { screen: "session", id: Number(second), tab: third === "terminal" ? "terminal" : "chat" };
-  if (first === "p" && Number(second)) return { screen: third === "files" ? "files" : "project", id: Number(second) };
+  if (first === "p" && Number(second) && third === "t" && Number(fourth)) return { screen: "task", id: Number(second), task: Number(fourth) };
+  if (first === "p" && Number(second)) {
+    return { screen: { files: "files", sessions: "sessions" }[third] ?? "project", id: Number(second) };
+  }
   if (first === "projects" || first === "settings") return { screen: first };
   return { screen: "inbox" };
 }

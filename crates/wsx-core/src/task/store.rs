@@ -501,8 +501,10 @@ pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
     ];
     for id in task_numbers(project_id)? {
         let task = dir.join(id.to_string());
-        files.push(task.join(RECORD_FILE));
-        files.push(task.join(LOG_FILE));
+        // ^ The host writes the report after the log line that caused it.
+        for name in [RECORD_FILE, LOG_FILE, RESULT_FILE, REPORT_FILE] {
+            files.push(task.join(name));
+        }
     }
     Ok(files)
 }

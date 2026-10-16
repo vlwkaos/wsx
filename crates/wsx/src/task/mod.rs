@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::LandPolicy;
 use wsx_core::task::manager::{ApprovalAction, ApprovalLine, ManagerEvent};
-use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT};
+use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{
     overlaps, project_tasks, task_summary, verification_value, MAX_RESULT_READ_BYTES,
@@ -32,7 +32,6 @@ use wsx_core::task::{
 };
 use wsx_core::{ops, runtime};
 
-const LAND_TIMEOUT: Duration = Duration::from_secs(300);
 const HOST_START_WAIT: Duration = Duration::from_secs(10);
 const CLOSE_WAIT: Duration = Duration::from_secs(15);
 const CARGO_CLEAN_TIMEOUT: Duration = Duration::from_secs(10 * 60);

@@ -35,10 +35,10 @@ export async function api(path, { method = "GET", json, body, query } = {}) {
   return data;
 }
 
-// handlers: { workspace, history, exchange, daemon, resync, revoked, down, up }
+// handlers: { workspace, history, exchange, daemon, resync, revoked, tasks, task, manager, down, up }
 export function openEvents(handlers) {
   const stream = new EventSource(resolve("api/events"));
-  for (const name of ["workspace", "history", "exchange", "daemon", "resync", "revoked"]) {
+  for (const name of ["workspace", "history", "exchange", "daemon", "resync", "revoked", "tasks", "task", "manager"]) {
     stream.addEventListener(name, (event) => handlers[name]?.(JSON.parse(event.data)));
   }
   stream.onopen = () => handlers.up?.();

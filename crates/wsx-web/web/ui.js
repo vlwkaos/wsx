@@ -48,7 +48,7 @@ export function Notices() {
       ${!store.online && html`<p class="notice" data-tone="attention">Connection lost. Reconnecting…</p>`}
       ${store.newBuild && html`<p class="notice notice-build"><span>A new version of this page is ready.</span>
         <button class="link-action" type="button" onClick=${reloadForBuild}>Reload</button></p>`}
-      ${toasts.map((entry) => html`<p class="notice">${entry.text}</p>`)}
+      ${toasts.slice(-2).map((entry) => html`<p class="notice">${entry.text}</p>`)}
     </div>`;
 }
 
@@ -91,6 +91,7 @@ export function Back({ fallback }) {
   const project = state.projects.find((candidate) => candidate.id === route.id)?.name ?? "project";
   const names = {
     inbox: "inbox", projects: "projects", settings: "settings", project, files: `files of ${project}`,
+    sessions: `sessions of ${project}`, task: `task #${route.task}`,
     session: state.sessions.find((candidate) => candidate.id === route.id)?.label ?? "session",
   };
   return html`
