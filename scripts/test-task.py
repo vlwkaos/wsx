@@ -383,9 +383,10 @@ def run(wsx, wsxd, work, owned):
     ids = sorted(json.loads(out)['id'] for out, _ in outputs)
     assert ids == [7, 8], ids
     for n in ids:
-        # ^ NOOP on main lacks a.txt, so the declared check fails: both still finish r1.
-        done = wait_state(n, 'ready', 'failed')
-        assert done['revision'] == 1 and done['result']['checks'][0]['exit'] == 1, done
+        # ^ NOOP on main lacks a.txt, so the declared check fails: both go back to the worker
+        # twice (docs/tasks.md "Checks"), then fail at r3.
+        done = wait_state(n, 'failed')
+        assert done['revision'] == 3 and done['result']['checks'][0]['exit'] == 1, done
         js('task', 'close', n)
 
     # 13. A check that runs past tasks.checkTimeoutSeconds is killed and fails the task.
@@ -902,6 +903,32 @@ def run(wsx, wsxd, work, owned):
     assert {'kind': 'network', 'host': 'npmjs.org'} in json.loads(grants_file.read_text())
     js('task', 'deny', requests[1])
     for n in (g, h):
+        js('task', 'close', n, '--discard')
+
+    # 25. A done result whose checks fail goes back to the worker with the failed command and
+    # its output, at most twice, then the task fails as before.
+    fixable = 'test -f fixed.txt || { echo "WORK fixed.txt"; exit 1; }'
+    (project / 'wsx.config.yml').write_text(CONFIG.replace('    - "test -f a.txt"\n    - "test ! -e broken.txt"\n',
+                                                           '    - %s\n' % json.dumps(fixable)))
+    git('commit', '-q', '-am', 'fixable check')
+    f = js('task', 'new', 'WORK retry1.txt')['id']
+    fixed = wait_state(f, 'ready', 'failed')
+    assert fixed['state'] == 'ready' and fixed['revision'] == 2, fixed
+    retries = [e for e in log(f) if e['kind'] == 'check_retry']
+    assert [(e['revision'], e['attempt'], e['commands']) for e in retries] == [(1, 1, [fixable])], retries
+    retry_message = next(t['message'] for t in traces() if fixable in t.get('message', ''))
+    assert '(automatic retry 1 of 2)' in retry_message and fixable in retry_message and 'WORK fixed.txt' in retry_message
+    (project / 'wsx.config.yml').write_text(CONFIG.replace('    - "test -f a.txt"\n    - "test ! -e broken.txt"\n',
+                                                           '    - "echo stays broken; exit 3"\n'))
+    git('commit', '-q', '-am', 'broken check')
+    b = js('task', 'new', 'WORK retry2.txt')['id']
+    broken = wait_state(b, 'failed', 'ready')
+    assert broken['state'] == 'failed' and broken['revision'] == 3, broken
+    assert [e['attempt'] for e in log(b) if e['kind'] == 'check_retry'] == [1, 2]
+    # ^ A message from a person allows two more.
+    js('task', 'add', b, 'NOOP')
+    wait(lambda: len([e for e in log(b) if e['kind'] == 'check_retry']) == 4 and show(b)['state'] == 'failed', 'two more retries')
+    for n in (f, b):
         js('task', 'close', n, '--discard')
 
 

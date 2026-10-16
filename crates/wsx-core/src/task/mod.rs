@@ -240,6 +240,12 @@ pub enum LogEvent {
     Checks {
         results: Vec<CheckResult>,
     },
+    /// Failed checks of `revision` went back to the worker as turn `attempt`.
+    CheckRetry {
+        revision: u32,
+        attempt: u32,
+        commands: Vec<String>,
+    },
     Revision {
         revision: u32,
         commit: String,
