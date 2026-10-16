@@ -5,6 +5,7 @@
 use super::claude::{new_session_id, AgentLine, ClaudeAgent, Launch, TurnResult};
 use super::hosting;
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -12,9 +13,11 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::runtime;
 use wsx_core::task::manager::{
-    Author, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState,
+    Author, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState, Seen,
 };
 use wsx_core::task::store::ManagerDir;
+use wsx_core::task::store::RESULT_FILE;
+use wsx_core::task::TaskState;
 use wsx_core::task::MAX_MESSAGE_BYTES;
 
 pub const MANAGER_TOOLS: [&str; 4] = ["Read", "Grep", "Glob", "Bash(wsx task:*)"];
@@ -29,6 +32,23 @@ const MANAGER_ENV: [&str; 5] = [
 ];
 pub const ACTOR_ENV: &str = "WSX_TASK_ACTOR";
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
+/// Events within this long of each other, or during a turn, become one message.
+const EVENT_QUIET: Duration = Duration::from_secs(3);
+const EVENT_TITLE_CHARS: usize = 80;
+const EVENT_SUMMARY_CHARS: usize = 160;
+
+/// Task states the manager hears about.
+fn is_event_state(state: TaskState) -> bool {
+    matches!(
+        state,
+        TaskState::Ready
+            | TaskState::Blocked
+            | TaskState::Failed
+            | TaskState::Conflict
+            | TaskState::InReview
+            | TaskState::Landed
+    )
+}
 
 pub(super) enum Event {
     Request(ManagerRequest, Sender<ManagerResponse>),
@@ -52,6 +72,11 @@ struct Manager {
     turn: Option<Vec<u64>>,
     pane: Option<u64>,
     started: Instant,
+    /// Task states as last seen, including ones not yet reported.
+    observed: BTreeMap<u32, Seen>,
+    /// Event lines not yet logged as a message, and when the last one came.
+    pending_events: Vec<String>,
+    last_event: Option<Instant>,
 }
 
 fn instructions(project: &str) -> String {
@@ -88,7 +113,11 @@ pub fn run(project_id: &str) -> Result<()> {
         turn: None,
         pane: hosting::own_pane(),
         started: Instant::now(),
+        observed: BTreeMap::new(),
+        pending_events: Vec::new(),
+        last_event: None,
     };
+    manager.restore()?;
     let requests = events.clone();
     std::thread::spawn(move || {
         hosting::serve(
@@ -124,9 +153,10 @@ impl Manager {
                     self.on_agent(line)
                 }
                 Event::Agent(..) => {}
-                Event::Tick => {}
+                Event::Tick => self.watch_tasks(),
             }
             if self.turn.is_none() {
+                self.flush_events();
                 self.next_turn();
             }
         }
@@ -163,6 +193,111 @@ impl Manager {
         }
     }
 
+    /// Re-queue messages logged but never delivered, and pick up what was last reported.
+    /// ^ No event is lost across a restart: a change reported in no logged message is
+    /// found again because `seen` is saved only when its message is logged.
+    fn restore(&mut self) -> Result<()> {
+        let log = self.dir.read_log()?;
+        let delivered: std::collections::HashSet<u64> = log
+            .iter()
+            .flat_map(|entry| match &entry.event {
+                ManagerEvent::Delivered { ids } => ids.clone(),
+                _ => Vec::new(),
+            })
+            .collect();
+        for entry in log {
+            if let ManagerEvent::Message { id, from, text } = entry.event {
+                if !delivered.contains(&id) {
+                    self.enqueue(id, from, text);
+                }
+            }
+        }
+        match self.state.seen.clone() {
+            Some(seen) => self.observed = seen,
+            None => {
+                // ^ First start: what already happened is the baseline, not news.
+                self.observed = self.current_tasks().into_iter().collect();
+                self.state.seen = Some(self.observed.clone());
+                self.save();
+            }
+        }
+        Ok(())
+    }
+
+    fn current_tasks(&self) -> Vec<(u32, Seen)> {
+        super::project_tasks(&self.dir.project_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, record)| record.ok())
+            .map(|record| {
+                (
+                    record.id,
+                    Seen {
+                        state: record.state,
+                        revision: record.revision,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Turn task state changes into event lines.
+    fn watch_tasks(&mut self) {
+        let Ok(tasks) = super::project_tasks(&self.dir.project_id) else {
+            return;
+        };
+        for (dir, record) in tasks {
+            let Ok(record) = record else { continue };
+            let now = Seen {
+                state: record.state,
+                revision: record.revision,
+            };
+            if self.observed.get(&record.id) == Some(&now) {
+                continue;
+            }
+            self.observed.insert(record.id, now);
+            if !is_event_state(record.state) {
+                continue;
+            }
+            let title = dir.prompt().ok().flatten().unwrap_or_default();
+            let summary = dir
+                .read_file(RESULT_FILE, super::MAX_RESULT_READ_BYTES)
+                .ok()
+                .flatten()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .and_then(|value| value["result"]["summary"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            self.pending_events.push(format!(
+                "#{} {} r{}: {}; {}",
+                record.id,
+                record.state.as_str(),
+                record.revision,
+                super::ledger::clip(&title, EVENT_TITLE_CHARS),
+                super::ledger::clip(&summary, EVENT_SUMMARY_CHARS),
+            ));
+            self.last_event = Some(Instant::now());
+        }
+    }
+
+    /// Log the waiting event lines as one message once they have been quiet for a while.
+    fn flush_events(&mut self) {
+        let quiet = self
+            .last_event
+            .is_some_and(|last| last.elapsed() >= EVENT_QUIET);
+        if self.pending_events.is_empty() || !quiet {
+            return;
+        }
+        let text = self.pending_events.join("\n");
+        match self.accept(Author::Events, text) {
+            Ok(_) => {
+                self.pending_events.clear();
+                self.state.seen = Some(self.observed.clone());
+                self.save();
+            }
+            Err(error) => self.say(&format!("cannot log the events: {error:#}")),
+        }
+    }
+
     /// Log a message and queue it; owner messages go before events.
     fn accept(&mut self, from: Author, text: String) -> Result<u64> {
         if text.trim().is_empty() {
@@ -177,6 +312,11 @@ impl Manager {
             from,
             text: text.clone(),
         })?;
+        self.enqueue(id, from, text);
+        Ok(id)
+    }
+
+    fn enqueue(&mut self, id: u64, from: Author, text: String) {
         let at = match from {
             Author::Owner => self
                 .queue
@@ -186,7 +326,6 @@ impl Manager {
             Author::Events => self.queue.len(),
         };
         self.queue.insert(at, (id, from, text));
-        Ok(id)
     }
 
     fn next_id(&mut self) -> u64 {

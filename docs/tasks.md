@@ -107,6 +107,8 @@ One manager per project runs as hidden `wsx task manager-host <project-id>` in a
 
 - `manager/log.jsonl` (rolls to `log.1.jsonl` past 8 MiB) has `message{id, from: owner|events, text}`, `delivered{ids}`, `reply{id, to, text, usage}`, `agent` (its commands), `rotated{tokens}` and `stopped`. `manager/state.json` keeps the conversation, the next id and what was already reported.
 - One turn at a time. Waiting owner messages go together in one turn, each headed with its id, before waiting events.
+- Events: the host checks the task records every second. A change of (state, revision) into `ready`, `blocked`, `failed`, `conflict`, `in_review` or `landed` becomes a line written by wsx, `#<n> <state> r<k>: <title, 80 chars>; <summary, 160 chars>`. Lines are logged as one `events` message when 3 s have passed since the last one and no turn runs, so events during a turn or close together arrive merged.
+- Restart: `state.json` records the reported state of each task only when its message is logged, and `delivered` marks what reached the agent. A restarted host queues logged messages that were never delivered and reports changes it has not reported, so no event is lost. Its first start takes the existing tasks as they are, without events.
 - After a reply whose context (input, cache read and cache write tokens) passes `rotateTokens`, the next turn starts a fresh conversation and the log has `rotated`; the ledger carries the state.
 
 ## Deploy and release

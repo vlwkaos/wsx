@@ -605,8 +605,43 @@ def run(wsx, wsxd, work, owned):
     reply_to(after_rotation['id'])
     manager_launches = [t for t in traces() if t.get('launch') and t.get('manager')]
     assert not manager_launches[-1]['resume'] and manager_launches[-1]['session'] != launch['session']
-    assert [e['id'] for e in chat(after=big['id']) if e['kind'] == 'message'] == [after_rotation['id']]
+    assert [e['id'] for e in chat(after=big['id']) if e['kind'] == 'message' and e['from'] == 'owner'] == [after_rotation['id']]
     for n in (running, manager_task):
+        js('task', 'close', n, '--discard')
+
+    # 21. Events: task state changes reach the manager, merged while it is busy; an owner
+    # message waiting at the same time goes first; a host restart loses no event.
+    manager_log = Path(created['task_dir']).parent / 'manager' / 'log.jsonl'
+
+    def manager_entries():
+        return [json.loads(line) for line in manager_log.read_text().splitlines()]
+
+    def events_with(*needles):
+        return [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
+                and all(needle in e['text'] for needle in needles)]
+
+    busy = js('task', 'say', 'SLOW')
+    first = js('task', 'new', 'NOOP')['id']
+    second = js('task', 'new', 'NOOP')['id']
+    for n in (first, second):
+        wait_state(n, 'ready', 'failed')
+    waiting = js('task', 'say', 'STATUS')
+    assert waiting['busy'] and 'queued' in waiting['message'], waiting
+    merged = wait(lambda: events_with('#%d ready r1' % first, '#%d ready r1' % second), 'merged events')
+    assert len(merged) == 1, merged
+    delivered = [e['ids'] for e in manager_entries() if e['kind'] == 'delivered']
+    assert delivered.index([waiting['id']]) < delivered.index([merged[0]['id']]), delivered
+    assert 'noted events' in reply_to(merged[0]['id'])['text']
+    # Stop the manager host, finish a task while it is down, start it again.
+    cli('session', 'delete', 'task-manager', '-p', 'demo')
+    wait(lambda: not (manager_log.parent / 'manager.sock').exists() or
+         subprocess.run(['nc', '-zU', str(manager_log.parent / 'manager.sock')]).returncode != 0, 'manager down')
+    unseen = js('task', 'new', 'WORK late.txt')['id']
+    wait_state(unseen, 'ready', 'failed')
+    assert js('task', 'manager')['state'] == 'started'
+    late = wait(lambda: events_with('#%d ready r1' % unseen), 'event after restart')
+    assert 'noted events' in reply_to(late[0]['id'])['text']
+    for n in (first, second, unseen):
         js('task', 'close', n, '--discard')
 
 
