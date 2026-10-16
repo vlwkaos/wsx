@@ -57,3 +57,33 @@ export function useNow(active) {
   }, [active]);
   return now;
 }
+
+// A conversation log that keeps its reader at the end only while the reader is at the end.
+// `log` is the scroller's ref callback; `atEnd` is a ref the page may set (a sent message goes
+// to the end); `away` shows the jump button. The log is also pinned when its own box changes
+// size (a brief or tray above it appears, the keyboard opens): that fires no scroll event.
+export function useFollowEnd() {
+  const node = useRef(null);
+  const atEnd = useRef(true);
+  const watcher = useRef(null);
+  const [away, setAway] = useState(false);
+  const pin = () => { if (atEnd.current && node.current) node.current.scrollTop = node.current.scrollHeight; };
+  const scrolled = () => {
+    const element = node.current;
+    // A scroll event may still arrive after the view closed.
+    if (!element) return;
+    atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+    setAway(!atEnd.current);
+  };
+  const log = useCallback((element) => {
+    watcher.current?.disconnect();
+    watcher.current = null;
+    node.current = element;
+    if (!element) return;
+    watcher.current = new ResizeObserver(() => { if (atEnd.current) pin(); else scrolled(); });
+    watcher.current.observe(element);
+  }, []);
+  const toEnd = () => { atEnd.current = true; pin(); setAway(false); };
+  useLayoutEffect(pin);
+  return { log, atEnd, away, scrolled, toEnd };
+}
