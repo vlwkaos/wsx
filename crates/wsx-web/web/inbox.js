@@ -3,6 +3,22 @@
 import { api } from "./api.js";
 import { elapsed, html, Icon, useNow, useState } from "./lib.js";
 import { can, isAgent, isNew, sessionLink, shows, stateOf, useStore } from "./store.js";
+import { Needs, needing } from "./tasks.js";
+
+// Each granted project's Needs-you items, under its name (docs/web-client.md "Inbox").
+function TaskNeeds({ store }) {
+  if (!can("task_view")) return null;
+  const waiting = store.projects.filter((project) => needing(project.id, store.tasks[project.id]).length);
+  return waiting.length ? html`
+    <section aria-label="Tasks">
+      <h2 class="label">Tasks</h2>
+      ${waiting.map((project) => html`
+        <div class="group" key=${project.id}>
+          <div class="group-head"><a class="group-name group-link" href=${`#/p/${project.id}`}>${project.name}</a></div>
+          <${Needs} project=${project.id} overview=${store.tasks[project.id]} all />
+        </div>`)}
+    </section>` : null;
+}
 
 // One session. Left: a state mark. Middle: the work first, project › worktree, then the
 // session and its provider, and for a working session what it does. Right: the state
@@ -113,6 +129,6 @@ export function Inbox({ rail }) {
   return html`
     <div class="page">
       ${!rail && html`<h1 class="title">Inbox</h1>`}
-      <div class="scroll">${body}</div>
+      <div class="scroll"><${TaskNeeds} store=${store} />${body}</div>
     </div>`;
 }

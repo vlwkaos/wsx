@@ -3,11 +3,13 @@
 // Wide (900 px and more): a left rail with the inbox or the projects, the rest beside it.
 import { api, openEvents } from "./api.js";
 import { html, render, useEffect, useState } from "./lib.js";
-import { events, noteBuild, shows, state, trackHistory, update, useRoute, useStore } from "./store.js";
+import { can, events, noteBuild, shows, state, trackHistory, update, useRoute, useStore } from "./store.js";
 import { applyScheme, Notices } from "./ui.js";
 import { Pair } from "./pair.js";
 import { Inbox } from "./inbox.js";
-import { Project, Projects } from "./projects.js";
+import { Project, Projects, ProjectSessions } from "./projects.js";
+import { loadTasks, Manager } from "./tasks.js";
+import { TaskPage } from "./task.js";
 import { Session } from "./session.js";
 import { Files } from "./files.js";
 import { Settings } from "./settings.js";
@@ -75,7 +77,11 @@ const Tabs = ({ current, rail }) => html`
 function Screen({ route }) {
   if (route.screen === "session") return html`<${Session} key=${route.id} id=${route.id} tab=${route.tab} />`;
   if (route.screen === "files") return html`<${Files} key=${route.id} project=${route.id} />`;
-  if (route.screen === "project") return html`<${Project} key=${route.id} id=${route.id} />`;
+  if (route.screen === "project") {
+    return can("task_view") ? html`<${Manager} key=${route.id} project=${route.id} />` : html`<${Project} key=${route.id} id=${route.id} />`;
+  }
+  if (route.screen === "task") return html`<${TaskPage} key=${`${route.id}/${route.task}`} project=${route.id} task=${route.task} />`;
+  if (route.screen === "sessions") return html`<${ProjectSessions} key=${route.id} id=${route.id} />`;
   if (route.screen === "settings") return html`<${Settings} />`;
   if (route.screen === "projects") return html`<${Projects} />`;
   return html`<${Inbox} />`;
@@ -89,7 +95,7 @@ function App() {
   useEffect(() => {
     const titles = { inbox: "Inbox", projects: "Projects", settings: "Settings", files: "Files" };
     const session = route.screen === "session" && state.sessions.find((candidate) => candidate.id === route.id);
-    const project = route.screen === "project" && state.projects.find((candidate) => candidate.id === route.id);
+    const project = ["project", "sessions", "task"].includes(route.screen) && state.projects.find((candidate) => candidate.id === route.id);
     document.title = `${session ? session.label : project ? project.name : titles[route.screen] ?? "Session"} - ${state.site.name}`;
   });
   if (!wide) {
@@ -101,7 +107,7 @@ function App() {
       </div>`;
   }
   // The rail keeps the list the main area was reached from.
-  const list = ["projects", "project", "files"].includes(route.screen) ? "projects" : "inbox";
+  const list = ["projects", "project", "files", "sessions", "task"].includes(route.screen) ? "projects" : "inbox";
   return html`
     <div class="app" data-wide>
       <aside class="rail">
@@ -130,11 +136,22 @@ function start(session) {
     history: (data) => events.dispatchEvent(new CustomEvent("history", { detail: data })),
     exchange: (data) => events.dispatchEvent(new CustomEvent("exchange", { detail: data })),
     daemon: (data) => update(data.available ? { daemon: true } : { daemon: false, sessions: [], projects: [], loaded: true }),
-    resync: () => events.dispatchEvent(new CustomEvent("history", { detail: {} })),
+    resync: () => {
+      events.dispatchEvent(new CustomEvent("history", { detail: {} }));
+      if (can("task_view")) loadTasks();
+    },
+    tasks: (data) => update({ tasks: { ...state.tasks, [data.project]: data } }),
+    task: (data) => events.dispatchEvent(new CustomEvent("task", { detail: data })),
+    manager: (data) => events.dispatchEvent(new CustomEvent("manager", { detail: data })),
     revoked: () => location.reload(),
     down: () => update({ online: false }),
-    up: () => update({ online: true }),
+    // A reconnected stream may have missed task changes.
+    up: () => {
+      update({ online: true });
+      if (can("task_view")) loadTasks();
+    },
   });
+  if (can("task_view")) loadTasks();
   // ^ index.html's "Loading…" placeholder is not Preact's: a first render adopts an
   // existing child only of the same element type, and the app's root is a div, so the
   // placeholder would stay beside the app and take half of the screen.

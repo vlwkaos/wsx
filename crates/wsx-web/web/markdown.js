@@ -61,7 +61,7 @@ function Code({ source, language }) {
 
 const ALIGN = /text-align:(left|center|right)/;
 
-function inline(tokens, files) {
+function inline(tokens, files, words) {
   const stack = [[]];
   const push = (node) => stack.at(-1).push(node);
   for (const token of tokens ?? []) {
@@ -77,7 +77,7 @@ function inline(tokens, files) {
         push(h(token.tag, null, children));
       }
     } else if (token.type === "text") {
-      push(token.content);
+      for (const node of words ? words(token.content) : [token.content]) push(node);
     } else if (token.type === "code_inline") {
       push(html`<code>${token.content}</code>`);
     } else if (token.type === "softbreak") {
@@ -108,12 +108,12 @@ function task(children) {
   return match[1] !== " ";
 }
 
-function blocks(tokens, files) {
+function blocks(tokens, files, words) {
   const stack = [{ children: [] }];
   const push = (...nodes) => stack.at(-1).children.push(...nodes);
   for (const token of tokens) {
     if (token.type === "inline") {
-      push(...inline(token.children, files));
+      push(...inline(token.children, files, words));
     } else if (token.nesting === 1) {
       // The closing token carries no attributes: keep the opening one.
       stack.push({ open: token, children: [] });
@@ -151,7 +151,8 @@ function blocks(tokens, files) {
 }
 
 // One parse per text: a timeline refresh that brings the same message reuses the nodes.
-export function Markdown({ text, files }) {
+// `words`, when given, turns a text run into nodes (task chips); keep it the same function.
+export function Markdown({ text, files, words }) {
   const granted = files?.filter((file) => file.image).map((file) => file.hash).join() ?? "";
   return useMemo(() => {
     const env = {};
@@ -164,6 +165,6 @@ export function Markdown({ text, files }) {
         else if (child.type === "link_close") child.meta = href;
       }
     }
-    return html`<div class="markdown">${blocks(tokens, files)}</div>`;
-  }, [text, granted]);
+    return html`<div class="markdown">${blocks(tokens, files, words)}</div>`;
+  }, [text, granted, words]);
 }

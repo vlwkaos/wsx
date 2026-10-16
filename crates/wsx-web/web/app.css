@@ -441,6 +441,64 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .chips li { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; }
 .chips li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Hook: .needs, .task-chip, .events — manager mode on a project (docs/web-client.md "Tasks").
+   The strip is bounded, so the manager chat under it keeps most of the height. */
+.manager .chat { --strip-share: 0.4; }
+.needs { flex: 0 1 auto; max-height: calc(100% * var(--strip-share)); overflow-y: auto; overscroll-behavior: contain; border-bottom: var(--border-width) solid var(--color-hairline); }
+.needs .row-link { padding-inline: var(--column-inset, var(--space-4)); }
+.needs .row { --row-inset: calc(var(--column-inset, var(--space-4)) + var(--space-1) * 1.5 + var(--space-3)); }
+/* In the inbox the strip is one group of rows under its project, as the sessions are. */
+.scroll .needs { max-height: none; overflow: visible; border-bottom: 0; }
+.group-link { text-decoration: none; font-weight: var(--font-weight-medium); color: var(--color-text); }
+.needs-none, .tasks-working { flex: 0 0 auto; padding: var(--space-2) var(--column-inset, var(--space-4)); font-size: var(--font-size-sm); color: var(--color-muted); }
+.needs-none { border-bottom: var(--border-width) solid var(--color-hairline); }
+.tasks-working { border-bottom: var(--border-width) solid var(--color-hairline); }
+.need-id { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--color-muted); }
+.need-action { min-height: var(--size-control); display: inline-flex; align-items: center; padding: 0 var(--space-3); text-decoration: none; font-size: var(--font-size-sm); }
+.need-form { display: flex; gap: var(--space-2); padding: 0 var(--column-inset, var(--space-4)) var(--space-2); padding-left: var(--row-inset); }
+.need-error { padding: 0 var(--column-inset, var(--space-4)) var(--space-2); padding-left: var(--row-inset); }
+.needs-more { margin: 0 var(--column-inset, var(--space-4)) var(--space-2); }
+.needs-line { display: none; padding: var(--space-2) var(--column-inset, var(--space-4)); font-size: var(--font-size-sm); color: var(--color-attention); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* An answer typed in the strip keeps its rows: the fold is for the composer's keyboard. */
+body:is([data-short], [data-keyboard]) .manager .needs:not(:focus-within) .needs-line { display: block; }
+body:is([data-short], [data-keyboard]) .manager .needs:not(:focus-within) :is(.rows, .needs-more) { display: none; }
+.manager .log-wrap { overflow: hidden; }
+.task-chip, .markdown .task-chip { color: var(--color-text); }
+.bar-link { padding-inline: var(--space-3); min-height: var(--size-control); display: inline-flex; align-items: center; }
+.task-chip {
+  display: inline-flex; align-items: baseline; gap: var(--space-1); max-width: 100%; padding: 0 var(--space-1);
+  border-radius: calc(var(--radius-key) / 2); background: var(--color-surface); text-decoration: none; vertical-align: baseline;
+}
+.task-chip-id { font-variant-numeric: tabular-nums; font-weight: var(--font-weight-medium); }
+.task-chip-state { font-size: var(--font-size-sm); }
+.task-chip-title { min-width: 0; max-width: calc(var(--size-prose) / 3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-sm); color: var(--color-muted); }
+.events { max-width: var(--size-prose); display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--font-size-sm); color: var(--color-muted); }
+.event-line { overflow-wrap: anywhere; }
+
+/* Hook: .task-page — one task: actions, report sections, shared files, timeline. */
+.task-page .scroll { padding-bottom: var(--space-4); }
+.task-actions { border-bottom: var(--border-width) solid var(--color-hairline); }
+.task-row { padding: var(--space-3) var(--column-inset, var(--space-4)) 0; overflow-wrap: anywhere; }
+.task-row .actions { padding-inline: 0; justify-content: flex-end; }
+.task-row code { font-family: var(--font-terminal); font-size: var(--font-size-sm); }
+.task-allow { padding: var(--space-2) 0 var(--space-3); }
+.task-body { padding: 0 var(--space-4); max-width: calc(var(--size-prose) + 2 * var(--space-4)); }
+.verify .actions { justify-content: flex-end; }
+.verify-note { padding: 0 var(--space-4); display: flex; flex-direction: column; }
+.verify-note textarea { min-height: calc(var(--size-control) * 2); padding: var(--space-2) var(--space-3); resize: vertical; }
+.verify-note .actions { padding-inline: 0; }
+.task-overlaps { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); overflow-wrap: anywhere; }
+.timeline-head { display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; min-height: var(--size-control); padding-block: 0; }
+.timeline-head::-webkit-details-marker { display: none; }
+.timeline[open] .timeline-head .icon { transform: rotate(90deg); }
+.timeline-list { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); }
+.timeline-list li { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: var(--space-3); }
+.timeline-what { font-weight: var(--font-weight-medium); }
+.timeline-more { grid-column: 2; color: var(--color-muted); overflow-wrap: anywhere; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.task-steer { align-self: center; }
+.app:not([data-wide]) .task-steer { margin-left: auto; }
+.app:not([data-wide]) .task-message .task-steer + .composer-send { margin-left: var(--space-2); }
+
 /* Hook: .code, .crumbs — a project's files. */
 .crumbs { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-1); overflow-x: auto; scrollbar-width: none; white-space: nowrap; }
 .crumb-mark { color: var(--color-faint); }

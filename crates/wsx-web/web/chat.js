@@ -213,14 +213,14 @@ const SOURCE_WORDS = { builtin: "built-in", project: "project", user: "yours", p
 // form fields on the page. While the composer has the focus, no other field takes part.
 // The bar itself belongs to WebKit and stays (https://bugs.webkit.org/show_bug.cgi?id=251787).
 const OTHER_FIELDS = "input, select, textarea:not(.composer-field)";
-function isolate() {
+export function isolate() {
   for (const node of document.querySelectorAll(OTHER_FIELDS)) {
     if (node.hasAttribute("data-tab-index")) continue;
     node.dataset.tabIndex = node.getAttribute("tabindex") ?? "";
     node.tabIndex = -1;
   }
 }
-function release() {
+export function release() {
   for (const node of document.querySelectorAll("[data-tab-index]")) {
     if (node.dataset.tabIndex === "") node.removeAttribute("tabindex");
     else node.setAttribute("tabindex", node.dataset.tabIndex);
@@ -234,21 +234,37 @@ function tokenOf(listing, text) {
   return name && listing?.commands.some((command) => command.name === name) ? `/${name}` : null;
 }
 
-const CommandList = ({ listing, matches, active, onPick, onHover }) => html`
+// A list of suggestions above a composer: the `/` commands and the `#` tasks. Each option
+// is `{ key, name, description, source }`; `notes` are muted lines at the end of its box.
+export const Suggestions = ({ label, options, active, onPick, onHover, notes }) => html`
   <div class="slash">
-    <ul class="slash-list" id="slash-list" role="listbox" aria-label="Commands">
-      ${matches.map((command, index) => html`
-        <li key=${command.name} id=${`slash-${index}`} class="slash-option" role="option" aria-selected=${index === active}
-          onPointerDown=${(event) => event.preventDefault()} onPointerEnter=${() => onHover(index)} onClick=${() => onPick(command)}>
-          <span class="slash-name">/${command.name}</span>
-          <span class="slash-description">${command.description}</span>
-          <span class="slash-source">${SOURCE_WORDS[command.source]}</span>
+    <ul class="slash-list" id="slash-list" role="listbox" aria-label=${label}>
+      ${options.map((option, index) => html`
+        <li key=${option.key} id=${`slash-${index}`} class="slash-option" role="option" aria-selected=${index === active}
+          onPointerDown=${(event) => event.preventDefault()} onPointerEnter=${() => onHover(index)} onClick=${() => onPick(option)}>
+          <span class="slash-name">${option.name}</span>
+          <span class="slash-description">${option.description}</span>
+          <span class="slash-source" data-tone=${option.tone}>${option.source}</span>
         </li>`)}
     </ul>
-    ${!matches.length && html`<p class="slash-note">No command starts with that.</p>`}
-    ${!listing.listed && html`<p class="slash-note">Only the built-in commands of ${listing.provider || "this agent"} are listed.</p>`}
-    ${!listing.runs && html`<p class="slash-note">Upgrade wsx on the host to run commands from here.</p>`}
+    ${notes.filter(Boolean).map((note) => html`<p class="slash-note">${note}</p>`)}
   </div>`;
+
+const CommandList = ({ listing, matches, active, onPick, onHover }) => html`
+  <${Suggestions} label="Commands" active=${active} onHover=${onHover}
+    options=${matches.map((command) => ({ key: command.name, name: `/${command.name}`, description: command.description,
+      source: SOURCE_WORDS[command.source], command }))}
+    onPick=${(option) => onPick(option.command)}
+    notes=${[!matches.length && "No command starts with that.",
+      !listing.listed && `Only the built-in commands of ${listing.provider || "this agent"} are listed.`,
+      !listing.runs && "Upgrade wsx on the host to run commands from here."]} />`;
+
+// A composer field grows with its text, up to six lines.
+export function grow(node) {
+  node.style.height = "auto";
+  const line = parseFloat(getComputedStyle(node).lineHeight);
+  node.style.height = `${Math.min(node.scrollHeight, line * 6 + (node.offsetHeight - node.clientHeight))}px`;
+}
 
 function Composer({ session, working, onSent }) {
   const draft = draftFor(session.id);
@@ -289,20 +305,13 @@ function Composer({ session, working, onSent }) {
     field.current.setSelectionRange(text.length, text.length);
   };
 
-  // The field grows with its text, up to six lines.
   // A tap anywhere on the composer card, outside its buttons, puts the caret in the field.
   const focusField = (event) => {
     if (event.target.closest("button, textarea, input") || !ready) return;
     event.preventDefault();
     field.current.focus();
   };
-  const grow = () => {
-    const node = field.current;
-    node.style.height = "auto";
-    const line = parseFloat(getComputedStyle(node).lineHeight);
-    node.style.height = `${Math.min(node.scrollHeight, line * 6 + (node.offsetHeight - node.clientHeight))}px`;
-  };
-  useLayoutEffect(() => { field.current.value = draft.text; grow(); }, [session.id]);
+  useLayoutEffect(() => { field.current.value = draft.text; grow(field.current); }, [session.id]);
   // A composer that goes away with the focus gives the other fields back.
   useEffect(() => release, []);
 
@@ -318,7 +327,7 @@ function Composer({ session, working, onSent }) {
       draft.attachments = [];
       keepDraft(session.id);
       field.current.value = "";
-      grow();
+      grow(field.current);
       onSent(answer);
     } catch (failure) {
       // The draft stays in the field; nothing was sent.
@@ -375,7 +384,7 @@ function Composer({ session, working, onSent }) {
       node.value = draft.text.slice(token.length);
       node.setSelectionRange(0, 0);
       changed(node.value);
-      grow();
+      grow(field.current);
       return;
     }
     // On a hardware keyboard Enter sends and Shift+Enter is a newline. On a touch
@@ -408,7 +417,7 @@ function Composer({ session, working, onSent }) {
           placeholder=${ready ? "Message" : "Cannot receive messages"}
           disabled=${!ready} role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
           aria-controls=${listOpen ? "slash-list" : null} aria-activedescendant=${listOpen && matches.length ? `slash-${active}` : null}
-          onInput=${() => { changed(field.current.value); grow(); }} onKeyDown=${keydown}
+          onInput=${() => { changed(field.current.value); grow(field.current); }} onKeyDown=${keydown}
           onFocus=${isolate} onBlur=${release}></textarea>
         </div>
         <button class="button button-primary composer-send" type="button" aria-label=${working ? "Queue" : "Send"}
