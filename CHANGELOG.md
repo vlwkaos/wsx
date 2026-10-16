@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `wsx task new|list|show|steer|add|allow|stop|close` (manager mode, first part). `task new "<prompt>" -p <project> [--from <ref>]` starts a headless Claude worker on branch `wsx/t<n>` in its own working copy, a copy-on-write clone of the main checkout. Nobody types into it: steer it during a turn, add work after it, allow a denied tool, stop it, read its result and report, and close it, each in one call with `--json`. After each result wsx runs the project's `tasks.checks` and records revision `refs/wsx/task/<n>/r<k>`; the task is `ready` only when the worker reports done and every check exits 0. `close` refuses while the branch has commits that are not on the default branch, unless `--discard`. Settings come from a new `tasks:` section in `wsx.config.yml`. No wsxd protocol change. See [Tasks](docs/tasks.md).
+
 ### Breaking Changes
 
 - Rust callers that construct `AgentExchange` must provide `key` and `continue_key`, and `Request` has the new variants `AgentExchangeCreateKeyed` and `AgentExchangeContinueKeyed`. Older JSON without the new fields decodes as before.

@@ -4,31 +4,660 @@
 mod claude;
 pub mod host;
 
-use anyhow::Result;
+use crate::cli::{existing_daemon_snapshot, load_config, load_full_workspace, resolve_project};
+use anyhow::{bail, Context, Result};
 use clap::Subcommand;
-use wsx_core::task::store;
+use serde_json::json;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+use wsx_core::config::project::load_task_config;
+use wsx_core::task::{
+    call_host, copy, now_unix_ms,
+    store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
+    HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
+};
+use wsx_core::{ops, runtime};
+
+const HOST_TIMEOUT: Duration = Duration::from_secs(15);
+const HOST_START_WAIT: Duration = Duration::from_secs(10);
+const CLOSE_WAIT: Duration = Duration::from_secs(15);
+const CARGO_CLEAN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const MAX_RESULT_READ_BYTES: u64 = 1024 * 1024;
 
 #[derive(Subcommand)]
 pub enum TaskCmd {
+    /// Start a worker on a new branch in its own working copy
+    New {
+        #[command(flatten)]
+        prompt: PromptSource,
+        /// Start from this branch, tag or commit instead of the default branch
+        #[arg(long, value_name = "REF")]
+        from: Option<String>,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List a project's tasks (closed ones with --all)
+    List {
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one task with its latest result
+    Show {
+        task: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send a message into the running turn
+    Steer {
+        task: String,
+        #[command(flatten)]
+        text: PromptSource,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send a message after the current turn
+    Add {
+        task: String,
+        #[command(flatten)]
+        text: PromptSource,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Allow one more tool pattern, such as "Bash(cargo test:*)", and resume a blocked task
+    Allow {
+        task: String,
+        tool: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Interrupt the worker; the next add resumes the same conversation
+    Stop {
+        task: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove the working copy, session and branch
+    Close {
+        task: String,
+        /// Close although the branch has commits that are not on the default branch
+        #[arg(long)]
+        discard: bool,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     #[command(hide = true)]
     Host { project_id: String, task: String },
 }
 
 impl TaskCmd {
     pub fn json_output(&self) -> bool {
-        false
+        match self {
+            Self::New { json, .. }
+            | Self::List { json, .. }
+            | Self::Show { json, .. }
+            | Self::Steer { json, .. }
+            | Self::Add { json, .. }
+            | Self::Allow { json, .. }
+            | Self::Stop { json, .. }
+            | Self::Close { json, .. } => *json,
+            Self::Host { .. } => false,
+        }
     }
 
     /// Commands that read files or a host socket and never need wsxd.
     pub fn without_daemon(&self) -> bool {
-        true
+        !matches!(self, Self::New { .. } | Self::Close { .. })
+    }
+}
+
+/// Exactly one prompt source: the argument, `-` for standard input, or a file.
+/// ^ Same rules as `agent request` on feat/orchestration-cli; merge the two when it lands.
+#[derive(clap::Args)]
+pub struct PromptSource {
+    /// Text, or `-` to read it from standard input
+    prompt: Option<String>,
+    /// Read the text from this file
+    #[arg(long, value_name = "PATH")]
+    prompt_file: Option<PathBuf>,
+}
+
+impl PromptSource {
+    fn read(self, limit: usize) -> Result<String> {
+        use std::io::Read;
+        let bounded = |reader: &mut dyn Read, source: &str| -> Result<String> {
+            let mut bytes = Vec::new();
+            reader
+                .take(limit as u64 + 2)
+                .read_to_end(&mut bytes)
+                .with_context(|| format!("cannot read the prompt from {source}"))?;
+            let mut text = String::from_utf8(bytes)
+                .map_err(|_| anyhow::anyhow!("the prompt from {source} is not UTF-8 text"))?;
+            if text.ends_with('\n') {
+                text.pop();
+                if text.ends_with('\r') {
+                    text.pop();
+                }
+            }
+            Ok(text)
+        };
+        let prompt = match (self.prompt, self.prompt_file) {
+            (Some(_), Some(_)) => {
+                bail!(
+                    "give one prompt source: an argument, `-` for standard input, or --prompt-file"
+                )
+            }
+            (None, None) => {
+                bail!("a prompt is required: an argument, `-` for standard input, or --prompt-file <path>")
+            }
+            (Some(text), None) if text == "-" => {
+                bounded(&mut std::io::stdin().lock(), "standard input")?
+            }
+            (Some(text), None) => text,
+            (None, Some(path)) => {
+                let mut file = std::fs::File::open(&path)
+                    .with_context(|| format!("cannot open prompt file {}", path.display()))?;
+                bounded(&mut file, &path.display().to_string())?
+            }
+        };
+        if prompt.trim().is_empty() {
+            bail!("the prompt is empty");
+        }
+        if prompt.len() > limit {
+            bail!("the prompt is larger than the limit of {limit} bytes");
+        }
+        Ok(prompt)
     }
 }
 
 pub fn run(command: TaskCmd) -> Result<()> {
     match command {
+        TaskCmd::New {
+            prompt,
+            from,
+            project,
+            json,
+        } => new(prompt, from.as_deref(), project.as_deref(), json),
+        TaskCmd::List { project, all, json } => list(project.as_deref(), all, json),
+        TaskCmd::Show {
+            task,
+            project,
+            json,
+        } => show(&open(project.as_deref(), &task)?, json),
+        TaskCmd::Steer {
+            task,
+            text,
+            project,
+            json,
+        } => {
+            let dir = open(project.as_deref(), &task)?;
+            let text = text.read(MAX_MESSAGE_BYTES)?;
+            send(&dir, HostRequest::Steer { text }, json)
+        }
+        TaskCmd::Add {
+            task,
+            text,
+            project,
+            json,
+        } => {
+            let dir = open(project.as_deref(), &task)?;
+            let text = text.read(MAX_MESSAGE_BYTES)?;
+            send(&dir, HostRequest::Add { text }, json)
+        }
+        TaskCmd::Allow {
+            task,
+            tool,
+            project,
+            json,
+        } => send(
+            &open(project.as_deref(), &task)?,
+            HostRequest::Allow { tool },
+            json,
+        ),
+        TaskCmd::Stop {
+            task,
+            project,
+            json,
+        } => send(&open(project.as_deref(), &task)?, HostRequest::Stop, json),
+        TaskCmd::Close {
+            task,
+            discard,
+            project,
+            json,
+        } => close(&open(project.as_deref(), &task)?, discard, json),
         TaskCmd::Host { project_id, task } => {
             host::run(&project_id, store::parse_task_number(&task)?)
         }
+    }
+}
+
+/// The registered project by name, by the current folder, or the only one.
+fn project_entry(name: Option<&str>) -> Result<(String, PathBuf)> {
+    let config = load_config()?;
+    let projects = &config.projects;
+    if let Some(name) = name {
+        return projects
+            .iter()
+            .find(|project| project.name == name)
+            .map(|project| (project.name.clone(), project.path.clone()))
+            .with_context(|| format!("project '{name}' is not registered"));
+    }
+    let cwd = std::env::current_dir().ok();
+    if let Some(project) = cwd.as_deref().and_then(|cwd| {
+        projects
+            .iter()
+            .filter(|project| cwd.starts_with(&project.path))
+            .max_by_key(|project| project.path.as_os_str().len())
+    }) {
+        return Ok((project.name.clone(), project.path.clone()));
+    }
+    match projects.as_slice() {
+        [project] => Ok((project.name.clone(), project.path.clone())),
+        [] => bail!("no projects are registered"),
+        _ => bail!(
+            "several projects are registered; use -p with one of: {}",
+            projects
+                .iter()
+                .map(|project| project.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn open(project: Option<&str>, task: &str) -> Result<TaskDir> {
+    let (name, path) = project_entry(project)?;
+    TaskDir::open(
+        &store::project_id(&name, &path),
+        store::parse_task_number(task)?,
+    )
+}
+
+fn print_json(value: &serde_json::Value) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+fn new(prompt: PromptSource, from: Option<&str>, project: Option<&str>, json: bool) -> Result<()> {
+    let prompt = prompt.read(MAX_MESSAGE_BYTES)?;
+    let (config, workspace) = load_full_workspace()?;
+    let project = resolve_project(&workspace, project)?;
+    let settings = load_task_config(&project.path)
+        .map_err(|error| anyhow::anyhow!("{error}; no task was created"))?;
+    let project_id = store::project_id(&project.name, &project.path);
+    let dir = TaskDir::allocate(&project_id)?;
+    let id = dir.id;
+    let working_copy =
+        match copy::create(&project.path, from.unwrap_or(&project.default_branch), id) {
+            Ok(copy) => copy,
+            Err(error) => {
+                let _ = dir.remove();
+                return Err(error.context(format!(
+                    "task t{id} was not created and its number is not reused"
+                )));
+            }
+        };
+    let now = now_unix_ms();
+    let record = TaskRecord {
+        id,
+        project: project.name.clone(),
+        project_id: project_id.clone(),
+        project_path: project.path.clone(),
+        default_branch: project.default_branch.clone(),
+        base: working_copy.base.clone(),
+        branch: working_copy.branch.clone(),
+        working_copy: working_copy.path.clone(),
+        pane_id: None,
+        adapter: settings.adapter,
+        model: settings.model,
+        tools: settings.tools,
+        checks: settings.checks,
+        agent_session: None,
+        state: TaskState::Starting,
+        revision: 0,
+        created_unix_ms: now,
+        updated_unix_ms: now,
+    };
+    let started = (|| -> Result<()> {
+        dir.write_record(&record)?;
+        dir.append(LogEvent::Created {
+            base: record.base.clone(),
+            branch: record.branch.clone(),
+        })?;
+        dir.append(LogEvent::Message {
+            mode: MessageKind::Prompt,
+            text: prompt,
+        })?;
+        let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+        let argv = vec![
+            exe.to_string_lossy().into_owned(),
+            "task".into(),
+            "host".into(),
+            project_id.clone(),
+            id.to_string(),
+        ];
+        ops::create_session_launch(
+            &config,
+            &record.working_copy,
+            format!("task-{id}"),
+            argv,
+            None,
+        )?;
+        Ok(())
+    })();
+    if let Err(error) = started {
+        let _ = copy::remove(&project.path, &record.working_copy, &record.branch);
+        let _ = dir.remove();
+        return Err(error.context(format!(
+            "task t{id} did not start; its working copy and branch were removed"
+        )));
+    }
+    let state = wait_for_host(&dir).map_or(TaskState::Starting, |response| response.state);
+    if json {
+        return print_json(&json!({
+            "id": id,
+            "project": record.project,
+            "state": state,
+            "branch": record.branch,
+            "base": record.base,
+            "working_copy": record.working_copy,
+            "task_dir": dir.path,
+        }));
+    }
+    println!("task t{id} {}", state.as_str());
+    println!("branch:       {}", record.branch);
+    println!("working copy: {}", record.working_copy.display());
+    if state == TaskState::Starting {
+        println!("the host has not answered yet; check it with `wsx task show {id}`");
+    }
+    Ok(())
+}
+
+fn wait_for_host(dir: &TaskDir) -> Option<HostResponse> {
+    let deadline = Instant::now() + HOST_START_WAIT;
+    while Instant::now() < deadline {
+        if let Ok(response) = call_host(&dir.socket_path(), &HostRequest::Status, HOST_TIMEOUT) {
+            return Some(response);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    None
+}
+
+fn task_summary(dir: &TaskDir, record: &TaskRecord) -> serde_json::Value {
+    let title = dir.prompt().ok().flatten().map(|prompt| {
+        prompt
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(120)
+            .collect::<String>()
+    });
+    json!({
+        "id": record.id,
+        "state": record.state,
+        "title": title,
+        "branch": record.branch,
+        "revision": record.revision,
+        "updated_unix_ms": record.updated_unix_ms,
+    })
+}
+
+fn list(project: Option<&str>, all: bool, json: bool) -> Result<()> {
+    let (name, path) = project_entry(project)?;
+    let project_id = store::project_id(&name, &path);
+    let mut rows = Vec::new();
+    for id in store::task_numbers(&project_id)? {
+        let dir = TaskDir::open(&project_id, id)?;
+        match dir.read_record() {
+            Ok(record) if all || record.state != TaskState::Closed => {
+                rows.push(task_summary(&dir, &record))
+            }
+            Ok(_) => {}
+            Err(error) => rows.push(json!({ "id": id, "error": format!("{error:#}") })),
+        }
+    }
+    if json {
+        return print_json(&json!({ "project": name, "tasks": rows }));
+    }
+    if rows.is_empty() {
+        println!("no tasks in {name}");
+    }
+    for row in rows {
+        println!(
+            "t{:<4} {:<9} r{:<3} {}",
+            row["id"],
+            row["state"].as_str().unwrap_or("error"),
+            row["revision"].as_u64().unwrap_or(0),
+            row["title"]
+                .as_str()
+                .or(row["error"].as_str())
+                .unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+fn show(dir: &TaskDir, json: bool) -> Result<()> {
+    let record = dir.read_record()?;
+    let result = dir
+        .read_file(RESULT_FILE, MAX_RESULT_READ_BYTES)?
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let report = dir.file(REPORT_FILE);
+    let report = report.exists().then_some(report);
+    let host = call_host(&dir.socket_path(), &HostRequest::Status, HOST_TIMEOUT).is_ok();
+    let mut summary = task_summary(dir, &record);
+    if json {
+        summary["record"] = serde_json::to_value(&record)?;
+        summary["result"] = result.unwrap_or(serde_json::Value::Null);
+        summary["report"] = json!(report);
+        summary["log"] = json!(dir.file(store::LOG_FILE));
+        summary["host_running"] = json!(host);
+        return print_json(&summary);
+    }
+    println!(
+        "t{} {}  r{}  {}",
+        record.id,
+        record.state.as_str(),
+        record.revision,
+        summary["title"].as_str().unwrap_or_default()
+    );
+    println!("branch:       {}", record.branch);
+    println!("working copy: {}", record.working_copy.display());
+    println!(
+        "host:         {}",
+        if host { "running" } else { "not running" }
+    );
+    if let Some(result) = result {
+        println!(
+            "result:       {}: {}",
+            result["result"]["status"].as_str().unwrap_or_default(),
+            result["result"]["summary"].as_str().unwrap_or_default()
+        );
+    }
+    if let Some(report) = report {
+        println!("report:       {}", report.display());
+    }
+    Ok(())
+}
+
+fn send(dir: &TaskDir, request: HostRequest, json: bool) -> Result<()> {
+    let response = match call_host(&dir.socket_path(), &request, HOST_TIMEOUT) {
+        Ok(response) => response,
+        Err(error) => {
+            let (state, working_copy) = dir.read_record().map_or_else(
+                |_| ("unknown".to_string(), String::new()),
+                |record| {
+                    (
+                        record.state.as_str().to_string(),
+                        record.working_copy.display().to_string(),
+                    )
+                },
+            );
+            bail!(
+                "{error:#}; task t{} is {state} and unchanged. Restart its host with `wsx session restart task-{} -w {working_copy}`",
+                dir.id,
+                dir.id
+            );
+        }
+    };
+    if json {
+        print_json(&serde_json::to_value(&response)?)?;
+    } else {
+        println!(
+            "t{} {}: {}",
+            dir.id,
+            response.state.as_str(),
+            response.message
+        );
+    }
+    if !response.ok {
+        bail!(
+            "task t{} refused the request and is still {}",
+            dir.id,
+            response.state.as_str()
+        );
+    }
+    Ok(())
+}
+
+fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
+    let mut record = dir.read_record()?;
+    let main = record.project_path.clone();
+    let working_copy_exists = record.working_copy.exists();
+    if working_copy_exists && !discard {
+        let unlanded = copy::unlanded_commits(&main, &record.branch, &record.default_branch)
+            .with_context(|| format!("task t{} is unchanged", record.id))?;
+        if unlanded > 0 {
+            bail!(
+                "{} has {unlanded} commit(s) that are not on {}; task t{} is unchanged ({}). Land them, or run `wsx task close {} --discard`",
+                record.branch,
+                record.default_branch,
+                record.id,
+                record.state.as_str(),
+                record.id
+            );
+        }
+    }
+    // ^ The host is the writer while it runs: ask it to close and wait for it to exit.
+    let socket = dir.socket_path();
+    if call_host(&socket, &HostRequest::Close { discard }, HOST_TIMEOUT).is_ok() {
+        let deadline = Instant::now() + CLOSE_WAIT;
+        while socket.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if socket.exists() {
+            bail!(
+                "the host of task t{} did not exit; it is closed but its working copy remains. Run `wsx task close {}{}` again",
+                record.id,
+                record.id,
+                if discard { " --discard" } else { "" }
+            );
+        }
+        record = dir.read_record()?;
+    } else if record.state != TaskState::Closed {
+        let _ = std::fs::remove_file(&socket);
+        dir.append(LogEvent::Closed { discarded: discard })?;
+        record.state = TaskState::Closed;
+        record.updated_unix_ms = now_unix_ms();
+        dir.write_record(&record)?;
+    }
+    let mut removed = Vec::new();
+    for session in sessions_in(&record.working_copy)? {
+        ops::kill_session(session).with_context(|| {
+            format!(
+                "task t{} is closed but session {session} remains",
+                record.id
+            )
+        })?;
+        removed.push(session.0);
+    }
+    if working_copy_exists {
+        if record.working_copy.join("Cargo.toml").exists() {
+            cargo_clean(&record.working_copy);
+        }
+        copy::remove(&main, &record.working_copy, &record.branch).with_context(|| {
+            format!(
+                "task t{} is closed but its working copy remains; run `wsx task close {} --discard` again",
+                record.id, record.id
+            )
+        })?;
+    }
+    if discard {
+        delete_revision_refs(&main, record.id);
+    }
+    if json {
+        return print_json(&json!({
+            "id": record.id,
+            "state": record.state,
+            "discarded": discard,
+            "sessions_removed": removed,
+            "working_copy_removed": working_copy_exists,
+        }));
+    }
+    println!(
+        "task t{} closed; removed {} and {} session(s)",
+        record.id,
+        record.working_copy.display(),
+        removed.len()
+    );
+    Ok(())
+}
+
+fn sessions_in(working_copy: &Path) -> Result<Vec<runtime::SessionId>> {
+    let snapshot = existing_daemon_snapshot()?;
+    let worktrees: Vec<_> = snapshot
+        .worktrees
+        .iter()
+        .filter(|worktree| worktree.path == working_copy)
+        .map(|worktree| worktree.id)
+        .collect();
+    Ok(snapshot
+        .sessions
+        .iter()
+        .filter(|session| worktrees.contains(&session.worktree_id))
+        .map(|session| session.id)
+        .collect())
+}
+
+fn cargo_clean(working_copy: &Path) {
+    let mut command = std::process::Command::new("cargo");
+    command
+        .arg("clean")
+        .current_dir(working_copy)
+        .stdin(std::process::Stdio::null());
+    let _ = wsx_core::git::output_with_timeout_limit(&mut command, CARGO_CLEAN_TIMEOUT, 4096);
+}
+
+fn delete_revision_refs(main: &Path, id: u32) {
+    let prefix = format!("refs/wsx/task/{id}/");
+    let Ok(output) = wsx_core::git::git_cmd(main)
+        .args(["for-each-ref", "--format=%(refname)", &prefix])
+        .output()
+    else {
+        return;
+    };
+    for reference in String::from_utf8_lossy(&output.stdout).lines() {
+        let _ = wsx_core::git::git_cmd(main)
+            .args(["update-ref", "-d", reference])
+            .status();
     }
 }
