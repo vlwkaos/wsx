@@ -82,7 +82,9 @@ class Fixture:
                          "XDG_CONFIG_HOME": str(work / "config"), "XDG_CACHE_HOME": str(work / "cache"),
                          "WSX_DAEMON_BIN": str(daemon_bin), "WSX_SOCKET": str(self.daemon_socket),
                          "SHELL": "/bin/sh", "TERM": "xterm-256color",
-                         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"})
+                         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                         # ^ A fixture git command must never reach the repository this runs in.
+                         "GIT_CEILING_DIRECTORIES": str(work)})
         subprocess.run(["git", "init", "-q", "-b", "main", str(self.project)], check=True, env=self.env)
 
     def configure(self, position, replace=None):

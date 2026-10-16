@@ -776,7 +776,9 @@ def web_journey(args):
         path = work / 'state/wsx/wsx.sock'
         env = {'HOME': str(work / 'home'), 'XDG_CONFIG_HOME': str(work / 'config'), 'XDG_STATE_HOME': str(work / 'state'),
                'XDG_CACHE_HOME': str(work / 'cache'), 'WSX_SOCKET': str(path), 'WSX_DAEMON_BIN': str(wsxd),
-               'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8'}
+               'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8',
+               # ^ A fixture git command must never reach the repository this script runs in.
+               'GIT_CEILING_DIRECTORIES': str(work)}
         for name in ('project', 'project2', 'project3', 'design', 'bare'):
             subprocess.run(['git', 'init', '-q', '-b', 'main', str(work / name)], env=env, check=True, timeout=5)
         project = (work / 'project').resolve()
@@ -2459,10 +2461,15 @@ def task_journey(args):
         env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
                'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_SOCKET': str(path),
                'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
-               'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp)}
+               'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp),
+               # ^ A fixture git command must never reach the repository this script runs in.
+               'GIT_CEILING_DIRECTORIES': str(work)}
         for folder in (project, other, calm, plans, *session_projects):
             for argv in (['init', '-q', '-b', 'main'], ['add', '.'], ['commit', '-q', '-m', 'start']):
                 if argv[0] == 'add':
+                    top = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=folder, env=env,
+                                         capture_output=True, text=True, timeout=20).stdout.strip()
+                    assert os.path.realpath(top) == os.path.realpath(folder), ('fixture git escaped', folder, top)
                     (folder / 'wsx.config.yml').write_text(
                         TASK_CONFIG.replace('  brief: false\n', '') if folder == plans else TASK_CONFIG)
                     (folder / 'README').write_text('fixture\n')

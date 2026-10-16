@@ -120,7 +120,8 @@ if WORK.exists():
     shutil.rmtree(WORK)
 for path in (PROJECT, HOME, STATE):
     path.mkdir(parents=True, exist_ok=True)
-subprocess.run(["git", "init", "-q", "-b", "main", str(PROJECT)], check=True)
+subprocess.run(["git", "init", "-q", "-b", "main", str(PROJECT)], check=True,
+               env=dict(os.environ, GIT_CEILING_DIRECTORIES=str(WORK)))
 config_dir = HOME / "Library" / "Application Support" / "wsx" if sys.platform == "darwin" else WORK / "config" / "wsx"
 config_dir.mkdir(parents=True, exist_ok=True)
 config = config_dir / "config-v2.toml"

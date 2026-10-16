@@ -191,13 +191,16 @@ def orchestration(wsx, wsxd, released):
                'XDG_CACHE_HOME':str(work / 'cache'),'WSX_SOCKET':str(path),'WSX_DAEMON_BIN':str(wsxd),
                'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','SHELL':'/bin/sh','TERM':'xterm-256color','LANG':'en_US.UTF-8',
                'GIT_AUTHOR_NAME':'fixture','GIT_AUTHOR_EMAIL':'fixture@example.invalid',
-               'GIT_COMMITTER_NAME':'fixture','GIT_COMMITTER_EMAIL':'fixture@example.invalid'}
+               'GIT_COMMITTER_NAME':'fixture','GIT_COMMITTER_EMAIL':'fixture@example.invalid',
+               'GIT_CEILING_DIRECTORIES':str(work)}
         def git(repo, *args, ok=True):
             result = subprocess.run(['git','-C',str(repo),*args],env=env,capture_output=True,text=True,timeout=10)
             assert not ok or result.returncode == 0, result.stderr
             return result
         for name in ('fixture','other'):
             subprocess.run(['git','init','-q','-b','main',str(repos / name)],env=env,check=True,timeout=5)
+            top = git(repos / name,'rev-parse','--show-toplevel').stdout.strip()
+            assert os.path.realpath(top) == os.path.realpath(repos / name), ('fixture git escaped', top)
             git(repos / name,'commit','-q','--allow-empty','-m','start')
         worker = work / 'worker.py'; worker.write_text(WORKER)
         agent = '%s %s %s' % (sys.executable, worker, work / 'run')
@@ -525,7 +528,8 @@ def main():
         path = work / 'state/wsx/wsx.sock'
         env = {'HOME':str(work / 'home'),'XDG_CONFIG_HOME':str(work / 'config'),'XDG_STATE_HOME':str(work / 'state'),
                'XDG_CACHE_HOME':str(work / 'cache'),'WSX_SOCKET':str(path),'WSX_DAEMON_BIN':str(wsxd),
-               'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','SHELL':'/bin/sh','TERM':'xterm-256color','LANG':'en_US.UTF-8'}
+               'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','SHELL':'/bin/sh','TERM':'xterm-256color','LANG':'en_US.UTF-8',
+               'GIT_CEILING_DIRECTORIES':str(work)}
         subprocess.run(['git','init','-q','-b','main',str(work / 'project')],env=env,check=True,timeout=5)
         actor = work / 'actor.py'; actor.write_text(ACTOR)
         def call(method, params=None): return rpc(path, method, params)

@@ -67,7 +67,8 @@ def main():
     path = work / 'state/wsx/wsx.sock'
     env = {'HOME': str(work / 'home'), 'XDG_CONFIG_HOME': str(work / 'config'), 'XDG_STATE_HOME': str(work / 'state'),
            'XDG_CACHE_HOME': str(work / 'cache'), 'WSX_SOCKET': str(path), 'WSX_DAEMON_BIN': str(wsxd),
-           'PATH': os.environ['PATH'], 'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8'}
+           'PATH': os.environ['PATH'], 'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8',
+           'GIT_CEILING_DIRECTORIES': str(work)}
     project = (work / 'project').resolve()
     subprocess.run(['git', 'init', '-q', '-b', 'main', str(project)], env=env, check=True, timeout=5)
     (project / 'note.txt').write_text('The word is heron.\n')
