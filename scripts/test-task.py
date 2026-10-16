@@ -604,6 +604,10 @@ def run(wsx, wsxd, work, owned):
     launch = next(t for t in traces() if t.get('launch') and t.get('manager'))
     assert launch['allowed'] == ['Read', 'Grep', 'Glob', 'Bash(wsx task:*)'] and launch['model'] == 'fake-manager'
     assert launch['actor'] == 'manager' and 'WSX_PANE_ID' not in launch['wsx_env']
+    # Its rules for briefs: start work with one, skip it only on the owner's word, never start a build alone.
+    for rule in ('the brief is coming', "`--no-brief` only when the owner's message asks", 'Never start a build on your own',
+                 '`wsx task start <n>`, which asks', 'name the briefs that wait'):
+        assert rule in launch['instructions'], rule
     assert launch['cwd'] == str(project)
     assert js('task', 'manager')['state'] == 'running'
     # A new task and an add to the running one, each by a wsx task command the manager runs.
