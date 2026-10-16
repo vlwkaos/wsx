@@ -618,7 +618,7 @@ pub struct PromptSource {
 impl PromptSource {
     /// Read the prompt and refuse an empty or oversized one before any daemon call.
     /// ^ One trailing line end of a file or a pipe is not part of the prompt: wsxd adds Enter.
-    fn read(self, limit: usize) -> Result<String> {
+    pub(crate) fn read(self, limit: usize) -> Result<String> {
         use std::io::Read;
         let bounded = |reader: &mut dyn Read, source: &str| -> Result<String> {
             let mut bytes = Vec::new();
