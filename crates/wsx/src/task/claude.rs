@@ -25,6 +25,17 @@ const KEPT_ENV: &[&str] = &[
     "TMPDIR",
     "CLAUDE_CONFIG_DIR",
     "ANTHROPIC_API_KEY",
+    // ^ Network and toolchain setup a worker's own commands need.
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
 ];
 
 pub enum AgentLine {
@@ -125,9 +136,7 @@ impl ClaudeAgent {
                 {
                     Ok(0) | Err(_) => break,
                     Ok(_) if !line.ends_with(b"\n") && line.len() as u64 >= MAX_LINE_BYTES => {
-                        // ^ Skip the rest of an oversized line.
-                        let mut rest = Vec::new();
-                        if reader.read_until(b'\n', &mut rest).is_err() {
+                        if !matches!(skip_line(&mut reader), Ok(true)) {
                             break;
                         }
                     }
@@ -173,6 +182,27 @@ impl ClaudeAgent {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// Drop the rest of an oversized line one buffer at a time, never holding it.
+/// Returns false at end of input.
+fn skip_line(reader: &mut impl BufRead) -> std::io::Result<bool> {
+    loop {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            return Ok(false);
+        }
+        match buffer.iter().position(|byte| *byte == b'\n') {
+            Some(end) => {
+                reader.consume(end + 1);
+                return Ok(true);
+            }
+            None => {
+                let length = buffer.len();
+                reader.consume(length);
+            }
+        }
     }
 }
 
