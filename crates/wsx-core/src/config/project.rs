@@ -1,7 +1,7 @@
 // Canonical per-project configuration and legacy .gtrconfig migration.
 // ref: README.md#project-configuration
 
-use crate::model::workspace::{DefaultSessionConfig, ProjectConfig};
+use crate::model::workspace::{DefaultSessionConfig, ProjectConfig, TaskConfig};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -14,6 +14,9 @@ const LEGACY_CONFIG_FILE: &str = ".gtrconfig";
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 const MAX_BRANCH_PREFIX_BYTES: usize = 256;
 const MAX_DEFAULT_COMMAND_BYTES: usize = 16 * 1024;
+const MAX_TASK_WORD_BYTES: usize = 256;
+const MAX_TASK_LIST_ITEMS: usize = 64;
+const TASK_ADAPTERS: &[&str] = &["claude"];
 const PROJECT_CONFIG_TEMPLATE: &str = "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\ngit:\n  subtrees: []\nworktree:\n  branchPrefix:\n  # defaultSession:\n  #   enabled: true\n  #   command:\n";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -31,6 +34,28 @@ struct ProjectConfigFile {
     git: GitConfig,
     #[serde(skip_serializing_if = "WorktreeConfig::is_empty")]
     worktree: WorktreeConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tasks: Option<TasksFile>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct TasksFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<TaskAgentFile>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    checks: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct TaskAgentFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adapter: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -152,25 +177,83 @@ fn load_yaml(path: &Path) -> ProjectConfig {
             };
         }
     };
-    match yaml_serde::from_str::<ProjectConfigFile>(&text) {
-        Ok(file) => match validate_project_file(file) {
-            Ok(config) => config,
-            Err(error) => ProjectConfig {
-                notice: Some(format!(
-                    "Could not parse {} (using defaults): {error}",
-                    path.display()
-                )),
-                ..ProjectConfig::default()
-            },
-        },
-        Err(error) => ProjectConfig {
-            notice: Some(format!(
-                "Could not parse {} (using defaults): {error}",
-                path.display()
-            )),
-            ..ProjectConfig::default()
-        },
+    parse_yaml(&text).unwrap_or_else(|error| ProjectConfig {
+        notice: Some(format!(
+            "Could not parse {} (using defaults): {error}",
+            path.display()
+        )),
+        ..ProjectConfig::default()
+    })
+}
+
+fn parse_yaml(text: &str) -> Result<ProjectConfig, String> {
+    let file =
+        yaml_serde::from_str::<ProjectConfigFile>(text).map_err(|error| error.to_string())?;
+    validate_project_file(file)
+}
+
+/// The task settings of a project. Unlike `load_project_config`, a file that
+/// cannot be read or parsed is an error: a task must not run with default tools.
+pub fn load_task_config(repo_path: &Path) -> Result<TaskConfig, String> {
+    let canonical = repo_path.join(PROJECT_CONFIG_FILE);
+    if !canonical.exists() {
+        return Ok(TaskConfig::default());
     }
+    let text = read_bounded(&canonical)
+        .map_err(|error| format!("cannot read {}: {error}", canonical.display()))?;
+    parse_yaml(&text)
+        .map(|config| config.tasks)
+        .map_err(|error| format!("cannot parse {}: {error}", canonical.display()))
+}
+
+fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
+    let mut config = TaskConfig::default();
+    let Some(file) = file else {
+        return Ok(config);
+    };
+    if let Some(agent) = file.agent {
+        if let Some(adapter) = agent.adapter {
+            if !TASK_ADAPTERS.contains(&adapter.as_str()) {
+                return Err(format!(
+                    "tasks.agent.adapter must be one of: {}",
+                    TASK_ADAPTERS.join(", ")
+                ));
+            }
+            config.adapter = adapter;
+        }
+        if let Some(model) =
+            validate_optional_text(agent.model, "tasks.agent.model", MAX_TASK_WORD_BYTES)?
+        {
+            if model.contains(char::is_whitespace) {
+                return Err("tasks.agent.model must be one word".into());
+            }
+            config.model = model;
+        }
+        if let Some(tools) = agent.tools {
+            config.tools = validate_list(tools, "tasks.agent.tools", MAX_TASK_WORD_BYTES)?;
+        }
+    }
+    config.checks = validate_list(file.checks, "tasks.checks", MAX_DEFAULT_COMMAND_BYTES)?;
+    Ok(config)
+}
+
+fn validate_list(
+    values: Vec<String>,
+    field: &str,
+    max_bytes: usize,
+) -> Result<Vec<String>, String> {
+    if values.len() > MAX_TASK_LIST_ITEMS {
+        return Err(format!(
+            "{field} must have at most {MAX_TASK_LIST_ITEMS} items"
+        ));
+    }
+    values
+        .into_iter()
+        .map(|value| {
+            validate_optional_text(Some(value), field, max_bytes)?
+                .ok_or_else(|| format!("{field} must not contain an empty item"))
+        })
+        .collect()
 }
 
 fn validate_project_file(file: ProjectConfigFile) -> Result<ProjectConfig, String> {
@@ -195,7 +278,9 @@ fn validate_project_file(file: ProjectConfigFile) -> Result<ProjectConfig, Strin
             })
         })
         .transpose()?;
+    let tasks = validate_tasks(file.tasks)?;
     Ok(ProjectConfig {
+        tasks,
         post_create: file.hooks.post_create,
         copy_includes: file.copy.include,
         copy_excludes: file.copy.exclude,
@@ -282,6 +367,7 @@ fn write_yaml(path: &Path, config: &ProjectConfig) -> Result<(), String> {
                     command: session.command.clone(),
                 }),
         },
+        tasks: None,
     };
     let text = yaml_serde::to_string(&document).map_err(|error| error.to_string())?;
     write_text_atomic(path, &text, PublishMode::Create)

@@ -53,8 +53,42 @@ pub struct ProjectConfig {
     pub git_subtrees: Vec<PathBuf>,
     pub branch_prefix: String,
     pub default_session: Option<DefaultSessionConfig>,
+    pub tasks: TaskConfig,
     /// Migration or parse feedback for the TUI; never affects worktree behavior.
     pub notice: Option<String>,
+}
+
+/// The `tasks:` section of `wsx.config.yml` (docs/tasks.md).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskConfig {
+    pub adapter: String,
+    pub model: String,
+    pub tools: Vec<String>,
+    pub checks: Vec<String>,
+}
+
+impl Default for TaskConfig {
+    fn default() -> Self {
+        Self {
+            adapter: "claude".into(),
+            model: "sonnet".into(),
+            tools: [
+                "Read",
+                "Glob",
+                "Grep",
+                "Edit",
+                "Write",
+                "Bash(git add:*)",
+                "Bash(git commit:*)",
+                "Bash(git status:*)",
+                "Bash(git diff:*)",
+                "Bash(git log:*)",
+            ]
+            .map(String::from)
+            .into(),
+            checks: Vec::new(),
+        }
+    }
 }
 
 impl ProjectConfig {
