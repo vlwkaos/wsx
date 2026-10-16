@@ -641,7 +641,9 @@ def run(wsx, wsxd, work, owned):
     assert launch['actor'] == 'manager' and 'WSX_PANE_ID' not in launch['wsx_env']
     # Its rules for briefs: start work with one, skip it only on the owner's word, never start a build alone.
     for rule in ('the brief is coming', "`--no-brief` only when the owner's message asks", 'Never start a build on your own',
-                 '`wsx task start <n>`, which asks', 'name the briefs that wait'):
+                 '`wsx task start <n>`, which asks', 'name the briefs that wait',
+                 'one `wsx task` command per Bash call', 'grant it with `wsx task allow <n> --host <host>`',
+                 'Never tell the owner to edit settings'):
         assert rule in launch['instructions'], rule
     assert launch['cwd'] == str(project)
     assert js('task', 'manager')['state'] == 'running'
