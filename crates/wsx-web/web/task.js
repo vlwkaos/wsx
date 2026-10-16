@@ -35,6 +35,8 @@ function described(entry) {
       return [`Checks: ${entry.results.length - failed.length} of ${entry.results.length} passed`,
         failed.map((check) => `${check.command}${check.timed_out ? " (timed out)" : ` (exit ${check.exit})`}`).join(", "), failed.length ? "danger" : null];
     }
+    case "check_retry": return [`Checks failed on r${entry.revision}: sent back to the worker`,
+      `${entry.commands.join(", ")} (automatic retry ${entry.attempt} of 2)`, "attention"];
     case "revision": return [`Revision r${entry.revision}`, `${short(entry.commit)} · ${entry.paths_total} ${entry.paths_total === 1 ? "file" : "files"}`];
     case "stopped": return ["Stopped", entry.reason];
     case "closed": return [entry.discarded ? "Closed and discarded" : "Closed", ""];

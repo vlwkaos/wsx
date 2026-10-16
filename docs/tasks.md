@@ -26,7 +26,7 @@ wsx task close <n> [--discard] --json
 | File | Content | Limit |
 |---|---|---|
 | `task.json` | id, project, base, branch `wsx/t<n>`, working copy, pane, adapter, model, tools, checks, agent session, state, revision | 64 KiB |
-| `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress), `blocked{denials, asks}`, `granted{access, project, by}`, `revoked`, `result`, `checks`, `revision`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
+| `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress), `blocked{denials, asks}`, `granted{access, project, by}`, `revoked`, `result`, `checks`, `check_retry`, `revision`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
 | `result.json` | latest worker result and check results, `denials`, and `asks` of a block | 256 KiB |
 | `report.md` | report of the latest revision | |
 | `brief.json`, `brief.md` | the latest brief (`{version, brief}`) and its text | 256 KiB |
@@ -95,7 +95,7 @@ The worker's system prompt is the same in both phases, because Claude records a 
 
 ## Checks, revisions and report
 
-After each result that is not blocked the host runs `tasks.checks` with `/bin/sh -c` in the working copy (`tasks.checkTimeoutSeconds`, default 1200, and 8 KiB of output each, no `WSX_*`; a timed-out check's process group is killed), then sets `refs/wsx/task/<n>/r<k>` to the worker's HEAD. The host commits nothing; the worker commits. `ready` needs worker status `done` and every check at exit 0; otherwise `failed`. `report.md` has Asked, Summary, Decisions, Changes (`base..r<k>` commits and diffstat, plus uncommitted files), Evidence, Human Verify and Left open, built from the log, git and `result.json` only.
+After each result that is not blocked the host runs `tasks.checks` with `/bin/sh -c` in the working copy (`tasks.checkTimeoutSeconds`, default 1200, and 8 KiB of output each, no `WSX_*`; a timed-out check's process group is killed), then sets `refs/wsx/task/<n>/r<k>` to the worker's HEAD. The host commits nothing; the worker commits. `ready` needs worker status `done` and every check at exit 0; otherwise `failed`. When the worker said `done` but a check failed, the host first sends the failure back: it logs `check_retry{revision, attempt, commands}` and starts a worker turn with each failed command, how it ended and the last 3 KiB of its output; the checks run again on the result as a new revision. After 2 such turns the task is `failed` as before; a message from the owner or the manager (an add, a grant that resumes, `start`) allows 2 more. A landing's checks are never retried. `report.md` has Asked, Summary, Decisions, Changes (`base..r<k>` commits and diffstat, plus uncommitted files), Evidence, Human Verify and Left open, built from the log, git and `result.json` only.
 
 ## Human verification
 

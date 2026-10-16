@@ -27,6 +27,10 @@ use wsx_core::task::{
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 const CHECK_OUTPUT_BYTES: usize = 8 * 1024;
 const MAX_RESULT_BYTES: usize = 256 * 1024;
+/// Turns a failed check starts by itself before the task fails; an owner's message resets it.
+const MAX_CHECK_RETRIES: u32 = 2;
+/// The end of each failed check's output that goes back to the worker.
+const CHECK_TAIL_BYTES: usize = 3 * 1024;
 
 enum Event {
     Request(HostRequest, Sender<HostResponse>),
@@ -63,6 +67,8 @@ struct Host {
     reached: std::collections::BTreeSet<String>,
     /// What the latest blocked result asks for.
     last_asks: Vec<Access>,
+    /// Turns started for failed checks since the last message from a person.
+    check_retries: u32,
     landing: Option<Landing>,
     started: Instant,
 }
@@ -96,6 +102,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         stops: Vec::new(),
         reached: Default::default(),
         last_asks,
+        check_retries: 0,
         landing: None,
         started: Instant::now(),
     };
@@ -237,6 +244,7 @@ impl Host {
     }
 
     fn deliver_or_queue(&mut self, text: String) -> String {
+        self.check_retries = 0;
         // ^ Before the build, an add is a talk-through: the worker answers and may revise the brief.
         let text = match self.record.phase {
             Phase::Brief => talk_request(&text),
@@ -279,6 +287,7 @@ impl Host {
             return Ok(format!("may now {what}; still asks to {}", open.join(", ")));
         }
         if blocked {
+            self.check_retries = 0;
             let who = match by {
                 Actor::Owner => "The owner",
                 Actor::Manager => "The manager",
@@ -392,6 +401,7 @@ impl Host {
         }
         let file = brief::read(&self.dir).context("the task has no readable brief")?;
         let prompt = file.brief.rewritten_prompt.trim().to_string();
+        self.check_retries = 0;
         self.record.phase = Phase::Build;
         self.restart_needed = true;
         self.log(LogEvent::Started {
@@ -650,7 +660,32 @@ impl Host {
                 self.say(&format!("revision r{revision} at {commit:.12}"));
                 // ^ A landing goes from checking straight to landed, or to ready with
                 // land_stopped: readers never see a ready task that is still landing.
+                let failed: Vec<&CheckResult> = results
+                    .iter()
+                    .filter(|check| check.exit != Some(0))
+                    .collect();
                 match landing {
+                    // ^ A worker that says done but fails a check gets the failure back,
+                    // bounded, before the task fails. ref: docs/tasks.md "Checks, revisions and report"
+                    None if state == TaskState::Failed
+                        && result.status == "done"
+                        && !failed.is_empty()
+                        && self.pending.is_empty()
+                        && self.check_retries < MAX_CHECK_RETRIES =>
+                    {
+                        self.check_retries += 1;
+                        let attempt = self.check_retries;
+                        self.log(LogEvent::CheckRetry {
+                            revision,
+                            attempt,
+                            commands: failed.iter().map(|check| check.command.clone()).collect(),
+                        });
+                        self.say(&format!(
+                            "checks failed on r{revision}: sent back to the worker ({attempt} of {MAX_CHECK_RETRIES})"
+                        ));
+                        let text = check_retry_request(&failed, attempt);
+                        self.start_turn(&text);
+                    }
                     None => self.set_state(state),
                     Some(landing) => {
                         let finished = if state == TaskState::Ready {
@@ -1267,4 +1302,34 @@ fn normalize(path: &Path) -> std::path::PathBuf {
         }
     }
     clean
+}
+
+/// The failed checks for the worker: each command, how it ended and the end of its output.
+fn check_retry_request(failed: &[&CheckResult], attempt: u32) -> String {
+    let mut text = format!(
+        "The checks failed after your result (automatic retry {attempt} of {MAX_CHECK_RETRIES}). \
+         Fix the cause, commit, and return your result again."
+    );
+    for check in failed {
+        let ended = if check.timed_out {
+            "timed out".to_string()
+        } else {
+            check
+                .exit
+                .map_or("ended without an exit code".into(), |code| {
+                    format!("exit {code}")
+                })
+        };
+        let output = check.output.trim_end();
+        let mut start = output.len().saturating_sub(CHECK_TAIL_BYTES);
+        while !output.is_char_boundary(start) {
+            start += 1;
+        }
+        text.push_str(&format!(
+            "\n\n`{}`: {ended}\n```\n{}\n```",
+            check.command,
+            &output[start..]
+        ));
+    }
+    text
 }
