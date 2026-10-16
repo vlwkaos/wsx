@@ -144,7 +144,7 @@ wsx task deployed -p <project> --json
 
 ```yaml
 tasks:
-  agent: { adapter: claude, model: sonnet, tools: [Read, Edit, "Bash(cargo test:*)"] }
+  agent: { adapter: claude, model: opus, tools: [Read, Edit, "Bash(cargo test:*)"] }
   checks: ["cargo fmt --check"]
   checkTimeoutSeconds: 1200
   land: { policy: local-merge, remote: origin, approve: true }   # or policy: pr
@@ -153,7 +153,7 @@ tasks:
   manager: { adapter: claude, model: sonnet, rotateTokens: 150000 }
 ```
 
-Defaults: adapter `claude`, model `sonnet`, tools `Read Glob Grep Edit Write` plus `Bash(git add|commit|status|diff|log:*)`, no checks. Up to 64 tools and 64 checks; `checkTimeoutSeconds` is 1..86400; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.
+Defaults: adapter `claude`, worker model `opus` (the manager keeps `sonnet`), tools `Read Glob Grep Edit Write` plus `Bash(git add|commit|status|diff|log:*)`, no checks. Up to 64 tools and 64 checks; `checkTimeoutSeconds` is 1..86400; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.
 
 ## Verify
 

@@ -376,6 +376,8 @@ def run(wsx, wsxd, work, owned):
     x2 = js('task', 'new', 'WORK x.txt beta')['id']
     for n in (x1, y1, x2):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
+    # ^ LAND_CONFIG names no model: workers default to opus.
+    assert show(x1)['record']['model'] == 'opus'
     assert show(x1)['record']['paths'] == ['x.txt'] and show(x1)['record']['paths_total'] == 1
     rows = {row['id']: row for row in js('task', 'list')['tasks']}
     assert rows[x1]['overlaps'] == [{'id': x2, 'count': 1, 'complete': True}], rows[x1]
