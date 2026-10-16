@@ -551,6 +551,22 @@ def run(wsx, wsxd, work, owned):
     assert 'not on main' in cli('task', 'close', p2, ok=False).stderr
     js('task', 'close', p2, '--discard')
 
+    # 19. The ledger: open tasks by attention order, recent ones, deploys, the main checkout.
+    ready_task = js('task', 'new', 'WORK l.txt')['id']
+    blocked_task = js('task', 'new', 'NEEDS Bash(make:*) WORK m.txt')['id']
+    wait_state(ready_task, 'ready', 'failed')
+    wait_state(blocked_task, 'blocked')
+    raw = cli('task', 'ledger').stdout
+    ledger = json.loads(raw)
+    assert len(raw.encode()) <= 16 * 1024 and ledger['open_omitted'] == 0
+    assert [(row['id'], row['state']) for row in ledger['open']] == [(blocked_task, 'blocked'), (ready_task, 'ready')]
+    assert ledger['open'][1]['summary'] == 'did: WORK l.txt' and ledger['open'][1]['human_verify'] == 0
+    assert 0 < len(ledger['recent']) <= 10 and all(row['state'] in ('landed', 'closed') for row in ledger['recent'])
+    assert ledger['deploys']['deploy']['commit'] == merged and ledger['main']['branch'] == 'main'
+    assert ledger['main']['changed_files'] >= 1  # scratch.txt is untracked in the main checkout
+    for n in (ready_task, blocked_task):
+        js('task', 'close', n, '--discard')
+
 
 if __name__ == '__main__':
     main()
