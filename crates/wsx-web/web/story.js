@@ -5,7 +5,7 @@ import { api } from "./api.js";
 import { html, Icon, useEffect, useRef, useState } from "./lib.js";
 import { can } from "./store.js";
 import { toast } from "./ui.js";
-import { taskLink } from "./tasks.js";
+import { askWords, taskLink } from "./tasks.js";
 
 const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 // `refs/heads/main` reads as `main`, `refs/remotes/origin/main` as `origin/main`.
@@ -199,8 +199,8 @@ function nextWords(detail) {
   switch (detail.state) {
     case "starting": case "working": return "The worker is on it. Steer it now, or add a message for after this turn.";
     case "checking": return "The checks run on the new revision. The task is ready when they pass.";
-    case "blocked": return detail.denials?.length
-      ? `The worker waits for you to allow ${detail.denials[0]} or answer.`
+    case "blocked": return detail.asks?.length
+      ? `The worker waits for you to let it ${askWords(detail.asks)}, or to answer.`
       : "The worker waits for your answer.";
     case "stopped": return "The worker stopped. Add a message to resume it.";
     case "failed": {

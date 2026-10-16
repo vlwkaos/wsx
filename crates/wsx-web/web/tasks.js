@@ -68,7 +68,16 @@ const NEED_WORDS = {
   land: "is ready to land", review: "is in review",
 };
 export const needWords = (item) => item.kind === "approval" ? item.label
-  : item.kind === "brief" ? `Brief ready #${item.task}` : `#${item.task} ${NEED_WORDS[item.kind]}`;
+  : item.kind === "brief" ? `Brief ready #${item.task}`
+  : item.kind === "blocked" && item.asks?.length ? `#${item.task} needs to ${askWords(item.asks)}`
+  : `#${item.task} ${NEED_WORDS[item.kind]}`;
+// What a blocked task asks for, never a command: "reach crates.io and write ~/.cargo"
+// (docs/web-client.md "Tasks"). A grant body names one ask.
+export function askWords(asks) {
+  const words = asks.map((ask) => ask.kind === "network" ? `reach ${ask.host}` : `write ${ask.path}`);
+  return words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
+}
+export const grantBody = (ask, project) => ask.kind === "network" ? { host: ask.host, project } : { path: ask.path, project };
 export const needTone = (item) => KIND_TONE[item.kind];
 const itemKey = (item) => item.kind === "approval" ? item.approval : `${item.kind}-${item.task}`;
 const needId = (item) => `need-${itemKey(item)}`;
@@ -133,16 +142,30 @@ function NeedRow({ project, item, card, flash }) {
   const submit = (event) => {
     event.preventDefault();
     const text = field.current.value.trim();
-    if (!text) return;
-    if (draft.field === "answer") run("add", { text });
-    else if (draft.field === "allow") run("allow", { tool: text });
+    if (text) run("add", { text });
+  };
+  // ^ One grant per ask; the host resumes the task with the last one.
+  const asks = item.kind === "blocked" ? item.asks ?? [] : [];
+  const grant = async (project_wide) => {
+    draft.busy = true;
+    draft.error = "";
+    refresh();
+    try {
+      for (const ask of asks) await act(project, item, "allow", grantBody(ask, project_wide));
+    } catch (failure) {
+      draft.error = failure.message;
+    }
+    draft.busy = false;
+    refresh();
   };
   const button = (label, onClick, extra = {}) => html`
     <button class="button need-action" type="button" disabled=${draft.busy} onClick=${onClick} ...${extra}>${label}</button>`;
   let actions = null;
   if (acting && item.kind === "blocked") {
     actions = html`
-      ${item.denials?.length ? button("Allow", () => open("allow", item.denials[0]), { "aria-expanded": draft.field === "allow" }) : null}
+      ${asks.length ? html`
+        ${button("Allow", () => grant(false), { "aria-label": `Allow #${item.task} to ${askWords(asks)}` })}
+        ${button("Allow for project", () => grant(true), { "aria-label": `Allow every task of this project to ${askWords(asks)}` })}` : null}
       ${button("Answer", () => open("answer"), { "aria-expanded": draft.field === "answer" })}`;
   } else if (acting && item.kind === "approval") {
     actions = html`${button("Deny", () => run("deny"))}${button("Approve", () => run("approve"))}`;
@@ -159,6 +182,7 @@ function NeedRow({ project, item, card, flash }) {
   // ^ An approval reads as the action it asks for, never as its id (docs/web-client.md "Tasks").
   const context = item.kind === "approval"
     ? [item.revision != null && `r${item.revision}`, item.title ?? item.commit].filter(Boolean).join(" · ")
+    : asks.length ? `needs to ${askWords(asks)}`
     : [KIND_WORDS[item.kind], item.summary].filter(Boolean).join(" · ");
   const label = item.kind === "approval" ? item.label : item.title;
   const name = item.kind === "approval" ? null : `#${item.task}`;
@@ -177,10 +201,10 @@ function NeedRow({ project, item, card, flash }) {
       ${draft.field && html`
         <form class="need-form" onSubmit=${submit}>
           <input class="input" ref=${field} type="text" autocomplete="off" value=${draft.text}
-            aria-label=${draft.field === "answer" ? `${item.kind === "brief" ? "Reply to the brief of" : "Answer to"} #${item.task}` : `Tool to allow for #${item.task}`}
-            placeholder=${draft.field === "answer" ? (item.kind === "brief" ? "Reply to the brief" : "Answer") : "Tool, such as Bash(make:*)"}
+            aria-label=${`${item.kind === "brief" ? "Reply to the brief of" : "Answer to"} #${item.task}`}
+            placeholder=${item.kind === "brief" ? "Reply to the brief" : "Answer"}
             onInput=${(event) => { draft.text = event.target.value; }} disabled=${draft.busy} />
-          <button class="button" type="submit" disabled=${draft.busy}>${draft.field === "answer" ? "Send" : "Allow"}</button>
+          <button class="button" type="submit" disabled=${draft.busy}>Send</button>
         </form>`}
       ${draft.error && html`<p class="error need-error" role="alert">${draft.error}</p>`}
     </div>`;

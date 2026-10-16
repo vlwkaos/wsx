@@ -403,6 +403,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     summary["pr_url"] = json!(record.pr_url);
     summary["result"] = result["result"].clone();
     summary["denials"] = result["denials"].clone();
+    summary["asks"] = result["asks"].clone();
     summary["checks"] = result["checks"].clone();
     summary["report"] = json!(report);
     summary["phase"] = json!(record.phase);

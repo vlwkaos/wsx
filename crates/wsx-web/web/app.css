@@ -462,6 +462,10 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .need-card .row-link { padding-inline: var(--space-3); }
 .need-card { --row-inset: calc(var(--space-3) + var(--space-1) * 1.5 + var(--space-3)); }
 .need-card[data-flash] { border-color: var(--color-accent); }
+/* ^ A blocked card's Allow, Allow for project and Answer leave its words no room at phone
+   width: three actions take their own line under the words, aligned with them. */
+.need-card .row-link:has(.row-actions > :nth-child(3)) { flex-wrap: wrap; row-gap: var(--space-1); }
+.need-card .row-link:has(.row-actions > :nth-child(3)) .row-actions { flex-basis: 100%; margin-left: calc(var(--space-1) * 1.5 + var(--space-3)); }
 .resolved { max-width: var(--size-prose); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
 .resolved-id { color: inherit; font-weight: var(--font-weight-medium); }
 .tray { flex: 0 0 auto; max-height: calc(100% * var(--strip-share)); overflow-y: auto; overscroll-behavior: contain; padding: var(--space-1) var(--column-inset, var(--space-4)); border-top: var(--border-width) solid var(--color-hairline); }
@@ -545,7 +549,6 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .task-row { padding: var(--space-3) var(--column-inset, var(--space-4)) 0; overflow-wrap: anywhere; }
 .task-row .actions { padding-inline: 0; justify-content: flex-end; }
 .task-row code { font-family: var(--font-terminal); font-size: var(--font-size-sm); }
-.task-allow { padding: var(--space-2) 0 var(--space-3); }
 .task-body { padding: 0 var(--space-4); max-width: calc(var(--size-prose) + 2 * var(--space-4)); }
 .verify .actions { justify-content: flex-end; }
 .verify-note { padding: 0 var(--space-4); display: flex; flex-direction: column; }

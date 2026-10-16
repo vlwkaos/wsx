@@ -6,7 +6,7 @@ import { html, Icon, useEffect, useRef, useState } from "./lib.js";
 import { can, events, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { grow, isolate, release } from "./chat.js";
-import { announce, loadTasks, taskLink, taskState, withChips } from "./tasks.js";
+import { announce, askWords, grantBody, loadTasks, taskLink, taskState, withChips } from "./tasks.js";
 import { TaskStory } from "./story.js";
 
 const short = (commit) => (commit ?? "").slice(0, 8);
@@ -24,8 +24,11 @@ function described(entry) {
     case "created": return [`Created on ${entry.branch}`, `from ${short(entry.base)}`];
     case "message": return [MESSAGE_WORDS[entry.mode] ?? "Message", entry.text];
     case "steps": return [`${entry.count} ${entry.count === 1 ? "step" : "steps"}`, entry.last];
-    case "blocked": return ["Blocked", entry.denials.length ? `denied: ${entry.denials.join(", ")}` : "", "attention"];
+    case "blocked": return ["Blocked", entry.asks?.length ? `needs to ${askWords(entry.asks)}`
+      : entry.denials.length ? `denied: ${entry.denials.join(", ")}` : "", "attention"];
     case "allowed": return ["Allowed", entry.tool];
+    case "granted": return [`Allowed by the ${entry.by}${entry.project ? " for every task" : ""}`, askWords([entry.access]) || `use ${entry.access.rule}`];
+    case "revoked": return [`Taken back by the ${entry.by}`, askWords([entry.access]) || `use ${entry.access.rule}`];
     case "result": return [`Result: ${entry.status}`, entry.summary, entry.status === "done" ? null : "danger"];
     case "checks": {
       const failed = entry.results.filter((check) => check.exit !== 0);
@@ -66,15 +69,18 @@ function useAction(detail) {
   const run = async (name, path, body, done, label = `#${detail.id}`) => {
     setBusy(name);
     setError("");
+    let ok = false;
     try {
       const answer = await api(path, { method: "POST", json: body });
       announce(label, name, answer);
       done?.();
       loadTasks(detail.project);
+      ok = true;
     } catch (failure) {
       setError(failure.message);
     }
     setBusy("");
+    return ok;
   };
   return { busy, error, run };
 }
@@ -188,7 +194,6 @@ export function TaskPage({ project, task, onClose, grip }) {
   const store = useStore();
   const [detail, setDetail] = useState(null);
   const [failure, setFailure] = useState("");
-  const [tool, setTool] = useState(null);
   const loading = useRef(false);
   const again = useRef(false);
   const load = async () => {
@@ -247,17 +252,21 @@ export function TaskPage({ project, task, onClose, grip }) {
             onClick=${() => act.run("approve", `api/tasks/${project}/approvals/${request.id}/approve`, {}, null, request.label)}>Approve</button>
         </div>`}
     </div>`);
-  const allow = actions.includes("allow") && html`
+  // ^ What the block asks for, never a command; one grant per ask, the last one resumes the task.
+  const asks = detail.asks ?? [];
+  const grant = async (project_wide) => {
+    for (const ask of asks) {
+      if (!await act.run("allow", `api/tasks/${project}/t/${task}/allow`, grantBody(ask, project_wide))) return;
+    }
+  };
+  const allow = actions.includes("allow") && asks.length > 0 && html`
     <div class="task-row">
-      <p>${detail.denials?.length ? html`Denied: ${detail.denials.map((denial) => html`<code key=${denial}>${denial}</code> `)}` : "Blocked; the worker asks in its summary."}</p>
-      ${tool === null
-        ? html`<div class="actions"><button class="button" type="button" onClick=${() => setTool(detail.denials?.[0] ?? "")}>Allow a tool</button></div>`
-        : html`
-          <form class="need-form task-allow" onSubmit=${(event) => { event.preventDefault(); const value = event.target.tool.value.trim();
-            if (value) act.run("allow", `api/tasks/${project}/t/${task}/allow`, { tool: value }, () => setTool(null)); }}>
-            <input class="input" name="tool" type="text" autocomplete="off" value=${tool} aria-label="Tool to allow" placeholder="Tool, such as Bash(make:*)" />
-            <button class="button" type="submit" disabled=${Boolean(act.busy)}>Allow</button>
-          </form>`}
+      <p>#${task} needs to ${askWords(asks)}.</p>
+      <div class="actions">
+        <button class="button" type="button" disabled=${Boolean(act.busy)} onClick=${() => grant(false)}>Allow</button>
+        <button class="button" type="button" disabled=${Boolean(act.busy)} onClick=${() => grant(true)}
+          aria-label=${`Allow every task of this project to ${askWords(asks)}`}>Allow for project</button>
+      </div>
     </div>`;
   const land = actions.includes("land") && html`
     <div class="task-row">
