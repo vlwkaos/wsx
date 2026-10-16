@@ -450,6 +450,13 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 /* In the inbox the strip is one group of rows under its project, as the sessions are. */
 .scroll .needs { max-height: none; overflow: visible; border-bottom: 0; }
 .group-link { text-decoration: none; font-weight: var(--font-weight-medium); color: var(--color-text); }
+.since {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  padding: var(--space-2) var(--column-inset, var(--space-4)); font-size: var(--font-size-sm);
+  background: var(--color-surface); border-bottom: var(--border-width) solid var(--color-hairline);
+}
+.since p { min-width: 0; overflow-wrap: anywhere; }
+.since a { color: var(--color-accent); }
 .needs-none, .tasks-working { flex: 0 0 auto; padding: var(--space-2) var(--column-inset, var(--space-4)); font-size: var(--font-size-sm); color: var(--color-muted); }
 .needs-none { border-bottom: var(--border-width) solid var(--color-hairline); }
 .tasks-working { border-bottom: var(--border-width) solid var(--color-hairline); }

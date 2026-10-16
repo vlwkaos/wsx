@@ -684,11 +684,12 @@ class Terminal:
 class Events(threading.Thread):
     """The page's one server-sent event stream, read like a browser would."""
 
-    def __init__(self, site, shape='prefixed'):
+    def __init__(self, site, shape='prefixed', page=None):
         super().__init__(daemon=True)
         self.seen, self.ready, self.closed = [], threading.Condition(), threading.Event()
         self.connection = http.client.HTTPConnection('127.0.0.1', site.port, timeout=60)
-        self.connection.request('GET', (site.base if shape == 'prefixed' else '') + '/api/events',
+        self.connection.request('GET', (site.base if shape == 'prefixed' else '') + '/api/events'
+                                + ('?page=' + page if page else ''),
                                 headers=dict({'Cookie': site.cookie, 'Accept': 'text/event-stream'},
                                              **({'Host': site.host} if site.host else {})))
         self.response = self.connection.getresponse()
@@ -2506,6 +2507,10 @@ capabilities = [{capabilities}]
 subject = "mailto:owner@example.invalid"
 private_key = "{private_key}"
 service_origins = ["{push_origin}"]
+[tasks]
+merge_seconds = 3
+digest_quiet_seconds = 3
+digest_max_seconds = 6
 ''')
             files[name].chmod(0o600)
             start(work, [str(wsx), 'web', 'serve', '--site', str(files[name])], env=env, cwd=project,
@@ -2648,6 +2653,84 @@ service_origins = ["{push_origin}"]
             assert result.returncode == 0, result.stdout + result.stderr
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
 
+        # --- Task notifications: at once after the merge window, a digest after a quiet time,
+        # never to a device whose page shows the project.
+        def pushes():
+            file = work / 'push.jsonl'
+            return [json.loads(line) for line in file.read_text().splitlines()] if file.exists() else []
+        keys = {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}
+        refused = steady(plain, 'POST', '/api/push', {'subscription': {'endpoint': push_origin + '/push/plain', 'keys': keys}, 'topics': ['tasks']})
+        assert refused[0] == 403, refused
+        status, body = steady(owner, 'POST', '/api/push', {'subscription': {'endpoint': push_origin + '/push/tasks', 'keys': keys}, 'topics': ['tasks']})
+        assert status == 200 and body['topics'] == ['tasks'], body
+        time.sleep(7)  # batches from the journey above went out to nobody
+        baseline = len(pushes())
+
+        def new_pushes(count, label, timeout=30):
+            got = wait(lambda: len(pushes()) >= baseline + count and pushes()[baseline:], label, timeout=timeout)
+            for record in got:
+                assert record.get('error') is None and record['vapid']['ok'], record
+            return [record['payload'] for record in got]
+
+        first = js('task', 'new', 'NEEDS Bash(x:*) NOOP', '-p', 'demo')['id']
+        second = js('task', 'new', 'NEEDS Bash(x:*) NOOP', '-p', 'demo')['id']
+        wait_state(first, 'blocked')
+        wait_state(second, 'blocked')
+        merged = new_pushes(1, 'blocked push')
+        time.sleep(4)
+        assert len(pushes()) == baseline + 1, pushes()[baseline:]
+        assert merged[0]['title'] == 'owner: demo' and merged[0]['url'] == '#/p/%d' % demo, merged
+        assert merged[0]['body'] == '#%d blocked · #%d blocked' % (first, second) and merged[0]['tag'].endswith('-now'), merged
+        baseline += 1
+        for n in (first, second):
+            assert act(n, 'allow', {'tool': 'Bash(x:*)'})[0] == 200
+        wait_state(first, 'ready')
+        wait_state(second, 'ready')
+        digest = new_pushes(1, 'digest push')
+        time.sleep(4)
+        assert len(pushes()) == baseline + 1, pushes()[baseline:]
+        assert digest[0]['body'] == '2 ready (#%d, #%d)' % (first, second) and digest[0]['tag'].endswith('-digest'), digest
+        baseline += 1
+        # The cap: a task finishes every 2 s, so the 3 s quiet time never comes; the digest
+        # goes out 6 s after the first, with what came until then.
+        started_at = time.monotonic()
+        steady_ids = []
+        for _ in range(6):
+            steady_ids.append(js('task', 'new', 'NOOP', '-p', 'demo')['id'])
+            wait_state(steady_ids[-1], 'ready')
+            time.sleep(max(0, 2 * len(steady_ids) - (time.monotonic() - started_at)))
+        capped = new_pushes(1, 'capped digest')
+        first_ready = capped[0]['body']
+        assert re.match(r'[2-5] ready \(', first_ready) and '#%d' % steady_ids[0] in first_ready, capped
+        assert '#%d' % steady_ids[-1] not in first_ready, capped
+        baseline += 1
+        rest = new_pushes(1, 'digest after the cap')
+        assert '#%d' % steady_ids[-1] in rest[0]['body'], rest
+        baseline += 1
+        # A page of this device shows demo: no push for demo, a push for ui.
+        page = 'page-owner-1'
+        assert steady(owner, 'POST', '/api/presence', {'page': page, 'project': demo})[0] == 404  # no stream yet
+        assert steady(owner, 'POST', '/api/presence', {'page': 'x', 'project': demo})[0] == 400
+        shown = Events(owner, page=page)
+        shown.expect('workspace')
+        assert steady(owner, 'POST', '/api/presence', {'page': page, 'project': demo})[0] == 200
+        assert steady(viewer, 'POST', '/api/presence', {'page': page, 'project': None})[0] == 404
+        hidden = js('task', 'new', 'NEEDS Bash(y:*) NOOP', '-p', 'demo')['id']
+        wait_state(hidden, 'blocked')
+        other = js('task', 'new', 'NEEDS Bash(y:*) NOOP', '-p', 'ui')['id']
+        wait(lambda: js('task', 'show', other, '-p', 'ui')['state'] == 'blocked', 'ui blocked')
+        elsewhere = new_pushes(1, 'push for the other project')
+        time.sleep(4)
+        assert len(pushes()) == baseline + 1 and elsewhere[0]['title'] == 'owner: ui', pushes()[baseline:]
+        assert elsewhere[0]['body'] == '#%d blocked' % other and elsewhere[0]['url'] == '#/p/%d/t/%d' % (ids['ui'], other), elsewhere
+        baseline += 1
+        # The page goes away: its presence goes with its stream.
+        shown.connection.close()
+        time.sleep(1)
+        later = js('task', 'new', 'NEEDS Bash(z:*) NOOP', '-p', 'demo')['id']
+        wait_state(later, 'blocked')
+        assert new_pushes(1, 'push after the page closed')[0]['body'] == '#%d blocked' % later
+        ok('task push: blocked merged in one, ready as one digest, the digest cap, the shown project skipped for that device, presence ends with the stream, tasks topic needs task_view')
         success = True
     finally:
         for process in reversed(STARTED):

@@ -237,13 +237,6 @@ fn publish(app: &App, message: Message) {
 }
 
 fn notify(app: &Arc<App>, topic: Topic, session: u64, label: &str, words: &str) {
-    if app.push.is_none() {
-        return;
-    }
-    let paired: Vec<String> = match app.devices.list() {
-        Ok(devices) => devices.into_iter().map(|device| device.id).collect(),
-        Err(_) => return,
-    };
     let label: String = label.chars().take(60).collect();
     let payload = json!({
         "kind": topic,
@@ -252,11 +245,23 @@ fn notify(app: &Arc<App>, topic: Topic, session: u64, label: &str, words: &str) 
         "session_id": session,
         "tag": format!("wsx-{}-{session}", app.site.id),
     });
+    deliver(app, topic, payload, Vec::new());
+}
+
+/// Push `payload` to every paired device that consented to `topic`, except `except`.
+pub fn deliver(app: &Arc<App>, topic: Topic, payload: Value, except: Vec<String>) {
+    if app.push.is_none() {
+        return;
+    }
+    let paired: Vec<String> = match app.devices.list() {
+        Ok(devices) => devices.into_iter().map(|device| device.id).collect(),
+        Err(_) => return,
+    };
     // A slow push service must not hold back the event stream.
     let app = app.clone();
     thread::spawn(move || {
         if let Some(push) = &app.push {
-            push.notify(topic, &payload, &paired, &[]);
+            push.notify(topic, &payload, &paired, &except);
         }
     });
 }

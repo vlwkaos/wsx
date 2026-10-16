@@ -8,6 +8,7 @@ const TOPICS = [
   ["blocked", "An agent needs my input"],
   ["done", "An agent finished"],
   ["error", "An agent stopped with an error"],
+  ["tasks", "A task needs me (at once), or tasks finished (one digest)", "task_view"],
 ];
 
 function keyBytes(base64url) {
@@ -55,7 +56,7 @@ function Push() {
     <section aria-label="Notifications">
       <h2 class="label">Notify this device when</h2>
       <div class="options">
-        ${TOPICS.map(([topic, label]) => html`
+        ${TOPICS.filter(([, , needs]) => !needs || can(needs)).map(([topic, label]) => html`
           <label class="option" key=${topic}><input type="checkbox" checked=${topics.includes(topic)} onChange=${() => toggle(topic)} />${label}</label>`)}
       </div>
       <div class="actions">

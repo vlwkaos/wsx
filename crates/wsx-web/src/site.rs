@@ -78,6 +78,30 @@ struct SiteFile {
     push: Option<PushFile>,
     #[serde(default)]
     terminal: TerminalFile,
+    #[serde(default)]
+    tasks: TaskTimes,
+}
+
+/// When task notifications go out (docs/web-client.md "Task notifications").
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TaskTimes {
+    /// Blocked, conflict and approval requests wait this long for others to merge.
+    pub merge_seconds: u64,
+    /// Ready, failed and landed go out as one digest once none came for this long,
+    pub digest_quiet_seconds: u64,
+    /// or at the latest this long after the first of them.
+    pub digest_max_seconds: u64,
+}
+
+impl Default for TaskTimes {
+    fn default() -> Self {
+        Self {
+            merge_seconds: 3,
+            digest_quiet_seconds: 180,
+            digest_max_seconds: 900,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -207,6 +231,7 @@ pub struct Site {
     pub media: MediaLimits,
     pub push: Option<PushSettings>,
     pub terminal_ligatures: bool,
+    pub tasks: TaskTimes,
     pub state_dir: PathBuf,
 }
 
@@ -322,6 +347,14 @@ impl Site {
             !has(Capability::TaskAct) || has(Capability::TaskView),
             "task_act needs task_view"
         );
+        let tasks = file.tasks;
+        ensure!(
+            (1..=60).contains(&tasks.merge_seconds)
+                && (1..=3600).contains(&tasks.digest_quiet_seconds)
+                && (tasks.digest_quiet_seconds..=86_400).contains(&tasks.digest_max_seconds),
+            "tasks times are out of range: merge_seconds 1-60, digest_quiet_seconds 1-3600, \
+             digest_max_seconds from digest_quiet_seconds to 86400"
+        );
         ensure!(
             has(Capability::SessionStart) != file.access.agent_command.is_empty(),
             "session_start and agent_command must be set together"
@@ -430,6 +463,7 @@ impl Site {
             media,
             push,
             terminal_ligatures: file.terminal.ligatures,
+            tasks,
             state_dir,
         })
     }

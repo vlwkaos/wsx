@@ -61,6 +61,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/session", get(session))
             .route("/api/logout", post(logout))
             .route("/api/events", get(events))
+            .route("/api/presence", post(presence))
             .route("/api/sessions", post(session_start))
             .route("/api/chat/{session}/timeline", get(timeline))
             .route("/api/chat/{session}/send", post(send))
@@ -466,12 +467,99 @@ impl Drop for StreamSlot {
     }
 }
 
+/// `page`: an id the page chose for itself, so it can say which project it shows.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventsQuery {
+    page: Option<String>,
+}
+
+fn page_id(id: &str) -> Outcome<()> {
+    let valid = (8..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+    valid.then_some(()).ok_or_else(|| {
+        Fault::new(
+            400,
+            "invalid_page",
+            "a page id is 8-64 of a-z, A-Z, 0-9, - and _",
+        )
+    })
+}
+
+/// A page's open stream. The page and what it shows are forgotten with its last stream.
+struct PageSlot(Shared, String);
+impl PageSlot {
+    fn take(app: &Shared, id: String, device: &str) -> Outcome<Self> {
+        let mut pages = app.pages.lock().unwrap_or_else(|lock| lock.into_inner());
+        let page = pages.entry(id.clone()).or_insert_with(|| crate::Page {
+            device: device.to_string(),
+            streams: 0,
+            project: None,
+        });
+        // ^ One device cannot speak for another device's page.
+        if page.device != device {
+            return Err(Fault::new(
+                409,
+                "invalid_page",
+                "this page id belongs to another device",
+            ));
+        }
+        page.streams += 1;
+        Ok(Self(app.clone(), id))
+    }
+}
+impl Drop for PageSlot {
+    fn drop(&mut self) {
+        let mut pages = self.0.pages.lock().unwrap_or_else(|lock| lock.into_inner());
+        if let Some(page) = pages.get_mut(&self.1) {
+            page.streams = page.streams.saturating_sub(1);
+            if page.streams == 0 {
+                pages.remove(&self.1);
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PresenceInput {
+    page: String,
+    /// The project the page shows while it is visible, or null.
+    project: Option<u64>,
+}
+
+/// What an open page shows, so a task push for that project skips its device.
+async fn presence(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    Json(input): Json<PresenceInput>,
+) -> Outcome<Json<Value>> {
+    page_id(&input.page)?;
+    let mut pages = app.pages.lock().unwrap_or_else(|lock| lock.into_inner());
+    let page = pages
+        .get_mut(&input.page)
+        .filter(|page| page.device == device.id)
+        .ok_or_else(|| Fault::new(404, "unknown_page", "this page has no open event stream"))?;
+    page.project = input.project;
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// The page's one event stream. It ends when the device is revoked.
 async fn events(
     State(app): State<Shared>,
     Paired(device): Paired,
+    Query(query): Query<EventsQuery>,
     headers: HeaderMap,
 ) -> Outcome<Response> {
+    let page = match query.page {
+        Some(id) => {
+            page_id(&id)?;
+            Some(PageSlot::take(&app, id, &device.id)?)
+        }
+        None => None,
+    };
     // The slot is released when the stream task ends, however it ends.
     let slot = StreamSlot::take(&app, device.id, "pages")?;
     let mut source = app.events.subscribe();
@@ -482,6 +570,7 @@ async fn events(
         .clone();
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(64);
     tokio::spawn(async move {
+        let _page = page;
         let app = &slot.0;
         let event =
             |message: Message| Ok(Event::default().event(message.event).data(&*message.data));

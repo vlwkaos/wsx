@@ -48,7 +48,7 @@ self.addEventListener("push", (event) => {
       body: data.body ?? "An agent changed state.",
       tag: data.tag,
       icon: "__WSX_ICON__",
-      data: { session_id: data.session_id },
+      data: { session_id: data.session_id, url: data.url },
     }),
   );
 });
@@ -56,8 +56,9 @@ self.addEventListener("push", (event) => {
 // Open the session the notification is about, in an existing window when one is open.
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const session = event.notification.data?.session_id;
-  const target = session ? `${scope}#/s/${session}/chat` : scope;
+  const { session_id: session, url } = event.notification.data ?? {};
+  // A task notification names its project or task route; only a route of this page is followed.
+  const target = session ? `${scope}#/s/${session}/chat` : /^#\/p\/\d+(\/t\/\d+)?$/.test(url ?? "") ? `${scope}${url}` : scope;
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
       const open = windows.find((client) => client.url.startsWith(scope));

@@ -111,6 +111,8 @@ One manager per project runs as hidden `wsx task manager-host <project-id>` in a
 - Restart: `state.json` records the reported state of each task only when its message is logged, and `delivered` marks what reached the agent. A restarted host queues logged messages that were never delivered and reports changes it has not reported, so no event is lost. Its first start takes the existing tasks as they are, without events.
 - After a reply whose context (input, cache read and cache write tokens) passes `rotateTokens`, the next turn starts a fresh conversation and the log has `rotated`; the ledger carries the state.
 
+The web client shows the manager chat, the tasks, their reports and their fixed actions, and notifies about them: [web-client.md](web-client.md) "Tasks".
+
 ## Approvals
 
 `tasks.land.approve`, `tasks.deploy.approve` and `tasks.release.approve` (default `true`) decide whether the manager may land, deploy or release alone. A `wsx task` command run with `WSX_TASK_ACTOR=manager` (the manager host sets it for its agent) that needs approval does not act: it appends `request{id: a<n>, action, task, revision, skip_verify, commit}` to `tasks/<project-id>/approvals.jsonl` and answers that the owner was asked. `close --discard` by the manager always asks. The ledger lists pending requests under `approvals`.

@@ -1,9 +1,9 @@
 // Page shell: pairing gate, event stream, routes, and the two layouts.
 // Phone: top-level screens share a bottom tab bar; a session owns the full height.
 // Wide (900 px and more): a left rail with the inbox or the projects, the rest beside it.
-import { api, openEvents } from "./api.js";
+import { api, openEvents, pageId } from "./api.js";
 import { html, render, useEffect, useState } from "./lib.js";
-import { can, events, noteBuild, shows, state, trackHistory, update, useRoute, useStore } from "./store.js";
+import { can, events, noteBuild, parseRoute, shows, state, trackHistory, update, useRoute, useStore } from "./store.js";
 import { applyScheme, Notices } from "./ui.js";
 import { Pair } from "./pair.js";
 import { Inbox } from "./inbox.js";
@@ -125,6 +125,18 @@ function App() {
     </div>`;
 }
 
+// The project this page shows while it is visible, so the server pushes no task
+// notification for it to this device. Sent when it changes and when the stream reopens.
+let shown;
+function tellPresence(force) {
+  if (!can("task_view") || !can("push")) return;
+  const route = parseRoute(location.hash);
+  const project = document.visibilityState === "visible" && ["project", "sessions", "task", "files"].includes(route.screen) ? route.id : null;
+  if (project === shown && !force) return;
+  shown = project;
+  api("api/presence", { method: "POST", json: { page: pageId, project } }).catch(() => { shown = undefined; });
+}
+
 function start(session) {
   update({ site: session.site, device: session.device, build: session.build });
   noteBuild(session.build?.id);
@@ -149,9 +161,12 @@ function start(session) {
     up: () => {
       update({ online: true });
       if (can("task_view")) loadTasks();
+      tellPresence(true);
     },
   });
   if (can("task_view")) loadTasks();
+  addEventListener("hashchange", () => tellPresence(false));
+  document.addEventListener("visibilitychange", () => tellPresence(false));
   // ^ index.html's "Loading…" placeholder is not Preact's: a first render adopts an
   // existing child only of the same element type, and the app's root is a div, so the
   // placeholder would stay beside the app and take half of the screen.

@@ -178,7 +178,7 @@ if (mode === "restart") {
     await alone("a wide reload after a server restart");
   }
   // The restart cuts the open event stream once; the page reconnects by itself.
-  const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/ERR_INCOMPLETE_CHUNKED_ENCODING \S+\/api\/events$/.test(problem));
+  const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/ERR_INCOMPLETE_CHUNKED_ENCODING \S+\/api\/events(\?page=\S+)?$/.test(problem));
   if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
   console.log("paired page reloaded with its service worker, on two screens, after a server restart and wide: the app alone in the page root");
   await cleanup();

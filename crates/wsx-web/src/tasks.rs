@@ -13,7 +13,7 @@ use std::{
     os::unix::fs::MetadataExt,
     path::PathBuf,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
@@ -577,6 +577,169 @@ fn stamp(store_id: &str) -> Stamp {
 pub struct Watch {
     stamps: HashMap<String, Stamp>,
     overviews: HashMap<u64, String>,
+    /// Each task's (state, revision) when last seen, by project; a project seen for the
+    /// first time, as at a server start, notifies nothing.
+    seen: HashMap<u64, HashMap<u32, (TaskState, u32)>>,
+    /// Approval requests already seen, by project.
+    requests: HashMap<u64, HashSet<String>>,
+    /// Blocked, conflict and approval requests that wait for the merge window, by project.
+    urgent: HashMap<u64, Batch>,
+    /// Ready, failed and landed that wait for the digest, by project.
+    digest: HashMap<u64, Batch>,
+}
+
+/// Changes that go out as one notification.
+struct Batch {
+    project: String,
+    first: Instant,
+    last: Instant,
+    /// `(task, state word)`, or `(None, "a3 approve land #5")` for a request.
+    changes: Vec<(Option<u32>, String)>,
+}
+
+impl Batch {
+    fn add(batches: &mut HashMap<u64, Batch>, scope: &Scope, change: (Option<u32>, String)) {
+        let now = Instant::now();
+        let batch = batches.entry(scope.project).or_insert_with(|| Batch {
+            project: scope.name.clone(),
+            first: now,
+            last: now,
+            changes: Vec::new(),
+        });
+        batch.last = now;
+        batch.changes.push(change);
+    }
+}
+
+/// Turn new task states and approval requests into waiting notifications
+/// (docs/web-client.md "Task notifications").
+fn notice(scope: &Scope, watch: &mut Watch) {
+    let first = !watch.seen.contains_key(&scope.project);
+    let seen = watch.seen.entry(scope.project).or_default();
+    for (_, record) in view::project_tasks(&scope.store).unwrap_or_default() {
+        let Ok(record) = record else { continue };
+        let now = (record.state, record.revision);
+        let before = seen.insert(record.id, now);
+        if first || before == Some(now) {
+            continue;
+        }
+        let change = (Some(record.id), record.state.as_str().to_string());
+        match record.state {
+            TaskState::Blocked | TaskState::Conflict => {
+                Batch::add(&mut watch.urgent, scope, change)
+            }
+            TaskState::Ready | TaskState::Failed | TaskState::Landed => {
+                Batch::add(&mut watch.digest, scope, change)
+            }
+            _ => {}
+        }
+    }
+    let lines = store::read_approvals(&scope.store).unwrap_or_default();
+    let known = watch.requests.entry(scope.project).or_default();
+    for line in pending_approvals(&lines) {
+        let ApprovalLine::Request {
+            id, action, task, ..
+        } = line
+        else {
+            continue;
+        };
+        if known.insert(id.clone()) && !first {
+            let what = task.map_or(String::new(), |task| format!(" #{task}"));
+            Batch::add(
+                &mut watch.urgent,
+                scope,
+                (
+                    None,
+                    format!("{id} approve {}{what}", owner::action_name(*action)),
+                ),
+            );
+        }
+    }
+}
+
+/// Send each batch whose time has come: the urgent one after its merge window, the digest
+/// after a quiet time or at its cap. A device whose page shows the project is skipped.
+fn flush(app: &Arc<App>, watch: &mut Watch) {
+    let times = &app.site.tasks;
+    let now = Instant::now();
+    let merge = Duration::from_secs(times.merge_seconds);
+    let quiet = Duration::from_secs(times.digest_quiet_seconds);
+    let cap = Duration::from_secs(times.digest_max_seconds);
+    let urgent: Vec<u64> = watch
+        .urgent
+        .iter()
+        .filter(|(_, batch)| now - batch.first >= merge)
+        .map(|(project, _)| *project)
+        .collect();
+    let digest: Vec<u64> = watch
+        .digest
+        .iter()
+        .filter(|(_, batch)| now - batch.last >= quiet || now - batch.first >= cap)
+        .map(|(project, _)| *project)
+        .collect();
+    for project in urgent {
+        if let Some(batch) = watch.urgent.remove(&project) {
+            send(app, project, &batch, true);
+        }
+    }
+    for project in digest {
+        if let Some(batch) = watch.digest.remove(&project) {
+            send(app, project, &batch, false);
+        }
+    }
+}
+
+/// One push for a batch: `#4 blocked · a3 approve land #5` at once, or as a digest
+/// `2 ready (#5, #6) · 1 landed (#3)` with each task in its latest state only.
+fn send(app: &Arc<App>, project: u64, batch: &Batch, urgent: bool) {
+    let tasks: HashSet<u32> = batch.changes.iter().filter_map(|(task, _)| *task).collect();
+    let url = match (tasks.iter().next(), tasks.len(), batch.changes.len()) {
+        (Some(task), 1, 1) => format!("#/p/{project}/t/{task}"),
+        _ => format!("#/p/{project}"),
+    };
+    let body = if urgent {
+        batch
+            .changes
+            .iter()
+            .map(|(task, words)| task.map_or(words.clone(), |task| format!("#{task} {words}")))
+            .collect::<Vec<_>>()
+            .join(" · ")
+    } else {
+        let mut latest: Vec<(u32, &str)> = Vec::new();
+        for (task, words) in &batch.changes {
+            let Some(task) = task else { continue };
+            latest.retain(|(other, _)| other != task);
+            latest.push((*task, words));
+        }
+        let mut words: Vec<&str> = latest.iter().map(|(_, words)| *words).collect();
+        words.sort_unstable();
+        words.dedup();
+        words
+            .iter()
+            .map(|word| {
+                let ids: Vec<String> = latest
+                    .iter()
+                    .filter(|(_, other)| other == word)
+                    .map(|(task, _)| format!("#{task}"))
+                    .collect();
+                format!("{} {word} ({})", ids.len(), ids.join(", "))
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    let payload = json!({
+        "kind": "tasks",
+        "title": format!("{}: {}", app.site.name, batch.project),
+        "body": view::clip(&body, 300),
+        "url": url,
+        "tag": format!("wsx-{}-tasks-{project}-{}", app.site.id, if urgent { "now" } else { "digest" }),
+    });
+    crate::events::deliver(
+        app,
+        crate::push::Topic::Tasks,
+        payload,
+        app.showing(project),
+    );
 }
 
 /// One observer step: publish `tasks` when a project's overview changed, `task` for each
@@ -599,11 +762,33 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
             })
             .map(|(path, _)| path)
             .collect();
-        let overview = overview(scope);
-        let text = overview.to_string();
-        if watch.overviews.get(&scope.project) != Some(&text) {
-            watch.overviews.insert(scope.project, text);
-            crate::events::publish_json(app, "tasks", overview);
+        notice(scope, watch);
+        // ^ A working agent appends a progress line about every second. Only a ready task's
+        // log can change the overview (its verdict), and the overview reads those logs whole.
+        let ready = |id: u32| {
+            watch
+                .seen
+                .get(&scope.project)
+                .and_then(|seen| seen.get(&id))
+                .is_some_and(|(state, _)| *state == TaskState::Ready)
+        };
+        let progress_only = before
+            .as_ref()
+            .is_some_and(|before| before.len() == now.len())
+            && changed.iter().all(|path| {
+                path.file_name().is_some_and(|name| name == store::LOG_FILE)
+                    && path
+                        .parent()
+                        .and_then(|parent| parent.file_name()?.to_str()?.parse().ok())
+                        .is_none_or(|id| !ready(id))
+            });
+        if !progress_only {
+            let overview = overview(scope);
+            let text = overview.to_string();
+            if watch.overviews.get(&scope.project) != Some(&text) {
+                watch.overviews.insert(scope.project, text);
+                crate::events::publish_json(app, "tasks", overview);
+            }
         }
         if before.is_none() {
             continue;
@@ -630,8 +815,11 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
             );
         }
     }
+    flush(app, watch);
     let alive: HashSet<u64> = scopes.iter().map(|scope| scope.project).collect();
     watch.overviews.retain(|project, _| alive.contains(project));
+    watch.seen.retain(|project, _| alive.contains(project));
+    watch.requests.retain(|project, _| alive.contains(project));
     let stores: HashSet<&String> = scopes.iter().map(|scope| &scope.store).collect();
     watch.stamps.retain(|store, _| stores.contains(store));
 }
