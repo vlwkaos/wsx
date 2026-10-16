@@ -39,8 +39,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Revision 27 types a one-line slash command of an exchange as written, without the
 // exchange line (`command`, capability `exchange_command`).
 // Revision 28 publishes when an agent entered its state (`AgentInfo::state_since_unix_ms`).
-// Revision 29 writes a prompt to the PTY without holding daemon state, and adds the keyed
-// exchange requests (docs/agent-orchestration.md "Idempotent delivery").
+// Revision 29 writes a prompt to the PTY without holding daemon state or the mutation lock,
+// within a 10-second write limit, and adds the keyed exchange requests
+// (docs/agent-orchestration.md "Idempotent delivery").
 pub const DAEMON_REVISION: u32 = 29;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";

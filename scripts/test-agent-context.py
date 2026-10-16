@@ -273,6 +273,7 @@ def orchestration(wsx, wsxd, released):
         scope = ('-p','fixture','-w','w/slow')
         session = json.loads(cli('session','create','--name','worker','--command',agent,'--json',*scope).stdout)
         until(lambda: ready(session['pane_id']),'slow worker agent')
+        spare = json.loads(cli('session','create','--name','spare','--json',*scope).stdout)['session_id']
         prompt_file.write_text('slow delivery\n' + 'y' * 16000)
         keyed = ('agent','request','worker','--prompt-file',prompt_file,'--key','slow-1','--json',*scope)
         revision = rpc(path,'snapshot')['data']['revision']
@@ -283,6 +284,10 @@ def orchestration(wsx, wsxd, released):
         until(lambda: rpc(path,'snapshot')['data']['revision'] > revision,'intent of the slow delivery')
         began = time.monotonic()
         repeat = json.loads(cli(*keyed,seconds=40).stdout)['exchange']
+        # Other changes go on while the PTY takes the prompt; the client limit is 5 seconds.
+        cli('session','rename',spare,'spare-renamed')
+        cli('session','delete',spare,'--json')
+        assert time.monotonic() - began < 3 and first_call.poll() is None, 'a slow delivery held other changes'
         stdout, stderr = first_call.communicate(timeout=40)
         assert first_call.returncode == 0, stderr
         slow_exchange = json.loads(stdout)['exchange']
@@ -299,6 +304,19 @@ def orchestration(wsx, wsxd, released):
         until(lambda: at_boundary(slow_exchange['id']),'keyed follow up done')
         assert len(received(slow_name)) == 2 and received(slow_name)[1].endswith('\nkeyed follow up')
         assert 'invalid_key' in cli('agent','request','worker','refused','--key','has space','--json',*scope,ok=False).stderr
+        # An agent that does not read its input ends the delivery at the 10-second write limit.
+        cli('worktree','create','w/stuck','--from','main','--json','-p','fixture')
+        (work / 'run/fixture-w-stuck.stall').write_text('60')
+        stuck = ('-p','fixture','-w','w/stuck')
+        stuck_session = json.loads(cli('session','create','--name','worker','--command',agent,'--json',*stuck).stdout)
+        until(lambda: ready(stuck_session['pane_id']),'stuck worker agent')
+        prompt_file.write_text('never read\n' + 'z' * 60000)
+        began = time.monotonic()
+        failed = json.loads(cli('agent','request','worker','--prompt-file',prompt_file,'--timeout','120','--json',*stuck,seconds=40).stdout)['exchange']
+        assert 9 < time.monotonic() - began < 15 and failed['state'] == 'delivery_failed', failed
+        assert failed.get('delivery_sha256') is None and failed['evidence'] == 'intent_persisted'
+        # Closing that pane returns too: the PTY writer's end-of-file byte no longer blocks.
+        cli('session','delete',stuck_session['session_id'],'--json')
         assert len(received(slow_name)) == 2
 
         # The result of a round is the agent's last message after that round was delivered.
@@ -473,7 +491,7 @@ for X in $A $B; do "$WSX" agent wait $X --result --timeout 30 --json > result-$X
         if success: shutil.rmtree(work)
         else: print('diagnostics retained at '+str(work),file=sys.stderr)
     print(json.dumps({'result':'PASS','seconds':round(time.monotonic()-started,2),'model_calls':0,'skipped':skipped,
-        'journey':'worktree retry without a leftover branch, session identities, prompt from file and standard input, slow delivery, once-per-key request and continuation, result of a round and its refusal, one-line manager with agent start and wait --any, late failure report, folder trust question, scoped exchanges, manager status, released-daemon refusal'}))
+        'journey':'worktree retry without a leftover branch, session identities, prompt from file and standard input, slow delivery, once-per-key request and continuation, result of a round and its refusal, other changes during a slow delivery, delivery write limit, one-line manager with agent start and wait --any, late failure report, folder trust question, scoped exchanges, manager status, released-daemon refusal'}))
 
 
 def main():

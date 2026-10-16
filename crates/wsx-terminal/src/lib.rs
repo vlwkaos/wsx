@@ -686,15 +686,44 @@ impl TerminalRuntime {
         self.write(&bytes)
     }
 
+    /// `write` that gives up at `deadline` when the program stops reading its input.
+    /// Bytes written before the deadline stay in the program's input.
+    pub fn write_within(&self, bytes: &[u8], deadline: Instant) -> Result<(), TerminalError> {
+        #[cfg(unix)]
+        if let Some(process) = self.process.as_ref().filter(|_| !bytes.is_empty()) {
+            if self.exited() {
+                return Err(TerminalError::Runtime("terminal process exited".into()));
+            }
+            // ^ Hold the writer: no other write may see the master in non-blocking mode.
+            let writer = lock(&self.shared.writer);
+            if writer.is_none() {
+                return Err(TerminalError::Io(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "PTY closed",
+                )));
+            }
+            let master = lock(&process.master);
+            return write_master_until(master.as_ref(), bytes, deadline).map_err(TerminalError::Io);
+        }
+        let _ = deadline;
+        self.write(bytes)
+    }
+
     pub fn paste(&self, text: &str) -> Result<(), TerminalError> {
-        let bytes = {
-            let emulator = lock(&self.shared.emulator);
-            ghostty::encode_paste(
-                text.as_bytes(),
-                emulator.terminal.mode_get(BRACKETED_PASTE_MODE)?,
-            )?
-        };
-        self.write(&bytes)
+        self.write(&self.paste_bytes(text)?)
+    }
+
+    /// `paste` that gives up at `deadline`, as `write_within` does.
+    pub fn paste_within(&self, text: &str, deadline: Instant) -> Result<(), TerminalError> {
+        self.write_within(&self.paste_bytes(text)?, deadline)
+    }
+
+    fn paste_bytes(&self, text: &str) -> Result<Vec<u8>, TerminalError> {
+        let emulator = lock(&self.shared.emulator);
+        Ok(ghostty::encode_paste(
+            text.as_bytes(),
+            emulator.terminal.mode_get(BRACKETED_PASTE_MODE)?,
+        )?)
     }
 
     pub fn mouse(&self, mouse: &MouseEvent) -> Result<(), TerminalError> {
@@ -1279,7 +1308,25 @@ impl TerminalRuntime {
         if self.shared.terminating.swap(true, Ordering::AcqRel) {
             return;
         }
-        lock(&self.shared.writer).take();
+        {
+            let mut writer = lock(&self.shared.writer);
+            // ^ portable-pty's writer writes an end-of-file byte when it is dropped. A program
+            // that stopped reading its input would hold that write, and wsxd with it, for ever.
+            #[cfg(unix)]
+            if let Some(fd) = self
+                .process
+                .as_ref()
+                .and_then(|process| lock(&process.master).as_raw_fd())
+            {
+                unsafe {
+                    let flags = libc::fcntl(fd, libc::F_GETFL);
+                    if flags >= 0 {
+                        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+                    }
+                }
+            }
+            writer.take();
+        }
         if let Some(process) = &self.process {
             #[cfg(unix)]
             terminate_group(take_process_group(&process.process_group));
@@ -1493,7 +1540,11 @@ fn spawn_reader_fd(
                     break;
                 }
                 let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
+                // ^ WouldBlock: a bounded write holds the shared master in non-blocking mode.
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                ) {
                     continue;
                 }
                 if error.raw_os_error() == Some(libc::EIO) {
@@ -1629,6 +1680,14 @@ fn terminate_group(group: Option<libc::pid_t>) {
 
 #[cfg(unix)]
 fn write_startup_input(master: &dyn MasterPty, bytes: &[u8]) -> io::Result<()> {
+    write_master_until(master, bytes, Instant::now() + STARTUP_WRITE_TIMEOUT)
+}
+
+/// Write to the PTY master and give up at `deadline` when the program stops reading.
+/// ^ O_NONBLOCK belongs to the open file, which the reader's duplicate shares: callers
+/// hold the writer lock, and the reader takes EAGAIN as "poll again".
+#[cfg(unix)]
+fn write_master_until(master: &dyn MasterPty, bytes: &[u8], deadline: Instant) -> io::Result<()> {
     let fd = master
         .as_raw_fd()
         .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "PTY has no file descriptor"))?;
@@ -1651,7 +1710,6 @@ fn write_startup_input(master: &dyn MasterPty, bytes: &[u8]) -> io::Result<()> {
         }
     }
     let _restore = RestoreFlags { fd, flags };
-    let deadline = Instant::now() + STARTUP_WRITE_TIMEOUT;
     let mut written = 0;
     while written < bytes.len() {
         let count =
@@ -1671,7 +1729,7 @@ fn write_startup_input(master: &dyn MasterPty, bytes: &[u8]) -> io::Result<()> {
         if remaining.is_zero() {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "timed out writing terminal startup input",
+                "timed out writing terminal input",
             ));
         }
         let mut pollfd = libc::pollfd {
