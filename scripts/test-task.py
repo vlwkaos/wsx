@@ -793,8 +793,9 @@ def run(wsx, wsxd, work, owned):
     assert wait_state(m, 'ready', 'failed')['state'] == 'ready'
     # The manager may skip the brief when the owner asks; the log names it.
     js('task', 'say', 'RUN wsx task new "WORK mn.txt" --no-brief -p demo --json')
-    mn = wait(lambda: max(row['id'] for row in js('task', 'list')['tasks']) > m and
-              max(row['id'] for row in js('task', 'list')['tasks']), 'manager --no-brief task')
+    # ^ A new number is listed with an error row until its record is written.
+    mn = wait(lambda: max((row['id'] for row in js('task', 'list')['tasks'] if 'state' in row), default=0) > m and
+              max(row['id'] for row in js('task', 'list')['tasks'] if 'state' in row), 'manager --no-brief task')
     assert wait_state(mn, 'ready', 'failed')['state'] == 'ready'
     assert [(e['by'], e['actor']) for e in log(mn) if e['kind'] == 'brief_skipped'] == [('flag', 'manager')]
     for n in (m, mn):
