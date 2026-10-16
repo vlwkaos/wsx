@@ -20,10 +20,11 @@ const MAX_SOCKET_PATH_BYTES: usize = 103;
 pub fn bind(socket: &Path) -> Result<UnixListener> {
     if socket.as_os_str().len() > MAX_SOCKET_PATH_BYTES {
         bail!(
-            "socket path {} is longer than {MAX_SOCKET_PATH_BYTES} bytes; use a shorter XDG_STATE_HOME",
+            "socket path {} is longer than {MAX_SOCKET_PATH_BYTES} bytes",
             socket.display()
         );
     }
+    wsx_core::task::store::prepare_socket_dir(socket)?;
     if socket.exists() {
         if UnixStream::connect(socket).is_ok() {
             bail!("another host already serves {}", socket.display());

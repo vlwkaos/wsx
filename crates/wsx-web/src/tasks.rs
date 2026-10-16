@@ -168,6 +168,7 @@ pub fn overview(scope: &Scope) -> Value {
             *unix_ms,
             json!({
                 "kind": "approval", "approval": id, "action": owner::action_name(*action),
+                "label": owner::approval_label(*action, *task),
                 "task": task, "revision": revision, "skip_verify": skip_verify, "commit": commit,
                 "title": task.and_then(|task| titles.get(&task)), "unix_ms": unix_ms,
             }),
@@ -266,7 +267,16 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
         json!([])
     };
     summary["verification"] = view::verification_value(&log, record.revision);
-    summary["approvals"] = json!(approvals);
+    summary["approvals"] = json!(approvals
+        .iter()
+        .map(|line| {
+            let mut row = json!(line);
+            if let ApprovalLine::Request { action, task, .. } = line {
+                row["label"] = json!(owner::approval_label(*action, *task));
+            }
+            row
+        })
+        .collect::<Vec<_>>());
     summary["actions"] = if can_act {
         // ^ A revision with a pass needs no verdict; a new revision brings the buttons back.
         let unverified = human_verify
@@ -593,7 +603,7 @@ struct Batch {
     project: String,
     first: Instant,
     last: Instant,
-    /// `(task, state word)`, or `(None, "a3 approve land #5")` for a request.
+    /// `(task, state word)`, or `(None, "Approve land #5")` for a request.
     changes: Vec<(Option<u32>, String)>,
 }
 
@@ -644,14 +654,10 @@ fn notice(scope: &Scope, watch: &mut Watch) {
             continue;
         };
         if known.insert(id.clone()) && !first {
-            let what = task.map_or(String::new(), |task| format!(" #{task}"));
             Batch::add(
                 &mut watch.urgent,
                 scope,
-                (
-                    None,
-                    format!("{id} approve {}{what}", owner::action_name(*action)),
-                ),
+                (None, owner::approval_label(*action, *task)),
             );
         }
     }
@@ -689,7 +695,7 @@ fn flush(app: &Arc<App>, watch: &mut Watch) {
     }
 }
 
-/// One push for a batch: `#4 blocked · a3 approve land #5` at once, or as a digest
+/// One push for a batch: `#4 blocked · Approve land #5` at once, or as a digest
 /// `2 ready (#5, #6) · 1 landed (#3)` with each task in its latest state only.
 fn send(app: &Arc<App>, project: u64, batch: &Batch, urgent: bool) {
     let tasks: HashSet<u32> = batch.changes.iter().filter_map(|(task, _)| *task).collect();

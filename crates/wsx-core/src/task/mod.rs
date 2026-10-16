@@ -276,7 +276,7 @@ pub enum DeployKind {
     Release,
 }
 
-/// One request on a host's `host.sock`; one JSON line per connection.
+/// One request on a task host's control socket; one JSON line per connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum HostRequest {

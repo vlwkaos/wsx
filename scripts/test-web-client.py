@@ -2401,7 +2401,6 @@ def task_journey(args):
     node = shutil.which('node')
     assert node, 'Node is required for the independent Web Push receiver'
     sweep()
-    # Short path: task host sockets must fit macOS SUN_LEN.
     work = ROOT / '.work' / ('web-' + str(os.getpid()) + 't')
     work.mkdir(mode=0o700, parents=True)
     started, success, checks, path, env = time.monotonic(), False, [], None, None
@@ -2419,8 +2418,9 @@ def task_journey(args):
         raise AssertionError(label + ' timeout')
 
     try:
-        home, state, project, other, bin_dir = (work / name for name in ('h', 's', 'demo', 'ui', 'bin'))
-        for folder in (home, state, project, other, bin_dir):
+        # ^ Its own TMPDIR: the task host sockets' folder goes away with the run.
+        home, state, project, other, bin_dir, tmp = (work / name for name in ('h', 's', 'demo', 'ui', 'bin', 't'))
+        for folder in (home, state, project, other, bin_dir, tmp):
             folder.mkdir(mode=0o700)
         project, other = project.resolve(), other.resolve()
         config = (home / 'Library/Application Support/wsx' if sys.platform == 'darwin' else work / 'c/wsx')
@@ -2436,7 +2436,7 @@ def task_journey(args):
         env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
                'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_SOCKET': str(path),
                'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
-               'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8'}
+               'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp)}
         for folder in (project, other):
             for argv in (['init', '-q', '-b', 'main'], ['add', '.'], ['commit', '-q', '-m', 'start']):
                 if argv[0] == 'add':
@@ -2470,7 +2470,7 @@ def task_journey(args):
         wait_state(2, 'ready')
         wait_state(3, 'ready')
         if args.browser:
-            # The same store in the second project (`ui`; a short name keeps manager.sock within sun_path), for the page: the browser acts on it.
+            # The same store in the second project (`ui`), for the page: the browser acts on it.
             for prompt in ('NEEDS Bash(make:*) WORK m.txt', 'WORK a.txt HV', 'WORK b.txt', 'NEEDS Bash(make:*) WORK n.txt'):
                 js('task', 'new', prompt, '-p', 'ui')
             for n, state_name in ((1, 'blocked'), (2, 'ready'), (3, 'ready'), (4, 'blocked')):
@@ -2612,6 +2612,7 @@ digest_max_seconds = 6
         request = wait(lambda: next((item for item in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['needs']
                                      if item['kind'] == 'approval'), None), 'approval request', timeout=30)
         assert request['approval'] == 'a1' and request['action'] == 'land' and request['task'] == 3, request
+        assert request['label'] == 'Approve land #3', request
         status, body = steady(owner, 'POST', '/api/tasks/%d/approvals/a1/approve' % demo, {})
         assert status == 202 and body['started'], body
         again = steady(owner, 'POST', '/api/tasks/%d/approvals/a1/approve' % demo, {})
@@ -2730,7 +2731,12 @@ digest_max_seconds = 6
         later = js('task', 'new', 'NEEDS Bash(z:*) NOOP', '-p', 'demo')['id']
         wait_state(later, 'blocked')
         assert new_pushes(1, 'push after the page closed')[0]['body'] == '#%d blocked' % later
-        ok('task push: blocked merged in one, ready as one digest, the digest cap, the shown project skipped for that device, presence ends with the stream, tasks topic needs task_view')
+        baseline += 1
+        # An approval request reads as its action, never as its id.
+        js('task', 'say', 'RUN wsx task land %d -p demo --json' % steady_ids[0], '-p', 'demo')
+        asked = new_pushes(1, 'approval push')
+        assert asked[0]['body'] == 'Approve land #%d' % steady_ids[0] and asked[0]['tag'].endswith('-now'), asked
+        ok('task push: blocked merged in one, ready as one digest, the digest cap, the shown project skipped for that device, presence ends with the stream, an approval named by its action, tasks topic needs task_view')
         success = True
     finally:
         for process in reversed(STARTED):

@@ -63,7 +63,6 @@ def main():
     wsxd = wsx.with_name('wsxd')
     if not wsx.is_file() or not wsxd.is_file():
         raise RuntimeError('build adjacent wsx and wsxd first')
-    # ^ Short root: host.sock must fit in sun_path.
     work = ROOT / '.work' / ('tk' + str(os.getpid()))
     work.mkdir(mode=0o700, parents=True, exist_ok=False)
     started = time.monotonic()
@@ -81,8 +80,14 @@ def main():
 
 
 def run(wsx, wsxd, work, owned):
-    home, state, project, bin_dir = work / 'h', work / 's', work / 'project', work / 'bin'
-    for path in (home, state, project, bin_dir):
+    # ^ Long state and project paths: a socket in the store would pass sun_path's 104 bytes,
+    # so the hosts' sockets must live elsewhere (docs/tasks.md "Store").
+    base = work / ('long-project-folder-' + 'p' * 40)
+    home, state, project, bin_dir = work / 'h', work / ('state-' + 's' * 40), base / 'project', work / 'bin'
+    # ^ Its own TMPDIR: the host sockets' folder goes away with the run.
+    tmp = work / 't'
+    base.mkdir(mode=0o700)
+    for path in (home, state, project, bin_dir, tmp):
         path.mkdir(mode=0o700)
     config_dir = (home / 'Library/Application Support/wsx' if sys.platform == 'darwin'
                   else work / 'c/wsx')
@@ -93,11 +98,11 @@ def run(wsx, wsxd, work, owned):
     fake = bin_dir / 'claude'
     fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(ROOT / 'scripts/fake-claude-stream.py') + ' "$@"\n')
     fake.chmod(0o755)
-    daemon_socket = state / 'wsx/wsx.sock'
+    daemon_socket = work / 'd.sock'
     env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
            'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_SOCKET': str(daemon_socket),
            'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
-           'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8'}
+           'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp)}
     owned['env'] = env
 
     def git(*argv, cwd=project, ok=True):
@@ -162,7 +167,7 @@ def run(wsx, wsxd, work, owned):
         return pane and pane.get('agent')
 
     def traces():
-        path = work / 'fake-claude.trace'
+        path = base / 'fake-claude.trace'
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def log(n):
@@ -186,14 +191,18 @@ def run(wsx, wsxd, work, owned):
     created = js('task', 'new', 'SLOW WORK a.txt')
     assert created['id'] == 1 and created['state'] == 'working', created
     copy = Path(created['working_copy'])
-    assert copy == work / 'project-t1' and created['branch'] == 'wsx/t1'
+    assert copy == base / 'project-t1' and created['branch'] == 'wsx/t1'
     assert (copy / 'target/warm').read_text() == 'cached'
     assert not (copy / 'scratch.txt').exists()
     assert (copy / '.git').is_file() and git('rev-parse', '--abbrev-ref', 'HEAD', cwd=copy) == 'wsx/t1'
     assert git('rev-parse', '--git-dir', cwd=copy) != git('rev-parse', '--git-dir')
     task_dir = Path(created['task_dir'])
     assert oct(task_dir.stat().st_mode & 0o777) == '0o700'
-    assert oct((task_dir / 'host.sock').stat().st_mode & 0o777) == '0o600'
+    host_socket = Path(show(1)['socket'])
+    assert len(str(task_dir / 'manager/manager.sock')) > 104 and len(str(host_socket)) < 104, host_socket
+    assert oct(host_socket.stat().st_mode & 0o777) == '0o600'
+    assert host_socket.parent == tmp / ('wsx-%d' % os.getuid()), host_socket
+    assert oct(host_socket.parent.stat().st_mode & 0o777) == '0o700'
     launch = wait(lambda: next((t for t in traces() if t.get('launch')), None), 'fake launch')
     assert launch['wsx_env'] == [] and launch['allowed'] == ['Read', 'Edit'] and launch['schema']
     assert launch['model'] == 'fake-model' and not launch['resume']
@@ -287,11 +296,12 @@ def run(wsx, wsxd, work, owned):
     assert second['id'] == 2
     wait_state(2, 'ready', 'failed')
     copy2 = Path(second['working_copy'])
+    socket2 = Path(show(2)['socket'])
     closed = js('task', 'close', '2')
     assert closed['state'] == 'closed' and closed['working_copy_removed'], closed
     project_id = show(1)['record']['project_id']
     assert not copy2.exists() and not git('branch', '--list', 'wsx/t2')
-    assert not (Path(second['task_dir']) / 'host.sock').exists()
+    assert not socket2.exists()
     assert not leftovers('task host ' + project_id + ' 2')
 
     # 9. Close with --discard removes everything of task 1, including its revision refs.
@@ -307,11 +317,11 @@ def run(wsx, wsxd, work, owned):
     assert log(1)[-1]['kind'] == 'closed'
 
     # 10. A failed start leaves nothing and does not reuse the number.
-    (work / 'project-t3').mkdir()
+    (base / 'project-t3').mkdir()
     blocked_path = cli('task', 'new', 'NOOP', ok=False)
     assert 'already exists' in blocked_path.stderr and 'not reused' in blocked_path.stderr, blocked_path.stderr
     assert not (task_dir.parent / '3').exists() and not git('branch', '--list', 'wsx/t3')
-    (work / 'project-t3').rmdir()
+    (base / 'project-t3').rmdir()
     fourth = js('task', 'new', 'NOOP')
     assert fourth['id'] == 4, fourth
     wait_state(4, 'ready', 'failed')
@@ -323,7 +333,7 @@ def run(wsx, wsxd, work, owned):
     git('add', 'later.txt')
     git('commit', '-q', '-m', 'later')
     assert 'not a commit' in cli('task', 'new', 'NOOP', '--from', 'no-such-ref', ok=False).stderr
-    assert not (task_dir.parent / '5').exists() and not (work / 'project-t5').exists()
+    assert not (task_dir.parent / '5').exists() and not (base / 'project-t5').exists()
     sixth = js('task', 'new', 'NOOP', '--from', first)
     assert sixth['id'] == 6 and sixth['base'] == first, sixth
     assert not (Path(sixth['working_copy']) / 'later.txt').exists()
@@ -477,7 +487,7 @@ def run(wsx, wsxd, work, owned):
     deployed = js('task', 'deploy')
     tip = git('rev-parse', 'main')
     assert deployed['commit'] == tip and deployed['exit'] == 0, deployed
-    commit_line, where = (work / 'deploy.log').read_text().split()
+    commit_line, where = (base / 'deploy.log').read_text().split()
     assert commit_line == tip and Path(where) != project and not Path(where).exists()
     assert git('worktree', 'list', '--porcelain').count('worktree ') == 1
     assert js('task', 'deployed')['deploy']['behind'] == 0
@@ -633,9 +643,11 @@ def run(wsx, wsxd, work, owned):
     assert delivered.index([waiting['id']]) < delivered.index([merged[0]['id']]), delivered
     assert 'noted events' in reply_to(merged[0]['id'])['text']
     # Stop the manager host, finish a task while it is down, start it again.
+    manager_socket = js('task', 'manager')['socket']
+    assert len(manager_socket) < 104, manager_socket
     cli('session', 'delete', 'task-manager', '-p', 'demo')
-    wait(lambda: not (manager_log.parent / 'manager.sock').exists() or
-         subprocess.run(['nc', '-zU', str(manager_log.parent / 'manager.sock')]).returncode != 0, 'manager down')
+    wait(lambda: not Path(manager_socket).exists() or
+         subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
     unseen = js('task', 'new', 'WORK late.txt')['id']
     wait_state(unseen, 'ready', 'failed')
     assert js('task', 'manager')['state'] == 'started'

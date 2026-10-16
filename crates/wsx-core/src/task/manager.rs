@@ -141,7 +141,7 @@ pub fn pending_approvals(lines: &[ApprovalLine]) -> Vec<&ApprovalLine> {
         .collect()
 }
 
-/// One request on `manager/manager.sock`.
+/// One request on the manager host's control socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ManagerRequest {

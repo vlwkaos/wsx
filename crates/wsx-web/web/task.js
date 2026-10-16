@@ -59,12 +59,12 @@ function sections(report) {
 function useAction(detail) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const run = async (name, path, body, done) => {
+  const run = async (name, path, body, done, label = `#${detail.id}`) => {
     setBusy(name);
     setError("");
     try {
       const answer = await api(path, { method: "POST", json: body });
-      announce(`#${detail.id}`, name, answer);
+      announce(label, name, answer);
       done?.();
       loadTasks(detail.project);
     } catch (failure) {
@@ -189,13 +189,13 @@ export function TaskPage({ project, task }) {
   const actions = detail.actions;
   const approvals = detail.approvals.map((request) => html`
     <div class="task-row" key=${request.id}>
-      <p><span class="need-id">${request.id}</span> The manager asks to ${request.action === "discard" ? "close and discard" : request.action} r${request.revision}.</p>
+      <p>The manager asks: ${request.label}${request.revision != null ? ` r${request.revision}` : ""}.</p>
       ${can("task_act") && html`
         <div class="actions">
           <button class="button" type="button" disabled=${Boolean(act.busy)}
-            onClick=${() => act.run("deny", `api/tasks/${project}/approvals/${request.id}/deny`, {})}>Deny</button>
+            onClick=${() => act.run("deny", `api/tasks/${project}/approvals/${request.id}/deny`, {}, null, request.label)}>Deny</button>
           <button class="button" type="button" disabled=${Boolean(act.busy)}
-            onClick=${() => act.run("approve", `api/tasks/${project}/approvals/${request.id}/approve`, {})}>Approve</button>
+            onClick=${() => act.run("approve", `api/tasks/${project}/approvals/${request.id}/approve`, {}, null, request.label)}>Approve</button>
         </div>`}
     </div>`);
   const allow = actions.includes("allow") && html`
