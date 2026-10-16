@@ -7,7 +7,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
-use wsx_core::task::{worker_result_schema, TaskRecord, TurnUsage};
+use wsx_core::task::{
+    brief, worker_result_schema, Phase, TaskRecord, TurnUsage, BRIEF_DENIED_TOOLS,
+};
 
 /// Longest stdout line the host reads; a longer one (a huge tool result) is skipped.
 const MAX_LINE_BYTES: u64 = 4 * 1024 * 1024;
@@ -64,6 +66,8 @@ pub struct Launch {
     pub cwd: std::path::PathBuf,
     pub model: String,
     pub tools: Vec<String>,
+    /// Denied even when the project's settings allow them.
+    pub disallowed: Vec<String>,
     /// JSON Schema of the final result, when the turn must end with structured output.
     pub schema: Option<Value>,
     pub instructions: String,
@@ -74,12 +78,25 @@ pub struct Launch {
 }
 
 impl Launch {
+    /// A brief turn reads only and returns a brief; a build turn edits and returns a result.
     pub fn worker(record: &TaskRecord) -> Self {
+        let (tools, disallowed, schema) = match record.phase {
+            Phase::Brief => (
+                record.brief_tools.clone(),
+                BRIEF_DENIED_TOOLS
+                    .iter()
+                    .map(|tool| tool.to_string())
+                    .collect(),
+                brief::schema(),
+            ),
+            Phase::Build => (record.tools.clone(), Vec::new(), worker_result_schema()),
+        };
         Self {
             cwd: record.working_copy.clone(),
             model: record.model.clone(),
-            tools: record.tools.clone(),
-            schema: Some(worker_result_schema()),
+            tools,
+            disallowed,
+            schema: Some(schema),
             instructions: worker_instructions(record),
             env: Vec::new(),
             path_prefix: None,
@@ -87,11 +104,17 @@ impl Launch {
     }
 }
 
+/// The same text in both phases: Claude records the system prompt of a conversation's
+/// first request and reuses it on every resume (`--system-prompt-snapshot`), so the
+/// phase is said in the user messages.
 fn worker_instructions(record: &TaskRecord) -> String {
     format!(
         "You are a task worker in a separate working copy on branch {}. \
          Nobody reads your terminal: work without asking questions. \
-         Commit your changes with git before you finish. \
+         A task may start with a brief: while a message asks for the brief, only read, \
+         search and run read-only commands, change no file, and return the brief in the \
+         requested structure. When a message says the build starts, build it and commit \
+         your changes with git before you finish. \
          When you cannot continue, return status blocked and say what you need.",
         record.branch
     )
@@ -139,6 +162,9 @@ impl ClaudeAgent {
         }
         if !launch.tools.is_empty() {
             command.arg("--allowedTools").args(&launch.tools);
+        }
+        if !launch.disallowed.is_empty() {
+            command.arg("--disallowedTools").args(&launch.disallowed);
         }
         command.env_clear();
         for name in KEPT_ENV {

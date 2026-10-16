@@ -3,7 +3,8 @@
 A task is one headless worker on its own branch and working copy. The caller never types into it. Every action is one CLI call; `--json` works on all of them. No wsxd protocol change.
 
 ```sh
-wsx task new "<prompt>" -p <project> [--from <ref>] --json   # or `-` (stdin) or --prompt-file <path>
+wsx task new "<prompt>" -p <project> [--from <ref>] [--no-brief] --json   # or `-` (stdin) or --prompt-file <path>
+wsx task start <n> --json                        # build a briefed task against its rewritten prompt
 wsx task list -p <project> [--all] --json
 wsx task show <n> -p <project> --json            # record, result.json, report path, host_running, socket
 wsx task steer <n> "<text>" --json               # into the running turn
@@ -27,11 +28,12 @@ wsx task close <n> [--discard] --json
 | `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress), `blocked`, `allowed`, `result`, `checks`, `revision`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
 | `result.json` | latest worker result and check results | 256 KiB |
 | `report.md` | report of the latest revision | |
+| `brief.json`, `brief.md` | the latest brief (`{version, brief}`) and its text | 256 KiB |
 
 - A host's control socket is not in the store: `sun_path` holds 104 bytes on macOS. The task host serves `<TMPDIR>/wsx-<uid>/t-<hash>.sock` and the manager `m-<hash>.sock`, where `<hash>` is 16 hex of sha256 of the store path the socket stands for (`<n>/host.sock`, `manager/manager.sock`), and `/tmp` replaces a `TMPDIR` longer than 64 bytes. The folder is 0700 and must belong to the user, the socket is 0600, a host removes its socket when it exits and replaces a stale one when it starts. A host and its callers must share `TMPDIR`; `show --json` and `manager --json` name the socket.
 - `<project-id>` is `<name-slug>-<first 8 hex of sha256(project path)>`. Numbers come from a locked `next` counter and are never reused, also after a failed start.
 - One writer: the CLI writes before the host starts and after it exits; the host writes everything in between.
-- States: `starting, working, blocked, checking, ready, failed, stopped, conflict, in_review, landed, closed`. `landed` and `closed` are not open.
+- States: `starting, working, briefed, blocked, checking, ready, failed, stopped, conflict, in_review, landed, closed`. `landed` and `closed` are not open. `task.json` also has `phase`: `brief` until `start`, then `build` (records from before the brief read as `build`).
 - A prompt, steer or add is at most 64 KiB.
 - Each revision records `base` (the merge base with the default branch, so it follows a rebase) and the paths changed in `base..r<k>`: at most 500 paths and 32 KiB in `paths`, the full count in `paths_total`.
 - `list --json` gives each open task `overlaps: [{id, count, complete}]`, the other open tasks that changed a path it changed; `show --json` adds up to 20 shared `paths` per task. `complete` is false when a side kept fewer paths than it changed.
@@ -59,6 +61,17 @@ A host restarted by a cold daemon start marks a running turn `stopped`; the next
 - Steer: a stream-json user message during a turn. Claude does not save it in its history, so the host logs it. A steer with no running turn is sent as an add.
 - Only the worker's own `status: blocked` makes the task `blocked` (no checks run). Tool calls Claude denied (`permission_denials`) are evidence: they are logged on the `result` event, listed in `result.json` (`denials`, also in `show --json`) and under Evidence in the report, and checks still run.
 - Result schema: `{status: done|blocked|failed, summary, decisions[{choice, reason}], human_verify[{check, pass_if}], left_open[], notes}`.
+
+## Brief
+
+With `tasks.brief` (default `true`) a new task first returns a brief and builds nothing. `new --no-brief` skips it, and so does `tasks.brief: false`; both log `brief_skipped{by: flag|config, actor: owner|manager}`. The manager passes `--no-brief` only when the owner's message asks to skip the brief.
+
+1. The first turn asks the worker, as a top professional in the field, for the brief of the owner's prompt. The agent runs with the brief tools only: `Read Grep Glob`, `Bash(git log|show|diff|status|grep:*)`, `Bash(ls:*)` and `tasks.agent.briefTools`, with `--disallowedTools Edit Write NotebookEdit`. The owner keeps `briefTools` read-only (for example `Bash(cargo nextest list:*)`); wsx does not check what a listed command does. Any other tool call is denied and logged with the brief.
+2. The turn ends with structured output (`--json-schema`, the brief schema): `additions[{what, why}]` (what a top professional would add), `raw_material[{source, why}]` (primary sources by path or link), `methods[]`, `independent_check[]` (what, other than the owner or an agent, shows the result is right), `concepts[{term, explanation}]` (terms the owner is likely new to), `rewritten_prompt`, `open_questions[]` and `answer`. The host writes `brief.json` as the next version and renders `brief.md` with the sections in that order, logs `brief{version, answer, usage, denials}` and sets `briefed`. A turn without a usable brief (no output, or no rewritten prompt) logs a failed `result` and sets `failed`.
+3. An `add` before the build is a talk-through: the worker answers the reply in `answer` (logged with the brief, so the conversation reads as reply and answer) and returns the whole brief again, revised where the reply changes it, still read-only. An `allow` before the build adds to the brief tools.
+4. `wsx task start <n>` needs `briefed`. It logs `started{version, prompt}` with the rewritten prompt (the first prompt stays in the log), sets `phase: build`, restarts the agent with the build tools and the result schema and resumes the same conversation with the rewritten prompt. Under `WSX_TASK_ACTOR=manager` it records an approval request "Approve start #n" instead. `close` works in every state.
+
+The worker's system prompt is the same in both phases, because Claude records a conversation's first system prompt and reuses it on resume (`--system-prompt-snapshot`); the user messages say which phase runs. `report.md` lists the build prompt under Asked as "Build prompt (brief v<k>)". The host reports `briefed` to wsx lists as Blocked (waits for the owner).
 
 ## Checks, revisions and report
 
@@ -88,7 +101,7 @@ With `tasks.land.policy: pr`, the first `land` of a ready task applies the same 
 
 `wsx task ledger -p <project>` prints JSON of at most 16 KiB, the manager's source of truth:
 
-- `open`: each open task with number, title (80 chars), state, revision, overlaps, the current verdict (without its note), the Human Verify item count, the last result summary (240 chars) and `pr_url`, in attention order (blocked, failed, conflict, ready, in_review, working, stopped);
+- `open`: each open task with number, title (80 chars), state, revision, overlaps, the current verdict (without its note), the Human Verify item count, the last result summary (240 chars), `pr_url`, `phase` and, before the build, `brief{version, rewritten_prompt}` (240 chars), in attention order (blocked, failed, conflict, briefed, ready, in_review, working, stopped);
 - `recent`: the last 10 landed or closed tasks;
 - `deploys`: the `deployed` status, with `configured` per kind (whether its command is set); under `pr` it uses the last fetched `<remote>/<default>` and does not fetch;
 - `main`: the main checkout's path, branch and number of changed files (tracked or new).
@@ -107,7 +120,7 @@ One manager per project runs as hidden `wsx task manager-host <project-id>` in a
 
 - `manager/log.jsonl` (rolls to `log.1.jsonl` past 8 MiB) has `message{id, from: owner|events, text}`, `delivered{ids}`, `reply{id, to, text, usage}`, `agent` (its commands), `rotated{tokens}` and `stopped`. `manager/state.json` keeps the conversation, the next id and what was already reported.
 - One turn at a time. Waiting owner messages go together in one turn, each headed with its id, before waiting events.
-- Events: the host checks the task records every second. A change of (state, revision) into `ready`, `blocked`, `failed`, `conflict`, `in_review` or `landed` becomes a line written by wsx, `#<n> <state> r<k>: <title, 80 chars>; <summary, 160 chars>`. Lines are logged as one `events` message when 3 s have passed since the last one and no turn runs, so events during a turn or close together arrive merged.
+- Events: the host checks the task records every second. A change of (state, revision) into `ready`, `briefed`, `blocked`, `failed`, `conflict`, `in_review` or `landed` becomes a line written by wsx, `#<n> <state> r<k>: <title, 80 chars>; <summary, 160 chars>`; for `briefed` the summary is `brief v<k>: <rewritten prompt>`. Lines are logged as one `events` message when 3 s have passed since the last one and no turn runs, so events during a turn or close together arrive merged.
 - Restart: `state.json` records the reported state of each task only when its message is logged, and `delivered` marks what reached the agent. A restarted host queues logged messages that were never delivered and reports changes it has not reported, so no event is lost. Its first start takes the existing tasks as they are, without events.
 - After a reply whose context (input, cache read and cache write tokens) passes `rotateTokens`, the next turn starts a fresh conversation and the log has `rotated`; the ledger carries the state.
 
@@ -115,7 +128,7 @@ The web client shows the manager chat, the tasks, their reports and their fixed 
 
 ## Approvals
 
-`tasks.land.approve`, `tasks.deploy.approve` and `tasks.release.approve` (default `true`) decide whether the manager may land, deploy or release alone. A `wsx task` command run with `WSX_TASK_ACTOR=manager` (the manager host sets it for its agent) that needs approval does not act: it appends `request{id: a<n>, action, task, revision, skip_verify, commit}` to `tasks/<project-id>/approvals.jsonl` and answers that the owner was asked. `close --discard` by the manager always asks. The ledger lists pending requests under `approvals`.
+`tasks.land.approve`, `tasks.deploy.approve` and `tasks.release.approve` (default `true`) decide whether the manager may land, deploy or release alone. A `wsx task` command run with `WSX_TASK_ACTOR=manager` (the manager host sets it for its agent) that needs approval does not act: it appends `request{id: a<n>, action, task, revision, skip_verify, commit}` to `tasks/<project-id>/approvals.jsonl` and answers that the owner was asked. `close --discard` and `start` by the manager always ask: the build of a brief is the owner's decision. The ledger lists pending requests under `approvals`.
 
 ```sh
 wsx task approve a3 -p <project> --json            # run the action as the owner would
@@ -144,7 +157,8 @@ wsx task deployed -p <project> --json
 
 ```yaml
 tasks:
-  agent: { adapter: claude, model: opus, tools: [Read, Edit, "Bash(cargo test:*)"] }
+  agent: { adapter: claude, model: opus, tools: [Read, Edit, "Bash(cargo test:*)"], briefTools: ["Bash(cargo nextest list:*)"] }
+  brief: true                                                    # false: build at once
   checks: ["cargo fmt --check"]
   checkTimeoutSeconds: 1200
   land: { policy: local-merge, remote: origin, approve: true }   # or policy: pr
@@ -153,7 +167,7 @@ tasks:
   manager: { adapter: claude, model: sonnet, rotateTokens: 150000 }
 ```
 
-Defaults: adapter `claude`, worker model `opus` (the manager keeps `sonnet`), tools `Read Glob Grep Edit Write` plus `Bash(git add|commit|status|diff|log:*)`, no checks. Up to 64 tools and 64 checks; `checkTimeoutSeconds` is 1..86400; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.
+Defaults: adapter `claude`, worker model `opus` (the manager keeps `sonnet`), tools `Read Glob Grep Edit Write` plus `Bash(git add|commit|status|diff|log:*)`, `brief: true` with no `briefTools` (they must stay read-only: see Brief), no checks. Up to 64 tools, 64 brief tools and 64 checks; `checkTimeoutSeconds` is 1..86400; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.
 
 ## Verify
 

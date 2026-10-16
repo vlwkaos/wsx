@@ -2,7 +2,7 @@
 //! client's project brief. ref: docs/tasks.md "Ledger"
 
 use super::view::{attention, clip, overlaps, project_tasks, read_result, task_summary};
-use super::{copy, store, verification, DeployKind, TaskRecord};
+use super::{brief, copy, store, verification, DeployKind, Phase, TaskRecord};
 use crate::config::project::load_task_config;
 use crate::model::workspace::{LandPolicy, TaskConfig};
 use crate::ops;
@@ -58,6 +58,12 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
                 "human_verify": result.as_ref().map_or(0, |r| r["result"]["human_verify"].as_array().map_or(0, Vec::len)),
                 "summary": result.as_ref().and_then(|r| r["result"]["summary"].as_str()).map(|s| clip(s, SUMMARY_CHARS)),
                 "pr_url": record.pr_url,
+                "phase": record.phase,
+                // ^ A brief that waits for the owner's start: its version and build prompt.
+                "brief": (record.phase == Phase::Brief).then(|| brief::read(dir)).flatten().map(|file| json!({
+                    "version": file.version,
+                    "rewritten_prompt": clip(&file.brief.rewritten_prompt, SUMMARY_CHARS),
+                })),
             }),
         ));
     }

@@ -19,8 +19,7 @@ use wsx_core::task::manager::{
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{clip, project_tasks, read_result};
-use wsx_core::task::TaskState;
-use wsx_core::task::MAX_MESSAGE_BYTES;
+use wsx_core::task::{brief, TaskState, MAX_MESSAGE_BYTES};
 
 pub const MANAGER_TOOLS: [&str; 4] = ["Read", "Grep", "Glob", "Bash(wsx task:*)"];
 /// Variables the manager's own `wsx task` commands need to reach this project's state
@@ -44,6 +43,7 @@ fn is_event_state(state: TaskState) -> bool {
     matches!(
         state,
         TaskState::Ready
+            | TaskState::Briefed
             | TaskState::Blocked
             | TaskState::Failed
             | TaskState::Conflict
@@ -320,9 +320,14 @@ impl Manager {
                 continue;
             }
             let title = dir.prompt().ok().flatten().unwrap_or_default();
-            let summary = read_result(&dir)
-                .and_then(|value| value["result"]["summary"].as_str().map(str::to_string))
-                .unwrap_or_default();
+            let summary = if record.state == TaskState::Briefed {
+                brief::read(&dir)
+                    .map(|file| format!("brief v{}: {}", file.version, file.brief.rewritten_prompt))
+            } else {
+                read_result(&dir)
+                    .and_then(|value| value["result"]["summary"].as_str().map(str::to_string))
+            }
+            .unwrap_or_default();
             self.pending_events.push(format!(
                 "#{} {} r{}: {}; {}",
                 record.id,
@@ -457,6 +462,7 @@ impl Manager {
             cwd: self.main.clone(),
             model: self.model.clone(),
             tools: MANAGER_TOOLS.map(String::from).to_vec(),
+            disallowed: Vec::new(),
             schema: None,
             instructions: instructions(&self.project),
             env,

@@ -5,6 +5,7 @@
 //! host runs it is the only writer; the CLI writes only before the host starts
 //! and after it has exited.
 
+pub mod brief;
 pub mod copy;
 pub mod ledger;
 pub mod manager;
@@ -24,6 +25,8 @@ pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 pub enum TaskState {
     Starting,
     Working,
+    /// The brief is written; the task waits for the owner's `start` or a reply.
+    Briefed,
     Blocked,
     Checking,
     Ready,
@@ -48,6 +51,7 @@ impl TaskState {
         match self {
             Self::Starting => "starting",
             Self::Working => "working",
+            Self::Briefed => "briefed",
             Self::Blocked => "blocked",
             Self::Checking => "checking",
             Self::Ready => "ready",
@@ -60,6 +64,32 @@ impl TaskState {
         }
     }
 }
+
+/// Whether the worker still writes the brief (read-only turns) or builds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Brief,
+    /// Records from before the brief phase build from the start.
+    #[default]
+    Build,
+}
+
+/// Tools of every brief turn: reading, and git commands that change nothing.
+/// `tasks.agent.briefTools` adds the project's own read-only commands.
+pub const BRIEF_TOOLS: &[&str] = &[
+    "Read",
+    "Grep",
+    "Glob",
+    "Bash(git log:*)",
+    "Bash(git show:*)",
+    "Bash(git diff:*)",
+    "Bash(git status:*)",
+    "Bash(git grep:*)",
+    "Bash(ls:*)",
+];
+/// Denied in a brief turn even when a project's settings allow them.
+pub const BRIEF_DENIED_TOOLS: &[&str] = &["Edit", "Write", "NotebookEdit"];
 
 /// `task.json`: what the task is and where it runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +106,11 @@ pub struct TaskRecord {
     pub adapter: String,
     pub model: String,
     pub tools: Vec<String>,
+    #[serde(default)]
+    pub phase: Phase,
+    /// The brief turns' tools: `BRIEF_TOOLS`, `tasks.agent.briefTools` and what `allow` added.
+    #[serde(default)]
+    pub brief_tools: Vec<String>,
     pub checks: Vec<String>,
     #[serde(default = "default_check_timeout_secs")]
     pub check_timeout_secs: u64,
@@ -196,6 +231,27 @@ pub enum LogEvent {
     PrClosed {
         url: String,
     },
+    /// A brief turn returned brief `version` (saved in `brief.json`), with the worker's
+    /// answer to the owner's reply when the turn was a talk-through.
+    Brief {
+        version: u32,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        answer: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TurnUsage>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        denials: Vec<String>,
+    },
+    /// The task builds without a brief: `by` is `flag` (`--no-brief`) or `config` (`tasks.brief: false`).
+    BriefSkipped {
+        by: String,
+        actor: String,
+    },
+    /// The owner started the build of brief `version`; `prompt` is its rewritten prompt.
+    Started {
+        version: u32,
+        prompt: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +348,8 @@ pub enum HostRequest {
         tool: String,
     },
     Stop,
+    /// Build the brief's rewritten prompt.
+    Start,
     Land {
         skip_verify: bool,
     },

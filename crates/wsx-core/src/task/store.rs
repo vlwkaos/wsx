@@ -21,6 +21,9 @@ pub const RECORD_FILE: &str = "task.json";
 pub const LOG_FILE: &str = "log.jsonl";
 pub const RESULT_FILE: &str = "result.json";
 pub const REPORT_FILE: &str = "report.md";
+/// The latest brief as the worker returned it, and as the owner reads it.
+pub const BRIEF_FILE: &str = "brief.json";
+pub const BRIEF_TEXT_FILE: &str = "brief.md";
 /// The logical name of a task host's socket; the socket itself is in `socket_dir()`.
 pub const SOCKET_FILE: &str = "host.sock";
 const COUNTER_FILE: &str = "next";

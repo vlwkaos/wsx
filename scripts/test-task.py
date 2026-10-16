@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -17,7 +18,9 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# ^ Parts 1-22 build at once (`brief: false`); part 23 turns the brief on.
 CONFIG = '''tasks:
+  brief: false
   agent:
     model: fake-model
     tools: [Read, Edit]
@@ -47,6 +50,7 @@ else:
 '''
 
 LAND_CONFIG = '''tasks:
+  brief: false
   agent:
     tools: [Read, Edit]
   checks:
@@ -214,6 +218,8 @@ def run(wsx, wsxd, work, owned):
     assert ready['state'] == 'ready', ready
     assert any(t.get('steer_in_turn') == 'use capitals' for t in traces())
     assert [e['mode'] for e in log(1) if e['kind'] == 'message'] == ['prompt', 'steer']
+    assert [(e['by'], e['actor']) for e in log(1) if e['kind'] == 'brief_skipped'] == [('config', 'owner')]
+    assert not launch['briefing'] and launch['disallowed'] == []
     assert ready['result']['checks'] and all(c['exit'] == 0 for c in ready['result']['checks'])
     commit = git('rev-parse', 'refs/wsx/task/1/r1')
     assert commit == git('rev-parse', 'wsx/t1')
@@ -355,7 +361,7 @@ def run(wsx, wsxd, work, owned):
 
     # 13. A check that runs past tasks.checkTimeoutSeconds is killed and fails the task.
     (project / 'wsx.config.yml').write_text(
-        'tasks:\n  agent:\n    tools: [Read]\n  checks: ["sleep 37"]\n  checkTimeoutSeconds: 1\n')
+        'tasks:\n  brief: false\n  agent:\n    tools: [Read]\n  checks: ["sleep 37"]\n  checkTimeoutSeconds: 1\n')
     timed = js('task', 'new', 'NOOP')
     failed = wait_state(timed['id'], 'failed', 'ready')
     check = failed['result']['checks'][0]
@@ -694,6 +700,101 @@ def run(wsx, wsxd, work, owned):
     assert js('task', 'ledger')['approvals'] == []
     js('task', 'close', ap)
     js('task', 'close', keep, '--discard')
+
+    # 23. Brief first (docs/tasks.md "Brief"): a read-only turn returns a brief and the task
+    # waits; a reply is a talk-through the worker answers; start builds the rewritten prompt
+    # in the same conversation with the build's tools; --no-brief builds at once.
+    config = (project / 'wsx.config.yml').read_text().replace('  brief: false\n', '')
+    config = config.replace('  agent:\n    tools: [Read, Edit]\n',
+                            '  agent:\n    tools: [Read, Edit]\n    briefTools: ["Bash(cargo nextest list:*)"]\n')
+    (project / 'wsx.config.yml').write_text(config)
+    git('commit', '-q', '-am', 'brief on')
+
+    def brief_version(n, version):
+        return wait(lambda: (current := show(n))['state'] in ('briefed', 'failed')
+                    and (current['brief'] or {}).get('version') == version and current, 't%s brief v%d' % (n, version))
+
+    b = js('task', 'new', 'Fix the fixture EDIT README REWRITE WORK b1.txt')['id']
+    briefed = brief_version(b, 1)
+    assert briefed['state'] == 'briefed' and briefed['record']['phase'] == 'brief', briefed
+    brief_launch = [t for t in traces() if t.get('launch')][-1]
+    assert brief_launch['briefing'] and not brief_launch['resume'], brief_launch
+    assert brief_launch['disallowed'] == ['Edit', 'Write', 'NotebookEdit'], brief_launch
+    assert 'Edit' not in brief_launch['allowed'] and 'Bash(git log:*)' in brief_launch['allowed']
+    assert 'Bash(cargo nextest list:*)' in brief_launch['allowed'], brief_launch['allowed']
+    # The edit the worker tried in the brief turn was denied and changed nothing.
+    copy_b = Path(briefed['record']['working_copy'])
+    assert (copy_b / 'README').read_text() == 'fixture\n'
+    assert any(t.get('edit_denied') == 'README' for t in traces())
+    entry = [e for e in log(b) if e['kind'] == 'brief'][-1]
+    assert entry['version'] == 1 and entry['denials'] == ['Edit(README)'] and 'answer' not in entry, entry
+    assert entry['usage']['cost_micro_usd'] == 20000, entry
+    assert not any(e['kind'] in ('result', 'checks', 'revision') for e in log(b))
+    assert briefed['brief']['brief']['rewritten_prompt'] == 'WORK b1.txt'
+    brief_md = Path(briefed['brief_text']).read_text()
+    for section in ('What a top professional would add', 'Raw material', 'Methods and tools', 'Independent check',
+                    'Concepts to know', 'Rewritten prompt', 'Open questions'):
+        assert '## ' + section in brief_md, section
+    assert brief_md.split('## Rewritten prompt')[1].split('## Open questions')[0].strip() == 'WORK b1.txt', brief_md
+    row = next(r for r in js('task', 'ledger')['open'] if r['id'] == b)
+    assert row['state'] == 'briefed' and row['brief'] == {'version': 1, 'rewritten_prompt': 'WORK b1.txt'}, row
+    # A reply is a talk-through: the worker answers in the log and revises the brief, still read-only.
+    js('task', 'add', b, 'Why b1? REVISE WORK b2.txt')
+    revised = brief_version(b, 2)
+    assert revised['state'] == 'briefed' and revised['brief']['brief']['rewritten_prompt'] == 'WORK b2.txt'
+    answer = [e for e in log(b) if e['kind'] == 'brief'][-1]
+    assert answer['answer'] == 'answered: Why b1? REVISE WORK b2.txt', answer
+    assert [t for t in traces() if t.get('launch')][-1]['pid'] == brief_launch['pid'], 'the talk-through restarted the agent'
+    # Start: the same conversation with the build's tools and result schema, against the revised prompt.
+    assert js('task', 'start', b)['message'] == 'started the build of brief v2'
+    ready = wait_state(b, 'ready', 'failed')
+    assert ready['state'] == 'ready' and ready['record']['phase'] == 'build', ready
+    build_launch = [t for t in traces() if t.get('launch')][-1]
+    assert build_launch['resume'] and build_launch['session'] == brief_launch['session'], build_launch
+    assert not build_launch['briefing'] and build_launch['allowed'] == ['Read', 'Edit'] and build_launch['disallowed'] == []
+    # ^ Claude reuses a conversation's first system prompt on resume: both launches pass the same text.
+    assert build_launch['instructions'] == brief_launch['instructions']
+    assert (copy_b / 'b2.txt').exists() and not (copy_b / 'b1.txt').exists()
+    assert [(e['version'], e['prompt']) for e in log(b) if e['kind'] == 'started'] == [(2, 'WORK b2.txt')]
+    assert [e['text'] for e in log(b) if e['kind'] == 'message' and e['mode'] == 'prompt'] == \
+        ['Fix the fixture EDIT README REWRITE WORK b1.txt']
+    report = Path(ready['report']).read_text()
+    assert report.index('Fix the fixture EDIT') < report.index('**Build prompt (brief v2)**') < report.index('## Summary')
+    assert 'only a briefed task starts' in cli('task', 'start', b, ok=False).stdout
+    js('task', 'close', b, '--discard')
+    # A brief turn without a brief fails; the next reply asks again.
+    f = js('task', 'new', 'NOBRIEF')['id']
+    assert wait_state(f, 'failed', 'briefed')['state'] == 'failed'
+    js('task', 'add', f, 'REVISE NOOP')
+    assert brief_version(f, 1)['state'] == 'briefed'
+    js('task', 'close', f, '--discard')
+    # --no-brief builds at once, and the log says who skipped the brief.
+    nb = js('task', 'new', 'WORK nb.txt', '--no-brief')['id']
+    assert wait_state(nb, 'ready', 'failed')['state'] == 'ready' and show(nb)['brief'] is None
+    assert [(e['by'], e['actor']) for e in log(nb) if e['kind'] == 'brief_skipped'] == [('flag', 'owner')]
+    js('task', 'close', nb, '--discard')
+    # The manager hears of the brief, cannot start the build alone, and the owner's approval starts it.
+    m = js('task', 'new', 'REWRITE WORK m1.txt')['id']
+    brief_version(m, 1)
+    wait(lambda: events_with('#%d briefed r0' % m, 'brief v1: WORK m1.txt'), 'briefed event')
+    asked = js('task', 'say', 'RUN wsx task start %d -p demo --json' % m)
+    text = reply_to(asked['id'])['text']
+    request = re.search(r'the owner was asked \((a\d+)\)', text)
+    assert request, text
+    assert show(m)['state'] == 'briefed'
+    pending = js('task', 'ledger')['approvals']
+    assert [(p['id'], p['action'], p['task']) for p in pending] == [(request[1], 'start', m)], pending
+    approved = js('task', 'approve', request[1])
+    assert approved['ok'] and 'started the build of brief v1' in approved['outcome'], approved
+    assert wait_state(m, 'ready', 'failed')['state'] == 'ready'
+    # The manager may skip the brief when the owner asks; the log names it.
+    js('task', 'say', 'RUN wsx task new "WORK mn.txt" --no-brief -p demo --json')
+    mn = wait(lambda: max(row['id'] for row in js('task', 'list')['tasks']) > m and
+              max(row['id'] for row in js('task', 'list')['tasks']), 'manager --no-brief task')
+    assert wait_state(mn, 'ready', 'failed')['state'] == 'ready'
+    assert [(e['by'], e['actor']) for e in log(mn) if e['kind'] == 'brief_skipped'] == [('flag', 'manager')]
+    for n in (m, mn):
+        js('task', 'close', n, '--discard')
 
 
 if __name__ == '__main__':

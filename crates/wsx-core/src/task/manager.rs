@@ -96,6 +96,8 @@ pub enum ApprovalAction {
     Release,
     /// `close --discard`
     Discard,
+    /// `start`: build a briefed task.
+    Start,
 }
 
 /// One line of `approvals.jsonl`.

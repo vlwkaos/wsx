@@ -17,11 +17,13 @@ pub fn attention(state: TaskState) -> u8 {
         TaskState::Blocked => 0,
         TaskState::Failed => 1,
         TaskState::Conflict => 2,
-        TaskState::Ready => 3,
-        TaskState::InReview => 4,
-        TaskState::Checking | TaskState::Working | TaskState::Starting => 5,
-        TaskState::Stopped => 6,
-        TaskState::Landed | TaskState::Closed => 7,
+        // ^ A brief waits for the owner's start, like an approval request.
+        TaskState::Briefed => 3,
+        TaskState::Ready => 4,
+        TaskState::InReview => 5,
+        TaskState::Checking | TaskState::Working | TaskState::Starting => 6,
+        TaskState::Stopped => 7,
+        TaskState::Landed | TaskState::Closed => 8,
     }
 }
 
