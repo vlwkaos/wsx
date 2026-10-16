@@ -789,10 +789,12 @@ await send("Emulation.setEmulatedMedia", { features: [] });
 
 // Slash commands: `/` opens the agent's list, typing filters it, the arrows move, Escape
 // closes, Tab or a tap picks. One pick is sent, and the agent gets exactly "/compact".
+// ^ The phone pass sends /compact, and the fixture compacts "long": later waits see the kept
+// answer and the command, two messages.
 for (const next of [SIZES[1], SIZES[2]]) {
   await resize(next);
   await openSession("long");
-  await until("document.querySelectorAll('.message').length > 4 && !!document.querySelector('.composer-field:not([disabled])')", "the conversation or the composer is not ready for a command");
+  await until("document.querySelectorAll('.message').length > 1 && !!document.querySelector('.composer-field:not([disabled])')", "the conversation or the composer is not ready for a command");
   await typeInto("/");
   await until("document.querySelectorAll('.slash-option').length === 6", "the / list did not open");
   const names = await text(".slash-name");
@@ -842,7 +844,9 @@ for (const next of [SIZES[1], SIZES[2]]) {
   }
   if (phone()) {
     await evaluate("document.querySelector('.composer .button-primary').click()");
-    await until("[...document.querySelectorAll('.message:not(.message-user) .markdown')].some((node) => node.textContent === 'echo: /compact')", "the agent did not answer /compact");
+    // The fixture compacts as Claude 2.1.300 does: the summary, then the command as typed.
+    await until("[...document.querySelectorAll('.message-user:not([data-pending]) .prose')].at(-1)?.textContent === '/compact'"
+      + " && [...document.querySelectorAll('.summary-body')].some((node) => node.textContent.includes('Run the tests.'))", "the agent did not compact on /compact");
   } else {
     await typeInto("");
   }
@@ -859,7 +863,7 @@ const keyboard = (height) => evaluate(`(() => {
 })()`);
 async function commandsAbove(label, tag) {
   await openSession("long");
-  await until("document.querySelectorAll('.message').length > 4 && !!document.querySelector('.composer-field:not([disabled])')", `${label}: the composer is not ready`);
+  await until("document.querySelectorAll('.message').length > 1 && !!document.querySelector('.composer-field:not([disabled])')", `${label}: the composer is not ready`);
   // The conversation with the keyboard up and nothing typed yet.
   await typeInto("");
   await shot(`chat-typing-${tag}`);
