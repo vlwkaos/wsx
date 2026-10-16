@@ -518,6 +518,28 @@ impl ManagerDir {
         Ok(entries)
     }
 
+    /// The entries in the last `bytes` of the current log, for a quick look at the latest
+    /// ones; a line cut at the start is skipped.
+    pub fn read_tail(&self, bytes: u64) -> Result<Vec<super::manager::ManagerEntry>> {
+        use std::io::{Seek, SeekFrom};
+        let path = self.path.join(MANAGER_LOG);
+        let mut file = match open_nofollow(&path, OpenOptions::new().read(true)) {
+            Ok(file) => file,
+            Err(_) if !path.exists() => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let size = file.metadata()?.len();
+        let start = size.saturating_sub(bytes);
+        file.seek(SeekFrom::Start(start))?;
+        let mut tail = Vec::new();
+        file.take(bytes).read_to_end(&mut tail)?;
+        let lines = tail.split(|byte| *byte == b'\n');
+        Ok(lines
+            .skip(usize::from(start > 0))
+            .filter_map(|line| serde_json::from_slice(line).ok())
+            .collect())
+    }
+
     pub fn read_state(&self) -> Result<super::manager::ManagerState> {
         let path = self.path.join(MANAGER_STATE);
         if !path.exists() {

@@ -26,10 +26,15 @@ use wsx_core::task::{
 };
 
 const SUMMARY_CHARS: usize = 240;
-const DONE_SHOWN: usize = 10;
-const DONE_WITHIN_MS: u64 = 7 * 24 * 3600 * 1000;
 const TASKS_LISTED: usize = 200;
 const DECISIONS_SHOWN: usize = 5;
+const RESOLUTIONS_SHOWN: usize = 30;
+/// Resolutions come from the logs of the tasks changed most recently, within a week.
+const RESOLUTION_TASKS: usize = 30;
+const RESOLUTION_WITHIN_MS: u64 = 7 * 24 * 3600 * 1000;
+const LAST_REPLY_CHARS: usize = 120;
+/// The home row's last reply and activity come from this much of the manager log's end.
+const MANAGER_TAIL_BYTES: u64 = 64 * 1024;
 const CHAT_ENTRIES: usize = 200;
 const TIMELINE_ENTRIES: usize = 300;
 const MAX_REPORT_BYTES: u64 = 1024 * 1024;
@@ -76,7 +81,6 @@ pub fn overview(scope: &Scope) -> Value {
     let tasks = view::project_tasks(&scope.store).unwrap_or_default();
     let now = task::now_unix_ms();
     let mut needs: Vec<(u8, u64, Value)> = Vec::new();
-    let mut done: Vec<(u64, Value)> = Vec::new();
     let mut listed: Vec<(u8, u64, Value)> = Vec::new();
     let (mut working, mut stopped) = (0, 0);
     let mut titles: HashMap<u32, String> = HashMap::new();
@@ -129,12 +133,7 @@ pub fn overview(scope: &Scope) -> Value {
                 row["pr_url"] = json!(record.pr_url);
                 (4, row)
             }
-            TaskState::Landed => {
-                if now.saturating_sub(record.updated_unix_ms) < DONE_WITHIN_MS {
-                    done.push((record.updated_unix_ms, item("done")));
-                }
-                continue;
-            }
+            TaskState::Landed => continue,
             TaskState::Starting | TaskState::Working | TaskState::Checking => {
                 working += 1;
                 continue;
@@ -175,15 +174,25 @@ pub fn overview(scope: &Scope) -> Value {
             }),
         ));
     }
-    done.sort_by_key(|(updated, _)| std::cmp::Reverse(*updated));
-    needs.extend(
-        done.into_iter()
-            .take(DONE_SHOWN)
-            .map(|(updated, row)| (5, u64::MAX - updated, row)),
-    );
     needs.sort_by_key(|(rank, order, _)| (*rank, *order));
     listed.sort_by_key(|(order, recent, _)| (*order, *recent));
     listed.truncate(TASKS_LISTED);
+    // ^ The latest manager entry and reply, for the home row (docs/web-client.md "Home").
+    let tail = ManagerDir::existing(&scope.store)
+        .ok()
+        .flatten()
+        .and_then(|dir| dir.read_tail(MANAGER_TAIL_BYTES).ok())
+        .unwrap_or_default();
+    let last_reply = tail.iter().rev().find_map(|entry| match &entry.event {
+        ManagerEvent::Reply { text, .. } => Some(view::clip(text.trim(), LAST_REPLY_CHARS)),
+        _ => None,
+    });
+    let last_unix_ms = tasks
+        .iter()
+        .filter_map(|(_, record)| record.as_ref().ok())
+        .map(|record| record.updated_unix_ms)
+        .chain(tail.last().map(|entry| entry.unix_ms))
+        .max();
     json!({
         "project": scope.project,
         "needs": needs.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
@@ -191,7 +200,95 @@ pub fn overview(scope: &Scope) -> Value {
         "stopped": stopped,
         "tasks": listed.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
         "decisions": decisions(&lines),
+        "resolutions": resolutions(&tasks, &lines, now),
+        "last_reply": last_reply,
+        "last_unix_ms": last_unix_ms,
     })
+}
+
+/// What the owner or the manager settled, newest first, one line each ("#4 allowed
+/// Bash(make:*)", "Approved land #3"): the chat shows a resolved card as this line.
+fn resolutions(
+    tasks: &[(TaskDir, anyhow::Result<TaskRecord>)],
+    lines: &[ApprovalLine],
+    now: u64,
+) -> Value {
+    let mut recent: Vec<(&TaskDir, &TaskRecord)> = tasks
+        .iter()
+        .filter_map(|(dir, record)| Some((dir, record.as_ref().ok()?)))
+        .filter(|(_, record)| now.saturating_sub(record.updated_unix_ms) < RESOLUTION_WITHIN_MS)
+        .collect();
+    recent.sort_by_key(|(_, record)| std::cmp::Reverse(record.updated_unix_ms));
+    recent.truncate(RESOLUTION_TASKS);
+    let mut rows: Vec<(u64, Option<u32>, String)> = Vec::new();
+    for (dir, record) in recent {
+        let id = record.id;
+        let mut blocked = false;
+        for entry in dir.read_log().unwrap_or_default() {
+            let text = match &entry.event {
+                LogEvent::Blocked { .. } => {
+                    blocked = true;
+                    continue;
+                }
+                LogEvent::Message {
+                    mode: task::MessageKind::Add,
+                    ..
+                } if blocked => format!("#{id} got an answer"),
+                LogEvent::Allowed { tool } => format!("#{id} allowed {tool}"),
+                LogEvent::Verified {
+                    revision,
+                    result,
+                    carried_from: None,
+                    ..
+                } => match result {
+                    Verdict::Pass => format!("#{id} passed verification of r{revision}"),
+                    Verdict::Fail => format!("#{id} failed verification of r{revision}"),
+                },
+                LogEvent::Landed { .. } => format!("#{id} landed"),
+                LogEvent::Closed { discarded: true } => format!("#{id} was closed and discarded"),
+                LogEvent::Closed { discarded: false } => format!("#{id} was closed"),
+                LogEvent::Agent { .. } => continue,
+                _ => {
+                    blocked = false;
+                    continue;
+                }
+            };
+            blocked = false;
+            rows.push((entry.unix_ms, Some(id), text));
+        }
+    }
+    for line in lines {
+        let ApprovalLine::Decision {
+            id,
+            approved,
+            unix_ms,
+            ..
+        } = line
+        else {
+            continue;
+        };
+        let asked = lines.iter().find_map(|line| match line {
+            ApprovalLine::Request {
+                id: requested,
+                action,
+                task,
+                ..
+            } if requested == id => Some((*action, *task)),
+            _ => None,
+        });
+        let Some((action, task)) = asked else {
+            continue;
+        };
+        let label = owner::approval_label(action, task);
+        let word = if *approved { "Approved" } else { "Denied" };
+        rows.push((*unix_ms, task, label.replacen("Approve", word, 1)));
+    }
+    rows.sort_by_key(|(unix_ms, _, _)| std::cmp::Reverse(*unix_ms));
+    rows.truncate(RESOLUTIONS_SHOWN);
+    json!(rows
+        .into_iter()
+        .map(|(unix_ms, task, text)| json!({ "unix_ms": unix_ms, "task": task, "text": text }))
+        .collect::<Vec<_>>())
 }
 
 /// The latest decisions, newest first, with what was asked.

@@ -1,6 +1,6 @@
 // Notices, the confirmation dialog, and the device's light or dark choice.
 import { html, Icon, useEffect, useState } from "./lib.js";
-import { backTarget, goBack, parseRoute, reloadForBuild, state, useStore } from "./store.js";
+import { backTarget, can, goBack, parseRoute, reloadForBuild, state, useStore } from "./store.js";
 
 // A theme with a dark scheme is dark unless this device chose light (docs/web-themes.md).
 const SCHEME_KEY = "wsx-scheme";
@@ -90,7 +90,7 @@ export function Back({ fallback }) {
   const route = parseRoute(target);
   const project = state.projects.find((candidate) => candidate.id === route.id)?.name ?? "project";
   const names = {
-    inbox: "inbox", projects: "projects", settings: "settings", project, files: `files of ${project}`,
+    home: "home", inbox: can("task_view") ? "all sessions" : "inbox", projects: "projects", settings: "settings", project, files: `files of ${project}`,
     sessions: `sessions of ${project}`, task: `task #${route.task}`,
     session: state.sessions.find((candidate) => candidate.id === route.id)?.label ?? "session",
   };

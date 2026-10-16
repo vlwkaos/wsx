@@ -2420,16 +2420,17 @@ def task_journey(args):
 
     try:
         # ^ Its own TMPDIR: the task host sockets' folder goes away with the run.
-        home, state, project, other, bin_dir, tmp = (work / name for name in ('h', 's', 'demo', 'ui', 'bin', 't'))
-        for folder in (home, state, project, other, bin_dir, tmp):
+        # `calm` has no task: home lists it last.
+        home, state, project, other, calm, bin_dir, tmp = (work / name for name in ('h', 's', 'demo', 'ui', 'calm', 'bin', 't'))
+        for folder in (home, state, project, other, calm, bin_dir, tmp):
             folder.mkdir(mode=0o700)
-        project, other = project.resolve(), other.resolve()
+        project, other, calm = project.resolve(), other.resolve(), calm.resolve()
         config = (home / 'Library/Application Support/wsx' if sys.platform == 'darwin' else work / 'c/wsx')
         config.mkdir(parents=True)
         (config / 'config-v2.toml').write_text(
             'resume_agents_on_restore = false\n' + ''.join(
                 '[[projects]]\nname = "%s"\npath = %s\n' % (folder.name, json.dumps(str(folder)))
-                for folder in (project, other)))
+                for folder in (project, other, calm)))
         fake = bin_dir / 'claude'
         fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(ROOT / 'scripts/fake-claude-stream.py') + ' "$@"\n')
         fake.chmod(0o755)
@@ -2438,7 +2439,7 @@ def task_journey(args):
                'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_SOCKET': str(path),
                'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
                'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp)}
-        for folder in (project, other):
+        for folder in (project, other, calm):
             for argv in (['init', '-q', '-b', 'main'], ['add', '.'], ['commit', '-q', '-m', 'start']):
                 if argv[0] == 'add':
                     (folder / 'wsx.config.yml').write_text(TASK_CONFIG)
@@ -2588,7 +2589,7 @@ digest_max_seconds = 6
         wait_state(1, 'ready')
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         kinds = [(item['kind'], item.get('task')) for item in overview['needs']]
-        assert kinds == [('land', 3), ('land', 1), ('done', 2)], kinds  # oldest first within a kind
+        assert kinds == [('land', 3), ('land', 1)], kinds  # oldest first within a kind; landed #2 is no need
         # A steer reaches the running turn.
         assert js('task', 'new', 'SLOW WORK s.txt', '-p', 'demo')['id'] == 4
         wait_state(4, 'working')
@@ -2633,7 +2634,19 @@ digest_max_seconds = 6
         assert task_state(1) == 'ready'
         since = steady(owner, 'GET', '/api/tasks/%d/since?after=1' % demo)[1]
         assert since['tasks']['landed'] == [2, 3] and since['tasks']['started'] == [1, 2, 3, 4] and since['replies'] >= 3, since
-        ok('manager: say starts it, reply in the chat, approve runs once and records the outcome, deny with a note, since')
+        # What was settled, newest first, one line each; the home row's last reply and activity.
+        overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
+        settled = [row['text'] for row in overview['resolutions']]
+        for line in ('Denied discard #1', 'Approved land #3', '#3 landed', '#2 landed', '#2 passed verification of r1',
+                     '#3 passed verification of r1', '#1 allowed Bash(make:*)'):
+            assert line in settled, (line, settled)
+        assert settled.index('Denied discard #1') < settled.index('#3 landed') < settled.index('#2 landed'), settled
+        stamps = [row['unix_ms'] for row in overview['resolutions']]
+        assert stamps == sorted(stamps, reverse=True) and overview['resolutions'][0]['task'] == 1, overview['resolutions']
+        assert overview['last_reply'] and len(overview['last_reply']) <= 121 and overview['last_unix_ms'] >= stamps[0], overview
+        empty = steady(owner, 'GET', '/api/tasks/%d' % ids['calm'])[1]
+        assert empty['needs'] == [] and empty['resolutions'] == [] and empty['last_reply'] is None and empty['last_unix_ms'] is None, empty
+        ok('manager: say starts it, reply in the chat, approve runs once and records the outcome, deny with a note, since, resolutions, last reply')
 
         # --- Refusals: the capability and the grant come from the site file only.
         for method, route, body in (('POST', '/api/tasks/%d/say' % demo, {'text': 'hi'}),
@@ -2658,8 +2671,20 @@ digest_max_seconds = 6
             args.captures.mkdir(parents=True, exist_ok=True)
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
+            # Home's order by its rule: needs first (most urgent kind, then the oldest need of it),
+            # then the last activity, newest first (docs/web-client.md "Home").
+            urgency = {'blocked': 0, 'conflict': 1, 'failed': 1, 'approval': 2, 'verify': 3, 'land': 4, 'review': 4}
+            def home_key(name):
+                view = steady(owner, 'GET', '/api/tasks/%d' % ids[name])[1]
+                if not view['needs']:
+                    return (1, -(view['last_unix_ms'] or 0), 0)
+                rank = min(urgency[item['kind']] for item in view['needs'])
+                return (0, rank, min(item['unix_ms'] for item in view['needs'] if urgency[item['kind']] == rank))
+            home_order = sorted(ids, key=home_key)
+            assert home_order == ['ui', 'demo', 'calm'], home_order
             result = check(work, [node, str(ROOT / 'scripts/web-tasks-check.mjs'), owner.origin + '/', browser_code,
-                                  str(ids['ui']), str(args.captures), str(audit) if audit.exists() else ''], timeout=300)
+                                  str(ids['ui']), str(args.captures), ','.join(home_order),
+                                  str(audit) if audit.exists() else ''], timeout=300)
             assert result.returncode == 0, result.stdout + result.stderr
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
 

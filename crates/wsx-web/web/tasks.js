@@ -1,13 +1,14 @@
-// Manager mode on a project: the "Needs you" strip, the manager chat with live task chips,
-// and the `#` task picker (docs/web-client.md "Tasks"). Fixed actions go straight to wsx.
+// Manager mode on a project: the manager chat with live task chips, what needs the owner as
+// cards in it and in the tray over the composer, the `#` task picker and a task's sheet over the
+// chat (docs/web-client.md "Tasks"). Fixed actions go straight to wsx.
 import { api } from "./api.js";
 import { html, Icon, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
-import { can, events, state, taskSeen, touch, update, useStore } from "./store.js";
+import { can, events, leaveFor, shows, state, touch, update, useStore } from "./store.js";
 import { Back, toast } from "./ui.js";
 import { Markdown } from "./markdown.js";
 import { grow, isolate, release, Suggestions } from "./chat.js";
-import { filesLink } from "./projects.js";
 import { ProjectBrief } from "./story.js";
+import { TaskPage } from "./task.js";
 
 // Every granted project's overview, or one project's.
 export async function loadTasks(project) {
@@ -57,16 +58,20 @@ export function withChips(project) {
 // What each Needs-you item is, in words.
 const KIND_WORDS = {
   blocked: "needs an answer", conflict: "conflict", failed: "failed", verify: "ready to verify",
-  land: "ready to land", review: "in review", done: "done",
+  land: "ready to land", review: "in review",
 };
-const KIND_TONE = { blocked: "attention", conflict: "danger", failed: "danger", approval: "attention", verify: "accent", land: "accent", review: "muted", done: "muted" };
+const KIND_TONE = { blocked: "attention", conflict: "danger", failed: "danger", approval: "attention", verify: "accent", land: "accent", review: "muted" };
+// One open item in words, as the owner would read it: "#4 needs an answer", "Approve land #3".
+const NEED_WORDS = {
+  blocked: "needs an answer", conflict: "has a conflict", failed: "failed", verify: "is ready to verify",
+  land: "is ready to land", review: "is in review",
+};
+export const needWords = (item) => item.kind === "approval" ? item.label : `#${item.task} ${NEED_WORDS[item.kind]}`;
+export const needTone = (item) => KIND_TONE[item.kind];
 const itemKey = (item) => item.kind === "approval" ? item.approval : `${item.kind}-${item.task}`;
+const needId = (item) => `need-${itemKey(item)}`;
 
-// The items that still need this device: a done task drops out once its page was opened here.
-export const needing = (project, overview) =>
-  (overview?.needs ?? []).filter((item) => item.kind !== "done" || !taskSeen(project, item.task, item.unix_ms));
-
-// Drafts and outcomes of actions, by `<project>/<item>`, kept across the strip's re-renders.
+// Drafts and outcomes of actions, by `<project>/<item>`, kept across the cards' re-renders.
 const pending = new Map();
 const actionOf = (key) => {
   if (!pending.has(key)) pending.set(key, { field: null, text: "", busy: false, error: "" });
@@ -93,7 +98,9 @@ async function act(project, item, action, body = {}) {
   return answer;
 }
 
-function NeedRow({ project, item }) {
+// One item that needs the owner, with its fixed actions: a card in the conversation (`card`),
+// or a row opened from the tray. Its text opens the task's sheet.
+function NeedRow({ project, item, card, flash }) {
   const key = `${project}/${itemKey(item)}`;
   const draft = actionOf(key);
   const [, renew] = useState(0);
@@ -152,7 +159,7 @@ function NeedRow({ project, item }) {
     <span class="row-work">${name && html`<span class="need-id">${name}</span>`}<span class="row-label">${label}</span></span>
     <span class="row-context">${context}</span>`;
   return html`
-    <li class="row need">
+    <div class=${card ? "need need-card" : "need"} id=${card ? needId(item) : null} data-flash=${flash ? "" : null}>
       <div class="row-link">
         <span class="mark" data-tone=${KIND_TONE[item.kind]} aria-hidden="true"></span>
         ${item.task != null
@@ -169,29 +176,7 @@ function NeedRow({ project, item }) {
           <button class="button" type="submit" disabled=${draft.busy}>${draft.field === "answer" ? "Send" : "Allow"}</button>
         </form>`}
       ${draft.error && html`<p class="error need-error" role="alert">${draft.error}</p>`}
-    </li>`;
-}
-
-// "Needs you": what waits for the owner, most urgent first. Two items, then the rest on request;
-// one line when nothing waits.
-const SHOWN = 2;
-export function Needs({ project, overview, all }) {
-  const [open, setOpen] = useState(false);
-  const items = needing(project, overview);
-  if (!overview) return null;
-  if (!items.length) return html`<p class="needs-none">Nothing needs you.</p>`;
-  const shown = open || all ? items : items.slice(0, SHOWN);
-  // ^ With the keyboard up or on a short screen the rows give way to one line, so the
-  // conversation stays in view (CSS: body[data-short], body[data-keyboard]).
-  const names = items.map((item) => item.kind === "approval" ? item.label : `#${item.task}`);
-  return html`
-    <section class="needs" aria-label="Needs you">
-      <p class="needs-line">Needs you: ${names.join(", ")}</p>
-      <ul class="rows">${shown.map((item) => html`<${NeedRow} key=${itemKey(item)} project=${project} item=${item} />`)}</ul>
-      ${!all && items.length > SHOWN && html`
-        <button class="link-action needs-more" type="button" aria-expanded=${open} onClick=${() => setOpen(!open)}>
-          ${open ? "Show fewer" : `Show ${items.length - SHOWN} more`}</button>`}
-    </section>`;
+    </div>`;
 }
 
 // Unsent manager messages by project, kept on this device.
@@ -214,9 +199,8 @@ function matchingTasks(tasks, query) {
   return hits.slice(0, 50);
 }
 
-function ManagerComposer({ project, busy: thinking, onSent }) {
+function ManagerComposer({ project, busy: thinking, onSent, field }) {
   const store = useStore();
-  const field = useRef();
   const [text, setText] = useState(() => readDrafts()[project] ?? "");
   const [caret, setCaret] = useState(0);
   const [active, setActive] = useState(0);
@@ -360,6 +344,9 @@ function SinceLine({ project }) {
 
 // Plain text with task chips, for owner messages and event lines.
 const Chipped = ({ project, text }) => withChips(project)(text);
+// A resolved line stays one muted line: `#n` links to the task without the chip's state and title.
+const Linked = ({ project, text }) => text.split(/(#\d+)/).map((part) => /^#\d+$/.test(part)
+  ? html`<a class="resolved-id" href=${taskLink(project, Number(part.slice(1)))}>${part}</a>` : part);
 
 function Entry({ project, entry }) {
   if (entry.kind === "message" && entry.from === "owner") {
@@ -380,8 +367,127 @@ function Entry({ project, entry }) {
   return null;
 }
 
-// The project screen with task_view: one manager chat under the Needs-you strip.
-export function Manager({ project: id }) {
+// The conversation in time order: chat entries, a card for each open item at the time it arose,
+// and a muted line for each settled one. On this page a card that gets settled is replaced by
+// its line in place (`placed` remembers where cards were). Items older than the loaded history
+// are not placed; the tray opens them inline.
+function conversation(entries, items, resolutions, cut, placed) {
+  const start = entries[0]?.unix_ms ?? Infinity;
+  const loaded = (at) => !cut || at >= start;
+  const rows = entries.map((entry, index) => ({ at: entry.unix_ms ?? 0, order: 0, key: entry.id != null ? `${entry.kind}-${entry.id}` : `n${index}`, entry }));
+  const open = new Set(items.map(itemKey));
+  for (const item of items) {
+    if (!placed.has(itemKey(item))) placed.set(itemKey(item), { at: item.unix_ms, task: item.task ?? null });
+    if (loaded(item.unix_ms)) rows.push({ at: item.unix_ms, order: 1, key: `card-${itemKey(item)}`, item });
+  }
+  const used = new Set();
+  for (const [key, card] of placed) {
+    if (open.has(key)) continue;
+    const line = resolutions.find((candidate, index) => !used.has(index) && (candidate.task ?? null) === card.task && candidate.unix_ms >= card.at);
+    if (!line) continue;
+    used.add(resolutions.indexOf(line));
+    if (loaded(card.at)) rows.push({ at: card.at, order: 1, key: `line-${key}`, line });
+  }
+  resolutions.forEach((line, index) => {
+    if (!used.has(index) && loaded(line.unix_ms)) rows.push({ at: line.unix_ms, order: 2, key: `line-${index}-${line.unix_ms}`, line });
+  });
+  rows.sort((left, right) => left.at - right.at || left.order - right.order);
+  return { rows, outside: items.filter((item) => !loaded(item.unix_ms)).map(itemKey) };
+}
+
+// The open items over the composer, one line each: two, then "+N" (one with the keyboard up).
+// A line scrolls to its card, or opens the item here when its card is not in the loaded history.
+function Tray({ project, items, outside, onShow }) {
+  const [expanded, setExpanded] = useState(false);
+  const [inline, setInline] = useState(null);
+  if (!items.length) return null;
+  const opened = items.find((item) => itemKey(item) === inline);
+  return html`
+    <section class="tray" aria-label="Needs you" data-expanded=${expanded ? "" : null}>
+      <ul class="tray-lines">
+        ${items.map((item) => html`
+          <li key=${itemKey(item)}>
+            <button class="tray-line" type="button" aria-expanded=${outside.includes(itemKey(item)) ? inline === itemKey(item) : null}
+              onClick=${() => (outside.includes(itemKey(item)) ? setInline(inline === itemKey(item) ? null : itemKey(item)) : onShow(item))}>
+              <span class="mark" data-tone=${KIND_TONE[item.kind]} aria-hidden="true"></span>
+              <span class="tray-words">${needWords(item)}</span>
+              ${item.kind !== "approval" && html`<span class="tray-title">${item.title}</span>`}
+            </button>
+          </li>`)}
+      </ul>
+      ${items.length > 1 && html`
+        <button class="link-action tray-more" type="button" aria-expanded=${expanded} onClick=${() => setExpanded(!expanded)}>
+          ${expanded ? "Fewer" : html`<span class="tray-more-one">+${items.length - 1}</span>${items.length > 2 && html`<span class="tray-more-two">+${items.length - 2}</span>`}`}
+        </button>`}
+      ${opened && html`<${NeedRow} project=${project} item=${opened} />`}
+    </section>`;
+}
+
+// The top row's ⋯: the project's sessions and files.
+function More({ project }) {
+  const [open, setOpen] = useState(false);
+  const menu = useRef();
+  useEffect(() => {
+    if (!open) return undefined;
+    const outside = (event) => { if (!menu.current?.contains(event.target)) setOpen(false); };
+    const escape = (event) => { if (event.key === "Escape") { setOpen(false); menu.current?.querySelector("button")?.focus(); } };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
+  }, [open]);
+  const files = shows("files") && can("files_read");
+  return html`
+    <div class="more" ref=${menu}>
+      <button class="icon-button more-button" type="button" aria-label="More" aria-haspopup="menu" aria-expanded=${open}
+        onClick=${() => setOpen(!open)}><span aria-hidden="true">⋯</span></button>
+      ${open && html`
+        <div class="more-menu" role="menu">
+          <a role="menuitem" href=${`#/p/${project.id}/sessions`} onClick=${() => setOpen(false)}>Sessions</a>
+          ${files && html`<a role="menuitem" href=${`#/p/${project.id}/files`} onClick=${() => setOpen(false)}>Files</a>`}
+        </div>`}
+    </div>`;
+}
+
+// A task over the chat, about 85% of the height: Back, Escape, a tap beside it or a swipe down
+// on its top closes it, and the chat under it keeps its scroll and its draft.
+function TaskSheet({ project, task, onClose }) {
+  const dialog = useRef();
+  const drag = useRef(null);
+  useEffect(() => {
+    const node = dialog.current;
+    if (!node.open) node.showModal();
+    return () => { if (node.open) node.close(); };
+  }, []);
+  const cancel = (event) => { event.preventDefault(); onClose(); };
+  const backdrop = (event) => { if (event.target === dialog.current) onClose(); };
+  const down = (event) => {
+    if (event.target.closest("button, a, input, textarea")) return;
+    drag.current = { y: event.clientY, id: event.pointerId };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const move = (event) => {
+    if (drag.current?.id !== event.pointerId) return;
+    dialog.current.style.setProperty("--sheet-drag", `${Math.max(0, event.clientY - drag.current.y)}px`);
+  };
+  const up = (event) => {
+    if (drag.current?.id !== event.pointerId) return;
+    const moved = event.clientY - drag.current.y;
+    drag.current = null;
+    dialog.current.style.removeProperty("--sheet-drag");
+    if (moved > 80) onClose();
+  };
+  return html`
+    <dialog class="task-sheet" ref=${dialog} aria-label=${`Task #${task}`} onCancel=${cancel} onClick=${backdrop}>
+      <div class="task-sheet-top" onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${up}>
+        <span class="sheet-grip" aria-hidden="true"></span>
+      </div>
+      <${TaskPage} key=${task} project=${project} task=${task} onClose=${onClose} grip=${{ down, move, up }} />
+    </dialog>`;
+}
+
+// The project screen with task_view: the manager chat, what needs the owner as cards in it and
+// in the tray, and with a task in the route its sheet over the chat.
+export function Manager({ project: id, task }) {
   const store = useStore();
   const project = store.projects.find((candidate) => candidate.id === id);
   const overview = store.tasks[id];
@@ -389,11 +495,15 @@ export function Manager({ project: id }) {
   const [failure, setFailure] = useState("");
   const [sent, setSent] = useState(null);
   const [away, setAway] = useState(false);
+  const [flash, setFlash] = useState(null);
   const log = useRef();
+  const field = useRef();
   const atEnd = useRef(true);
   const loading = useRef(false);
   const again = useRef(false);
   const shown = useRef([]);
+  const cut = useRef(false);
+  const placed = useRef(new Map());
 
   // Reads after the last entry it has; one read at a time, one more after a change during it.
   const load = async () => {
@@ -407,7 +517,9 @@ export function Manager({ project: id }) {
         again.current = false;
         const last = shown.current.findLast((entry) => entry.id != null)?.id;
         const next = await api(`api/tasks/${id}/chat`, { query: last != null ? { after: last } : undefined });
-        shown.current = [...shown.current, ...next.entries].slice(-400);
+        const all = [...shown.current, ...next.entries];
+        if (next.skipped || all.length > 400) cut.current = true;
+        shown.current = all.slice(-400);
         setChat({ ...next, entries: shown.current });
         setFailure("");
       } while (again.current);
@@ -424,6 +536,12 @@ export function Manager({ project: id }) {
     events.addEventListener("manager", changed);
     return () => events.removeEventListener("manager", changed);
   }, [id]);
+  // Closing the sheet gives the focus back to the composer.
+  const sheetWas = useRef(task);
+  useEffect(() => {
+    if (sheetWas.current != null && task == null) field.current?.focus({ preventScroll: true });
+    sheetWas.current = task;
+  }, [task]);
   const scrolled = () => {
     const node = log.current;
     if (!node) return;
@@ -432,43 +550,48 @@ export function Manager({ project: id }) {
   };
   const toEnd = () => { log.current.scrollTop = log.current.scrollHeight; atEnd.current = true; setAway(false); };
   useLayoutEffect(() => { if (atEnd.current && log.current) log.current.scrollTop = log.current.scrollHeight; });
+  const show = (item) => {
+    // ^ Off the end first: the flash renders again, and a render at the end scrolls back to it.
+    atEnd.current = false;
+    document.getElementById(needId(item))?.scrollIntoView({ block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    setFlash(itemKey(item));
+    setTimeout(() => setFlash((current) => (current === itemKey(item) ? null : current)), 1500);
+  };
 
   if (!project) {
     return html`
       <div class="page">
-        <header class="bar"><${Back} fallback="#/projects" /></header>
+        <header class="bar"><${Back} fallback="#/" /></header>
         <p class="empty">${!store.daemon ? "wsx is not running on the host." : store.loaded ? "This project is not available." : "Loading…"}</p>
       </div>`;
   }
   const entries = chat?.entries ?? [];
+  const items = overview?.needs ?? [];
+  const { rows, outside } = chat ? conversation(entries, items, overview?.resolutions ?? [], cut.current, placed.current) : { rows: [], outside: [] };
   // The sent message shows until the log has it.
   const waiting = sent && !entries.some((entry) => entry.kind === "message" && entry.id === sent.id) ? sent : null;
   const thinking = Boolean(chat?.busy);
   const managerWord = !chat ? "" : thinking ? "manager thinking" : chat.running ? "manager idle" : "manager not started";
-  const counts = [overview?.working && `${overview.working} working`, overview?.stopped && `${overview.stopped} stopped`].filter(Boolean);
   return html`
     <div class="page manager">
       <header class="bar">
-        <${Back} fallback="#/projects" />
+        <${Back} fallback="#/" />
         <div class="bar-title">
           <span class="bar-label">${project.name}</span>
           <span class="bar-state" data-tone=${thinking ? "accent" : null}>${managerWord}</span>
         </div>
-        <div class="bar-tools">
-          <a class="link-action bar-link" href=${`#/p/${id}/sessions`}>Sessions</a>
-          ${filesLink(project)}
-        </div>
+        <div class="bar-tools"><${More} project=${project} /></div>
       </header>
       <div class="chat">
         <${ProjectBrief} project=${id} overview=${overview} onExplained=${() => { atEnd.current = true; load(); }} />
         <${SinceLine} project=${id} />
-        <${Needs} project=${id} overview=${overview} />
-        ${counts.length ? html`<p class="tasks-working">${counts.join(" · ")}</p>` : null}
         <div class="log-wrap">
           <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation with the manager" tabindex="0">
-            ${chat?.skipped ? html`<p class="note">Older messages are not shown.</p>` : null}
-            ${chat && !entries.length && !waiting ? html`<p class="empty">No messages yet. Ask the manager for a task or a status; it answers from the ledger.</p>` : null}
-            ${entries.map((entry, index) => html`<${Entry} key=${entry.id != null ? `${entry.kind}-${entry.id}` : `n${index}`} project=${id} entry=${entry} />`)}
+            ${cut.current ? html`<p class="note">Older messages are not shown.</p>` : null}
+            ${chat && !rows.length && !waiting ? html`<p class="empty">No messages yet. Ask the manager for a task or a status; it answers from the ledger.</p>` : null}
+            ${rows.map((row) => row.entry ? html`<${Entry} key=${row.key} project=${id} entry=${row.entry} />`
+              : row.item ? html`<${NeedRow} key=${row.key} project=${id} item=${row.item} card flash=${flash === itemKey(row.item)} />`
+              : html`<p class="resolved" key=${row.key}><${Linked} project=${id} text=${row.line.text} /></p>`)}
             ${waiting && html`<article class="message message-user" data-pending><p class="prose">${waiting.text}</p></article>`}
             ${thinking && html`
               <div class="working" role="status">
@@ -479,8 +602,10 @@ export function Manager({ project: id }) {
           ${away && html`<button class="jump" type="button" onClick=${toEnd}><${Icon} name="down" />Jump to latest</button>`}
         </div>
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
-        ${can("task_act") && html`<${ManagerComposer} project=${id} busy=${thinking}
+        <${Tray} project=${id} items=${items} outside=${outside} onShow=${show} />
+        ${can("task_act") && html`<${ManagerComposer} project=${id} busy=${thinking} field=${field}
           onSent=${(message) => { atEnd.current = true; setSent(message); load(); }} />`}
       </div>
+      ${task != null && html`<${TaskSheet} key=${task} project=${id} task=${task} onClose=${() => leaveFor(`#/p/${id}`)} />`}
     </div>`;
 }
