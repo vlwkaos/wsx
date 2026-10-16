@@ -11,3 +11,4 @@ pub mod integration;
 pub mod model;
 pub mod ops;
 pub mod runtime;
+pub mod task;
