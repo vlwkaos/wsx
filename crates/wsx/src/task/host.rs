@@ -210,6 +210,7 @@ impl Host {
             HostRequest::Allow { tool } => self.allow(tool),
             HostRequest::Stop => self.stop(),
             HostRequest::Land { skip_verify } => self.land(skip_verify),
+            HostRequest::Verify { result, note } => self.verify(result, note),
             HostRequest::Close { discard } => {
                 if let Some(agent) = self.agent.take() {
                     agent.stop();
@@ -471,31 +472,28 @@ impl Host {
                 }
                 // ^ Readers act on the state: the result and report must be complete before it.
                 self.write_result(&result, &results);
-                let log = self.dir.read_log().unwrap_or_default();
-                let reported = TaskRecord {
-                    state,
-                    ..self.record.clone()
-                };
-                let text = report::render(&reported, &log, &result, revision, &commit);
-                if let Err(error) = self.dir.write_file(REPORT_FILE, text.as_bytes()) {
-                    self.say(&format!("cannot write the report: {error:#}"));
-                }
+                self.write_report(state);
                 self.say(&format!("revision r{revision} at {commit:.12}"));
-                self.set_state(state);
-                if let Some(landing) = landing {
-                    let finished = if state == TaskState::Ready {
-                        self.verify_gate(landing.skip_verify)
-                            .and_then(|()| self.fast_forward())
-                    } else {
-                        Err(anyhow::anyhow!("checks failed on the rebased revision"))
-                    };
-                    match finished {
-                        Ok(message) => self.say(&message),
-                        Err(error) => {
-                            self.say(&format!("landing stopped: {error:#}"));
-                            self.log(LogEvent::LandStopped {
-                                reason: format!("{error:#}"),
-                            });
+                // ^ A landing goes from checking straight to landed, or to ready with
+                // land_stopped: readers never see a ready task that is still landing.
+                match landing {
+                    None => self.set_state(state),
+                    Some(landing) => {
+                        let finished = if state == TaskState::Ready {
+                            self.verify_gate(landing.skip_verify)
+                                .and_then(|()| self.fast_forward())
+                        } else {
+                            Err(anyhow::anyhow!("checks failed on the rebased revision"))
+                        };
+                        match finished {
+                            Ok(message) => self.say(&message),
+                            Err(error) => {
+                                self.say(&format!("landing stopped: {error:#}"));
+                                self.log(LogEvent::LandStopped {
+                                    reason: format!("{error:#}"),
+                                });
+                                self.set_state(state);
+                            }
                         }
                     }
                 }
@@ -509,6 +507,78 @@ impl Host {
             let text: Vec<String> = self.pending.drain(..).collect();
             self.start_turn(&text.join("\n\n"));
         }
+    }
+
+    /// Rewrite `report.md` for the current revision as it will read in `state`.
+    fn write_report(&self, state: TaskState) {
+        let log = self.dir.read_log().unwrap_or_default();
+        let revision = self.record.revision;
+        let Some(commit) = log.iter().rev().find_map(|entry| match &entry.event {
+            LogEvent::Revision {
+                revision: logged,
+                commit,
+                ..
+            } if *logged == revision => Some(commit.clone()),
+            _ => None,
+        }) else {
+            return;
+        };
+        let reported = TaskRecord {
+            state,
+            ..self.record.clone()
+        };
+        let text = report::render(&reported, &log, &self.current_result(), revision, &commit);
+        if let Err(error) = self.dir.write_file(REPORT_FILE, text.as_bytes()) {
+            self.say(&format!("cannot write the report: {error:#}"));
+        }
+    }
+
+    /// Record a human verdict on the current revision. A fail goes to the worker.
+    fn verify(&mut self, result: Verdict, note: Option<String>) -> Result<String> {
+        let revision = self.record.revision;
+        if revision == 0 {
+            bail!(
+                "task t{} has no revision yet; verify after its first result",
+                self.record.id
+            );
+        }
+        let note = note.filter(|note| !note.trim().is_empty());
+        if let Some(note) = &note {
+            check_message(note)?;
+        }
+        if result == Verdict::Fail && note.is_none() {
+            bail!("a fail needs --note saying what is wrong; the worker gets it");
+        }
+        self.log(LogEvent::Verified {
+            revision,
+            result,
+            note: note.clone(),
+            carried_from: None,
+        });
+        self.write_report(self.record.state);
+        let Some(note) = note.filter(|_| result == Verdict::Fail) else {
+            return Ok(format!("r{revision} passed human verification"));
+        };
+        self.log(LogEvent::Message {
+            mode: MessageKind::Verify,
+            text: note.clone(),
+        });
+        let text = format!(
+            "Human verification of r{revision} failed. The owner wrote:\n\n{note}\n\nFix it, commit, and report."
+        );
+        if self.turn_active {
+            self.agent
+                .as_mut()
+                .context("the agent is not running")?
+                .send(&text)?;
+            return Ok(format!(
+                "r{revision} failed; the note steered the running turn"
+            ));
+        }
+        Ok(format!(
+            "r{revision} failed; the note was sent to the worker: {}",
+            self.deliver_or_queue(text)
+        ))
     }
 
     /// Land the current revision on the default branch (docs/tasks.md "Landing").

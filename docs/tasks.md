@@ -10,6 +10,7 @@ wsx task steer <n> "<text>" --json               # into the running turn
 wsx task add <n> "<text>" --json                 # after the turn (queued while one runs)
 wsx task allow <n> "Bash(make:*)" --json         # restart with the tool and resume a blocked task
 wsx task stop <n> --json                         # interrupt; the next add resumes the conversation
+wsx task verify <n> pass|fail [--note <text>] --json   # human verdict on the current revision
 wsx task land <n> [--skip-verify] --json         # onto the default branch by tasks.land.policy
 wsx task close <n> [--discard] --json
 ```
@@ -63,6 +64,10 @@ A host restarted by a cold daemon start marks a running turn `stopped`; the next
 
 After each result that is not blocked the host runs `tasks.checks` with `/bin/sh -c` in the working copy (`tasks.checkTimeoutSeconds`, default 1200, and 8 KiB of output each, no `WSX_*`; a timed-out check's process group is killed), then sets `refs/wsx/task/<n>/r<k>` to the worker's HEAD. The host commits nothing; the worker commits. `ready` needs worker status `done` and every check at exit 0; otherwise `failed`. `report.md` has Asked, Summary, Decisions, Changes (`base..r<k>` commits and diffstat, plus uncommitted files), Evidence, Human Verify and Left open, built from the log, git and `result.json` only.
 
+## Human verification
+
+`wsx task verify <n> pass|fail [--note <text>]` logs `verified{revision, result, note}` for the current revision through the host. The verdict that applies is the latest one for the record's revision, so a new revision has none: it needs a new verdict or a carried pass (see Landing). A fail needs `--note`; the note is logged verbatim as a `verify` message (Asked shows it as "Human verification (fail)") and goes to the worker, as a steer during a turn or as an add after it. `report.md` ticks the Human Verify items on a pass and ends the section with the verdict, its time and note; `show --json` has `verification`.
+
 ## Landing (`local-merge`, the default policy)
 
 `wsx task land <n>` asks the host to:
@@ -73,7 +78,7 @@ After each result that is not blocked the host runs `tasks.checks` with `/bin/sh
    - a conflict aborts the rebase, logs `conflict{onto, paths}`, allows `Bash(git rebase:*)` for this task (logged) and starts a worker turn that rebases and resolves. The state stays `conflict` until the result; the normal checks then make it `ready`, and the caller lands again;
    - a clean rebase reruns the checks as a new revision and lands when they pass. A `pass` on the old revision is carried (`verified{carried_from}`) only when the default branch changed none of the task's paths since its old base; otherwise the new revision needs a new verdict. A failure logs `land_stopped`;
 4. fast-forward the default branch: `git merge --ff-only` in the checkout that has it checked out, refused with the changed files named when that checkout has tracked changes; `git update-ref` with the old tip as guard when no checkout has it;
-5. log `landed{commit}` and set `landed`.
+5. log `landed{commit}` and set `landed`. After a rebase the task goes from `checking` straight to `landed`, or to `ready` with `land_stopped`.
 
 ## Deploy and release
 

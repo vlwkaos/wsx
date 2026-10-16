@@ -9,6 +9,7 @@ Each user message is a small script of words:
   NOOP         change nothing
   HUGE         first print one 5 MiB stdout line
   HV           return one Human Verify item
+  LINE <file> <n>  replace line n of <file> with the message and commit
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
 conflict with the line "resolved".
 Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE.
@@ -116,6 +117,17 @@ def main():
             subprocess.run(['git', 'add', name], check=True)
             subprocess.run(['git', '-c', 'user.name=fake', '-c', 'user.email=fake@example.invalid',
                             'commit', '-q', '-m', 'add ' + name], check=True)
+        if not blocked and 'LINE' in words:
+            at = words.index('LINE')
+            name, number = words[at + 1], int(words[at + 2])
+            with open(name) as source:
+                lines = source.read().splitlines()
+            lines[number - 1] = text.replace('\n', ' ')
+            with open(name, 'w') as out:
+                out.write('\n'.join(lines) + '\n')
+            subprocess.run(['git', 'commit', '-q', '-am', 'edit ' + name], check=True,
+                           env=dict(os.environ, GIT_AUTHOR_NAME='fake', GIT_AUTHOR_EMAIL='fake@example.invalid',
+                                    GIT_COMMITTER_NAME='fake', GIT_COMMITTER_EMAIL='fake@example.invalid'))
         status = 'blocked' if blocked else 'done'
         summary = 'did: ' + text + (' | steers: ' + '; '.join(steers) if steers else '')
         emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': summary,
