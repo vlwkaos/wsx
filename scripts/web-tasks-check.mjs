@@ -115,6 +115,19 @@ await pair();
 const home = `#/p/${project}`;
 await go(home);
 await until("document.querySelectorAll('.needs .need').length >= 2 && !!document.querySelector('.composer-field')", "the project screen did not open on the manager");
+// "Since you left": this device left the project two hours ago; the line names what happened.
+await go("#/");
+await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 }))`);
+await go(home);
+await until("/Since you left: .*#1 #2 #3 #4 started.* repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')", "no since-you-left line");
+await shot("project-since", ".composer-send");
+await evaluate("[...document.querySelectorAll('.since button')].find((node) => node.textContent === 'Dismiss').click()");
+await until("!document.querySelector('.since')", "Dismiss did not close the line");
+await go("#/");
+await go(home);
+await pause(500);
+if (await count(".since")) await fail("a return within a minute shows a since-you-left line");
+await until("document.querySelectorAll('.needs .need').length >= 2", "the project screen did not reopen");
 
 // --- The project screen: strip order, folding, the working line, the top row.
 let rows = await strip();
@@ -291,6 +304,6 @@ for (const next of [[320, 568, 2], [1280, 800, 1]]) {
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
-console.log(`tasks page: project screen with the strip folded and open, Sessions one tap away, a reply with task chips, the # picker (filter, pick, no match, Escape, keyboard up), Answer and Approve from the strip, the task page (report sections, Fail with and without a note, Pass, timeline, Land, Deny, Allow), done-not-seen, the inbox grouped by project; ${audits.length} captures`);
+console.log(`tasks page: since-you-left, project screen with the strip folded and open, Sessions one tap away, a reply with task chips, the # picker (filter, pick, no match, Escape, keyboard up), Answer and Approve from the strip, the task page (report sections, Fail with and without a note, Pass, timeline, Land, Deny, Allow), done-not-seen, the inbox grouped by project; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

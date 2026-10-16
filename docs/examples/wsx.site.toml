@@ -18,6 +18,7 @@ capabilities = [
   "files_read", "files_write",
   "terminal_view", "terminal_input",
   "media_upload", "media_download",
+  "task_view", "task_act",
 ]
 # A session started from the page. In auto mode Claude's classifier reviews routine actions
 # instead of a person; the prompts that remain arrive in the chat (chat_answer).

@@ -146,8 +146,8 @@ impl Push {
         input: SubscriptionInput,
         mut topics: Vec<Topic>,
     ) -> Result<()> {
-        topics.sort_by_key(|topic| *topic as u8);
         topics.dedup();
+        ensure!(topics.len() <= 4, "too many topics");
         ensure!(
             input.endpoint.len() <= MAX_ENDPOINT_BYTES
                 && !input.endpoint.chars().any(|c| c.is_control() || c == ' '),

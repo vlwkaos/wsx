@@ -48,13 +48,32 @@ pub(crate) struct App {
     /// Latest workspace event, replayed first on every new stream.
     workspace: Mutex<Option<events::Message>>,
     streams: Mutex<HashMap<String, usize>>,
+    /// Each open page by its id: its device, its event streams and the project it shows.
+    pages: Mutex<HashMap<String, Page>>,
     /// Approvals whose action runs now, as `<store>/<id>`; a second tap is refused.
     approving: Mutex<std::collections::HashSet<String>>,
     /// When this server started, shown in Settings with the build.
     started_unix: u64,
 }
 
+/// A page of a device, for "no push for the project a page of that device shows".
+pub(crate) struct Page {
+    pub(crate) device: String,
+    pub(crate) streams: usize,
+    pub(crate) project: Option<u64>,
+}
+
 impl App {
+    /// The devices with an open page that shows `project` now.
+    pub(crate) fn showing(&self, project: u64) -> Vec<String> {
+        let pages = self.pages.lock().unwrap_or_else(|lock| lock.into_inner());
+        pages
+            .values()
+            .filter(|page| page.streams > 0 && page.project == Some(project))
+            .map(|page| page.device.clone())
+            .collect()
+    }
+
     /// The pinned root of a granted project. The caller checked the grant.
     fn root(&self, project: &Path) -> std::io::Result<Arc<sandbox::Root>> {
         let path = std::fs::canonicalize(project)?;
@@ -90,6 +109,7 @@ pub fn serve(named: Option<&str>) -> Result<()> {
         workspace: Mutex::new(None),
         streams: Mutex::new(HashMap::new()),
         approving: Mutex::new(Default::default()),
+        pages: Mutex::new(HashMap::new()),
         started_unix: devices::now_unix(),
         site,
     });

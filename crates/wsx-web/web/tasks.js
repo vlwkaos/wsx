@@ -32,7 +32,7 @@ export const taskState = (key) => STATES[key] ?? [key, "muted"];
 export const taskLink = (project, task) => `#/p/${project}/t/${task}`;
 
 // `#12` in a reply, an event or a sent message: a link with the task's current state and title.
-export function TaskChip({ project, id }) {
+function TaskChip({ project, id }) {
   const store = useStore();
   const task = store.tasks[project]?.tasks.find((candidate) => candidate.id === id);
   if (!task) return html`<a class="task-chip" href=${taskLink(project, id)}>#${id}</a>`;
@@ -78,7 +78,7 @@ export function announce(name, action, answer) {
 }
 
 // One fixed action. A success says what wsx did and clears the draft; a failure keeps it.
-export async function act(project, item, action, body = {}) {
+async function act(project, item, action, body = {}) {
   const path = item.kind === "approval"
     ? `api/tasks/${project}/approvals/${item.approval}/${action}`
     : `api/tasks/${project}/t/${item.task}/${action}`;
@@ -310,6 +310,49 @@ function ManagerComposer({ project, busy: thinking, onSent }) {
     </div>`;
 }
 
+// When this device last left each project's screen, for "since you left".
+const LEFT_KEY = "wsx-project-left";
+const readLeft = () => { try { return JSON.parse(localStorage.getItem(LEFT_KEY)) ?? {}; } catch { return {}; } };
+function noteLeft(project) {
+  const all = readLeft();
+  all[project] = Date.now();
+  try { localStorage.setItem(LEFT_KEY, JSON.stringify(all)); } catch { /* no line next time */ }
+}
+// Shorter absences are a glance away, not an absence.
+const AWAY_MS = 60_000;
+const SINCE_WORDS = [["landed", "landed"], ["blocked", "blocked"], ["conflict", "conflicted"], ["revised", "got a new revision"], ["started", "started"]];
+
+// "Since you left": what the task logs say happened while this device was away from the
+// project, on opening it or on coming back to it. Nothing runs while away.
+function SinceLine({ project }) {
+  const [since, setSince] = useState(null);
+  useEffect(() => {
+    const ask = () => {
+      const left = readLeft()[project];
+      if (left && Date.now() - left > AWAY_MS) {
+        api(`api/tasks/${project}/since`, { query: { after: left } }).then(setSince, () => {});
+      }
+    };
+    const changed = () => (document.visibilityState === "hidden" ? noteLeft(project) : ask());
+    ask();
+    document.addEventListener("visibilitychange", changed);
+    return () => {
+      document.removeEventListener("visibilitychange", changed);
+      noteLeft(project);
+    };
+  }, [project]);
+  if (!since) return null;
+  const parts = SINCE_WORDS.filter(([key]) => since.tasks[key]?.length).map(([key, words]) => html`
+    <span key=${key}>${since.tasks[key].map((id) => html`<a href=${taskLink(project, id)}>#${id}</a> `)}${words}</span>`);
+  if (since.replies) parts.push(html`<span key="replies">${since.replies} ${since.replies === 1 ? "reply" : "replies"}</span>`);
+  if (!parts.length) return null;
+  return html`
+    <div class="since" role="status">
+      <p>Since you left: ${parts.map((part, index) => html`${index ? " · " : ""}${part}`)}</p>
+      <button class="link-action" type="button" onClick=${() => setSince(null)}>Dismiss</button>
+    </div>`;
+}
+
 // Plain text with task chips, for owner messages and event lines.
 const Chipped = ({ project, text }) => withChips(project)(text);
 
@@ -412,6 +455,7 @@ export function Manager({ project: id }) {
         </div>
       </header>
       <div class="chat">
+        <${SinceLine} project=${id} />
         <${Needs} project=${id} overview=${overview} />
         ${counts.length ? html`<p class="tasks-working">${counts.join(" · ")}</p>` : null}
         <div class="log-wrap">

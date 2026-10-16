@@ -36,8 +36,11 @@ export async function api(path, { method = "GET", json, body, query } = {}) {
 }
 
 // handlers: { workspace, history, exchange, daemon, resync, revoked, tasks, task, manager, down, up }
+// ^ This page's id for its event stream and its presence (docs/web-client.md "Task notifications").
+export const pageId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
 export function openEvents(handlers) {
-  const stream = new EventSource(resolve("api/events"));
+  const stream = new EventSource(resolve(`api/events?page=${encodeURIComponent(pageId)}`));
   for (const name of ["workspace", "history", "exchange", "daemon", "resync", "revoked", "tasks", "task", "manager"]) {
     stream.addEventListener(name, (event) => handlers[name]?.(JSON.parse(event.data)));
   }
