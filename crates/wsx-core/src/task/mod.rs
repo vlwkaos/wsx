@@ -75,22 +75,6 @@ pub enum Phase {
     Build,
 }
 
-/// Tools of every brief turn: reading, and git commands that change nothing.
-/// `tasks.agent.briefTools` adds the project's own read-only commands.
-pub const BRIEF_TOOLS: &[&str] = &[
-    "Read",
-    "Grep",
-    "Glob",
-    "Bash(git log:*)",
-    "Bash(git show:*)",
-    "Bash(git diff:*)",
-    "Bash(git status:*)",
-    "Bash(git grep:*)",
-    "Bash(ls:*)",
-];
-/// Denied in a brief turn even when a project's settings allow them.
-pub const BRIEF_DENIED_TOOLS: &[&str] = &["Edit", "Write", "NotebookEdit"];
-
 /// `task.json`: what the task is and where it runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskRecord {
@@ -105,12 +89,14 @@ pub struct TaskRecord {
     pub pane_id: Option<u64>,
     pub adapter: String,
     pub model: String,
+    /// Tools beyond the fixed ones (`tasks.agent.tools`). Records from before the sandbox
+    /// may hold `Bash(...)` rules; the launch drops them.
     pub tools: Vec<String>,
     #[serde(default)]
     pub phase: Phase,
-    /// The brief turns' tools: `BRIEF_TOOLS`, `tasks.agent.briefTools` and what `allow` added.
+    /// `tasks.sandbox` as it was when the task was created.
     #[serde(default)]
-    pub brief_tools: Vec<String>,
+    pub sandbox: crate::model::workspace::TaskSandbox,
     pub checks: Vec<String>,
     #[serde(default = "default_check_timeout_secs")]
     pub check_timeout_secs: u64,

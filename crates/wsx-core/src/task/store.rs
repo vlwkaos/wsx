@@ -28,13 +28,18 @@ pub const BRIEF_TEXT_FILE: &str = "brief.md";
 pub const SOCKET_FILE: &str = "host.sock";
 const COUNTER_FILE: &str = "next";
 
-fn tasks_root() -> PathBuf {
+/// wsx's state folder, `$XDG_STATE_HOME/wsx`: the task store and the daemon's socket.
+pub fn state_dir() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
         .unwrap_or_else(std::env::temp_dir)
-        .join("wsx/tasks")
+        .join("wsx")
+}
+
+fn tasks_root() -> PathBuf {
+    state_dir().join("tasks")
 }
 
 /// The owner-only folder of host sockets: `<TMPDIR>/wsx-<uid>`, or `/tmp/wsx-<uid>` when
@@ -482,6 +487,13 @@ impl ManagerDir {
 
     pub fn socket_path(&self) -> PathBuf {
         socket_for('m', &self.path.join(MANAGER_SOCKET))
+    }
+
+    /// `manager/notes/`, the only folder the manager's commands may write; created owner-only.
+    pub fn notes(&self) -> Result<PathBuf> {
+        let path = self.path.join("notes");
+        create_private_dir(&path)?;
+        Ok(path)
     }
 
     pub fn append(&self, event: super::manager::ManagerEvent) -> Result<()> {

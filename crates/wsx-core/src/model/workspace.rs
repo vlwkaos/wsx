@@ -65,11 +65,11 @@ pub const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 20 * 60;
 pub struct TaskConfig {
     pub adapter: String,
     pub model: String,
+    /// Tools beyond the fixed ones, never `Bash(...)`: the sandbox bounds Bash (docs/tasks.md "Permissions").
     pub tools: Vec<String>,
     /// Whether a new task first returns a brief and waits for `start` (docs/tasks.md "Brief").
     pub brief: bool,
-    /// Project read-only commands added to the brief turn's fixed tools; the owner keeps them read-only.
-    pub brief_tools: Vec<String>,
+    pub sandbox: TaskSandbox,
     pub checks: Vec<String>,
     /// Seconds one check may run before its process group is killed.
     pub check_timeout_secs: u64,
@@ -89,6 +89,17 @@ pub struct TaskConfig {
     pub manager_rotate_tokens: u64,
 }
 
+/// `tasks.sandbox`: what a worker's commands may reach beyond its working copy.
+/// ref: docs/tasks.md "Permissions"
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, Serialize)]
+#[serde(default)]
+pub struct TaskSandbox {
+    /// Hosts reachable without the classifier, such as `crates.io` or `*.npmjs.org`.
+    pub allowed_domains: Vec<String>,
+    /// Absolute or `~/` paths the worker's commands may write, such as `~/.cargo/registry`.
+    pub allow_write: Vec<String>,
+}
+
 /// How `wsx task land` brings a task onto the default branch (docs/tasks.md "Landing").
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -103,22 +114,9 @@ impl Default for TaskConfig {
         Self {
             adapter: "claude".into(),
             model: "opus".into(),
-            tools: [
-                "Read",
-                "Glob",
-                "Grep",
-                "Edit",
-                "Write",
-                "Bash(git add:*)",
-                "Bash(git commit:*)",
-                "Bash(git status:*)",
-                "Bash(git diff:*)",
-                "Bash(git log:*)",
-            ]
-            .map(String::from)
-            .into(),
+            tools: Vec::new(),
             brief: true,
-            brief_tools: Vec::new(),
+            sandbox: TaskSandbox::default(),
             checks: Vec::new(),
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
             land_policy: LandPolicy::LocalMerge,

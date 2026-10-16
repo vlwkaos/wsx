@@ -36,6 +36,51 @@ pub fn working_copy_path_named(main: &Path, suffix: &str) -> Result<PathBuf> {
     Ok(parent.join(format!("{name}-{suffix}")))
 }
 
+/// The task copies beside the main checkout: `<parent>/<repo>-t<n>`, also of closed tasks
+/// whose folder is still there.
+pub fn task_copies(main: &Path) -> Vec<PathBuf> {
+    let (Some(parent), Some(name)) = (main.parent(), main.file_name()) else {
+        return Vec::new();
+    };
+    let prefix = format!("{}-t", name.to_string_lossy());
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let mut copies: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry.file_name().to_str().is_some_and(|name| {
+                name.strip_prefix(&prefix)
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            })
+        })
+        .map(|entry| entry.path())
+        .collect();
+    copies.sort();
+    copies
+}
+
+/// The main repository's git folder and this worktree's own folder inside it.
+pub fn git_dirs(working_copy: &Path) -> Result<(PathBuf, PathBuf)> {
+    let text = git(
+        working_copy,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+            "--git-dir",
+        ],
+    )?;
+    let mut lines = text.lines();
+    match (lines.next(), lines.next()) {
+        (Some(common), Some(own)) => Ok((PathBuf::from(common), PathBuf::from(own))),
+        _ => bail!(
+            "git rev-parse did not name the git folders of {}",
+            working_copy.display()
+        ),
+    }
+}
+
 fn git(repo: &Path, args: &[&str]) -> Result<String> {
     let output = git_cmd(repo)
         .args(args)

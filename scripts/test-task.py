@@ -23,7 +23,7 @@ CONFIG = '''tasks:
   brief: false
   agent:
     model: fake-model
-    tools: [Read, Edit]
+    tools: [WebFetch]
   checks:
     - "test -f a.txt"
     - "test ! -e broken.txt"
@@ -52,7 +52,7 @@ else:
 LAND_CONFIG = '''tasks:
   brief: false
   agent:
-    tools: [Read, Edit]
+    tools: [WebFetch]
   checks:
     - "test ! -e broken.txt"
 '''
@@ -189,7 +189,15 @@ def run(wsx, wsxd, work, owned):
     (project / 'wsx.config.yml').write_text('tasks:\n  agent:\n    adapter: nope\n')
     refused = cli('task', 'new', 'WORK a.txt', ok=False)
     assert 'tasks.agent.adapter' in refused.stderr and 'no task was created' in refused.stderr, refused.stderr
-    (project / 'wsx.config.yml').write_text(CONFIG)
+    # ^ The sandbox replaces Bash rules; a bare file-tool rule would skip the classifier.
+    for tools, word in (('["Bash(make:*)"]', 'the sandbox replaces Bash rules'), ('[Write]', 'file tools are always on')):
+        (project / 'wsx.config.yml').write_text('tasks:\n  agent:\n    tools: %s\n' % tools)
+        assert word in cli('task', 'new', 'WORK a.txt', ok=False).stderr
+    (project / 'wsx.config.yml').write_text('tasks:\n  agent:\n    briefTools: [Read]\n')
+    assert 'briefTools was removed' in cli('task', 'new', 'WORK a.txt', ok=False).stderr
+    (project / 'wsx.config.yml').write_text('tasks:\n  sandbox:\n    allowWrite: ["~/"]\n')
+    assert 'tasks.sandbox.allowWrite' in cli('task', 'new', 'WORK a.txt', ok=False).stderr
+    (project / 'wsx.config.yml').write_text(CONFIG + '  sandbox:\n    allowedDomains: [crates.io]\n    allowWrite: ["~/.cargo/registry"]\n')
     assert 'invalid task number' in cli('task', 'show', '../1', ok=False).stderr
     assert 'a prompt is required' in cli('task', 'new', ok=False).stderr
     assert 'empty' in cli('task', 'new', '-', stdin='\n', ok=False).stderr
@@ -211,8 +219,23 @@ def run(wsx, wsxd, work, owned):
     assert host_socket.parent == tmp / ('wsx-%d' % os.getuid()), host_socket
     assert oct(host_socket.parent.stat().st_mode & 0o777) == '0o700'
     launch = wait(lambda: next((t for t in traces() if t.get('launch')), None), 'fake launch')
-    assert launch['wsx_env'] == [] and launch['allowed'] == ['Read', 'Edit'] and launch['schema']
-    assert launch['model'] == 'fake-model' and not launch['resume']
+    assert launch['wsx_env'] == [] and launch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch'] and launch['schema']
+    assert launch['model'] == 'fake-model' and not launch['resume'] and launch['mode'] == 'auto'
+    # One permission model (docs/tasks.md "Permissions"): the sandbox bounds Bash, never a Bash rule.
+    sandbox, common = launch['settings']['sandbox'], Path(git('rev-parse', '--path-format=absolute', '--git-common-dir'))
+    assert (sandbox['enabled'], sandbox['failIfUnavailable'], sandbox['autoAllowBashIfSandboxed'],
+            sandbox['allowUnsandboxedCommands']) == (True, True, True, False), sandbox
+    assert sandbox['network']['allowedDomains'] == ['crates.io'] and 'excludedCommands' not in sandbox
+    admin = Path(git('rev-parse', '--path-format=absolute', '--git-dir', cwd=copy))
+    assert sandbox['filesystem']['allowWrite'] == [str(common / 'objects'), str(admin), str(common / 'refs/heads/wsx'),
+                                                    str(common / 'logs/refs/heads/wsx'), '~/.cargo/registry'], sandbox
+    assert sandbox['filesystem']['denyWrite'] == [str(common / 'hooks'), str(common / 'config'), str(common / 'refs/heads/main'),
+                                                   str(common / 'logs/refs/heads/main')], sandbox
+    deny = launch['settings']['permissions']['deny']
+    assert 'Edit(/%s/**)' % project in deny and 'Edit(/%s/**)' % (state / 'wsx') in deny, deny
+    assert 'Edit(/%s/**)' % (home / 'Library/Application Support/wsx' if sys.platform == 'darwin' else work / 'c/wsx') in deny
+    assert not any(str(copy) in rule for rule in deny), deny
+    assert launch['settings']['attribution'] == {'commit': '', 'pr': ''}
 
     # 2. Steer during the turn: Claude does not save it, so the host logs it.
     steered = js('task', 'steer', '1', 'use capitals')
@@ -236,19 +259,22 @@ def run(wsx, wsxd, work, owned):
     assert agent['provider'] == 'task'
 
     # 3. Add after the turn, blocked on a denied tool, then allow resumes the same conversation.
-    added = js('task', 'add', '1', 'NEEDS Bash(make:*) WORK b.txt')
+    added = js('task', 'add', '1', 'NEEDS WebSearch WORK b.txt')
     assert added['ok'] and 'new turn' in added['message'], added
     blocked = wait_state(1, 'blocked')
-    assert any(e['kind'] == 'blocked' and e['denials'] == ['Bash(Bash(make:*))'] for e in log(1)), log(1)
+    assert any(e['kind'] == 'blocked' and e['denials'] == ['Bash(WebSearch)'] for e in log(1)), log(1)
     wait(lambda: (pane_agent(1) or {}).get('state') == 'blocked', 'agent blocked')
     assert blocked['revision'] == 1
-    allowed = js('task', 'allow', '1', 'Bash(make:*)')
+    for rule in ('Bash(make:*)', 'Edit'):
+        refused = cli('task', 'allow', '1', rule, '--json', ok=False)
+        assert 'the sandbox replaces Bash rules' in refused.stdout + refused.stderr or 'file tools' in refused.stdout + refused.stderr, refused
+    allowed = js('task', 'allow', '1', 'WebSearch')
     assert allowed['ok'] and 'resumed' in allowed['message'], allowed
     ready = wait_state(1, 'ready', 'failed')
     assert ready['state'] == 'ready' and ready['revision'] == 2, ready
     relaunch = [t for t in traces() if t.get('launch')][-1]
     assert relaunch['resume'] and relaunch['session'] == launch['session']
-    assert 'Bash(make:*)' in relaunch['allowed']
+    assert relaunch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'], relaunch['allowed']
 
     # 3b. Denials the worker worked around do not block: checks run and the denials are evidence.
     js('task', 'add', '1', 'DENIED rm-tmp WORK d.txt')
@@ -574,7 +600,7 @@ def run(wsx, wsxd, work, owned):
 
     # 19. The ledger: open tasks by attention order, recent ones, deploys, the main checkout.
     ready_task = js('task', 'new', 'WORK l.txt')['id']
-    blocked_task = js('task', 'new', 'NEEDS Bash(make:*) WORK m.txt')['id']
+    blocked_task = js('task', 'new', 'NEEDS WebSearch WORK m.txt')['id']
     wait_state(ready_task, 'ready', 'failed')
     wait_state(blocked_task, 'blocked')
     raw = cli('task', 'ledger').stdout
@@ -605,7 +631,13 @@ def run(wsx, wsxd, work, owned):
     assert asked['ok'] and asked['id'] == 1, asked
     assert ('#%d working' % running) in reply_to(asked['id'])['text']
     launch = next(t for t in traces() if t.get('launch') and t.get('manager'))
-    assert launch['allowed'] == ['Read', 'Grep', 'Glob', 'Bash(wsx task:*)'] and launch['model'] == 'fake-manager'
+    assert launch['allowed'] == ['Read', 'Glob', 'Grep', 'Bash(wsx task *)'] and launch['model'] == 'fake-manager'
+    # ^ Its `wsx task` commands leave the sandbox; its own Bash writes only its notes folder.
+    sandbox = launch['settings']['sandbox']
+    assert launch['mode'] == 'auto' and sandbox['excludedCommands'] == ['wsx task *'], sandbox
+    assert len(sandbox['filesystem']['allowWrite']) == 1 and sandbox['filesystem']['allowWrite'][0].endswith('/manager/notes')
+    assert Path(sandbox['filesystem']['allowWrite'][0]).is_dir() and sandbox['filesystem']['denyWrite'] == [str(project)]
+    assert 'Edit(/%s/**)' % project in launch['settings']['permissions']['deny'], launch['settings']
     assert launch['actor'] == 'manager' and 'WSX_PANE_ID' not in launch['wsx_env']
     # Its rules for briefs: start work with one, skip it only on the owner's word, never start a build alone.
     for rule in ('the brief is coming', "`--no-brief` only when the owner's message asks", 'Never start a build on your own',
@@ -712,8 +744,6 @@ def run(wsx, wsxd, work, owned):
     # waits; a reply is a talk-through the worker answers; start builds the rewritten prompt
     # in the same conversation with the build's tools; --no-brief builds at once.
     config = (project / 'wsx.config.yml').read_text().replace('  brief: false\n', '')
-    config = config.replace('  agent:\n    tools: [Read, Edit]\n',
-                            '  agent:\n    tools: [Read, Edit]\n    briefTools: ["Bash(cargo nextest list:*)"]\n')
     (project / 'wsx.config.yml').write_text(config)
     git('commit', '-q', '-am', 'brief on')
 
@@ -727,8 +757,10 @@ def run(wsx, wsxd, work, owned):
     brief_launch = [t for t in traces() if t.get('launch')][-1]
     assert brief_launch['briefing'] and not brief_launch['resume'], brief_launch
     assert brief_launch['disallowed'] == ['Edit', 'Write', 'NotebookEdit'], brief_launch
-    assert 'Edit' not in brief_launch['allowed'] and 'Bash(git log:*)' in brief_launch['allowed']
-    assert 'Bash(cargo nextest list:*)' in brief_launch['allowed'], brief_launch['allowed']
+    assert brief_launch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch'] and brief_launch['mode'] == 'auto'
+    # ^ The OS keeps a brief read-only: Bash writes nothing, not even the working copy.
+    files = brief_launch['settings']['sandbox']['filesystem']
+    assert files['allowWrite'] == [] and files['denyWrite'][0] == brief_launch['cwd'], files
     # The edit the worker tried in the brief turn was denied and changed nothing.
     copy_b = Path(briefed['record']['working_copy'])
     assert (copy_b / 'README').read_text() == 'fixture\n'
@@ -758,7 +790,8 @@ def run(wsx, wsxd, work, owned):
     assert ready['state'] == 'ready' and ready['record']['phase'] == 'build', ready
     build_launch = [t for t in traces() if t.get('launch')][-1]
     assert build_launch['resume'] and build_launch['session'] == brief_launch['session'], build_launch
-    assert not build_launch['briefing'] and build_launch['allowed'] == ['Read', 'Edit'] and build_launch['disallowed'] == []
+    assert not build_launch['briefing'] and build_launch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch']
+    assert build_launch['disallowed'] == [] and build_launch['settings']['sandbox']['filesystem']['allowWrite'], build_launch
     # ^ Claude reuses a conversation's first system prompt on resume: both launches pass the same text.
     assert build_launch['instructions'] == brief_launch['instructions']
     assert (copy_b / 'b2.txt').exists() and not (copy_b / 'b1.txt').exists()

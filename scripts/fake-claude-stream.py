@@ -10,7 +10,7 @@ Each user message is a small script of words:
   HUGE         first print one 5 MiB stdout line
   HV           return one Human Verify item
   LINE <file> <n>  replace line n of <file> with the message and commit
-  EDIT <file>  try the Edit tool on <file>: denied unless Edit is allowed and not disallowed
+  EDIT <file>  try the Edit tool on <file>: auto mode allows it in the copy unless Edit is disallowed
 Launched with the brief schema it writes a brief instead and builds nothing:
   REWRITE <words>  the rewritten prompt is the rest of the line
   REVISE <words>   (a reply) the rewritten prompt becomes the rest of the line
@@ -78,13 +78,13 @@ def rest_of_line(text, word):
 
 
 def try_edit(words, allowed, disallowed, denials):
-    """EDIT <file>: the agent's permission check, as Claude applies the two lists."""
+    """EDIT <file>: auto mode accepts an edit in the working copy unless the tool is disallowed."""
     if 'EDIT' not in words:
         return
     name = words[words.index('EDIT') + 1]
     emit({'type': 'assistant', 'message': {'content': [
         {'type': 'tool_use', 'name': 'Edit', 'input': {'file_path': name}}]}})
-    if 'Edit' in disallowed or 'Edit' not in allowed:
+    if 'Edit' in disallowed:
         denials.append({'tool_name': 'Edit', 'tool_use_id': 'e', 'tool_input': {'file_path': name}})
         trace({'edit_denied': name})
         return
@@ -149,6 +149,7 @@ def main():
     trace({'launch': True, 'pid': os.getpid(), 'session': session, 'resume': '--resume' in options,
            'allowed': allowed, 'disallowed': disallowed, 'briefing': briefing, 'instructions': instructions,
            'schema': '--json-schema' in options, 'model': options.get('--model'),
+           'mode': options.get('--permission-mode'), 'settings': json.loads(options.get('--settings', '{}')),
            'wsx_env': sorted(name for name in os.environ if name.startswith('WSX_')),
            'manager': project is not None, 'actor': os.environ.get('WSX_TASK_ACTOR'),
            'cwd': os.getcwd()})
