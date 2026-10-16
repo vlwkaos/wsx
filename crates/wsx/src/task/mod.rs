@@ -3,6 +3,7 @@
 
 mod claude;
 pub mod host;
+mod ledger;
 
 use crate::cli::{
     existing_daemon_snapshot, load_config, load_full_workspace, resolve_project, PromptSource,
@@ -153,6 +154,11 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Print the bounded project state a manager reads first (JSON, at most 16 KiB)
+    Ledger {
+        #[arg(short, long)]
+        project: Option<String>,
+    },
     /// Show the last deployed and released commits and how far each is behind
     Deployed {
         #[arg(short, long)]
@@ -180,6 +186,7 @@ impl TaskCmd {
             | Self::Deploy { json, .. }
             | Self::Release { json, .. }
             | Self::Deployed { json, .. } => *json,
+            Self::Ledger { .. } => true,
             Self::Host { .. } => false,
         }
     }
@@ -299,6 +306,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             json,
         ),
         TaskCmd::Deployed { project, json } => deployed(project.as_deref(), json),
+        TaskCmd::Ledger { project } => ledger::ledger(project.as_deref()),
         TaskCmd::Host { project_id, task } => {
             host::run(&project_id, store::parse_task_number(&task)?)
         }
@@ -803,12 +811,21 @@ fn delete_revision_refs(main: &Path, id: u32) {
 }
 
 /// The ref a deploy defaults to and `behind` counts against. Under the `pr` policy the
-/// local default branch can lag the remote, so it is fetched and the remote one is used.
-fn default_ref(main: &Path, settings: &wsx_core::model::workspace::TaskConfig) -> Result<String> {
+/// local default branch can lag the remote, so the remote one is used: fetched first when
+/// `fetch`, else as last fetched.
+fn default_ref(
+    main: &Path,
+    settings: &wsx_core::model::workspace::TaskConfig,
+    fetch: bool,
+) -> Result<String> {
     let default_branch = ops::detect_default_branch(main);
     match settings.land_policy {
         LandPolicy::LocalMerge => Ok(format!("refs/heads/{default_branch}")),
-        LandPolicy::Pr => copy::fetch(main, &settings.land_remote, &default_branch),
+        LandPolicy::Pr if fetch => copy::fetch(main, &settings.land_remote, &default_branch),
+        LandPolicy::Pr => Ok(format!(
+            "refs/remotes/{}/{default_branch}",
+            settings.land_remote
+        )),
     }
 }
 
@@ -835,7 +852,7 @@ fn deploy(kind: DeployKind, project: Option<&str>, commit: Option<&str>, json: b
     })?;
     let revision = match commit {
         Some(commit) => commit.to_string(),
-        None => default_ref(&main, &settings).map_err(|error| {
+        None => default_ref(&main, &settings, true).map_err(|error| {
             error.context(format!("nothing was run or recorded for this {name}"))
         })?,
     };
@@ -899,31 +916,13 @@ fn deploy(kind: DeployKind, project: Option<&str>, commit: Option<&str>, json: b
 /// The last successful deploy and release and how many default-branch commits each lacks.
 fn deployed(project: Option<&str>, json: bool) -> Result<()> {
     let (project_name, main) = project_entry(project)?;
-    let records = store::read_deploys(&store::project_id(&project_name, &main))?;
     let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
-    let default = default_ref(&main, &settings)?;
-    let tip = copy::resolve_commit(&main, &default)?;
-    let mut out = json!({ "project": project_name, "default_branch": default, "tip": tip });
-    for kind in [DeployKind::Deploy, DeployKind::Release] {
-        // ^ Newest first: attempts that failed until the last success of this kind.
-        let (mut last, mut failed_since) = (None, 0);
-        for record in records.iter().rev().filter(|record| record.kind == kind) {
-            if record.exit == Some(0) {
-                last = Some(record);
-                break;
-            }
-            failed_since += 1;
-        }
-        out[kind_name(kind)] = match last {
-            None => json!({ "commit": null, "failed_since": failed_since }),
-            Some(record) => json!({
-                "commit": record.commit,
-                "unix_ms": record.unix_ms,
-                "behind": copy::unlanded_commits(&main, &tip, &record.commit).ok(),
-                "failed_since": failed_since,
-            }),
-        };
-    }
+    let mut out = deploy_status(&project_name, &main, &settings, true)?;
+    let default = out["default_branch"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    out["project"] = json!(project_name);
     if json {
         return print_json(&out);
     }
@@ -940,4 +939,41 @@ fn deployed(project: Option<&str>, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The last successful deploy and release, how far each is behind the default branch,
+/// and how many attempts failed since.
+fn deploy_status(
+    project_name: &str,
+    main: &Path,
+    settings: &wsx_core::model::workspace::TaskConfig,
+    fetch: bool,
+) -> Result<serde_json::Value> {
+    let records = store::read_deploys(&store::project_id(project_name, main))?;
+    let default = default_ref(main, settings, fetch)?;
+    let tip = copy::resolve_commit(main, &default).ok();
+    let mut out = json!({ "default_branch": default, "tip": tip });
+    for kind in [DeployKind::Deploy, DeployKind::Release] {
+        // ^ Newest first: attempts that failed until the last success of this kind.
+        let (mut last, mut failed_since) = (None, 0);
+        for record in records.iter().rev().filter(|record| record.kind == kind) {
+            if record.exit == Some(0) {
+                last = Some(record);
+                break;
+            }
+            failed_since += 1;
+        }
+        out[kind_name(kind)] = match last {
+            None => json!({ "commit": null, "failed_since": failed_since }),
+            Some(record) => json!({
+                "commit": record.commit,
+                "unix_ms": record.unix_ms,
+                "behind": tip
+                    .as_deref()
+                    .and_then(|tip| copy::unlanded_commits(main, tip, &record.commit).ok()),
+                "failed_since": failed_since,
+            }),
+        };
+    }
+    Ok(out)
 }

@@ -84,6 +84,17 @@ After each result that is not blocked the host runs `tasks.checks` with `/bin/sh
 
 With `tasks.land.policy: pr`, the first `land` of a ready task applies the same verify and commit gates, pushes `HEAD` to `wsx/t<n>` on `tasks.land.remote` (default `origin`, `--force-with-lease`), runs `gh pr create --base <default> --head wsx/t<n> --title <first prompt line, 72 chars> --body-file report.md`, records `pr_url` and `pr_revision`, logs `in_review{url, revision}` and sets `in_review`. The branch is not rebased first; the remote shows and merges conflicts. A later `land` runs `gh pr view <url> --json state,mergeCommit`: `MERGED` logs `landed{commit: mergeCommit.oid}` and sets `landed` (the local default branch is not changed); `CLOSED` logs `pr_closed` and the task stays `in_review`; an open PR gets the newer revision pushed when the task is `ready` with one, otherwise the answer says it is still open. Push and `gh` each have 120 s.
 
+## Ledger
+
+`wsx task ledger -p <project>` prints JSON of at most 16 KiB, the manager's source of truth:
+
+- `open`: each open task with number, title (80 chars), state, revision, overlaps, the current verdict (without its note), the Human Verify item count, the last result summary (240 chars) and `pr_url`, in attention order (blocked, failed, conflict, ready, in_review, working, stopped);
+- `recent`: the last 10 landed or closed tasks;
+- `deploys`: the `deployed` status; under `pr` it uses the last fetched `<remote>/<default>` and does not fetch;
+- `main`: the main checkout's path, branch and number of changed files (tracked or new).
+
+When it would pass 16 KiB, the least urgent open tasks are left out and counted in `open_omitted`.
+
 ## Deploy and release
 
 ```sh
