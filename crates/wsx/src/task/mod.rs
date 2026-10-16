@@ -4,7 +4,9 @@
 mod claude;
 pub mod host;
 
-use crate::cli::{existing_daemon_snapshot, load_config, load_full_workspace, resolve_project};
+use crate::cli::{
+    existing_daemon_snapshot, load_config, load_full_workspace, resolve_project, PromptSource,
+};
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use serde_json::json;
@@ -192,65 +194,6 @@ impl TaskCmd {
 pub enum VerdictArg {
     Pass,
     Fail,
-}
-
-/// Exactly one prompt source: the argument, `-` for standard input, or a file.
-/// ^ Same rules as `agent request` on feat/orchestration-cli; merge the two when it lands.
-#[derive(clap::Args)]
-pub struct PromptSource {
-    /// Text, or `-` to read it from standard input
-    prompt: Option<String>,
-    /// Read the text from this file
-    #[arg(long, value_name = "PATH")]
-    prompt_file: Option<PathBuf>,
-}
-
-impl PromptSource {
-    fn read(self, limit: usize) -> Result<String> {
-        use std::io::Read;
-        let bounded = |reader: &mut dyn Read, source: &str| -> Result<String> {
-            let mut bytes = Vec::new();
-            reader
-                .take(limit as u64 + 2)
-                .read_to_end(&mut bytes)
-                .with_context(|| format!("cannot read the prompt from {source}"))?;
-            let mut text = String::from_utf8(bytes)
-                .map_err(|_| anyhow::anyhow!("the prompt from {source} is not UTF-8 text"))?;
-            if text.ends_with('\n') {
-                text.pop();
-                if text.ends_with('\r') {
-                    text.pop();
-                }
-            }
-            Ok(text)
-        };
-        let prompt = match (self.prompt, self.prompt_file) {
-            (Some(_), Some(_)) => {
-                bail!(
-                    "give one prompt source: an argument, `-` for standard input, or --prompt-file"
-                )
-            }
-            (None, None) => {
-                bail!("a prompt is required: an argument, `-` for standard input, or --prompt-file <path>")
-            }
-            (Some(text), None) if text == "-" => {
-                bounded(&mut std::io::stdin().lock(), "standard input")?
-            }
-            (Some(text), None) => text,
-            (None, Some(path)) => {
-                let mut file = std::fs::File::open(&path)
-                    .with_context(|| format!("cannot open prompt file {}", path.display()))?;
-                bounded(&mut file, &path.display().to_string())?
-            }
-        };
-        if prompt.trim().is_empty() {
-            bail!("the prompt is empty");
-        }
-        if prompt.len() > limit {
-            bail!("the prompt is larger than the limit of {limit} bytes");
-        }
-        Ok(prompt)
-    }
 }
 
 pub fn run(command: TaskCmd) -> Result<()> {
