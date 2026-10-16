@@ -16,8 +16,8 @@ use wsx_core::task::manager::ApprovalLine;
 use wsx_core::task::manager::{
     Author, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState, Seen,
 };
+use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
-use wsx_core::task::store::{self, RESULT_FILE};
 use wsx_core::task::TaskState;
 use wsx_core::task::MAX_MESSAGE_BYTES;
 
@@ -224,7 +224,7 @@ impl Manager {
             None => {
                 // ^ First start: what already happened is the baseline, not news.
                 self.observed = self.current_tasks().into_iter().collect();
-                self.observed_decisions = self.decisions().len() as u64;
+                self.observed_decisions = self.approval_lines().len() as u64;
                 self.state.seen = Some(self.observed.clone());
                 self.state.decisions_seen = self.observed_decisions;
                 self.save();
@@ -250,13 +250,13 @@ impl Manager {
             .collect()
     }
 
-    fn decisions(&self) -> Vec<ApprovalLine> {
+    fn approval_lines(&self) -> Vec<ApprovalLine> {
         store::read_approvals(&self.dir.project_id).unwrap_or_default()
     }
 
     /// Turn new approval decisions into event lines.
     fn watch_approvals(&mut self) {
-        let lines = self.decisions();
+        let lines = self.approval_lines();
         let decisions: Vec<&ApprovalLine> = lines
             .iter()
             .filter(|line| matches!(line, ApprovalLine::Decision { .. }))
@@ -319,11 +319,7 @@ impl Manager {
                 continue;
             }
             let title = dir.prompt().ok().flatten().unwrap_or_default();
-            let summary = dir
-                .read_file(RESULT_FILE, super::MAX_RESULT_READ_BYTES)
-                .ok()
-                .flatten()
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            let summary = super::ledger::read_result(&dir)
                 .and_then(|value| value["result"]["summary"].as_str().map(str::to_string))
                 .unwrap_or_default();
             self.pending_events.push(format!(
@@ -533,14 +529,7 @@ impl Manager {
     }
 
     fn say(&self, text: &str) {
-        let elapsed = self.started.elapsed().as_secs();
-        println!(
-            "{:02}:{:02}:{:02} {}",
-            elapsed / 3600,
-            elapsed / 60 % 60,
-            elapsed % 60,
-            text
-        );
+        hosting::progress(self.started, text);
     }
 
     fn report(&self, state: runtime::AgentState) {
