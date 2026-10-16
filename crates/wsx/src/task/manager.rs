@@ -18,6 +18,7 @@ use wsx_core::task::manager::{
 };
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
+use wsx_core::task::view::{clip, project_tasks, read_result};
 use wsx_core::task::TaskState;
 use wsx_core::task::MAX_MESSAGE_BYTES;
 
@@ -31,7 +32,7 @@ const MANAGER_ENV: [&str; 5] = [
     "WSX_SOCKET",
     "WSX_DAEMON_BIN",
 ];
-pub const ACTOR_ENV: &str = "WSX_TASK_ACTOR";
+use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 /// Events within this long of each other, or during a turn, become one message.
 const EVENT_QUIET: Duration = Duration::from_secs(3);
@@ -234,7 +235,7 @@ impl Manager {
     }
 
     fn current_tasks(&self) -> Vec<(u32, Seen)> {
-        super::project_tasks(&self.dir.project_id)
+        project_tasks(&self.dir.project_id)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|(_, record)| record.ok())
@@ -292,7 +293,7 @@ impl Manager {
             self.pending_events.push(format!(
                 "approval {id} ({}) {}",
                 asked.unwrap_or_default().to_ascii_lowercase(),
-                super::ledger::clip(&verdict, EVENT_SUMMARY_CHARS * 2)
+                clip(&verdict, EVENT_SUMMARY_CHARS * 2)
             ));
             self.last_event = Some(Instant::now());
         }
@@ -302,7 +303,7 @@ impl Manager {
     /// Turn task state changes into event lines.
     fn watch_tasks(&mut self) {
         self.watch_approvals();
-        let Ok(tasks) = super::project_tasks(&self.dir.project_id) else {
+        let Ok(tasks) = project_tasks(&self.dir.project_id) else {
             return;
         };
         for (dir, record) in tasks {
@@ -319,7 +320,7 @@ impl Manager {
                 continue;
             }
             let title = dir.prompt().ok().flatten().unwrap_or_default();
-            let summary = super::ledger::read_result(&dir)
+            let summary = read_result(&dir)
                 .and_then(|value| value["result"]["summary"].as_str().map(str::to_string))
                 .unwrap_or_default();
             self.pending_events.push(format!(
@@ -327,8 +328,8 @@ impl Manager {
                 record.id,
                 record.state.as_str(),
                 record.revision,
-                super::ledger::clip(&title, EVENT_TITLE_CHARS),
-                super::ledger::clip(&summary, EVENT_SUMMARY_CHARS),
+                clip(&title, EVENT_TITLE_CHARS),
+                clip(&summary, EVENT_SUMMARY_CHARS),
             ));
             self.last_event = Some(Instant::now());
         }

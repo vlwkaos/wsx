@@ -7,8 +7,10 @@
 
 pub mod copy;
 pub mod manager;
+pub mod owner;
 pub mod report;
 pub mod store;
+pub mod view;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

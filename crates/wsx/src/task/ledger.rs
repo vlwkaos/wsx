@@ -1,55 +1,19 @@
 //! `wsx task ledger`: the bounded project state a manager reads before it acts.
 //! ref: docs/tasks.md "Ledger"
 
-use super::{
-    deploy_status, overlaps, print_json, project_entry, project_tasks, task_summary,
-    MAX_RESULT_READ_BYTES,
-};
+use super::{deploy_status, print_json, project_entry};
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::path::Path;
 use wsx_core::config::project::load_task_config;
-use wsx_core::task::{
-    store::{TaskDir, RESULT_FILE},
-    verification, TaskRecord, TaskState,
-};
+use wsx_core::task::view::{attention, clip, overlaps, project_tasks, read_result, task_summary};
+use wsx_core::task::{verification, TaskRecord};
 
 /// The whole ledger fits in this many bytes of JSON.
 pub(super) const MAX_LEDGER_BYTES: usize = 16 * 1024;
 const RECENT_TASKS: usize = 10;
 const SUMMARY_CHARS: usize = 240;
 const TITLE_CHARS: usize = 80;
-
-/// Attention order (knowledge "Manager Mode Attention UX"): what needs the owner first.
-fn attention(state: TaskState) -> u8 {
-    match state {
-        TaskState::Blocked => 0,
-        TaskState::Failed => 1,
-        TaskState::Conflict => 2,
-        TaskState::Ready => 3,
-        TaskState::InReview => 4,
-        TaskState::Checking | TaskState::Working | TaskState::Starting => 5,
-        TaskState::Stopped => 6,
-        TaskState::Landed | TaskState::Closed => 7,
-    }
-}
-
-pub(super) fn clip(text: &str, chars: usize) -> String {
-    let line = text.lines().next().unwrap_or_default();
-    if line.chars().count() <= chars {
-        line.to_string()
-    } else {
-        line.chars().take(chars).collect::<String>() + "…"
-    }
-}
-
-/// A task's `result.json`, or none when it is missing or unreadable.
-pub(super) fn read_result(dir: &TaskDir) -> Option<Value> {
-    dir.read_file(RESULT_FILE, MAX_RESULT_READ_BYTES)
-        .ok()
-        .flatten()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-}
 
 pub(super) fn ledger(project: Option<&str>) -> Result<()> {
     let (project_name, main) = project_entry(project)?;

@@ -18,24 +18,24 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::LandPolicy;
-use wsx_core::task::manager::{
-    pending_approvals, ApprovalAction, ApprovalLine, ManagerEvent, ManagerRequest, ManagerResponse,
-};
+use wsx_core::task::manager::{ApprovalAction, ApprovalLine, ManagerEvent};
+use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT};
 use wsx_core::task::store::ManagerDir;
+use wsx_core::task::view::{
+    overlaps, project_tasks, task_summary, verification_value, MAX_RESULT_READ_BYTES,
+};
 use wsx_core::task::{
-    call_host, call_socket, copy, now_unix_ms,
+    call_host, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
     DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord,
     TaskState, Verdict, MAX_MESSAGE_BYTES,
 };
 use wsx_core::{ops, runtime};
 
-const HOST_TIMEOUT: Duration = Duration::from_secs(15);
 const LAND_TIMEOUT: Duration = Duration::from_secs(300);
 const HOST_START_WAIT: Duration = Duration::from_secs(10);
 const CLOSE_WAIT: Duration = Duration::from_secs(15);
 const CARGO_CLEAN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-const MAX_RESULT_READ_BYTES: u64 = 1024 * 1024;
 
 #[derive(Subcommand)]
 pub enum TaskCmd {
@@ -603,70 +603,6 @@ fn wait_for_host(dir: &TaskDir) -> Option<HostResponse> {
     None
 }
 
-fn task_summary(dir: &TaskDir, record: &TaskRecord) -> serde_json::Value {
-    let title = dir.prompt().ok().flatten().map(|prompt| {
-        prompt
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .chars()
-            .take(120)
-            .collect::<String>()
-    });
-    json!({
-        "id": record.id,
-        "state": record.state,
-        "title": title,
-        "branch": record.branch,
-        "revision": record.revision,
-        "updated_unix_ms": record.updated_unix_ms,
-    })
-}
-
-/// Every task of a project with its record, or the error that hid it.
-fn project_tasks(project_id: &str) -> Result<Vec<(TaskDir, Result<TaskRecord>)>> {
-    store::task_numbers(project_id)?
-        .into_iter()
-        .map(|id| {
-            let dir = TaskDir::open(project_id, id)?;
-            let record = dir.read_record();
-            Ok((dir, record))
-        })
-        .collect()
-}
-
-/// Paths shown per overlapping task in `show`.
-const OVERLAP_PATHS_SHOWN: usize = 20;
-
-/// The other open tasks that changed a path this task changed. Paths are capped per
-/// record, so `complete` is false when either side kept fewer paths than it changed.
-fn overlaps(record: &TaskRecord, others: &[&TaskRecord], with_paths: bool) -> serde_json::Value {
-    let mine: std::collections::HashSet<&str> = record.paths.iter().map(String::as_str).collect();
-    let rows: Vec<_> = others
-        .iter()
-        .filter(|other| other.id != record.id && other.state.is_open())
-        .filter_map(|other| {
-            let common: Vec<&str> = other
-                .paths
-                .iter()
-                .map(String::as_str)
-                .filter(|path| mine.contains(path))
-                .collect();
-            if common.is_empty() {
-                return None;
-            }
-            let complete = record.paths.len() as u32 == record.paths_total
-                && other.paths.len() as u32 == other.paths_total;
-            let mut row = json!({ "id": other.id, "count": common.len(), "complete": complete });
-            if with_paths {
-                row["paths"] = json!(common.iter().take(OVERLAP_PATHS_SHOWN).collect::<Vec<_>>());
-            }
-            Some(row)
-        })
-        .collect();
-    json!(rows)
-}
-
 fn list(project: Option<&str>, all: bool, json: bool) -> Result<()> {
     let (name, path) = project_entry(project)?;
     let tasks = project_tasks(&store::project_id(&name, &path))?;
@@ -726,14 +662,7 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
         summary["log"] = json!(dir.file(store::LOG_FILE));
         summary["host_running"] = json!(host);
         let log = dir.read_log()?;
-        summary["verification"] = match wsx_core::task::verification(&log, record.revision) {
-            Some(entry) => {
-                let mut value = serde_json::to_value(&entry.event)?;
-                value["unix_ms"] = json!(entry.unix_ms);
-                value
-            }
-            None => serde_json::Value::Null,
-        };
+        summary["verification"] = verification_value(&log, record.revision);
         let tasks = project_tasks(&dir.project_id)?;
         let records: Vec<&TaskRecord> = tasks
             .iter()
@@ -1128,7 +1057,6 @@ fn deploy_status(
     Ok(out)
 }
 
-const MANAGER_START_WAIT: Duration = Duration::from_secs(10);
 /// Most entries `chat` prints at once.
 const MAX_CHAT_ENTRIES: usize = 200;
 
@@ -1136,44 +1064,14 @@ const MAX_CHAT_ENTRIES: usize = 200;
 /// Returns whether it was started.
 fn ensure_manager(project: Option<&str>) -> Result<(bool, ManagerDir)> {
     let (name, main) = project_entry(project)?;
-    let project_id = store::project_id(&name, &main);
-    let dir = ManagerDir::open(&project_id)?;
-    let status = || {
-        call_socket::<_, ManagerResponse>(&dir.socket_path(), &ManagerRequest::Status, HOST_TIMEOUT)
-    };
-    if status().is_ok() {
-        return Ok((false, dir));
-    }
-    let (config, _) = load_full_workspace()?;
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-    let argv = vec![
-        exe.to_string_lossy().into_owned(),
-        "task".into(),
-        "manager-host".into(),
-        project_id,
-    ];
-    ops::create_session_launch(&config, &main, "task-manager".into(), argv, None)
-        .context("the manager did not start; no session was left running")?;
-    let deadline = Instant::now() + MANAGER_START_WAIT;
-    while Instant::now() < deadline {
-        if status().is_ok() {
-            return Ok((true, dir));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    bail!(
-        "the manager session started but its host does not answer; look at session task-manager in {}",
-        main.display()
-    )
+    owner::ensure_manager(&load_config()?, &name, &main, &exe)
 }
 
 fn say(project: Option<&str>, text: String, json: bool) -> Result<()> {
-    let (_, dir) = ensure_manager(project)?;
-    let response: ManagerResponse = call_socket(
-        &dir.socket_path(),
-        &ManagerRequest::Say { text },
-        HOST_TIMEOUT,
-    )?;
+    let (name, main) = project_entry(project)?;
+    let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+    let response = owner::say(&load_config()?, &name, &main, &exe, text)?;
     if json {
         print_json(&serde_json::to_value(&response)?)?;
     } else {
@@ -1229,16 +1127,7 @@ fn chat(project: Option<&str>, after: Option<u64>, json: bool) -> Result<()> {
 /// ^ A guard against the manager's mistakes, not a security boundary: anything that runs
 /// commands as the owner can unset it (docs/tasks.md "Approvals").
 fn acting_as_manager() -> bool {
-    std::env::var(manager::ACTOR_ENV).is_ok_and(|actor| actor == "manager")
-}
-
-fn action_name(action: ApprovalAction) -> &'static str {
-    match action {
-        ApprovalAction::Land => "land",
-        ApprovalAction::Deploy => "deploy",
-        ApprovalAction::Release => "release",
-        ApprovalAction::Discard => "close --discard",
-    }
+    std::env::var(owner::ACTOR_ENV).is_ok_and(|actor| actor == "manager")
 }
 
 /// Record an approval request instead of acting, and say that the owner was asked.
@@ -1280,15 +1169,6 @@ fn ask_owner(
     }
 }
 
-fn find_request<'a>(lines: &'a [ApprovalLine], id: &str) -> Result<&'a ApprovalLine> {
-    pending_approvals(lines)
-        .into_iter()
-        .find(|line| matches!(line, ApprovalLine::Request { id: pending, .. } if pending == id))
-        .with_context(|| {
-            format!("no pending approval {id}; `wsx task ledger` lists the pending ones")
-        })
-}
-
 fn owner_only(command: &str) -> Result<()> {
     if acting_as_manager() {
         bail!("wsx task {command} is for the owner; the manager cannot decide its own requests");
@@ -1300,91 +1180,32 @@ fn owner_only(command: &str) -> Result<()> {
 fn approve(project: Option<&str>, id: &str, json: bool) -> Result<()> {
     owner_only("approve")?;
     let (name, main) = project_entry(project)?;
-    let project_id = store::project_id(&name, &main);
-    let lines = store::read_approvals(&project_id)?;
-    let ApprovalLine::Request {
-        action,
-        task,
-        revision,
-        skip_verify,
-        commit,
-        ..
-    } = find_request(&lines, id)?.clone()
-    else {
-        unreachable!("find_request returns requests");
-    };
-    // ^ The owner approves one revision: a task that moved on needs a new request.
-    if let (Some(task), Some(revision)) = (task, revision) {
-        let now = TaskDir::open(&project_id, task)?.read_record()?.revision;
-        if now != revision {
-            let outcome = format!("not run: #{task} moved from r{revision} to r{now}; ask again");
-            decide(&project_id, id, true, None, &outcome)?;
-            bail!("{outcome}");
-        }
-    }
-    let mut argv: Vec<String> = vec!["task".into()];
-    match action {
-        ApprovalAction::Land => {
-            argv.extend(["land".into(), task.unwrap_or_default().to_string()]);
-            if skip_verify {
-                argv.push("--skip-verify".into());
-            }
-        }
-        ApprovalAction::Discard => argv.extend([
-            "close".into(),
-            task.unwrap_or_default().to_string(),
-            "--discard".into(),
-        ]),
-        ApprovalAction::Deploy | ApprovalAction::Release => {
-            argv.push(action_name(action).into());
-            if let Some(commit) = commit {
-                argv.extend(["--commit".into(), commit]);
-            }
-        }
-    }
-    argv.extend(["-p".into(), name, "--json".into()]);
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-    let output = std::process::Command::new(exe)
-        .args(&argv)
-        .env_remove(manager::ACTOR_ENV)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .context("cannot run the approved action")?;
-    let result: serde_json::Value =
-        serde_json::from_slice(&output.stdout).unwrap_or(serde_json::Value::Null);
-    let said = result["message"]
-        .as_str()
-        .map(str::to_string)
-        .or_else(|| {
-            result["state"]
-                .as_str()
-                .map(|state| format!("state {state}"))
-        })
-        .unwrap_or_else(|| String::from_utf8_lossy(&output.stderr).trim().to_string());
-    let outcome = format!(
-        "{}: {said}",
-        if output.status.success() {
-            "done"
-        } else {
-            "failed"
-        }
-    );
-    decide(&project_id, id, true, None, &outcome)?;
+    let action = find_request(
+        &store::read_approvals(&store::project_id(&name, &main))?,
+        id,
+    )
+    .ok()
+    .and_then(|line| match line {
+        ApprovalLine::Request { action, .. } => Some(*action),
+        ApprovalLine::Decision { .. } => None,
+    });
+    let approved = owner::approve(&name, &main, id, &exe)?;
     if json {
         print_json(&json!({
             "approval": id,
             "approved": true,
-            "ok": output.status.success(),
-            "outcome": outcome,
-            "result": result,
+            "ok": approved.ok,
+            "outcome": approved.outcome,
+            "result": approved.result,
         }))?;
     } else {
-        println!("{id} approved; {outcome}");
+        println!("{id} approved; {}", approved.outcome);
     }
-    if !output.status.success() {
+    if !approved.ok {
         bail!(
             "the approved {} failed; the decision and its outcome are recorded",
-            action_name(action)
+            action.map_or("action", action_name)
         );
     }
     Ok(())
@@ -1393,43 +1214,11 @@ fn approve(project: Option<&str>, id: &str, json: bool) -> Result<()> {
 fn deny(project: Option<&str>, id: &str, note: Option<String>, json: bool) -> Result<()> {
     owner_only("deny")?;
     let (name, main) = project_entry(project)?;
-    let project_id = store::project_id(&name, &main);
-    find_request(&store::read_approvals(&project_id)?, id)?;
-    let note = note.filter(|note| !note.trim().is_empty());
-    if note
-        .as_ref()
-        .is_some_and(|note| note.len() > MAX_MESSAGE_BYTES)
-    {
-        bail!("the note is larger than the limit of {MAX_MESSAGE_BYTES} bytes");
-    }
-    decide(&project_id, id, false, note, "denied")?;
+    owner::deny(&name, &main, id, note)?;
     if json {
         print_json(&json!({ "approval": id, "approved": false }))
     } else {
         println!("{id} denied");
         Ok(())
     }
-}
-
-/// Most characters of an action's answer kept in its decision.
-const MAX_OUTCOME_CHARS: usize = 1000;
-
-fn decide(
-    project_id: &str,
-    id: &str,
-    approved: bool,
-    note: Option<String>,
-    outcome: &str,
-) -> Result<()> {
-    store::append_approval(
-        project_id,
-        ApprovalLine::Decision {
-            id: id.into(),
-            approved,
-            note,
-            outcome: outcome.chars().take(MAX_OUTCOME_CHARS).collect(),
-            unix_ms: now_unix_ms(),
-        },
-    )
-    .map(drop)
 }
