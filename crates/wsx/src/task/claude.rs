@@ -187,7 +187,10 @@ fn settings(boundary: &Boundary) -> Value {
             "deny": boundary
                 .deny_edits
                 .iter()
-                .map(|path| format!("Edit(/{}/**)", path.display()))
+                .map(|path| match path.is_dir() {
+                    true => format!("Edit(/{}/**)", path.display()),
+                    false => format!("Edit(/{})", path.display()),
+                })
                 .collect::<Vec<_>>(),
         },
     })
@@ -248,15 +251,30 @@ fn worker_boundary(record: &TaskRecord, grants: &[&Access]) -> Result<Boundary> 
     })
 }
 
-/// Folders no agent's file tools may write: the main checkout, wsx's config folders and
-/// the project's task copies other than `own`.
-pub fn kept_from_edits(main: &Path, own: Option<&Path>) -> Vec<PathBuf> {
-    let mut paths = vec![main.to_path_buf()];
+/// What no agent's file tools may write: the main checkout, wsx's config folders and the
+/// project's task copies other than a worker's own.
+pub fn kept_from_edits(main: &Path, worker_copy: Option<&Path>) -> Vec<PathBuf> {
+    // ^ Claude merges Edit deny rules into the sandbox, where a deny beats `allowWrite`: a rule
+    // on the whole main checkout would stop a worker's commits through its `.git`. A worker's
+    // rules name the checkout's entries other than `.git` instead.
+    let mut paths = match worker_copy {
+        Some(_) => std::fs::read_dir(main)
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| entry.ok())
+                    .filter(|entry| entry.file_name() != ".git")
+                    .map(|entry| entry.path())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        None => vec![main.to_path_buf()],
+    };
+    paths.sort();
     paths.extend(config_dirs());
     paths.extend(
         copy::task_copies(main)
             .into_iter()
-            .filter(|path| Some(path.as_path()) != own),
+            .filter(|path| Some(path.as_path()) != worker_copy),
     );
     paths
 }
@@ -582,10 +600,19 @@ fn violation_hosts(text: &str) -> impl Iterator<Item = String> + '_ {
         })
 }
 
-/// Paths in lines such as `touch: /a/b: Operation not permitted` or `Unable to create
-/// '/a/b.lock': Operation not permitted`: the last absolute path before the error.
+/// Paths in lines such as `touch: /a/b: Operation not permitted`, `Unable to create
+/// '/a/b.lock': Operation not permitted` (the last absolute path before the error) or zsh's
+/// `operation not permitted: /a/b`.
 fn refused_paths(text: &str) -> impl Iterator<Item = String> + '_ {
     text.lines().filter_map(|line| {
+        // ^ zsh names the path after the error: `operation not permitted: /a/b`.
+        if let Some(path) = line
+            .split_once("operation not permitted: ")
+            .map(|(_, path)| path.trim())
+            .filter(|path| path.starts_with('/') && path.len() > 1)
+        {
+            return Some(path.to_string());
+        }
         let at = REFUSED_WRITE.iter().find_map(|error| line.find(error))?;
         let before = line[..at].trim_end_matches([':', ' ']);
         let (start, _) = before.char_indices().rfind(|(index, c)| {

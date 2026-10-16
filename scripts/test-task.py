@@ -232,7 +232,10 @@ def run(wsx, wsxd, work, owned):
     assert sandbox['filesystem']['denyWrite'] == [str(common / 'hooks'), str(common / 'config'), str(common / 'refs/heads/main'),
                                                    str(common / 'logs/refs/heads/main')], sandbox
     deny = launch['settings']['permissions']['deny']
-    assert 'Edit(/%s/**)' % project in deny and 'Edit(/%s/**)' % (state / 'wsx') in deny, deny
+    # ^ The main checkout's entries other than .git: a rule on all of it would also stop commits.
+    assert 'Edit(/%s)' % (project / 'README') in deny and 'Edit(/%s/**)' % (project / 'target') in deny, deny
+    assert not any(rule in ('Edit(/%s/.git/**)' % project, 'Edit(/%s/**)' % project) for rule in deny), deny
+    assert 'Edit(/%s/**)' % (state / 'wsx') in deny, deny
     assert 'Edit(/%s/**)' % (home / 'Library/Application Support/wsx' if sys.platform == 'darwin' else work / 'c/wsx') in deny
     assert not any(str(copy) in rule for rule in deny), deny
     assert launch['settings']['attribution'] == {'commit': '', 'pr': ''}
