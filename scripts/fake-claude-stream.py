@@ -108,7 +108,7 @@ def sandbox_stops(words, settings):
         path = words[words.index('NEEDS_PATH') + 1]
         tool_use('p1', 'touch ' + path)
         if not any(path.startswith(folder.rstrip('/') + '/') for folder in writes):
-            tool_result('p1', 'touch: %s: Operation not permitted' % path, True)
+            tool_result('p1', '(eval):1: operation not permitted: %s' % path, True)
             stopped = True
         else:
             tool_result('p1', '', False)
