@@ -58,6 +58,8 @@ pub struct ProjectConfig {
     pub notice: Option<String>,
 }
 
+pub const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 20 * 60;
+
 /// The `tasks:` section of `wsx.config.yml` (docs/tasks.md).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskConfig {
@@ -65,6 +67,8 @@ pub struct TaskConfig {
     pub model: String,
     pub tools: Vec<String>,
     pub checks: Vec<String>,
+    /// Seconds one check may run before its process group is killed.
+    pub check_timeout_secs: u64,
 }
 
 impl Default for TaskConfig {
@@ -87,6 +91,7 @@ impl Default for TaskConfig {
             .map(String::from)
             .into(),
             checks: Vec::new(),
+            check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
         }
     }
 }

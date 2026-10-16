@@ -3,9 +3,11 @@
 
 Each user message is a small script of words:
   SLOW         take about 2 s and accept steers during the turn
-  NEEDS <rule> deny once unless <rule> is in --allowedTools
+  NEEDS <rule> deny once unless <rule> is in --allowedTools, and report blocked
+  DENIED <rule> deny <rule> but carry on and report done
   WORK <file>  write <file> and commit it
   NOOP         change nothing
+  HUGE         first print one 5 MiB stdout line
 Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE.
 """
 import json
@@ -65,6 +67,8 @@ def main():
         text = json.loads(line)['message']['content']
         trace({'message': text, 'session': session})
         words = text.split()
+        if 'HUGE' in words:
+            emit({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'x' * (5 << 20)}]}})
         steers = []
         if 'SLOW' in words:
             deadline = time.monotonic() + 2.0
@@ -83,7 +87,11 @@ def main():
             rule = words[words.index('NEEDS') + 1]
             if rule not in allowed:
                 denials.append({'tool_name': 'Bash', 'tool_use_id': 'x', 'tool_input': {'command': rule}})
-        if not denials and 'WORK' in words:
+        if 'DENIED' in words:
+            worked_around = words[words.index('DENIED') + 1]
+            denials.append({'tool_name': 'Bash', 'tool_use_id': 'y', 'tool_input': {'command': worked_around}})
+        blocked = bool(denials) and 'NEEDS' in words
+        if not blocked and 'WORK' in words:
             name = words[words.index('WORK') + 1]
             emit({'type': 'assistant', 'message': {'content': [
                 {'type': 'tool_use', 'name': 'Write', 'input': {'file_path': name, 'content': 'x'}}]}})
@@ -92,7 +100,7 @@ def main():
             subprocess.run(['git', 'add', name], check=True)
             subprocess.run(['git', '-c', 'user.name=fake', '-c', 'user.email=fake@example.invalid',
                             'commit', '-q', '-m', 'add ' + name], check=True)
-        status = 'blocked' if denials else 'done'
+        status = 'blocked' if blocked else 'done'
         summary = 'did: ' + text + (' | steers: ' + '; '.join(steers) if steers else '')
         emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': summary,
               'session_id': session, 'permission_denials': denials,

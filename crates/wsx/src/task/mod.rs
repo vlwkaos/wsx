@@ -329,6 +329,7 @@ fn new(prompt: PromptSource, from: Option<&str>, project: Option<&str>, json: bo
         model: settings.model,
         tools: settings.tools,
         checks: settings.checks,
+        check_timeout_secs: settings.check_timeout_secs,
         agent_session: None,
         state: TaskState::Starting,
         revision: 0,

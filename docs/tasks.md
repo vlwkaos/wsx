@@ -50,15 +50,15 @@ A host restarted by a cold daemon start marks a running turn `stopped`; the next
 
 ## Claude adapter
 
-`claude -p --input-format stream-json --output-format stream-json --verbose --setting-sources project,local --permission-mode default --model <model> --json-schema <result schema> --append-system-prompt <worker rules> --allowedTools <tools>`, with `--session-id <uuid>` first and `--resume <uuid>` after a stop or allow. The environment keeps only `HOME USER LOGNAME PATH SHELL LANG LC_ALL LC_CTYPE TMPDIR CLAUDE_CONFIG_DIR ANTHROPIC_API_KEY`; no `WSX_*`.
+`claude -p --input-format stream-json --output-format stream-json --verbose --setting-sources project,local --permission-mode default --model <model> --json-schema <result schema> --append-system-prompt <worker rules> --allowedTools <tools>`, with `--session-id <uuid>` first and `--resume <uuid>` after a stop or allow. The environment keeps only `HOME USER LOGNAME PATH SHELL LANG LC_ALL LC_CTYPE TMPDIR CLAUDE_CONFIG_DIR ANTHROPIC_API_KEY`, the proxy variables (`HTTPS_PROXY HTTP_PROXY NO_PROXY` and lowercase), `NODE_EXTRA_CA_CERTS SSL_CERT_FILE CARGO_HOME RUSTUP_HOME`; no `WSX_*`. A stdout line over 4 MiB is dropped in buffer-sized steps.
 
 - Steer: a stream-json user message during a turn. Claude does not save it in its history, so the host logs it. A steer with no running turn is sent as an add.
-- A non-empty `permission_denials`, or a result `status: blocked`, makes the task `blocked` without checks.
+- Only the worker's own `status: blocked` makes the task `blocked` (no checks run). Tool calls Claude denied (`permission_denials`) are evidence: they are logged on the `result` event, listed in `result.json` (`denials`, also in `show --json`) and under Evidence in the report, and checks still run.
 - Result schema: `{status: done|blocked|failed, summary, decisions[{choice, reason}], human_verify[{check, pass_if}], left_open[], notes}`.
 
 ## Checks, revisions and report
 
-After each result that is not blocked the host runs `tasks.checks` with `/bin/sh -c` in the working copy (20 min and 8 KiB of output each, no `WSX_*`), then sets `refs/wsx/task/<n>/r<k>` to the worker's HEAD. The host commits nothing; the worker commits. `ready` needs worker status `done` and every check at exit 0; otherwise `failed`. `report.md` has Asked, Summary, Decisions, Changes (`base..r<k>` commits and diffstat, plus uncommitted files), Evidence, Human Verify and Left open, built from the log, git and `result.json` only.
+After each result that is not blocked the host runs `tasks.checks` with `/bin/sh -c` in the working copy (`tasks.checkTimeoutSeconds`, default 1200, and 8 KiB of output each, no `WSX_*`; a timed-out check's process group is killed), then sets `refs/wsx/task/<n>/r<k>` to the worker's HEAD. The host commits nothing; the worker commits. `ready` needs worker status `done` and every check at exit 0; otherwise `failed`. `report.md` has Asked, Summary, Decisions, Changes (`base..r<k>` commits and diffstat, plus uncommitted files), Evidence, Human Verify and Left open, built from the log, git and `result.json` only.
 
 ## Close
 
@@ -70,9 +70,10 @@ After each result that is not blocked the host runs `tasks.checks` with `/bin/sh
 tasks:
   agent: { adapter: claude, model: sonnet, tools: [Read, Edit, "Bash(cargo test:*)"] }
   checks: ["cargo fmt --check"]
+  checkTimeoutSeconds: 1200
 ```
 
-Defaults: adapter `claude`, model `sonnet`, tools `Read Glob Grep Edit Write` plus `Bash(git add|commit|status|diff|log:*)`, no checks. Up to 64 tools and 64 checks; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.
+Defaults: adapter `claude`, model `sonnet`, tools `Read Glob Grep Edit Write` plus `Bash(git add|commit|status|diff|log:*)`, no checks. Up to 64 tools and 64 checks; `checkTimeoutSeconds` is 1..86400; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.
 
 ## Verify
 

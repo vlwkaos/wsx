@@ -16,6 +16,7 @@ const MAX_BRANCH_PREFIX_BYTES: usize = 256;
 const MAX_DEFAULT_COMMAND_BYTES: usize = 16 * 1024;
 const MAX_TASK_WORD_BYTES: usize = 256;
 const MAX_TASK_LIST_ITEMS: usize = 64;
+const MAX_CHECK_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 const TASK_ADAPTERS: &[&str] = &["claude"];
 const PROJECT_CONFIG_TEMPLATE: &str = "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\ngit:\n  subtrees: []\nworktree:\n  branchPrefix:\n  # defaultSession:\n  #   enabled: true\n  #   command:\n";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -45,6 +46,11 @@ struct TasksFile {
     agent: Option<TaskAgentFile>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     checks: Vec<String>,
+    #[serde(
+        rename = "checkTimeoutSeconds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    check_timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -234,6 +240,14 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
     }
     config.checks = validate_list(file.checks, "tasks.checks", MAX_DEFAULT_COMMAND_BYTES)?;
+    if let Some(seconds) = file.check_timeout_seconds {
+        if !(1..=MAX_CHECK_TIMEOUT_SECS).contains(&seconds) {
+            return Err(format!(
+                "tasks.checkTimeoutSeconds must be 1..={MAX_CHECK_TIMEOUT_SECS}"
+            ));
+        }
+        config.check_timeout_secs = seconds;
+    }
     Ok(config)
 }
 

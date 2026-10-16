@@ -133,6 +133,18 @@ pub fn render(
         }
     }
 
+    let denials = log.iter().rev().find_map(|entry| match &entry.event {
+        LogEvent::Result { denials, .. } => Some(denials),
+        _ => None,
+    });
+    if let Some(denials) = denials.filter(|denials| !denials.is_empty()) {
+        out.push_str("Denied tool calls in the last turn (the worker continued without them):\n\n");
+        for denial in denials {
+            let _ = writeln!(out, "- `{denial}`");
+        }
+        out.push('\n');
+    }
+
     out.push_str("## Human Verify\n\n");
     if result.human_verify.is_empty() {
         out.push_str("None reported.\n\n");
