@@ -5,7 +5,7 @@ import { api } from "./api.js";
 import { html, Icon, useEffect, useRef, useState } from "./lib.js";
 import { can } from "./store.js";
 import { toast } from "./ui.js";
-import { needing, taskLink } from "./tasks.js";
+import { taskLink } from "./tasks.js";
 
 const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 // `refs/heads/main` reads as `main`, `refs/remotes/origin/main` as `origin/main`.
@@ -108,7 +108,7 @@ export function ProjectBrief({ project, overview, onExplained }) {
     timer.current = setTimeout(() => { timer.current = null; read(); }, Math.max(0, last.current + BRIEF_EVERY_MS - Date.now()));
   }, [overview]);
   if (!ledger) return null;
-  const needs = needing(project, overview).filter((item) => item.kind !== "done").length;
+  const needs = overview?.needs.length ?? 0;
   const main = branchName(ledger.deploys?.default_branch) || ledger.main?.branch || "the default branch";
   const landed = ledger.recent.filter((row) => row.state === "landed").slice(0, 3);
   const deploys = ["deploy", "release"].map((kind) => deployWords(ledger.deploys?.[kind], kind, main)).filter(Boolean);

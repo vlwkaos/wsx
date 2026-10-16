@@ -71,6 +71,13 @@ const STATES = {
 };
 // A session without an agent is a shell: no inbox group, no chat.
 export const isAgent = (session) => Boolean(session.agent);
+// ^ A task worker (`task-<n>`) or the project manager (`task-manager`): its task or the
+// project chat shows it, so the session lists leave it out (docs/web-client.md "Home").
+// The hosts report as providers `task` and `manager`; the name covers a host not yet reporting.
+export const isTaskSession = (session) =>
+  ["task", "manager"].includes(session.agent?.provider) || /^task-(\d+|manager)$/.test(session.label);
+// The sessions a list shows.
+export const listedSessions = (sessions) => sessions.filter((session) => !isTaskSession(session));
 export function stateOf(session) {
   if (session.exited) return { key: "exited", word: "exited", group: session.agent ? "needs" : null, tone: session.agent ? "danger" : "muted" };
   if (!session.agent) return { key: "shell", word: "open", group: null, tone: "muted" };
@@ -97,23 +104,9 @@ export function markSeen(session) {
   try { localStorage.setItem(SEEN_KEY, JSON.stringify(kept)); } catch { /* a private window shows "new" again */ }
 }
 
-// "Done, not seen" is per device: the time a landed task was last opened here, by `<project>/<task>`.
-const TASK_SEEN_KEY = "wsx-task-seen";
-function tasksSeen() {
-  try { return JSON.parse(localStorage.getItem(TASK_SEEN_KEY)) ?? {}; } catch { return {}; }
-}
-export const taskSeen = (project, task, since) => (tasksSeen()[`${project}/${task}`] ?? 0) >= since;
-export function markTaskSeen(project, task, since) {
-  const known = tasksSeen();
-  if ((known[`${project}/${task}`] ?? 0) >= since) return;
-  known[`${project}/${task}`] = since;
-  // The oldest go first, so the record stays small.
-  const kept = Object.fromEntries(Object.entries(known).sort((left, right) => right[1] - left[1]).slice(0, 200));
-  try { localStorage.setItem(TASK_SEEN_KEY, JSON.stringify(kept)); } catch { /* a private window shows it again */ }
-}
-
-// Routes: #/ (inbox), #/projects, #/settings, #/s/<id>/chat|terminal, #/p/<id> (the manager with
-// task_view, else the sessions), #/p/<id>/sessions, #/p/<id>/files, #/p/<id>/t/<task>.
+// Routes: #/ (home: the projects with task_view, else the inbox), #/sessions (the inbox),
+// #/projects, #/settings, #/s/<id>/chat|terminal, #/p/<id> (the manager with task_view, else the
+// sessions), #/p/<id>/sessions, #/p/<id>/files, #/p/<id>/t/<task> (the manager with the task's sheet).
 export function parseRoute(hash) {
   const [, first = "", second, third, fourth] = hash.split("/");
   if (first === "s" && Number(second)) return { screen: "session", id: Number(second), tab: third === "terminal" ? "terminal" : "chat" };
@@ -122,7 +115,8 @@ export function parseRoute(hash) {
     return { screen: { files: "files", sessions: "sessions" }[third] ?? "project", id: Number(second) };
   }
   if (first === "projects" || first === "settings") return { screen: first };
-  return { screen: "inbox" };
+  if (first === "sessions") return { screen: "inbox" };
+  return { screen: "home" };
 }
 export function useRoute() {
   const [route, setRoute] = useState(parseRoute(location.hash));
@@ -154,6 +148,15 @@ export function trackHistory() {
     history.replaceState({ wsx: true, depth, from: new URL(event.oldURL).hash || "#/" }, "");
   });
 }
+// Put `under` beneath the current entry when the page was opened on this one from outside:
+// a task deep link (a notification) gets its chat beneath, so Back closes the sheet first.
+export function stackUnder(under) {
+  if (depth > 0) return;
+  const hash = location.hash;
+  history.replaceState({ wsx: true, depth: 0, from: null }, "", under);
+  history.pushState({ wsx: true, depth: 1, from: under }, "", hash);
+  depth = 1;
+}
 // The hash of this page's previous history entry, if there is one.
 const previous = () => (depth > 0 && history.state?.from) || null;
 // The screen Back leads to: the previous entry of this page, else `fallback`.
@@ -168,8 +171,17 @@ export function goBack(event) {
 // so Back still leads to where the screen was opened from.
 export function replaceRoute(event, hash) {
   event.preventDefault();
+  replaceHash(hash);
+}
+export function replaceHash(hash) {
   if (location.hash === hash) return;
   const oldURL = location.href;
   history.replaceState(history.state, "", hash);
   dispatchEvent(new HashChangeEvent("hashchange", { oldURL, newURL: location.href }));
+}
+// Leave a screen layer (a sheet) for `under`: Back when the previous entry is `under`,
+// else replace this entry, so the next Back does not return to the layer.
+export function leaveFor(under) {
+  if (previous() === under) history.back();
+  else replaceHash(under);
 }

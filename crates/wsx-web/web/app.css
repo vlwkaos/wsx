@@ -441,15 +441,10 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .chips li { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; }
 .chips li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Hook: .needs, .task-chip, .events — manager mode on a project (docs/web-client.md "Tasks").
-   The strip is bounded, so the manager chat under it keeps most of the height. */
+/* Hook: .need-card, .resolved, .tray, .more, .task-chip, .events — manager mode on a project
+   (docs/web-client.md "Tasks"). What needs the owner is a card in the conversation and one
+   line in the tray over the composer; the tray is bounded so the conversation keeps the height. */
 .manager .chat { --strip-share: 0.4; }
-.needs { flex: 0 1 auto; max-height: calc(100% * var(--strip-share)); overflow-y: auto; overscroll-behavior: contain; border-bottom: var(--border-width) solid var(--color-hairline); }
-.needs .row-link { padding-inline: var(--column-inset, var(--space-4)); }
-.needs .row { --row-inset: calc(var(--column-inset, var(--space-4)) + var(--space-1) * 1.5 + var(--space-3)); }
-/* In the inbox the strip is one group of rows under its project, as the sessions are. */
-.scroll .needs { max-height: none; overflow: visible; border-bottom: 0; }
-.group-link { text-decoration: none; font-weight: var(--font-weight-medium); color: var(--color-text); }
 .since {
   flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
   padding: var(--space-2) var(--column-inset, var(--space-4)); font-size: var(--font-size-sm);
@@ -457,19 +452,82 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 }
 .since p { min-width: 0; overflow-wrap: anywhere; }
 .since a { color: var(--color-accent); }
-.needs-none, .tasks-working { flex: 0 0 auto; padding: var(--space-2) var(--column-inset, var(--space-4)); font-size: var(--font-size-sm); color: var(--color-muted); }
-.needs-none { border-bottom: var(--border-width) solid var(--color-hairline); }
-.tasks-working { border-bottom: var(--border-width) solid var(--color-hairline); }
 .need-id { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--color-muted); }
 .need-action { min-height: var(--size-control); display: inline-flex; align-items: center; padding: 0 var(--space-3); text-decoration: none; font-size: var(--font-size-sm); }
-.need-form { display: flex; gap: var(--space-2); padding: 0 var(--column-inset, var(--space-4)) var(--space-2); padding-left: var(--row-inset); }
-.need-error { padding: 0 var(--column-inset, var(--space-4)) var(--space-2); padding-left: var(--row-inset); }
-.needs-more { margin: 0 var(--column-inset, var(--space-4)) var(--space-2); }
-.needs-line { display: none; padding: var(--space-2) var(--column-inset, var(--space-4)); font-size: var(--font-size-sm); color: var(--color-attention); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* An answer typed in the strip keeps its rows: the fold is for the composer's keyboard. */
-body:is([data-short], [data-keyboard]) .manager .needs:not(:focus-within) .needs-line { display: block; }
-body:is([data-short], [data-keyboard]) .manager .needs:not(:focus-within) :is(.rows, .needs-more) { display: none; }
+.need { --row-inset: calc(var(--space-4) + var(--space-1) * 1.5 + var(--space-3)); }
+.need-form { display: flex; gap: var(--space-2); padding: 0 var(--space-4) var(--space-2); padding-left: var(--row-inset); }
+.need-error { padding: 0 var(--space-4) var(--space-2); padding-left: var(--row-inset); }
+/* A card is the one framed block in the conversation: it asks for a decision. */
+.need-card { max-width: var(--size-prose); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control); background: var(--color-surface); }
+.need-card .row-link { padding-inline: var(--space-3); }
+.need-card { --row-inset: calc(var(--space-3) + var(--space-1) * 1.5 + var(--space-3)); }
+.need-card[data-flash] { border-color: var(--color-accent); }
+.resolved { max-width: var(--size-prose); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
+.resolved-id { color: inherit; font-weight: var(--font-weight-medium); }
+.tray { flex: 0 0 auto; max-height: calc(100% * var(--strip-share)); overflow-y: auto; overscroll-behavior: contain; padding: var(--space-1) var(--column-inset, var(--space-4)); border-top: var(--border-width) solid var(--color-hairline); }
+.tray-lines { list-style: none; margin: 0; padding: 0; }
+.tray-line {
+  width: 100%; min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-2);
+  padding: 0; border: 0; background: none; text-align: left; cursor: pointer; font-size: var(--font-size-sm);
+}
+.tray-words { flex: 0 0 auto; font-weight: var(--font-weight-medium); }
+.tray-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-muted); }
+.tray-more { min-width: var(--size-control); margin-bottom: var(--space-1); }
+.tray .need { margin: 0 calc(-1 * var(--space-4)); }
+/* Two lines and "+N"; with the keyboard up or on a short screen one line and "+N". */
+.tray:not([data-expanded]) .tray-lines li:nth-child(n+3) { display: none; }
+.tray-more-one { display: none; }
+body:is([data-short], [data-keyboard]) .tray:not([data-expanded]) .tray-lines li:nth-child(n+2) { display: none; }
+body:is([data-short], [data-keyboard]) .tray-more-one { display: inline; }
+body:is([data-short], [data-keyboard]) .tray-more-two { display: none; }
+.tray:not(:has(.tray-lines li:nth-child(3))) .tray-more:not([aria-expanded="true"]) { display: none; }
+body:is([data-short], [data-keyboard]) .tray .tray-more { display: inline-flex; }
+/* With the keyboard up the folded brief steps aside, and so does the tray while the `#` or `/`
+   list is open, so the list and part of the conversation fit above the keyboard. */
+body[data-keyboard] .brief:not([open]),
+body[data-keyboard] .chat:has(.slash) .tray { display: none; }
+.more { position: relative; }
+.more-button { font-size: var(--font-size-title); color: var(--color-text); }
+.more-menu {
+  position: absolute; z-index: 2; top: 100%; right: 0; min-width: calc(var(--size-rail) / 2); padding: var(--space-1) 0;
+  display: flex; flex-direction: column; border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control); background: var(--color-surface);
+}
+.more-menu a { min-height: var(--size-control); display: flex; align-items: center; padding: 0 var(--space-4); text-decoration: none; }
+.more-menu a:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
 .manager .log-wrap { overflow: hidden; }
+/* The task sheet: over the chat from the bottom, about 85% of the visible height; on a wide
+   screen a panel at the right. A swipe down on its top moves it with the finger. */
+.task-sheet {
+  position: fixed; inset: auto 0 0 0; margin: 0; padding: 0; width: 100%; max-width: none;
+  top: calc(var(--viewport-top, 0px) + var(--viewport-height, 100dvh) * 0.15 + var(--sheet-drag, 0px));
+  height: calc(var(--viewport-height, 100dvh) * 0.85); max-height: none;
+  display: flex; flex-direction: column; border: 0; border-top: var(--border-width) solid var(--color-hairline);
+  border-radius: var(--radius-sheet) var(--radius-sheet) 0 0; background: var(--color-bg); color: var(--color-text);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+body[data-keyboard] .task-sheet { padding-bottom: 0; }
+.task-sheet:not([open]) { display: none; }
+.task-sheet::backdrop { background: var(--color-overlay); }
+.task-sheet-top { flex: 0 0 auto; display: flex; justify-content: center; padding-top: var(--space-2); touch-action: none; cursor: grab; }
+.sheet-grip { width: calc(var(--space-4) * 2.5); height: var(--space-1); border-radius: var(--space-1); background: var(--color-faint); }
+.task-sheet .bar { touch-action: none; }
+/* ^ The sheet gives Back the focus when it opens; its ring stays inside the screen edge. */
+.task-sheet .bar .icon-button:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
+.task-sheet .task-page { flex: 1; min-height: 0; }
+@media (min-width: 900px) {
+  .task-sheet {
+    inset: 0 0 0 auto; top: 0; width: min(100%, calc(var(--size-rail) * 2)); height: 100%;
+    border-top: 0; border-left: var(--border-width) solid var(--color-hairline); border-radius: 0;
+  }
+  .task-sheet-top { display: none; }
+}
+/* Home: one row per project, what needs the owner first. */
+.count {
+  flex: 0 0 auto; min-width: calc(var(--space-4) * 1.25); padding: 0 var(--space-1); border-radius: var(--space-4);
+  text-align: center; font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); font-variant-numeric: tabular-nums;
+}
+.count[data-tone="attention"] { background: var(--color-attention); color: var(--color-bg); }
+.home-more { padding: var(--space-4); }
 .task-chip, .markdown .task-chip { color: var(--color-text); }
 .bar-link { padding-inline: var(--space-3); min-height: var(--size-control); display: inline-flex; align-items: center; }
 .task-chip {

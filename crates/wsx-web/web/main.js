@@ -1,20 +1,25 @@
 // Page shell: pairing gate, event stream, routes, and the two layouts.
 // Phone: top-level screens share a bottom tab bar; a session owns the full height.
-// Wide (900 px and more): a left rail with the inbox or the projects, the rest beside it.
+// Wide (900 px and more): a left rail with the home list (the inbox or the projects without
+// task_view), the rest beside it.
 import { api, openEvents, pageId } from "./api.js";
 import { html, render, useEffect, useState } from "./lib.js";
-import { can, events, noteBuild, parseRoute, shows, state, trackHistory, update, useRoute, useStore } from "./store.js";
+import { can, events, noteBuild, parseRoute, shows, stackUnder, state, trackHistory, update, useRoute, useStore } from "./store.js";
+import { Home } from "./home.js";
 import { applyScheme, Notices } from "./ui.js";
 import { Pair } from "./pair.js";
 import { Inbox } from "./inbox.js";
 import { Project, Projects, ProjectSessions } from "./projects.js";
 import { loadTasks, Manager } from "./tasks.js";
-import { TaskPage } from "./task.js";
 import { Session } from "./session.js";
 import { Files } from "./files.js";
 import { Settings } from "./settings.js";
 
-const TABS = [["inbox", "#/", "Inbox"], ["projects", "#/projects", "Projects"], ["settings", "#/settings", "Settings"]];
+// ^ With task_view home is one row per project, so a Projects tab would repeat it; a project's
+// worktrees and shells are a tap away in its chat (⋯ Sessions), every session in "All sessions".
+const tabs = () => can("task_view")
+  ? [["home", "#/", "Home"], ["settings", "#/settings", "Settings"]]
+  : [["home", "#/", "Inbox"], ["projects", "#/projects", "Projects"], ["settings", "#/settings", "Settings"]];
 
 function useWide() {
   const query = matchMedia("(min-width: 900px)");
@@ -70,30 +75,33 @@ function followViewport() {
 
 const Tabs = ({ current, rail }) => html`
   <nav class=${rail ? "rail-tabs" : "tabbar"} aria-label="Screens">
-    ${TABS.map(([name, href, label]) => html`
+    ${tabs().map(([name, href, label]) => html`
       <a href=${href} aria-current=${current === name ? "page" : null}>${label}</a>`)}
   </nav>`;
 
 function Screen({ route }) {
   if (route.screen === "session") return html`<${Session} key=${route.id} id=${route.id} tab=${route.tab} />`;
   if (route.screen === "files") return html`<${Files} key=${route.id} project=${route.id} />`;
-  if (route.screen === "project") {
-    return can("task_view") ? html`<${Manager} key=${route.id} project=${route.id} />` : html`<${Project} key=${route.id} id=${route.id} />`;
+  // ^ The chat and the chat with a task's sheet are one Manager, so opening and closing the
+  // sheet keeps the conversation, its scroll and the composer's draft.
+  if (route.screen === "project" || route.screen === "task") {
+    return can("task_view") ? html`<${Manager} key=${route.id} project=${route.id} task=${route.task ?? null} />` : html`<${Project} key=${route.id} id=${route.id} />`;
   }
-  if (route.screen === "task") return html`<${TaskPage} key=${`${route.id}/${route.task}`} project=${route.id} task=${route.task} />`;
   if (route.screen === "sessions") return html`<${ProjectSessions} key=${route.id} id=${route.id} />`;
   if (route.screen === "settings") return html`<${Settings} />`;
   if (route.screen === "projects") return html`<${Projects} />`;
-  return html`<${Inbox} />`;
+  if (route.screen === "inbox" || !can("task_view")) return html`<${Inbox} />`;
+  return html`<${Home} />`;
 }
 
 function App() {
   useStore();
   const route = useRoute();
   const wide = useWide();
-  const top = TABS.some(([name]) => name === route.screen);
+  const top = tabs().some(([name]) => name === route.screen) || (route.screen === "inbox" && !can("task_view"));
   useEffect(() => {
-    const titles = { inbox: "Inbox", projects: "Projects", settings: "Settings", files: "Files" };
+    const titles = { home: can("task_view") ? "Home" : "Inbox", inbox: can("task_view") ? "All sessions" : "Inbox",
+      projects: "Projects", settings: "Settings", files: "Files" };
     const session = route.screen === "session" && state.sessions.find((candidate) => candidate.id === route.id);
     const project = ["project", "sessions", "task"].includes(route.screen) && state.projects.find((candidate) => candidate.id === route.id);
     document.title = `${session ? session.label : project ? project.name : titles[route.screen] ?? "Session"} - ${state.site.name}`;
@@ -106,19 +114,21 @@ function App() {
         ${top && html`<${Tabs} current=${route.screen} />`}
       </div>`;
   }
-  // The rail keeps the list the main area was reached from.
-  const list = ["projects", "project", "files", "sessions", "task"].includes(route.screen) ? "projects" : "inbox";
+  // The rail keeps the list the main area was reached from; with task_view it is always home.
+  const list = can("task_view") ? "home" : ["projects", "project", "files", "sessions", "task"].includes(route.screen) ? "projects" : "inbox";
+  const railList = { home: html`<${Home} rail />`, projects: html`<${Projects} rail />`, inbox: html`<${Inbox} rail />` }[list];
+  const listScreen = route.screen === "home" || route.screen === "projects" || (route.screen === "inbox" && !can("task_view"));
   return html`
     <div class="app" data-wide>
       <aside class="rail">
-        <div class="rail-head"><span class="rail-name">${state.site.name}</span><${Tabs} current=${top ? route.screen : list} rail /></div>
-        <div class="rail-body">${list === "projects" ? html`<${Projects} rail />` : html`<${Inbox} rail />`}</div>
+        <div class="rail-head"><span class="rail-name">${state.site.name}</span><${Tabs} current=${top ? route.screen : list === "inbox" ? "home" : list} rail /></div>
+        <div class="rail-body">${railList}</div>
       </aside>
       <div class="stage">
         <${Notices} />
         <main class="screen" id="main">
-          ${route.screen === "inbox" || route.screen === "projects"
-            ? html`<p class="placeholder">${shows("chat") || shows("terminal") ? "Choose a session." : "Choose a project."}</p>`
+          ${listScreen
+            ? html`<p class="placeholder">${!can("task_view") && (shows("chat") || shows("terminal")) ? "Choose a session." : "Choose a project."}</p>`
             : html`<${Screen} route=${route} />`}
         </main>
       </div>
@@ -165,6 +175,8 @@ function start(session) {
     },
   });
   if (can("task_view")) loadTasks();
+  const opened = parseRoute(location.hash);
+  if (opened.screen === "task" && can("task_view")) stackUnder(`#/p/${opened.id}`);
   addEventListener("hashchange", () => tellPresence(false));
   document.addEventListener("visibilitychange", () => tellPresence(false));
   // ^ index.html's "Loading…" placeholder is not Preact's: a first render adopts an

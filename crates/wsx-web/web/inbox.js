@@ -1,24 +1,9 @@
-// Inbox: the home screen. Agent state is the first thing to read, so sessions are
-// listed by what they need: your answer, nothing yet, a look, or nothing at all.
+// Inbox: every session by what it needs: your answer, nothing yet, a look, or nothing at all.
+// The home screen without task_view; with it, "All sessions" (#/sessions) under home.
 import { api } from "./api.js";
 import { elapsed, html, Icon, useNow, useState } from "./lib.js";
-import { can, isAgent, isNew, sessionLink, shows, stateOf, useStore } from "./store.js";
-import { Needs, needing } from "./tasks.js";
-
-// Each granted project's Needs-you items, under its name (docs/web-client.md "Inbox").
-function TaskNeeds({ store }) {
-  if (!can("task_view")) return null;
-  const waiting = store.projects.filter((project) => needing(project.id, store.tasks[project.id]).length);
-  return waiting.length ? html`
-    <section aria-label="Tasks">
-      <h2 class="label">Tasks</h2>
-      ${waiting.map((project) => html`
-        <div class="group" key=${project.id}>
-          <div class="group-head"><a class="group-name group-link" href=${`#/p/${project.id}`}>${project.name}</a></div>
-          <${Needs} project=${project.id} overview=${store.tasks[project.id]} all />
-        </div>`)}
-    </section>` : null;
-}
+import { can, isAgent, isNew, listedSessions, sessionLink, shows, stateOf, useStore } from "./store.js";
+import { Back } from "./ui.js";
 
 // One session. Left: a state mark. Middle: the work first, project › worktree, then the
 // session and its provider, and for a working session what it does. Right: the state
@@ -81,8 +66,10 @@ const SECTIONS = [["needs", "Needs you"], ["running", "Running"], ["finished", "
 
 export function Inbox({ rail }) {
   const store = useStore();
-  // The inbox is agent work; shells are listed under their worktree in Projects.
-  const sessions = store.sessions.filter(isAgent);
+  // The inbox is agent work; shells are listed under their worktree in Projects, and task
+  // workers and the manager in their task and their project's chat.
+  const listed = listedSessions(store.sessions);
+  const sessions = listed.filter(isAgent);
   const now = useNow(sessions.some((session) => stateOf(session).key === "working"));
   const currentId = Number(location.hash.split("/")[2]) || null;
   const row = (session, place) => html`<${SessionRow} key=${session.id} session=${session} now=${now} current=${rail && session.id === currentId} place=${place} />`;
@@ -98,7 +85,7 @@ export function Inbox({ rail }) {
     body = html`<p class="empty">wsx is not running on the host. Sessions return when it starts.</p>`;
   } else if (!store.loaded) {
     body = html`<p class="empty">Loading…</p>`;
-  } else if (!sessions.length && store.sessions.length) {
+  } else if (!sessions.length && listed.length) {
     body = html`<p class="empty">No agent session. Shells are in <a class="link-action" href="#/projects">Projects</a>.</p>`;
   } else if (!sessions.length) {
     body = html`
@@ -126,9 +113,12 @@ export function Inbox({ rail }) {
             </div>`)}
         </section>` : null}`;
   }
+  const top = !rail && (can("task_view")
+    ? html`<header class="bar"><${Back} fallback="#/" /><div class="bar-title"><span class="bar-label">All sessions</span></div></header>`
+    : html`<h1 class="title">Inbox</h1>`);
   return html`
     <div class="page">
-      ${!rail && html`<h1 class="title">Inbox</h1>`}
-      <div class="scroll"><${TaskNeeds} store=${store} />${body}</div>
+      ${top}
+      <div class="scroll">${body}</div>
     </div>`;
 }

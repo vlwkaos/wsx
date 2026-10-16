@@ -37,6 +37,15 @@ export function elapsed(ms) {
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
+// How long ago, in one short word: now, 5m ago, 3h ago, 2d ago.
+export function ago(ms) {
+  const minutes = Math.floor(Math.max(0, ms) / 60000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 48 * 60) return `${Math.floor(minutes / 60)}h ago`;
+  return `${Math.floor(minutes / 1440)}d ago`;
+}
+
 // The present time, renewed every second while `active` is true.
 export function useNow(active) {
   const [now, setNow] = useState(Date.now());

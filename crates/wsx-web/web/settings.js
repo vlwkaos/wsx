@@ -114,6 +114,11 @@ export function Settings() {
                 <button class="button" type="button" onClick=${reloadForBuild}>Reload</button>
               </div>`}
           </section>`}
+        ${can("task_view") && html`
+          <section aria-label="Sessions">
+            <h2 class="label">Sessions</h2>
+            <div class="actions"><a class="link-action" href="#/sessions">All sessions</a></div>
+          </section>`}
         <section aria-label="This device">
           <h2 class="label">This device</h2>
           <p class="muted device">Paired as "${state.device.name}" (device ${state.device.id}).</p>

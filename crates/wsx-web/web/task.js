@@ -1,9 +1,9 @@
-// One task: its actions, its report with Pass and Fail at the Human Verify items, the files it
-// shares with other tasks, and its timeline (docs/web-client.md "Task page").
+// One task, in its sheet over the project chat: its story, its actions, its report with Pass and
+// Fail at the Human Verify items, the files it shares with other tasks, and its timeline
+// (docs/web-client.md "Task sheet").
 import { api } from "./api.js";
 import { html, Icon, useEffect, useRef, useState } from "./lib.js";
-import { can, events, markTaskSeen, useStore } from "./store.js";
-import { Back } from "./ui.js";
+import { can, events, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { grow, isolate, release } from "./chat.js";
 import { announce, loadTasks, taskLink, taskState, withChips } from "./tasks.js";
@@ -138,7 +138,7 @@ function Message({ detail, act }) {
     </div>`;
 }
 
-export function TaskPage({ project, task }) {
+export function TaskPage({ project, task, onClose, grip }) {
   const store = useStore();
   const [detail, setDetail] = useState(null);
   const [failure, setFailure] = useState("");
@@ -172,18 +172,19 @@ export function TaskPage({ project, task }) {
   // An approval or a decision changes the overview, not this task's files.
   const overview = store.tasks[project];
   useEffect(() => { if (detail) load(); }, [overview?.decisions?.[0]?.approval, overview?.needs?.length]);
-  // "Done, not seen" clears on this device once the page of a landed task was open.
-  useEffect(() => { if (detail?.state === "landed") markTaskSeen(project, task, detail.updated_unix_ms); }, [detail?.state, detail?.updated_unix_ms]);
   const act = useAction(detail ?? { project, id: task });
   const words = withChips(project);
 
+  // ^ The worker's own session, to watch it: the session lists leave task sessions out.
+  const worker = store.sessions.find((session) => session.project.id === project && session.label === `task-${task}`);
   const top = html`
-    <header class="bar">
-      <${Back} fallback=${`#/p/${project}`} />
+    <header class="bar" onPointerDown=${grip?.down} onPointerMove=${grip?.move} onPointerUp=${grip?.up} onPointerCancel=${grip?.up}>
+      <button class="icon-button" type="button" aria-label="Back to the chat" onClick=${onClose}><${Icon} name="back" /></button>
       <div class="bar-title">
         <span class="bar-label">#${task}${detail?.title ? ` ${detail.title}` : ""}</span>
         ${detail && html`<span class="bar-state" data-tone=${taskState(detail.state)[1]}>${taskState(detail.state)[0]} · r${detail.revision}</span>`}
       </div>
+      ${worker && html`<div class="bar-tools"><a class="link-action bar-link" href=${`#/s/${worker.id}/terminal`}>Session</a></div>`}
     </header>`;
   if (!detail) return html`<div class="page">${top}<p class=${failure ? "error empty" : "empty"}>${failure || "Loading…"}</p></div>`;
 
@@ -230,7 +231,7 @@ export function TaskPage({ project, task }) {
     <div class="page task-page">
       ${top}
       <div class="scroll">
-        <${TaskStory} project=${project} detail=${detail} onExplained=${() => { location.hash = `#/p/${project}`; }} />
+        <${TaskStory} project=${project} detail=${detail} onExplained=${onClose} />
         ${(approvals.length || allow || land || review) && html`
           <section class="task-actions" aria-label="Actions">${approvals}${allow}${review}${land}</section>`}
         ${sections(detail.report).map((section) => html`

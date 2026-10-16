@@ -1,15 +1,14 @@
 // Projects: every project this site may reach. A project opens its worktrees and
 // their sessions; Files and New session stay on each row.
 import { html, useNow } from "./lib.js";
-import { can, shows, stateOf, useStore } from "./store.js";
-import { needing } from "./tasks.js";
+import { can, listedSessions, shows, stateOf, useStore } from "./store.js";
 import { NewSession, SessionRow } from "./inbox.js";
 import { Back } from "./ui.js";
 
 const counted = (count) => (count === 1 ? "1 session" : `${count} sessions`);
 // How many task items wait for the owner in a project, after its session count.
 const waiting = (store, project) => {
-  const count = can("task_view") ? needing(project.id, store.tasks[project.id]).length : 0;
+  const count = can("task_view") ? store.tasks[project.id]?.needs.length ?? 0 : 0;
   return count ? ` · ${count} ${count === 1 ? "needs" : "need"} you` : "";
 };
 export const filesLink = (project) => shows("files") && can("files_read") && html`
@@ -17,7 +16,7 @@ export const filesLink = (project) => shows("files") && can("files_read") && htm
 
 export function Projects({ rail }) {
   const store = useStore();
-  const count = (project) => store.sessions.filter((session) => session.project.id === project.id).length;
+  const count = (project) => listedSessions(store.sessions).filter((session) => session.project.id === project.id).length;
   const [, , open] = location.hash.split("/");
   let body;
   if (!store.daemon) body = html`<p class="empty">wsx is not running on the host.</p>`;
@@ -55,7 +54,7 @@ export const ProjectSessions = ({ id }) => html`<${Project} id=${id} back=${`#/p
 export function Project({ id, back = "#/projects" }) {
   const store = useStore();
   const project = store.projects.find((candidate) => candidate.id === id);
-  const sessions = project ? store.sessions.filter((session) => session.project.id === id) : [];
+  const sessions = project ? listedSessions(store.sessions).filter((session) => session.project.id === id) : [];
   const now = useNow(sessions.some((session) => stateOf(session).key === "working"));
   if (!project) {
     return html`
