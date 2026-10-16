@@ -205,6 +205,19 @@ def run(wsx, wsxd, work, owned):
     assert relaunch['resume'] and relaunch['session'] == launch['session']
     assert 'Bash(make:*)' in relaunch['allowed']
 
+    # 3b. Denials the worker worked around do not block: checks run and the denials are evidence.
+    js('task', 'add', '1', 'DENIED rm-tmp WORK d.txt')
+    ready = wait_state(1, 'ready', 'failed', 'blocked')
+    assert ready['state'] == 'ready', ready
+    assert ready['result']['denials'] == ['Bash(rm-tmp)'], ready['result']
+    report = Path(ready['report']).read_text()
+    assert report.index('`Bash(rm-tmp)`') > report.index('## Evidence'), report
+
+    # 3c. A stdout line past the reader's 4 MiB bound is dropped and the turn still ends.
+    js('task', 'add', '1', 'HUGE NOOP')
+    assert wait_state(1, 'ready', 'failed')['state'] == 'ready'
+    assert not any(len(e.get('text', '')) > 1000 for e in log(1) if e['kind'] == 'agent')
+
     # 4. A failing check makes the task failed with the evidence.
     js('task', 'add', '1', 'WORK broken.txt')
     failed = wait_state(1, 'failed')
@@ -289,6 +302,31 @@ def run(wsx, wsxd, work, owned):
     assert not (Path(sixth['working_copy']) / 'later.txt').exists()
     wait_state(6, 'ready', 'failed')
     js('task', 'close', '6')
+
+    # 12. Two concurrent starts get distinct numbers and both work.
+    starts = [subprocess.Popen([str(wsx), 'task', 'new', 'NOOP', '--json'], cwd=project, env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(2)]
+    outputs = [start.communicate(timeout=60) for start in starts]
+    assert all(start.returncode == 0 for start in starts), outputs
+    ids = sorted(json.loads(out)['id'] for out, _ in outputs)
+    assert ids == [7, 8], ids
+    for n in ids:
+        # ^ NOOP on main lacks a.txt, so the declared check fails: both still finish r1.
+        done = wait_state(n, 'ready', 'failed')
+        assert done['revision'] == 1 and done['result']['checks'][0]['exit'] == 1, done
+        js('task', 'close', n)
+
+    # 13. A check that runs past tasks.checkTimeoutSeconds is killed and fails the task.
+    (project / 'wsx.config.yml').write_text(
+        'tasks:\n  agent:\n    tools: [Read]\n  checks: ["sleep 37"]\n  checkTimeoutSeconds: 1\n')
+    timed = js('task', 'new', 'NOOP')
+    failed = wait_state(timed['id'], 'failed', 'ready')
+    check = failed['result']['checks'][0]
+    assert failed['state'] == 'failed' and check['timed_out'] and check['exit'] is None, failed['result']
+    assert '`sleep 37`: timed out' in Path(failed['report']).read_text()
+    assert not leftovers('sleep 37')
+    js('task', 'close', timed['id'])
+    (project / 'wsx.config.yml').write_text(CONFIG)
 
 
 if __name__ == '__main__':

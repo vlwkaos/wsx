@@ -24,7 +24,6 @@ use wsx_core::task::{
 
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-const CHECK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const CHECK_OUTPUT_BYTES: usize = 8 * 1024;
 const MAX_RESULT_BYTES: usize = 256 * 1024;
 const MAX_TOOL_BYTES: usize = 256;
@@ -52,6 +51,8 @@ struct Host {
     stop_requested: bool,
     /// The result of the latest turn, until its checks end.
     last_result: Option<WorkerResult>,
+    /// Tool calls denied in that turn.
+    last_denials: Vec<String>,
     started: Instant,
 }
 
@@ -84,6 +85,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         restart_needed: false,
         stop_requested: false,
         last_result: None,
+        last_denials: Vec::new(),
         started: Instant::now(),
     };
     std::thread::spawn(move || serve(listener, events));
@@ -381,15 +383,18 @@ impl Host {
             status: result.status.clone(),
             summary: result.summary.clone(),
             usage: Some(turn.usage),
+            denials: turn.denials.clone(),
         });
         self.say(&format!(
             "result {}: {}",
             result.status,
             first_line(&result.summary)
         ));
+        self.last_denials = turn.denials.clone();
         self.write_result(&result, &[]);
         self.last_result = Some(result.clone());
-        if !turn.denials.is_empty() || result.status == "blocked" {
+        // ^ Only the worker's own word blocks a task. Denials it worked around are evidence.
+        if result.status == "blocked" {
             self.log(LogEvent::Blocked {
                 denials: turn.denials,
             });
@@ -398,12 +403,13 @@ impl Host {
         }
         self.set_state(TaskState::Checking);
         let checks = self.record.checks.clone();
+        let timeout = Duration::from_secs(self.record.check_timeout_secs);
         let working_copy = self.record.working_copy.clone();
         let events = self.events.clone();
         std::thread::spawn(move || {
             let results = checks
                 .iter()
-                .map(|command| run_check(&working_copy, command))
+                .map(|command| run_check(&working_copy, command, timeout))
                 .collect();
             let _ = events.send(Event::ChecksDone(results));
         });
@@ -488,6 +494,7 @@ impl Host {
             "revision": self.record.revision,
             "result": result,
             "checks": checks,
+            "denials": self.last_denials,
         }))
         .unwrap_or_default();
         if bytes.len() > MAX_RESULT_BYTES {
@@ -592,7 +599,7 @@ fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
 }
 
-fn run_check(working_copy: &Path, command: &str) -> CheckResult {
+fn run_check(working_copy: &Path, command: &str, timeout: Duration) -> CheckResult {
     let mut process = std::process::Command::new("/bin/sh");
     process
         .args(["-c", command])
@@ -603,7 +610,7 @@ fn run_check(working_copy: &Path, command: &str) -> CheckResult {
             process.env_remove(name);
         }
     }
-    match output_with_timeout_limit(&mut process, CHECK_TIMEOUT, CHECK_OUTPUT_BYTES) {
+    match output_with_timeout_limit(&mut process, timeout, CHECK_OUTPUT_BYTES) {
         Ok(output) => {
             let mut text = String::from_utf8_lossy(&output.stdout)
                 .trim_end()

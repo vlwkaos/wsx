@@ -59,6 +59,8 @@ pub struct TaskRecord {
     pub model: String,
     pub tools: Vec<String>,
     pub checks: Vec<String>,
+    #[serde(default = "default_check_timeout_secs")]
+    pub check_timeout_secs: u64,
     /// The adapter's own conversation ID, used to resume after a stop.
     pub agent_session: Option<String>,
     pub state: TaskState,
@@ -110,6 +112,9 @@ pub enum LogEvent {
         summary: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TurnUsage>,
+        /// Tool calls the agent refused during the turn; the worker may have continued without them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        denials: Vec<String>,
     },
     Checks {
         results: Vec<CheckResult>,
@@ -149,6 +154,10 @@ pub struct LogEntry {
     pub unix_ms: u64,
     #[serde(flatten)]
     pub event: LogEvent,
+}
+
+fn default_check_timeout_secs() -> u64 {
+    crate::model::workspace::DEFAULT_CHECK_TIMEOUT_SECS
 }
 
 pub fn now_unix_ms() -> u64 {
