@@ -40,6 +40,8 @@ fn main() -> Result<()> {
                     subcommand: cli::AgentCmd::Install { .. }
                         | cli::AgentCmd::Context { .. }
                         | cli::AgentCmd::Report { .. }
+                        | cli::AgentCmd::PresenceRenew { .. }
+                        | cli::AgentCmd::WakeHeartbeat { .. }
                         | cli::AgentCmd::ExchangeReceipt { .. },
                 }
                 | cli::Command::Session {

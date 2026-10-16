@@ -102,7 +102,7 @@ port_visibility = "non_agentic"
 attention_priority = "blocked_first"
 ```
 
-With `wake_mode` enabled on macOS, generation-authorized Working reports keep a bounded idle-sleep assertion active. Claude starts an asynchronous five-minute heartbeat for each prompt so a long streamed response remains protected beyond the base 30-minute lease. The heartbeat is bound to the exact prompt and runtime generation; completion, blocking, errors, detachment, runtime replacement, or a later prompt revokes the old heartbeat.
+With `wake_mode` enabled on macOS, generation-authorized Working reports keep a bounded idle-sleep assertion active. Claude starts an asynchronous heartbeat for each prompt so a long streamed response remains protected beyond the base 30-minute lease. The heartbeat is bound to the exact prompt and runtime generation and renews every 5 seconds; completion, blocking, errors, detachment, runtime replacement, a later prompt, a closed pane or a stopped wsxd ends it within seconds.
 
 Set `auto_collapse` to `{ mode = "disabled" }` to turn automatic collapse off, or `{ mode = "flat", hours = 72 }` for a fixed window. Legacy numeric `auto_collapse_after_hours` values remain compatible and migrate to flat mode; zero migrates to disabled.
 

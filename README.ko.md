@@ -102,7 +102,7 @@ port_visibility = "non_agentic"
 attention_priority = "blocked_first"
 ```
 
-macOS에서 `wake_mode`를 켜면 현재 runtime generation에서 권한을 받은 Working report가 제한된 idle sleep 방지 assertion을 유지합니다. Claude는 prompt마다 5분 간격의 비동기 heartbeat를 시작하므로 긴 streaming response도 기본 30분 lease를 넘어 보호됩니다. Heartbeat는 정확한 prompt와 runtime generation에 묶입니다. 완료, blocked 상태, error, detach, runtime 교체 또는 다음 prompt가 발생하면 이전 heartbeat의 권한은 사라집니다.
+macOS에서 `wake_mode`를 켜면 현재 runtime generation에서 권한을 받은 Working report가 제한된 idle sleep 방지 assertion을 유지합니다. Claude는 prompt마다 비동기 heartbeat를 시작하므로 긴 streaming response도 기본 30분 lease를 넘어 보호됩니다. Heartbeat는 정확한 prompt와 runtime generation에 묶이고 5초마다 갱신합니다. 완료, blocked 상태, error, detach, runtime 교체, 다음 prompt, pane 종료 또는 wsxd 중지가 발생하면 몇 초 안에 heartbeat가 끝납니다.
 
 자동 collapse를 끄려면 `auto_collapse`를 `{ mode = "disabled" }`로 설정하고, 고정 window를 사용하려면 `{ mode = "flat", hours = 72 }`로 설정합니다. 기존 numeric `auto_collapse_after_hours`는 flat mode로 호환되며, 0은 disabled로 migration됩니다.
 

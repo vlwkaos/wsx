@@ -904,9 +904,39 @@ def main():
         assert failed.get('delivery_sha256') is None, 'failed delivery retained input-binding authority'
         assert failed.get('native_input_id') is None, 'failed continuation retained native acceptance'
         assert len(traces('claude')) == 5, 'unconfirmed stash delivered a prompt'
+        # A wake heartbeat ends within seconds of its prompt, pane or wsxd. Claude starts it from
+        # a detached hook shell and never ends it: docs/agent-reporting.md "Wake heartbeat".
+        beat_command = next(hook['command'] for group in claude_config['hooks']['UserPromptSubmit']
+                            for hook in group['hooks'] if hook['command'].endswith(' heartbeat'))
+        def heartbeat(prompt, pane=claude, pane_generation=generation):
+            working = dict(report,pane_id=pane,runtime_generation=pane_generation,state='working',wake_token=prompt)
+            assert call('agent_report',working)['type'] == 'ack'
+            shell = subprocess.Popen(['/bin/sh','-c',beat_command],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,start_new_session=True,
+                env=dict(claude_env,WSX_PANE_ID=str(pane),WSX_RUNTIME_GENERATION=pane_generation))
+            shell.stdin.write(json.dumps({'prompt_id':prompt}).encode()); shell.stdin.close()
+            time.sleep(1)
+            assert shell.poll() is None, 'heartbeat did not start'
+            return shell
+        def ended(shell, label):
+            wait(lambda: shell.poll() is not None, label, 12)
+        done_beat = heartbeat('prompt-done')
+        assert call('agent_report',dict(report,state='done'))['type'] == 'ack'
+        ended(done_beat,'heartbeat of a finished prompt')
+        replaced, last_beat = heartbeat('prompt-replaced'), heartbeat('prompt-last')
+        ended(replaced,'heartbeat of a replaced prompt')
+        assert last_beat.poll() is None, 'the current heartbeat ended with the replaced one'
+        codex_generation = (work / 'codex.generation').read_text()
+        pane_beat = heartbeat('prompt-pane', codex, codex_generation)
+        codex_session = next(pane for pane in call('snapshot')['data']['panes'] if pane['id'] == codex)['session_id']
+        cli('session','delete',codex_session,'--json')
+        ended(pane_beat,'heartbeat of a deleted pane')
+        assert last_beat.poll() is None
         assert call('shutdown')['type'] == 'ack'
         daemon.wait(timeout=5)
         assert not path.exists() and daemon.returncode == 0
+        ended(last_beat,'heartbeat after wsxd stopped')
+        assert not path.exists(), 'a heartbeat started wsxd again'
         # Context must not bootstrap a daemon or silently fall back to a screen.
         cli('agent','context','--json',ok=False)
         assert not path.exists()
@@ -937,6 +967,6 @@ def main():
         if success: shutil.rmtree(work)
         else: print('diagnostics retained at '+str(work),file=sys.stderr)
     print(json.dumps({'result':'PASS','seconds':round(time.monotonic()-started,2),'model_calls':0,
-        'journey':'installed shell/JS reporting, current/stale generation, unchanged actor, metadata/native history, scoped bounds, lease/provider refusal, preserved draft/continuation, capability/generation/round-fenced request-bound receipts, lifecycle distinct from completion, duplicate receipt idempotence, no bootstrap, private cleanup'}))
+        'journey':'installed shell/JS reporting, current/stale generation, unchanged actor, metadata/native history, scoped bounds, lease/provider refusal, preserved draft/continuation, capability/generation/round-fenced request-bound receipts, lifecycle distinct from completion, duplicate receipt idempotence, wake heartbeat ends with its prompt, pane and daemon, no bootstrap, private cleanup'}))
 
 if __name__ == '__main__': main()

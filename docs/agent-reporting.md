@@ -76,6 +76,15 @@ Claude Code fires `SessionStart` with `source: "compact"` after every compaction
 
 Pi integration 20 keeps lifecycle-only behavior without Pygmalion's Goal Run owner or daemon bound-receipt support. With both present, the loaded observer advertises prompt/receipt support, binds exact delivered native input before a run, and holds completion through Task continuations. See [native request-bound receipts](agent-orchestration.md#native-request-bound-receipts). Update assets and load the new extension through the provider's normal lifecycle; never rewrite or restart an unrelated live pane. Updating files alone does not alter loaded code.
 
+## Wake heartbeat
+
+Claude's `UserPromptSubmit` hook starts `wsx.reporter agent wake-heartbeat <pane> --prompt-id <id>` as an asynchronous hook. Claude runs it in a detached `/bin/sh -c` and does not end it, so its parent process tells nothing about the pane.
+
+- The heartbeat renews the wake lease of its prompt every 5 seconds. A renewal is an in-memory lease update in wsxd, so it is also the check that the prompt, the pane and wsxd still exist.
+- It ends at the first refused renewal: the prompt ended or was replaced, the pane or its runtime generation is gone, or no Claude agent is at work.
+- It ends when no wsxd answers on the socket, after the client's wait for a live handoff. Other failures, such as a timeout, end it after 5 minutes without an answer.
+- `agent wake-heartbeat` and `agent presence-renew` never start wsxd, as `agent report` does not.
+
 ## Verification
 
 - `node scripts/test-agent-reporter.mjs` checks removed-path recovery and no rejection replay.
@@ -84,3 +93,4 @@ Pi integration 20 keeps lifecycle-only behavior without Pygmalion's Goal Run own
 - Isolated runtime scenarios verify actual reporting and live handoff without replacing pane processes.
 - `scripts/test-agent-context.py` runs the installed Claude hooks for a compaction inside a turn, a `/compact` and a session start against a real wsxd.
 - `scripts/web-real-agent-check.py --scenario compact` runs a real Claude with this build's hooks: `/compact`, and a message sent while it compacts.
+- `python3 -B scripts/test-agent-context.py --only context` starts the installed heartbeat hook in a detached shell and checks that it ends after a finished prompt, a replaced prompt, a deleted pane and a stopped wsxd, and that it starts no wsxd.
