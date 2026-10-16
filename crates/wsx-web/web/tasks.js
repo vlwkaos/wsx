@@ -2,7 +2,7 @@
 // cards in it and in the tray over the composer, the `#` task picker and a task's sheet over the
 // chat (docs/web-client.md "Tasks"). Fixed actions go straight to wsx.
 import { api } from "./api.js";
-import { html, Icon, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
+import { html, Icon, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, events, leaveFor, shows, state, touch, update, useStore } from "./store.js";
 import { Back, toast } from "./ui.js";
 import { Markdown } from "./markdown.js";
@@ -501,11 +501,9 @@ export function Manager({ project: id, task }) {
   const [chat, setChat] = useState(null);
   const [failure, setFailure] = useState("");
   const [sent, setSent] = useState(null);
-  const [away, setAway] = useState(false);
   const [flash, setFlash] = useState(null);
-  const log = useRef();
+  const { log, atEnd, away, scrolled, toEnd } = useFollowEnd();
   const field = useRef();
-  const atEnd = useRef(true);
   const loading = useRef(false);
   const again = useRef(false);
   const shown = useRef([]);
@@ -549,14 +547,6 @@ export function Manager({ project: id, task }) {
     if (sheetWas.current != null && task == null) field.current?.focus({ preventScroll: true });
     sheetWas.current = task;
   }, [task]);
-  const scrolled = () => {
-    const node = log.current;
-    if (!node) return;
-    atEnd.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
-    setAway(!atEnd.current);
-  };
-  const toEnd = () => { log.current.scrollTop = log.current.scrollHeight; atEnd.current = true; setAway(false); };
-  useLayoutEffect(() => { if (atEnd.current && log.current) log.current.scrollTop = log.current.scrollHeight; });
   const show = (item) => {
     // ^ Off the end first: the flash renders again, and a render at the end scrolls back to it.
     atEnd.current = false;

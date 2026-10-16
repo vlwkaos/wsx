@@ -1,7 +1,7 @@
 // Chat: the agent's own saved conversation as a typed timeline, what the agent does
 // now, the messages that wait for it, and the composer (docs/web-client.md "Chat").
 import { api, resolve } from "./api.js";
-import { bytes, elapsed, html, Icon, useCallback, useEffect, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
+import { bytes, elapsed, html, Icon, useCallback, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, events, shows, stateOf, state, touch } from "./store.js";
 import { Markdown } from "./markdown.js";
 
@@ -491,9 +491,8 @@ export function Chat({ session }) {
   const id = session.id;
   const [data, setData] = useState(null);
   const [failure, setFailure] = useState("");
-  const [away, setAway] = useState(false);
-  const log = useRef();
-  const atEnd = useRef(true);
+  // New items keep the reader at the end only when the reader is at the end.
+  const { log, atEnd, away, scrolled, toEnd } = useFollowEnd();
   const generation = useRef(0);
   // The timeline the page shows, one request at a time, and whether a change came during it.
   const shown = useRef(null);
@@ -551,16 +550,6 @@ export function Chat({ session }) {
   const status = stateOf(session);
   useEffect(() => { if (data) load(); }, [status.key]);
 
-  // New items keep the reader at the end only when the reader is at the end.
-  const scrolled = () => {
-    const node = log.current;
-    // A scroll event may still arrive after the view closed.
-    if (!node) return;
-    atEnd.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
-    setAway(!atEnd.current);
-  };
-  const toEnd = () => { log.current.scrollTop = log.current.scrollHeight; atEnd.current = true; setAway(false); };
-  useLayoutEffect(() => { if (atEnd.current && log.current) log.current.scrollTop = log.current.scrollHeight; });
 
   const act = async (path, method = "POST") => {
     try {
