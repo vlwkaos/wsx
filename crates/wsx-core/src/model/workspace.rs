@@ -72,6 +72,10 @@ pub struct TaskConfig {
     pub land_policy: LandPolicy,
     /// Remote the `pr` policy pushes to.
     pub land_remote: String,
+    /// Whether the manager's land, deploy and release need the owner's approval.
+    pub land_approve: bool,
+    pub deploy_approve: bool,
+    pub release_approve: bool,
     /// Shell commands that deploy or release one default-branch commit.
     pub deploy_command: Option<String>,
     pub release_command: Option<String>,
@@ -113,6 +117,9 @@ impl Default for TaskConfig {
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
             land_policy: LandPolicy::LocalMerge,
             land_remote: "origin".into(),
+            land_approve: true,
+            deploy_approve: true,
+            release_approve: true,
             deploy_command: None,
             release_command: None,
             manager_model: "sonnet".into(),

@@ -103,6 +103,9 @@ pub(super) fn build(project_name: &str, main: &Path) -> Result<Value> {
         "recent": recent.into_iter().map(|(_, row)| row).collect::<Vec<_>>(),
         "open": open.iter().map(|(_, _, row)| row.clone()).collect::<Vec<_>>(),
         "open_omitted": 0,
+        "approvals": wsx_core::task::store::read_approvals(&wsx_core::task::store::project_id(project_name, main))
+            .map(|lines| json!(wsx_core::task::manager::pending_approvals(&lines)))
+            .unwrap_or(Value::Null),
     });
     // ^ Least urgent open tasks go first when the ledger is over its size.
     let mut omitted = 0;

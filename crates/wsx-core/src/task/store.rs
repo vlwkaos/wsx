@@ -479,3 +479,58 @@ impl ManagerDir {
         )
     }
 }
+
+const APPROVALS_FILE: &str = "approvals.jsonl";
+const MAX_APPROVALS_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Append an approval line under a lock on the file. A `Request` with an empty id gets
+/// the next `a<n>`; the line as written is returned.
+pub fn append_approval(
+    project_id: &str,
+    mut line: super::manager::ApprovalLine,
+) -> Result<super::manager::ApprovalLine> {
+    use super::manager::ApprovalLine;
+    let path = ensure_project_dir(project_id)?.join(APPROVALS_FILE);
+    let mut file = open_nofollow(
+        &path,
+        OpenOptions::new().read(true).append(true).create(true),
+    )?;
+    // SAFETY: flock on an open descriptor; released when `file` closes.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("cannot lock {}", path.display()));
+    }
+    let size = file.metadata()?.len();
+    if size > MAX_APPROVALS_BYTES {
+        bail!("{} is full ({MAX_APPROVALS_BYTES} bytes)", path.display());
+    }
+    if let ApprovalLine::Request { id, .. } = &mut line {
+        if id.is_empty() {
+            let mut text = String::new();
+            (&file).read_to_string(&mut text)?;
+            let requests = text
+                .lines()
+                .filter_map(|line| serde_json::from_str::<ApprovalLine>(line).ok())
+                .filter(|line| matches!(line, ApprovalLine::Request { .. }))
+                .count();
+            *id = format!("a{}", requests + 1);
+        }
+    }
+    let mut bytes = serde_json::to_vec(&line)?;
+    bytes.push(b'\n');
+    file.write_all(&bytes)
+        .with_context(|| format!("cannot append to {}", path.display()))?;
+    Ok(line)
+}
+
+pub fn read_approvals(project_id: &str) -> Result<Vec<super::manager::ApprovalLine>> {
+    let path = project_dir(project_id)?.join(APPROVALS_FILE);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let bytes = read_bounded(&path, MAX_APPROVALS_BYTES + MAX_LOG_LINE_BYTES as u64)?;
+    Ok(bytes
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| serde_json::from_slice(line).ok())
+        .collect())
+}

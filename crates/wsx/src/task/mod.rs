@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::LandPolicy;
-use wsx_core::task::manager::{ManagerEvent, ManagerRequest, ManagerResponse};
+use wsx_core::task::manager::{
+    pending_approvals, ApprovalAction, ApprovalLine, ManagerEvent, ManagerRequest, ManagerResponse,
+};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::{
     call_host, call_socket, copy, now_unix_ms,
@@ -162,6 +164,9 @@ pub enum TaskCmd {
     Ledger {
         #[arg(short, long)]
         project: Option<String>,
+        /// Accepted like on every task command; the ledger is always JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show the last deployed and released commits and how far each is behind
     Deployed {
@@ -195,6 +200,25 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Approve a request the manager made, and run its action (owner only)
+    Approve {
+        /// The request id, such as a3
+        id: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Deny a request the manager made (owner only)
+    Deny {
+        id: String,
+        #[arg(long)]
+        note: Option<String>,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     #[command(hide = true)]
     Host { project_id: String, task: String },
     #[command(hide = true)]
@@ -217,7 +241,11 @@ impl TaskCmd {
             | Self::Deploy { json, .. }
             | Self::Release { json, .. }
             | Self::Deployed { json, .. } => *json,
-            Self::Manager { json, .. } | Self::Say { json, .. } | Self::Chat { json, .. } => *json,
+            Self::Manager { json, .. }
+            | Self::Say { json, .. }
+            | Self::Chat { json, .. }
+            | Self::Approve { json, .. }
+            | Self::Deny { json, .. } => *json,
             Self::Ledger { .. } => true,
             Self::Host { .. } | Self::ManagerHost { .. } => false,
         }
@@ -227,7 +255,11 @@ impl TaskCmd {
     pub fn without_daemon(&self) -> bool {
         !matches!(
             self,
-            Self::New { .. } | Self::Close { .. } | Self::Manager { .. } | Self::Say { .. }
+            Self::New { .. }
+                | Self::Close { .. }
+                | Self::Manager { .. }
+                | Self::Say { .. }
+                | Self::Approve { .. }
         )
     }
 }
@@ -309,17 +341,51 @@ pub fn run(command: TaskCmd) -> Result<()> {
             skip_verify,
             project,
             json,
-        } => send(
-            &open(project.as_deref(), &task)?,
-            HostRequest::Land { skip_verify },
-            json,
-        ),
+        } => {
+            let dir = open(project.as_deref(), &task)?;
+            let record = dir.read_record()?;
+            let settings = load_task_config(&record.project_path)
+                .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
+            if acting_as_manager() && settings.land_approve {
+                return ask_owner(
+                    &dir.project_id,
+                    ApprovalAction::Land,
+                    Some(&record),
+                    skip_verify,
+                    None,
+                    json,
+                );
+            }
+            send(&dir, HostRequest::Land { skip_verify }, json)
+        }
         TaskCmd::Close {
             task,
             discard,
             project,
             json,
-        } => close(&open(project.as_deref(), &task)?, discard, json),
+        } => {
+            let dir = open(project.as_deref(), &task)?;
+            // ^ Discarding work cannot be undone: the manager always asks first.
+            if discard && acting_as_manager() {
+                let record = dir.read_record()?;
+                return ask_owner(
+                    &dir.project_id,
+                    ApprovalAction::Discard,
+                    Some(&record),
+                    false,
+                    None,
+                    json,
+                );
+            }
+            close(&dir, discard, json)
+        }
+        TaskCmd::Approve { id, project, json } => approve(project.as_deref(), &id, json),
+        TaskCmd::Deny {
+            id,
+            note,
+            project,
+            json,
+        } => deny(project.as_deref(), &id, note, json),
         TaskCmd::Deploy {
             commit,
             project,
@@ -341,7 +407,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             json,
         ),
         TaskCmd::Deployed { project, json } => deployed(project.as_deref(), json),
-        TaskCmd::Ledger { project } => ledger::ledger(project.as_deref()),
+        TaskCmd::Ledger { project, .. } => ledger::ledger(project.as_deref()),
         TaskCmd::Manager { project, json } => {
             let (started, dir) = ensure_manager(project.as_deref())?;
             let state = if started { "started" } else { "running" };
@@ -916,6 +982,24 @@ fn deploy(kind: DeployKind, project: Option<&str>, commit: Option<&str>, json: b
     .with_context(|| {
         format!("tasks.{name}.command is not set in wsx.config.yml; nothing was run")
     })?;
+    let approve = match kind {
+        DeployKind::Deploy => settings.deploy_approve,
+        DeployKind::Release => settings.release_approve,
+    };
+    if approve && acting_as_manager() {
+        let action = match kind {
+            DeployKind::Deploy => ApprovalAction::Deploy,
+            DeployKind::Release => ApprovalAction::Release,
+        };
+        return ask_owner(
+            &store::project_id(&project_name, &main),
+            action,
+            None,
+            false,
+            commit,
+            json,
+        );
+    }
     let revision = match commit {
         Some(commit) => commit.to_string(),
         None => default_ref(&main, &settings, true).map_err(|error| {
@@ -1139,4 +1223,213 @@ fn chat(project: Option<&str>, after: Option<u64>, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// True when the manager's agent runs this command (`WSX_TASK_ACTOR=manager`).
+/// ^ A guard against the manager's mistakes, not a security boundary: anything that runs
+/// commands as the owner can unset it (docs/tasks.md "Approvals").
+fn acting_as_manager() -> bool {
+    std::env::var(manager::ACTOR_ENV).is_ok_and(|actor| actor == "manager")
+}
+
+fn action_name(action: ApprovalAction) -> &'static str {
+    match action {
+        ApprovalAction::Land => "land",
+        ApprovalAction::Deploy => "deploy",
+        ApprovalAction::Release => "release",
+        ApprovalAction::Discard => "close --discard",
+    }
+}
+
+/// Record an approval request instead of acting, and say that the owner was asked.
+fn ask_owner(
+    project_id: &str,
+    action: ApprovalAction,
+    task: Option<&TaskRecord>,
+    skip_verify: bool,
+    commit: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let line = store::append_approval(
+        project_id,
+        ApprovalLine::Request {
+            id: String::new(),
+            action,
+            task: task.map(|record| record.id),
+            revision: task.map(|record| record.revision),
+            skip_verify,
+            commit: commit.map(str::to_string),
+            unix_ms: now_unix_ms(),
+        },
+    )?;
+    let ApprovalLine::Request { id, .. } = &line else {
+        unreachable!("a request stays a request");
+    };
+    let target = task.map_or(String::new(), |record| {
+        format!(" #{} r{}", record.id, record.revision)
+    });
+    let message = format!(
+        "{}{target} needs the owner's approval; the owner was asked ({id}). Do not retry it",
+        action_name(action)
+    );
+    if json {
+        print_json(&json!({ "ok": true, "approval": id, "message": message }))
+    } else {
+        println!("{message}");
+        Ok(())
+    }
+}
+
+fn find_request<'a>(lines: &'a [ApprovalLine], id: &str) -> Result<&'a ApprovalLine> {
+    pending_approvals(lines)
+        .into_iter()
+        .find(|line| matches!(line, ApprovalLine::Request { id: pending, .. } if pending == id))
+        .with_context(|| {
+            format!("no pending approval {id}; `wsx task ledger` lists the pending ones")
+        })
+}
+
+fn owner_only(command: &str) -> Result<()> {
+    if acting_as_manager() {
+        bail!("wsx task {command} is for the owner; the manager cannot decide its own requests");
+    }
+    Ok(())
+}
+
+/// Run an approved request's action as its own `wsx task` command, without the actor mark.
+fn approve(project: Option<&str>, id: &str, json: bool) -> Result<()> {
+    owner_only("approve")?;
+    let (name, main) = project_entry(project)?;
+    let project_id = store::project_id(&name, &main);
+    let lines = store::read_approvals(&project_id)?;
+    let ApprovalLine::Request {
+        action,
+        task,
+        revision,
+        skip_verify,
+        commit,
+        ..
+    } = find_request(&lines, id)?.clone()
+    else {
+        unreachable!("find_request returns requests");
+    };
+    // ^ The owner approves one revision: a task that moved on needs a new request.
+    if let (Some(task), Some(revision)) = (task, revision) {
+        let now = TaskDir::open(&project_id, task)?.read_record()?.revision;
+        if now != revision {
+            let outcome = format!("not run: #{task} moved from r{revision} to r{now}; ask again");
+            decide(&project_id, id, true, None, &outcome)?;
+            bail!("{outcome}");
+        }
+    }
+    let mut argv: Vec<String> = vec!["task".into()];
+    match action {
+        ApprovalAction::Land => {
+            argv.extend(["land".into(), task.unwrap_or_default().to_string()]);
+            if skip_verify {
+                argv.push("--skip-verify".into());
+            }
+        }
+        ApprovalAction::Discard => argv.extend([
+            "close".into(),
+            task.unwrap_or_default().to_string(),
+            "--discard".into(),
+        ]),
+        ApprovalAction::Deploy | ApprovalAction::Release => {
+            argv.push(action_name(action).into());
+            if let Some(commit) = commit {
+                argv.extend(["--commit".into(), commit]);
+            }
+        }
+    }
+    argv.extend(["-p".into(), name, "--json".into()]);
+    let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+    let output = std::process::Command::new(exe)
+        .args(&argv)
+        .env_remove(manager::ACTOR_ENV)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("cannot run the approved action")?;
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).unwrap_or(serde_json::Value::Null);
+    let said = result["message"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| {
+            result["state"]
+                .as_str()
+                .map(|state| format!("state {state}"))
+        })
+        .unwrap_or_else(|| String::from_utf8_lossy(&output.stderr).trim().to_string());
+    let outcome = format!(
+        "{}: {said}",
+        if output.status.success() {
+            "done"
+        } else {
+            "failed"
+        }
+    );
+    decide(&project_id, id, true, None, &outcome)?;
+    if json {
+        print_json(&json!({
+            "approval": id,
+            "approved": true,
+            "ok": output.status.success(),
+            "outcome": outcome,
+            "result": result,
+        }))?;
+    } else {
+        println!("{id} approved; {outcome}");
+    }
+    if !output.status.success() {
+        bail!(
+            "the approved {} failed; the decision and its outcome are recorded",
+            action_name(action)
+        );
+    }
+    Ok(())
+}
+
+fn deny(project: Option<&str>, id: &str, note: Option<String>, json: bool) -> Result<()> {
+    owner_only("deny")?;
+    let (name, main) = project_entry(project)?;
+    let project_id = store::project_id(&name, &main);
+    find_request(&store::read_approvals(&project_id)?, id)?;
+    let note = note.filter(|note| !note.trim().is_empty());
+    if note
+        .as_ref()
+        .is_some_and(|note| note.len() > MAX_MESSAGE_BYTES)
+    {
+        bail!("the note is larger than the limit of {MAX_MESSAGE_BYTES} bytes");
+    }
+    decide(&project_id, id, false, note, "denied")?;
+    if json {
+        print_json(&json!({ "approval": id, "approved": false }))
+    } else {
+        println!("{id} denied");
+        Ok(())
+    }
+}
+
+/// Most characters of an action's answer kept in its decision.
+const MAX_OUTCOME_CHARS: usize = 1000;
+
+fn decide(
+    project_id: &str,
+    id: &str,
+    approved: bool,
+    note: Option<String>,
+    outcome: &str,
+) -> Result<()> {
+    store::append_approval(
+        project_id,
+        ApprovalLine::Decision {
+            id: id.into(),
+            approved,
+            note,
+            outcome: outcome.chars().take(MAX_OUTCOME_CHARS).collect(),
+            unix_ms: now_unix_ms(),
+        },
+    )
+    .map(drop)
 }

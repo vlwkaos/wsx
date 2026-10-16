@@ -78,11 +78,15 @@ struct TaskManagerFile {
 #[serde(default, deny_unknown_fields)]
 struct TaskCommandFile {
     command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approve: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct TaskLandFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approve: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     policy: Option<LandPolicy>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -284,6 +288,12 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
         config.check_timeout_secs = seconds;
     }
+    if let Some(approve) = file.deploy.as_ref().and_then(|deploy| deploy.approve) {
+        config.deploy_approve = approve;
+    }
+    if let Some(approve) = file.release.as_ref().and_then(|release| release.approve) {
+        config.release_approve = approve;
+    }
     config.deploy_command = file
         .deploy
         .map(|deploy| {
@@ -333,6 +343,9 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
     }
     if let Some(land) = file.land {
+        if let Some(approve) = land.approve {
+            config.land_approve = approve;
+        }
         if let Some(policy) = land.policy {
             config.land_policy = policy;
         }
