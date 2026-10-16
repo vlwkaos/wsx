@@ -58,6 +58,8 @@ private_key = "<base64url>"
 | `terminal_input` | type, paste, resize the pane, take control from another wsx window | terminal |
 | `media_upload`, `media_download` | attach files to a prompt; receive agent-produced files | any |
 | `push` | Web Push for this device | any |
+| `task_view` | read a project's tasks, reports and manager chat ("Tasks") | chat |
+| `task_act` | talk to the manager and act on tasks; needs `task_view` | chat |
 
 `projects` is the grant. A session, pane, worktree or file of a project outside it answers 404, as if it did not exist; `chat::targets` and `chat::projects` are the only code that maps daemon state to the grant. With `"all"`, a project that wsx starts to manage later is reachable at once. The files API and `POST api/sessions` name the project by its wsx id (`project`), and a new session may name a worktree of that project (`worktree`); the page gets both lists in the `workspace` event.
 
@@ -218,7 +220,7 @@ wsxd allows one active exchange per pane. A message sent while the agent works, 
 
 ## Live updates
 
-A page opens one `EventSource` (`api/events`) and has no polling timer. Events: `workspace` (projects and session list), `history` (a session's saved conversation changed), `exchange`, `daemon`, `resync`, `revoked`. The server follows `wsxd` with its long-poll and states the protocol it reconnects at, so a running web server does not defer a daemon upgrade (`docs/daemon-live-upgrade.md`). While a page is connected it also compares each transcript file's size and modification time about every two seconds.
+A page opens one `EventSource` (`api/events`) and has no polling timer. Events: `workspace` (projects and session list), `history` (a session's saved conversation changed), `exchange`, `daemon`, `resync`, `revoked`, and with `task_view` `tasks`, `task` and `manager` ("Tasks"). The server follows `wsxd` with its long-poll and states the protocol it reconnects at, so a running web server does not defer a daemon upgrade (`docs/daemon-live-upgrade.md`). While a page is connected it also compares each transcript file's size and modification time about every two seconds.
 
 While an agent writes, `history` arrives about once a second. A chat page reads its timeline once per change, from its last turn ("Timeline"), and runs one read at a time: changes during a read cause one more read after it. Measured by the browser check on a 200 KB conversation at 390 px with the processor slowed four times, during a 21 s turn: 26 `history` and 2 `exchange` events, 29 reads of 16 KB each (215 KB before), 43 ms in the server per read, 28 ms of main-thread work per read.
 
@@ -229,6 +231,29 @@ While an agent writes, `history` arrives about once a second. A chat page reads 
 - A sent attachment is added to the prompt as the stored file's absolute path, so the agent can read it.
 - Agent-produced files: the server looks for file paths in assistant messages of the saved conversation, opens them inside that session's worktree without following symlinks, and copies allowed types that are newer than the TTL and within the size limit. Hidden paths (`.env`, `.git/`), and names that look like credentials (`*secret*`, `*token*`, `*.pem`, `*.key`, `id_rsa*` and similar) are never copied. For other files this gives a chat-only site the same reach as asking the agent to print the file. Images are shown inline.
 - Store: `media/<sha256>.<ext>`, URL `media/<sha256>.<ext>`. Responses are `Cache-Control: private, max-age=<seconds left>, immutable`. An entry is removed when its TTL ends, or oldest first when a new file would exceed the quota. Uploading the same bytes again restarts that entry's TTL. Partly received uploads are not counted against the quota. Single-range requests are supported.
+
+## Tasks
+
+The web side of manager mode ([tasks.md](tasks.md)). The server reads the task store and talks to the task hosts and the manager through `wsx_core::task` (`crates/wsx-web/src/tasks.rs`); the browser only names a project id, a task number and its text. Every route checks the chat panel, the capability and the grant; a project outside the grant, an unknown task and an unknown action answer 404.
+
+| Route | Needs | Answer |
+|---|---|---|
+| `GET api/tasks` | `task_view` | the overview of every granted project |
+| `GET api/tasks/<project>` | `task_view` | overview: `needs`, `working`, `stopped`, `tasks` (chips and the `#` picker, at most 200), `decisions` (last 5) |
+| `GET api/tasks/<project>/t/<n>` | `task_view` | record, `result`, `denials`, `checks`, `report` (`report.md`), `timeline`, `overlaps` with paths, `verification`, pending `approvals`, `actions` |
+| `GET api/tasks/<project>/chat?after=<id>` | `task_view` | manager messages, replies, rotations and stops after `after` (at most 200), `running`, `busy`, `activity` |
+| `GET api/tasks/<project>/since?after=<ms>` | `task_view` | task numbers that `started`, `landed`, `blocked`, `conflict` or were `revised` after that time, and the count of `replies` |
+| `POST api/tasks/<project>/say` `{text}` | `task_act` | `{ok, id}`; starts the manager when it does not run |
+| `POST api/tasks/<project>/t/<n>/<action>` | `task_act` | `add {text}`, `steer {text}`, `allow {tool}`, `verify {result, note}`, `land {}`; the host's `{ok, state, message}` |
+| `POST api/tasks/<project>/approvals/<id>/approve` | `task_act` | 202 at once; the action runs as `wsx task ...` without `WSX_TASK_ACTOR`, and its outcome is the decision in the next overview |
+| `POST api/tasks/<project>/approvals/<id>/deny` `{note}` | `task_act` | `{ok}` |
+
+- `needs` is in this order: `blocked`, `conflict` and `failed`, `approval`, `verify` (ready with Human Verify items and no pass on the revision), `land` (ready otherwise) and `review` (in review), then `done` (landed in the last 7 days, newest 10). Within a kind the oldest comes first. A blocked item has the worker's `denials`. Whether a `done` item was seen is decided by the device.
+- `actions` lists the buttons a state has: working `steer add`, blocked `add allow`, ready `verify land add` (`verify` only with Human Verify items), failed, conflict and stopped `add`, in review `land add`; none without `task_act`. The host still decides: its refusal is a 409 with `refused` and its reason, and a host that does not answer is a 409 `host_not_running`.
+- Limits: a message or note is at most 64 KiB, a tool 256 bytes without control characters, a fail needs a note. Actions share the message rate limit. A landing waits for the host for at most 300 s. A second approve of a request whose action still runs is a 409.
+- The timeline is the task log with each run of agent progress lines folded into one `steps` entry (count and last line); the last 300 entries.
+- The manager's session is created with the server's own daemon client, which never starts wsxd.
+- Events: the observer stats each granted project's `task.json` and `log.jsonl` files, `manager/log.jsonl` and `approvals.jsonl` on every poll. A change sends `tasks` (the project's overview, only when it changed), `task {project, task}` for each task whose files changed, and `manager {project}`.
 
 ## PWA and push
 
@@ -286,7 +311,9 @@ The files panel covers each granted project's main checkout only, not its other 
 
 ```sh
 cargo build --locked -p wsx -p wsx-daemon
-python3 -B scripts/test-web-client.py [--browser] [--captures <dir>]
+python3 -B scripts/test-web-client.py [--part all|chat|tasks] [--browser] [--captures <dir>]
 ```
+
+`--part tasks` runs only the task journey: its own isolated `wsxd` with `scripts/fake-claude-stream.py` as `claude`, a fixture store (a task blocked on a tool, one ready with Human Verify, one ready to land), three sites (`task_view` and `task_act` on every project, `task_view` on one, neither), every action through the API, the manager's chat, an approval approved and one denied, and the capability and grant refusals.
 
 The model-free journey uses an isolated `wsxd`, PTY fixture agents with their own transcripts, six served sites and `scripts/web-push-fixture.mjs`, a separate receiver that verifies the VAPID signature and decrypts the payload. It opens terminal WebSockets like a browser does: refused upgrades, bytes both ways, every key-row byte, resize, control lost and taken, reconnect, and a watch-only site. `--browser` adds `scripts/web-terminal-check.mjs` and `scripts/web-browser-check.mjs` with an installed Chrome and writes captures to `.work/web-captures/` or `--captures`. The terminal check runs at 390x844 with touch and at 1280x800, compares the browser screen with `wsxd`'s screen row by row, and checks the shipped fonts: Powerline and icon glyphs in one cell, joined operator runs (the same line captured with ligatures on and off must differ), Korean and box drawing on the grid, and a full-width line against `stty size`. The page check captures every screen and state at 320x568, 390x844 and 1280x800 with a slop audit beside each. On a phone it also runs the mobile audit of the ui-view-standards skill (`scripts/mobile-audit.js`, or the file `WSX_MOBILE_AUDIT` names) beside each capture: it fails when the page scrolls sideways, a field makes iOS zoom, or another field can take the focus from the composer, and prints the rest (content share, small targets, small text, text outside the gutter). `scripts/web-real-agent-check.py` is the opt-in real turn: one short Claude or Pi turn in an isolated `wsxd`, for the timeline and Stop. The journey also covers the answer API (question with screen, choices and waiting tool; refused without the capability, for a stale stamp, an invalid key, a held terminal and an agent that is not blocked; approve, deny, number and text reach the PTY) with a fixture agent that draws a numbered dialog. The page check renders a markdown answer with a table and code, measures a 204 KB answer with the processor slowed four times, draws two Mermaid diagrams and a broken one in both schemes, opens a diagram full screen and zooms it, shows the question sheet for a permission dialog and a four-option question, and answers one. It fails on any console error, which includes a CSP report, and the journey compares the whole CSP header. `scripts/web-real-agent-check.py --scenario answers` is the opt-in real check of answering: a real Claude permission dialog approved by its number, one denied with Escape, an `AskUserQuestion` answered by number, and a stale stamp refused (three model turns). `--scenario draft` types an unsent line into a real Claude's editor and sends a chat message: it must be delivered, and Claude must put the line back (one model turn). Each helper of a run (wsxd, `wsx web serve`, the Node checks and their Chrome, the push receiver) runs in its own process group, listed in `processes` in the run's folder under `.work/`. The run stops each group with SIGTERM, then SIGKILL, also after an error or a SIGTERM to the run. A run that was killed with SIGKILL leaves its list behind: the next run in the checkout ends those processes first (only ones in a listed group with the listed command, or whose command names that run's folder) and removes the Chrome profiles in that folder. The model-free journey does not prove a real Claude turn, a real push service, a phone, an on-screen keyboard, Safari, or Tailscale.

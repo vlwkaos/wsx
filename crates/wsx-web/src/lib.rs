@@ -15,6 +15,7 @@ mod question;
 mod queue;
 mod sandbox;
 mod site;
+mod tasks;
 mod terminal;
 mod theme;
 
@@ -47,6 +48,8 @@ pub(crate) struct App {
     /// Latest workspace event, replayed first on every new stream.
     workspace: Mutex<Option<events::Message>>,
     streams: Mutex<HashMap<String, usize>>,
+    /// Approvals whose action runs now, as `<store>/<id>`; a second tap is refused.
+    approving: Mutex<std::collections::HashSet<String>>,
     /// When this server started, shown in Settings with the build.
     started_unix: u64,
 }
@@ -86,6 +89,7 @@ pub fn serve(named: Option<&str>) -> Result<()> {
         events: tokio::sync::broadcast::channel(256).0,
         workspace: Mutex::new(None),
         streams: Mutex::new(HashMap::new()),
+        approving: Mutex::new(Default::default()),
         started_unix: devices::now_unix(),
         site,
     });

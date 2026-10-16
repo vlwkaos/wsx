@@ -7,8 +7,6 @@ use super::manager::{
 };
 use super::store::{self, ManagerDir, TaskDir};
 use super::{call_socket, now_unix_ms, MAX_MESSAGE_BYTES};
-use crate::config::global::GlobalConfig;
-use crate::ops;
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -21,12 +19,13 @@ const MANAGER_START_WAIT: Duration = Duration::from_secs(10);
 const MAX_OUTCOME_CHARS: usize = 1000;
 
 /// Start the project's manager host unless one answers. True when it was started.
-/// `wsx` is the binary whose hidden `task manager-host` runs it.
+/// `launch` creates the hidden session `task-manager` in the main checkout with the given
+/// argv; the CLI may start wsxd for it, the web client never does.
 pub fn ensure_manager(
-    config: &GlobalConfig,
     name: &str,
     main: &Path,
     wsx: &Path,
+    launch: impl FnOnce(Vec<String>) -> Result<()>,
 ) -> Result<(bool, ManagerDir)> {
     let project_id = store::project_id(name, main);
     let dir = ManagerDir::open(&project_id)?;
@@ -42,8 +41,7 @@ pub fn ensure_manager(
         "manager-host".into(),
         project_id,
     ];
-    ops::create_session_launch(config, main, "task-manager".into(), argv, None)
-        .context("the manager did not start; no session was left running")?;
+    launch(argv).context("the manager did not start; no session was left running")?;
     let deadline = Instant::now() + MANAGER_START_WAIT;
     while Instant::now() < deadline {
         if status().is_ok() {
@@ -59,13 +57,13 @@ pub fn ensure_manager(
 
 /// Give the manager an owner message, starting it first when needed.
 pub fn say(
-    config: &GlobalConfig,
     name: &str,
     main: &Path,
     wsx: &Path,
+    launch: impl FnOnce(Vec<String>) -> Result<()>,
     text: String,
 ) -> Result<ManagerResponse> {
-    let (_, dir) = ensure_manager(config, name, main, wsx)?;
+    let (_, dir) = ensure_manager(name, main, wsx, launch)?;
     call_socket(
         &dir.socket_path(),
         &ManagerRequest::Say { text },

@@ -47,6 +47,7 @@ fn observe(app: Arc<App>) {
     let mut stamps: HashMap<u64, Option<(std::path::PathBuf, u64, i64)>> = HashMap::new();
     let mut exchange_revisions: HashMap<u64, u64> = HashMap::new();
     let mut workspace = String::new();
+    let mut tasks = crate::tasks::Watch::default();
     // What each working session does now, read again only when its transcript changed.
     let mut activities: HashMap<u64, String> = HashMap::new();
     // The screen stamp of each blocked session's question, while a page is open.
@@ -110,6 +111,7 @@ fn observe(app: Arc<App>) {
         let Ok(snapshot) = chat::snapshot(&app.client) else {
             continue;
         };
+        crate::tasks::watch(app, &snapshot, &mut tasks);
         let targets = chat::targets(&snapshot, &app.site.access);
         if changed {
             if let Ok(exchanges) = chat::exchanges(&app.client, None) {
@@ -219,6 +221,11 @@ pub fn history_changed(app: &App, session: u64) {
     publish(app, message("history", json!({ "session_id": session })));
 }
 
+/// Send a named event with a JSON body to every open page.
+pub fn publish_json(app: &App, event: &'static str, data: Value) {
+    publish(app, message(event, data));
+}
+
 fn publish(app: &App, message: Message) {
     if message.event == "workspace" {
         *app.workspace
@@ -249,7 +256,7 @@ fn notify(app: &Arc<App>, topic: Topic, session: u64, label: &str, words: &str) 
     let app = app.clone();
     thread::spawn(move || {
         if let Some(push) = &app.push {
-            push.notify(topic, &payload, &paired);
+            push.notify(topic, &payload, &paired, &[]);
         }
     });
 }

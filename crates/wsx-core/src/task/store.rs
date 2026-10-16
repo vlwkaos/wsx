@@ -422,6 +422,15 @@ impl ManagerDir {
         })
     }
 
+    /// The folder when it exists; a reader never creates it.
+    pub fn existing(project_id: &str) -> Result<Option<Self>> {
+        let path = project_dir(project_id)?.join(MANAGER_DIR);
+        Ok(require_real_dir(&path).is_ok().then(|| Self {
+            project_id: project_id.into(),
+            path,
+        }))
+    }
+
     pub fn socket_path(&self) -> PathBuf {
         self.path.join(MANAGER_SOCKET)
     }
@@ -481,6 +490,22 @@ impl ManagerDir {
 }
 
 const APPROVALS_FILE: &str = "approvals.jsonl";
+
+/// The files a reader follows to see every change to a project's tasks, its manager
+/// conversation and its approvals. Missing ones are left out.
+pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
+    let dir = project_dir(project_id)?;
+    let mut files = vec![
+        dir.join(APPROVALS_FILE),
+        dir.join(MANAGER_DIR).join(MANAGER_LOG),
+    ];
+    for id in task_numbers(project_id)? {
+        let task = dir.join(id.to_string());
+        files.push(task.join(RECORD_FILE));
+        files.push(task.join(LOG_FILE));
+    }
+    Ok(files)
+}
 const MAX_APPROVALS_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Append an approval line under a lock on the file. A `Request` with an empty id gets

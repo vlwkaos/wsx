@@ -33,15 +33,22 @@ pub enum Capability {
     MediaUpload,
     MediaDownload,
     Push,
+    /// Read the tasks, reports and manager chat of a project (docs/web-client.md "Tasks").
+    TaskView,
+    /// Talk to the manager and act on tasks: add, steer, allow, verify, land, approve, deny.
+    TaskAct,
 }
 
 impl Capability {
     /// The panel that must be enabled for this capability to be reachable.
     fn panel(self) -> Option<Panel> {
         match self {
-            Self::ChatSend | Self::ChatAnswer | Self::AgentWrite | Self::SessionStart => {
-                Some(Panel::Chat)
-            }
+            Self::ChatSend
+            | Self::ChatAnswer
+            | Self::AgentWrite
+            | Self::SessionStart
+            | Self::TaskView
+            | Self::TaskAct => Some(Panel::Chat),
             Self::FilesRead | Self::FilesWrite => Some(Panel::Files),
             Self::TerminalView | Self::TerminalInput => Some(Panel::Terminal),
             Self::MediaUpload | Self::MediaDownload | Self::Push => None,
@@ -310,6 +317,10 @@ impl Site {
         ensure!(
             !has(Capability::ChatAnswer) || has(Capability::ChatSend),
             "chat_answer needs chat_send"
+        );
+        ensure!(
+            !has(Capability::TaskAct) || has(Capability::TaskView),
+            "task_act needs task_view"
         );
         ensure!(
             has(Capability::SessionStart) != file.access.agent_command.is_empty(),
