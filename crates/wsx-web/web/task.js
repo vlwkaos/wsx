@@ -7,6 +7,7 @@ import { Back } from "./ui.js";
 import { Markdown } from "./markdown.js";
 import { grow, isolate, release } from "./chat.js";
 import { announce, loadTasks, taskLink, taskState, withChips } from "./tasks.js";
+import { TaskStory } from "./story.js";
 
 const short = (commit) => (commit ?? "").slice(0, 8);
 function when(ms) {
@@ -229,6 +230,7 @@ export function TaskPage({ project, task }) {
     <div class="page task-page">
       ${top}
       <div class="scroll">
+        <${TaskStory} project=${project} detail=${detail} onExplained=${() => { location.hash = `#/p/${project}`; }} />
         ${(approvals.length || allow || land || review) && html`
           <section class="task-actions" aria-label="Actions">${approvals}${allow}${review}${land}</section>`}
         ${sections(detail.report).map((section) => html`

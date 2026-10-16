@@ -7,6 +7,7 @@ import { Back, toast } from "./ui.js";
 import { Markdown } from "./markdown.js";
 import { grow, isolate, release, Suggestions } from "./chat.js";
 import { filesLink } from "./projects.js";
+import { ProjectBrief } from "./story.js";
 
 // Every granted project's overview, or one project's.
 export async function loadTasks(project) {
@@ -459,6 +460,7 @@ export function Manager({ project: id }) {
         </div>
       </header>
       <div class="chat">
+        <${ProjectBrief} project=${id} overview=${overview} onExplained=${() => { atEnd.current = true; load(); }} />
         <${SinceLine} project=${id} />
         <${Needs} project=${id} overview=${overview} />
         ${counts.length ? html`<p class="tasks-working">${counts.join(" · ")}</p>` : null}

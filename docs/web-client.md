@@ -247,8 +247,9 @@ The web side of manager mode ([tasks.md](tasks.md)). The server reads the task s
 |---|---|---|
 | `GET api/tasks` | `task_view` | the overview of every granted project |
 | `GET api/tasks/<project>` | `task_view` | overview: `needs`, `working`, `stopped`, `tasks` (chips and the `#` picker, at most 200), `decisions` (last 5) |
-| `GET api/tasks/<project>/t/<n>` | `task_view` | record, `result`, `denials`, `checks`, `report` (`report.md`), `timeline`, `overlaps` with paths, `verification`, pending `approvals`, `actions` |
+| `GET api/tasks/<project>/t/<n>` | `task_view` | record, `result`, `denials`, `checks`, `report` (`report.md`), `timeline`, `overlaps` with paths, `verification`, pending `approvals`, `actions`, `landed_commit`, `deploy` (`configured`, and whether the last deploy has the landed commit, `deployed`, and its `behind`) |
 | `GET api/tasks/<project>/chat?after=<id>` | `task_view` | manager messages, replies, rotations and stops after `after` (at most 200), `running`, `busy`, `activity` |
+| `GET api/tasks/<project>/brief` | `task_view` | the project's ledger ([tasks.md](tasks.md) "Ledger"), for the project brief |
 | `GET api/tasks/<project>/since?after=<ms>` | `task_view` | task numbers that `started`, `landed`, `blocked`, `conflict` or were `revised` after that time, and the count of `replies` |
 | `POST api/tasks/<project>/say` `{text}` | `task_act` | `{ok, id}`; starts the manager when it does not run |
 | `POST api/tasks/<project>/t/<n>/<action>` | `task_act` | `add {text}`, `steer {text}`, `allow {tool}`, `verify {result, note}`, `land {}`; the host's `{ok, state, message}` |
@@ -281,6 +282,14 @@ The web side of manager mode ([tasks.md](tasks.md)). The server reads the task s
 4. The timeline, folded: one line per log entry with its time and what happened in words; agent progress is one line per run of steps.
 
 A message field stays at the bottom while the state takes one: *Send* is an add (the answer to a blocked task), and while the worker runs *Steer now* sends into the turn and *Add* after it. An action's outcome is a notice; a failure is shown above the field and keeps the draft. The page reads again on a `task` event for it and when the project's approvals change. Opening a landed task marks it seen on this device, so it leaves "Done, not seen".
+
+### Project brief and task story
+
+`crates/wsx-web/web/story.js`. Plain words written by wsx from the ledger, the task record, its result and its log; no model call.
+
+- **Project brief**, the top of the project screen, folded to one line: "3 open · 1 needs you · main 2 ahead of deploy" (the open count, the needs-you count without "done", and with a deploy command: never deployed, up to date, or how many commits the default branch is ahead, and "last deploy failed"). A tap unfolds: each open task in one line with its state in words (waits for you, ready to verify, ready to land, failed, conflict while landing, running checks, in review, stopped, working), the last 3 landed, the deploy and release with their commit and how far behind, and the main checkout's branch and uncommitted files. The brief reads `brief` on opening and again at most every 2 s while the overview changes.
+- **Task story**, the top of the task page: "Asked:" and the first line of the prompt; the steps `Asked → Working → Checks → Ready → Verified → Landed → Deployed` with the current one marked, where it stopped named on that step (blocked, stopped or failed on Working, failed checks on Checks, conflict or in review on Landed), and Verified (no Human Verify items) or Deployed (no deploy command) struck out when they do not apply; and one sentence "What happens next" for the state, such as "The worker waits for you to allow Bash(make:*) or answer.", "Check the 2 items below, then Pass to allow landing." or "Landed on main; the last deploy does not have it yet". A pending approval of the task comes first: "The manager asks: Approve land #3. Approve or Deny it above."
+- *Explain* (with `task_act`), in the unfolded brief and in the story, sends a fixed owner message to the manager: "Explain where the project stands in plain words" or "Explain #n in plain words: why, what changed, risks". The task page then opens the chat, where the answer comes. A failure stays beside the button.
 
 ### Inbox
 

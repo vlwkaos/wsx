@@ -55,7 +55,7 @@ async function sound(label) {
   const seen = await evaluate(`(() => {
     const free = (node) => node.closest('.code-block pre, .table-wrap, .diagram, .timeline-output');
     const wide = [...document.querySelectorAll('#app *')].filter((node) => !free(node) && node.getBoundingClientRect().right > innerWidth + 0.5);
-    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .needs, .slash')
+    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .needs, .brief, .slash')
       && /auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1);
     return { wide: wide.slice(0, 3).map((node) => node.className || node.tagName), scrollers: scrollers.map((node) => node.className),
       raw: /\\b(null|undefined|NaN)\\b/.test(document.querySelector('#app').innerText), page: document.scrollingElement.scrollTop + document.scrollingElement.scrollLeft };
@@ -106,6 +106,12 @@ async function pair() {
 }
 
 // The strip as rows: [id, kind words, action labels].
+// The task story as words: what was asked, the step marked current (with its stop word),
+// each step's state, and what happens next.
+const story = () => evaluate(`(() => { const words = (li) => li.querySelector('.story-name').textContent + (li.querySelector('.story-word')?.textContent ?? '');
+  const current = document.querySelector('.story-steps [aria-current=step]');
+  return { asked: document.querySelector('.story-asked')?.textContent.trim(), current: current && words(current),
+    steps: [...document.querySelectorAll('.story-steps li')].map((li) => li.dataset.step).join(), next: document.querySelector('.story-next')?.textContent.trim() }; })()`);
 const strip = () => evaluate(`[...document.querySelectorAll('.needs .need')].map((row) => [
   (row.querySelector('.need-id') ?? row.querySelector('.row-label')).textContent, row.querySelector('.row-context').textContent,
   [...row.querySelectorAll('.need-action')].map((node) => node.textContent.trim()).join('+')])`);
@@ -134,6 +140,10 @@ let rows = await strip();
 if (rows.map((row) => row[0]).join() !== "#1,#4") await fail(`the strip starts with ${JSON.stringify(rows)}`);
 if (!/needs an answer/.test(rows[0][1]) || rows[0][2] !== "Allow+Answer") await fail(`the blocked row reads ${JSON.stringify(rows[0])}`);
 if ((await text(".needs-more")).join() !== "Show 4 more") await fail(`the strip does not fold: ${await text(".needs-more")}`);
+// --- The project brief: one line, unfolded on a tap.
+await until("!!document.querySelector('.brief-text')", "the project shows no brief");
+const folded = (await text(".brief-text"))[0];
+if (folded !== "4 open · 6 need you · deploy up to date") await fail(`the folded brief reads ${folded}`);
 await shot("project", ".composer-send");
 await click(".needs-more");
 rows = await strip();
@@ -141,6 +151,15 @@ if (rows.map((row) => row[0]).join() !== "#1,#4,Approve land #3,Approve discard 
 if (rows[2][2] !== "Deny+Approve" || /\ba1\b/.test(await evaluate("document.querySelector('.needs').textContent"))) await fail(`the approval row reads ${JSON.stringify(rows[2])}`);
 if (rows[4][2] !== "Verify" || rows[5][2] !== "Land") await fail(`verify and land rows read ${JSON.stringify(rows.slice(4))}`);
 await shot("project-strip-open", ".composer-send");
+await click(".brief-line");
+const openLines = await text(".brief-list[aria-label='Open tasks'] li");
+// ^ The title and the state are two flex items, so their texts meet without a space.
+const expected = [/^#1 .*waits for you$/, /^#4 .*waits for you$/, /^#2 WORK a\.txt HVready to verify$/, /^#3 WORK b\.txtready to land$/];
+if (openLines.length !== 4 || !expected.every((pattern, index) => pattern.test(openLines[index]))) await fail(`the brief lists ${JSON.stringify(openLines)}`);
+const briefBody = (await text(".brief-body"))[0];
+if (!/Deploy: [0-9a-f]{8}, up to date with main\./.test(briefBody) || !/Main checkout on main, /.test(briefBody)) await fail(`the brief says ${briefBody}`);
+await shot("brief-open", ".composer-send");
+await click(".brief-line");
 // One tap from the top row to the sessions, and Back to the manager.
 if ((await text(".bar .bar-link")).join() !== "Sessions") await fail("the top row has no Sessions link");
 await click(".bar .bar-link");
@@ -167,6 +186,12 @@ await evaluate("document.querySelector('.bar a.icon-button').click()");
 await until(`location.hash === ${JSON.stringify(home)} && !!document.querySelector('.needs')`, "Back did not return from the task page");
 if (await evaluate("document.querySelector('.composer-field').value") !== "") await fail("the sent message stayed in the field");
 await shot("project-reply", ".composer-send");
+// Explain in the brief: the fixed owner message, visible in the chat.
+await until("!!document.querySelector('.brief-line')", "the brief did not come back with the project");
+await click(".brief-line");
+await click(".brief .story-explain");
+await until("[...document.querySelectorAll('.message-user')].some((node) => node.textContent.trim() === 'Explain where the project stands in plain words')", "Explain in the brief sent no message");
+await click(".brief-line");
 
 // --- The `#` picker: every task, filtered by number or words, a pick inserts `#n `.
 await typeInto(".composer-field", "land #");
@@ -229,6 +254,9 @@ await shot("strip-after-actions", ".composer-send");
 const page = (n) => `#/p/${project}/t/${n}`;
 await go(page(2));
 await until("document.querySelectorAll('.task-section').length >= 7", "the task page did not show the report");
+let told = await story();
+if (told.asked !== "Asked: WORK a.txt HV" || told.current !== "Ready" || told.steps !== "done,done,done,done,todo,todo,todo"
+  || told.next !== "What happens next: Check the 1 item below, then Pass to allow landing.") await fail(`the story of a task to verify reads ${JSON.stringify(told)}`);
 const headings = await text(".task-section > .label");
 if (headings.slice(0, 7).join() !== "Asked,Summary,Decisions,Changes,Evidence,Human Verify,Left open") await fail(`the report sections are ${headings}`);
 if ((await text(".verify button")).join() !== "Fail,Pass r1") await fail(`the verify buttons are ${await text(".verify button")}`);
@@ -261,13 +289,24 @@ await evaluate("[...document.querySelectorAll('.task-actions button')].find((nod
 await until("(document.querySelector('.bar-state')?.textContent ?? '').startsWith('landed')", "#2 did not land", 300);
 if (await count(".task-message")) await fail("a landed task still offers a message field");
 await shot("task-landed");
+told = await story();
+if (told.current !== "Landed" || told.steps !== "done,done,done,done,done,done,todo"
+  || !/^What happens next: Landed on main; the last deploy does not have it yet \(the deploy is \d+ commits? behind\)\.$/.test(told.next)) await fail(`the story of a landed task reads ${JSON.stringify(told)}`);
+// Explain in the story: the fixed message about this task, and the chat to read the answer.
+await click(".story .story-explain");
+await until(`location.hash === ${JSON.stringify(home)} && [...document.querySelectorAll('.message-user')].some((node) => node.querySelector('.task-chip-id')?.textContent === '#2' && /^Explain #2.* in plain words: why, what changed, risks$/.test(node.textContent.trim()))`, "Explain in the story sent no message");
+await until("/main \\d+ ahead of deploy/.test(document.querySelector('.brief-text')?.textContent ?? '')", "the brief does not say the deploy is behind");
 
 // --- The task page of #4: Deny the discard, then Allow the denied tool.
 await go(page(4));
 await until("/The manager asks: Approve discard #4/.test(document.querySelector('.task-actions')?.textContent ?? '')", "#4 shows no pending approval");
+told = await story();
+if (told.current !== "Working blocked" || told.next !== "What happens next: The manager asks: Approve discard #4. Approve or Deny it above.") await fail(`the story of a blocked task with an approval reads ${JSON.stringify(told)}`);
 await shot("task-blocked", ".composer-send");
 await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Deny').click()");
 await until("!/Approve discard #4/.test(document.querySelector('.task-actions')?.textContent ?? '')", "the denied approval stayed", 300);
+told = await story();
+if (told.next !== "What happens next: The worker waits for you to allow Bash(Bash(make:*)) or answer.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
 await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Allow a tool').click()");
 await until("document.querySelector('.task-allow input')?.value === 'Bash(Bash(make:*))'", "Allow did not offer the denied tool");
 await typeInto(".task-allow input", "Bash(make:*)");
@@ -304,6 +343,6 @@ for (const next of [[320, 568, 2], [1280, 800, 1]]) {
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
-console.log(`tasks page: since-you-left, project screen with the strip folded and open, Sessions one tap away, a reply with task chips, the # picker (filter, pick, no match, Escape, keyboard up), Answer and Approve from the strip, the task page (report sections, Fail with and without a note, Pass, timeline, Land, Deny, Allow), done-not-seen, the inbox grouped by project; ${audits.length} captures`);
+console.log(`tasks page: since-you-left, the project brief (folded line, open tasks, deploy, main checkout, deploy behind after a landing, Explain), the task story (to verify, landed and not deployed, blocked with and without an approval, Explain), project screen with the strip folded and open, Sessions one tap away, a reply with task chips, the # picker (filter, pick, no match, Escape, keyboard up), Answer and Approve from the strip, the task page (report sections, Fail with and without a note, Pass, timeline, Land, Deny, Allow), done-not-seen, the inbox grouped by project; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

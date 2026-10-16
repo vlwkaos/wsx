@@ -90,7 +90,7 @@ With `tasks.land.policy: pr`, the first `land` of a ready task applies the same 
 
 - `open`: each open task with number, title (80 chars), state, revision, overlaps, the current verdict (without its note), the Human Verify item count, the last result summary (240 chars) and `pr_url`, in attention order (blocked, failed, conflict, ready, in_review, working, stopped);
 - `recent`: the last 10 landed or closed tasks;
-- `deploys`: the `deployed` status; under `pr` it uses the last fetched `<remote>/<default>` and does not fetch;
+- `deploys`: the `deployed` status, with `configured` per kind (whether its command is set); under `pr` it uses the last fetched `<remote>/<default>` and does not fetch;
 - `main`: the main checkout's path, branch and number of changed files (tracked or new).
 
 When it would pass 16 KiB, the least urgent open tasks are left out and counted in `open_omitted`.
@@ -134,7 +134,7 @@ wsx task release -p <project> [--commit <ref>] --json   # tasks.release.command
 wsx task deployed -p <project> --json
 ```
 
-`deploy` and `release` make a temporary detached working copy of one commit (default: the default branch tip) beside the main checkout, run the command there with `/bin/sh -c` and `WSX_DEPLOY_COMMIT`, record `{kind, commit, exit, unix_ms, duration_ms}` in `tasks/<project-id>/deploys.jsonl`, then `cargo clean` and remove the copy. They never run in a task's working copy. With `--json` the command's output goes to stderr. Under the `pr` policy the local default branch can lag, so `deploy`, `release` and `deployed` first fetch it from `tasks.land.remote` and use `<remote>/<default>` as the default commit and as the base of `behind`; `local-merge` stays local. `deployed` gives, per kind, the last successful commit, how many default-branch commits it lacks (`behind`) and how many attempts failed since (`failed_since`).
+`deploy` and `release` make a temporary detached working copy of one commit (default: the default branch tip) beside the main checkout, run the command there with `/bin/sh -c` and `WSX_DEPLOY_COMMIT`, record `{kind, commit, exit, unix_ms, duration_ms}` in `tasks/<project-id>/deploys.jsonl`, then `cargo clean` and remove the copy. They never run in a task's working copy. With `--json` the command's output goes to stderr. Under the `pr` policy the local default branch can lag, so `deploy`, `release` and `deployed` first fetch it from `tasks.land.remote` and use `<remote>/<default>` as the default commit and as the base of `behind`; `local-merge` stays local. `deployed` gives, per kind, whether its command is set (`configured`), the last successful commit, how many default-branch commits it lacks (`behind`) and how many attempts failed since (`failed_since`).
 
 ## Close
 

@@ -17,7 +17,7 @@ use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
-use wsx_core::model::workspace::LandPolicy;
+use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
 use wsx_core::task::manager::{ApprovalAction, ApprovalLine, ManagerEvent};
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::store::ManagerDir;
@@ -871,32 +871,6 @@ fn delete_revision_refs(main: &Path, id: u32) {
     }
 }
 
-/// The ref a deploy defaults to and `behind` counts against. Under the `pr` policy the
-/// local default branch can lag the remote, so the remote one is used: fetched first when
-/// `fetch`, else as last fetched.
-fn default_ref(
-    main: &Path,
-    settings: &wsx_core::model::workspace::TaskConfig,
-    fetch: bool,
-) -> Result<String> {
-    let default_branch = ops::detect_default_branch(main);
-    match settings.land_policy {
-        LandPolicy::LocalMerge => Ok(format!("refs/heads/{default_branch}")),
-        LandPolicy::Pr if fetch => copy::fetch(main, &settings.land_remote, &default_branch),
-        LandPolicy::Pr => Ok(format!(
-            "refs/remotes/{}/{default_branch}",
-            settings.land_remote
-        )),
-    }
-}
-
-fn kind_name(kind: DeployKind) -> &'static str {
-    match kind {
-        DeployKind::Deploy => "deploy",
-        DeployKind::Release => "release",
-    }
-}
-
 /// Run the project's deploy or release command in a temporary copy of one commit.
 /// ^ Never from a task's working copy: what runs is always a default-branch commit.
 fn deploy(kind: DeployKind, project: Option<&str>, commit: Option<&str>, json: bool) -> Result<()> {
@@ -1018,43 +992,6 @@ fn deployed(project: Option<&str>, json: bool) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// The last successful deploy and release, how far each is behind the default branch,
-/// and how many attempts failed since.
-fn deploy_status(
-    project_name: &str,
-    main: &Path,
-    settings: &wsx_core::model::workspace::TaskConfig,
-    fetch: bool,
-) -> Result<serde_json::Value> {
-    let records = store::read_deploys(&store::project_id(project_name, main))?;
-    let default = default_ref(main, settings, fetch)?;
-    let tip = copy::resolve_commit(main, &default).ok();
-    let mut out = json!({ "default_branch": default, "tip": tip });
-    for kind in [DeployKind::Deploy, DeployKind::Release] {
-        // ^ Newest first: attempts that failed until the last success of this kind.
-        let (mut last, mut failed_since) = (None, 0);
-        for record in records.iter().rev().filter(|record| record.kind == kind) {
-            if record.exit == Some(0) {
-                last = Some(record);
-                break;
-            }
-            failed_since += 1;
-        }
-        out[kind_name(kind)] = match last {
-            None => json!({ "commit": null, "failed_since": failed_since }),
-            Some(record) => json!({
-                "commit": record.commit,
-                "unix_ms": record.unix_ms,
-                "behind": tip
-                    .as_deref()
-                    .and_then(|tip| copy::unlanded_commits(main, tip, &record.commit).ok()),
-                "failed_since": failed_since,
-            }),
-        };
-    }
-    Ok(out)
 }
 
 /// Most entries `chat` prints at once.

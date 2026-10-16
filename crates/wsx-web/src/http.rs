@@ -74,6 +74,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/tasks/{project}", get(tasks_overview))
             .route("/api/tasks/{project}/chat", get(tasks_chat))
             .route("/api/tasks/{project}/since", get(tasks_since))
+            .route("/api/tasks/{project}/brief", get(tasks_brief))
             .route("/api/tasks/{project}/say", post(tasks_say))
             .route("/api/tasks/{project}/t/{task}", get(task_detail))
             .route("/api/tasks/{project}/t/{task}/{action}", post(task_act))
@@ -883,6 +884,15 @@ async fn tasks_since(
             after,
         )))
     })
+}
+
+async fn tasks_brief(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(project): UrlPath<u64>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, false)?;
+    blocking(|| crate::tasks::brief(&crate::tasks::scope(&app, project)?).map(Json))
 }
 
 async fn task_detail(
