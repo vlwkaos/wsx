@@ -143,7 +143,7 @@ const homeRows = await evaluate(`[...document.querySelectorAll('.home-row')].map
   count: row.querySelector('.count')?.textContent ?? '', status: row.querySelector('.row-context').textContent, state: row.querySelector('.row-state').textContent }))`);
 if (homeRows.map((row) => row.name).join() !== homeOrder) await fail(`home lists ${JSON.stringify(homeRows)}, not ${homeOrder}`);
 const uiRow = homeRows.find((row) => row.name === "ui");
-if (uiRow.count !== "6" || uiRow.status !== "#1 needs an answer" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
+if (uiRow.count !== "6" || uiRow.status !== "#1 needs to reach crates.io" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
 const calmRow = homeRows.at(-1);
 if (calmRow.name !== "calm" || calmRow.count || calmRow.status !== "No tasks yet" || calmRow.state) await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
 const plansRow = homeRows.find((row) => row.name === "plans");
@@ -192,12 +192,17 @@ await until("document.querySelectorAll('.log .need-card').length >= 6", "the cha
 // its buttons; an approval reads as its action; the tray shows two lines and "+N".
 if (await count(".needs")) await fail("the chat still has the strip");
 let shown = await cards();
-if (shown.map((card) => card[0].split(" ").slice(0, 3).join(" ")).join() !== "#1 NEEDS Bash(make:*),#2 WORK a.txt,#3 WORK b.txt,#4 NEEDS Bash(make:*),Approve land #3,Approve discard #4") await fail(`the cards are ${JSON.stringify(shown)}`);
+if (shown.map((card) => card[0].split(" ").slice(0, 3).join(" ")).join() !== "#1 NEEDS_HOST crates.io,#2 WORK a.txt,#3 WORK b.txt,#4 NEEDS_HOST crates.io,Approve land #3,Approve discard #4") await fail(`the cards are ${JSON.stringify(shown)}`);
+// ^ A blocked card names what the sandbox stopped, never a command (docs/web-client.md "Tasks").
+if (!shown[0].join(" ").includes("needs to reach crates.io") || /Bash\(|curl/.test(shown[0].join(" "))) await fail(`the blocked card reads ${JSON.stringify(shown[0])}`);
 const actionsOf = Object.fromEntries(shown.map((card) => [card[0].split(" ").slice(0, 3).join(" "), card[2]]));
-if (actionsOf["#1 NEEDS Bash(make:*)"] !== "Allow+Answer" || actionsOf["Approve land #3"] !== "Deny+Approve" || actionsOf["#2 WORK a.txt"] !== "Verify" || actionsOf["#3 WORK b.txt"] !== "Land") await fail(`the card buttons are ${JSON.stringify(actionsOf)}`);
+if (actionsOf["#1 NEEDS_HOST crates.io"] !== "Allow+Allow for project+Answer" || actionsOf["Approve land #3"] !== "Deny+Approve" || actionsOf["#2 WORK a.txt"] !== "Verify" || actionsOf["#3 WORK b.txt"] !== "Land") await fail(`the card buttons are ${JSON.stringify(actionsOf)}`);
+// ^ Three actions must not squeeze a card's words: they wrap under them.
+const squeezed = await evaluate("[...document.querySelectorAll('.log .need-card')].filter((card) => card.querySelectorAll('.need-action').length >= 3).map((card) => Math.round(card.querySelector('.row-main').getBoundingClientRect().width)).filter((width) => width < 200)");
+if (squeezed.length) await fail(`a card with three actions leaves its words ${squeezed}px`);
 const named = await evaluate("[...document.querySelectorAll('.log .need-card')].map((card) => card.textContent).find((words) => /\\ba[12]\\b/.test(words))");
 if (named) await fail(`a card names an approval by its id: ${named}`);
-if ((await trayLines()).join() !== "#1 needs an answer,#4 needs an answer,Approve land #3,Approve discard #4,#2 is ready to verify,#3 is ready to land") await fail(`the tray reads ${await trayLines()}`);
+if ((await trayLines()).join() !== "#1 needs to reach crates.io,#4 needs to reach crates.io,Approve land #3,Approve discard #4,#2 is ready to verify,#3 is ready to land") await fail(`the tray reads ${await trayLines()}`);
 if (await trayVisible() !== 2 || await trayMore() !== "+4") await fail(`the tray shows ${await trayVisible()} lines and ${await trayMore()}`);
 // --- The project brief: one line, unfolded on a tap.
 await until("!!document.querySelector('.brief-text')", "the project shows no brief");
@@ -393,7 +398,7 @@ await click(".story .story-explain");
 await until(`location.hash === ${JSON.stringify(chat)} && [...document.querySelectorAll('.message-user')].some((node) => node.querySelector('.task-chip-id')?.textContent === '#2' && /^Explain #2.* in plain words: why, what changed, risks$/.test(node.textContent.trim()))`, "Explain in the story sent no message");
 await until("/main \\d+ ahead of deploy/.test(document.querySelector('.brief-text')?.textContent ?? '')", "the brief does not say the deploy is behind");
 
-// --- The task page of #4: Deny the discard, then Allow the denied tool.
+// --- The task page of #4: Deny the discard, then Allow for project the host it needs.
 await go(page(4));
 await until("/The manager asks: Approve discard #4/.test(document.querySelector('.task-actions')?.textContent ?? '')", "#4 shows no pending approval");
 told = await story();
@@ -402,11 +407,11 @@ await shot("task-blocked", ".composer-send");
 await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Deny').click()");
 await until("!/Approve discard #4/.test(document.querySelector('.task-actions')?.textContent ?? '')", "the denied approval stayed", 300);
 told = await story();
-if (told.next !== "What happens next: The worker waits for you to allow Bash(Bash(make:*)) or answer.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
-await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Allow a tool').click()");
-await until("document.querySelector('.task-allow input')?.value === 'Bash(Bash(make:*))'", "Allow did not offer the denied tool");
-await typeInto(".task-allow input", "Bash(make:*)");
-await evaluate("document.querySelector('.task-allow').requestSubmit()");
+if (told.next !== "What happens next: The worker waits for you to let it reach crates.io, or to answer.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
+const asking = await text(".task-actions .task-row");
+if (!asking.join(" ").includes("#4 needs to reach crates.io.") || await count(".task-actions input")) await fail(`the ask row reads ${JSON.stringify(asking)}`);
+await shot("task-ask", ".composer-send");
+await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Allow for project').click()");
 await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '').startsWith('ready')", "#4 did not resume after Allow", 300);
 
 // --- A deep link to a task opens the chat with the sheet over it; Back closes the sheet, then

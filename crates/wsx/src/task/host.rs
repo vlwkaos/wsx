@@ -76,6 +76,10 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
     let socket = dir.socket_path();
     let listener = hosting::bind(&socket)?;
     record.pane_id = hosting::own_pane();
+    // ^ A restarted host still knows what the block asks for.
+    let last_asks = view::read_result(&dir)
+        .and_then(|result| serde_json::from_value(result["asks"].clone()).ok())
+        .unwrap_or_default();
     let (events, receiver) = channel();
     let mut host = Host {
         dir,
@@ -91,7 +95,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         last_denials: Vec::new(),
         stops: Vec::new(),
         reached: Default::default(),
-        last_asks: Vec::new(),
+        last_asks,
         landing: None,
         started: Instant::now(),
     };
@@ -247,8 +251,9 @@ impl Host {
         }
     }
 
-    /// Add a grant; a blocked task resumes with it. A project grant is already in the
-    /// project's file (`owner::prepare_request`), so only the log names it here.
+    /// Add a grant; a blocked task resumes once every ask of its block is granted. A
+    /// project grant is already in the project's file (`owner::prepare_request`), so only
+    /// the log names it here.
     fn grant(&mut self, access: Access, project: bool, by: Actor) -> Result<String> {
         access.check().map_err(anyhow::Error::msg)?;
         if !project && !self.record.grants.contains(&access) {
@@ -261,7 +266,19 @@ impl Host {
         });
         self.restart_needed = true;
         let what = access.describe();
-        if self.record.state == TaskState::Blocked && !self.turn_active {
+        let project_grants = store::read_grants(&self.record.project_id).unwrap_or_default();
+        let open: Vec<String> = self
+            .last_asks
+            .iter()
+            .filter(|ask| !self.record.grants.contains(ask) && !project_grants.contains(ask))
+            .map(Access::describe)
+            .collect();
+        let blocked = self.record.state == TaskState::Blocked && !self.turn_active;
+        if blocked && !open.is_empty() {
+            self.save();
+            return Ok(format!("may now {what}; still asks to {}", open.join(", ")));
+        }
+        if blocked {
             let who = match by {
                 Actor::Owner => "The owner",
                 Actor::Manager => "The manager",

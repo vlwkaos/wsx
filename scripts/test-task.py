@@ -855,15 +855,19 @@ def run(wsx, wsxd, work, owned):
     assert next(r for r in js('task', 'ledger')['open'] if r['id'] == g)['asks'] == asks
     bad = cli('task', 'allow', g, '--host', 'bad host', '--json', ok=False)
     assert 'is not a host name' in bad.stdout + bad.stderr, bad
+    # ^ The block resumes once every ask is granted, so one resume carries both.
     granted = js('task', 'allow', g, '--host', 'example.org')
-    assert granted['ok'] and granted['message'] == 'may now reach example.org; resumed the task', granted
-    wait(lambda: len(launches_in(g)) == 2, 'relaunch with the host')
+    assert granted['message'] == 'may now reach example.org; still asks to write ~/.cargo', granted
+    assert show(g)['state'] == 'blocked' and len(launches_in(g)) == 1
+    # A project-wide grant goes to grants.json (owner-only) and every next agent start.
+    granted = js('task', 'allow', g, '--path', '~/.cargo', '--project-wide')
+    assert granted['message'] == 'may now write ~/.cargo; resumed the task', granted
+    wait(lambda: len(launches_in(g)) == 2, 'relaunch with the grants')
     relaunch = launches_in(g)[-1]
     assert relaunch['resume'] and 'example.org' in sandbox_of(relaunch)['network']['allowedDomains'], relaunch
+    assert '~/.cargo' in sandbox_of(relaunch)['filesystem']['allowWrite'], relaunch
     wait_state(g, 'ready', 'failed')
     assert show(g)['record']['grants'] == [{'kind': 'network', 'host': 'example.org'}]
-    # A project-wide grant goes to grants.json (owner-only) and every next agent start.
-    js('task', 'allow', g, '--path', '~/.cargo', '--project-wide')
     grants_file = Path(show(g)['log']).parent.parent / 'grants.json'
     assert json.loads(grants_file.read_text()) == [{'kind': 'write', 'path': '~/.cargo'}]
     assert oct(grants_file.stat().st_mode & 0o777) == '0o600'

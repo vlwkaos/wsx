@@ -2388,7 +2388,7 @@ TASK_CONFIG = '''tasks:
   brief: false
   agent:
     model: fake-model
-    tools: [Read, Edit]
+    tools: [WebFetch]
   checks:
     - "test ! -e broken.txt"
   manager: { model: fake-manager }
@@ -2493,8 +2493,8 @@ def task_journey(args):
 
         daemon = start(work, [str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait(path.exists, 'daemon')
-        # The fixture store: #1 blocked on a tool, #2 ready with Human Verify, #3 ready to land.
-        assert js('task', 'new', 'NEEDS Bash(make:*) WORK m.txt', '-p', 'demo')['id'] == 1
+        # The fixture store: #1 blocked on a host, #2 ready with Human Verify, #3 ready to land.
+        assert js('task', 'new', 'NEEDS_HOST crates.io WORK m.txt', '-p', 'demo')['id'] == 1
         assert js('task', 'new', 'WORK a.txt HV', '-p', 'demo')['id'] == 2
         assert js('task', 'new', 'WORK b.txt', '-p', 'demo')['id'] == 3
         wait_state(1, 'blocked')
@@ -2508,7 +2508,7 @@ def task_journey(args):
             wait(lambda: js('task', 'show', n, '-p', 'plans')['state'] == 'briefed', 'plans #%d briefed' % n)
         if args.browser:
             # The same store in the second project (`ui`), for the page: the browser acts on it.
-            for prompt in ('NEEDS Bash(make:*) WORK m.txt', 'WORK a.txt HV', 'WORK b.txt', 'NEEDS Bash(make:*) WORK n.txt'):
+            for prompt in ('NEEDS_HOST crates.io WORK m.txt', 'WORK a.txt HV', 'WORK b.txt', 'NEEDS_HOST crates.io WORK n.txt'):
                 js('task', 'new', prompt, '-p', 'ui')
             for n, state_name in ((1, 'blocked'), (2, 'ready'), (3, 'ready'), (4, 'blocked')):
                 wait(lambda: js('task', 'show', n, '-p', 'ui')['state'] == state_name, 'ui #%d' % n)
@@ -2605,7 +2605,7 @@ digest_max_seconds = 6
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         kinds = [(item['kind'], item.get('task')) for item in overview['needs']]
         assert kinds == [('blocked', 1), ('verify', 2), ('land', 3)], kinds
-        assert overview['needs'][0]['denials'] == ['Bash(Bash(make:*))'], overview['needs'][0]
+        assert overview['needs'][0]['asks'] == [{'kind': 'network', 'host': 'crates.io'}], overview['needs'][0]
         assert overview['needs'][1]['human_verify'] == 1 and overview['working'] == 0
         # Chips and the `#` picker: attention order, then the newest first.
         assert [row['id'] for row in overview['tasks']] == [1, 3, 2], overview['tasks']
@@ -2630,7 +2630,9 @@ digest_max_seconds = 6
         assert status == 400 and body['error']['code'] == 'note_required', body
         assert act(2, 'add', {'text': '  '})[0] == 400
         assert act(2, 'add', {'text': 'x' * (64 * 1024 + 1)})[0] == 413
-        assert act(1, 'allow', {'tool': 'Bash(make:*)\n'})[0] == 400
+        assert act(1, 'allow', {'host': 'bad host'})[0] == 400
+        assert act(1, 'allow', {'tool': 'Bash(make:*)'})[0] == 422  # no tool rules from the web
+        assert act(1, 'allow', {'host': 'a.example', 'path': '~/.x'})[0] == 400
         assert act(2, 'verify', {'result': 'maybe'})[0] == 422
         assert act(2, 'explode', {})[0] == 404 and act(99, 'add', {'text': 'hi'})[0] == 404
         status, body = act(3, 'verify', {'result': 'pass', 'note': 'looked'})
@@ -2646,8 +2648,8 @@ digest_max_seconds = 6
                       [(item['kind'], item.get('task')) for item in data['needs']][:3] == [('blocked', 1), ('land', 2), ('land', 3)])
         status, body = act(2, 'land', {})
         assert status == 200 and body['state'] == 'landed', body
-        status, body = act(1, 'allow', {'tool': 'Bash(make:*)'})
-        assert status == 200, body
+        status, body = act(1, 'allow', {'host': 'crates.io'})
+        assert status == 200 and body['message'] == 'may now reach crates.io; resumed the task', body
         wait_state(1, 'ready')
         status, body = act(1, 'add', {'text': 'NOOP and again'})
         assert status == 200, body
@@ -2704,7 +2706,7 @@ digest_max_seconds = 6
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         settled = [row['text'] for row in overview['resolutions']]
         for line in ('Denied discard #1', 'Approved land #3', '#3 landed', '#2 landed', '#2 passed verification of r1',
-                     '#3 passed verification of r1', '#1 allowed Bash(make:*)'):
+                     '#3 passed verification of r1', '#1 may reach crates.io (owner)'):
             assert line in settled, (line, settled)
         assert settled.index('Denied discard #1') < settled.index('#3 landed') < settled.index('#2 landed'), settled
         stamps = [row['unix_ms'] for row in overview['resolutions']]
@@ -2803,8 +2805,8 @@ digest_max_seconds = 6
                 assert record.get('error') is None and record['vapid']['ok'], record
             return [record['payload'] for record in got]
 
-        first = js('task', 'new', 'NEEDS Bash(x:*) NOOP', '-p', 'demo')['id']
-        second = js('task', 'new', 'NEEDS Bash(x:*) NOOP', '-p', 'demo')['id']
+        first = js('task', 'new', 'NEEDS_HOST x.example NOOP', '-p', 'demo')['id']
+        second = js('task', 'new', 'NEEDS_HOST x.example NOOP', '-p', 'demo')['id']
         wait_state(first, 'blocked')
         wait_state(second, 'blocked')
         merged = new_pushes(1, 'blocked push')
@@ -2814,7 +2816,7 @@ digest_max_seconds = 6
         assert merged[0]['body'] == '#%d blocked · #%d blocked' % (first, second) and merged[0]['tag'].endswith('-now'), merged
         baseline += 1
         for n in (first, second):
-            assert act(n, 'allow', {'tool': 'Bash(x:*)'})[0] == 200
+            assert act(n, 'allow', {'host': 'x.example'})[0] == 200
         wait_state(first, 'ready')
         wait_state(second, 'ready')
         digest = new_pushes(1, 'digest push')
@@ -2846,9 +2848,9 @@ digest_max_seconds = 6
         shown.expect('workspace')
         assert steady(owner, 'POST', '/api/presence', {'page': page, 'project': demo})[0] == 200
         assert steady(viewer, 'POST', '/api/presence', {'page': page, 'project': None})[0] == 404
-        hidden = js('task', 'new', 'NEEDS Bash(y:*) NOOP', '-p', 'demo')['id']
+        hidden = js('task', 'new', 'NEEDS_HOST y.example NOOP', '-p', 'demo')['id']
         wait_state(hidden, 'blocked')
-        other = js('task', 'new', 'NEEDS Bash(y:*) NOOP', '-p', 'ui')['id']
+        other = js('task', 'new', 'NEEDS_HOST y.example NOOP', '-p', 'ui')['id']
         wait(lambda: js('task', 'show', other, '-p', 'ui')['state'] == 'blocked', 'ui blocked')
         elsewhere = new_pushes(1, 'push for the other project')
         time.sleep(4)
@@ -2858,7 +2860,7 @@ digest_max_seconds = 6
         # The page goes away: its presence goes with its stream.
         shown.connection.close()
         time.sleep(1)
-        later = js('task', 'new', 'NEEDS Bash(z:*) NOOP', '-p', 'demo')['id']
+        later = js('task', 'new', 'NEEDS_HOST z.example NOOP', '-p', 'demo')['id']
         wait_state(later, 'blocked')
         assert new_pushes(1, 'push after the page closed')[0]['body'] == '#%d blocked' % later
         baseline += 1
