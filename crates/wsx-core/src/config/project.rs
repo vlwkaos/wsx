@@ -1,7 +1,9 @@
 // Canonical per-project configuration and legacy .gtrconfig migration.
 // ref: README.md#project-configuration
 
-use crate::model::workspace::{DefaultSessionConfig, LandPolicy, ProjectConfig, TaskConfig};
+use crate::model::workspace::{
+    DefaultSessionConfig, LandPolicy, ProjectConfig, TaskConfig, TaskSandbox,
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -20,6 +22,7 @@ const MAX_CHECK_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 const MIN_ROTATE_TOKENS: u64 = 1_000;
 const MAX_ROTATE_TOKENS: u64 = 2_000_000;
 const TASK_ADAPTERS: &[&str] = &["claude"];
+const BARE_FILE_TOOLS: &[&str] = &["Edit", "Write", "NotebookEdit", "MultiEdit"];
 const PROJECT_CONFIG_TEMPLATE: &str = "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\ngit:\n  subtrees: []\nworktree:\n  branchPrefix:\n  # defaultSession:\n  #   enabled: true\n  #   command:\n";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -63,6 +66,17 @@ struct TasksFile {
     manager: Option<TaskManagerFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     brief: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sandbox: Option<TaskSandboxFile>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct TaskSandboxFile {
+    #[serde(rename = "allowedDomains", skip_serializing_if = "Vec::is_empty")]
+    allowed_domains: Vec<String>,
+    #[serde(rename = "allowWrite", skip_serializing_if = "Vec::is_empty")]
+    allow_write: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -104,6 +118,7 @@ struct TaskAgentFile {
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<String>>,
+    // ^ Removed; read only to refuse it with the reason.
     #[serde(rename = "briefTools", skip_serializing_if = "Option::is_none")]
     brief_tools: Option<Vec<String>>,
 }
@@ -281,11 +296,20 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
         if let Some(tools) = agent.tools {
             config.tools = validate_list(tools, "tasks.agent.tools", MAX_TASK_WORD_BYTES)?;
+            if let Some((rule, reason)) = config
+                .tools
+                .iter()
+                .find_map(|tool| tool_refusal(tool).map(|reason| (tool, reason)))
+            {
+                return Err(format!("tasks.agent.tools has {rule}: {reason}; remove it"));
+            }
         }
-        if let Some(tools) = agent.brief_tools {
-            config.brief_tools =
-                validate_list(tools, "tasks.agent.briefTools", MAX_TASK_WORD_BYTES)?;
+        if agent.brief_tools.is_some() {
+            return Err("tasks.agent.briefTools was removed: a brief turn runs Bash read-only in the sandbox; remove it".into());
         }
+    }
+    if let Some(sandbox) = file.sandbox {
+        config.sandbox = validate_sandbox(sandbox)?;
     }
     if let Some(brief) = file.brief {
         config.brief = brief;
@@ -370,6 +394,91 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
     }
     Ok(config)
+}
+
+/// `Bash` or `Bash(...)`: the worker always has Bash, inside the sandbox.
+pub fn is_bash_rule(tool: &str) -> bool {
+    tool == "Bash" || tool.starts_with("Bash(")
+}
+
+/// Why a tool rule cannot be given to an agent, if it cannot. ref: docs/tasks.md "Permissions"
+pub fn tool_refusal(tool: &str) -> Option<&'static str> {
+    if is_bash_rule(tool) {
+        Some("the sandbox replaces Bash rules; allow a host or a path instead")
+    } else if BARE_FILE_TOOLS.contains(&tool) {
+        // ^ A bare file-tool rule would allow every path and skip the auto-mode classifier.
+        Some(
+            "file tools are always on in the working copy and reviewed by the classifier elsewhere",
+        )
+    } else {
+        None
+    }
+}
+
+/// A host for the sandbox's allow list: a name with an optional `*.` in front, no scheme,
+/// path or port.
+pub fn validate_host(host: &str) -> Result<(), String> {
+    let name = host.strip_prefix("*.").unwrap_or(host);
+    let valid = !name.is_empty()
+        && host.len() <= 253
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "{host:?} is not a host name such as crates.io or *.npmjs.org"
+        ))
+    }
+}
+
+/// A path for the sandbox's write list: absolute or under `~/`, without `..`, and never
+/// the home folder or the root itself.
+pub fn validate_write_path(path: &str) -> Result<(), String> {
+    let rest = path
+        .strip_prefix("~/")
+        .or_else(|| path.strip_prefix('/'))
+        .ok_or_else(|| format!("{path:?} must be absolute or start with ~/"))?;
+    let rest = rest.trim_end_matches('/');
+    if rest.is_empty()
+        || rest
+            .split('/')
+            .any(|part| part.is_empty() || part == ".." || part == ".")
+        || path.chars().any(char::is_control)
+        || path.len() > MAX_TASK_WORD_BYTES
+    {
+        return Err(format!(
+            "{path:?} must name a folder below / or ~/ without . or .. parts"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sandbox(file: TaskSandboxFile) -> Result<TaskSandbox, String> {
+    let allowed_domains = validate_list(
+        file.allowed_domains,
+        "tasks.sandbox.allowedDomains",
+        MAX_TASK_WORD_BYTES,
+    )?;
+    for host in &allowed_domains {
+        validate_host(host).map_err(|error| format!("tasks.sandbox.allowedDomains: {error}"))?;
+    }
+    let allow_write = validate_list(
+        file.allow_write,
+        "tasks.sandbox.allowWrite",
+        MAX_TASK_WORD_BYTES,
+    )?;
+    for path in &allow_write {
+        validate_write_path(path).map_err(|error| format!("tasks.sandbox.allowWrite: {error}"))?;
+    }
+    Ok(TaskSandbox {
+        allowed_domains,
+        allow_write,
+    })
 }
 
 fn validate_list(

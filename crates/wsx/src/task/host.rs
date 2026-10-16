@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
-use wsx_core::config::project::load_task_config;
+use wsx_core::config::project::{load_task_config, tool_refusal};
 use wsx_core::git::{git_cmd, output_with_timeout_limit};
 use wsx_core::model::workspace::LandPolicy;
 use wsx_core::runtime;
@@ -28,8 +28,6 @@ const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 const CHECK_OUTPUT_BYTES: usize = 8 * 1024;
 const MAX_RESULT_BYTES: usize = 256 * 1024;
 const MAX_TOOL_BYTES: usize = 256;
-/// The worker rebases a conflicted landing itself and needs this rule for it.
-const REBASE_TOOL: &str = "Bash(git rebase:*)";
 
 enum Event {
     Request(HostRequest, Sender<HostResponse>),
@@ -237,13 +235,11 @@ impl Host {
         if tool.is_empty() || tool.len() > MAX_TOOL_BYTES || tool.chars().any(char::is_control) {
             bail!("a tool pattern must be 1..{MAX_TOOL_BYTES} bytes without control characters");
         }
-        // ^ During the brief an allowed tool joins the brief turns' tools only.
-        let tools = match self.record.phase {
-            Phase::Brief => &mut self.record.brief_tools,
-            Phase::Build => &mut self.record.tools,
-        };
-        if !tools.contains(&tool) {
-            tools.push(tool.clone());
+        if let Some(reason) = tool_refusal(&tool) {
+            bail!("{tool}: {reason}");
+        }
+        if !self.record.tools.contains(&tool) {
+            self.record.tools.push(tool.clone());
         }
         self.log(LogEvent::Allowed { tool: tool.clone() });
         self.restart_needed = true;
@@ -326,7 +322,7 @@ impl Host {
             let generation = self.generation;
             self.stop_requested = false;
             self.agent = Some(ClaudeAgent::spawn(
-                &Launch::worker(&self.record),
+                &Launch::worker(&self.record)?,
                 &session,
                 resume,
                 self.events.clone(),
@@ -660,13 +656,6 @@ impl Host {
                     onto: tip.clone(),
                     paths: paths.clone(),
                 });
-                if !self.record.tools.iter().any(|tool| tool == REBASE_TOOL) {
-                    self.record.tools.push(REBASE_TOOL.into());
-                    self.log(LogEvent::Allowed {
-                        tool: REBASE_TOOL.into(),
-                    });
-                    self.restart_needed = true;
-                }
                 self.set_state(TaskState::Conflict);
                 self.start_turn(&format!(
                     "Landing needs branch {branch} rebased onto {tip} (the current {default}). \

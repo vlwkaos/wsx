@@ -28,7 +28,7 @@ use wsx_core::task::{
     brief, call_host, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
     DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind, Phase, TaskRecord,
-    TaskState, Verdict, BRIEF_TOOLS, MAX_MESSAGE_BYTES,
+    TaskState, Verdict, MAX_MESSAGE_BYTES,
 };
 use wsx_core::{ops, runtime};
 
@@ -557,12 +557,6 @@ fn new(
     } else {
         None
     };
-    let mut brief_tools: Vec<String> = BRIEF_TOOLS.iter().map(|tool| tool.to_string()).collect();
-    for tool in settings.brief_tools {
-        if !brief_tools.contains(&tool) {
-            brief_tools.push(tool);
-        }
-    }
     let record = TaskRecord {
         id,
         project: project.name.clone(),
@@ -581,7 +575,7 @@ fn new(
         } else {
             Phase::Brief
         },
-        brief_tools,
+        sandbox: settings.sandbox,
         checks: settings.checks,
         check_timeout_secs: settings.check_timeout_secs,
         agent_session: None,

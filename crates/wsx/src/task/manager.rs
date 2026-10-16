@@ -1,8 +1,11 @@
 //! `wsx task manager-host`: one manager agent per project in a hidden session in the
-//! main checkout. It never edits files; it answers from the ledger and acts through
-//! `wsx task` commands. ref: docs/tasks.md "Manager"
+//! main checkout. It edits no project file; it answers from the ledger, acts through
+//! `wsx task` commands and keeps notes in its own folder. ref: docs/tasks.md "Manager"
 
-use super::claude::{new_session_id, AgentLine, ClaudeAgent, Launch, TurnResult};
+use super::claude::{
+    kept_from_edits, new_session_id, AgentLine, Boundary, ClaudeAgent, Launch, TurnResult,
+    MANAGER_COMMAND,
+};
 use super::hosting;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -21,7 +24,6 @@ use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{clip, project_tasks, read_result};
 use wsx_core::task::{brief, TaskState, MAX_MESSAGE_BYTES};
 
-pub const MANAGER_TOOLS: [&str; 4] = ["Read", "Grep", "Glob", "Bash(wsx task:*)"];
 /// Variables the manager's own `wsx task` commands need to reach this project's state
 /// and daemon. Pane identity (`WSX_PANE_ID`, the generation) is never passed on.
 const MANAGER_ENV: [&str; 5] = [
@@ -84,10 +86,11 @@ struct Manager {
 }
 
 /// ref: docs/tasks.md "Manager", "Brief"
-fn instructions(project: &str) -> String {
+fn instructions(project: &str, notes: &Path) -> String {
     format!(
-        "You are the manager of the wsx project {project}. You never edit files and never \
-         run builds or tests; workers do that in their own tasks. Start every turn with \
+        "You are the manager of the wsx project {project}. You never edit the project's \
+         files and never run builds or tests; workers do that in their own tasks. You may \
+         keep notes in {notes}, the only folder you can write. Start every turn with \
          `wsx task ledger -p {project}`: it is the source of truth, not your memory. \
          Messages headed 'Owner' come from the owner; messages headed 'Events' are written \
          by wsx. For each owner message choose one: answer it, `wsx task add`, \
@@ -100,7 +103,8 @@ fn instructions(project: &str) -> String {
          'just do it' or 'no brief'. Never start a build on your own: when the owner says \
          'start #<n>', run `wsx task start <n>`, which asks the owner's approval. A reply \
          about a brief goes to its task with `wsx task add`. In status answers, name the \
-         briefs that wait for the owner."
+         briefs that wait for the owner.",
+        notes = notes.display()
     )
 }
 
@@ -459,23 +463,32 @@ impl Manager {
             .send(text)
     }
 
+    /// The manager's Bash writes only its notes folder; its `wsx task` commands leave the
+    /// sandbox. ref: docs/tasks.md "Permissions"
     fn launch(&self) -> Result<Launch> {
         let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-        let mut env: Vec<(String, std::ffi::OsString)> = MANAGER_ENV
+        let notes = self.dir.notes()?;
+        let boundary = Boundary {
+            cwd: self.main.clone(),
+            writes: vec![notes.display().to_string()],
+            deny_writes: vec![self.main.display().to_string()],
+            domains: Vec::new(),
+            excluded: vec![MANAGER_COMMAND.into()],
+            deny_edits: kept_from_edits(&self.main, None),
+        };
+        let mut launch = Launch::new(
+            &boundary,
+            &self.model,
+            vec![format!("Bash({MANAGER_COMMAND})")],
+            instructions(&self.project, &notes),
+        );
+        launch.env = MANAGER_ENV
             .iter()
             .filter_map(|name| std::env::var_os(name).map(|value| (name.to_string(), value)))
             .collect();
-        env.push((ACTOR_ENV.into(), "manager".into()));
-        Ok(Launch {
-            cwd: self.main.clone(),
-            model: self.model.clone(),
-            tools: MANAGER_TOOLS.map(String::from).to_vec(),
-            disallowed: Vec::new(),
-            schema: None,
-            instructions: instructions(&self.project),
-            env,
-            path_prefix: exe.parent().map(Path::to_path_buf),
-        })
+        launch.env.push((ACTOR_ENV.into(), "manager".into()));
+        launch.path_prefix = exe.parent().map(Path::to_path_buf);
+        Ok(launch)
     }
 
     fn on_agent(&mut self, line: Option<AgentLine>) {

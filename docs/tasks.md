@@ -9,7 +9,7 @@ wsx task list -p <project> [--all] --json
 wsx task show <n> -p <project> --json            # record, result.json, report path, host_running, socket
 wsx task steer <n> "<text>" --json               # into the running turn
 wsx task add <n> "<text>" --json                 # after the turn (queued while one runs)
-wsx task allow <n> "Bash(make:*)" --json         # restart with the tool and resume a blocked task
+wsx task allow <n> WebSearch --json              # restart with the tool (never a Bash rule) and resume a blocked task
 wsx task stop <n> --json                         # interrupt; the next add resumes the conversation
 wsx task verify <n> pass|fail [--note <text>] --json   # human verdict on the current revision
 wsx task land <n> [--skip-verify] --json         # onto the default branch by tasks.land.policy
@@ -56,17 +56,33 @@ A host restarted by a cold daemon start marks a running turn `stopped`; the next
 
 ## Claude adapter
 
-`claude -p --input-format stream-json --output-format stream-json --verbose --setting-sources project,local --permission-mode default --model <model> --json-schema <result schema> --append-system-prompt <worker rules> --allowedTools <tools>`, with `--session-id <uuid>` first and `--resume <uuid>` after a stop or allow. The environment keeps only `HOME USER LOGNAME PATH SHELL LANG LC_ALL LC_CTYPE TMPDIR CLAUDE_CONFIG_DIR ANTHROPIC_API_KEY`, the proxy variables (`HTTPS_PROXY HTTP_PROXY NO_PROXY` and lowercase), `NODE_EXTRA_CA_CERTS SSL_CERT_FILE CARGO_HOME RUSTUP_HOME`; no `WSX_*`. `GIT_EDITOR=true`, since no terminal can edit a commit or rebase message. A stdout line over 4 MiB is dropped in buffer-sized steps.
+`claude -p --input-format stream-json --output-format stream-json --verbose --setting-sources project,local --permission-mode auto --model <model> --append-system-prompt <rules> --settings <sandbox and rules> --json-schema <result schema> --allowedTools <tools> [--disallowedTools <tools>]` (see Permissions), with `--session-id <uuid>` first and `--resume <uuid>` after a stop or allow. The environment keeps only `HOME USER LOGNAME PATH SHELL LANG LC_ALL LC_CTYPE TMPDIR CLAUDE_CONFIG_DIR ANTHROPIC_API_KEY`, the proxy variables (`HTTPS_PROXY HTTP_PROXY NO_PROXY` and lowercase), `NODE_EXTRA_CA_CERTS SSL_CERT_FILE CARGO_HOME RUSTUP_HOME`; no `WSX_*`. `GIT_EDITOR=true`, since no terminal can edit a commit or rebase message. A stdout line over 4 MiB is dropped in buffer-sized steps.
 
 - Steer: a stream-json user message during a turn. Claude does not save it in its history, so the host logs it. A steer with no running turn is sent as an add.
 - Only the worker's own `status: blocked` makes the task `blocked` (no checks run). Tool calls Claude denied (`permission_denials`) are evidence: they are logged on the `result` event, listed in `result.json` (`denials`, also in `show --json`) and under Evidence in the report, and checks still run.
 - Result schema: `{status: done|blocked|failed, summary, decisions[{choice, reason}], human_verify[{check, pass_if}], left_open[], notes}`.
 
+## Permissions
+
+Every agent wsx starts (worker, brief turn, manager) runs in Claude's auto mode with Claude's Bash sandbox, set through `--settings`. The sandbox is `enabled`, `failIfUnavailable`, `autoAllowBashIfSandboxed` and `allowUnsandboxedCommands: false`. Set from `--settings`, the last makes the sandbox admin-required: a repository's own `.claude/settings*.json` cannot add hosts, write paths or excluded commands. Claude's sandbox docs: https://code.claude.com/docs/en/sandboxing.
+
+| Role | Bash writes (the OS enforces) | Also |
+|---|---|---|
+| worker | its working copy; in the main repository's git folder `objects`, `worktrees/<copy>`, `refs/heads/wsx/` and `logs/refs/heads/wsx/` (what a commit, amend and rebase write); `tasks.sandbox.allowWrite` | `denyWrite` the main repository's `hooks`, `config` and the default branch's ref and reflog |
+| brief | nothing: `denyWrite` the working copy | `--disallowedTools Edit Write NotebookEdit` |
+| manager | `tasks/<project-id>/manager/notes/`; `denyWrite` the main checkout | `wsx task *` runs outside the sandbox (`excludedCommands` and the allowed tool `Bash(wsx task *)`); a command line with anything else stays inside |
+
+- Bash needs no rules: any command, compound ones too, runs without a prompt inside the boundary. A write outside fails with `Operation not permitted`.
+- Network: `tasks.sandbox.allowedDomains` are reachable. Another host fails once with a `<sandbox_violations>` note; the agent may run the command again with the host listed, and the auto-mode classifier decides.
+- File tools (Read, Edit, Write) are not in the OS sandbox. Auto mode accepts edits in the working directory, and its classifier reviews the rest. Deny rules (`Edit(//<path>/**)`, which cover every file tool) keep them out of the main checkout, the wsx state folder (`$XDG_STATE_HOME/wsx`), the wsx config folders (the platform one and `$XDG_CONFIG_HOME/wsx`) and the project's other task copies `<repo>-t<n>`. The manager has the same rules without the state folder.
+- `--allowedTools` is `Read Glob Grep` plus `tasks.agent.tools` (the manager: `Bash(wsx task *)`). A record from before the sandbox drops its `Bash(...)`, `Edit` and `Write` entries at launch.
+- What cannot run in the sandbox: a PTY (`openpty` fails) and Chrome (it needs the per-user temp folder and `~/Library`). Tests that need them belong in `tasks.checks`, which the host runs outside the sandbox.
+
 ## Brief
 
 With `tasks.brief` (default `true`) a new task first returns a brief and builds nothing. `new --no-brief` skips it, and so does `tasks.brief: false`; both log `brief_skipped{by: flag|config, actor: owner|manager}`. The manager passes `--no-brief` only when the owner's message asks to skip the brief.
 
-1. The first turn asks the worker, as a top professional in the field, for the brief of the owner's prompt. The agent runs with the brief tools only: `Read Grep Glob`, `Bash(git log|show|diff|status|grep:*)`, `Bash(ls:*)` and `tasks.agent.briefTools`, with `--disallowedTools Edit Write NotebookEdit`. The owner keeps `briefTools` read-only (for example `Bash(cargo nextest list:*)`); wsx does not check what a listed command does. Any other tool call is denied and logged with the brief.
+1. The first turn asks the worker, as a top professional in the field, for the brief of the owner's prompt. The turn runs read-only (see Permissions): its Bash writes nothing, not even the working copy, and `--disallowedTools Edit Write NotebookEdit`. A denied file edit is logged with the brief.
 2. The turn ends with structured output (`--json-schema`, the brief schema): `additions[{what, why}]` (what a top professional would add), `raw_material[{source, why}]` (primary sources by path or link), `methods[]`, `independent_check[]` (what, other than the owner or an agent, shows the result is right), `concepts[{term, explanation}]` (terms the owner is likely new to), `rewritten_prompt`, `open_questions[]` and `answer`. The host writes `brief.json` as the next version and renders `brief.md` with the sections in that order, logs `brief{version, answer, usage, denials}` and sets `briefed`. A turn without a usable brief (no output, or no rewritten prompt) logs a failed `result` and sets `failed`.
 3. An `add` before the build is a talk-through: the worker answers the reply in `answer` (logged with the brief, so the conversation reads as reply and answer) and returns the whole brief again, revised where the reply changes it, still read-only. An `allow` before the build adds to the brief tools.
 4. `wsx task start <n>` needs `briefed`. It logs `started{version, prompt}` with the rewritten prompt (the first prompt stays in the log), sets `phase: build`, restarts the agent with the build tools and the result schema and resumes the same conversation with the rewritten prompt. Under `WSX_TASK_ACTOR=manager` it records an approval request "Approve start #n" instead. `close` works in every state.
@@ -88,7 +104,7 @@ After each result that is not blocked the host runs `tasks.checks` with `/bin/sh
 1. refuse unless the task is `ready`, and when the result has Human Verify items and the current revision has no `pass` (`--skip-verify` lands anyway and logs `verify_skipped`);
 2. refuse when the worker left uncommitted tracked changes;
 3. when the branch does not contain the default branch tip, rebase it there in the working copy:
-   - a conflict aborts the rebase, logs `conflict{onto, paths}`, allows `Bash(git rebase:*)` for this task (logged) and starts a worker turn that rebases and resolves. The state stays `conflict` until the result; the normal checks then make it `ready`, and the caller lands again;
+   - a conflict aborts the rebase, logs `conflict{onto, paths}`, and starts a worker turn that rebases and resolves. The state stays `conflict` until the result; the normal checks then make it `ready`, and the caller lands again;
    - a clean rebase reruns the checks as a new revision and lands when they pass. A `pass` on the old revision is carried (`verified{carried_from}`) only when the default branch changed none of the task's paths since its old base; otherwise the new revision needs a new verdict. A failure logs `land_stopped`;
 4. fast-forward the default branch: `git merge --ff-only` in the checkout that has it checked out, refused with the changed files named when that checkout has tracked changes; `git update-ref` with the old tip as guard when no checkout has it;
 5. log `landed{commit}` and set `landed`. After a rebase the task goes from `checking` straight to `landed`, or to `ready` with `land_stopped`.
@@ -116,7 +132,7 @@ wsx task say -p <project> "<text>" --json        # or `-` or --prompt-file; retu
 wsx task chat -p <project> [--after <id>] --json # messages, replies, rotations
 ```
 
-One manager per project runs as hidden `wsx task manager-host <project-id>` in a wsxd session `task-manager` in the main checkout (no working copy); `say` starts it when it is not running. Its agent uses `tasks.manager` (`model`, default `sonnet`; `rotateTokens`, default 150000), project and local settings only, and the tools `Read Grep Glob Bash(wsx task:*)`. Its instructions: never edit files or run builds; read `wsx task ledger` first; for each owner message answer, add, steer, start, verify or land; keep turns short; name tasks `#<n>`. Asked for work, it runs `task new` (brief on), tells the owner the brief is coming and never starts a build alone; it adds `--no-brief` only when the owner's message asks to skip the brief ("just do it", "no brief"); on "start #n" it runs `task start <n>`, which asks the owner's approval; a reply about a brief goes to the task as an `add`; status answers name the briefs that wait. A running manager keeps the instructions its conversation started with until it rotates. Its environment is the worker allowlist plus `XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME WSX_SOCKET WSX_DAEMON_BIN` (so its `wsx task` commands reach this project) and `WSX_TASK_ACTOR=manager`; the host puts its own `wsx` first on `PATH`.
+One manager per project runs as hidden `wsx task manager-host <project-id>` in a wsxd session `task-manager` in the main checkout (no working copy); `say` starts it when it is not running. Its agent uses `tasks.manager` (`model`, default `sonnet`; `rotateTokens`, default 150000), project and local settings only, the tools `Read Glob Grep Bash(wsx task *)` and the manager boundary (see Permissions). Its instructions: never edit the project's files or run builds; keep notes only in `manager/notes/`; read `wsx task ledger` first; for each owner message answer, add, steer, start, verify or land; keep turns short; name tasks `#<n>`. Asked for work, it runs `task new` (brief on), tells the owner the brief is coming and never starts a build alone; it adds `--no-brief` only when the owner's message asks to skip the brief ("just do it", "no brief"); on "start #n" it runs `task start <n>`, which asks the owner's approval; a reply about a brief goes to the task as an `add`; status answers name the briefs that wait. A running manager keeps the instructions its conversation started with until it rotates. Its environment is the worker allowlist plus `XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME WSX_SOCKET WSX_DAEMON_BIN` (so its `wsx task` commands reach this project) and `WSX_TASK_ACTOR=manager`; the host puts its own `wsx` first on `PATH`.
 
 - `manager/log.jsonl` (rolls to `log.1.jsonl` past 8 MiB) has `message{id, from: owner|events, text}`, `delivered{ids}`, `reply{id, to, text, usage}`, `agent` (its commands), `rotated{tokens}` and `stopped`. `manager/state.json` keeps the conversation, the next id and what was already reported.
 - One turn at a time. Waiting owner messages go together in one turn, each headed with its id, before waiting events.
@@ -157,8 +173,9 @@ wsx task deployed -p <project> --json
 
 ```yaml
 tasks:
-  agent: { adapter: claude, model: opus, tools: [Read, Edit, "Bash(cargo test:*)"], briefTools: ["Bash(cargo nextest list:*)"] }
+  agent: { adapter: claude, model: opus, tools: [WebFetch] }   # never Bash rules
   brief: true                                                    # false: build at once
+  sandbox: { allowedDomains: [crates.io, "*.npmjs.org"], allowWrite: ["~/.cargo/registry"] }
   checks: ["cargo fmt --check"]
   checkTimeoutSeconds: 1200
   land: { policy: local-merge, remote: origin, approve: true }   # or policy: pr
@@ -167,7 +184,7 @@ tasks:
   manager: { adapter: claude, model: sonnet, rotateTokens: 150000 }
 ```
 
-Defaults: adapter `claude`, worker model `opus` (the manager keeps `sonnet`), tools `Read Glob Grep Edit Write` plus `Bash(git add|commit|status|diff|log:*)`, `brief: true` with no `briefTools` (they must stay read-only: see Brief), no checks. Up to 64 tools, 64 brief tools and 64 checks; `checkTimeoutSeconds` is 1..86400; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.
+Defaults: adapter `claude`, worker model `opus` (the manager keeps `sonnet`), no extra tools, `brief: true`, an empty sandbox list, no checks. `tasks.agent.tools` refuses `Bash(...)` (the sandbox replaces it) and bare `Edit`, `Write`, `NotebookEdit`, `MultiEdit` (they would skip the classifier); `briefTools` was removed and is refused with the reason. `allowedDomains` are host names with an optional `*.`; `allowWrite` paths are absolute or `~/`, below the root or home, without `.` or `..`. Up to 64 tools, 64 checks and 64 entries per sandbox list; `checkTimeoutSeconds` is 1..86400; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.
 
 ## Verify
 

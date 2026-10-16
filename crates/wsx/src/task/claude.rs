@@ -2,14 +2,14 @@
 //! ref: docs/tasks.md "Claude adapter"; knowledge "Headless Worker Transport"
 
 use anyhow::{Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
-use wsx_core::task::{
-    brief, worker_result_schema, Phase, TaskRecord, TurnUsage, BRIEF_DENIED_TOOLS,
-};
+use wsx_core::config::project::tool_refusal;
+use wsx_core::task::{brief, copy, store, worker_result_schema, Phase, TaskRecord, TurnUsage};
 
 /// Longest stdout line the host reads; a longer one (a huge tool result) is skipped.
 const MAX_LINE_BYTES: u64 = 4 * 1024 * 1024;
@@ -61,12 +61,16 @@ pub struct ClaudeAgent {
     stdin: ChildStdin,
 }
 
-/// What one agent process runs with. Workers and the manager differ only here.
+/// What one agent process runs with. Every role gets its launch from `Launch::new`.
+/// ref: docs/tasks.md "Permissions"
 pub struct Launch {
-    pub cwd: std::path::PathBuf,
+    pub cwd: PathBuf,
     pub model: String,
+    /// `--settings`: the sandbox and the file-tool rules of the role.
+    pub settings: Value,
+    /// `--allowedTools`: never a Bash rule; the sandbox bounds Bash.
     pub tools: Vec<String>,
-    /// Denied even when the project's settings allow them.
+    /// `--disallowedTools`
     pub disallowed: Vec<String>,
     /// JSON Schema of the final result, when the turn must end with structured output.
     pub schema: Option<Value>,
@@ -74,34 +78,172 @@ pub struct Launch {
     /// Set on top of `KEPT_ENV`.
     pub env: Vec<(String, std::ffi::OsString)>,
     /// Put first on `PATH`, so the agent's commands find this wsx build.
-    pub path_prefix: Option<std::path::PathBuf>,
+    pub path_prefix: Option<PathBuf>,
 }
 
+/// What one role may write and reach. The OS enforces it on Bash; the file tools get
+/// deny rules for `deny_edits` and the auto-mode classifier reviews the rest.
+pub struct Boundary {
+    pub cwd: PathBuf,
+    pub writes: Vec<String>,
+    pub deny_writes: Vec<String>,
+    pub domains: Vec<String>,
+    /// Commands that run outside the sandbox; each also needs an allowed tool rule.
+    pub excluded: Vec<String>,
+    pub deny_edits: Vec<PathBuf>,
+}
+
+/// Tools of every role. Edit and Write are not listed: auto mode accepts them in the
+/// working directory and its classifier reviews them elsewhere, while a bare `Write`
+/// rule would allow every path.
+const BASE_TOOLS: [&str; 3] = ["Read", "Glob", "Grep"];
+/// The manager's own commands, which leave the sandbox (`excludedCommands`).
+pub const MANAGER_COMMAND: &str = "wsx task *";
+/// Denied in a brief turn even when a project's settings allow them.
+const BRIEF_DENIED_TOOLS: [&str; 3] = ["Edit", "Write", "NotebookEdit"];
+
 impl Launch {
-    /// A brief turn reads only and returns a brief; a build turn edits and returns a result.
-    pub fn worker(record: &TaskRecord) -> Self {
-        let (tools, disallowed, schema) = match record.phase {
-            Phase::Brief => (
-                record.brief_tools.clone(),
-                BRIEF_DENIED_TOOLS
-                    .iter()
-                    .map(|tool| tool.to_string())
-                    .collect(),
-                brief::schema(),
-            ),
-            Phase::Build => (record.tools.clone(), Vec::new(), worker_result_schema()),
-        };
+    pub fn new(boundary: &Boundary, model: &str, tools: Vec<String>, instructions: String) -> Self {
+        let mut allowed: Vec<String> = BASE_TOOLS.map(String::from).to_vec();
+        for tool in tools {
+            if !allowed.contains(&tool) {
+                allowed.push(tool);
+            }
+        }
         Self {
-            cwd: record.working_copy.clone(),
-            model: record.model.clone(),
-            tools,
-            disallowed,
-            schema: Some(schema),
-            instructions: worker_instructions(record),
+            cwd: boundary.cwd.clone(),
+            model: model.to_string(),
+            settings: settings(boundary),
+            tools: allowed,
+            disallowed: Vec::new(),
+            schema: None,
+            instructions,
             env: Vec::new(),
             path_prefix: None,
         }
     }
+
+    /// A brief turn reads only and returns a brief; a build turn edits and returns a result.
+    pub fn worker(record: &TaskRecord) -> Result<Self> {
+        let boundary = worker_boundary(record)?;
+        // ^ Records from before the sandbox hold Bash rules and bare Edit and Write: drop them.
+        let tools = record
+            .tools
+            .iter()
+            .filter(|tool| tool_refusal(tool).is_none())
+            .cloned()
+            .collect();
+        let mut launch = Self::new(&boundary, &record.model, tools, worker_instructions(record));
+        launch.schema = Some(match record.phase {
+            Phase::Brief => {
+                launch.disallowed = BRIEF_DENIED_TOOLS.map(String::from).to_vec();
+                brief::schema()
+            }
+            Phase::Build => worker_result_schema(),
+        });
+        Ok(launch)
+    }
+}
+
+/// The settings every role shares, with its own boundary.
+fn settings(boundary: &Boundary) -> Value {
+    let mut sandbox = json!({
+        "enabled": true,
+        "failIfUnavailable": true,
+        "autoAllowBashIfSandboxed": true,
+        // ^ From `--settings` this also makes the sandbox admin-required, so a repository's
+        // own settings cannot add hosts, write paths or excluded commands.
+        "allowUnsandboxedCommands": false,
+        "network": { "allowedDomains": boundary.domains },
+        "filesystem": { "allowWrite": boundary.writes, "denyWrite": boundary.deny_writes },
+    });
+    if !boundary.excluded.is_empty() {
+        sandbox["excludedCommands"] = json!(boundary.excluded);
+    }
+    json!({
+        // ^ Agent commits carry no AI attribution; `attribution` replaced
+        // `includeCoAuthoredBy`, which older builds still read.
+        "attribution": { "commit": "", "pr": "" },
+        "includeCoAuthoredBy": false,
+        "sandbox": sandbox,
+        // ^ `//` starts an absolute path in a permission rule; Edit rules cover every file tool.
+        "permissions": {
+            "deny": boundary
+                .deny_edits
+                .iter()
+                .map(|path| format!("Edit(/{}/**)", path.display()))
+                .collect::<Vec<_>>(),
+        },
+    })
+}
+
+/// A worker writes its working copy and the git paths its commits need in the main
+/// repository; a brief turn writes nothing. ref: docs/tasks.md "Permissions"
+fn worker_boundary(record: &TaskRecord) -> Result<Boundary> {
+    let (common, admin) = copy::git_dirs(&record.working_copy)?;
+    let default_ref = format!("refs/heads/{}", record.default_branch);
+    let mut deny_writes = vec![
+        common.join("hooks"),
+        common.join("config"),
+        common.join(&default_ref),
+        common.join("logs").join(&default_ref),
+    ];
+    let mut writes: Vec<String> = Vec::new();
+    match record.phase {
+        Phase::Brief => deny_writes.insert(0, record.working_copy.clone()),
+        Phase::Build => {
+            writes.extend(
+                [
+                    common.join("objects"),
+                    admin,
+                    common.join("refs/heads/wsx"),
+                    common.join("logs/refs/heads/wsx"),
+                ]
+                .iter()
+                .map(|path| path.display().to_string()),
+            );
+            writes.extend(record.sandbox.allow_write.iter().cloned());
+        }
+    }
+    let mut deny_edits = kept_from_edits(&record.project_path, Some(&record.working_copy));
+    deny_edits.push(store::state_dir());
+    Ok(Boundary {
+        cwd: record.working_copy.clone(),
+        writes,
+        deny_writes: deny_writes
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect(),
+        domains: record.sandbox.allowed_domains.clone(),
+        excluded: Vec::new(),
+        deny_edits,
+    })
+}
+
+/// Folders no agent's file tools may write: the main checkout, wsx's config folders and
+/// the project's task copies other than `own`.
+pub fn kept_from_edits(main: &Path, own: Option<&Path>) -> Vec<PathBuf> {
+    let mut paths = vec![main.to_path_buf()];
+    paths.extend(config_dirs());
+    paths.extend(
+        copy::task_copies(main)
+            .into_iter()
+            .filter(|path| Some(path.as_path()) != own),
+    );
+    paths
+}
+
+/// Where wsx keeps its configuration: the platform folder and the XDG one.
+fn config_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = dirs::config_dir().into_iter().collect();
+    let xdg = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".config")));
+    dirs.extend(xdg);
+    let mut dirs: Vec<PathBuf> = dirs.into_iter().map(|dir| dir.join("wsx")).collect();
+    dirs.dedup();
+    dirs
 }
 
 /// The same text in both phases: Claude records the system prompt of a conversation's
@@ -114,8 +256,13 @@ fn worker_instructions(record: &TaskRecord) -> String {
          A task may start with a brief: while a message asks for the brief, only read, \
          search and run read-only commands, change no file, and return the brief in the \
          requested structure. When a message says the build starts, build it and commit \
-         your changes with git before you finish. \
-         When you cannot continue, return status blocked and say what you need.",
+         your changes with git before you finish. Build and test what you change. \
+         Your commands run in a sandbox: they write only in this working copy, and a \
+         host that is not allowed fails with a sandbox_violations note; when the task \
+         needs that host, run the command again with the host listed. Keep file edits in \
+         this working copy. \
+         When you cannot continue, return status blocked and say what you need; when the \
+         sandbox or a permission stops a host or a path you need, name that host or path.",
         record.branch
     )
 }
@@ -142,15 +289,13 @@ impl ClaudeAgent {
                 "--setting-sources",
                 "project,local",
                 "--permission-mode",
-                "default",
+                "auto",
                 "--model",
                 &launch.model,
                 "--append-system-prompt",
                 &launch.instructions,
-                // ^ Worker commits carry no AI attribution; `attribution` replaced
-                // `includeCoAuthoredBy`, which older builds still read.
                 "--settings",
-                r#"{"attribution":{"commit":"","pr":""},"includeCoAuthoredBy":false}"#,
+                &launch.settings.to_string(),
             ])
             .args(if resume {
                 ["--resume", session]
