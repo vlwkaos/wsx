@@ -91,6 +91,8 @@ pub enum MessageKind {
     Prompt,
     Steer,
     Add,
+    /// The owner's note on a failed human verification, sent to the worker.
+    Verify,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,12 +249,26 @@ pub enum DeployKind {
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum HostRequest {
     Status,
-    Steer { text: String },
-    Add { text: String },
-    Allow { tool: String },
+    Steer {
+        text: String,
+    },
+    Add {
+        text: String,
+    },
+    Allow {
+        tool: String,
+    },
     Stop,
-    Land { skip_verify: bool },
-    Close { discard: bool },
+    Land {
+        skip_verify: bool,
+    },
+    Verify {
+        result: Verdict,
+        note: Option<String>,
+    },
+    Close {
+        discard: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

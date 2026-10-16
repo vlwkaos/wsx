@@ -1,7 +1,7 @@
 //! `report.md` of one revision, built only from the log, git and the result.
 //! ref: docs/tasks.md "Report"
 
-use super::{LogEvent, MessageKind, TaskRecord, WorkerResult};
+use super::{LogEntry, LogEvent, MessageKind, TaskRecord, Verdict, WorkerResult};
 use crate::git::{git_cmd, output_with_timeout_limit};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -62,6 +62,7 @@ pub fn render(
                 MessageKind::Prompt => "Prompt",
                 MessageKind::Steer => "Steer",
                 MessageKind::Add => "Add",
+                MessageKind::Verify => "Human verification (fail)",
             };
             let _ = writeln!(out, "**{label}**\n");
             fenced(&mut out, text);
@@ -146,14 +147,61 @@ pub fn render(
     }
 
     out.push_str("## Human Verify\n\n");
+    let verdict = super::verification(log, revision);
+    let passed = matches!(
+        verdict.map(|entry| &entry.event),
+        Some(LogEvent::Verified {
+            result: Verdict::Pass,
+            ..
+        })
+    );
     if result.human_verify.is_empty() {
         out.push_str("None reported.\n\n");
     }
     for item in &result.human_verify {
-        let _ = writeln!(out, "- [ ] {} (pass if: {})", item.check, item.pass_if);
+        let mark = if passed { 'x' } else { ' ' };
+        let _ = writeln!(out, "- [{mark}] {} (pass if: {})", item.check, item.pass_if);
     }
     if !result.human_verify.is_empty() {
         out.push('\n');
+    }
+    match verdict {
+        Some(LogEntry {
+            unix_ms,
+            event:
+                LogEvent::Verified {
+                    result,
+                    note,
+                    carried_from,
+                    ..
+                },
+        }) => {
+            let result = match result {
+                Verdict::Pass => "pass",
+                Verdict::Fail => "fail",
+            };
+            let _ = write!(
+                out,
+                "Verdict on r{revision}: **{result}** at {}",
+                utc(*unix_ms)
+            );
+            if let Some(from) = carried_from {
+                let _ = write!(
+                    out,
+                    " (carried from r{from}; the default branch changed none of this task's paths)"
+                );
+            }
+            out.push('\n');
+            if let Some(note) = note {
+                out.push('\n');
+                fenced(&mut out, note);
+            }
+            out.push('\n');
+        }
+        _ if result.human_verify.is_empty() => {}
+        _ => {
+            let _ = writeln!(out, "Verdict on r{revision}: not verified\n");
+        }
     }
 
     out.push_str("## Left open\n\n");
@@ -167,6 +215,26 @@ pub fn render(
         let _ = writeln!(out, "\nNotes: {}", result.notes);
     }
     out
+}
+
+/// `YYYY-MM-DD HH:MM UTC` from Unix milliseconds (days-to-civil, proleptic Gregorian).
+fn utc(unix_ms: u64) -> String {
+    let seconds = unix_ms / 1000;
+    let (days, rest) = ((seconds / 86_400) as i64, seconds % 86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
+        rest / 3600,
+        rest / 60 % 60
+    )
 }
 
 fn short(commit: &str) -> &str {

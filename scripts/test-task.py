@@ -336,6 +336,8 @@ def run(wsx, wsxd, work, owned):
 
     # M2: the landing steps use a committed config without the a.txt check.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
+    (project / 'big.txt').write_text(''.join('line %d\n' % n for n in range(1, 11)))
+    git('add', 'big.txt')
     git('commit', '-q', '-am', 'land config')
 
     # 14. Each revision records its paths; list and show report overlap between open tasks.
@@ -395,6 +397,46 @@ def run(wsx, wsxd, work, owned):
     assert main_has('z.txt') and git('rev-parse', '--abbrev-ref', 'HEAD') == 'parking'
     git('switch', '-q', 'main')
     js('task', 'close', hv)
+
+    # 16b. Human verification is bound to a revision.
+    v = js('task', 'new', 'WORK v.txt HV')['id']
+    assert wait_state(v, 'ready', 'failed')['revision'] == 1
+    assert 'needs --note' in json.loads(cli('task', 'verify', v, 'fail', '--json', ok=False).stdout)['message']
+    passed = js('task', 'verify', v, 'pass', '--note', 'looked at v.txt')
+    assert passed['ok'] and show(v)['verification']['result'] == 'pass'
+    report = Path(show(v)['report']).read_text()
+    assert '- [x] open the file' in report and 'Verdict on r1: **pass**' in report, report
+    # A fail reaches the worker as the owner's words; its new revision has no verdict.
+    js('task', 'verify', v, 'fail', '--note', 'wrong colour WORK v2.txt HV')
+    assert any(t.get('message', '').startswith('Human verification of r1 failed') for t in traces())
+    again = wait_state(v, 'ready', 'failed')
+    assert again['revision'] == 2 and again['verification'] is None, again
+    assert [e['text'] for e in log(v) if e.get('mode') == 'verify'] == ['wrong colour WORK v2.txt HV']
+    report = Path(again['report']).read_text()
+    assert 'Human verification (fail)' in report and 'Verdict on r2: not verified' in report
+    js('task', 'verify', v, 'pass')
+    # Carried: main moves by a task on other paths, so v's pass survives its rebase.
+    u = js('task', 'new', 'WORK u.txt')['id']
+    assert wait_state(u, 'ready', 'failed')['state'] == 'ready' and land(u)['state'] == 'landed'
+    assert land(v)['ok']
+    landed_v = wait_state(v, 'landed', 'ready', 'failed')
+    assert landed_v['state'] == 'landed' and landed_v['verification']['carried_from'] == 2, landed_v
+    # Cleared: main changed big.txt too (another line), so the rebased revision needs a new pass.
+    c1 = js('task', 'new', 'LINE big.txt 1 HV')['id']
+    c2 = js('task', 'new', 'LINE big.txt 9')['id']
+    for n in (c1, c2):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
+    js('task', 'verify', c1, 'pass')
+    assert land(c2)['state'] == 'landed'
+    assert land(c1)['ok']
+    stopped = wait_state(c1, 'ready', 'landed', 'failed')
+    assert any(e['kind'] == 'land_stopped' for e in log(c1))
+    assert stopped['state'] == 'ready' and stopped['revision'] == 2 and stopped['verification'] is None, stopped
+    js('task', 'verify', c1, 'pass')
+    assert land(c1)['state'] == 'landed'
+    assert git('show', 'main:big.txt').splitlines()[0].startswith('LINE big.txt 1')
+    for n in (u, v, c1, c2):
+        js('task', 'close', n)
 
     # 17. Deploy and release records. Each runs in a temporary copy of a default-branch commit.
     unset = cli('task', 'deploy', ok=False)

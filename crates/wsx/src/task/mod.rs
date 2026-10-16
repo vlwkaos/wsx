@@ -16,7 +16,7 @@ use wsx_core::task::{
     call_host, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
     DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord,
-    TaskState, MAX_MESSAGE_BYTES,
+    TaskState, Verdict, MAX_MESSAGE_BYTES,
 };
 use wsx_core::{ops, runtime};
 
@@ -94,6 +94,19 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Record a human verdict on the current revision; a fail goes to the worker
+    Verify {
+        task: String,
+        #[arg(value_enum)]
+        result: VerdictArg,
+        /// What was checked, or for a fail what is wrong (required for a fail)
+        #[arg(long)]
+        note: Option<String>,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Bring a ready task onto the default branch by the project's landing policy
     Land {
         task: String,
@@ -158,6 +171,7 @@ impl TaskCmd {
             | Self::Allow { json, .. }
             | Self::Stop { json, .. }
             | Self::Land { json, .. }
+            | Self::Verify { json, .. }
             | Self::Close { json, .. }
             | Self::Deploy { json, .. }
             | Self::Release { json, .. }
@@ -170,6 +184,12 @@ impl TaskCmd {
     pub fn without_daemon(&self) -> bool {
         !matches!(self, Self::New { .. } | Self::Close { .. })
     }
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum VerdictArg {
+    Pass,
+    Fail,
 }
 
 /// Exactly one prompt source: the argument, `-` for standard input, or a file.
@@ -280,6 +300,23 @@ pub fn run(command: TaskCmd) -> Result<()> {
             project,
             json,
         } => send(&open(project.as_deref(), &task)?, HostRequest::Stop, json),
+        TaskCmd::Verify {
+            task,
+            result,
+            note,
+            project,
+            json,
+        } => send(
+            &open(project.as_deref(), &task)?,
+            HostRequest::Verify {
+                result: match result {
+                    VerdictArg::Pass => Verdict::Pass,
+                    VerdictArg::Fail => Verdict::Fail,
+                },
+                note,
+            },
+            json,
+        ),
         TaskCmd::Land {
             task,
             skip_verify,
@@ -601,6 +638,15 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
         summary["report"] = json!(report);
         summary["log"] = json!(dir.file(store::LOG_FILE));
         summary["host_running"] = json!(host);
+        let log = dir.read_log()?;
+        summary["verification"] = match wsx_core::task::verification(&log, record.revision) {
+            Some(entry) => {
+                let mut value = serde_json::to_value(&entry.event)?;
+                value["unix_ms"] = json!(entry.unix_ms);
+                value
+            }
+            None => serde_json::Value::Null,
+        };
         let tasks = project_tasks(&dir.project_id)?;
         let records: Vec<&TaskRecord> = tasks
             .iter()
