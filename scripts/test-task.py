@@ -350,6 +350,52 @@ def run(wsx, wsxd, work, owned):
     assert rows[y1]['overlaps'] == [] and rows[x2]['overlaps'][0]['id'] == x1
     assert show(x2)['overlaps'] == [{'id': x1, 'count': 1, 'complete': True, 'paths': ['x.txt']}]
 
+    def land(n, *flags, ok=True):
+        return json.loads(cli('task', 'land', n, *flags, '--json', ok=ok).stdout)
+
+    def main_has(path):
+        return subprocess.run(['git', 'cat-file', '-e', 'main:' + path], cwd=project, env=env).returncode == 0
+
+    # 15. Landing, local-merge. A dirty default-branch checkout refuses and names the file.
+    (project / 'README').write_text('dirty\n')
+    refused = land(y1, ok=False)
+    assert not refused['ok'] and 'README' in refused['message'] and 'land again' in refused['message'], refused
+    assert show(y1)['state'] == 'ready'
+    git('checkout', '--', 'README')
+    # y1 is on the tip: fast-forward. x1 then rebases onto the moved main without conflict.
+    landed = land(y1)
+    assert landed['ok'] and landed['state'] == 'landed', landed
+    assert git('rev-parse', 'main') == git('rev-parse', 'wsx/t%d' % y1) and (project / 'y.txt').exists()
+    assert land(x1)['ok']
+    landed_x1 = wait_state(x1, 'landed', 'failed')
+    assert landed_x1['state'] == 'landed' and main_has('x.txt') and main_has('y.txt'), landed_x1
+    assert landed_x1['record']['paths'] == ['x.txt'] and landed_x1['record']['revision'] == 2
+    # x2 changed the same file: the rebase conflicts, the worker resolves it, then it lands.
+    conflict = land(x2)
+    assert conflict['ok'] and 'conflicted in x.txt' in conflict['message'], conflict
+    assert any(e['kind'] == 'conflict' and e['paths'] == ['x.txt'] for e in log(x2))
+    assert wait_state(x2, 'ready', 'failed')['state'] == 'ready'
+    assert any(t.get('resolved_onto') for t in traces())
+    assert land(x2)['state'] == 'landed'
+    assert git('show', 'main:x.txt') == 'resolved'
+    # A not-ready task does not land; a landed one closes without --discard.
+    assert 'only a ready task lands' in land(x2, ok=False)['message']
+    for n in (x1, y1, x2):
+        assert js('task', 'close', n)['state'] == 'closed'
+        assert not git('branch', '--list', 'wsx/t%d' % n)
+
+    # 16. Human Verify items gate landing; --skip-verify is logged. With main not checked
+    # out, the ref moves with the old tip as guard.
+    hv = js('task', 'new', 'WORK z.txt HV')['id']
+    assert wait_state(hv, 'ready', 'failed')['state'] == 'ready'
+    assert 'Human Verify' in land(hv, ok=False)['message']
+    git('switch', '-q', '-c', 'parking')
+    assert land(hv, '--skip-verify')['state'] == 'landed'
+    assert any(e['kind'] == 'verify_skipped' for e in log(hv))
+    assert main_has('z.txt') and git('rev-parse', '--abbrev-ref', 'HEAD') == 'parking'
+    git('switch', '-q', 'main')
+    js('task', 'close', hv)
+
 
 if __name__ == '__main__':
     main()

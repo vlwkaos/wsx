@@ -8,6 +8,9 @@ Each user message is a small script of words:
   WORK <file>  write <file> and commit it
   NOOP         change nothing
   HUGE         first print one 5 MiB stdout line
+  HV           return one Human Verify item
+The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
+conflict with the line "resolved".
 Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE.
 """
 import json
@@ -87,6 +90,19 @@ def main():
             rule = words[words.index('NEEDS') + 1]
             if rule not in allowed:
                 denials.append({'tool_name': 'Bash', 'tool_use_id': 'x', 'tool_input': {'command': rule}})
+        if 'rebased' in words and 'onto' in words:
+            tip = words[words.index('onto') + 1]
+            rebase_env = dict(os.environ, GIT_EDITOR='true', GIT_AUTHOR_NAME='fake', GIT_AUTHOR_EMAIL='fake@example.invalid',
+                              GIT_COMMITTER_NAME='fake', GIT_COMMITTER_EMAIL='fake@example.invalid')
+            if subprocess.run(['git', 'rebase', '-q', tip], env=rebase_env, capture_output=True).returncode:
+                conflicted = subprocess.run(['git', 'diff', '--name-only', '--diff-filter=U'],
+                                            capture_output=True, text=True).stdout.split()
+                for name in conflicted:
+                    with open(name, 'w') as out:
+                        out.write('resolved\n')
+                    subprocess.run(['git', 'add', name], check=True)
+                subprocess.run(['git', 'rebase', '--continue'], env=rebase_env, check=True, capture_output=True)
+            trace({'resolved_onto': tip})
         if 'DENIED' in words:
             worked_around = words[words.index('DENIED') + 1]
             denials.append({'tool_name': 'Bash', 'tool_use_id': 'y', 'tool_input': {'command': worked_around}})
@@ -106,7 +122,7 @@ def main():
               'session_id': session, 'permission_denials': denials,
               'structured_output': {'status': status, 'summary': summary,
                                     'decisions': [{'choice': 'fake choice', 'reason': 'fixture'}],
-                                    'human_verify': [{'check': 'open the file', 'pass_if': 'it has text'}],
+                                    'human_verify': [{'check': 'open the file', 'pass_if': 'it has text'}] if 'HV' in words else [],
                                     'left_open': ['nothing real'], 'notes': ''}})
 
 

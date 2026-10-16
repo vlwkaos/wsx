@@ -49,7 +49,7 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn resolve_commit(repo: &Path, revision: &str) -> Result<String> {
+pub fn resolve_commit(repo: &Path, revision: &str) -> Result<String> {
     git(
         repo,
         &[
@@ -238,6 +238,103 @@ pub fn changed_paths(repo: &Path, from: &str, to: &str) -> Result<(Vec<String>, 
 /// The commit where `head` left `target`.
 pub fn merge_base(repo: &Path, head: &str, target: &str) -> Result<String> {
     git(repo, &["merge-base", head, target])
+}
+
+pub fn is_ancestor(repo: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    let status = git_cmd(repo)
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("cannot run git merge-base")?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => bail!("git merge-base --is-ancestor {ancestor} {descendant} failed"),
+    }
+}
+
+/// Tracked files with changes in a checkout (untracked files are left to git's own checks).
+pub fn tracked_changes(checkout: &Path) -> Result<Vec<String>> {
+    // ^ Paths only: porcelain status columns would be cut by the helper's trim.
+    let changed = git(checkout, &["diff", "--name-only", "--no-renames", "HEAD"])?;
+    Ok(changed
+        .lines()
+        .take(MAX_LISTED_CHANGES)
+        .map(str::to_string)
+        .collect())
+}
+
+const MAX_LISTED_CHANGES: usize = 50;
+
+pub enum Rebase {
+    Done,
+    /// The rebase was aborted; these paths conflicted.
+    Conflict(Vec<String>),
+}
+
+/// Rebase the checked-out branch of `working_copy` onto `onto`. A conflict is aborted,
+/// so the branch is left as it was.
+pub fn rebase(working_copy: &Path, onto: &str) -> Result<Rebase> {
+    let output = git_cmd(working_copy)
+        .args(["rebase", "--quiet", onto])
+        .env("GIT_EDITOR", "true")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .context("cannot run git rebase")?;
+    if output.status.success() {
+        return Ok(Rebase::Done);
+    }
+    let conflicted =
+        git(working_copy, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
+    git(working_copy, &["rebase", "--abort"])
+        .context("git rebase failed and could not be aborted; finish it by hand")?;
+    if conflicted.is_empty() {
+        bail!(
+            "git rebase onto {onto} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(Rebase::Conflict(
+        conflicted
+            .lines()
+            .take(MAX_LISTED_CHANGES)
+            .map(str::to_string)
+            .collect(),
+    ))
+}
+
+/// Move `default_branch` from `old_tip` to `commit`, fast-forward only. Where the branch is
+/// checked out the checkout must have no tracked changes; elsewhere the ref moves with
+/// `old_tip` as guard, so a branch that moved meanwhile is never overwritten.
+pub fn fast_forward(main: &Path, default_branch: &str, old_tip: &str, commit: &str) -> Result<()> {
+    let checkout = list_worktrees(main)?
+        .into_iter()
+        .find(|worktree| worktree.branch == default_branch);
+    match checkout {
+        Some(checkout) => {
+            let changes = tracked_changes(&checkout.path)?;
+            if !changes.is_empty() {
+                bail!(
+                    "{} has {default_branch} checked out with changes: {}; commit or stash them, then land again",
+                    checkout.path.display(),
+                    changes.join(", ")
+                );
+            }
+            git(&checkout.path, &["merge", "--ff-only", "--quiet", commit]).map(drop)
+        }
+        None => git(
+            main,
+            &[
+                "update-ref",
+                &format!("refs/heads/{default_branch}"),
+                commit,
+                old_tip,
+            ],
+        )
+        .map(drop),
+    }
 }
 
 /// Commits on `branch` that `target` does not have.

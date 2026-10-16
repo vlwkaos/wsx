@@ -69,6 +69,18 @@ pub struct TaskConfig {
     pub checks: Vec<String>,
     /// Seconds one check may run before its process group is killed.
     pub check_timeout_secs: u64,
+    pub land_policy: LandPolicy,
+    /// Remote the `pr` policy pushes to.
+    pub land_remote: String,
+}
+
+/// How `wsx task land` brings a task onto the default branch (docs/tasks.md "Landing").
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LandPolicy {
+    #[default]
+    LocalMerge,
+    Pr,
 }
 
 impl Default for TaskConfig {
@@ -92,6 +104,8 @@ impl Default for TaskConfig {
             .into(),
             checks: Vec::new(),
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
+            land_policy: LandPolicy::LocalMerge,
+            land_remote: "origin".into(),
         }
     }
 }

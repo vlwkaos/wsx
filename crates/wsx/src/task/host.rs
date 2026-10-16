@@ -13,13 +13,16 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
+use wsx_core::config::project::load_task_config;
 use wsx_core::git::{git_cmd, output_with_timeout_limit};
+use wsx_core::model::workspace::LandPolicy;
 use wsx_core::runtime;
 use wsx_core::task::{
-    copy, now_unix_ms, report,
+    copy::{self, Rebase},
+    now_unix_ms, report,
     store::{TaskDir, REPORT_FILE, RESULT_FILE},
-    CheckResult, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord, TaskState,
-    WorkerResult, MAX_MESSAGE_BYTES,
+    verification, CheckResult, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord,
+    TaskState, Verdict, WorkerResult, MAX_MESSAGE_BYTES,
 };
 
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -27,6 +30,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const CHECK_OUTPUT_BYTES: usize = 8 * 1024;
 const MAX_RESULT_BYTES: usize = 256 * 1024;
 const MAX_TOOL_BYTES: usize = 256;
+/// The worker rebases a conflicted landing itself and needs this rule for it.
+const REBASE_TOOL: &str = "Bash(git rebase:*)";
 /// `sun_path` holds 104 bytes on macOS, including the final NUL.
 const MAX_SOCKET_PATH_BYTES: usize = 103;
 
@@ -35,6 +40,13 @@ enum Event {
     /// `None` when the agent process of that generation ended.
     Agent(u64, Option<AgentLine>),
     ChecksDone(Vec<CheckResult>),
+}
+
+/// A `land` waiting for the checks of its rebased revision.
+struct Landing {
+    skip_verify: bool,
+    /// The verified revision whose pass carries to the rebased one, with its note.
+    carried: Option<(u32, Option<String>)>,
 }
 
 struct Host {
@@ -53,6 +65,7 @@ struct Host {
     last_result: Option<WorkerResult>,
     /// Tool calls denied in that turn.
     last_denials: Vec<String>,
+    landing: Option<Landing>,
     started: Instant,
 }
 
@@ -86,6 +99,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         stop_requested: false,
         last_result: None,
         last_denials: Vec::new(),
+        landing: None,
         started: Instant::now(),
     };
     std::thread::spawn(move || serve(listener, events));
@@ -195,6 +209,7 @@ impl Host {
             HostRequest::Add { text } => self.add(text),
             HostRequest::Allow { tool } => self.allow(tool),
             HostRequest::Stop => self.stop(),
+            HostRequest::Land { skip_verify } => self.land(skip_verify),
             HostRequest::Close { discard } => {
                 if let Some(agent) = self.agent.take() {
                     agent.stop();
@@ -332,7 +347,10 @@ impl Host {
             .context("the agent is not running")?
             .send(text)?;
         self.turn_active = true;
-        self.set_state(TaskState::Working);
+        // ^ A conflict turn shows as `conflict` until its result, so lists say why it runs.
+        if self.record.state != TaskState::Conflict {
+            self.set_state(TaskState::Working);
+        }
         Ok(())
     }
 
@@ -401,6 +419,10 @@ impl Host {
             self.set_state(TaskState::Blocked);
             return;
         }
+        self.start_checks();
+    }
+
+    fn start_checks(&mut self) {
         self.set_state(TaskState::Checking);
         let checks = self.record.checks.clone();
         let timeout = Duration::from_secs(self.record.check_timeout_secs);
@@ -437,6 +459,16 @@ impl Host {
                 } else {
                     TaskState::Failed
                 };
+                let landing = self.landing.take();
+                if let Some((from, note)) = landing.as_ref().and_then(|l| l.carried.clone()) {
+                    self.say(&format!("carried the pass of r{from} to r{revision}"));
+                    self.log(LogEvent::Verified {
+                        revision,
+                        result: Verdict::Pass,
+                        note,
+                        carried_from: Some(from),
+                    });
+                }
                 // ^ Readers act on the state: the result and report must be complete before it.
                 self.write_result(&result, &results);
                 let log = self.dir.read_log().unwrap_or_default();
@@ -450,6 +482,23 @@ impl Host {
                 }
                 self.say(&format!("revision r{revision} at {commit:.12}"));
                 self.set_state(state);
+                if let Some(landing) = landing {
+                    let finished = if state == TaskState::Ready {
+                        self.verify_gate(landing.skip_verify)
+                            .and_then(|()| self.fast_forward())
+                    } else {
+                        Err(anyhow::anyhow!("checks failed on the rebased revision"))
+                    };
+                    match finished {
+                        Ok(message) => self.say(&message),
+                        Err(error) => {
+                            self.say(&format!("landing stopped: {error:#}"));
+                            self.log(LogEvent::LandStopped {
+                                reason: format!("{error:#}"),
+                            });
+                        }
+                    }
+                }
             }
             Err(error) => {
                 self.say(&format!("cannot record a revision: {error:#}"));
@@ -460,6 +509,172 @@ impl Host {
             let text: Vec<String> = self.pending.drain(..).collect();
             self.start_turn(&text.join("\n\n"));
         }
+    }
+
+    /// Land the current revision on the default branch (docs/tasks.md "Landing").
+    fn land(&mut self, skip_verify: bool) -> Result<String> {
+        if self.record.state != TaskState::Ready {
+            bail!(
+                "task t{} is {}; only a ready task lands",
+                self.record.id,
+                self.record.state.as_str()
+            );
+        }
+        let settings =
+            load_task_config(&self.record.project_path).map_err(|error| anyhow::anyhow!(error))?;
+        if settings.land_policy == LandPolicy::Pr {
+            bail!("the pr landing policy is not available yet");
+        }
+        self.verify_gate(skip_verify)?;
+        let working_copy = self.record.working_copy.clone();
+        let changes = copy::tracked_changes(&working_copy)?;
+        if !changes.is_empty() {
+            bail!(
+                "the working copy has uncommitted changes: {}; ask the worker to commit them",
+                changes.join(", ")
+            );
+        }
+        let tip = self.default_tip()?;
+        let head = copy::resolve_commit(&working_copy, "HEAD")?;
+        if copy::is_ancestor(&working_copy, &tip, &head)? {
+            return self.fast_forward();
+        }
+        let (old_revision, old_base) = (self.record.revision, self.record.base.clone());
+        match copy::rebase(&working_copy, &tip)? {
+            Rebase::Conflict(paths) => {
+                self.log(LogEvent::Conflict {
+                    onto: tip.clone(),
+                    paths: paths.clone(),
+                });
+                if !self.record.tools.iter().any(|tool| tool == REBASE_TOOL) {
+                    self.record.tools.push(REBASE_TOOL.into());
+                    self.log(LogEvent::Allowed {
+                        tool: REBASE_TOOL.into(),
+                    });
+                    self.restart_needed = true;
+                }
+                self.set_state(TaskState::Conflict);
+                self.start_turn(&format!(
+                    "Landing needs branch {branch} rebased onto {tip} (the current {default}). \
+                     Run `git rebase {tip}`, resolve the conflicts in {paths}, `git add` them and \
+                     `git rebase --continue`, then report.",
+                    branch = self.record.branch,
+                    default = self.record.default_branch,
+                    paths = paths.join(", "),
+                ));
+                Ok(format!(
+                    "the rebase onto {} conflicted in {}; the worker is resolving it. Land again when the task is ready",
+                    self.record.default_branch,
+                    paths.join(", ")
+                ))
+            }
+            Rebase::Done => {
+                let carried = self.carried_pass(old_revision, &old_base, &tip);
+                self.landing = Some(Landing {
+                    skip_verify,
+                    carried,
+                });
+                self.start_checks();
+                Ok(format!(
+                    "rebased onto {} at {tip:.12}; checks run on the new revision and it lands when they pass",
+                    self.record.default_branch
+                ))
+            }
+        }
+    }
+
+    fn default_tip(&self) -> Result<String> {
+        copy::resolve_commit(
+            &self.record.project_path,
+            &format!("refs/heads/{}", self.record.default_branch),
+        )
+    }
+
+    /// Refuse a revision with Human Verify items and no pass, unless the caller skips it (logged).
+    fn verify_gate(&mut self, skip_verify: bool) -> Result<()> {
+        let items = self.current_result().human_verify.len();
+        if items == 0 {
+            return Ok(());
+        }
+        let revision = self.record.revision;
+        let log = self.dir.read_log()?;
+        let passed = matches!(
+            verification(&log, revision).map(|entry| &entry.event),
+            Some(LogEvent::Verified {
+                result: Verdict::Pass,
+                ..
+            })
+        );
+        if passed {
+            return Ok(());
+        }
+        if skip_verify {
+            self.log(LogEvent::VerifySkipped { revision });
+            return Ok(());
+        }
+        bail!(
+            "r{revision} has {items} Human Verify item(s) and no pass; check them and run `wsx task verify {} pass`, or land with --skip-verify",
+            self.record.id
+        )
+    }
+
+    /// A pass on `revision` carries over a rebase only when the default branch changed
+    /// none of the task's paths between the old base and `tip`.
+    fn carried_pass(
+        &self,
+        revision: u32,
+        old_base: &str,
+        tip: &str,
+    ) -> Option<(u32, Option<String>)> {
+        let log = self.dir.read_log().ok()?;
+        let LogEvent::Verified {
+            result: Verdict::Pass,
+            note,
+            ..
+        } = &verification(&log, revision)?.event
+        else {
+            return None;
+        };
+        let (upstream, total) =
+            copy::changed_paths(&self.record.working_copy, old_base, tip).ok()?;
+        // ^ Capped lists cannot prove that no path is shared.
+        let complete = upstream.len() as u32 == total
+            && self.record.paths.len() as u32 == self.record.paths_total;
+        let shared = upstream.iter().any(|path| self.record.paths.contains(path));
+        (complete && !shared).then(|| (revision, note.clone()))
+    }
+
+    fn fast_forward(&mut self) -> Result<String> {
+        let tip = self.default_tip()?;
+        let head = copy::resolve_commit(&self.record.working_copy, "HEAD")?;
+        copy::fast_forward(
+            &self.record.project_path,
+            &self.record.default_branch,
+            &tip,
+            &head,
+        )?;
+        self.log(LogEvent::Landed {
+            commit: head.clone(),
+        });
+        self.set_state(TaskState::Landed);
+        Ok(format!(
+            "landed r{} on {} at {head:.12}",
+            self.record.revision, self.record.default_branch
+        ))
+    }
+
+    /// The worker result of the current revision, from `result.json`.
+    fn current_result(&self) -> WorkerResult {
+        if let Some(result) = &self.last_result {
+            return result.clone();
+        }
+        self.dir
+            .read_file(RESULT_FILE, MAX_RESULT_BYTES as u64 * 2)
+            .ok()
+            .flatten()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|value| serde_json::from_value(value.get("result")?.clone()).ok())
+            .unwrap_or_default()
     }
 
     fn record_revision(&mut self) -> Result<(u32, String)> {
@@ -567,11 +782,12 @@ impl Host {
             return;
         };
         let state = match self.record.state {
-            TaskState::Starting | TaskState::Working | TaskState::Checking => {
-                runtime::AgentState::Working
-            }
+            TaskState::Starting
+            | TaskState::Working
+            | TaskState::Checking
+            | TaskState::Conflict => runtime::AgentState::Working,
             TaskState::Blocked => runtime::AgentState::Blocked,
-            TaskState::Ready => runtime::AgentState::Done,
+            TaskState::Ready | TaskState::Landed => runtime::AgentState::Done,
             TaskState::Failed => runtime::AgentState::Error,
             TaskState::Stopped | TaskState::Closed => runtime::AgentState::Idle,
         };

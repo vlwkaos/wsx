@@ -25,13 +25,17 @@ pub enum TaskState {
     Ready,
     Failed,
     Stopped,
+    /// A landing rebase conflicted; the worker is resolving it.
+    Conflict,
+    /// The revision is on the default branch.
+    Landed,
     Closed,
 }
 
 impl TaskState {
     /// Still part of the project's work: counted for overlap and listed by default.
     pub fn is_open(self) -> bool {
-        !matches!(self, Self::Closed)
+        !matches!(self, Self::Landed | Self::Closed)
     }
 
     pub fn as_str(self) -> &'static str {
@@ -43,6 +47,8 @@ impl TaskState {
             Self::Ready => "ready",
             Self::Failed => "failed",
             Self::Stopped => "stopped",
+            Self::Conflict => "conflict",
+            Self::Landed => "landed",
             Self::Closed => "closed",
         }
     }
@@ -143,6 +149,45 @@ pub enum LogEvent {
     Closed {
         discarded: bool,
     },
+    /// A human verdict on one revision, or a pass carried over a rebase.
+    Verified {
+        revision: u32,
+        result: Verdict,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        carried_from: Option<u32>,
+    },
+    /// `land --skip-verify` landed a revision without a pass.
+    VerifySkipped {
+        revision: u32,
+    },
+    Conflict {
+        onto: String,
+        paths: Vec<String>,
+    },
+    /// A landing that started did not finish; the task keeps its state.
+    LandStopped {
+        reason: String,
+    },
+    Landed {
+        commit: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    Pass,
+    Fail,
+}
+
+/// The verdict that applies to `revision`: the latest one recorded for it.
+/// A new revision has none until someone verifies it or a pass is carried.
+pub fn verification(log: &[LogEntry], revision: u32) -> Option<&LogEntry> {
+    log.iter().rev().find(|entry| {
+        matches!(&entry.event, LogEvent::Verified { revision: verified, .. } if *verified == revision)
+    })
 }
 
 impl LogEvent {
@@ -189,6 +234,7 @@ pub enum HostRequest {
     Add { text: String },
     Allow { tool: String },
     Stop,
+    Land { skip_verify: bool },
     Close { discard: bool },
 }
 
