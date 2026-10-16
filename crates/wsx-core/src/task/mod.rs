@@ -451,6 +451,37 @@ pub fn call_host(
     call_socket(socket, request, timeout)
 }
 
+/// `call_host` for an action: a host that execs its replaced wsx binary has no socket for
+/// a moment, so a connect that finds none is tried again for up to 3 s. Status probes use
+/// `call_host` and stay instant. ref: docs/tasks.md "Host"
+pub fn call_host_waiting(
+    socket: &std::path::Path,
+    request: &HostRequest,
+    timeout: std::time::Duration,
+) -> anyhow::Result<HostResponse> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match call_socket(socket, request, timeout) {
+            Err(error)
+                if std::time::Instant::now() < deadline
+                    && error
+                        .root_cause()
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|io| {
+                            matches!(
+                                io.kind(),
+                                std::io::ErrorKind::NotFound
+                                    | std::io::ErrorKind::ConnectionRefused
+                            )
+                        }) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            answer => return answer,
+        }
+    }
+}
+
 /// One JSON request and one JSON answer on a host's owner-only socket.
 pub fn call_socket<Request: Serialize, Response: serde::de::DeserializeOwned>(
     socket: &std::path::Path,

@@ -837,7 +837,7 @@ fn send(dir: &TaskDir, request: HostRequest, json: bool) -> Result<()> {
     } else {
         HOST_TIMEOUT
     };
-    let response = match call_host(&dir.socket_path(), &request, timeout) {
+    let response = match wsx_core::task::call_host_waiting(&dir.socket_path(), &request, timeout) {
         Ok(response) => response,
         Err(error) => {
             let (state, working_copy) = dir.read_record().map_or_else(

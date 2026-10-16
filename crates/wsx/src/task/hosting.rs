@@ -125,3 +125,39 @@ pub fn progress(started: std::time::Instant, text: &str) {
         elapsed % 60
     );
 }
+
+/// The wsx file a host was started as. A deploy that replaces it makes a running host
+/// exec the new file before its next agent start, so the agent gets the new launch.
+/// ref: docs/tasks.md "Host"
+pub struct Binary {
+    path: std::path::PathBuf,
+    identity: String,
+}
+
+impl Binary {
+    /// The path the host was started with (its argv[0], which `task new` and `say` make
+    /// absolute), else the running file.
+    pub fn capture() -> Option<Self> {
+        let path = std::env::args_os()
+            .next()
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| std::env::current_exe().ok())?;
+        let identity = runtime::binary_identity(&path).ok()?;
+        Some(Self { path, identity })
+    }
+
+    /// True when another file is now at the path. A missing file is not followed.
+    pub fn replaced(&self) -> bool {
+        runtime::binary_identity(&self.path).is_ok_and(|now| now != self.identity)
+    }
+
+    /// Replace this process with the file now at the path and the same arguments; the
+    /// pane and its pid stay. Returns only when that file could not start.
+    pub fn exec(&self) -> std::io::Error {
+        use std::os::unix::process::CommandExt;
+        std::process::Command::new(&self.path)
+            .args(std::env::args_os().skip(1))
+            .exec()
+    }
+}

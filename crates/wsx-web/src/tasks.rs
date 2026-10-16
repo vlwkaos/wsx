@@ -18,7 +18,7 @@ use std::{
 use wsx_core::config::project::load_task_config;
 use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
-    self, brief, call_host, call_socket, copy, ledger,
+    self, brief, call_host_waiting, call_socket, copy, ledger,
     manager::{pending_approvals, ApprovalLine, ManagerEvent, ManagerRequest, ManagerResponse},
     owner,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
@@ -648,7 +648,7 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
     } else {
         owner::HOST_TIMEOUT
     };
-    let response = call_host(&dir.socket_path(), &request, timeout).map_err(|_| {
+    let response = call_host_waiting(&dir.socket_path(), &request, timeout).map_err(|_| {
         let state = dir
             .read_record()
             .map_or("unknown".into(), |record| record.state.as_str().to_string());
