@@ -38,7 +38,6 @@ const MANAGER_TAIL_BYTES: u64 = 64 * 1024;
 const CHAT_ENTRIES: usize = 200;
 const TIMELINE_ENTRIES: usize = 300;
 const MAX_REPORT_BYTES: u64 = 1024 * 1024;
-const MAX_TOOL_BYTES: usize = 256;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A granted project and its task store.
@@ -148,6 +147,7 @@ pub fn overview(scope: &Scope) -> Value {
         };
         if record.state == TaskState::Blocked {
             row["denials"] = result["denials"].clone();
+            row["asks"] = result["asks"].clone();
         }
         // ^ A brief's card reads as its build prompt.
         if let Some(file) = (record.state == TaskState::Briefed)
@@ -169,6 +169,7 @@ pub fn overview(scope: &Scope) -> Value {
             skip_verify,
             commit,
             unix_ms,
+            ..
         } = line
         else {
             continue;
@@ -178,7 +179,7 @@ pub fn overview(scope: &Scope) -> Value {
             *unix_ms,
             json!({
                 "kind": "approval", "approval": id, "action": owner::action_name(*action),
-                "label": owner::approval_label(*action, *task),
+                "label": owner::approval_label(line),
                 "task": task, "revision": revision, "skip_verify": skip_verify, "commit": commit,
                 "title": task.and_then(|task| titles.get(&task)), "unix_ms": unix_ms,
             }),
@@ -245,6 +246,19 @@ fn resolutions(
                     ..
                 } if blocked => format!("#{id} got an answer"),
                 LogEvent::Allowed { tool } => format!("#{id} allowed {tool}"),
+                LogEvent::Granted {
+                    access,
+                    project,
+                    by,
+                } => format!(
+                    "#{id} may {}{} ({})",
+                    access.describe(),
+                    if *project { ", every task" } else { "" },
+                    match by {
+                        task::Actor::Owner => "owner",
+                        task::Actor::Manager => "manager",
+                    }
+                ),
                 LogEvent::Verified {
                     revision,
                     result,
@@ -277,19 +291,14 @@ fn resolutions(
         else {
             continue;
         };
-        let asked = lines.iter().find_map(|line| match line {
-            ApprovalLine::Request {
-                id: requested,
-                action,
-                task,
-                ..
-            } if requested == id => Some((*action, *task)),
-            _ => None,
-        });
-        let Some((action, task)) = asked else {
+        let asked = lines.iter().find(
+            |line| matches!(line, ApprovalLine::Request { id: requested, .. } if requested == id),
+        );
+        let Some(request @ ApprovalLine::Request { task, .. }) = asked else {
             continue;
         };
-        let label = owner::approval_label(action, task);
+        let task = *task;
+        let label = owner::approval_label(request);
         let word = if *approved { "Approved" } else { "Denied" };
         rows.push((*unix_ms, task, label.replacen("Approve", word, 1)));
     }
@@ -416,8 +425,8 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
         .iter()
         .map(|line| {
             let mut row = json!(line);
-            if let ApprovalLine::Request { action, task, .. } = line {
-                row["label"] = json!(owner::approval_label(*action, *task));
+            if matches!(line, ApprovalLine::Request { .. }) {
+                row["label"] = json!(owner::approval_label(line));
             }
             row
         })
@@ -607,17 +616,10 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
         HostRequest::Steer { text } | HostRequest::Add { text } => {
             message(text, "the message")?;
         }
-        HostRequest::Allow { tool } => {
-            if tool.trim().is_empty()
-                || tool.len() > MAX_TOOL_BYTES
-                || tool.chars().any(char::is_control)
-            {
-                return Err(Fault::new(
-                    400,
-                    "invalid_tool",
-                    format!("a tool is 1-{MAX_TOOL_BYTES} bytes without control characters"),
-                ));
-            }
+        HostRequest::Grant { access, .. } => {
+            access
+                .check()
+                .map_err(|reason| Fault::new(400, "invalid_grant", reason))?;
         }
         HostRequest::Verify { result, note } => {
             if let Some(note) = note {
@@ -631,11 +633,15 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
             }
         }
         HostRequest::Land { .. } | HostRequest::Start => {}
-        HostRequest::Status | HostRequest::Stop | HostRequest::Close { .. } => {
+        HostRequest::Status
+        | HostRequest::Stop
+        | HostRequest::Close { .. }
+        | HostRequest::Revoke { .. } => {
             return Err(Fault::new(400, "unsupported", "not a web action"));
         }
     }
     let dir = open_task(scope, task)?;
+    owner::prepare_request(&dir.project_id, &request).map_err(internal)?;
     let timeout = if matches!(request, HostRequest::Land { .. }) {
         owner::LAND_TIMEOUT
     } else {
@@ -821,17 +827,14 @@ fn notice(scope: &Scope, watch: &mut Watch) {
     let lines = store::read_approvals(&scope.store).unwrap_or_default();
     let known = watch.requests.entry(scope.project).or_default();
     for line in pending_approvals(&lines) {
-        let ApprovalLine::Request {
-            id, action, task, ..
-        } = line
-        else {
+        let ApprovalLine::Request { id, .. } = line else {
             continue;
         };
         if known.insert(id.clone()) && !first {
             Batch::add(
                 &mut watch.urgent,
                 scope,
-                (None, owner::approval_label(*action, *task)),
+                (None, owner::approval_label(line)),
             );
         }
     }

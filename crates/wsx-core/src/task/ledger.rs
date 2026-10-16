@@ -59,6 +59,11 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
                 "summary": result.as_ref().and_then(|r| r["result"]["summary"].as_str()).map(|s| clip(s, SUMMARY_CHARS)),
                 "pr_url": record.pr_url,
                 "phase": record.phase,
+                // ^ What a blocked task asks for; the manager may grant it (docs/tasks.md "Permissions").
+                "asks": (record.state == super::TaskState::Blocked)
+                    .then(|| result.as_ref().map(|r| r["asks"].clone()))
+                    .flatten()
+                    .filter(|asks| asks.as_array().is_some_and(|asks| !asks.is_empty())),
                 // ^ A brief that waits for the owner's start: its version and build prompt.
                 "brief": (record.phase == Phase::Brief).then(|| brief::read(dir)).flatten().map(|file| json!({
                     "version": file.version,

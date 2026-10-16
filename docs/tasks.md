@@ -9,7 +9,8 @@ wsx task list -p <project> [--all] --json
 wsx task show <n> -p <project> --json            # record, result.json, report path, host_running, socket
 wsx task steer <n> "<text>" --json               # into the running turn
 wsx task add <n> "<text>" --json                 # after the turn (queued while one runs)
-wsx task allow <n> WebSearch --json              # restart with the tool (never a Bash rule) and resume a blocked task
+wsx task allow <n> --host <host> | --path <path> | "<rule>" [--project-wide] --json   # grant; resumes a blocked task
+wsx task revoke <n> --host <host> | --path <path> | "<rule>" [--project-wide] --json  # from the next turn
 wsx task stop <n> --json                         # interrupt; the next add resumes the conversation
 wsx task verify <n> pass|fail [--note <text>] --json   # human verdict on the current revision
 wsx task land <n> [--skip-verify] --json         # onto the default branch by tasks.land.policy
@@ -25,8 +26,8 @@ wsx task close <n> [--discard] --json
 | File | Content | Limit |
 |---|---|---|
 | `task.json` | id, project, base, branch `wsx/t<n>`, working copy, pane, adapter, model, tools, checks, agent session, state, revision | 64 KiB |
-| `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress), `blocked`, `allowed`, `result`, `checks`, `revision`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
-| `result.json` | latest worker result and check results | 256 KiB |
+| `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress), `blocked{denials, asks}`, `granted{access, project, by}`, `revoked`, `result`, `checks`, `revision`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
+| `result.json` | latest worker result and check results, `denials`, and `asks` of a block | 256 KiB |
 | `report.md` | report of the latest revision | |
 | `brief.json`, `brief.md` | the latest brief (`{version, brief}`) and its text | 256 KiB |
 
@@ -76,6 +77,9 @@ Every agent wsx starts (worker, brief turn, manager) runs in Claude's auto mode 
 - Network: `tasks.sandbox.allowedDomains` are reachable. Another host fails once with a `<sandbox_violations>` note; the agent may run the command again with the host listed, and the auto-mode classifier decides.
 - File tools (Read, Edit, Write) are not in the OS sandbox. Auto mode accepts edits in the working directory, and its classifier reviews the rest. Deny rules (`Edit(//<path>/**)`, which cover every file tool) keep them out of the main checkout, the wsx state folder (`$XDG_STATE_HOME/wsx`), the wsx config folders (the platform one and `$XDG_CONFIG_HOME/wsx`) and the project's other task copies `<repo>-t<n>`. The manager has the same rules without the state folder.
 - `--allowedTools` is `Read Glob Grep` plus `tasks.agent.tools` (the manager: `Bash(wsx task *)`). A record from before the sandbox drops its `Bash(...)`, `Edit` and `Write` entries at launch.
+- Asks: a tool result with a `<sandbox_violations>` network line, a `<path>: Operation not permitted` line, or a denied Write or Edit outside the copy is a stop. When the worker returns `blocked`, the stops of that turn become typed asks: `{kind: network, host}` for a host no later command reached with `allowed_domains`, and `{kind: write, path}` for a folder (`~/<hidden folder>` in home, such as `~/.cargo`, else the parent folder; never the working copy or the main repository's git folder). They are logged on `blocked`, kept in `result.json` and listed in the ledger.
+- Grants: `wsx task allow <n> --host <host> | --path <path> | "<rule>"` adds one to `task.json` (`grants`), logs `granted{access, project, by: owner|manager}` and resumes a blocked task in the same conversation; otherwise it applies from the next agent start. `--project-wide` keeps it in `tasks/<project-id>/grants.json` (0600, locked writers, never in a checked-in file), which every task of the project reads at its next agent start. `revoke` takes one back from the next agent start. A rule is refused when it is a Bash rule or a bare file-tool rule, with the reason.
+- The manager (`WSX_TASK_ACTOR=manager`) grants a host or a path for one task alone, logged with `by: manager` and shown in the web as a settled line. A project-wide grant and a tool rule ask the owner (see Approvals); it cannot revoke a project-wide grant.
 - What cannot run in the sandbox: a PTY (`openpty` fails) and Chrome (it needs the per-user temp folder and `~/Library`). Tests that need them belong in `tasks.checks`, which the host runs outside the sandbox.
 
 ## Brief
@@ -117,7 +121,7 @@ With `tasks.land.policy: pr`, the first `land` of a ready task applies the same 
 
 `wsx task ledger -p <project>` prints JSON of at most 16 KiB, the manager's source of truth:
 
-- `open`: each open task with number, title (80 chars), state, revision, overlaps, the current verdict (without its note), the Human Verify item count, the last result summary (240 chars), `pr_url`, `phase` and, before the build, `brief{version, rewritten_prompt}` (240 chars), in attention order (blocked, failed, conflict, briefed, ready, in_review, working, stopped);
+- `open`: each open task with number, title (80 chars), state, revision, overlaps, the current verdict (without its note), the Human Verify item count, the last result summary (240 chars), `pr_url`, `phase`, the `asks` of a blocked task and, before the build, `brief{version, rewritten_prompt}` (240 chars), in attention order (blocked, failed, conflict, briefed, ready, in_review, working, stopped);
 - `recent`: the last 10 landed or closed tasks;
 - `deploys`: the `deployed` status, with `configured` per kind (whether its command is set); under `pr` it uses the last fetched `<remote>/<default>` and does not fetch;
 - `main`: the main checkout's path, branch and number of changed files (tracked or new).
@@ -144,7 +148,7 @@ The web client shows the manager chat, the tasks, their reports and their fixed 
 
 ## Approvals
 
-`tasks.land.approve`, `tasks.deploy.approve` and `tasks.release.approve` (default `true`) decide whether the manager may land, deploy or release alone. A `wsx task` command run with `WSX_TASK_ACTOR=manager` (the manager host sets it for its agent) that needs approval does not act: it appends `request{id: a<n>, action, task, revision, skip_verify, commit}` to `tasks/<project-id>/approvals.jsonl` and answers that the owner was asked. `close --discard` and `start` by the manager always ask: the build of a brief is the owner's decision. The ledger lists pending requests under `approvals`.
+`tasks.land.approve`, `tasks.deploy.approve` and `tasks.release.approve` (default `true`) decide whether the manager may land, deploy or release alone. A `wsx task` command run with `WSX_TASK_ACTOR=manager` (the manager host sets it for its agent) that needs approval does not act: it appends `request{id: a<n>, action, task, revision, skip_verify, commit}` to `tasks/<project-id>/approvals.jsonl` and answers that the owner was asked. `close --discard` and `start` by the manager always ask: the build of a brief is the owner's decision. So do its project-wide grants and tool rules (`request{action: grant, grant{access, project_wide}}`, not tied to a revision); see Permissions. The ledger lists pending requests under `approvals`.
 
 ```sh
 wsx task approve a3 -p <project> --json            # run the action as the owner would

@@ -837,6 +837,67 @@ def run(wsx, wsxd, work, owned):
     for n in (m, mn):
         js('task', 'close', n, '--discard')
 
+    # 24. Asks and grants (docs/tasks.md "Permissions"): a block names what the sandbox
+    # stopped, a grant resumes the task with it, a project grant reaches the next task.
+    def launches_in(n):
+        copy = os.path.realpath(show(n)['record']['working_copy'])
+        return [t for t in traces() if t.get('launch') and os.path.realpath(t['cwd']) == copy]
+
+    def sandbox_of(launch):
+        return launch['settings']['sandbox']
+
+    crate = home / '.cargo/registry/cache/x.crate'
+    g = js('task', 'new', 'NEEDS_HOST example.org NEEDS_PATH %s RETRY_HOST reached.example' % crate, '--no-brief')['id']
+    blocked = wait_state(g, 'blocked')
+    asks = [{'kind': 'network', 'host': 'example.org'}, {'kind': 'write', 'path': '~/.cargo'}]
+    assert blocked['result']['asks'] == asks, blocked['result']
+    assert [e['asks'] for e in log(g) if e['kind'] == 'blocked'] == [asks], log(g)
+    assert next(r for r in js('task', 'ledger')['open'] if r['id'] == g)['asks'] == asks
+    bad = cli('task', 'allow', g, '--host', 'bad host', '--json', ok=False)
+    assert 'is not a host name' in bad.stdout + bad.stderr, bad
+    granted = js('task', 'allow', g, '--host', 'example.org')
+    assert granted['ok'] and granted['message'] == 'may now reach example.org; resumed the task', granted
+    wait(lambda: len(launches_in(g)) == 2, 'relaunch with the host')
+    relaunch = launches_in(g)[-1]
+    assert relaunch['resume'] and 'example.org' in sandbox_of(relaunch)['network']['allowedDomains'], relaunch
+    wait_state(g, 'ready', 'failed')
+    assert show(g)['record']['grants'] == [{'kind': 'network', 'host': 'example.org'}]
+    # A project-wide grant goes to grants.json (owner-only) and every next agent start.
+    js('task', 'allow', g, '--path', '~/.cargo', '--project-wide')
+    grants_file = Path(show(g)['log']).parent.parent / 'grants.json'
+    assert json.loads(grants_file.read_text()) == [{'kind': 'write', 'path': '~/.cargo'}]
+    assert oct(grants_file.stat().st_mode & 0o777) == '0o600'
+    h = js('task', 'new', 'NEEDS_PATH %s WORK h.txt' % crate, '--no-brief')['id']
+    assert wait_state(h, 'ready', 'failed')['state'] == 'ready'
+    assert '~/.cargo' in sandbox_of(launches_in(h)[0])['filesystem']['allowWrite']
+    # Revoke: the next turn starts without it.
+    assert js('task', 'revoke', g, '--host', 'example.org')['ok']
+    js('task', 'add', g, 'NOOP')
+    wait(lambda: len(launches_in(g)) == 3, 'relaunch without the host')
+    assert 'example.org' not in sandbox_of(launches_in(g)[-1])['network']['allowedDomains']
+    assert [e['kind'] for e in log(g) if e['kind'] in ('granted', 'revoked')] == ['granted', 'granted', 'revoked']
+    # The manager grants a host for one task alone; a project-wide grant asks the owner.
+    wait_state(g, 'ready', 'failed')
+    asked = js('task', 'say', 'RUN wsx task allow %d --host crates.io -p demo --json\n'
+                              'RUN wsx task allow %d --host npmjs.org --project-wide -p demo --json\n'
+                              'RUN wsx task allow %d WebSearch -p demo --json\n'
+                              'RUN wsx task revoke %d --path "~/.cargo" --project-wide -p demo --json' % (g, g, g, g))
+    text = reply_to(asked['id'])['text']
+    assert 'may now reach crates.io from the next turn' in text, text
+    assert any(e['kind'] == 'granted' and e['by'] == 'manager' and e['access'] == {'kind': 'network', 'host': 'crates.io'}
+               for e in log(g)), log(g)
+    requests = re.findall(r'the owner was asked \((a\d+)\)', text)
+    assert len(requests) == 2 and "owner's to revoke" in text, text
+    pending = {p['id']: p for p in js('task', 'ledger')['approvals']}
+    assert pending[requests[0]]['grant'] == {'access': {'kind': 'network', 'host': 'npmjs.org'}, 'project_wide': True}
+    assert pending[requests[1]]['grant'] == {'access': {'kind': 'tool', 'rule': 'WebSearch'}, 'project_wide': False}
+    assert 'revision' not in pending[requests[0]], pending
+    assert js('task', 'approve', requests[0])['ok']
+    assert {'kind': 'network', 'host': 'npmjs.org'} in json.loads(grants_file.read_text())
+    js('task', 'deny', requests[1])
+    for n in (g, h):
+        js('task', 'close', n, '--discard')
+
 
 if __name__ == '__main__':
     main()

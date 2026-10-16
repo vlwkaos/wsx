@@ -11,6 +11,9 @@ Each user message is a small script of words:
   HV           return one Human Verify item
   LINE <file> <n>  replace line n of <file> with the message and commit
   EDIT <file>  try the Edit tool on <file>: auto mode allows it in the copy unless Edit is disallowed
+  NEEDS_HOST <host>  curl <host>: a sandbox violation and blocked unless the launch's allowedDomains has it
+  NEEDS_PATH <path>  touch <path>: "Operation not permitted" and blocked unless an allowWrite folder holds it
+  RETRY_HOST <host>  a violation, then the same command with allowed_domains that succeeds (no ask)
 Launched with the brief schema it writes a brief instead and builds nothing:
   REWRITE <words>  the rewritten prompt is the rest of the line
   REVISE <words>   (a reply) the rewritten prompt becomes the rest of the line
@@ -64,6 +67,53 @@ def parse_args(argv):
         options[arg] = True
         index += 1
     return options, allowed, disallowed
+
+
+def tool_use(use_id, command, **extra):
+    emit({'type': 'assistant', 'message': {'content': [
+        {'type': 'tool_use', 'id': use_id, 'name': 'Bash', 'input': dict(command=command, **extra)}]}})
+
+
+def tool_result(use_id, text, failed):
+    emit({'type': 'user', 'message': {'role': 'user', 'content': [
+        {'type': 'tool_result', 'tool_use_id': use_id, 'is_error': failed, 'content': text}]}})
+
+
+def violation(host):
+    return ("curl: (56) CONNECT tunnel failed, response 403\n<sandbox_violations>\ndeny network-outbound %s:443 "
+            "(not in this command's allowed_domains)\n</sandbox_violations>" % host)
+
+
+def sandbox_stops(words, settings):
+    """What the sandbox of this launch stops; True when the turn must block on it."""
+    sandbox = settings.get('sandbox', {})
+    domains = sandbox.get('network', {}).get('allowedDomains', [])
+    writes = [os.path.expanduser(path) for path in sandbox.get('filesystem', {}).get('allowWrite', [])]
+    stopped = False
+    if 'RETRY_HOST' in words:
+        host = words[words.index('RETRY_HOST') + 1]
+        tool_use('r1', 'curl https://' + host)
+        tool_result('r1', violation(host), True)
+        tool_use('r2', 'curl https://' + host, allowed_domains=[host])
+        tool_result('r2', '200', False)
+    if 'NEEDS_HOST' in words:
+        host = words[words.index('NEEDS_HOST') + 1]
+        tool_use('h1', 'curl https://' + host)
+        if host not in domains:
+            tool_result('h1', violation(host), True)
+            stopped = True
+        else:
+            tool_result('h1', '200', False)
+    if 'NEEDS_PATH' in words:
+        path = words[words.index('NEEDS_PATH') + 1]
+        tool_use('p1', 'touch ' + path)
+        if not any(path.startswith(folder.rstrip('/') + '/') for folder in writes):
+            tool_result('p1', 'touch: %s: Operation not permitted' % path, True)
+            stopped = True
+        else:
+            tool_result('p1', '', False)
+    trace({'sandbox_stopped': stopped, 'words': words})
+    return stopped
 
 
 def own_repo():
@@ -210,7 +260,8 @@ def main():
             worked_around = words[words.index('DENIED') + 1]
             denials.append({'tool_name': 'Bash', 'tool_use_id': 'y', 'tool_input': {'command': worked_around}})
         try_edit(words, allowed, disallowed, denials)
-        blocked = bool(denials) and 'NEEDS' in words
+        stopped = sandbox_stops(words, json.loads(options.get('--settings', '{}')))
+        blocked = (bool(denials) and 'NEEDS' in words) or stopped
         if not blocked and 'WORK' in words:
             name = words[words.index('WORK') + 1]
             emit({'type': 'assistant', 'message': {'content': [

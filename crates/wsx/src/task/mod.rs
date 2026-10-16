@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
-use wsx_core::task::manager::{ApprovalAction, ApprovalLine, ManagerEvent};
+use wsx_core::task::manager::{ApprovalAction, ApprovalLine, GrantAsk, ManagerEvent};
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{
@@ -27,8 +27,8 @@ use wsx_core::task::view::{
 use wsx_core::task::{
     brief, call_host, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
-    DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind, Phase, TaskRecord,
-    TaskState, Verdict, MAX_MESSAGE_BYTES,
+    Access, Actor, DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind,
+    Phase, TaskRecord, TaskState, Verdict, MAX_MESSAGE_BYTES,
 };
 use wsx_core::{ops, runtime};
 
@@ -98,10 +98,21 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Allow one more tool pattern, such as "Bash(cargo test:*)", and resume a blocked task
+    /// Let a task reach a host, write a folder or use a tool (never Bash), and resume it when blocked
     Allow {
         task: String,
-        tool: String,
+        #[command(flatten)]
+        access: AccessArgs,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Take back a grant from the task's next turn on
+    Revoke {
+        task: String,
+        #[command(flatten)]
+        access: AccessArgs,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -244,6 +255,7 @@ impl TaskCmd {
             | Self::Steer { json, .. }
             | Self::Add { json, .. }
             | Self::Allow { json, .. }
+            | Self::Revoke { json, .. }
             | Self::Stop { json, .. }
             | Self::Start { json, .. }
             | Self::Land { json, .. }
@@ -305,6 +317,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
                     Some(&record),
                     false,
                     None,
+                    None,
                     json,
                 );
             }
@@ -338,14 +351,57 @@ pub fn run(command: TaskCmd) -> Result<()> {
         }
         TaskCmd::Allow {
             task,
-            tool,
+            access,
             project,
             json,
-        } => send(
-            &open(project.as_deref(), &task)?,
-            HostRequest::Allow { tool },
+        } => {
+            let dir = open(project.as_deref(), &task)?;
+            let (access, project_wide) = access.into_access();
+            // ^ The manager grants a host or a path for one task alone; the project and
+            // tool rules are the owner's. ref: docs/tasks.md "Permissions"
+            if acting_as_manager() && (project_wide || matches!(access, Access::Tool { .. })) {
+                access.check().map_err(anyhow::Error::msg)?;
+                let record = dir.read_record()?;
+                return ask_owner(
+                    &dir.project_id,
+                    ApprovalAction::Grant,
+                    Some(&record),
+                    false,
+                    None,
+                    Some(GrantAsk {
+                        access,
+                        project_wide,
+                    }),
+                    json,
+                );
+            }
+            let request = HostRequest::Grant {
+                access,
+                project: project_wide,
+                by: actor(),
+            };
+            owner::prepare_request(&dir.project_id, &request)?;
+            send(&dir, request, json)
+        }
+        TaskCmd::Revoke {
+            task,
+            access,
+            project,
             json,
-        ),
+        } => {
+            let dir = open(project.as_deref(), &task)?;
+            let (access, project_wide) = access.into_access();
+            if acting_as_manager() && project_wide {
+                bail!("a project-wide grant is the owner's to revoke; ask the owner");
+            }
+            let request = HostRequest::Revoke {
+                access,
+                project: project_wide,
+                by: actor(),
+            };
+            owner::prepare_request(&dir.project_id, &request)?;
+            send(&dir, request, json)
+        }
         TaskCmd::Stop {
             task,
             project,
@@ -385,6 +441,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
                     Some(&record),
                     skip_verify,
                     None,
+                    None,
                     json,
                 );
             }
@@ -405,6 +462,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
                     ApprovalAction::Discard,
                     Some(&record),
                     false,
+                    None,
                     None,
                     json,
                 );
@@ -576,6 +634,7 @@ fn new(
             Phase::Brief
         },
         sandbox: settings.sandbox,
+        grants: Vec::new(),
         checks: settings.checks,
         check_timeout_secs: settings.check_timeout_secs,
         agent_session: None,
@@ -970,6 +1029,7 @@ fn deploy(kind: DeployKind, project: Option<&str>, commit: Option<&str>, json: b
             None,
             false,
             commit,
+            None,
             json,
         );
     }
@@ -1145,6 +1205,44 @@ fn acting_as_manager() -> bool {
     std::env::var(owner::ACTOR_ENV).is_ok_and(|actor| actor == "manager")
 }
 
+fn actor() -> Actor {
+    if acting_as_manager() {
+        Actor::Manager
+    } else {
+        Actor::Owner
+    }
+}
+
+/// What `allow` and `revoke` name: one tool rule, host or folder.
+#[derive(clap::Args)]
+pub struct AccessArgs {
+    /// A tool rule that is not Bash, such as WebSearch
+    #[arg(required_unless_present_any = ["host", "path"], conflicts_with_all = ["host", "path"])]
+    tool: Option<String>,
+    /// A host the task's commands may reach, such as crates.io
+    #[arg(long, conflicts_with = "path")]
+    host: Option<String>,
+    /// A folder the task's commands may write, absolute or ~/, such as ~/.cargo
+    #[arg(long)]
+    path: Option<String>,
+    /// For every task of the project, kept in the task store
+    #[arg(long)]
+    project_wide: bool,
+}
+
+impl AccessArgs {
+    fn into_access(self) -> (Access, bool) {
+        let access = match (self.tool, self.host, self.path) {
+            (_, Some(host), _) => Access::Network { host },
+            (_, _, Some(path)) => Access::Write { path },
+            (rule, ..) => Access::Tool {
+                rule: rule.unwrap_or_default(),
+            },
+        };
+        (access, self.project_wide)
+    }
+}
+
 /// Record an approval request instead of acting, and say that the owner was asked.
 fn ask_owner(
     project_id: &str,
@@ -1152,17 +1250,23 @@ fn ask_owner(
     task: Option<&TaskRecord>,
     skip_verify: bool,
     commit: Option<&str>,
+    grant: Option<GrantAsk>,
     json: bool,
 ) -> Result<()> {
+    // ^ A grant does not depend on the revision; the owner approves it at any time.
+    let revision = task
+        .filter(|_| grant.is_none())
+        .map(|record| record.revision);
     let line = store::append_approval(
         project_id,
         ApprovalLine::Request {
             id: String::new(),
             action,
             task: task.map(|record| record.id),
-            revision: task.map(|record| record.revision),
+            revision,
             skip_verify,
             commit: commit.map(str::to_string),
+            grant,
             unix_ms: now_unix_ms(),
         },
     )?;

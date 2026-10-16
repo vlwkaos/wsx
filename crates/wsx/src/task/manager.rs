@@ -504,6 +504,8 @@ impl Manager {
                 self.log(ManagerEvent::Agent { text });
             }
             Some(AgentLine::Result(result)) => self.on_result(result),
+            // ^ The manager's commands ask nothing; its asks are the tasks'.
+            Some(AgentLine::Stopped(_) | AgentLine::Reached(_)) => {}
             None => {
                 self.agent = None;
                 if self.turn.take().is_some() {
