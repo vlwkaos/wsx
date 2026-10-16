@@ -2794,16 +2794,27 @@ fn cmd_agent_presence_renew(selector: &str, presence_id: &str) -> Result<()> {
     }
 }
 
-const AGENT_WAKE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5 * 60);
+// ^ docs/agent-reporting.md "Wake heartbeat": Claude starts the heartbeat from a detached
+// hook shell and never ends it, so each renewal is also the check that its prompt, pane
+// and wsxd still exist. A renewal is an in-memory lease update in wsxd.
+const AGENT_WAKE_RENEW_INTERVAL: Duration = Duration::from_secs(5);
+/// A heartbeat that cannot get an answer from wsxd for this long ends.
+const AGENT_WAKE_UNANSWERED_LIMIT: Duration = Duration::from_secs(5 * 60);
 const AGENT_WAKE_START_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 const AGENT_WAKE_START_RETRIES: usize = 50;
 
 fn cmd_agent_wake_heartbeat(selector: &str, prompt_id: &str) -> Result<()> {
-    let pane_id = resolve_pane(selector, &SessionScope::default())?;
+    // ^ As `agent report`: the hook has the exact pane ID, and nothing here starts wsxd.
+    let pane_id = if std::env::var(runtime::WSX_PANE_ID_ENV).ok().as_deref() == Some(selector) {
+        selector.parse::<runtime::PaneId>()?
+    } else {
+        resolve_pane(selector, &SessionScope::default())?
+    };
     let runtime_generation = std::env::var(runtime::WSX_RUNTIME_GENERATION_ENV)
         .context("wake heartbeat requires a managed wsx runtime generation")?;
+    let client = runtime::Client::new(runtime::default_socket_path());
     let renew = || {
-        runtime::Client::local().call(&runtime::Request::AgentWakeRenew {
+        client.call(&runtime::Request::AgentWakeRenew {
             pane_id,
             runtime_generation: runtime_generation.clone(),
             wake_token: prompt_id.to_string(),
@@ -2827,10 +2838,24 @@ fn cmd_agent_wake_heartbeat(selector: &str, prompt_id: &str) -> Result<()> {
         return Ok(());
     }
 
+    let mut answered = Instant::now();
     loop {
-        std::thread::sleep(AGENT_WAKE_HEARTBEAT_INTERVAL);
-        if !matches!(renew(), Ok(runtime::Response::Ack { .. })) {
-            return Ok(());
+        std::thread::sleep(AGENT_WAKE_RENEW_INTERVAL);
+        match renew() {
+            Ok(runtime::Response::Ack { .. }) => answered = Instant::now(),
+            // The prompt ended or was replaced, or the pane is gone.
+            Ok(_) => return Ok(()),
+            // No wsxd: `call` has already waited for a live handoff to finish.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) =>
+            {
+                return Ok(())
+            }
+            Err(_) if answered.elapsed() < AGENT_WAKE_UNANSWERED_LIMIT => {}
+            Err(_) => return Ok(()),
         }
     }
 }
