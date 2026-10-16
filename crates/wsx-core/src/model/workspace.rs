@@ -98,7 +98,7 @@ impl Default for TaskConfig {
     fn default() -> Self {
         Self {
             adapter: "claude".into(),
-            model: "sonnet".into(),
+            model: "opus".into(),
             tools: [
                 "Read",
                 "Glob",
