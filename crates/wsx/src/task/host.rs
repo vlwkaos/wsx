@@ -147,7 +147,8 @@ fn serve(listener: UnixListener, events: Sender<Event>) {
         if events.send(Event::Request(request, reply)).is_err() {
             return;
         }
-        if let Ok(response) = answer.recv_timeout(Duration::from_secs(30)) {
+        // ^ A pr landing pushes and calls gh, each bounded by 120 s.
+        if let Ok(response) = answer.recv_timeout(Duration::from_secs(330)) {
             if let Ok(mut line) = serde_json::to_vec(&response) {
                 line.push(b'\n');
                 let _ = stream.write_all(&line);
@@ -583,27 +584,15 @@ impl Host {
 
     /// Land the current revision on the default branch (docs/tasks.md "Landing").
     fn land(&mut self, skip_verify: bool) -> Result<String> {
-        if self.record.state != TaskState::Ready {
-            bail!(
-                "task t{} is {}; only a ready task lands",
-                self.record.id,
-                self.record.state.as_str()
-            );
-        }
         let settings =
             load_task_config(&self.record.project_path).map_err(|error| anyhow::anyhow!(error))?;
         if settings.land_policy == LandPolicy::Pr {
-            bail!("the pr landing policy is not available yet");
+            return self.land_pr(skip_verify, &settings.land_remote);
         }
+        self.require_ready()?;
         self.verify_gate(skip_verify)?;
+        self.require_committed()?;
         let working_copy = self.record.working_copy.clone();
-        let changes = copy::tracked_changes(&working_copy)?;
-        if !changes.is_empty() {
-            bail!(
-                "the working copy has uncommitted changes: {}; ask the worker to commit them",
-                changes.join(", ")
-            );
-        }
         let tip = self.default_tip()?;
         let head = copy::resolve_commit(&working_copy, "HEAD")?;
         if copy::is_ancestor(&working_copy, &tip, &head)? {
@@ -651,6 +640,126 @@ impl Host {
                 ))
             }
         }
+    }
+
+    fn require_ready(&self) -> Result<()> {
+        if self.record.state != TaskState::Ready {
+            bail!(
+                "task t{} is {}; only a ready task lands",
+                self.record.id,
+                self.record.state.as_str()
+            );
+        }
+        Ok(())
+    }
+
+    fn require_committed(&self) -> Result<()> {
+        let changes = copy::tracked_changes(&self.record.working_copy)?;
+        if !changes.is_empty() {
+            bail!(
+                "the working copy has uncommitted changes: {}; ask the worker to commit them",
+                changes.join(", ")
+            );
+        }
+        Ok(())
+    }
+
+    /// `pr` policy: push and open a pull request, then on a later land read whether it merged.
+    fn land_pr(&mut self, skip_verify: bool, remote: &str) -> Result<String> {
+        let Some(url) = self.record.pr_url.clone() else {
+            self.require_ready()?;
+            self.verify_gate(skip_verify)?;
+            self.require_committed()?;
+            copy::push(&self.record.working_copy, remote, &self.record.branch)?;
+            let title = self
+                .dir
+                .prompt()?
+                .and_then(|prompt| prompt.lines().next().map(str::to_string))
+                .unwrap_or_else(|| format!("Task t{}", self.record.id));
+            let title: String = title.chars().take(PR_TITLE_CHARS).collect();
+            let report_path = self.dir.file(REPORT_FILE);
+            let created = run_gh(
+                &self.record.working_copy,
+                &[
+                    "pr",
+                    "create",
+                    "--base",
+                    &self.record.default_branch,
+                    "--head",
+                    &self.record.branch,
+                    "--title",
+                    &title,
+                    "--body-file",
+                    &report_path.to_string_lossy(),
+                ],
+            )?;
+            let url = created
+                .lines()
+                .rev()
+                .map(str::trim)
+                .find(|line| line.starts_with("https://") || line.starts_with("http://"))
+                .with_context(|| {
+                    format!("gh pr create printed no URL; the branch was pushed to {remote}")
+                })?
+                .to_string();
+            return Ok(self.pushed(url, "opened"));
+        };
+        if !matches!(self.record.state, TaskState::InReview | TaskState::Ready) {
+            bail!(
+                "task t{} is {}; land it again when it is ready or in review",
+                self.record.id,
+                self.record.state.as_str()
+            );
+        }
+        let view = run_gh(
+            &self.record.working_copy,
+            &["pr", "view", &url, "--json", "state,mergeCommit"],
+        )?;
+        let view: serde_json::Value =
+            serde_json::from_str(&view).context("gh pr view did not print JSON")?;
+        match view["state"].as_str().unwrap_or_default() {
+            "MERGED" => {
+                let commit = view["mergeCommit"]["oid"]
+                    .as_str()
+                    .filter(|oid| !oid.is_empty())
+                    .context("gh reports the PR merged but names no merge commit")?
+                    .to_string();
+                self.log(LogEvent::Landed {
+                    commit: commit.clone(),
+                });
+                self.set_state(TaskState::Landed);
+                Ok(format!("{url} merged as {commit:.12}; landed"))
+            }
+            "CLOSED" => {
+                self.log(LogEvent::PrClosed { url: url.clone() });
+                self.set_state(TaskState::InReview);
+                Ok(format!(
+                    "{url} was closed without a merge; reopen it, or close the task with --discard"
+                ))
+            }
+            _ if self.record.state == TaskState::Ready
+                && self.record.pr_revision != Some(self.record.revision) =>
+            {
+                self.verify_gate(skip_verify)?;
+                self.require_committed()?;
+                copy::push(&self.record.working_copy, remote, &self.record.branch)?;
+                Ok(self.pushed(url, "updated"))
+            }
+            state => Ok(format!("{url} is still {}", state.to_ascii_lowercase())),
+        }
+    }
+
+    /// Record that the current revision is on the pull request at `url`.
+    fn pushed(&mut self, url: String, verb: &str) -> String {
+        let revision = self.record.revision;
+        self.record.pr_url = Some(url.clone());
+        self.record.pr_revision = Some(revision);
+        self.log(LogEvent::InReview {
+            url: url.clone(),
+            revision,
+        });
+        self.set_state(TaskState::InReview);
+        format!("{verb} {url} with r{revision}")
     }
 
     fn default_tip(&self) -> Result<String> {
@@ -857,7 +966,7 @@ impl Host {
             | TaskState::Checking
             | TaskState::Conflict => runtime::AgentState::Working,
             TaskState::Blocked => runtime::AgentState::Blocked,
-            TaskState::Ready | TaskState::Landed => runtime::AgentState::Done,
+            TaskState::Ready | TaskState::InReview | TaskState::Landed => runtime::AgentState::Done,
             TaskState::Failed => runtime::AgentState::Error,
             TaskState::Stopped | TaskState::Closed => runtime::AgentState::Idle,
         };
@@ -882,6 +991,30 @@ impl Host {
             Err(error) => self.say(&format!("agent report failed: {error:#}")),
         }
     }
+}
+
+const PR_TITLE_CHARS: usize = 72;
+const GH_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Run `gh` in `cwd` and return its stdout.
+fn run_gh(cwd: &Path, args: &[&str]) -> Result<String> {
+    let mut command = std::process::Command::new("gh");
+    command
+        .args(args)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .env("GH_PROMPT_DISABLED", "1");
+    let output = output_with_timeout_limit(&mut command, GH_TIMEOUT, 256 * 1024)
+        .with_context(|| format!("gh {} did not finish", args[..2.min(args.len())].join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "gh {} exited {}: {}",
+            args[..2.min(args.len())].join(" "),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn check_message(text: &str) -> Result<()> {

@@ -27,6 +27,8 @@ pub enum TaskState {
     Stopped,
     /// A landing rebase conflicted; the worker is resolving it.
     Conflict,
+    /// A pull request carries the task (`pr` landing policy).
+    InReview,
     /// The revision is on the default branch.
     Landed,
     Closed,
@@ -48,6 +50,7 @@ impl TaskState {
             Self::Failed => "failed",
             Self::Stopped => "stopped",
             Self::Conflict => "conflict",
+            Self::InReview => "in_review",
             Self::Landed => "landed",
             Self::Closed => "closed",
         }
@@ -81,6 +84,11 @@ pub struct TaskRecord {
     pub paths: Vec<String>,
     #[serde(default)]
     pub paths_total: u32,
+    /// The pull request of the `pr` landing policy, and the revision last pushed to it.
+    #[serde(default)]
+    pub pr_url: Option<String>,
+    #[serde(default)]
+    pub pr_revision: Option<u32>,
     pub created_unix_ms: u64,
     pub updated_unix_ms: u64,
 }
@@ -174,6 +182,15 @@ pub enum LogEvent {
     },
     Landed {
         commit: String,
+    },
+    /// A revision was pushed to the task's pull request.
+    InReview {
+        url: String,
+        revision: u32,
+    },
+    /// The pull request was closed without a merge.
+    PrClosed {
+        url: String,
     },
 }
 

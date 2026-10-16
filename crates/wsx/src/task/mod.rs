@@ -12,6 +12,7 @@ use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
+use wsx_core::model::workspace::LandPolicy;
 use wsx_core::task::{
     call_host, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
@@ -21,6 +22,7 @@ use wsx_core::task::{
 use wsx_core::{ops, runtime};
 
 const HOST_TIMEOUT: Duration = Duration::from_secs(15);
+const LAND_TIMEOUT: Duration = Duration::from_secs(300);
 const HOST_START_WAIT: Duration = Duration::from_secs(10);
 const CLOSE_WAIT: Duration = Duration::from_secs(15);
 const CARGO_CLEAN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -447,6 +449,8 @@ fn new(prompt: PromptSource, from: Option<&str>, project: Option<&str>, json: bo
         revision: 0,
         paths: Vec::new(),
         paths_total: 0,
+        pr_url: None,
+        pr_revision: None,
         created_unix_ms: now,
         updated_unix_ms: now,
     };
@@ -686,7 +690,13 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
 }
 
 fn send(dir: &TaskDir, request: HostRequest, json: bool) -> Result<()> {
-    let response = match call_host(&dir.socket_path(), &request, HOST_TIMEOUT) {
+    // ^ A pr landing pushes and calls gh on the host before it answers.
+    let timeout = if matches!(request, HostRequest::Land { .. }) {
+        LAND_TIMEOUT
+    } else {
+        HOST_TIMEOUT
+    };
+    let response = match call_host(&dir.socket_path(), &request, timeout) {
         Ok(response) => response,
         Err(error) => {
             let (state, working_copy) = dir.read_record().map_or_else(
@@ -849,6 +859,16 @@ fn delete_revision_refs(main: &Path, id: u32) {
     }
 }
 
+/// The ref a deploy defaults to and `behind` counts against. Under the `pr` policy the
+/// local default branch can lag the remote, so it is fetched and the remote one is used.
+fn default_ref(main: &Path, settings: &wsx_core::model::workspace::TaskConfig) -> Result<String> {
+    let default_branch = ops::detect_default_branch(main);
+    match settings.land_policy {
+        LandPolicy::LocalMerge => Ok(format!("refs/heads/{default_branch}")),
+        LandPolicy::Pr => copy::fetch(main, &settings.land_remote, &default_branch),
+    }
+}
+
 fn kind_name(kind: DeployKind) -> &'static str {
     match kind {
         DeployKind::Deploy => "deploy",
@@ -864,14 +884,18 @@ fn deploy(kind: DeployKind, project: Option<&str>, commit: Option<&str>, json: b
     let settings =
         load_task_config(&main).map_err(|error| anyhow::anyhow!("{error}; nothing was run"))?;
     let command = match kind {
-        DeployKind::Deploy => settings.deploy_command,
-        DeployKind::Release => settings.release_command,
+        DeployKind::Deploy => settings.deploy_command.clone(),
+        DeployKind::Release => settings.release_command.clone(),
     }
     .with_context(|| {
         format!("tasks.{name}.command is not set in wsx.config.yml; nothing was run")
     })?;
-    let default_branch = ops::detect_default_branch(&main);
-    let revision = commit.map_or_else(|| format!("refs/heads/{default_branch}"), str::to_string);
+    let revision = match commit {
+        Some(commit) => commit.to_string(),
+        None => default_ref(&main, &settings).map_err(|error| {
+            error.context(format!("nothing was run or recorded for this {name}"))
+        })?,
+    };
     let project_id = store::project_id(&project_name, &main);
     let path = copy::working_copy_path_named(&main, &format!("{name}-{}", std::process::id()))?;
     let commit = copy::create_detached(&main, &revision, &path)
@@ -933,9 +957,10 @@ fn deploy(kind: DeployKind, project: Option<&str>, commit: Option<&str>, json: b
 fn deployed(project: Option<&str>, json: bool) -> Result<()> {
     let (project_name, main) = project_entry(project)?;
     let records = store::read_deploys(&store::project_id(&project_name, &main))?;
-    let default_branch = ops::detect_default_branch(&main);
-    let tip = copy::resolve_commit(&main, &format!("refs/heads/{default_branch}"))?;
-    let mut out = json!({ "project": project_name, "default_branch": default_branch, "tip": tip });
+    let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
+    let default = default_ref(&main, &settings)?;
+    let tip = copy::resolve_commit(&main, &default)?;
+    let mut out = json!({ "project": project_name, "default_branch": default, "tip": tip });
     for kind in [DeployKind::Deploy, DeployKind::Release] {
         let last = records
             .iter()
@@ -964,7 +989,7 @@ fn deployed(project: Option<&str>, json: bool) -> Result<()> {
         let entry = &out[kind_name(kind)];
         match entry["commit"].as_str() {
             Some(commit) => println!(
-                "{:<8} {:.12}  {} commit(s) behind {default_branch}",
+                "{:<8} {:.12}  {} commit(s) behind {default}",
                 kind_name(kind),
                 commit,
                 entry["behind"]

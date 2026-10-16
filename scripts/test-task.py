@@ -26,6 +26,26 @@ CONFIG = '''tasks:
     - "test ! -e broken.txt"
 '''
 
+FAKE_GH = r'''
+import json, os, sys
+args = sys.argv[1:]
+entry = {'args': args, 'cwd': os.getcwd()}
+if args[:2] == ['pr', 'create']:
+    entry['body'] = open(args[args.index('--body-file') + 1]).read()
+    count = sum(1 for line in open('LOG')) if os.path.exists('LOG') else 0
+    with open('LOG', 'a') as out:
+        out.write(json.dumps(entry) + '\n')
+    print('Creating pull request')
+    print('https://example.invalid/pr/%d' % (count + 1))
+elif args[:2] == ['pr', 'view']:
+    with open('LOG', 'a') as out:
+        out.write(json.dumps(entry) + '\n')
+    states = json.load(open('STATE')) if os.path.exists('STATE') else {}
+    print(json.dumps(states.get(args[2], {'state': 'OPEN', 'mergeCommit': None})))
+else:
+    sys.exit('fake gh: unsupported ' + ' '.join(args))
+'''
+
 LAND_CONFIG = '''tasks:
   agent:
     tools: [Read, Edit]
@@ -467,6 +487,63 @@ def run(wsx, wsxd, work, owned):
     older = git('rev-parse', 'main~3')
     assert js('task', 'deploy', '--commit', older)['commit'] == older
     assert js('task', 'deployed')['deploy']['behind'] == 3
+
+    # 18. Landing, pr policy: a local bare origin and a fake gh. Never the network.
+    remote = work / 'remote.git'
+    git('init', '-q', '--bare', str(remote))
+    git('remote', 'add', 'origin', str(remote))
+    gh_state, gh_log = work / 'gh-state.json', work / 'gh.log'
+    (bin_dir / 'gh').write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(work / 'gh.py') + ' "$@"\n')
+    (bin_dir / 'gh').chmod(0o755)
+    (work / 'gh.py').write_text(FAKE_GH.replace('STATE', str(gh_state)).replace('LOG', str(gh_log)))
+    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text() + '  land: { policy: pr }\n')
+    git('commit', '-q', '-am', 'pr policy')
+    git('push', '-q', 'origin', 'main')
+
+    def gh_calls():
+        return [json.loads(line) for line in gh_log.read_text().splitlines()] if gh_log.exists() else []
+
+    p1 = js('task', 'new', 'WORK p.txt')['id']
+    assert wait_state(p1, 'ready', 'failed')['state'] == 'ready'
+    opened = land(p1)
+    assert opened['ok'] and opened['state'] == 'in_review', opened
+    url = show(p1)['record']['pr_url']
+    create = gh_calls()[0]
+    assert create['args'][:2] == ['pr', 'create'] and url == 'https://example.invalid/pr/1'
+    assert create['args'][create['args'].index('--head') + 1] == 'wsx/t%d' % p1
+    assert create['args'][create['args'].index('--title') + 1] == 'WORK p.txt' and '## Asked' in create['body']
+    assert git('rev-parse', 'refs/heads/wsx/t%d' % p1, cwd=remote) == git('rev-parse', 'wsx/t%d' % p1)
+    assert 'still open' in land(p1)['message']
+    # New work on an open PR: a later land pushes the new revision to it.
+    js('task', 'add', p1, 'WORK p2.txt')
+    assert wait_state(p1, 'ready', 'failed')['revision'] == 2
+    assert 'updated' in land(p1)['message']
+    assert git('rev-parse', 'refs/heads/wsx/t%d' % p1, cwd=remote) == git('rev-parse', 'wsx/t%d' % p1)
+    assert len([c for c in gh_calls() if c['args'][:2] == ['pr', 'create']]) == 1
+    # The PR merges on the remote: land records it; the local default branch stays.
+    merger = work / 'merger'
+    git('clone', '-q', str(remote), str(merger), cwd=work)
+    git('merge', '-q', '--no-ff', '-m', 'merge pr 1', 'origin/wsx/t%d' % p1, cwd=merger)
+    git('push', '-q', 'origin', 'main', cwd=merger)
+    merged = git('rev-parse', 'HEAD', cwd=merger)
+    gh_state.write_text(json.dumps({url: {'state': 'MERGED', 'mergeCommit': {'oid': merged}}}))
+    assert land(p1)['state'] == 'landed'
+    assert log(p1)[-1] == dict(log(p1)[-1], kind='landed', commit=merged)
+    assert git('rev-parse', 'main') != merged
+    assert js('task', 'close', p1)['state'] == 'closed'
+    # Deploys follow the fetched remote default branch under pr.
+    assert js('task', 'deploy')['commit'] == merged
+    assert js('task', 'deployed')['deploy']['behind'] == 0
+    # A PR closed without a merge is recorded and the task stays in review.
+    p2 = js('task', 'new', 'WORK q2.txt')['id']
+    assert wait_state(p2, 'ready', 'failed')['state'] == 'ready'
+    url2 = land(p2) and show(p2)['record']['pr_url']
+    gh_state.write_text(json.dumps({url2: {'state': 'CLOSED', 'mergeCommit': None}}))
+    closed_pr = land(p2)
+    assert closed_pr['state'] == 'in_review' and 'closed without a merge' in closed_pr['message']
+    assert any(e['kind'] == 'pr_closed' for e in log(p2))
+    assert 'not on main' in cli('task', 'close', p2, ok=False).stderr
+    js('task', 'close', p2, '--discard')
 
 
 if __name__ == '__main__':
