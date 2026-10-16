@@ -15,7 +15,7 @@ wsx session delete "$(jq .session_id w.json)" --json         # after the result 
 ```
 
 - Several workers: one `agent start` each, then `wsx agent wait --any $A $B --result --json`. Read `ready` and `pending`, and call it again with the pending IDs.
-- `agent start` creates the worktree, one agent session and the request. Its agent command is the project's `worktree.defaultSession.command`, or `--agent <command>`. On a failure it prints what exists and `next`; repeat the same command with the same `--key`.
+- `agent start` creates the worktree, one agent session and the request. Its agent command is the project's `worktree.defaultSession.command`, or `--agent <command>`. On a failure it prints what exists and `next`; repeat the same command with the same `--key`. A ready failure has `error.reason` and `error.screen`. Reason `folder_trust_question` means the agent asks whether to trust the new worktree: review it, then repeat with `--accept-folder-trust` (the agent saves that trust and the folder's own hooks can then run).
 - A prompt is an argument, `-` for standard input, or `--prompt-file <path>`.
 - `--key` makes a repeat return the existing exchange, so a lost reply is never a second delivery.
 - `result.status` other than `available` means that no result can be named yet. Never take an older message or a terminal frame as the result.

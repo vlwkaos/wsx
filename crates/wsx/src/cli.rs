@@ -405,6 +405,10 @@ pub struct AgentStartArgs {
     /// Deliver once per key and pane: a repeat returns the existing exchange
     #[arg(long, value_name = "TEXT")]
     key: Option<String>,
+    /// Answer yes when the agent asks whether to trust the worktree folder. The agent
+    /// saves that decision and then runs the folder's own settings and hooks
+    #[arg(long)]
+    accept_folder_trust: bool,
     #[arg(long)]
     json: bool,
 }
@@ -3131,6 +3135,8 @@ struct AgentStart {
     session_created: bool,
     pane_id: Option<runtime::PaneId>,
     agent: Option<String>,
+    /// True when this call answered the agent's folder trust question.
+    folder_trust_accepted: bool,
     exchange: Option<runtime::AgentExchange>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<serde_json::Value>,
@@ -3203,6 +3209,7 @@ fn cmd_agent_start(args: AgentStartArgs) -> Result<()> {
         session_created: false,
         pane_id: None,
         agent: None,
+        folder_trust_accepted: false,
         exchange: None,
         error: None,
         next: None,
@@ -3261,7 +3268,8 @@ fn cmd_agent_start(args: AgentStartArgs) -> Result<()> {
         let (pane_id, provider) = wait_for_prompt_agent(
             session_id,
             Instant::now() + Duration::from_secs(args.ready_timeout),
-            &mut start.pane_id,
+            args.accept_folder_trust,
+            &mut start,
         )
         .map_err(|error| ("ready", error))?;
         start.agent = Some(provider);
@@ -3292,10 +3300,20 @@ fn cmd_agent_start(args: AgentStartArgs) -> Result<()> {
 
     let failure = outcome.err();
     if let Some((step, error)) = &failure {
-        start.error = Some(serde_json::json!({ "step": step, "message": error.to_string() }));
-        start.next = Some(match (*step, start.session_id) {
-            ("ready", Some(session_id)) => format!(
-                "the worktree and session {session_id} are kept; read `wsx session peek {session_id} --trim`, then repeat this command"
+        let mut report = serde_json::json!({ "step": step, "message": error.to_string() });
+        let not_ready = error.downcast_ref::<AgentNotReady>();
+        if let Some(not_ready) = not_ready {
+            report["reason"] = serde_json::json!(not_ready.reason);
+            report["screen"] = serde_json::json!(not_ready.screen);
+        }
+        start.error = Some(report);
+        start.next = Some(match (not_ready.map(|not_ready| not_ready.reason), start.session_id) {
+            (Some(FOLDER_TRUST_QUESTION), Some(session_id)) => format!(
+                "session {session_id} waits on the agent's folder trust question for {}; review that folder, then repeat this command with --accept-folder-trust",
+                start.worktree.display()
+            ),
+            (Some(_), Some(session_id)) => format!(
+                "the worktree and session {session_id} are kept; read the screen in this report or `wsx session peek {session_id} --trim`, then repeat this command"
             ),
             _ => "what is listed here is kept; repeat this command".to_owned(),
         });
@@ -3316,6 +3334,16 @@ fn cmd_agent_start(args: AgentStartArgs) -> Result<()> {
                 exchange.id, exchange.round, exchange.state
             );
         }
+        if let Some(screen) = start
+            .error
+            .as_ref()
+            .and_then(|error| error["screen"].as_str())
+        {
+            println!("screen:   last lines of the pane");
+            for line in screen.lines() {
+                println!("  | {line}");
+            }
+        }
         if let Some(next) = &start.next {
             println!("next:     {next}");
         }
@@ -3326,13 +3354,91 @@ fn cmd_agent_start(args: AgentStartArgs) -> Result<()> {
     }
 }
 
+const FOLDER_TRUST_QUESTION: &str = "folder_trust_question";
+const NOT_READY_SCREEN_LINES: usize = 20;
+const NOT_READY_SCREEN_BYTES: usize = 2048;
+
+/// Why `agent start` stopped before its agent could take a prompt. `screen` is the end
+/// of the pane's visible screen, so the caller sees what the pane waits on in this reply.
+#[derive(Debug)]
+struct AgentNotReady {
+    reason: &'static str,
+    message: String,
+    screen: Option<String>,
+}
+
+impl std::fmt::Display for AgentNotReady {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for AgentNotReady {}
+
+/// The last non-empty lines of a screen, at most `NOT_READY_SCREEN_BYTES`.
+fn screen_excerpt(screen: &str) -> String {
+    let lines = screen
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    let excerpt = lines[lines.len().saturating_sub(NOT_READY_SCREEN_LINES)..].join("\n");
+    let mut start = excerpt.len().saturating_sub(NOT_READY_SCREEN_BYTES);
+    while !excerpt.is_char_boundary(start) {
+        start += 1;
+    }
+    excerpt[start..].to_owned()
+}
+
+/// Claude ("Yes, I trust this folder") and Codex ("Trust this folder?") ask this before
+/// they load a folder they have not seen. No agent hook runs until it is answered.
+fn asks_folder_trust(screen: &str) -> bool {
+    screen
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+        .contains("trust this folder")
+}
+
+/// Select the trust choice of the question and confirm it. The highlighted choice is the
+/// line after the agent's cursor (`❯` Claude, `›` Codex); Enter is sent only while that
+/// line is the trust choice. Claude highlights "No, exit" first. False when no trust
+/// choice was found.
+fn answer_folder_trust(pane_id: runtime::PaneId) -> Result<bool> {
+    for _ in 0..4 {
+        let screen = terminal_frame_text(&pane_frame(pane_id)?);
+        let choice = screen
+            .lines()
+            .map(str::trim_start)
+            .find_map(|line| line.strip_prefix('❯').or_else(|| line.strip_prefix('›')))
+            .map(|choice| choice.trim().to_lowercase());
+        match choice {
+            Some(choice)
+                if choice.contains("trust")
+                    && !choice.starts_with("no")
+                    && !choice.contains("not")
+                    && !choice.contains("don") =>
+            {
+                send_pane_bytes(pane_id, b"\r".to_vec())?;
+                return Ok(true);
+            }
+            Some(_) => send_pane_bytes(pane_id, b"\x1b[B".to_vec())?,
+            None => return Ok(false),
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    Ok(false)
+}
+
 /// Wait until the session's pane has an attached agent that can take a prompt now.
-/// `seen_pane` keeps the pane ID for the report when the wait fails.
+/// `start.pane_id` keeps the pane ID for the report when the wait fails.
 fn wait_for_prompt_agent(
     session_id: runtime::SessionId,
     deadline: Instant,
-    seen_pane: &mut Option<runtime::PaneId>,
+    accept_folder_trust: bool,
+    start: &mut AgentStart,
 ) -> Result<(runtime::PaneId, String)> {
+    let mut screen_read = None::<Instant>;
     loop {
         let snapshot = ops::runtime_snapshot()?;
         let session = snapshot
@@ -3345,9 +3451,20 @@ fn wait_for_prompt_agent(
             .iter()
             .find(|pane| pane.id == session.focused_pane)
             .context("session_missing: the session has no pane")?;
-        *seen_pane = Some(pane.id);
+        start.pane_id = Some(pane.id);
+        let not_ready = |reason, message: String| AgentNotReady {
+            reason,
+            message,
+            screen: pane_frame(pane.id)
+                .ok()
+                .map(|frame| screen_excerpt(&terminal_frame_text(&frame))),
+        };
         if pane.exited {
-            bail!("session_exited: run `wsx session restart {session_id}`");
+            return Err(not_ready(
+                "session_exited",
+                format!("session_exited: run `wsx session restart {session_id}`"),
+            )
+            .into());
         }
         let agent = pane.agent.as_ref().filter(|agent| agent.attached);
         if let Some(agent) = agent.filter(|agent| {
@@ -3359,24 +3476,75 @@ fn wait_for_prompt_agent(
         }) {
             return Ok((pane.id, agent.provider.clone()));
         }
+        // ^ The trust question does not go away by itself: stop at once, or answer it
+        // once when the caller asked for that.
+        if agent.is_none()
+            && screen_read.is_none_or(|read| read.elapsed() >= Duration::from_millis(500))
+        {
+            screen_read = Some(Instant::now());
+            let screen = terminal_frame_text(&pane_frame(pane.id)?);
+            if asks_folder_trust(&screen) {
+                if !accept_folder_trust || start.folder_trust_accepted {
+                    return Err(AgentNotReady {
+                        reason: FOLDER_TRUST_QUESTION,
+                        message: if start.folder_trust_accepted {
+                            "agent_not_ready: the agent still asks whether to trust the folder"
+                        } else {
+                            "agent_not_ready: the agent asks whether to trust the folder"
+                        }
+                        .to_owned(),
+                        screen: Some(screen_excerpt(&screen)),
+                    }
+                    .into());
+                }
+                if !answer_folder_trust(pane.id)? {
+                    return Err(not_ready(
+                        FOLDER_TRUST_QUESTION,
+                        "agent_not_ready: no trust choice was found in the folder trust question"
+                            .to_owned(),
+                    )
+                    .into());
+                }
+                start.folder_trust_accepted = true;
+                // ^ Look again after 2.5 s: the agent needs that long to load the folder.
+                screen_read = Some(Instant::now() + Duration::from_secs(2));
+            }
+        }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            match agent {
-                Some(agent) => bail!(
-                    "agent_not_ready: {} is {:?}{}",
-                    agent.provider,
-                    agent.state,
-                    if agent.capabilities.prompt {
-                        ""
-                    } else {
-                        " and its integration cannot take a prompt"
-                    }
+            return Err(match agent {
+                Some(agent) if agent.capabilities.prompt => not_ready(
+                    "agent_not_idle",
+                    format!("agent_not_ready: {} is {:?}", agent.provider, agent.state),
                 ),
-                None => bail!("agent_not_ready: no agent reported from the session"),
+                Some(agent) => not_ready(
+                    "agent_cannot_prompt",
+                    format!(
+                        "agent_not_ready: {} is {:?} and its integration cannot take a prompt",
+                        agent.provider, agent.state
+                    ),
+                ),
+                None => not_ready(
+                    "no_agent_report",
+                    "agent_not_ready: no agent reported from the session".to_owned(),
+                ),
             }
+            .into());
         }
         // ^ Not `poll`: wsxd counts a poll without TUI data as an open TUI.
         std::thread::sleep(remaining.min(Duration::from_millis(100)));
+    }
+}
+
+fn pane_frame(pane_id: runtime::PaneId) -> Result<runtime::TerminalFrame> {
+    match runtime::Client::local().call(&runtime::Request::View {
+        pane_ids: vec![pane_id],
+    })? {
+        runtime::Response::View { mut frames, .. } => {
+            frames.pop().context("terminal frame is unavailable")
+        }
+        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
+        _ => bail!("wsxd returned an unexpected view response"),
     }
 }
 
@@ -4733,17 +4901,7 @@ fn cmd_session_peek(
     agent: bool,
     scope: &SessionScope,
 ) -> Result<()> {
-    let pane_id = resolve_pane(selector, scope)?;
-    let client = runtime::Client::local();
-    let frame = match client.call(&runtime::Request::View {
-        pane_ids: vec![pane_id],
-    })? {
-        runtime::Response::View { mut frames, .. } => {
-            frames.pop().context("terminal frame is unavailable")?
-        }
-        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("wsxd returned an unexpected view response"),
-    };
+    let frame = pane_frame(resolve_pane(selector, scope)?)?;
     let mut rendered = frame
         .cells
         .chunks(usize::from(frame.cols))
