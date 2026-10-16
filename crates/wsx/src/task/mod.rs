@@ -962,16 +962,15 @@ fn deployed(project: Option<&str>, json: bool) -> Result<()> {
     let tip = copy::resolve_commit(&main, &default)?;
     let mut out = json!({ "project": project_name, "default_branch": default, "tip": tip });
     for kind in [DeployKind::Deploy, DeployKind::Release] {
-        let last = records
-            .iter()
-            .rev()
-            .find(|record| record.kind == kind && record.exit == Some(0));
-        let failed_since = records
-            .iter()
-            .rev()
-            .take_while(|record| last.is_none_or(|last| !std::ptr::eq(*record, last)))
-            .filter(|record| record.kind == kind)
-            .count();
+        // ^ Newest first: attempts that failed until the last success of this kind.
+        let (mut last, mut failed_since) = (None, 0);
+        for record in records.iter().rev().filter(|record| record.kind == kind) {
+            if record.exit == Some(0) {
+                last = Some(record);
+                break;
+            }
+            failed_since += 1;
+        }
         out[kind_name(kind)] = match last {
             None => json!({ "commit": null, "failed_since": failed_since }),
             Some(record) => json!({

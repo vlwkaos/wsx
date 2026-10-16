@@ -19,7 +19,7 @@ use wsx_core::model::workspace::LandPolicy;
 use wsx_core::runtime;
 use wsx_core::task::{
     copy::{self, Rebase},
-    now_unix_ms, report,
+    now_unix_ms, passed, report,
     store::{TaskDir, REPORT_FILE, RESULT_FILE},
     verification, CheckResult, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord,
     TaskState, Verdict, WorkerResult, MAX_MESSAGE_BYTES,
@@ -777,14 +777,7 @@ impl Host {
         }
         let revision = self.record.revision;
         let log = self.dir.read_log()?;
-        let passed = matches!(
-            verification(&log, revision).map(|entry| &entry.event),
-            Some(LogEvent::Verified {
-                result: Verdict::Pass,
-                ..
-            })
-        );
-        if passed {
+        if passed(&log, revision) {
             return Ok(());
         }
         if skip_verify {
@@ -1004,12 +997,12 @@ fn run_gh(cwd: &Path, args: &[&str]) -> Result<String> {
         .current_dir(cwd)
         .stdin(std::process::Stdio::null())
         .env("GH_PROMPT_DISABLED", "1");
+    let label = args[..2.min(args.len())].join(" ");
     let output = output_with_timeout_limit(&mut command, GH_TIMEOUT, 256 * 1024)
-        .with_context(|| format!("gh {} did not finish", args[..2.min(args.len())].join(" ")))?;
+        .with_context(|| format!("gh {label} did not finish"))?;
     if !output.status.success() {
         bail!(
-            "gh {} exited {}: {}",
-            args[..2.min(args.len())].join(" "),
+            "gh {label} exited {}: {}",
             output.status,
             String::from_utf8_lossy(&output.stderr).trim()
         );

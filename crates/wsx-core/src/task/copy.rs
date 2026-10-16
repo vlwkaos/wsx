@@ -221,7 +221,7 @@ pub fn remove(main: &Path, path: &Path, branch: Option<&str>) -> Result<()> {
 }
 
 /// Most paths a record keeps, and most bytes they may take together.
-pub const MAX_PATHS: usize = 500;
+const MAX_PATHS: usize = 500;
 const MAX_PATH_BYTES: usize = 32 * 1024;
 
 /// Paths changed between two commits: the first ones that fit the caps, and the full count.

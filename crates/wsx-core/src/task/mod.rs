@@ -201,6 +201,17 @@ pub enum Verdict {
     Fail,
 }
 
+/// True when the verdict that applies to `revision` is a pass.
+pub fn passed(log: &[LogEntry], revision: u32) -> bool {
+    matches!(
+        verification(log, revision).map(|entry| &entry.event),
+        Some(LogEvent::Verified {
+            result: Verdict::Pass,
+            ..
+        })
+    )
+}
+
 /// The verdict that applies to `revision`: the latest one recorded for it.
 /// A new revision has none until someone verifies it or a pass is carried.
 pub fn verification(log: &[LogEntry], revision: u32) -> Option<&LogEntry> {

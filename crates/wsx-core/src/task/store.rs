@@ -339,7 +339,7 @@ impl TaskDir {
     }
 }
 
-pub const DEPLOYS_FILE: &str = "deploys.jsonl";
+const DEPLOYS_FILE: &str = "deploys.jsonl";
 /// Deploy records are read from the end of the file only.
 const MAX_DEPLOYS_READ_BYTES: u64 = 1024 * 1024;
 

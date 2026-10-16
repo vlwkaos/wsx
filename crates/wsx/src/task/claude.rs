@@ -117,6 +117,8 @@ impl ClaudeAgent {
                 command.env(name, value);
             }
         }
+        // ^ No terminal to edit in: `git rebase --continue` and `git commit` keep their message.
+        command.env("GIT_EDITOR", "true");
         let mut child = command
             .current_dir(&record.working_copy)
             .stdin(Stdio::piped())
