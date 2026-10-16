@@ -36,7 +36,7 @@ The reader prints only validated `wsx inspect {...}` metadata from each private 
 
 Claude can hide successful hooks' stderr. WSX saves both successes and failures to `wsx-inspect.jsonl` beside the hook. The journal is mode 600, retains at most 32 records and 64 KiB, and each record is below 2 KiB. Nonblocking locks avoid concurrent record corruption; a busy/unsafe/unavailable journal can drop a record but never change reporting success or failure. The reader refuses symlinks, non-regular files, extra hardlinks, wrong ownership, and nonprivate permissions. Invalid records are not echoed. No log is created while inspection is disabled.
 
-A record proves that invocation reached Claude integration 21 or Codex integration 15. No record means the event/new binding/inspection did not produce a usable journal record; it does not prove that reporting succeeded. Journal failure can still emit bounded stderr metadata with `inspection_log_unavailable`. Stop and share the reader's fixed error rather than relaxing file permissions.
+A record proves that invocation reached Claude integration 22 or Codex integration 15. No record means the event/new binding/inspection did not produce a usable journal record; it does not prove that reporting succeeded. Journal failure can still emit bounded stderr metadata with `inspection_log_unavailable`. Stop and share the reader's fixed error rather than relaxing file permissions.
 
 ## What records establish
 
