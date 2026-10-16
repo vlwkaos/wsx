@@ -201,6 +201,45 @@ pub fn remove(main: &Path, path: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// Most paths a record keeps, and most bytes they may take together.
+pub const MAX_PATHS: usize = 500;
+const MAX_PATH_BYTES: usize = 32 * 1024;
+
+/// Paths changed between two commits: the first ones that fit the caps, and the full count.
+pub fn changed_paths(repo: &Path, from: &str, to: &str) -> Result<(Vec<String>, u32)> {
+    let output = crate::git::output_with_timeout_limit(
+        git_cmd(repo).args(["diff", "--name-only", "-z", "--no-renames", from, to]),
+        std::time::Duration::from_secs(60),
+        4 * 1024 * 1024,
+    )
+    .context("cannot run git diff")?;
+    if !output.status.success() {
+        bail!(
+            "git diff {from} {to} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let mut paths = Vec::new();
+    let (mut total, mut bytes) = (0u32, 0usize);
+    for path in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        total += 1;
+        bytes += path.len();
+        if paths.len() < MAX_PATHS && bytes <= MAX_PATH_BYTES {
+            paths.push(String::from_utf8_lossy(path).into_owned());
+        }
+    }
+    Ok((paths, total))
+}
+
+/// The commit where `head` left `target`.
+pub fn merge_base(repo: &Path, head: &str, target: &str) -> Result<String> {
+    git(repo, &["merge-base", head, target])
+}
+
 /// Commits on `branch` that `target` does not have.
 pub fn unlanded_commits(main: &Path, branch: &str, target: &str) -> Result<u32> {
     let count = git(

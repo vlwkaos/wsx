@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use wsx_core::git::{git_cmd, output_with_timeout_limit};
 use wsx_core::runtime;
 use wsx_core::task::{
-    now_unix_ms, report,
+    copy, now_unix_ms, report,
     store::{TaskDir, REPORT_FILE, RESULT_FILE},
     CheckResult, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord, TaskState,
     WorkerResult, MAX_MESSAGE_BYTES,
@@ -481,10 +481,23 @@ impl Host {
         if !status.success() {
             bail!("git update-ref {reference} failed");
         }
+        // ^ After a rebase the fork point moved: base..r<k> must name only the task's own work.
+        if let Ok(base) = copy::merge_base(
+            working_copy,
+            &commit,
+            &format!("refs/heads/{}", self.record.default_branch),
+        ) {
+            self.record.base = base;
+        }
+        let (paths, paths_total) = copy::changed_paths(working_copy, &self.record.base, &commit)?;
         self.record.revision = revision;
+        self.record.paths = paths;
+        self.record.paths_total = paths_total;
         self.log(LogEvent::Revision {
             revision,
             commit: commit.clone(),
+            base: self.record.base.clone(),
+            paths_total,
         });
         Ok((revision, commit))
     }
