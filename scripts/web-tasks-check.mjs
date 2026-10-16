@@ -137,7 +137,13 @@ if (homeRows.map((row) => row.name).join() !== homeOrder) await fail(`home lists
 const uiRow = homeRows.find((row) => row.name === "ui");
 if (uiRow.count !== "6" || uiRow.status !== "#1 needs an answer" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
 const calmRow = homeRows.at(-1);
-if (calmRow.name !== "calm" || calmRow.count || calmRow.status !== "No tasks yet") await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
+if (calmRow.name !== "calm" || calmRow.count || calmRow.status !== "No tasks yet" || calmRow.state) await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
+// Projects with agent sessions and no task: the sessions in words, and the time of the newest.
+const sessionRows = { busy: "2 working", quiet: "claude in main done just now", gone: "claude in main exited" };
+for (const [name, status] of Object.entries(sessionRows)) {
+  const row = homeRows.find((item) => item.name === name);
+  if (row?.status !== status || row.count || !/ago|now/.test(row.state)) await fail(`the ${name} row reads ${JSON.stringify(row)}, not "${status}" with a time`);
+}
 if ((await text(".tabbar a")).join() !== "Home,Settings") await fail(`the bottom bar is ${await text(".tabbar a")}`);
 await shot("home");
 // "All sessions": the session inbox, without task workers and the manager.
