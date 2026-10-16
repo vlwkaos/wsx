@@ -10,6 +10,7 @@ wsx task steer <n> "<text>" --json               # into the running turn
 wsx task add <n> "<text>" --json                 # after the turn (queued while one runs)
 wsx task allow <n> "Bash(make:*)" --json         # restart with the tool and resume a blocked task
 wsx task stop <n> --json                         # interrupt; the next add resumes the conversation
+wsx task land <n> [--skip-verify] --json         # onto the default branch by tasks.land.policy
 wsx task close <n> [--discard] --json
 ```
 
@@ -29,7 +30,7 @@ wsx task close <n> [--discard] --json
 
 - `<project-id>` is `<name-slug>-<first 8 hex of sha256(project path)>`. Numbers come from a locked `next` counter and are never reused, also after a failed start.
 - One writer: the CLI writes before the host starts and after it exits; the host writes everything in between.
-- States: `starting, working, blocked, checking, ready, failed, stopped, closed`.
+- States: `starting, working, blocked, checking, ready, failed, stopped, conflict, landed, closed`. `landed` and `closed` are not open.
 - A prompt, steer or add is at most 64 KiB.
 - Each revision records `base` (the merge base with the default branch, so it follows a rebase) and the paths changed in `base..r<k>`: at most 500 paths and 32 KiB in `paths`, the full count in `paths_total`.
 - `list --json` gives each open task `overlaps: [{id, count, complete}]`, the other open tasks that changed a path it changed; `show --json` adds up to 20 shared `paths` per task. `complete` is false when a side kept fewer paths than it changed.
@@ -62,9 +63,21 @@ A host restarted by a cold daemon start marks a running turn `stopped`; the next
 
 After each result that is not blocked the host runs `tasks.checks` with `/bin/sh -c` in the working copy (`tasks.checkTimeoutSeconds`, default 1200, and 8 KiB of output each, no `WSX_*`; a timed-out check's process group is killed), then sets `refs/wsx/task/<n>/r<k>` to the worker's HEAD. The host commits nothing; the worker commits. `ready` needs worker status `done` and every check at exit 0; otherwise `failed`. `report.md` has Asked, Summary, Decisions, Changes (`base..r<k>` commits and diffstat, plus uncommitted files), Evidence, Human Verify and Left open, built from the log, git and `result.json` only.
 
+## Landing (`local-merge`, the default policy)
+
+`wsx task land <n>` asks the host to:
+
+1. refuse unless the task is `ready`, and when the result has Human Verify items and the current revision has no `pass` (`--skip-verify` lands anyway and logs `verify_skipped`);
+2. refuse when the worker left uncommitted tracked changes;
+3. when the branch does not contain the default branch tip, rebase it there in the working copy:
+   - a conflict aborts the rebase, logs `conflict{onto, paths}`, allows `Bash(git rebase:*)` for this task (logged) and starts a worker turn that rebases and resolves. The state stays `conflict` until the result; the normal checks then make it `ready`, and the caller lands again;
+   - a clean rebase reruns the checks as a new revision and lands when they pass. A `pass` on the old revision is carried (`verified{carried_from}`) only when the default branch changed none of the task's paths since its old base; otherwise the new revision needs a new verdict. A failure logs `land_stopped`;
+4. fast-forward the default branch: `git merge --ff-only` in the checkout that has it checked out, refused with the changed files named when that checkout has tracked changes; `git update-ref` with the old tip as guard when no checkout has it;
+5. log `landed{commit}` and set `landed`.
+
 ## Close
 
-`close` refuses while `wsx/t<n>` has commits that are not on the default branch, unless `--discard`. It asks the host to close, waits for it to exit, removes the sessions of the working copy, runs `cargo clean` when the copy has `Cargo.toml`, and removes the worktree, folder and branch. `--discard` also deletes `refs/wsx/task/<n>/*`. The task folder stays as history (`list --all`).
+`close` refuses while `wsx/t<n>` has commits that are not on the default branch, unless `--discard` or the task is `landed`. It asks the host to close, waits for it to exit, removes the sessions of the working copy, runs `cargo clean` when the copy has `Cargo.toml`, and removes the worktree, folder and branch. `--discard` also deletes `refs/wsx/task/<n>/*`. The task folder stays as history (`list --all`).
 
 ## Config
 
@@ -73,6 +86,7 @@ tasks:
   agent: { adapter: claude, model: sonnet, tools: [Read, Edit, "Bash(cargo test:*)"] }
   checks: ["cargo fmt --check"]
   checkTimeoutSeconds: 1200
+  land: { policy: local-merge, remote: origin }   # or policy: pr
 ```
 
 Defaults: adapter `claude`, model `sonnet`, tools `Read Glob Grep Edit Write` plus `Bash(git add|commit|status|diff|log:*)`, no checks. Up to 64 tools and 64 checks; `checkTimeoutSeconds` is 1..86400; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.

@@ -92,6 +92,17 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Bring a ready task onto the default branch by the project's landing policy
+    Land {
+        task: String,
+        /// Land although Human Verify items have no pass for this revision (logged)
+        #[arg(long)]
+        skip_verify: bool,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove the working copy, session and branch
     Close {
         task: String,
@@ -117,6 +128,7 @@ impl TaskCmd {
             | Self::Add { json, .. }
             | Self::Allow { json, .. }
             | Self::Stop { json, .. }
+            | Self::Land { json, .. }
             | Self::Close { json, .. } => *json,
             Self::Host { .. } => false,
         }
@@ -236,6 +248,16 @@ pub fn run(command: TaskCmd) -> Result<()> {
             project,
             json,
         } => send(&open(project.as_deref(), &task)?, HostRequest::Stop, json),
+        TaskCmd::Land {
+            task,
+            skip_verify,
+            project,
+            json,
+        } => send(
+            &open(project.as_deref(), &task)?,
+            HostRequest::Land { skip_verify },
+            json,
+        ),
         TaskCmd::Close {
             task,
             discard,
@@ -608,7 +630,8 @@ fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
     let mut record = dir.read_record()?;
     let main = record.project_path.clone();
     let working_copy_exists = record.working_copy.exists();
-    if working_copy_exists && !discard {
+    // ^ A landed task's commits are on the default branch, also when a remote merged them.
+    if working_copy_exists && !discard && record.state != TaskState::Landed {
         let unlanded = copy::unlanded_commits(&main, &record.branch, &record.default_branch)
             .with_context(|| format!("task t{} is unchanged", record.id))?;
         if unlanded > 0 {

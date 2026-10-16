@@ -1,7 +1,7 @@
 // Canonical per-project configuration and legacy .gtrconfig migration.
 // ref: README.md#project-configuration
 
-use crate::model::workspace::{DefaultSessionConfig, ProjectConfig, TaskConfig};
+use crate::model::workspace::{DefaultSessionConfig, LandPolicy, ProjectConfig, TaskConfig};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -51,6 +51,17 @@ struct TasksFile {
         skip_serializing_if = "Option::is_none"
     )]
     check_timeout_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    land: Option<TaskLandFile>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct TaskLandFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy: Option<LandPolicy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -247,6 +258,19 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
             ));
         }
         config.check_timeout_secs = seconds;
+    }
+    if let Some(land) = file.land {
+        if let Some(policy) = land.policy {
+            config.land_policy = policy;
+        }
+        if let Some(remote) =
+            validate_optional_text(land.remote, "tasks.land.remote", MAX_TASK_WORD_BYTES)?
+        {
+            if remote.starts_with('-') || remote.contains(char::is_whitespace) {
+                return Err("tasks.land.remote must be one remote name".into());
+            }
+            config.land_remote = remote;
+        }
     }
     Ok(config)
 }
