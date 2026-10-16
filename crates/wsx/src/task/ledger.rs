@@ -31,7 +31,7 @@ fn attention(state: TaskState) -> u8 {
     }
 }
 
-fn clip(text: &str, chars: usize) -> String {
+pub(super) fn clip(text: &str, chars: usize) -> String {
     let line = text.lines().next().unwrap_or_default();
     if line.chars().count() <= chars {
         line.to_string()
