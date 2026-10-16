@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Real-browser check of manager mode on the page (docs/web-client.md "Tasks"), driven over the
 // Chrome DevTools Protocol. Called by `test-web-client.py --part tasks --browser`.
-//   web-tasks-check.mjs <site-url> <code> <project-id> <capture-dir> <home order> [slop-audit.js]
-// <home order> is the project names as home must list them, comma-separated.
+//   web-tasks-check.mjs <site-url> <code> <project-id> <capture-dir> <home order> [slop-audit.js] [plans-id]
+// <home order> is the project names as home must list them, comma-separated. <plans-id> is a
+// project whose #1 waits as briefed (rewritten prompt WORK keys.txt), for the brief journey.
 // The project has: #1 and #4 blocked on a tool, #2 ready with Human Verify, #3 ready to land,
 // and two pending approvals: a1 lands #3, a2 discards #4 (shown as "Approve land #3", "Approve discard #4"). Each capture is saved with the slop audit and, on a phone, the
 // mobile audit of /ui-view-standards beside it (WSX_MOBILE_AUDIT names the mobile audit).
@@ -11,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { launch } from "./web-cdp.mjs";
 
-const [siteUrl, code, projectArg, captures, homeOrder, auditPath] = process.argv.slice(2);
+const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg] = process.argv.slice(2);
 const project = Number(projectArg);
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = await launch({
   captures, prefix: "tasks-", timeoutSeconds: 240,
@@ -89,7 +90,12 @@ async function shot(name, primary) {
     fs.writeFileSync(path.join(captures, `tasks-${file}.mobile.json`), JSON.stringify(mobile, null, 1));
     if (mobile.horizontalOverflow) await fail(`${label}: the page scrolls sideways (mobile audit)`);
     if (mobile.zoomingFields.count) await fail(`${label}: a field makes iOS zoom: ${JSON.stringify(mobile.zoomingFields.items)}`);
-    if (mobile.focusedField?.startsWith("textarea.composer-field") && mobile.otherFocusableFields?.count) {
+    // ^ A field outside an open modal dialog (the task sheet) is inert, so the iOS form bar
+    // cannot reach it; the mobile audit does not know about modal dialogs.
+    const reachable = await evaluate(`(() => { const modal = document.querySelector('dialog[open]:modal');
+      return [...document.querySelectorAll('input:not([type=hidden]), textarea, select')].filter((el) => el !== document.activeElement
+        && !el.disabled && el.tabIndex >= 0 && !(modal && !modal.contains(el))).length; })()`);
+    if (mobile.focusedField?.startsWith("textarea.composer-field") && mobile.otherFocusableFields?.count && reachable) {
       await fail(`${label}: other fields can take the focus from the composer: ${JSON.stringify(mobile.otherFocusableFields.items)}`);
     }
     Object.assign(row, { contentShare: mobile.contentShare, smallTargets: mobile.smallTargets.items.map((item) => `${item.label || item.el} ${item.size.join("x")}`),
@@ -131,6 +137,8 @@ const chat = `#/p/${project}`;
 // --- Home: one row per project, needs first, then by activity; the bottom bar is Home and Settings.
 await go("#/");
 await until("document.querySelectorAll('.home-row').length >= 3", "home does not list the projects");
+// ^ The task summaries load after the projects; the order settles when they are in.
+await until(`[...document.querySelectorAll('.home-row .row-label')].map((node) => node.textContent).join() === ${JSON.stringify(homeOrder)}`, "home did not settle in the expected order", 30);
 const homeRows = await evaluate(`[...document.querySelectorAll('.home-row')].map((row) => ({ name: row.querySelector('.row-label').textContent,
   count: row.querySelector('.count')?.textContent ?? '', status: row.querySelector('.row-context').textContent, state: row.querySelector('.row-state').textContent }))`);
 if (homeRows.map((row) => row.name).join() !== homeOrder) await fail(`home lists ${JSON.stringify(homeRows)}, not ${homeOrder}`);
@@ -138,6 +146,9 @@ const uiRow = homeRows.find((row) => row.name === "ui");
 if (uiRow.count !== "6" || uiRow.status !== "#1 needs an answer" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
 const calmRow = homeRows.at(-1);
 if (calmRow.name !== "calm" || calmRow.count || calmRow.status !== "No tasks yet" || calmRow.state) await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
+const plansRow = homeRows.find((row) => row.name === "plans");
+// ^ #1 waits as briefed; #2, built by the API checks, is ready to land.
+if (plansArg && (plansRow?.status !== "Brief ready #1" || plansRow.count !== "2")) await fail(`the plans row reads ${JSON.stringify(plansRow)}`);
 // Projects with agent sessions and no task: the sessions in words, and the time of the newest.
 const sessionRows = { busy: "2 working", quiet: "claude in main done just now", gone: "claude in main exited" };
 for (const [name, status] of Object.entries(sessionRows)) {
@@ -392,6 +403,74 @@ if (await evaluate("history.state?.depth") !== 1) await fail(`a deep link sits a
 await evaluate("history.back()");
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Back after a deep link did not close the sheet");
 if (await evaluate("history.state?.depth ?? 0") !== 0) await fail(`after the sheet the chat is not the first entry: ${await evaluate("JSON.stringify(history.state)")}`);
+
+// --- A brief (docs/tasks.md "Brief"): its card with Reply and Start, a reply from the card, the
+// sheet with the sections, folded concepts and the talk-through, a reply there, then Start.
+if (plansArg) {
+  const plans = Number(plansArg);
+  const briefSheet = `#/p/${plans}/t/1`;
+  // ^ The actions above spent this device's burst (10, then one per 3 s); this part sends three.
+  await pause(9000);
+  await go(`#/p/${plans}`);
+  await until(`!!(${cardOf("#1")})`, "the brief has no card");
+  let [card] = await cards();
+  if (card[1] !== "brief ready · WORK keys.txt" || card[2] !== "Reply+Start") await fail(`the brief card reads ${JSON.stringify(card)}`);
+  if ((await trayLines())[0] !== "Brief ready #1") await fail(`the tray reads ${await trayLines()}`);
+  await shot("brief-card", ".composer-send");
+  await evaluate(`[...(${cardOf("#1")}).querySelectorAll('.need-action')].find((node) => node.textContent.trim() === 'Reply').click()`);
+  await until(`(${cardOf("#1")}).querySelector('.need-form input')?.placeholder === 'Reply to the brief'`, "Reply did not open a field");
+  await typeInto(".need-card .need-form input", "Why a file? REVISE WORK keys2.txt");
+  await evaluate("document.querySelector('.need-card .need-form').requestSubmit()");
+  await until(`(${cardOf("#1")})?.querySelector('.row-context').textContent === 'brief ready · WORK keys2.txt'`, "the reply did not revise the brief", 60);
+  // The project summary names the waiting brief in words.
+  await click(".brief-line");
+  await until("[...document.querySelectorAll('.brief-list[aria-label=\"Open tasks\"] li')].some((node) => /^#1 .*brief ready$/.test(node.textContent.trim()))", "the project summary does not name the waiting brief");
+  await click(".brief-line");
+  // The sheet: story at Brief, Start, the sections in order, concepts folded, the talk-through.
+  await go(briefSheet);
+  await until("!!document.querySelector('dialog.task-sheet[open] .task-talk')", "the brief sheet has no talk-through");
+  told = await story();
+  if (told.current !== "Brief" || told.steps !== "done,done,todo,todo,todo,skipped,todo,todo"
+    || told.next !== "What happens next: The brief is ready. Read it, reply to talk it through, or Start the build.") await fail(`the story of a brief reads ${JSON.stringify(told)}`);
+  const titles = await evaluate("[...document.querySelectorAll('.task-sheet .task-section > .label')].map((node) => node.textContent)");
+  // ^ The fixture has no open question, so that section is left out.
+  if (titles.slice(0, 7).join() !== "What a top professional would add,Raw material,Methods and tools,Independent check,Concepts to know,Rewritten prompt,Talk-through") await fail(`the brief sections are ${titles}`);
+  if (await evaluate("document.querySelector('.task-concept').open")) await fail("a concept is not folded");
+  await click(".task-concept-term");
+  if (!(await evaluate("document.querySelector('.task-concept').open"))) await fail("a concept does not unfold");
+  const talk = await text(".task-talk li");
+  if (talk.length !== 2 || !talk[0].startsWith("You") || !talk[1].startsWith("Worker, brief v2") || !talk[1].includes("answered: Why a file?")) await fail(`the talk-through reads ${JSON.stringify(talk)}`);
+  if ((await text(".task-actions button")).join() !== "Start the build") await fail(`a brief offers ${await text(".task-actions button")}`);
+  if (await sheetState() !== "brief ready · brief v2") await fail(`the brief sheet's state reads ${await sheetState()}`);
+  if (await evaluate("document.querySelector('.task-message .composer-field').placeholder") !== "Reply to the brief") await fail("the sheet's field is not a reply to the brief");
+  await shot("brief-sheet", ".composer-send");
+  await resize([390, 420, 2]);
+  await shot("brief-sheet", ".composer-send");
+  await resize([390, 844, 2]);
+  // A reply in the sheet: the answer joins the talk-through.
+  await typeInto(".task-message .composer-field", "And the shortcut? REVISE WORK keys3.txt");
+  await click(".task-message .composer-send");
+  await until("document.querySelectorAll('.task-talk li').length === 4", "the sheet's reply got no answer", 60);
+  // ^ The answer is logged just before the task is briefed again and Start comes back.
+  await until("[...document.querySelectorAll('.task-actions button')].some((node) => node.textContent === 'Start the build')", "Start did not come back after the answer", 60);
+  await click(".task-sheet .task-actions button");
+  await pause(500);
+  const startError = await text(".task-sheet .error");
+  if (startError.length) await fail(`Start failed: ${startError}`);
+  await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '').startsWith('ready')", "Start did not build the brief", 300);
+  told = await story();
+  if (told.current !== "Ready" || !told.steps.startsWith("done,done,done,done,done")) await fail(`the story after the build reads ${JSON.stringify(told)}`);
+  if ((await text(".task-fold > .timeline-head")).join() !== "Brief v3") await fail(`the built task's brief is ${await text(".task-fold > .timeline-head")}`);
+  if (await evaluate("document.querySelector('.task-fold').open")) await fail("the built task's brief is not folded");
+  await click(".timeline-head:not(.task-fold > *)");
+  const built = await text(".timeline-what");
+  if (!built.includes("Brief v3") || !built.includes("Build started from brief v3")) await fail(`the built task's timeline reads ${built}`);
+  await shot("brief-built");
+  await key("Escape", 27);
+  await until("!document.querySelector('dialog.task-sheet')", "Escape did not close the brief sheet");
+  await go(chat);
+  await until("document.querySelectorAll('.log .need-card').length >= 1", "the ui chat did not come back");
+}
 
 // --- Wide and narrow; on a wide screen the sheet is a panel at the right.
 for (const next of [[320, 568, 2], [1280, 800, 1]]) {

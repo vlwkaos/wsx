@@ -958,6 +958,8 @@ async fn task_act(
             note: input.note.filter(|note| !note.trim().is_empty()),
         },
         "land" => HostRequest::Land { skip_verify: false },
+        // ^ The owner's own start: direct actions bypass the manager and its approval.
+        "start" => HostRequest::Start,
         _ => return Err(Fault::not_found()),
     };
     act_budget(&app, &device)?;

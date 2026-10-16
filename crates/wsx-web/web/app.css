@@ -554,7 +554,18 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .task-overlaps { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); overflow-wrap: anywhere; }
 .timeline-head { display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; min-height: var(--size-control); padding-block: 0; }
 .timeline-head::-webkit-details-marker { display: none; }
-.timeline[open] .timeline-head .icon { transform: rotate(90deg); }
+.timeline[open] .timeline-head .icon, .task-fold[open] > .timeline-head .icon { transform: rotate(90deg); }
+/* The brief: lists of short items, concepts folded to their term, the talk-through as turns. */
+.task-brief-list { margin: 0; padding-inline-start: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); overflow-wrap: anywhere; }
+.task-brief-list code { font-family: var(--font-terminal); font-size: var(--font-size-sm); }
+.task-concepts { display: flex; flex-direction: column; }
+.task-concept-term { display: flex; align-items: center; gap: var(--space-1); min-height: var(--size-control); cursor: pointer; list-style: none; font-weight: var(--font-weight-medium); }
+.task-concept-term::-webkit-details-marker { display: none; }
+.task-concept[open] > .task-concept-term .icon { transform: rotate(90deg); }
+.task-concept-body { padding-inline-start: var(--space-4); }
+.task-talk { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); overflow-wrap: anywhere; }
+.task-talk li[data-from="owner"] { padding-inline-start: var(--space-3); border-inline-start: var(--border-width) solid var(--color-accent); }
+.task-talk-who { font-size: var(--font-size-sm); color: var(--color-muted); }
 .timeline-list { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); }
 .timeline-list li { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: var(--space-3); }
 .timeline-what { font-weight: var(--font-weight-medium); }

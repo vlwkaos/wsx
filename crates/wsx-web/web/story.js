@@ -16,6 +16,7 @@ const short = (commit) => (commit ?? "").slice(0, 8);
 function openWords(row) {
   switch (row.state) {
     case "blocked": return "waits for you";
+    case "briefed": return "brief ready";
     case "ready": return row.human_verify > 0 && row.verification?.result !== "pass" ? "ready to verify" : "ready to land";
     case "failed": return "failed";
     case "conflict": return "conflict while landing";
@@ -143,9 +144,9 @@ export function ProjectBrief({ project, overview, onExplained }) {
     </details>`;
 }
 
-const STEPS = ["Asked", "Working", "Checks", "Ready", "Verified", "Landed", "Deployed"];
+const STEPS = ["Asked", "Brief", "Working", "Checks", "Ready", "Verified", "Landed", "Deployed"];
 // Indexes into STEPS.
-const [ASKED, WORKING, CHECKS, READY, VERIFIED, LANDED, DEPLOYED] = [0, 1, 2, 3, 4, 5, 6];
+const [ASKED, BRIEF, WORKING, CHECKS, READY, VERIFIED, LANDED, DEPLOYED] = [0, 1, 2, 3, 4, 5, 6, 7];
 
 // Where a task is on `Asked → … → Deployed`: the last step reached, a step where it stopped
 // (with the word), and steps that do not apply.
@@ -155,7 +156,15 @@ function storySteps(detail) {
   const checksFailed = (detail.checks ?? []).some((check) => check.exit !== 0);
   const skipped = new Set(items ? [] : [VERIFIED]);
   if (!detail.deploy?.configured) skipped.add(DEPLOYED);
-  const at = (reached, stop = null, word = null) => ({ reached, stop, word, skipped });
+  // ^ A task built without a brief (--no-brief, tasks.brief: false) shows no Brief step.
+  const hidden = detail.phase === "build" && !detail.brief ? BRIEF : null;
+  const at = (reached, stop = null, word = null) => ({ reached, stop, word, skipped, hidden });
+  if (detail.phase === "brief") {
+    switch (detail.state) {
+      case "blocked": case "stopped": case "failed": case "closed": return at(ASKED, BRIEF, detail.state);
+      default: return at(BRIEF);
+    }
+  }
   switch (detail.state) {
     case "starting": case "working": return at(WORKING);
     case "checking": return at(CHECKS);
@@ -178,6 +187,15 @@ function nextWords(detail) {
   const main = detail.default_branch ?? "the default branch";
   const asked = detail.approvals?.[0];
   if (asked) return `The manager asks: ${asked.label}. Approve or Deny it above.`;
+  if (detail.phase === "brief") {
+    switch (detail.state) {
+      case "briefed": return "The brief is ready. Read it, reply to talk it through, or Start the build.";
+      case "failed": return "The worker returned no brief. Reply to ask again.";
+      case "stopped": return "The worker stopped. Reply to resume the brief.";
+      case "closed": return "Closed before the build. Nothing more happens.";
+      default: return "The worker reads the project and writes the brief. Nothing is built before you Start.";
+    }
+  }
   switch (detail.state) {
     case "starting": case "working": return "The worker is on it. Steer it now, or add a message for after this turn.";
     case "checking": return "The checks run on the new revision. The task is ready when they pass.";
@@ -211,13 +229,14 @@ const STOP_TONE = { blocked: "attention", failed: "danger", conflict: "danger" }
 
 // The task story at the top of the task: what was asked, the progress line, what happens next.
 export function TaskStory({ project, detail, onExplained }) {
-  const { reached, stop, word, skipped } = storySteps(detail);
+  const { reached, stop, word, skipped, hidden } = storySteps(detail);
   const current = stop ?? reached;
   return html`
     <section class="story" aria-label="Where this task stands">
       <p class="story-asked"><span class="muted">Asked:</span> ${detail.title || `task #${detail.id}`}</p>
       <ol class="story-steps" aria-label="Progress">
         ${STEPS.map((name, index) => {
+          if (index === hidden) return null;
           const state = index === stop ? "stopped" : skipped.has(index) && index > reached ? "skipped"
             : index <= reached ? "done" : "todo";
           return html`

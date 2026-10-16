@@ -5,7 +5,7 @@ import { isAgent, listedSessions, stateOf, useStore } from "./store.js";
 import { needTone, needWords } from "./tasks.js";
 
 // The order of need kinds, most urgent first, as the server ranks them.
-const URGENCY = { blocked: 0, conflict: 1, failed: 1, approval: 2, verify: 3, land: 4, review: 4 };
+const URGENCY = { blocked: 0, conflict: 1, failed: 1, approval: 2, brief: 2, verify: 3, land: 4, review: 4 };
 
 // Projects with needs first, by their most urgent kind and then their oldest need of that
 // kind; then the rest by their last activity (tasks, manager or agent sessions), newest first.
@@ -52,7 +52,9 @@ function statusLine({ overview, first, agents }, now) {
   if (sessions && ["blocked", "error", "exited", "working"].includes(sessions.key)) return sessions;
   if (overview?.last_reply) return { text: overview.last_reply };
   if (sessions) return sessions;
-  return { text: overview?.tasks?.length ? "Nothing needs you" : "No tasks yet" };
+  // ^ Until its tasks are read, a project's row claims nothing about them.
+  if (!overview) return { text: "Loading…" };
+  return { text: overview.tasks.length ? "Nothing needs you" : "No tasks yet" };
 }
 
 export function Home({ rail }) {
