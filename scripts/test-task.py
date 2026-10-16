@@ -396,6 +396,36 @@ def run(wsx, wsxd, work, owned):
     git('switch', '-q', 'main')
     js('task', 'close', hv)
 
+    # 17. Deploy and release records. Each runs in a temporary copy of a default-branch commit.
+    unset = cli('task', 'deploy', ok=False)
+    assert 'tasks.deploy.command is not set' in unset.stderr and 'nothing was run' in unset.stderr
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG + '''  deploy:
+    command: 'printf "%s %s\\n" "$WSX_DEPLOY_COMMIT" "$(pwd)" >> ../deploy.log'
+  release:
+    command: 'exit 3'
+''')
+    git('commit', '-q', '-am', 'deploy config')
+    assert js('task', 'deployed')['deploy']['commit'] is None
+    deployed = js('task', 'deploy')
+    tip = git('rev-parse', 'main')
+    assert deployed['commit'] == tip and deployed['exit'] == 0, deployed
+    commit_line, where = (work / 'deploy.log').read_text().split()
+    assert commit_line == tip and Path(where) != project and not Path(where).exists()
+    assert git('worktree', 'list', '--porcelain').count('worktree ') == 1
+    assert js('task', 'deployed')['deploy']['behind'] == 0
+    later = js('task', 'new', 'WORK w.txt')['id']
+    assert wait_state(later, 'ready', 'failed')['state'] == 'ready'
+    assert land(later)['state'] == 'landed'
+    js('task', 'close', later)
+    status = js('task', 'deployed')
+    assert status['deploy']['commit'] == tip and status['deploy']['behind'] == 1, status
+    failed_release = cli('task', 'release', '--json', ok=False)
+    assert json.loads(failed_release.stdout)['exit'] == 3 and 'recorded' in failed_release.stderr
+    assert js('task', 'deployed')['release'] == {'commit': None, 'failed_since': 1}
+    older = git('rev-parse', 'main~3')
+    assert js('task', 'deploy', '--commit', older)['commit'] == older
+    assert js('task', 'deployed')['deploy']['behind'] == 3
+
 
 if __name__ == '__main__':
     main()

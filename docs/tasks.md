@@ -75,6 +75,16 @@ After each result that is not blocked the host runs `tasks.checks` with `/bin/sh
 4. fast-forward the default branch: `git merge --ff-only` in the checkout that has it checked out, refused with the changed files named when that checkout has tracked changes; `git update-ref` with the old tip as guard when no checkout has it;
 5. log `landed{commit}` and set `landed`.
 
+## Deploy and release
+
+```sh
+wsx task deploy -p <project> [--commit <ref>] --json    # tasks.deploy.command
+wsx task release -p <project> [--commit <ref>] --json   # tasks.release.command
+wsx task deployed -p <project> --json
+```
+
+`deploy` and `release` make a temporary detached working copy of one commit (default: the default branch tip) beside the main checkout, run the command there with `/bin/sh -c` and `WSX_DEPLOY_COMMIT`, record `{kind, commit, exit, unix_ms, duration_ms}` in `tasks/<project-id>/deploys.jsonl`, then `cargo clean` and remove the copy. They never run in a task's working copy. With `--json` the command's output goes to stderr. `deployed` gives, per kind, the last successful commit, how many default-branch commits it lacks (`behind`) and how many attempts failed since (`failed_since`).
+
 ## Close
 
 `close` refuses while `wsx/t<n>` has commits that are not on the default branch, unless `--discard` or the task is `landed`. It asks the host to close, waits for it to exit, removes the sessions of the working copy, runs `cargo clean` when the copy has `Cargo.toml`, and removes the worktree, folder and branch. `--discard` also deletes `refs/wsx/task/<n>/*`. The task folder stays as history (`list --all`).
@@ -87,6 +97,8 @@ tasks:
   checks: ["cargo fmt --check"]
   checkTimeoutSeconds: 1200
   land: { policy: local-merge, remote: origin }   # or policy: pr
+  deploy: { command: "sh deploy.sh" }
+  release: { command: "sh release.sh" }
 ```
 
 Defaults: adapter `claude`, model `sonnet`, tools `Read Glob Grep Edit Write` plus `Bash(git add|commit|status|diff|log:*)`, no checks. Up to 64 tools and 64 checks; `checkTimeoutSeconds` is 1..86400; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.

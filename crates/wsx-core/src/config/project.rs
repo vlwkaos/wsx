@@ -53,6 +53,16 @@ struct TasksFile {
     check_timeout_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     land: Option<TaskLandFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deploy: Option<TaskCommandFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    release: Option<TaskCommandFile>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct TaskCommandFile {
+    command: String,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -259,6 +269,28 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
         config.check_timeout_secs = seconds;
     }
+    config.deploy_command = file
+        .deploy
+        .map(|deploy| {
+            validate_optional_text(
+                Some(deploy.command),
+                "tasks.deploy.command",
+                MAX_DEFAULT_COMMAND_BYTES,
+            )
+        })
+        .transpose()?
+        .flatten();
+    config.release_command = file
+        .release
+        .map(|release| {
+            validate_optional_text(
+                Some(release.command),
+                "tasks.release.command",
+                MAX_DEFAULT_COMMAND_BYTES,
+            )
+        })
+        .transpose()?
+        .flatten();
     if let Some(land) = file.land {
         if let Some(policy) = land.policy {
             config.land_policy = policy;
