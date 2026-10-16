@@ -2389,6 +2389,7 @@ TASK_CONFIG = '''tasks:
   checks:
     - "test ! -e broken.txt"
   manager: { model: fake-manager }
+  deploy: { command: "true" }
 '''
 
 
@@ -2479,6 +2480,8 @@ def task_journey(args):
             js('task', 'say', 'RUN wsx task land 3 -p ui --json\nRUN wsx task close 4 --discard -p ui --json', '-p', 'ui')
             wait(lambda: len(json.loads(cli('task', 'ledger', '-p', 'ui').stdout)['approvals'] or []) == 2,
                  'approval requests in ui', timeout=30)
+            # A deploy of the default branch tip: the brief says it is up to date until a task lands.
+            assert js('task', 'deploy', '-p', 'ui')['exit'] == 0
 
         push = start(work, [node, str(ROOT / 'scripts/web-push-fixture.mjs'), str(work / 'push.jsonl')],
                      stdout=subprocess.PIPE, text=True)
@@ -2642,9 +2645,15 @@ digest_max_seconds = 6
         assert steady(viewer, 'GET', '/api/tasks/%d' % ids['ui'])[0] == 404
         assert steady(viewer, 'GET', '/api/tasks/%d/t/1' % ids['ui'])[0] == 404
         assert steady(viewer, 'GET', '/api/tasks/%d/t/1' % demo)[1]['actions'] == []
-        for route in ('/api/tasks', '/api/tasks/%d' % demo, '/api/tasks/%d/chat' % demo):
+        # The brief is the ledger the manager reads; the page writes it in words.
+        brief = steady(owner, 'GET', '/api/tasks/%d/brief' % demo)[1]
+        assert brief['main']['branch'] == 'main' and isinstance(brief['main']['changed_files'], int), brief['main']
+        assert brief['deploys']['deploy']['configured'] and not brief['deploys']['release']['configured'], brief['deploys']
+        assert [row['id'] for row in brief['open']] == [row['id'] for row in js('task', 'ledger', '-p', 'demo')['open']]
+        assert steady(viewer, 'GET', '/api/tasks/%d/brief' % ids['ui'])[0] == 404
+        for route in ('/api/tasks', '/api/tasks/%d' % demo, '/api/tasks/%d/chat' % demo, '/api/tasks/%d/brief' % demo):
             assert steady(plain, 'GET', route)[0] == 403, route
-        ok('refusals: task_act and task_view per site, ungranted project 404, actions hidden without task_act')
+        ok('brief: the ledger with deploys and the main checkout; refusals: task_act and task_view per site, ungranted project 404, actions hidden without task_act')
         if args.browser:
             args.captures.mkdir(parents=True, exist_ok=True)
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'

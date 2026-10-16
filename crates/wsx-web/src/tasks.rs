@@ -15,9 +15,10 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use wsx_core::config::project::load_task_config;
 use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
-    self, call_host, call_socket,
+    self, call_host, call_socket, copy, ledger,
     manager::{pending_approvals, ApprovalLine, ManagerEvent, ManagerRequest, ManagerResponse},
     owner,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
@@ -229,6 +230,34 @@ fn decisions(lines: &[ApprovalLine]) -> Value {
     json!(rows)
 }
 
+/// The project brief: the ledger the manager reads (open and recent tasks, deploys and
+/// how far behind, the main checkout). The page writes it in words.
+pub fn brief(scope: &Scope) -> Outcome<Value> {
+    ledger::build(&scope.name, &scope.path).map_err(internal)
+}
+
+/// Whether the project deploys, and for a landed task whether the last deploy has its
+/// commit, so the task story can end at Deployed. `null` when the config does not parse.
+fn deployed(scope: &Scope, landed: Option<&str>) -> Value {
+    let Ok(settings) = load_task_config(&scope.path) else {
+        return Value::Null;
+    };
+    if settings.deploy_command.is_none() {
+        return json!({ "configured": false });
+    }
+    let Ok(status) = ledger::deploy_status(&scope.name, &scope.path, &settings, false) else {
+        return json!({ "configured": true });
+    };
+    let deploy = &status["deploy"];
+    let has_landed = match (landed, deploy["commit"].as_str()) {
+        (Some(landed), Some(commit)) => copy::unlanded_commits(&scope.path, landed, commit)
+            .ok()
+            .map(|count| count == 0),
+        _ => Some(false),
+    };
+    json!({ "configured": true, "deployed": has_landed, "behind": deploy["behind"] })
+}
+
 /// One task: its report, timeline, overlaps and the actions its state allows.
 pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     let dir = open_task(scope, task)?;
@@ -267,6 +296,12 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
         json!([])
     };
     summary["verification"] = view::verification_value(&log, record.revision);
+    let landed = log.iter().rev().find_map(|entry| match &entry.event {
+        LogEvent::Landed { commit } => Some(commit.clone()),
+        _ => None,
+    });
+    summary["deploy"] = deployed(scope, landed.as_deref());
+    summary["landed_commit"] = json!(landed);
     summary["approvals"] = json!(approvals
         .iter()
         .map(|line| {

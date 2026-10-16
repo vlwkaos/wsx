@@ -506,6 +506,35 @@ body:is([data-short], [data-keyboard]) .manager .needs:not(:focus-within) :is(.r
 .app:not([data-wide]) .task-steer { margin-left: auto; }
 .app:not([data-wide]) .task-message .task-steer + .composer-send { margin-left: var(--space-2); }
 
+/* Hook: .brief, .story — show-me context: where the project and a task stand, in words
+   (docs/web-client.md "Project brief and task story"). Folded, the brief is one line. */
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.brief { flex: 0 0 auto; max-height: calc(100% * var(--strip-share)); overflow-y: auto; overscroll-behavior: contain; border-bottom: var(--border-width) solid var(--color-hairline); font-size: var(--font-size-sm); }
+.brief-line {
+  display: flex; align-items: center; gap: var(--space-1); min-height: var(--size-control); padding: 0 var(--column-inset, var(--space-4));
+  cursor: pointer; list-style: none; color: var(--color-muted);
+}
+.brief-line::-webkit-details-marker { display: none; }
+.brief[open] > .brief-line .icon { transform: rotate(90deg); }
+.brief-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brief-body { display: flex; flex-direction: column; gap: var(--space-2); padding: 0 var(--column-inset, var(--space-4)) var(--space-3); overflow-wrap: anywhere; }
+.brief-head { color: var(--color-muted); }
+.brief-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.brief-list li { display: flex; justify-content: space-between; gap: var(--space-3); }
+.brief-list a { min-width: 0; text-decoration: none; }
+.brief-state { flex: 0 0 auto; color: var(--color-muted); }
+.brief-actions, .story-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-3); }
+.story-explain { min-height: var(--size-control); padding: 0 var(--space-3); font-size: var(--font-size-sm); }
+.story { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere; }
+.story-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; row-gap: var(--space-1); font-size: var(--font-size-sm); }
+.story-steps li { display: inline-flex; align-items: baseline; color: var(--color-faint); }
+.story-steps li + li::before { content: "→"; padding: 0 var(--space-1); color: var(--color-faint); }
+.story-steps li[data-step="done"] { color: var(--color-muted); }
+.story-steps li[data-step="skipped"] .story-name { text-decoration: line-through; }
+.story-steps li[aria-current="step"] { font-weight: var(--font-weight-strong); }
+.story-steps li[aria-current="step"]:not([data-tone]) { color: var(--color-text); }
+.story-steps li[data-step="stopped"] { font-weight: var(--font-weight-strong); }
+
 /* Hook: .code, .crumbs — a project's files. */
 .crumbs { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-1); overflow-x: auto; scrollbar-width: none; white-space: nowrap; }
 .crumb-mark { color: var(--color-faint); }

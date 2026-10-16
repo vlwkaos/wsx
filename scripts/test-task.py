@@ -499,7 +499,7 @@ def run(wsx, wsxd, work, owned):
     assert status['deploy']['commit'] == tip and status['deploy']['behind'] == 1, status
     failed_release = cli('task', 'release', '--json', ok=False)
     assert json.loads(failed_release.stdout)['exit'] == 3 and 'recorded' in failed_release.stderr
-    assert js('task', 'deployed')['release'] == {'commit': None, 'failed_since': 1}
+    assert js('task', 'deployed')['release'] == {'commit': None, 'failed_since': 1, 'configured': True}
     older = git('rev-parse', 'main~3')
     assert js('task', 'deploy', '--commit', older)['commit'] == older
     assert js('task', 'deployed')['deploy']['behind'] == 3
