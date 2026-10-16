@@ -889,14 +889,7 @@ impl Host {
     }
 
     fn say(&self, text: &str) {
-        let elapsed = self.started.elapsed().as_secs();
-        println!(
-            "{:02}:{:02}:{:02} {}",
-            elapsed / 3600,
-            elapsed / 60 % 60,
-            elapsed % 60,
-            text
-        );
+        hosting::progress(self.started, text);
     }
 
     /// Show the task state in wsx lists through the existing agent report path.

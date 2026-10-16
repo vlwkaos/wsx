@@ -9,7 +9,10 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use std::path::Path;
 use wsx_core::config::project::load_task_config;
-use wsx_core::task::{store::RESULT_FILE, verification, TaskRecord, TaskState};
+use wsx_core::task::{
+    store::{TaskDir, RESULT_FILE},
+    verification, TaskRecord, TaskState,
+};
 
 /// The whole ledger fits in this many bytes of JSON.
 pub(super) const MAX_LEDGER_BYTES: usize = 16 * 1024;
@@ -40,6 +43,14 @@ pub(super) fn clip(text: &str, chars: usize) -> String {
     }
 }
 
+/// A task's `result.json`, or none when it is missing or unreadable.
+pub(super) fn read_result(dir: &TaskDir) -> Option<Value> {
+    dir.read_file(RESULT_FILE, MAX_RESULT_READ_BYTES)
+        .ok()
+        .flatten()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
 pub(super) fn ledger(project: Option<&str>) -> Result<()> {
     let (project_name, main) = project_entry(project)?;
     print_json(&build(&project_name, &main)?)
@@ -65,11 +76,7 @@ pub(super) fn build(project_name: &str, main: &Path) -> Result<Value> {
             ));
             continue;
         }
-        let result = dir
-            .read_file(RESULT_FILE, MAX_RESULT_READ_BYTES)
-            .ok()
-            .flatten()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        let result = read_result(dir);
         let log = dir.read_log().unwrap_or_default();
         let verdict = verification(&log, record.revision).map(|entry| {
             let mut value = serde_json::to_value(&entry.event).unwrap_or_default();

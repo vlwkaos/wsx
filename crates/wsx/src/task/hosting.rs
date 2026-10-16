@@ -113,3 +113,14 @@ pub fn report_pane(
         Err(error) => Some(format!("agent report failed: {error:#}")),
     }
 }
+
+/// One line of a host's progress view: time since the host started, then the text.
+pub fn progress(started: std::time::Instant, text: &str) {
+    let elapsed = started.elapsed().as_secs();
+    println!(
+        "{:02}:{:02}:{:02} {text}",
+        elapsed / 3600,
+        elapsed / 60 % 60,
+        elapsed % 60
+    );
+}
