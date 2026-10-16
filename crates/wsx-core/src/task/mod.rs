@@ -6,6 +6,7 @@
 //! and after it has exited.
 
 pub mod copy;
+pub mod report;
 pub mod store;
 
 use serde::{Deserialize, Serialize};
