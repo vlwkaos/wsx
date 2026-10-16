@@ -204,6 +204,23 @@ await until("!!document.querySelector('.brief-text')", "the project shows no bri
 const folded = (await text(".brief-text"))[0];
 if (folded !== "4 open · 6 need you · deploy up to date") await fail(`the folded brief reads ${folded}`);
 await shot("project", ".composer-send");
+// --- Jump to latest on the manager chat: the brief and the tray load above the log after it
+// scrolled to its end and must not leave the end hidden; a log scrolled up shows the button.
+const atEnd = "(() => { const log = document.querySelector('.log'); return log.scrollHeight - log.scrollTop - log.clientHeight < 2; })()";
+const scrollable = await evaluate("(() => { const log = document.querySelector('.log'); return log.scrollHeight - log.clientHeight; })()");
+if (scrollable < 100) await fail(`the manager chat is too short to scroll (${scrollable} px)`);
+await until(atEnd, "the manager chat did not open at its end");
+if (await count(".jump")) await fail("the jump button shows on a chat at its end");
+await click(".brief-line");
+await pause(300);
+if (!await evaluate(atEnd) || await count(".jump")) await fail("unfolding the brief took the manager chat off its end");
+await click(".brief-line");
+await pause(300);
+if (!await evaluate(atEnd) || await count(".jump")) await fail("folding the brief took the manager chat off its end");
+await evaluate("document.querySelector('.log').scrollTop = 0");
+await until("!!document.querySelector('.jump')", "no jump button after scrolling the manager chat up");
+await click(".jump");
+await until(`!document.querySelector('.jump') && ${atEnd}`, "Jump to latest did not go to the end of the manager chat");
 await click(".brief-line");
 const openLines = await text(".brief-list[aria-label='Open tasks'] li");
 // ^ The title and the state are two flex items, so their texts meet without a space.
