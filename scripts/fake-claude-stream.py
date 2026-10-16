@@ -13,6 +13,12 @@ Each user message is a small script of words:
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
 conflict with the line "resolved".
 Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE.
+
+Started with the manager's instructions it is a scripted manager instead: per turn
+  RUN <command>  run that shell command (the wsx task commands it names) and quote its output
+  STATUS         answer from `wsx task ledger`
+  SLOW           take about 3 s
+  BIG            report a 200k-token context, so the host rotates the conversation
 """
 import json
 import os
@@ -54,12 +60,33 @@ def parse_args(argv):
     return options, allowed
 
 
+def manager_turn(text, project):
+    replies = []
+    if 'SLOW' in text.split():
+        time.sleep(3)
+    for line in text.splitlines():
+        if line.startswith('RUN '):
+            done = subprocess.run(line[4:], shell=True, capture_output=True, text=True)
+            replies.append('ran: %s -> %d %s' % (line[4:], done.returncode, (done.stdout + done.stderr).strip()[:300]))
+    if 'STATUS' in text.split():
+        ledger = json.loads(subprocess.run(['wsx', 'task', 'ledger', '-p', project], capture_output=True,
+                                           text=True, check=True).stdout)
+        rows = ['#%d %s' % (row['id'], row['state']) for row in ledger['open']]
+        replies.append('open: ' + (', '.join(rows) if rows else 'none'))
+    if text.startswith('Events'):
+        replies.append('noted events')
+    return '\n'.join(replies) or 'ok'
+
+
 def main():
     options, allowed = parse_args(sys.argv[1:])
+    instructions = options.get('--append-system-prompt', '')
+    project = instructions.split('wsx project ')[1].split('.')[0] if 'You are the manager' in instructions else None
     session = options.get('--resume') or options.get('--session-id')
     trace({'launch': True, 'pid': os.getpid(), 'session': session, 'resume': '--resume' in options,
            'allowed': allowed, 'schema': '--json-schema' in options, 'model': options.get('--model'),
            'wsx_env': sorted(name for name in os.environ if name.startswith('WSX_')),
+           'manager': project is not None, 'actor': os.environ.get('WSX_TASK_ACTOR'),
            'cwd': os.getcwd()})
     signal.signal(signal.SIGINT, lambda *_: (trace({'interrupted': True}), sys.exit(130)))
     emit({'type': 'system', 'subtype': 'init', 'session_id': session})
@@ -69,7 +96,14 @@ def main():
         if not line:
             return
         text = json.loads(line)['message']['content']
-        trace({'message': text, 'session': session})
+        trace({'message': text, 'session': session, 'manager': project is not None})
+        if project is not None:
+            answer = manager_turn(text, project)
+            context = 200000 if 'BIG' in text.split() else 5000
+            emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': answer,
+                  'session_id': session, 'permission_denials': [],
+                  'usage': {'input_tokens': context, 'output_tokens': 10}, 'total_cost_usd': 0.001})
+            continue
         words = text.split()
         if 'HUGE' in words:
             emit({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'x' * (5 << 20)}]}})

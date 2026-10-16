@@ -6,6 +6,7 @@
 //! and after it has exited.
 
 pub mod copy;
+pub mod manager;
 pub mod report;
 pub mod store;
 
@@ -235,6 +236,7 @@ pub struct TurnUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
     pub cost_micro_usd: u64,
 }
 
@@ -309,12 +311,21 @@ pub struct HostResponse {
 
 const MAX_HOST_RESPONSE_BYTES: u64 = 64 * 1024;
 
-/// Send one request to a running host. An error means no host answered.
+/// Send one request to a running task host. An error means no host answered.
 pub fn call_host(
     socket: &std::path::Path,
     request: &HostRequest,
     timeout: std::time::Duration,
 ) -> anyhow::Result<HostResponse> {
+    call_socket(socket, request, timeout)
+}
+
+/// One JSON request and one JSON answer on a host's owner-only socket.
+pub fn call_socket<Request: Serialize, Response: serde::de::DeserializeOwned>(
+    socket: &std::path::Path,
+    request: &Request,
+    timeout: std::time::Duration,
+) -> anyhow::Result<Response> {
     use anyhow::Context;
     use std::io::{Read, Write};
     let mut stream = std::os::unix::net::UnixStream::connect(socket)

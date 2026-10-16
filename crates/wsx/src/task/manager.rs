@@ -1,0 +1,354 @@
+//! `wsx task manager-host`: one manager agent per project in a hidden session in the
+//! main checkout. It never edits files; it answers from the ledger and acts through
+//! `wsx task` commands. ref: docs/tasks.md "Manager"
+
+use super::claude::{new_session_id, AgentLine, ClaudeAgent, Launch, TurnResult};
+use super::hosting;
+use anyhow::{Context, Result};
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::{Duration, Instant};
+use wsx_core::config::project::load_task_config;
+use wsx_core::runtime;
+use wsx_core::task::manager::{
+    Author, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState,
+};
+use wsx_core::task::store::ManagerDir;
+use wsx_core::task::MAX_MESSAGE_BYTES;
+
+pub const MANAGER_TOOLS: [&str; 4] = ["Read", "Grep", "Glob", "Bash(wsx task:*)"];
+/// Variables the manager's own `wsx task` commands need to reach this project's state
+/// and daemon. Pane identity (`WSX_PANE_ID`, the generation) is never passed on.
+const MANAGER_ENV: [&str; 5] = [
+    "XDG_STATE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "WSX_SOCKET",
+    "WSX_DAEMON_BIN",
+];
+pub const ACTOR_ENV: &str = "WSX_TASK_ACTOR";
+const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
+
+pub(super) enum Event {
+    Request(ManagerRequest, Sender<ManagerResponse>),
+    Agent(u64, Option<AgentLine>),
+    Tick,
+}
+
+struct Manager {
+    dir: ManagerDir,
+    project: String,
+    main: PathBuf,
+    model: String,
+    rotate_tokens: u64,
+    state: ManagerState,
+    events: Sender<Event>,
+    agent: Option<ClaudeAgent>,
+    generation: u64,
+    /// Logged messages not yet delivered, oldest first.
+    queue: VecDeque<(u64, Author, String)>,
+    /// The ids of the messages in the running turn.
+    turn: Option<Vec<u64>>,
+    pane: Option<u64>,
+    started: Instant,
+}
+
+fn instructions(project: &str) -> String {
+    format!(
+        "You are the manager of the wsx project {project}. You never edit files and never \
+         run builds or tests; workers do that in their own tasks. Start every turn with \
+         `wsx task ledger -p {project}`: it is the source of truth, not your memory. \
+         Messages headed 'Owner' come from the owner; messages headed 'Events' are written \
+         by wsx. For each owner message choose one: answer it, `wsx task add`, \
+         `wsx task steer`, `wsx task new`, `wsx task verify` or `wsx task land`, always with \
+         `-p {project} --json`. When a command says the owner was asked to approve, tell the \
+         owner and do not retry it. Keep turns short. Name tasks as #<n>."
+    )
+}
+
+pub fn run(project_id: &str) -> Result<()> {
+    let (project, main) = super::project_by_id(project_id)?;
+    let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
+    let dir = ManagerDir::open(project_id)?;
+    let listener = hosting::bind(&dir.socket_path())?;
+    let state = dir.read_state()?;
+    let (events, receiver) = channel();
+    let mut manager = Manager {
+        dir,
+        project,
+        main,
+        model: settings.manager_model,
+        rotate_tokens: settings.manager_rotate_tokens,
+        state,
+        events: events.clone(),
+        agent: None,
+        generation: 0,
+        queue: VecDeque::new(),
+        turn: None,
+        pane: hosting::own_pane(),
+        started: Instant::now(),
+    };
+    let requests = events.clone();
+    std::thread::spawn(move || {
+        hosting::serve(
+            listener,
+            requests,
+            Event::Request,
+            MAX_REQUEST_BYTES,
+            Duration::from_secs(15),
+        )
+    });
+    std::thread::spawn(move || {
+        while events.send(Event::Tick).is_ok() {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
+    manager.say(&format!(
+        "manager of {} in {}",
+        manager.project,
+        manager.main.display()
+    ));
+    manager.report(runtime::AgentState::Idle);
+    manager.run(receiver)
+}
+
+impl Manager {
+    fn run(&mut self, receiver: Receiver<Event>) -> Result<()> {
+        while let Ok(event) = receiver.recv() {
+            match event {
+                Event::Request(request, reply) => {
+                    let _ = reply.send(self.handle(request));
+                }
+                Event::Agent(generation, line) if generation == self.generation => {
+                    self.on_agent(line)
+                }
+                Event::Agent(..) => {}
+                Event::Tick => {}
+            }
+            if self.turn.is_none() {
+                self.next_turn();
+            }
+        }
+        Ok(())
+    }
+
+    fn handle(&mut self, request: ManagerRequest) -> ManagerResponse {
+        let busy = self.turn.is_some();
+        match request {
+            ManagerRequest::Status => ManagerResponse {
+                ok: true,
+                id: None,
+                busy,
+                message: format!("{} message(s) waiting", self.queue.len()),
+            },
+            ManagerRequest::Say { text } => match self.accept(Author::Owner, text) {
+                Ok(id) => ManagerResponse {
+                    ok: true,
+                    id: Some(id),
+                    busy,
+                    message: if busy {
+                        "queued until the manager's turn ends".into()
+                    } else {
+                        "sent to the manager".into()
+                    },
+                },
+                Err(error) => ManagerResponse {
+                    ok: false,
+                    id: None,
+                    busy,
+                    message: format!("{error:#}"),
+                },
+            },
+        }
+    }
+
+    /// Log a message and queue it; owner messages go before events.
+    fn accept(&mut self, from: Author, text: String) -> Result<u64> {
+        if text.trim().is_empty() {
+            anyhow::bail!("the message is empty");
+        }
+        if text.len() > MAX_MESSAGE_BYTES {
+            anyhow::bail!("the message is larger than the limit of {MAX_MESSAGE_BYTES} bytes");
+        }
+        let id = self.next_id();
+        self.dir.append(ManagerEvent::Message {
+            id,
+            from,
+            text: text.clone(),
+        })?;
+        let at = match from {
+            Author::Owner => self
+                .queue
+                .iter()
+                .position(|(_, author, _)| *author == Author::Events)
+                .unwrap_or(self.queue.len()),
+            Author::Events => self.queue.len(),
+        };
+        self.queue.insert(at, (id, from, text));
+        Ok(id)
+    }
+
+    fn next_id(&mut self) -> u64 {
+        self.state.next_id += 1;
+        self.save();
+        self.state.next_id
+    }
+
+    /// Start a turn with every waiting owner message, or else with the waiting events.
+    fn next_turn(&mut self) {
+        let Some((_, first, _)) = self.queue.front() else {
+            return;
+        };
+        let first = *first;
+        let mut ids = Vec::new();
+        let mut text = String::new();
+        while self
+            .queue
+            .front()
+            .is_some_and(|(_, author, _)| *author == first)
+        {
+            let (id, author, body) = self.queue.pop_front().expect("checked above");
+            let heading = match author {
+                Author::Owner => "Owner",
+                Author::Events => "Events",
+            };
+            text.push_str(&format!("{heading} (message {id}):\n{body}\n\n"));
+            ids.push(id);
+        }
+        if let Err(error) = self.send_turn(text.trim_end()) {
+            self.say(&format!("cannot start the manager agent: {error:#}"));
+            self.log(ManagerEvent::Stopped {
+                reason: format!("cannot start the manager agent: {error:#}"),
+            });
+            return;
+        }
+        self.log(ManagerEvent::Delivered { ids: ids.clone() });
+        self.turn = Some(ids);
+        self.report(runtime::AgentState::Working);
+    }
+
+    fn send_turn(&mut self, text: &str) -> Result<()> {
+        if self.agent.is_none() {
+            let (session, resume) = match &self.state.agent_session {
+                Some(session) => (session.clone(), true),
+                None => (new_session_id()?, false),
+            };
+            self.generation += 1;
+            let generation = self.generation;
+            self.agent = Some(ClaudeAgent::spawn(
+                &self.launch()?,
+                &session,
+                resume,
+                self.events.clone(),
+                move |line| Event::Agent(generation, line),
+            )?);
+        }
+        self.agent
+            .as_mut()
+            .context("the manager agent is not running")?
+            .send(text)
+    }
+
+    fn launch(&self) -> Result<Launch> {
+        let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+        let mut env: Vec<(String, std::ffi::OsString)> = MANAGER_ENV
+            .iter()
+            .filter_map(|name| std::env::var_os(name).map(|value| (name.to_string(), value)))
+            .collect();
+        env.push((ACTOR_ENV.into(), "manager".into()));
+        Ok(Launch {
+            cwd: self.main.clone(),
+            model: self.model.clone(),
+            tools: MANAGER_TOOLS.map(String::from).to_vec(),
+            schema: None,
+            instructions: instructions(&self.project),
+            env,
+            path_prefix: exe.parent().map(Path::to_path_buf),
+        })
+    }
+
+    fn on_agent(&mut self, line: Option<AgentLine>) {
+        match line {
+            Some(AgentLine::Init(session)) => {
+                if self.state.agent_session.as_deref() != Some(&session) {
+                    self.state.agent_session = Some(session);
+                    self.save();
+                }
+            }
+            Some(AgentLine::Progress(text)) => {
+                self.say(&text);
+                self.log(ManagerEvent::Agent { text });
+            }
+            Some(AgentLine::Result(result)) => self.on_result(result),
+            None => {
+                self.agent = None;
+                if self.turn.take().is_some() {
+                    self.log(ManagerEvent::Stopped {
+                        reason: "the manager agent ended during a turn".into(),
+                    });
+                    self.report(runtime::AgentState::Error);
+                }
+            }
+        }
+    }
+
+    fn on_result(&mut self, result: TurnResult) {
+        let to = self.turn.take().unwrap_or_default();
+        let id = self.next_id();
+        let context = result.usage.input_tokens
+            + result.usage.cache_read_tokens
+            + result.usage.cache_creation_tokens;
+        self.say(&format!(
+            "reply {id}: {}",
+            result.text.lines().next().unwrap_or_default()
+        ));
+        self.log(ManagerEvent::Reply {
+            id,
+            to,
+            text: result.text,
+            usage: Some(result.usage),
+        });
+        if context > self.rotate_tokens {
+            // ^ The ledger carries the state; a fresh conversation loses nothing it needs.
+            if let Some(agent) = self.agent.take() {
+                agent.stop();
+            }
+            self.state.agent_session = None;
+            self.save();
+            self.log(ManagerEvent::Rotated { tokens: context });
+        }
+        self.report(runtime::AgentState::Done);
+    }
+
+    fn save(&mut self) {
+        if let Err(error) = self.dir.write_state(&self.state) {
+            self.say(&format!("cannot write the manager state: {error:#}"));
+        }
+    }
+
+    fn log(&self, event: ManagerEvent) {
+        if let Err(error) = self.dir.append(event) {
+            self.say(&format!("cannot append to the manager log: {error:#}"));
+        }
+    }
+
+    fn say(&self, text: &str) {
+        let elapsed = self.started.elapsed().as_secs();
+        println!(
+            "{:02}:{:02}:{:02} {}",
+            elapsed / 3600,
+            elapsed / 60 % 60,
+            elapsed % 60,
+            text
+        );
+    }
+
+    fn report(&self, state: runtime::AgentState) {
+        if let Some(pane) = self.pane {
+            if let Some(problem) = hosting::report_pane(pane, "manager", state, true) {
+                self.say(&problem);
+            }
+        }
+    }
+}

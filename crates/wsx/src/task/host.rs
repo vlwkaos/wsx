@@ -4,12 +4,10 @@
 //! One main loop owns the task files. The socket thread and the agent reader
 //! send to it over one channel; it answers each request after acting on it.
 
-use super::claude::{new_session_id, AgentLine, ClaudeAgent, TurnResult};
+use super::claude::{new_session_id, AgentLine, ClaudeAgent, Launch, TurnResult};
+use super::hosting;
 use anyhow::{bail, Context, Result};
 use std::collections::VecDeque;
-use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -26,14 +24,11 @@ use wsx_core::task::{
 };
 
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const CHECK_OUTPUT_BYTES: usize = 8 * 1024;
 const MAX_RESULT_BYTES: usize = 256 * 1024;
 const MAX_TOOL_BYTES: usize = 256;
 /// The worker rebases a conflicted landing itself and needs this rule for it.
 const REBASE_TOOL: &str = "Bash(git rebase:*)";
-/// `sun_path` holds 104 bytes on macOS, including the final NUL.
-const MAX_SOCKET_PATH_BYTES: usize = 103;
 
 enum Event {
     Request(HostRequest, Sender<HostResponse>),
@@ -76,16 +71,8 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         bail!("task t{id} is closed");
     }
     let socket = dir.socket_path();
-    if socket.as_os_str().len() > MAX_SOCKET_PATH_BYTES {
-        bail!(
-            "socket path {} is longer than {MAX_SOCKET_PATH_BYTES} bytes; use a shorter XDG_STATE_HOME",
-            socket.display()
-        );
-    }
-    let listener = bind(&socket)?;
-    record.pane_id = std::env::var(runtime::WSX_PANE_ID_ENV)
-        .ok()
-        .and_then(|value| value.parse().ok());
+    let listener = hosting::bind(&socket)?;
+    record.pane_id = hosting::own_pane();
     let (events, receiver) = channel();
     let mut host = Host {
         dir,
@@ -102,7 +89,16 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         landing: None,
         started: Instant::now(),
     };
-    std::thread::spawn(move || serve(listener, events));
+    // ^ A pr landing pushes and calls gh, each bounded by 120 s.
+    std::thread::spawn(move || {
+        hosting::serve(
+            listener,
+            events,
+            Event::Request,
+            MAX_REQUEST_BYTES,
+            Duration::from_secs(330),
+        )
+    });
     let result = host.run(receiver);
     if let Some(agent) = host.agent.take() {
         agent.stop();
@@ -110,51 +106,6 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
     let _ = std::fs::remove_file(&socket);
     host.report_agent(false);
     result
-}
-
-fn bind(socket: &Path) -> Result<UnixListener> {
-    if socket.exists() {
-        if UnixStream::connect(socket).is_ok() {
-            bail!("another host already serves {}", socket.display());
-        }
-        std::fs::remove_file(socket)
-            .with_context(|| format!("cannot remove stale {}", socket.display()))?;
-    }
-    let listener =
-        UnixListener::bind(socket).with_context(|| format!("cannot bind {}", socket.display()))?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
-    Ok(listener)
-}
-
-fn serve(listener: UnixListener, events: Sender<Event>) {
-    for stream in listener.incoming() {
-        let Ok(mut stream) = stream else { continue };
-        let _ = stream.set_read_timeout(Some(REQUEST_TIMEOUT));
-        let _ = stream.set_write_timeout(Some(REQUEST_TIMEOUT));
-        let mut bytes = Vec::new();
-        if (&mut stream)
-            .take(MAX_REQUEST_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .is_err()
-            || bytes.len() as u64 > MAX_REQUEST_BYTES
-        {
-            continue;
-        }
-        let Ok(request) = serde_json::from_slice::<HostRequest>(&bytes) else {
-            continue;
-        };
-        let (reply, answer) = channel();
-        if events.send(Event::Request(request, reply)).is_err() {
-            return;
-        }
-        // ^ A pr landing pushes and calls gh, each bounded by 120 s.
-        if let Ok(response) = answer.recv_timeout(Duration::from_secs(330)) {
-            if let Ok(mut line) = serde_json::to_vec(&response) {
-                line.push(b'\n');
-                let _ = stream.write_all(&line);
-            }
-        }
-    }
 }
 
 impl Host {
@@ -337,7 +288,7 @@ impl Host {
             let generation = self.generation;
             self.stop_requested = false;
             self.agent = Some(ClaudeAgent::spawn(
-                &self.record,
+                &Launch::worker(&self.record),
                 &session,
                 resume,
                 self.events.clone(),
@@ -963,25 +914,8 @@ impl Host {
             TaskState::Failed => runtime::AgentState::Error,
             TaskState::Stopped | TaskState::Closed => runtime::AgentState::Idle,
         };
-        let request = runtime::Request::AgentReport {
-            pane_id: runtime::PaneId(pane_id),
-            runtime_generation: std::env::var(runtime::WSX_RUNTIME_GENERATION_ENV).ok(),
-            provider: "task".into(),
-            state,
-            attached,
-            presence_id: None,
-            conversation_id: None,
-            session_ref: None,
-            wake_token: None,
-            capabilities: runtime::AgentCapabilities::default(),
-        };
-        match runtime::Client::new(runtime::default_socket_path()).call(&request) {
-            Ok(runtime::Response::Ack { .. }) => {}
-            Ok(runtime::Response::Error(error)) => {
-                self.say(&format!("agent report refused: {}", error.message))
-            }
-            Ok(_) => {}
-            Err(error) => self.say(&format!("agent report failed: {error:#}")),
+        if let Some(problem) = hosting::report_pane(pane_id, "task", state, attached) {
+            self.say(&problem);
         }
     }
 }

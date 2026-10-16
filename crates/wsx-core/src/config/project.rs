@@ -17,6 +17,8 @@ const MAX_DEFAULT_COMMAND_BYTES: usize = 16 * 1024;
 const MAX_TASK_WORD_BYTES: usize = 256;
 const MAX_TASK_LIST_ITEMS: usize = 64;
 const MAX_CHECK_TIMEOUT_SECS: u64 = 24 * 60 * 60;
+const MIN_ROTATE_TOKENS: u64 = 1_000;
+const MAX_ROTATE_TOKENS: u64 = 2_000_000;
 const TASK_ADAPTERS: &[&str] = &["claude"];
 const PROJECT_CONFIG_TEMPLATE: &str = "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\ngit:\n  subtrees: []\nworktree:\n  branchPrefix:\n  # defaultSession:\n  #   enabled: true\n  #   command:\n";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -57,6 +59,19 @@ struct TasksFile {
     deploy: Option<TaskCommandFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     release: Option<TaskCommandFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manager: Option<TaskManagerFile>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct TaskManagerFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adapter: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(rename = "rotateTokens", skip_serializing_if = "Option::is_none")]
+    rotate_tokens: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -291,6 +306,32 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         })
         .transpose()?
         .flatten();
+    if let Some(manager) = file.manager {
+        if let Some(adapter) = manager.adapter {
+            if !TASK_ADAPTERS.contains(&adapter.as_str()) {
+                return Err(format!(
+                    "tasks.manager.adapter must be one of: {}",
+                    TASK_ADAPTERS.join(", ")
+                ));
+            }
+        }
+        if let Some(model) =
+            validate_optional_text(manager.model, "tasks.manager.model", MAX_TASK_WORD_BYTES)?
+        {
+            if model.contains(char::is_whitespace) {
+                return Err("tasks.manager.model must be one word".into());
+            }
+            config.manager_model = model;
+        }
+        if let Some(tokens) = manager.rotate_tokens {
+            if !(MIN_ROTATE_TOKENS..=MAX_ROTATE_TOKENS).contains(&tokens) {
+                return Err(format!(
+                    "tasks.manager.rotateTokens must be {MIN_ROTATE_TOKENS}..={MAX_ROTATE_TOKENS}"
+                ));
+            }
+            config.manager_rotate_tokens = tokens;
+        }
+    }
     if let Some(land) = file.land {
         if let Some(policy) = land.policy {
             config.land_policy = policy;
