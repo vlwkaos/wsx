@@ -931,6 +931,39 @@ def run(wsx, wsxd, work, owned):
     for n in (f, b):
         js('task', 'close', n, '--discard')
 
+    # 26. A host follows a replaced wsx binary (docs/tasks.md "Host"): the next turn execs the
+    # new file in the same process, which resumes the agent with the new launch.
+    (project / 'wsx.config.yml').write_text(CONFIG.split('  checks:')[0])
+    git('commit', '-q', '-am', 'no checks')
+    moved = work / 'moved'
+    moved.mkdir(mode=0o700)
+    shutil.copy2(wsx, moved / 'wsx')
+    started = subprocess.run([str(moved / 'wsx'), 'task', 'new', 'WORK follow1.txt', '--json'], cwd=project, env=env,
+                             capture_output=True, text=True, timeout=60)
+    r = json.loads(started.stdout)['id']
+    assert wait_state(r, 'ready', 'failed')['state'] == 'ready'
+
+    def host_process():
+        rows = subprocess.run(['ps', '-axwwo', 'pid=,command='], capture_output=True, text=True).stdout.splitlines()
+        return next(row.split()[0] for row in rows if ' task host ' in row and row.rstrip().endswith(' %d' % r))
+
+    before = host_process()
+    launches = len(launches_in(r))
+    # ^ A deploy replaces the file (a new inode), as install and mv do: macOS kills a process
+    # that execs an executable overwritten in place.
+    shutil.copy2(wsx, moved / 'wsx.new')
+    os.replace(moved / 'wsx.new', moved / 'wsx')
+    added = js('task', 'add', r, 'WORK follow2.txt')
+    assert added['ok'], added
+    wait(lambda: len(launches_in(r)) > launches, 'the agent restarts with the new binary')
+    assert wait_state(r, 'ready', 'failed')['state'] == 'ready'
+    after = host_process()
+    # ^ exec keeps the pid; the agent, which a live host would reuse, started again and resumed.
+    relaunch = launches_in(r)[launches:]
+    assert after == before and len(relaunch) == 1 and relaunch[0]['resume'], (before, after, relaunch)
+    assert not (Path(show(r)['log']).parent / 'handoff.txt').exists()
+    js('task', 'close', r, '--discard')
+
 
 if __name__ == '__main__':
     main()

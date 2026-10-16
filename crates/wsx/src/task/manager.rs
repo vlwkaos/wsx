@@ -83,6 +83,9 @@ struct Manager {
     /// Event lines not yet logged as a message, and when the last one came.
     pending_events: Vec<String>,
     last_event: Option<Instant>,
+    /// The file this host runs from, and whether it must exec its replacement.
+    binary: Option<hosting::Binary>,
+    reexec: bool,
 }
 
 /// ref: docs/tasks.md "Manager", "Brief"
@@ -141,6 +144,8 @@ pub fn run(project_id: &str) -> Result<()> {
         observed_decisions: 0,
         pending_events: Vec::new(),
         last_event: None,
+        binary: hosting::Binary::capture(),
+        reexec: false,
     };
     manager.restore()?;
     let requests = events.clone();
@@ -164,7 +169,16 @@ pub fn run(project_id: &str) -> Result<()> {
         manager.main.display()
     ));
     manager.report(runtime::AgentState::Idle);
-    manager.run(receiver)
+    manager.run(receiver)?;
+    if let (true, Some(binary)) = (manager.reexec, &manager.binary) {
+        if let Some(agent) = manager.agent.take() {
+            agent.stop();
+        }
+        let _ = std::fs::remove_file(manager.dir.socket_path());
+        let error = binary.exec();
+        anyhow::bail!("cannot start the replaced wsx binary: {error}");
+    }
+    Ok(())
 }
 
 impl Manager {
@@ -183,6 +197,10 @@ impl Manager {
             if self.turn.is_none() {
                 self.flush_events();
                 self.next_turn();
+            }
+            if self.reexec {
+                std::thread::sleep(Duration::from_millis(200));
+                return Ok(());
             }
         }
         Ok(())
@@ -421,6 +439,13 @@ impl Manager {
         let Some((_, first, _)) = self.queue.front() else {
             return;
         };
+        // ^ A replaced binary: exec it before this turn. The messages stay logged and not
+        // delivered, so the new host queues them again (`restore`).
+        if self.binary.as_ref().is_some_and(hosting::Binary::replaced) {
+            self.say("the wsx binary was replaced: the manager restarts with it");
+            self.reexec = true;
+            return;
+        }
         let first = *first;
         let mut ids = Vec::new();
         let mut text = String::new();

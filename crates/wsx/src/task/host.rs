@@ -27,6 +27,9 @@ use wsx_core::task::{
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 const CHECK_OUTPUT_BYTES: usize = 8 * 1024;
 const MAX_RESULT_BYTES: usize = 256 * 1024;
+/// The turn a host hands to its replacement: queued messages joined, so a few messages.
+const HANDOFF_FILE: &str = "handoff.txt";
+const MAX_HANDOFF_BYTES: u64 = 4 * 1024 * 1024;
 /// Turns a failed check starts by itself before the task fails; an owner's message resets it.
 const MAX_CHECK_RETRIES: u32 = 2;
 /// The end of each failed check's output that goes back to the worker.
@@ -69,6 +72,9 @@ struct Host {
     last_asks: Vec<Access>,
     /// Turns started for failed checks since the last message from a person.
     check_retries: u32,
+    /// The file this host runs from, and whether it must exec its replacement.
+    binary: Option<hosting::Binary>,
+    reexec: bool,
     landing: Option<Landing>,
     started: Instant,
 }
@@ -103,6 +109,8 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         reached: Default::default(),
         last_asks,
         check_retries: 0,
+        binary: hosting::Binary::capture(),
+        reexec: false,
         landing: None,
         started: Instant::now(),
     };
@@ -121,6 +129,14 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         agent.stop();
     }
     let _ = std::fs::remove_file(&socket);
+    if let (true, Some(binary)) = (host.reexec, &host.binary) {
+        let error = binary.exec();
+        host.say(&format!("cannot start the new wsx: {error}"));
+        host.log(LogEvent::Stopped {
+            reason: format!("cannot start the replaced wsx binary: {error}"),
+        });
+        host.set_state(TaskState::Stopped);
+    }
     host.report_agent(false);
     result
 }
@@ -133,24 +149,12 @@ impl Host {
             self.record.branch,
             self.record.working_copy.display()
         ));
-        match self.record.state {
-            TaskState::Starting => {
-                let prompt = self.dir.prompt()?.context("the task log has no prompt")?;
-                match self.record.phase {
-                    Phase::Brief => self.start_turn(&brief_request(&prompt)),
-                    Phase::Build => self.start_turn(&prompt),
-                }
-            }
-            TaskState::Working | TaskState::Checking => {
-                // ^ A restarted pane cannot rejoin a turn of the process it lost.
-                self.log(LogEvent::Stopped {
-                    reason: "the host restarted during a turn".into(),
-                });
-                self.set_state(TaskState::Stopped);
-            }
-            state => {
-                self.set_state(state);
-            }
+        // ^ A host that exec'd its replaced binary starts the turn the old one handed over.
+        if let Some(text) = self.take_handoff() {
+            self.say("restarted with the replaced wsx binary");
+            self.start_turn(&text);
+        } else {
+            self.resume_state()?;
         }
         while let Ok(event) = receiver.recv() {
             match event {
@@ -169,6 +173,43 @@ impl Host {
                 }
                 Event::Agent(..) => {}
                 Event::ChecksDone(results) => self.on_checks(results),
+            }
+            if self.reexec {
+                std::thread::sleep(Duration::from_millis(200));
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    fn take_handoff(&self) -> Option<String> {
+        let bytes = self
+            .dir
+            .read_file(HANDOFF_FILE, MAX_HANDOFF_BYTES)
+            .ok()
+            .flatten()?;
+        let _ = std::fs::remove_file(self.dir.file(HANDOFF_FILE));
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn resume_state(&mut self) -> Result<()> {
+        match self.record.state {
+            TaskState::Starting => {
+                let prompt = self.dir.prompt()?.context("the task log has no prompt")?;
+                match self.record.phase {
+                    Phase::Brief => self.start_turn(&brief_request(&prompt)),
+                    Phase::Build => self.start_turn(&prompt),
+                }
+            }
+            TaskState::Working | TaskState::Checking => {
+                // ^ A restarted pane cannot rejoin a turn of the process it lost.
+                self.log(LogEvent::Stopped {
+                    reason: "the host restarted during a turn".into(),
+                });
+                self.set_state(TaskState::Stopped);
+            }
+            state => {
+                self.set_state(state);
             }
         }
         Ok(())
@@ -424,6 +465,17 @@ impl Host {
     }
 
     fn try_start_turn(&mut self, text: &str) -> Result<()> {
+        if self.binary.as_ref().is_some_and(hosting::Binary::replaced) {
+            // ^ Every turn gets the replaced binary's launch: this host hands the turn over
+            // and execs it once the caller has its answer; the new host resumes the agent.
+            self.dir.write_file(HANDOFF_FILE, text.as_bytes())?;
+            self.reexec = true;
+            if self.record.state != TaskState::Conflict {
+                self.set_state(TaskState::Working);
+            }
+            self.say("the wsx binary was replaced: the host restarts with it");
+            return Ok(());
+        }
         if self.restart_needed {
             if let Some(agent) = self.agent.take() {
                 agent.stop();
