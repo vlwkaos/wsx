@@ -217,8 +217,8 @@ pub fn overview(scope: &Scope) -> Value {
     })
 }
 
-/// What the owner or the manager settled, newest first, one line each ("#4 allowed
-/// Bash(make:*)", "Approved land #3"): the chat shows a resolved card as this line.
+/// What the owner or the manager settled, newest first, one line each ("#4 may reach
+/// crates.io (owner)", "Approved land #3"): the chat shows a resolved card as this line.
 fn resolutions(
     tasks: &[(TaskDir, anyhow::Result<TaskRecord>)],
     lines: &[ApprovalLine],
