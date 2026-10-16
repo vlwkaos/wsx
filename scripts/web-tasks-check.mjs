@@ -3,7 +3,7 @@
 // Chrome DevTools Protocol. Called by `test-web-client.py --part tasks --browser`.
 //   web-tasks-check.mjs <site-url> <code> <project-id> <capture-dir> [slop-audit.js]
 // The project has: #1 and #4 blocked on a tool, #2 ready with Human Verify, #3 ready to land,
-// and two pending approvals: a1 lands #3, a2 discards #4. Each capture is saved with the slop audit and, on a phone, the
+// and two pending approvals: a1 lands #3, a2 discards #4 (shown as "Approve land #3", "Approve discard #4"). Each capture is saved with the slop audit and, on a phone, the
 // mobile audit of /ui-view-standards beside it (WSX_MOBILE_AUDIT names the mobile audit).
 import fs from "node:fs";
 import os from "node:os";
@@ -107,7 +107,7 @@ async function pair() {
 
 // The strip as rows: [id, kind words, action labels].
 const strip = () => evaluate(`[...document.querySelectorAll('.needs .need')].map((row) => [
-  row.querySelector('.need-id').textContent, row.querySelector('.row-context').textContent,
+  (row.querySelector('.need-id') ?? row.querySelector('.row-label')).textContent, row.querySelector('.row-context').textContent,
   [...row.querySelectorAll('.need-action')].map((node) => node.textContent.trim()).join('+')])`);
 
 await resize([390, 844, 2]);
@@ -137,8 +137,8 @@ if ((await text(".needs-more")).join() !== "Show 4 more") await fail(`the strip 
 await shot("project", ".composer-send");
 await click(".needs-more");
 rows = await strip();
-if (rows.map((row) => row[0]).join() !== "#1,#4,a1,a2,#2,#3") await fail(`the open strip is ${JSON.stringify(rows)}`);
-if (!/approve land #3/.test(rows[2][1]) || rows[2][2] !== "Deny+Approve") await fail(`the approval row reads ${JSON.stringify(rows[2])}`);
+if (rows.map((row) => row[0]).join() !== "#1,#4,Approve land #3,Approve discard #4,#2,#3") await fail(`the open strip is ${JSON.stringify(rows)}`);
+if (rows[2][2] !== "Deny+Approve" || /\ba1\b/.test(await evaluate("document.querySelector('.needs').textContent"))) await fail(`the approval row reads ${JSON.stringify(rows[2])}`);
 if (rows[4][2] !== "Verify" || rows[5][2] !== "Land") await fail(`verify and land rows read ${JSON.stringify(rows.slice(4))}`);
 await shot("project-strip-open", ".composer-send");
 // One tap from the top row to the sessions, and Back to the manager.
@@ -219,10 +219,10 @@ await evaluate("document.querySelector('.need-form').requestSubmit()");
 await until("!document.querySelector('.need-form')", "the answer was not sent");
 await until("[...document.querySelectorAll('.notice')].some((node) => /#1:/.test(node.textContent))", "the answer's outcome was not shown");
 await click(".needs-more");
-await evaluate("[...document.querySelectorAll('.needs .need')].find((row) => row.querySelector('.need-id').textContent === 'a1').querySelectorAll('.need-action')[1].click()");
-await until("[...document.querySelectorAll('.notice')].some((node) => /a1 approved/.test(node.textContent))", "Approve showed no outcome");
-await until("![...document.querySelectorAll('.needs .need-id')].some((node) => node.textContent === 'a1')", "the approval stayed in the strip", 300);
-await until("[...document.querySelectorAll('.needs .need')].some((row) => row.querySelector('.need-id').textContent === '#3' && /done/.test(row.textContent))", "#3 is not done after the approval", 300);
+await evaluate("[...document.querySelectorAll('.needs .need')].find((row) => row.querySelector('.row-label').textContent === 'Approve land #3').querySelectorAll('.need-action')[1].click()");
+await until("[...document.querySelectorAll('.notice')].some((node) => /Approved land #3/.test(node.textContent))", "Approve showed no outcome");
+await until("![...document.querySelectorAll('.needs .row-label')].some((node) => node.textContent === 'Approve land #3')", "the approval stayed in the strip", 300);
+await until("[...document.querySelectorAll('.needs .need')].some((row) => row.querySelector('.need-id')?.textContent === '#3' && /done/.test(row.textContent))", "#3 is not done after the approval", 300);
 await shot("strip-after-actions", ".composer-send");
 
 // --- The task page of #2: the report in its sections, Fail needs a note, Pass, then Land.
@@ -264,10 +264,10 @@ await shot("task-landed");
 
 // --- The task page of #4: Deny the discard, then Allow the denied tool.
 await go(page(4));
-await until("[...document.querySelectorAll('.task-actions .need-id')].some((node) => node.textContent === 'a2')", "#4 shows no pending approval");
+await until("/The manager asks: Approve discard #4/.test(document.querySelector('.task-actions')?.textContent ?? '')", "#4 shows no pending approval");
 await shot("task-blocked", ".composer-send");
 await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Deny').click()");
-await until("![...document.querySelectorAll('.task-actions .need-id')].some((node) => node.textContent === 'a2')", "the denied approval stayed", 300);
+await until("!/Approve discard #4/.test(document.querySelector('.task-actions')?.textContent ?? '')", "the denied approval stayed", 300);
 await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Allow a tool').click()");
 await until("document.querySelector('.task-allow input')?.value === 'Bash(Bash(make:*))'", "Allow did not offer the denied tool");
 await typeInto(".task-allow input", "Bash(make:*)");

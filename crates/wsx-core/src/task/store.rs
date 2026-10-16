@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
@@ -21,6 +21,7 @@ pub const RECORD_FILE: &str = "task.json";
 pub const LOG_FILE: &str = "log.jsonl";
 pub const RESULT_FILE: &str = "result.json";
 pub const REPORT_FILE: &str = "report.md";
+/// The logical name of a task host's socket; the socket itself is in `socket_dir()`.
 pub const SOCKET_FILE: &str = "host.sock";
 const COUNTER_FILE: &str = "next";
 
@@ -31,6 +32,51 @@ fn tasks_root() -> PathBuf {
         .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
         .unwrap_or_else(std::env::temp_dir)
         .join("wsx/tasks")
+}
+
+/// The owner-only folder of host sockets: `<TMPDIR>/wsx-<uid>`, or `/tmp/wsx-<uid>` when
+/// `TMPDIR` is too long for a socket name. A host and its callers must share `TMPDIR`.
+/// ^ `sun_path` holds 104 bytes on macOS, and a socket in the store passed that with a
+/// long `XDG_STATE_HOME` or project name. ref: docs/tasks.md "Store"
+fn socket_dir() -> PathBuf {
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    let name = format!("wsx-{uid}");
+    let base = std::env::temp_dir();
+    // ^ Room for "/wsx-<uid>/t-<16 hex>.sock" within 103 bytes.
+    if base.is_absolute() && base.as_os_str().len() <= 64 {
+        base.join(name)
+    } else {
+        PathBuf::from("/tmp").join(name)
+    }
+}
+
+/// A host's socket: `<socket_dir>/<kind>-<16 hex of sha256(logical path)>.sock`. Every
+/// process that names the same store path names the same socket, and the path is at most
+/// about 90 bytes.
+fn socket_for(kind: char, logical: &Path) -> PathBuf {
+    let digest = Sha256::digest(logical.as_os_str().as_encoded_bytes());
+    let hash: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+    socket_dir().join(format!("{kind}-{hash}.sock"))
+}
+
+/// Create the socket folder owner-only, or check one that exists: a real folder of this
+/// user that no one else can enter. A host calls it before it binds.
+pub fn prepare_socket_dir(socket: &Path) -> Result<()> {
+    let dir = socket
+        .parent()
+        .ok_or_else(|| anyhow!("socket {} has no folder", socket.display()))?;
+    create_private_dir(dir)?;
+    let metadata = fs::symlink_metadata(dir)?;
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    if metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+        bail!(
+            "{} must belong to this user and be closed to others (chmod 700)",
+            dir.display()
+        );
+    }
+    Ok(())
 }
 
 /// `<name-slug>-<8 hex of sha256(path)>`: readable, and unique per project path.
@@ -329,7 +375,7 @@ impl TaskDir {
     }
 
     pub fn socket_path(&self) -> PathBuf {
-        self.file(SOCKET_FILE)
+        socket_for('t', &self.file(SOCKET_FILE))
     }
 
     /// Remove the folder of a task that never started.
@@ -432,7 +478,7 @@ impl ManagerDir {
     }
 
     pub fn socket_path(&self) -> PathBuf {
-        self.path.join(MANAGER_SOCKET)
+        socket_for('m', &self.path.join(MANAGER_SOCKET))
     }
 
     pub fn append(&self, event: super::manager::ManagerEvent) -> Result<()> {

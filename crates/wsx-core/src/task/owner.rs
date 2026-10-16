@@ -82,6 +82,19 @@ pub fn action_name(action: ApprovalAction) -> &'static str {
     }
 }
 
+/// An approval request as the action it asks for, never its id: "Approve land #3",
+/// "Approve discard #4", "Approve deploy". ref: docs/web-client.md "Tasks"
+pub fn approval_label(action: ApprovalAction, task: Option<u32>) -> String {
+    let verb = match action {
+        ApprovalAction::Discard => "discard",
+        other => action_name(other),
+    };
+    match task {
+        Some(task) => format!("Approve {verb} #{task}"),
+        None => format!("Approve {verb}"),
+    }
+}
+
 pub fn find_request<'a>(lines: &'a [ApprovalLine], id: &str) -> Result<&'a ApprovalLine> {
     pending_approvals(lines)
         .into_iter()

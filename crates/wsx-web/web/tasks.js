@@ -74,7 +74,10 @@ const actionOf = (key) => {
 
 // What a fixed action did, as a notice: wsx's own answer, or the decision.
 export function announce(name, action, answer) {
-  toast(action === "approve" ? `${name} approved; it runs now.` : action === "deny" ? `${name} denied.` : `${name}: ${answer.message || "done"}`);
+  // ^ An approval is named by its label, "Approve land #3": the notice says what was decided.
+  const decided = (word) => name.startsWith("Approve ") ? name.replace(/^Approve /, `${word} `) : `${name} ${word.toLowerCase()}`;
+  toast(action === "approve" ? `${decided("Approved")}; it runs now.`
+    : action === "deny" ? `${decided("Denied")}.` : `${name}: ${answer.message || "done"}`);
 }
 
 // One fixed action. A success says what wsx did and clears the draft; a failure keeps it.
@@ -83,7 +86,7 @@ async function act(project, item, action, body = {}) {
     ? `api/tasks/${project}/approvals/${item.approval}/${action}`
     : `api/tasks/${project}/t/${item.task}/${action}`;
   const answer = await api(path, { method: "POST", json: body });
-  const name = item.kind === "approval" ? item.approval : `#${item.task}`;
+  const name = item.kind === "approval" ? item.label : `#${item.task}`;
   announce(name, action, answer);
   loadTasks(project);
   return answer;
@@ -138,13 +141,14 @@ function NeedRow({ project, item }) {
   } else if (item.kind === "verify" && item.task != null) {
     actions = html`<a class="button need-action" href=${taskLink(project, item.task)}>Verify</a>`;
   }
+  // ^ An approval reads as the action it asks for, never as its id (docs/web-client.md "Tasks").
   const context = item.kind === "approval"
-    ? `approve ${item.action}${item.task != null ? ` #${item.task}${item.revision != null ? ` r${item.revision}` : ""}` : ""}`
+    ? [item.revision != null && `r${item.revision}`, item.title ?? item.commit].filter(Boolean).join(" · ")
     : [KIND_WORDS[item.kind], item.summary].filter(Boolean).join(" · ");
-  const label = item.kind === "approval" ? item.title ?? item.commit ?? item.action : item.title;
-  const name = item.kind === "approval" ? item.approval : `#${item.task}`;
+  const label = item.kind === "approval" ? item.label : item.title;
+  const name = item.kind === "approval" ? null : `#${item.task}`;
   const body = html`
-    <span class="row-work"><span class="need-id">${name}</span><span class="row-label">${label}</span></span>
+    <span class="row-work">${name && html`<span class="need-id">${name}</span>`}<span class="row-label">${label}</span></span>
     <span class="row-context">${context}</span>`;
   return html`
     <li class="row need">
@@ -178,7 +182,7 @@ export function Needs({ project, overview, all }) {
   const shown = open || all ? items : items.slice(0, SHOWN);
   // ^ With the keyboard up or on a short screen the rows give way to one line, so the
   // conversation stays in view (CSS: body[data-short], body[data-keyboard]).
-  const names = items.map((item) => item.kind === "approval" ? item.approval : `#${item.task}`);
+  const names = items.map((item) => item.kind === "approval" ? item.label : `#${item.task}`);
   return html`
     <section class="needs" aria-label="Needs you">
       <p class="needs-line">Needs you: ${names.join(", ")}</p>

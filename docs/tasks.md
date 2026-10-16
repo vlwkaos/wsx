@@ -5,7 +5,7 @@ A task is one headless worker on its own branch and working copy. The caller nev
 ```sh
 wsx task new "<prompt>" -p <project> [--from <ref>] --json   # or `-` (stdin) or --prompt-file <path>
 wsx task list -p <project> [--all] --json
-wsx task show <n> -p <project> --json            # record, result.json, report path, host_running
+wsx task show <n> -p <project> --json            # record, result.json, report path, host_running, socket
 wsx task steer <n> "<text>" --json               # into the running turn
 wsx task add <n> "<text>" --json                 # after the turn (queued while one runs)
 wsx task allow <n> "Bash(make:*)" --json         # restart with the tool and resume a blocked task
@@ -27,8 +27,8 @@ wsx task close <n> [--discard] --json
 | `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress), `blocked`, `allowed`, `result`, `checks`, `revision`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
 | `result.json` | latest worker result and check results | 256 KiB |
 | `report.md` | report of the latest revision | |
-| `host.sock` | owner-only control socket while the host runs | |
 
+- A host's control socket is not in the store: `sun_path` holds 104 bytes on macOS. The task host serves `<TMPDIR>/wsx-<uid>/t-<hash>.sock` and the manager `m-<hash>.sock`, where `<hash>` is 16 hex of sha256 of the store path the socket stands for (`<n>/host.sock`, `manager/manager.sock`), and `/tmp` replaces a `TMPDIR` longer than 64 bytes. The folder is 0700 and must belong to the user, the socket is 0600, a host removes its socket when it exits and replaces a stale one when it starts. A host and its callers must share `TMPDIR`; `show --json` and `manager --json` name the socket.
 - `<project-id>` is `<name-slug>-<first 8 hex of sha256(project path)>`. Numbers come from a locked `next` counter and are never reused, also after a failed start.
 - One writer: the CLI writes before the host starts and after it exits; the host writes everything in between.
 - States: `starting, working, blocked, checking, ready, failed, stopped, conflict, in_review, landed, closed`. `landed` and `closed` are not open.
@@ -46,7 +46,7 @@ wsx task close <n> [--discard] --json
 
 1. starts the adapter and sends the prompt;
 2. prints one progress line per agent step to its terminal (watch it in wsx like any session);
-3. serves `host.sock`: one JSON request per connection (`status`, `steer`, `add`, `allow`, `stop`, `close`), one JSON answer `{ok, state, message}`;
+3. serves its control socket (see Store): one JSON request per connection (`status`, `steer`, `add`, `allow`, `stop`, `close`), one JSON answer `{ok, state, message}`;
 4. reports its pane through `AgentReport` with provider `task`: working/checking as Working, blocked as Blocked, ready as Done, failed as Error, stopped as Idle;
 5. keeps running through `wsx daemon restart` (live handoff), because it is a pane process.
 

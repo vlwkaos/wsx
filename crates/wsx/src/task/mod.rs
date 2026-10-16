@@ -660,6 +660,7 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
         summary["report"] = json!(report);
         summary["log"] = json!(dir.file(store::LOG_FILE));
         summary["host_running"] = json!(host);
+        summary["socket"] = json!(dir.socket_path());
         let log = dir.read_log()?;
         summary["verification"] = verification_value(&log, record.revision);
         let tasks = project_tasks(&dir.project_id)?;
