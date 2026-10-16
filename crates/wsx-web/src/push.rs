@@ -31,6 +31,8 @@ pub enum Topic {
     Blocked,
     Done,
     Error,
+    /// Task attention and digests (docs/web-client.md "Task notifications").
+    Tasks,
 }
 
 #[derive(Deserialize)]
@@ -144,8 +146,8 @@ impl Push {
         input: SubscriptionInput,
         mut topics: Vec<Topic>,
     ) -> Result<()> {
+        topics.sort_by_key(|topic| *topic as u8);
         topics.dedup();
-        ensure!(topics.len() <= 3, "too many topics");
         ensure!(
             input.endpoint.len() <= MAX_ENDPOINT_BYTES
                 && !input.endpoint.chars().any(|c| c.is_control() || c == ' '),
@@ -183,7 +185,14 @@ impl Push {
 
     /// Deliver to every still-paired device that consented to `topic`.
     /// Blocking network I/O: call from a blocking thread. Returns delivered count.
-    pub fn notify(&self, topic: Topic, payload: &serde_json::Value, paired: &[String]) -> usize {
+    /// Send to each paired device that consented to `topic`, except the devices in `except`.
+    pub fn notify(
+        &self,
+        topic: Topic,
+        payload: &serde_json::Value,
+        paired: &[String],
+        except: &[String],
+    ) -> usize {
         let targets: Vec<Subscription> = {
             let mut subscriptions = self.subscriptions.lock().unwrap_or_else(|l| l.into_inner());
             // A revoked device loses its subscription with its credential.
@@ -194,7 +203,10 @@ impl Push {
             }
             subscriptions
                 .iter()
-                .filter(|subscription| subscription.topics.contains(&topic))
+                .filter(|subscription| {
+                    subscription.topics.contains(&topic)
+                        && !except.contains(&subscription.device_id)
+                })
                 .cloned()
                 .collect()
         };

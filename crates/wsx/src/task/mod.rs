@@ -1062,16 +1062,24 @@ const MAX_CHAT_ENTRIES: usize = 200;
 
 /// Reuse the project's manager host, or start one in a hidden session in the main checkout.
 /// Returns whether it was started.
+/// Create the manager's hidden session, starting wsxd when it does not run.
+fn launch_manager(main: &Path) -> impl FnOnce(Vec<String>) -> Result<()> + '_ {
+    move |argv| {
+        ops::create_session_launch(&load_config()?, main, "task-manager".into(), argv, None)
+            .map(drop)
+    }
+}
+
 fn ensure_manager(project: Option<&str>) -> Result<(bool, ManagerDir)> {
     let (name, main) = project_entry(project)?;
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-    owner::ensure_manager(&load_config()?, &name, &main, &exe)
+    owner::ensure_manager(&name, &main, &exe, launch_manager(&main))
 }
 
 fn say(project: Option<&str>, text: String, json: bool) -> Result<()> {
     let (name, main) = project_entry(project)?;
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-    let response = owner::say(&load_config()?, &name, &main, &exe, text)?;
+    let response = owner::say(&name, &main, &exe, launch_manager(&main), text)?;
     if json {
         print_json(&serde_json::to_value(&response)?)?;
     } else {

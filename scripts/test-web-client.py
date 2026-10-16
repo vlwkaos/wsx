@@ -736,7 +736,16 @@ def main():
     parser.add_argument('--browser', action='store_true',
                         help='also run scripts/web-browser-check.mjs with an installed Chrome')
     parser.add_argument('--captures', type=Path, default=ROOT / '.work/web-captures')
+    parser.add_argument('--part', choices=('all', 'chat', 'tasks'), default='all',
+                        help='chat: sessions, files, terminal, push; tasks: tasks and the manager')
     args = parser.parse_args()
+    if args.part in ('all', 'chat'):
+        web_journey(args)
+    if args.part in ('all', 'tasks'):
+        task_journey(args)
+
+
+def web_journey(args):
     wsx, wsxd = args.wsx.resolve(), args.daemon.resolve()
     if not wsx.is_file() or not wsxd.is_file() or wsx.parent != wsxd.parent:
         raise RuntimeError('build adjacent wsx/wsxd first')
@@ -2370,6 +2379,269 @@ capabilities = ["terminal_view"]
             print('diagnostics retained at ' + str(work), file=sys.stderr)
     print(json.dumps({'result': 'PASS', 'seconds': round(time.monotonic() - started, 2), 'model_calls': 0,
                       'checks': checks}, indent=1))
+
+
+TASK_CONFIG = '''tasks:
+  agent:
+    model: fake-model
+    tools: [Read, Edit]
+  checks:
+    - "test ! -e broken.txt"
+  manager: { model: fake-manager }
+'''
+
+
+def task_journey(args):
+    """Tasks and the manager through the web API on an isolated wsxd with the stream-json
+    fake Claude (scripts/fake-claude-stream.py). ref: docs/web-client.md "Tasks"."""
+    wsx, wsxd = args.wsx.resolve(), args.daemon.resolve()
+    if not wsx.is_file() or not wsxd.is_file() or wsx.parent != wsxd.parent:
+        raise RuntimeError('build adjacent wsx/wsxd first')
+    node = shutil.which('node')
+    assert node, 'Node is required for the independent Web Push receiver'
+    sweep()
+    # Short path: task host sockets must fit macOS SUN_LEN.
+    work = ROOT / '.work' / ('web-' + str(os.getpid()) + 't')
+    work.mkdir(mode=0o700, parents=True)
+    started, success, checks, path, env = time.monotonic(), False, [], None, None
+
+    def ok(label):
+        checks.append(label)
+
+    def wait(test, label, timeout=20):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            value = test()
+            if value:
+                return value
+            time.sleep(0.1)
+        raise AssertionError(label + ' timeout')
+
+    try:
+        home, state, project, other, bin_dir = (work / name for name in ('h', 's', 'demo', 'other', 'bin'))
+        for folder in (home, state, project, other, bin_dir):
+            folder.mkdir(mode=0o700)
+        project, other = project.resolve(), other.resolve()
+        config = (home / 'Library/Application Support/wsx' if sys.platform == 'darwin' else work / 'c/wsx')
+        config.mkdir(parents=True)
+        (config / 'config-v2.toml').write_text(
+            'resume_agents_on_restore = false\n' + ''.join(
+                '[[projects]]\nname = "%s"\npath = %s\n' % (folder.name, json.dumps(str(folder)))
+                for folder in (project, other)))
+        fake = bin_dir / 'claude'
+        fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(ROOT / 'scripts/fake-claude-stream.py') + ' "$@"\n')
+        fake.chmod(0o755)
+        path = state / 'wsx/wsx.sock'
+        env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
+               'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_SOCKET': str(path),
+               'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
+               'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8'}
+        for folder in (project, other):
+            for argv in (['init', '-q', '-b', 'main'], ['add', '.'], ['commit', '-q', '-m', 'start']):
+                if argv[0] == 'add':
+                    (folder / 'wsx.config.yml').write_text(TASK_CONFIG)
+                    (folder / 'README').write_text('fixture\n')
+                subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', *argv],
+                               cwd=folder, env=env, check=True, capture_output=True, timeout=20)
+
+        def cli(*argv, expect=0):
+            result = subprocess.run([str(wsx), *map(str, argv)], cwd=project, env=env,
+                                    capture_output=True, text=True, timeout=60)
+            assert (result.returncode == 0) == (expect == 0), (argv, result.stdout, result.stderr)
+            return result
+
+        def js(*argv):
+            return json.loads(cli(*argv, '--json').stdout)
+
+        def task_state(n):
+            return js('task', 'show', n, '-p', 'demo')['state']
+
+        def wait_state(n, *states):
+            return wait(lambda: task_state(n) in states and task_state(n), '#%d %s' % (n, '/'.join(states)))
+
+        daemon = start(work, [str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        wait(path.exists, 'daemon')
+        # The fixture store: #1 blocked on a tool, #2 ready with Human Verify, #3 ready to land.
+        assert js('task', 'new', 'NEEDS Bash(make:*) WORK m.txt', '-p', 'demo')['id'] == 1
+        assert js('task', 'new', 'WORK a.txt HV', '-p', 'demo')['id'] == 2
+        assert js('task', 'new', 'WORK b.txt', '-p', 'demo')['id'] == 3
+        wait_state(1, 'blocked')
+        wait_state(2, 'ready')
+        wait_state(3, 'ready')
+
+        push = start(work, [node, str(ROOT / 'scripts/web-push-fixture.mjs'), str(work / 'push.jsonl')],
+                     stdout=subprocess.PIPE, text=True)
+        receiver = json.loads(push.stdout.readline())
+        push_origin = 'http://127.0.0.1:%d' % receiver['port']
+        vapid = cli('web', 'vapid').stdout
+        private_key = next(line.split('"')[1] for line in vapid.splitlines() if line.startswith('private_key'))
+        ports = {name: free_port() for name in ('owner', 'viewer', 'plain')}
+        grants = {
+            'owner': ('"all"', '"task_view", "task_act", "push"'),
+            'viewer': (json.dumps([str(project)]), '"task_view", "push"'),
+            'plain': (json.dumps([str(other)]), '"chat_send", "push"'),
+        }
+        files, sites = {}, {}
+        for name, (projects_value, capabilities) in grants.items():
+            files[name] = work / (name + '.toml')
+            files[name].write_text(f'''id = "{name}"
+name = "{name}"
+port = {ports[name]}
+public_origin = "http://127.0.0.1:{ports[name]}"
+panels = ["chat"]
+[access]
+projects = {projects_value}
+capabilities = [{capabilities}]
+[push]
+subject = "mailto:owner@example.invalid"
+private_key = "{private_key}"
+service_origins = ["{push_origin}"]
+''')
+            files[name].chmod(0o600)
+            start(work, [str(wsx), 'web', 'serve', '--site', str(files[name])], env=env, cwd=project,
+                  stdout=subprocess.DEVNULL, stderr=(work / (name + '.log')).open('a'))
+            sites[name] = Site(ports[name], '')
+        for site in sites.values():
+            wait(lambda: _up(site), 'web server')
+        for name, site in sites.items():
+            code = cli('web', 'pair', '--site', files[name]).stdout.splitlines()[0].rsplit(' ', 1)[1]
+            status, headers, body = site.request('POST', '/api/pair', {'code': code.lower(), 'name': name}, raw=True)
+            assert status == 200, body
+            site.cookie = headers['set-cookie'].split(';')[0]
+        owner, viewer, plain = sites['owner'], sites['viewer'], sites['plain']
+        session = owner.request('GET', '/api/session')[1]
+        assert 'task_view' in session['site']['capabilities'] and 'task_act' in session['site']['capabilities']
+        events = Events(owner)
+        workspace = events.expect('workspace')
+        ids = {item['name']: item['id'] for item in workspace['projects']}
+        demo = ids['demo']
+
+        # --- Read models: the strip order, the working count, the chip list.
+        overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
+        kinds = [(item['kind'], item.get('task')) for item in overview['needs']]
+        assert kinds == [('blocked', 1), ('verify', 2), ('land', 3)], kinds
+        assert overview['needs'][0]['denials'] == ['Bash(Bash(make:*))'], overview['needs'][0]
+        assert overview['needs'][1]['human_verify'] == 1 and overview['working'] == 0
+        # Chips and the `#` picker: attention order, then the newest first.
+        assert [row['id'] for row in overview['tasks']] == [1, 3, 2], overview['tasks']
+        assert overview['tasks'][2]['title'] == 'WORK a.txt HV'
+        everything = steady(owner, 'GET', '/api/tasks')[1]
+        assert sorted(item['project'] for item in everything) == sorted(ids.values()), everything
+        detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
+        assert detail['state'] == 'ready' and detail['actions'] == ['verify', 'land', 'add'], detail['actions']
+        assert detail['result']['human_verify'] == [{'check': 'open the file', 'pass_if': 'it has text'}]
+        for heading in ('## Asked', '## Summary', '## Decisions', '## Changes', '## Evidence', '## Human Verify', '## Left open'):
+            assert heading in detail['report'], (heading, detail['report'][:400])
+        kinds = [entry['kind'] for entry in detail['timeline']['entries']]
+        assert kinds[:2] == ['created', 'message'] and 'result' in kinds and 'revision' in kinds, kinds
+        assert detail['verification'] is None and detail['overlaps'] == []
+        ok('read models: needs-you order (blocked, verify, land), denials, report sections, timeline, actions by state')
+
+        # --- Fixed actions go straight to the task host.
+        def act(n, action, body, site=owner, project=demo):
+            return steady(site, 'POST', '/api/tasks/%d/t/%d/%s' % (project, n, action), body)
+
+        status, body = act(2, 'verify', {'result': 'fail'})
+        assert status == 400 and body['error']['code'] == 'note_required', body
+        assert act(2, 'add', {'text': '  '})[0] == 400
+        assert act(2, 'add', {'text': 'x' * (64 * 1024 + 1)})[0] == 413
+        assert act(1, 'allow', {'tool': 'Bash(make:*)\n'})[0] == 400
+        assert act(2, 'verify', {'result': 'maybe'})[0] == 422
+        assert act(2, 'explode', {})[0] == 404 and act(99, 'add', {'text': 'hi'})[0] == 404
+        status, body = act(3, 'verify', {'result': 'pass', 'note': 'looked'})
+        assert status == 200, body
+        status, body = act(1, 'land', {})
+        assert status == 409 and body['error']['code'] == 'refused', body
+        status, body = act(2, 'land', {})
+        assert status == 409 and 'verif' in body['error']['message'], body
+        status, body = act(2, 'verify', {'result': 'pass'})
+        assert status == 200 and body['state'] == 'ready', body
+        events.expect('task', lambda data: data == {'project': demo, 'task': 2})
+        events.expect('tasks', lambda data: data['project'] == demo and
+                      [(item['kind'], item.get('task')) for item in data['needs']][:3] == [('blocked', 1), ('land', 2), ('land', 3)])
+        status, body = act(2, 'land', {})
+        assert status == 200 and body['state'] == 'landed', body
+        status, body = act(1, 'allow', {'tool': 'Bash(make:*)'})
+        assert status == 200, body
+        wait_state(1, 'ready')
+        status, body = act(1, 'add', {'text': 'NOOP and again'})
+        assert status == 200, body
+        wait(lambda: 'NOOP and again' in (work / 'fake-claude.trace').read_text(), 'add reached the worker')
+        wait_state(1, 'ready')
+        overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
+        kinds = [(item['kind'], item.get('task')) for item in overview['needs']]
+        assert kinds == [('land', 3), ('land', 1), ('done', 2)], kinds  # oldest first within a kind
+        ok('actions: verify (fail needs a note), land refused then landed, allow resumes, add reaches the worker')
+
+        # --- The manager: say starts it, the reply arrives in the chat, events follow.
+        status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS'})
+        assert status == 200 and body['ok'] and isinstance(body['id'], int), body
+        events.expect('manager', lambda data: data == {'project': demo}, timeout=20)
+        chat = wait(lambda: (lambda data: data if any(e['kind'] == 'reply' for e in data['entries']) else None)(
+            steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]), 'manager reply')
+        reply = next(e for e in chat['entries'] if e['kind'] == 'reply')
+        assert reply['text'].startswith('open: #1 ready') and chat['running'], chat
+        assert all(e['kind'] not in ('delivered', 'agent') for e in chat['entries'])
+        later = steady(owner, 'GET', '/api/tasks/%d/chat?after=%d' % (demo, reply['id']))[1]
+        assert all(e.get('id', reply['id'] + 1) > reply['id'] for e in later['entries']), later
+        # An approval request from the manager, approved on the web; its outcome is the decision.
+        status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'RUN wsx task land 3 -p demo --json'})
+        assert status == 200, body
+        request = wait(lambda: next((item for item in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['needs']
+                                     if item['kind'] == 'approval'), None), 'approval request', timeout=30)
+        assert request['approval'] == 'a1' and request['action'] == 'land' and request['task'] == 3, request
+        status, body = steady(owner, 'POST', '/api/tasks/%d/approvals/a1/approve' % demo, {})
+        assert status == 202 and body['started'], body
+        again = steady(owner, 'POST', '/api/tasks/%d/approvals/a1/approve' % demo, {})
+        assert again[0] == 409, again
+        decided = events.expect('tasks', lambda data: data['project'] == demo and data['decisions'], timeout=30)
+        assert decided['decisions'][0]['approval'] == 'a1' and decided['decisions'][0]['outcome'].startswith('done'), decided
+        assert task_state(3) == 'landed'
+        status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'RUN wsx task close 1 --discard -p demo --json'})
+        wait(lambda: any(item['kind'] == 'approval' and item['approval'] == 'a2'
+                         for item in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['needs']), 'discard request', timeout=30)
+        status, body = steady(owner, 'POST', '/api/tasks/%d/approvals/a2/deny' % demo, {'note': 'keep it'})
+        assert status == 200, body
+        assert steady(owner, 'POST', '/api/tasks/%d/approvals/a2/deny' % demo, {})[0] == 409
+        assert steady(owner, 'POST', '/api/tasks/%d/approvals/a2/maybe' % demo, {})[0] == 404
+        assert task_state(1) == 'ready'
+        since = steady(owner, 'GET', '/api/tasks/%d/since?after=1' % demo)[1]
+        assert since['tasks']['landed'] == [2, 3] and since['tasks']['started'] == [1, 2, 3] and since['replies'] >= 3, since
+        ok('manager: say starts it, reply in the chat, approve runs once and records the outcome, deny with a note, since')
+
+        # --- Refusals: the capability and the grant come from the site file only.
+        for method, route, body in (('POST', '/api/tasks/%d/say' % demo, {'text': 'hi'}),
+                                    ('POST', '/api/tasks/%d/t/1/add' % demo, {'text': 'hi'}),
+                                    ('POST', '/api/tasks/%d/approvals/a9/approve' % demo, {})):
+            status, refused = steady(viewer, method, route, body)
+            assert status == 403 and refused['error']['code'] == 'capability_denied', (route, refused)
+        assert steady(viewer, 'GET', '/api/tasks/%d' % demo)[0] == 200
+        assert steady(viewer, 'GET', '/api/tasks/%d' % ids['other'])[0] == 404
+        assert steady(viewer, 'GET', '/api/tasks/%d/t/1' % ids['other'])[0] == 404
+        assert steady(viewer, 'GET', '/api/tasks/%d/t/1' % demo)[1]['actions'] == []
+        for route in ('/api/tasks', '/api/tasks/%d' % demo, '/api/tasks/%d/chat' % demo):
+            assert steady(plain, 'GET', route)[0] == 403, route
+        ok('refusals: task_act and task_view per site, ungranted project 404, actions hidden without task_act')
+        success = True
+    finally:
+        for process in reversed(STARTED):
+            stop(process)
+        if env is not None:
+            subprocess.run([str(wsx), 'daemon', 'stop', '--force'], env=env, capture_output=True, timeout=20)
+        if success:
+            shutil.rmtree(work, ignore_errors=True)
+        else:
+            print('diagnostics retained at ' + str(work), file=sys.stderr)
+    print(json.dumps({'result': 'PASS', 'part': 'tasks', 'seconds': round(time.monotonic() - started, 2),
+                      'model_calls': 0, 'checks': checks}, indent=1))
+
+
+def _up(site):
+    try:
+        return site.request('GET', '/manifest.webmanifest')[0] == 200
+    except OSError:
+        return False
+
 
 
 if __name__ == '__main__':

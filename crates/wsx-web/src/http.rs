@@ -69,6 +69,17 @@ pub fn router(app: Shared) -> Router {
             .route("/api/chat/{session}/answer", post(answer))
             .route("/api/chat/{session}/queue/{id}", delete(queue_remove))
             .route("/api/chat/{session}/queue/{id}/retry", post(queue_retry))
+            .route("/api/tasks", get(tasks_all))
+            .route("/api/tasks/{project}", get(tasks_overview))
+            .route("/api/tasks/{project}/chat", get(tasks_chat))
+            .route("/api/tasks/{project}/since", get(tasks_since))
+            .route("/api/tasks/{project}/say", post(tasks_say))
+            .route("/api/tasks/{project}/t/{task}", get(task_detail))
+            .route("/api/tasks/{project}/t/{task}/{action}", post(task_act))
+            .route(
+                "/api/tasks/{project}/approvals/{id}/{decision}",
+                post(task_decide),
+            )
             .route("/api/media", put(media_put))
             .route("/api/files", get(files_list))
             // A text file is at most 1 MiB and a write carries the old and the new text.
@@ -707,6 +718,186 @@ async fn answer(
     blocking(|| app.chat.answer(&app, session, &input).map(Json))
 }
 
+/// Task routes need the chat panel and `task_view`; actions also `task_act`.
+fn tasks_allowed(app: &App, act: bool) -> Outcome<()> {
+    need(app, Panel::Chat)?;
+    allow(app, Capability::TaskView, "tasks")?;
+    if act {
+        allow(app, Capability::TaskAct, "acting on tasks")?;
+    }
+    Ok(())
+}
+
+/// Task actions share the message budget: each one reaches an agent or runs a command.
+fn act_budget(app: &App, device: &Device) -> Outcome<()> {
+    if app
+        .limiter
+        .allow(&format!("send:{}", device.id), 10.0, 20.0)
+    {
+        Ok(())
+    } else {
+        Err(Fault::new(
+            429,
+            "rate_limited",
+            "too many messages; wait a moment",
+        ))
+    }
+}
+
+async fn tasks_all(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, false)?;
+    blocking(|| crate::tasks::overviews(&app).map(Json))
+}
+
+async fn tasks_overview(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(project): UrlPath<u64>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, false)?;
+    blocking(|| {
+        Ok(Json(crate::tasks::overview(&crate::tasks::scope(
+            &app, project,
+        )?)))
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AfterQuery {
+    after: Option<u64>,
+}
+
+async fn tasks_chat(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(project): UrlPath<u64>,
+    Query(query): Query<AfterQuery>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, false)?;
+    blocking(|| crate::tasks::chat(&crate::tasks::scope(&app, project)?, query.after).map(Json))
+}
+
+async fn tasks_since(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(project): UrlPath<u64>,
+    Query(query): Query<AfterQuery>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, false)?;
+    let after = query
+        .after
+        .ok_or_else(|| Fault::new(400, "after_required", "since needs ?after=<unix ms>"))?;
+    blocking(|| {
+        Ok(Json(crate::tasks::since(
+            &crate::tasks::scope(&app, project)?,
+            after,
+        )))
+    })
+}
+
+async fn task_detail(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath((project, task)): UrlPath<(u64, u32)>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, false)?;
+    let can_act = app.site.allows(Capability::TaskAct);
+    blocking(|| crate::tasks::detail(&crate::tasks::scope(&app, project)?, task, can_act).map(Json))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TextInput {
+    text: String,
+}
+
+async fn tasks_say(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    UrlPath(project): UrlPath<u64>,
+    Json(input): Json<TextInput>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, true)?;
+    act_budget(&app, &device)?;
+    blocking(|| {
+        crate::tasks::say(&app, &crate::tasks::scope(&app, project)?, &input.text).map(Json)
+    })
+}
+
+/// The body of a task action; each action reads only its own fields.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct ActInput {
+    text: Option<String>,
+    tool: Option<String>,
+    result: Option<wsx_core::task::Verdict>,
+    note: Option<String>,
+}
+
+async fn task_act(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    UrlPath((project, task, action)): UrlPath<(u64, u32, String)>,
+    Json(input): Json<ActInput>,
+) -> Outcome<Json<Value>> {
+    use wsx_core::task::HostRequest;
+    tasks_allowed(&app, true)?;
+    let missing = |field: &str| Fault::new(400, "invalid_body", format!("{action} needs {field}"));
+    let request = match action.as_str() {
+        "add" => HostRequest::Add {
+            text: input.text.ok_or_else(|| missing("text"))?,
+        },
+        "steer" => HostRequest::Steer {
+            text: input.text.ok_or_else(|| missing("text"))?,
+        },
+        "allow" => HostRequest::Allow {
+            tool: input.tool.ok_or_else(|| missing("tool"))?,
+        },
+        "verify" => HostRequest::Verify {
+            result: input.result.ok_or_else(|| missing("result"))?,
+            note: input.note.filter(|note| !note.trim().is_empty()),
+        },
+        "land" => HostRequest::Land { skip_verify: false },
+        _ => return Err(Fault::not_found()),
+    };
+    act_budget(&app, &device)?;
+    let scope = blocking(|| crate::tasks::scope(&app, project))?;
+    // A landing may take minutes; it must not hold a runtime worker.
+    tokio::task::spawn_blocking(move || crate::tasks::act(&scope, task, request))
+        .await
+        .map_err(|_| Fault::new(500, "task_action", "the action stopped unexpectedly"))?
+        .map(Json)
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct DecideInput {
+    note: Option<String>,
+}
+
+async fn task_decide(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    UrlPath((project, id, decision)): UrlPath<(u64, String, String)>,
+    Json(input): Json<DecideInput>,
+) -> Outcome<Response> {
+    tasks_allowed(&app, true)?;
+    act_budget(&app, &device)?;
+    blocking(|| {
+        let scope = crate::tasks::scope(&app, project)?;
+        match decision.as_str() {
+            "approve" => Ok((
+                StatusCode::ACCEPTED,
+                Json(crate::tasks::approve(&app, scope, &id)?),
+            )
+                .into_response()),
+            "deny" => Ok(Json(crate::tasks::deny(&scope, &id, input.note)?).into_response()),
+            _ => Err(Fault::not_found()),
+        }
+    })
+}
+
 fn media_fault(error: MediaError) -> Fault {
     match error {
         MediaError::TooLarge => {
@@ -1045,6 +1236,9 @@ async fn push_set(
     Json(input): Json<PushInput>,
 ) -> Outcome<Json<Value>> {
     allow(&app, Capability::Push, "notifications")?;
+    if input.topics.contains(&Topic::Tasks) {
+        allow(&app, Capability::TaskView, "task notifications")?;
+    }
     let push = app
         .push
         .as_ref()
