@@ -348,9 +348,9 @@ fn read_file(
                 keep[position] = true;
                 if segment_end.is_some() {
                     moved.push(position);
-                }
-                if segment_end.is_some() && node.id.as_deref() == segment_end {
-                    break;
+                    if node.id.as_deref() == segment_end {
+                        break;
+                    }
                 }
                 // ^ Claude 2.1.300: a compaction boundary starts a new chain, and its
                 // `preservedSegment` names the newest old records the model still has,
@@ -695,10 +695,7 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
             || text.starts_with("<local-command-stdout>")
             || text.starts_with("<local-command-stderr>"));
     // ^ A slash command Claude ran itself is saved in tags: show it as the person typed it.
-    let text = match command_line(provider, role, &text) {
-        Some(line) => line,
-        None => text,
-    };
+    let text = command_line(provider, role, &text).unwrap_or(text);
     let preserved = (provider == "claude")
         .then(|| record.get("compactMetadata")?.get("preservedSegment"))
         .flatten()
@@ -724,10 +721,9 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
             .get("timestamp")
             .and_then(Value::as_u64)
             .or_else(|| unix_ms(record.get("timestamp")?.as_str()?)),
-        // Claude also writes its own interruption notice and a command's output in the
-        // person's name, and
-        // (2.1.300) a background-task notice with `promptSource: "system"`. A prompt the
-        // person gave is `typed`, `suggestion_accepted`, `queued` or `sdk`.
+        // Claude also writes its own interruption notice, a command's output and (2.1.300)
+        // a background-task notice with `promptSource: "system"` in the person's name. A
+        // prompt the person gave is `typed`, `suggestion_accepted`, `queued` or `sdk`.
         meta: record.get("isMeta").and_then(Value::as_bool) == Some(true)
             || (role == "user" && text_is_notice)
             || (provider == "claude"

@@ -5175,17 +5175,7 @@ fn create_agent_exchange_with_draft(
         .iter_mut()
         .find(|exchange| exchange.id == id)
         .expect("new exchange remains persisted");
-    // ^ docs/agent-orchestration.md: only successful PTY delivery publishes this round's input digest.
-    exchange.delivery_sha256 = delivered.is_ok().then_some(delivery_sha256);
-    exchange.failure = delivered
-        .err()
-        .map(|error| format!("{}: {}", error.code, error.message));
-    exchange.state = if exchange.failure.is_none() {
-        exchange.evidence = AgentExchangeEvidence::PtyDelivery;
-        AgentExchangeState::Delivered
-    } else {
-        AgentExchangeState::DeliveryFailed
-    };
+    record_delivery(exchange, delivered, delivery_sha256);
     exchange.updated_unix_ms = unix_time_millis();
     exchange.revision = revision;
     let response = exchange.clone();
@@ -5338,16 +5328,7 @@ fn continue_agent_exchange_with_draft(
         .iter_mut()
         .find(|exchange| exchange.id == id)
         .unwrap();
-    exchange.delivery_sha256 = delivered.is_ok().then_some(delivery_sha256);
-    exchange.failure = delivered
-        .err()
-        .map(|error| format!("{}: {}", error.code, error.message));
-    exchange.state = if exchange.failure.is_none() {
-        exchange.evidence = AgentExchangeEvidence::PtyDelivery;
-        AgentExchangeState::Delivered
-    } else {
-        AgentExchangeState::DeliveryFailed
-    };
+    record_delivery(exchange, delivered, delivery_sha256);
     exchange.updated_unix_ms = unix_time_millis();
     exchange.revision = revision;
     let response = exchange.clone();
@@ -5364,6 +5345,28 @@ fn continue_agent_exchange_with_draft(
         exchange: response,
         frame: None,
     })
+}
+
+/// The outcome of one round's PTY delivery. Only a successful delivery publishes the
+/// round's input digest (docs/agent-orchestration.md); a failed one keeps its reason.
+fn record_delivery(
+    exchange: &mut AgentExchange,
+    delivered: Result<(), ApiError>,
+    delivery_sha256: String,
+) {
+    match delivered {
+        Ok(()) => {
+            exchange.delivery_sha256 = Some(delivery_sha256);
+            exchange.failure = None;
+            exchange.evidence = AgentExchangeEvidence::PtyDelivery;
+            exchange.state = AgentExchangeState::Delivered;
+        }
+        Err(error) => {
+            exchange.delivery_sha256 = None;
+            exchange.failure = Some(format!("{}: {}", error.code, error.message));
+            exchange.state = AgentExchangeState::DeliveryFailed;
+        }
+    }
 }
 
 fn expire_agent_exchange(

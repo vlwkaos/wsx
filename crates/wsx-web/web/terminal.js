@@ -1,7 +1,6 @@
 // Terminal view of one session: xterm.js on the pane's raw byte stream over one WebSocket.
 // Contract: docs/web-client.md "Terminal". Input behaviour follows remotty's Terminal.tsx.
 // ^ wsxd's own emulator already answers terminal queries, so this one must stay silent.
-import { resolve } from "./api.js";
 import { add, fill, h } from "./dom.js";
 import { can, state as store, touch as touchDevice } from "./store.js";
 
