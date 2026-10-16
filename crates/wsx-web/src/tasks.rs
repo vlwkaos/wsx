@@ -18,11 +18,11 @@ use std::{
 use wsx_core::config::project::load_task_config;
 use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
-    self, call_host, call_socket, copy, ledger,
+    self, brief, call_host, call_socket, copy, ledger,
     manager::{pending_approvals, ApprovalLine, ManagerEvent, ManagerRequest, ManagerResponse},
     owner,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
-    view, HostRequest, LogEvent, TaskRecord, TaskState, Verdict, MAX_MESSAGE_BYTES,
+    view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, Verdict, MAX_MESSAGE_BYTES,
 };
 
 const SUMMARY_CHARS: usize = 240;
@@ -148,6 +148,14 @@ pub fn overview(scope: &Scope) -> Value {
         };
         if record.state == TaskState::Blocked {
             row["denials"] = result["denials"].clone();
+        }
+        // ^ A brief's card reads as its build prompt.
+        if let Some(file) = (record.state == TaskState::Briefed)
+            .then(|| brief::read(dir))
+            .flatten()
+        {
+            row["summary"] = json!(view::clip(&file.brief.rewritten_prompt, SUMMARY_CHARS));
+            row["brief_version"] = json!(file.version);
         }
         needs.push((rank, record.updated_unix_ms, row));
     }
@@ -388,6 +396,9 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     summary["denials"] = result["denials"].clone();
     summary["checks"] = result["checks"].clone();
     summary["report"] = json!(report);
+    summary["phase"] = json!(record.phase);
+    summary["brief"] = json!(brief::read(&dir));
+    summary["talk"] = talk(&log);
     summary["timeline"] = timeline(&log);
     summary["overlaps"] = if record.state.is_open() {
         view::overlaps(&record, &records, true)
@@ -438,6 +449,28 @@ fn actions(state: TaskState, unverified: bool) -> Vec<&'static str> {
         TaskState::InReview => vec!["land", "add"],
         TaskState::Landed | TaskState::Closed => vec![],
     }
+}
+
+/// The talk-through before the build, in order: the owner's replies to the brief and the
+/// worker's answers. A reply is an add or steer logged before `started`.
+fn talk(log: &[task::LogEntry]) -> Value {
+    let mut rows = Vec::new();
+    for entry in log {
+        match &entry.event {
+            LogEvent::Started { .. } => break,
+            LogEvent::Message {
+                mode: MessageKind::Add | MessageKind::Steer,
+                text,
+            } => rows.push(json!({ "from": "owner", "text": text, "unix_ms": entry.unix_ms })),
+            LogEvent::Brief {
+                version, answer, ..
+            } if !answer.is_empty() => rows.push(json!({
+                "from": "worker", "text": answer, "version": version, "unix_ms": entry.unix_ms,
+            })),
+            _ => {}
+        }
+    }
+    json!(rows)
 }
 
 /// The log without agent progress: each run of progress lines becomes one `steps` entry
@@ -769,9 +802,14 @@ fn notice(scope: &Scope, watch: &mut Watch) {
         if first || before == Some(now) {
             continue;
         }
-        let change = (Some(record.id), record.state.as_str().to_string());
+        let words = match record.state {
+            TaskState::Briefed => "brief ready",
+            state => state.as_str(),
+        };
+        let change = (Some(record.id), words.to_string());
         match record.state {
-            TaskState::Blocked | TaskState::Conflict => {
+            // ^ A brief waits for the owner's start, so it is sent at once like a block.
+            TaskState::Blocked | TaskState::Conflict | TaskState::Briefed => {
                 Batch::add(&mut watch.urgent, scope, change)
             }
             TaskState::Ready | TaskState::Failed | TaskState::Landed => {

@@ -25,7 +25,7 @@ export async function loadTasks(project) {
 
 // A task state in words, and the tone that repeats it.
 const STATES = {
-  starting: ["starting", "accent"], working: ["working", "accent"], checking: ["checking", "accent"],
+  starting: ["starting", "accent"], working: ["working", "accent"], checking: ["checking", "accent"], briefed: ["brief ready", "attention"],
   blocked: ["blocked", "attention"], ready: ["ready", "accent"], failed: ["failed", "danger"],
   conflict: ["conflict", "danger"], stopped: ["stopped", "muted"], in_review: ["in review", "muted"],
   landed: ["landed", "muted"], closed: ["closed", "muted"],
@@ -58,15 +58,17 @@ export function withChips(project) {
 // What each Needs-you item is, in words.
 const KIND_WORDS = {
   blocked: "needs an answer", conflict: "conflict", failed: "failed", verify: "ready to verify",
-  land: "ready to land", review: "in review",
+  land: "ready to land", review: "in review", brief: "brief ready",
 };
-const KIND_TONE = { blocked: "attention", conflict: "danger", failed: "danger", approval: "attention", verify: "accent", land: "accent", review: "muted" };
-// One open item in words, as the owner would read it: "#4 needs an answer", "Approve land #3".
+const KIND_TONE = { blocked: "attention", conflict: "danger", failed: "danger", approval: "attention", brief: "attention", verify: "accent", land: "accent", review: "muted" };
+// One open item in words, as the owner would read it: "#4 needs an answer", "Approve land #3",
+// "Brief ready #2".
 const NEED_WORDS = {
   blocked: "needs an answer", conflict: "has a conflict", failed: "failed", verify: "is ready to verify",
   land: "is ready to land", review: "is in review",
 };
-export const needWords = (item) => item.kind === "approval" ? item.label : `#${item.task} ${NEED_WORDS[item.kind]}`;
+export const needWords = (item) => item.kind === "approval" ? item.label
+  : item.kind === "brief" ? `Brief ready #${item.task}` : `#${item.task} ${NEED_WORDS[item.kind]}`;
 export const needTone = (item) => KIND_TONE[item.kind];
 const itemKey = (item) => item.kind === "approval" ? item.approval : `${item.kind}-${item.task}`;
 const needId = (item) => `need-${itemKey(item)}`;
@@ -144,6 +146,11 @@ function NeedRow({ project, item, card, flash }) {
       ${button("Answer", () => open("answer"), { "aria-expanded": draft.field === "answer" })}`;
   } else if (acting && item.kind === "approval") {
     actions = html`${button("Deny", () => run("deny"))}${button("Approve", () => run("approve"))}`;
+  } else if (acting && item.kind === "brief") {
+    // ^ A reply is a talk-through turn (an add); Start builds the brief's rewritten prompt.
+    actions = html`
+      ${button("Reply", () => open("answer"), { "aria-expanded": draft.field === "answer", "aria-label": `Reply to the brief of #${item.task}` })}
+      ${button("Start", () => run("start"), { "aria-label": `Start the build of #${item.task}` })}`;
   } else if (acting && (item.kind === "land" || item.kind === "review")) {
     actions = button(item.kind === "land" ? "Land" : "Check", () => run("land"), { "aria-label": `${item.kind === "land" ? "Land" : "Check the pull request of"} #${item.task}` });
   } else if (item.kind === "verify" && item.task != null) {
@@ -170,8 +177,8 @@ function NeedRow({ project, item, card, flash }) {
       ${draft.field && html`
         <form class="need-form" onSubmit=${submit}>
           <input class="input" ref=${field} type="text" autocomplete="off" value=${draft.text}
-            aria-label=${draft.field === "answer" ? `Answer to #${item.task}` : `Tool to allow for #${item.task}`}
-            placeholder=${draft.field === "answer" ? "Answer" : "Tool, such as Bash(make:*)"}
+            aria-label=${draft.field === "answer" ? `${item.kind === "brief" ? "Reply to the brief of" : "Answer to"} #${item.task}` : `Tool to allow for #${item.task}`}
+            placeholder=${draft.field === "answer" ? (item.kind === "brief" ? "Reply to the brief" : "Answer") : "Tool, such as Bash(make:*)"}
             onInput=${(event) => { draft.text = event.target.value; }} disabled=${draft.busy} />
           <button class="button" type="submit" disabled=${draft.busy}>${draft.field === "answer" ? "Send" : "Allow"}</button>
         </form>`}

@@ -43,6 +43,9 @@ function described(entry) {
     case "landed": return ["Landed", short(entry.commit), "accent"];
     case "in_review": return [`Pull request r${entry.revision}`, entry.url];
     case "pr_closed": return ["Pull request closed", entry.url, "attention"];
+    case "brief": return [`Brief v${entry.version}`, entry.denials?.length ? `denied: ${entry.denials.join(", ")}` : entry.answer ?? ""];
+    case "brief_skipped": return ["Built without a brief", `${entry.by === "flag" ? "--no-brief" : "tasks.brief: false"} by the ${entry.actor}`];
+    case "started": return [`Build started from brief v${entry.version}`, entry.prompt, "accent"];
     default: return [entry.kind, ""];
   }
 }
@@ -105,6 +108,48 @@ function Verify({ detail, act }) {
     </div>`;
 }
 
+// The brief's sections in the order the owner reads them (docs/tasks.md "Brief"); an empty one
+// is left out. Each concept folds to its term.
+function BriefSections({ brief, words }) {
+  const prose = (text) => html`<${Markdown} text=${text} words=${words} />`;
+  const list = (items, item) => items.length ? html`<ul class="task-brief-list">${items.map((entry, index) => html`<li key=${index}>${item(entry)}</li>`)}</ul>` : null;
+  const parts = [
+    ["What a top professional would add", list(brief.additions, (entry) => html`<strong>${entry.what}</strong>${prose(entry.why)}`)],
+    ["Raw material", list(brief.raw_material, (entry) => html`<code class="path">${entry.source}</code>${prose(entry.why)}`)],
+    ["Methods and tools", list(brief.methods, prose)],
+    ["Independent check", list(brief.independent_check, prose)],
+    ["Concepts to know", brief.concepts.length ? html`
+      <div class="task-concepts">${brief.concepts.map((entry, index) => html`
+        <details class="task-concept" key=${index}>
+          <summary class="task-concept-term"><${Icon} name="chevron" />${entry.term}</summary>
+          <div class="task-concept-body">${prose(entry.explanation)}</div>
+        </details>`)}
+      </div>` : null],
+    ["Rewritten prompt", prose(brief.rewritten_prompt)],
+    ["Open questions", list(brief.open_questions, prose)],
+  ];
+  return parts.filter(([, body]) => body).map(([title, body]) => html`
+    <section class="task-section" key=${title} aria-label=${title}>
+      <h2 class="label">${title}</h2>
+      <div class="task-body">${body}</div>
+    </section>`);
+}
+
+// The talk-through before the build: each reply of the owner and the worker's answer.
+function Talk({ talk, words }) {
+  return html`
+    <section class="task-section" aria-label="Talk-through">
+      <h2 class="label">Talk-through</h2>
+      <ol class="task-talk">
+        ${talk.map((entry, index) => html`
+          <li key=${index} data-from=${entry.from}>
+            <span class="task-talk-who">${entry.from === "owner" ? "You" : `Worker${entry.version ? `, brief v${entry.version}` : ""}`}</span>
+            <div class="task-talk-text"><${Markdown} text=${entry.text} words=${words} /></div>
+          </li>`)}
+      </ol>
+    </section>`;
+}
+
 // The task's message field: an add (an answer after the turn), or a steer into a running turn.
 function Message({ detail, act }) {
   const field = useRef();
@@ -125,7 +170,8 @@ function Message({ detail, act }) {
       <div class="composer-row" onPointerDown=${(event) => { if (!event.target.closest("button, textarea")) { event.preventDefault(); field.current.focus(); } }}>
         <div class="composer-input">
           <textarea class="composer-field" ref=${field} rows="1" aria-label=${`Message to #${detail.id}`}
-            placeholder=${detail.state === "blocked" ? "Answer the worker" : steering ? "Steer or add a message" : "Add a message"}
+            placeholder=${detail.phase === "brief" ? (steering ? "Reply to the worker" : "Reply to the brief")
+              : detail.state === "blocked" ? "Answer the worker" : steering ? "Steer or add a message" : "Add a message"}
             onInput=${() => { setText(field.current.value); grow(field.current); }} onFocus=${isolate} onBlur=${release}></textarea>
         </div>
         ${steering && html`<button class="link-action task-steer" type="button" disabled=${!text.trim() || Boolean(act.busy)}
@@ -182,7 +228,8 @@ export function TaskPage({ project, task, onClose, grip }) {
       <button class="icon-button" type="button" aria-label="Back to the chat" onClick=${onClose}><${Icon} name="back" /></button>
       <div class="bar-title">
         <span class="bar-label">#${task}${detail?.title ? ` ${detail.title}` : ""}</span>
-        ${detail && html`<span class="bar-state" data-tone=${taskState(detail.state)[1]}>${taskState(detail.state)[0]} · r${detail.revision}</span>`}
+        ${detail && html`<span class="bar-state" data-tone=${taskState(detail.state)[1]}>${taskState(detail.state)[0]}${detail.phase === "brief"
+          ? (detail.brief ? ` · brief v${detail.brief.version}` : "") : ` · r${detail.revision}`}</span>`}
       </div>
       ${worker && html`<div class="bar-tools"><a class="link-action bar-link" href=${`#/s/${worker.id}/terminal`}>Session</a></div>`}
     </header>`;
@@ -226,14 +273,25 @@ export function TaskPage({ project, task, onClose, grip }) {
       <div class="actions"><button class="button" type="button"
         onClick=${() => document.getElementById("human-verify")?.scrollIntoView({ block: "start" })}>Review</button></div>
     </div>`;
+  const brief = detail.brief;
+  const start = actions.includes("start") && brief && html`
+    <div class="task-row">
+      <p>Brief v${brief.version} is ready. Start builds its rewritten prompt; reply below to talk it through first.</p>
+      <div class="actions"><button class="button" type="button" disabled=${Boolean(act.busy)}
+        onClick=${() => act.run("start", `api/tasks/${project}/t/${task}/start`, {})}>${act.busy === "start" ? "Starting…" : "Start the build"}</button></div>
+    </div>`;
+  const briefing = detail.phase === "brief";
   const entries = detail.timeline.entries;
   return html`
     <div class="page task-page">
       ${top}
       <div class="scroll">
         <${TaskStory} project=${project} detail=${detail} onExplained=${onClose} />
-        ${(approvals.length || allow || land || review) && html`
-          <section class="task-actions" aria-label="Actions">${approvals}${allow}${review}${land}</section>`}
+        ${(approvals.length || allow || land || review || start) && html`
+          <section class="task-actions" aria-label="Actions">${approvals}${start}${allow}${review}${land}</section>`}
+        ${briefing && brief && html`<${BriefSections} brief=${brief.brief} words=${words} />`}
+        ${briefing && !brief && detail.state !== "failed" && html`<p class="empty">The worker is writing the brief. Nothing is built before you start it.</p>`}
+        ${detail.talk.length ? html`<${Talk} talk=${detail.talk} words=${words} />` : null}
         ${sections(detail.report).map((section) => html`
           <section class="task-section" key=${section.title} aria-label=${section.title}
             id=${section.title === "Human Verify" ? "human-verify" : null}>
@@ -246,7 +304,12 @@ export function TaskPage({ project, task, onClose, grip }) {
             <h2 class="label">The worker says</h2>
             <div class="task-body"><${Markdown} text=${[detail.result.summary, detail.result.notes].filter(Boolean).join("\n\n")} words=${words} /></div>
           </section>` : null}
-        ${!detail.report && !detail.result?.summary && html`<p class="empty">No report yet: the worker has not finished a revision.</p>`}
+        ${!briefing && !detail.report && !detail.result?.summary && html`<p class="empty">No report yet: the worker has not finished a revision.</p>`}
+        ${!briefing && brief && html`
+          <details class="task-section task-fold">
+            <summary class="label timeline-head"><${Icon} name="chevron" />Brief v${brief.version}</summary>
+            <${BriefSections} brief=${brief.brief} words=${words} />
+          </details>`}
         ${detail.overlaps.length ? html`
           <section class="task-section" aria-label="Shared files">
             <h2 class="label">Shared files</h2>

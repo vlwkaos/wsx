@@ -2437,10 +2437,11 @@ def task_journey(args):
         # ^ Its own TMPDIR: the task host sockets' folder goes away with the run.
         # `calm` has no task and no session: home lists it last. With --browser, `busy`, `quiet` and
         # `gone` have agent sessions and no task: home words their rows from the sessions.
-        home, state, project, other, calm, bin_dir, tmp = (work / name for name in ('h', 's', 'demo', 'ui', 'calm', 'bin', 't'))
-        for folder in (home, state, project, other, calm, bin_dir, tmp):
+        # `plans` builds with a brief first (docs/tasks.md "Brief"): its tasks wait as briefed.
+        home, state, project, other, calm, plans, bin_dir, tmp = (work / name for name in ('h', 's', 'demo', 'ui', 'calm', 'plans', 'bin', 't'))
+        for folder in (home, state, project, other, calm, plans, bin_dir, tmp):
             folder.mkdir(mode=0o700)
-        project, other, calm = project.resolve(), other.resolve(), calm.resolve()
+        project, other, calm, plans = project.resolve(), other.resolve(), calm.resolve(), plans.resolve()
         session_projects = [(work / name) for name in (('busy', 'quiet', 'gone') if args.browser else ())]
         for folder in session_projects:
             folder.mkdir(mode=0o700)
@@ -2450,7 +2451,7 @@ def task_journey(args):
         (config / 'config-v2.toml').write_text(
             'resume_agents_on_restore = false\n' + ''.join(
                 '[[projects]]\nname = "%s"\npath = %s\n' % (folder.name, json.dumps(str(folder)))
-                for folder in (project, other, calm, *session_projects)))
+                for folder in (project, other, calm, plans, *session_projects)))
         fake = bin_dir / 'claude'
         fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(ROOT / 'scripts/fake-claude-stream.py') + ' "$@"\n')
         fake.chmod(0o755)
@@ -2459,10 +2460,11 @@ def task_journey(args):
                'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_SOCKET': str(path),
                'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
                'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp)}
-        for folder in (project, other, calm, *session_projects):
+        for folder in (project, other, calm, plans, *session_projects):
             for argv in (['init', '-q', '-b', 'main'], ['add', '.'], ['commit', '-q', '-m', 'start']):
                 if argv[0] == 'add':
-                    (folder / 'wsx.config.yml').write_text(TASK_CONFIG)
+                    (folder / 'wsx.config.yml').write_text(
+                        TASK_CONFIG.replace('  brief: false\n', '') if folder == plans else TASK_CONFIG)
                     (folder / 'README').write_text('fixture\n')
                 subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', *argv],
                                cwd=folder, env=env, check=True, capture_output=True, timeout=20)
@@ -2491,6 +2493,12 @@ def task_journey(args):
         wait_state(1, 'blocked')
         wait_state(2, 'ready')
         wait_state(3, 'ready')
+        # Two briefs in `plans`: #1 for the page, #2 for the API.
+        assert js('task', 'new', 'Let me jump between projects from the keyboard, without the mouse REWRITE WORK keys.txt',
+                  '-p', 'plans')['id'] == 1
+        assert js('task', 'new', 'REWRITE WORK two.txt', '-p', 'plans')['id'] == 2
+        for n in (1, 2):
+            wait(lambda: js('task', 'show', n, '-p', 'plans')['state'] == 'briefed', 'plans #%d briefed' % n)
         if args.browser:
             # The same store in the second project (`ui`), for the page: the browser acts on it.
             for prompt in ('NEEDS Bash(make:*) WORK m.txt', 'WORK a.txt HV', 'WORK b.txt', 'NEEDS Bash(make:*) WORK n.txt'):
@@ -2718,26 +2726,54 @@ digest_max_seconds = 6
         for route in ('/api/tasks', '/api/tasks/%d' % demo, '/api/tasks/%d/chat' % demo, '/api/tasks/%d/brief' % demo):
             assert steady(plain, 'GET', route)[0] == 403, route
         ok('brief: the ledger with deploys and the main checkout; refusals: task_act and task_view per site, ungranted project 404, actions hidden without task_act')
+
+        # --- A task brief (docs/tasks.md "Brief"): a need ranked with approvals, its sections, a
+        # talk-through as reply and answer, Start, and nothing built before it.
+        planned = ids['plans']
+        view = steady(owner, 'GET', '/api/tasks/%d' % planned)[1]
+        assert [(item['kind'], item['task']) for item in view['needs']] == [('brief', 1), ('brief', 2)], view['needs']
+        assert view['needs'][1]['summary'] == 'WORK two.txt' and view['needs'][1]['brief_version'] == 1, view['needs'][1]
+        detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % planned)[1]
+        assert detail['phase'] == 'brief' and detail['actions'] == ['start', 'add'] and detail['talk'] == [], detail
+        assert detail['brief']['version'] == 1 and detail['brief']['brief']['rewritten_prompt'] == 'WORK two.txt', detail['brief']
+        assert steady(viewer, 'POST', '/api/tasks/%d/t/2/start' % planned, {})[0] == 403
+        assert steady(owner, 'POST', '/api/tasks/%d/t/2/add' % planned, {'text': 'Why two? REVISE WORK three.txt'})[0] == 200
+
+        def plan_detail(test, label):
+            return wait(lambda: (current := steady(owner, 'GET', '/api/tasks/%d/t/2' % planned)[1]) and test(current) and current, label)
+        detail = plan_detail(lambda d: d['state'] == 'briefed' and d['brief']['version'] == 2, 'brief v2')
+        assert [(row['from'], row['text']) for row in detail['talk']] == [
+            ('owner', 'Why two? REVISE WORK three.txt'), ('worker', 'answered: Why two? REVISE WORK three.txt')], detail['talk']
+        assert not (work / 'plans-t2' / 'two.txt').exists() and not (work / 'plans-t2' / 'three.txt').exists()
+        status, started_build = steady(owner, 'POST', '/api/tasks/%d/t/2/start' % planned, {})
+        assert status == 200 and started_build['message'] == 'started the build of brief v2', started_build
+        detail = plan_detail(lambda d: d['state'] == 'ready', '#2 built')
+        assert detail['phase'] == 'build' and 'start' not in detail['actions'] and len(detail['talk']) == 2, detail
+        assert (work / 'plans-t2' / 'three.txt').exists()
+        status, refused = steady(owner, 'POST', '/api/tasks/%d/t/2/start' % planned, {})
+        assert status == 409 and 'only a briefed task starts' in refused['error']['message'], refused
+        ok('task brief: a need with the rewritten prompt, sections and actions, a talk-through as reply and answer, Start builds the revised prompt, a second Start refused, viewers cannot start')
         if args.browser:
             args.captures.mkdir(parents=True, exist_ok=True)
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
             # Home's order by its rule: needs first (most urgent kind, then the oldest need of it),
             # then the last activity, newest first (docs/web-client.md "Home").
-            urgency = {'blocked': 0, 'conflict': 1, 'failed': 1, 'approval': 2, 'verify': 3, 'land': 4, 'review': 4}
+            urgency = {'blocked': 0, 'conflict': 1, 'failed': 1, 'approval': 2, 'brief': 2, 'verify': 3, 'land': 4, 'review': 4}
             def home_key(name):
                 view = steady(owner, 'GET', '/api/tasks/%d' % ids[name])[1]
                 if not view['needs']:
                     return (1, -(view['last_unix_ms'] or 0), 0)
                 rank = min(urgency[item['kind']] for item in view['needs'])
                 return (0, rank, min(item['unix_ms'] for item in view['needs'] if urgency[item['kind']] == rank))
-            home_order = sorted((name for name in ids if name in ('ui', 'demo', 'calm')), key=home_key)
-            assert home_order == ['ui', 'demo', 'calm'], home_order
+            home_order = sorted((name for name in ids if name in ('ui', 'demo', 'plans', 'calm')), key=home_key)
+            # ^ A brief ranks with approval requests, so `plans` comes before demo's verify and land.
+            assert home_order == ['ui', 'plans', 'demo', 'calm'], home_order
             # ^ Projects with sessions and no task follow by their newest session (created in this order).
-            home_order[2:2] = ['busy', 'quiet', 'gone']
+            home_order[-1:-1] = ['busy', 'quiet', 'gone']
             result = check(work, [node, str(ROOT / 'scripts/web-tasks-check.mjs'), owner.origin + '/', browser_code,
                                   str(ids['ui']), str(args.captures), ','.join(home_order),
-                                  str(audit) if audit.exists() else ''], timeout=300)
+                                  str(audit) if audit.exists() else '', str(ids['plans'])], timeout=300)
             assert result.returncode == 0, result.stdout + result.stderr
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
 
@@ -2823,7 +2859,13 @@ digest_max_seconds = 6
         js('task', 'say', 'RUN wsx task land %d -p demo --json' % steady_ids[0], '-p', 'demo')
         asked = new_pushes(1, 'approval push')
         assert asked[0]['body'] == 'Approve land #%d' % steady_ids[0] and asked[0]['tag'].endswith('-now'), asked
-        ok('task push: blocked merged in one, ready as one digest, the digest cap, the shown project skipped for that device, presence ends with the stream, an approval named by its action, tasks topic needs task_view')
+        baseline += 1
+        # A brief waits for the owner's start: it is sent at once, like a block.
+        planned_late = js('task', 'new', 'REWRITE NOOP', '-p', 'plans')['id']
+        briefed_push = new_pushes(1, 'brief push')
+        assert briefed_push[0]['body'] == '#%d brief ready' % planned_late and briefed_push[0]['tag'].endswith('-now'), briefed_push
+        assert briefed_push[0]['url'] == '#/p/%d/t/%d' % (ids['plans'], planned_late), briefed_push
+        ok('task push: blocked merged in one, ready as one digest, the digest cap, the shown project skipped for that device, presence ends with the stream, an approval named by its action, a brief at once, tasks topic needs task_view')
         success = True
     finally:
         for process in reversed(STARTED):
