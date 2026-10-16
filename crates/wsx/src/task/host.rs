@@ -58,7 +58,7 @@ struct Host {
     turn_active: bool,
     /// Adds sent during a turn or a check, delivered when it ends.
     pending: VecDeque<String>,
-    /// An allowed tool takes effect when the agent next starts.
+    /// A grant, a revoke or a phase change takes effect when the agent next starts.
     restart_needed: bool,
     stop_requested: bool,
     /// The result of the latest turn, until its checks end.
