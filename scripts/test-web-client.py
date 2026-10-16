@@ -2392,6 +2392,20 @@ TASK_CONFIG = '''tasks:
   deploy: { command: "true" }
 '''
 
+# An agent session for Home's session words: report one state as Claude, then stay or end.
+SESSION_AGENT = r'''
+import json, os, socket, sys, time
+with socket.socket(socket.AF_UNIX) as client:
+    client.connect(os.environ['WSX_SOCKET']); stream = client.makefile('rb')
+    client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
+    params = {'pane_id': int(os.environ['WSX_PANE_ID']), 'runtime_generation': os.environ['WSX_RUNTIME_GENERATION'],
+              'provider': 'claude', 'state': sys.argv[1], 'capabilities': {'prompt': False, 'lifecycle': True}}
+    client.sendall(json.dumps({'method': 'agent_report', 'params': params}).encode() + b'\n')
+    assert json.loads(stream.readline())['type'] == 'ack'
+if sys.argv[2] == 'stay':
+    time.sleep(3600)
+'''
+
 
 def task_journey(args):
     """Tasks and the manager through the web API on an isolated wsxd with the stream-json
@@ -2420,17 +2434,22 @@ def task_journey(args):
 
     try:
         # ^ Its own TMPDIR: the task host sockets' folder goes away with the run.
-        # `calm` has no task: home lists it last.
+        # `calm` has no task and no session: home lists it last. With --browser, `busy`, `quiet` and
+        # `gone` have agent sessions and no task: home words their rows from the sessions.
         home, state, project, other, calm, bin_dir, tmp = (work / name for name in ('h', 's', 'demo', 'ui', 'calm', 'bin', 't'))
         for folder in (home, state, project, other, calm, bin_dir, tmp):
             folder.mkdir(mode=0o700)
         project, other, calm = project.resolve(), other.resolve(), calm.resolve()
+        session_projects = [(work / name) for name in (('busy', 'quiet', 'gone') if args.browser else ())]
+        for folder in session_projects:
+            folder.mkdir(mode=0o700)
+        session_projects = [folder.resolve() for folder in session_projects]
         config = (home / 'Library/Application Support/wsx' if sys.platform == 'darwin' else work / 'c/wsx')
         config.mkdir(parents=True)
         (config / 'config-v2.toml').write_text(
             'resume_agents_on_restore = false\n' + ''.join(
                 '[[projects]]\nname = "%s"\npath = %s\n' % (folder.name, json.dumps(str(folder)))
-                for folder in (project, other, calm)))
+                for folder in (project, other, calm, *session_projects)))
         fake = bin_dir / 'claude'
         fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(ROOT / 'scripts/fake-claude-stream.py') + ' "$@"\n')
         fake.chmod(0o755)
@@ -2439,7 +2458,7 @@ def task_journey(args):
                'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_SOCKET': str(path),
                'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
                'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp)}
-        for folder in (project, other, calm):
+        for folder in (project, other, calm, *session_projects):
             for argv in (['init', '-q', '-b', 'main'], ['add', '.'], ['commit', '-q', '-m', 'start']):
                 if argv[0] == 'add':
                     (folder / 'wsx.config.yml').write_text(TASK_CONFIG)
@@ -2483,6 +2502,37 @@ def task_journey(args):
                  'approval requests in ui', timeout=30)
             # A deploy of the default branch tip: the brief says it is up to date until a task lands.
             assert js('task', 'deploy', '-p', 'ui')['exit'] == 0
+            # Sessions without tasks, oldest first: an agent that exited (`gone`), one done
+            # (`quiet`), two working (`busy`).
+            agent_script = work / 'session-agent.py'
+            agent_script.write_text(SESSION_AGENT)
+
+            def call(method, params):
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.settimeout(5)
+                    client.connect(str(path))
+                    stream = client.makefile('rb')
+                    client.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
+                    stream.readline()
+                    client.sendall(json.dumps({'method': method, 'params': params}).encode() + b'\n')
+                    return json.loads(stream.readline())
+            snapshot = call('snapshot', None)['data']
+            names = {item['id']: Path(item['path']).name for item in snapshot['projects']}
+            worktrees = {names[item['project_id']]: item['id'] for item in snapshot['worktrees']}
+            for name, state_name, then in (('gone', 'working', 'end'), ('quiet', 'done', 'stay'),
+                                           ('busy', 'working', 'stay'), ('busy', 'working', 'stay')):
+                created = call('session_create', {'worktree_id': worktrees[name], 'label': name,
+                    'command': [sys.executable, str(agent_script), state_name, then], 'rows': 12, 'cols': 80})
+                assert created['type'] == 'created', created
+                session_id = created['data']['id']
+
+                def reported():
+                    current = call('snapshot', None)['data']
+                    pane_id = next(s['primary_pane'] for s in current['sessions'] if s['id'] == session_id)
+                    pane = next(p for p in current['panes'] if p['id'] == pane_id)
+                    return pane.get('agent') and (pane['exited'] or then == 'stay')
+                wait(reported, '%s session %s' % (name, then))
+                time.sleep(0.05)
 
         push = start(work, [node, str(ROOT / 'scripts/web-push-fixture.mjs'), str(work / 'push.jsonl')],
                      stdout=subprocess.PIPE, text=True)
@@ -2680,8 +2730,10 @@ digest_max_seconds = 6
                     return (1, -(view['last_unix_ms'] or 0), 0)
                 rank = min(urgency[item['kind']] for item in view['needs'])
                 return (0, rank, min(item['unix_ms'] for item in view['needs'] if urgency[item['kind']] == rank))
-            home_order = sorted(ids, key=home_key)
+            home_order = sorted((name for name in ids if name in ('ui', 'demo', 'calm')), key=home_key)
             assert home_order == ['ui', 'demo', 'calm'], home_order
+            # ^ Projects with sessions and no task follow by their newest session (created in this order).
+            home_order[2:2] = ['busy', 'quiet', 'gone']
             result = check(work, [node, str(ROOT / 'scripts/web-tasks-check.mjs'), owner.origin + '/', browser_code,
                                   str(ids['ui']), str(args.captures), ','.join(home_order),
                                   str(audit) if audit.exists() else ''], timeout=300)

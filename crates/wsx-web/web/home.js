@@ -1,35 +1,57 @@
 // Home with task_view: one row per granted project, what needs the owner first
 // (docs/web-client.md "Home"). A row opens the project's manager chat.
 import { ago, html, useNow } from "./lib.js";
-import { useStore } from "./store.js";
+import { isAgent, listedSessions, stateOf, useStore } from "./store.js";
 import { needTone, needWords } from "./tasks.js";
 
 // The order of need kinds, most urgent first, as the server ranks them.
 const URGENCY = { blocked: 0, conflict: 1, failed: 1, approval: 2, verify: 3, land: 4, review: 4 };
 
 // Projects with needs first, by their most urgent kind and then their oldest need of that
-// kind; then the rest by their last activity, newest first.
-function homeOrder(projects, tasks) {
+// kind; then the rest by their last activity (tasks, manager or agent sessions), newest first.
+function homeOrder(projects, tasks, sessions) {
   const rows = projects.map((project) => {
     const overview = tasks[project.id];
     const needs = overview?.needs ?? [];
     const rank = needs.length ? Math.min(...needs.map((item) => URGENCY[item.kind] ?? 5)) : null;
     const first = needs.filter((item) => (URGENCY[item.kind] ?? 5) === rank)
       .reduce((oldest, item) => (oldest && oldest.unix_ms <= item.unix_ms ? oldest : item), null);
-    return { project, overview, needs, rank, first };
+    const agents = sessions.filter((session) => session.project.id === project.id);
+    const last = Math.max(overview?.last_unix_ms ?? 0, ...agents.map((session) => session.state_since_unix_ms ?? 0)) || null;
+    return { project, overview, needs, rank, first, agents, last };
   });
   return rows.sort((left, right) => {
     if ((left.rank === null) !== (right.rank === null)) return left.rank === null ? 1 : -1;
     if (left.rank !== null) return left.rank - right.rank || left.first.unix_ms - right.first.unix_ms;
-    return (right.overview?.last_unix_ms ?? 0) - (left.overview?.last_unix_ms ?? 0);
+    return (right.last ?? 0) - (left.last ?? 0);
   });
 }
 
-// The row's one status line: the most urgent need, else the manager's last reply, else whether
-// there is any task at all.
-function statusLine({ overview, first }) {
+// The project's agent sessions in words, most urgent group first: "claude in main exited",
+// "2 working", "claude in main done 5m ago". Null without one.
+const SESSION_GROUPS = ["blocked", "error", "exited", "working", "done", "idle", "unknown"];
+function sessionWords(agents, now) {
+  for (const key of SESSION_GROUPS) {
+    const group = agents.filter((session) => stateOf(session).key === key)
+      .sort((left, right) => (right.state_since_unix_ms ?? 0) - (left.state_since_unix_ms ?? 0));
+    if (!group.length) continue;
+    const { word, tone } = stateOf(group[0]);
+    const done = key === "done" && group[0].state_since_unix_ms ? ago(now - group[0].state_since_unix_ms) : null;
+    const since = done ? ` ${done === "now" ? "just now" : done}` : "";
+    const who = group.length === 1 ? `${group[0].agent.provider} in ${group[0].branch}` : `${group.length}`;
+    return { text: `${who} ${word}${since}`, tone: ["blocked", "error", "exited"].includes(key) ? tone : null, key };
+  }
+  return null;
+}
+
+// The row's one status line: the most urgent need, else a session that needs attention or
+// works, else the manager's last reply, else the other sessions, else whether there is any task.
+function statusLine({ overview, first, agents }, now) {
   if (first) return { text: needWords(first), tone: needTone(first) };
+  const sessions = sessionWords(agents, now);
+  if (sessions && ["blocked", "error", "exited", "working"].includes(sessions.key)) return sessions;
   if (overview?.last_reply) return { text: overview.last_reply };
+  if (sessions) return sessions;
   return { text: overview?.tasks?.length ? "Nothing needs you" : "No tasks yet" };
 }
 
@@ -44,11 +66,11 @@ export function Home({ rail }) {
   else {
     body = html`
       <ul class="rows home-rows" aria-label="Projects">
-        ${homeOrder(store.projects, store.tasks).map((row) => {
-          const status = statusLine(row);
+        ${homeOrder(store.projects, store.tasks, listedSessions(store.sessions).filter(isAgent)).map((row) => {
+          const status = statusLine(row, now);
           const count = row.needs.length;
           const working = row.overview?.working ?? 0;
-          const last = row.overview?.last_unix_ms;
+          const last = row.last;
           return html`
             <li class="row" key=${row.project.id}>
               <a class="row-link home-row" href=${`#/p/${row.project.id}`} aria-current=${rail && Number(open) === row.project.id ? "page" : null}>
