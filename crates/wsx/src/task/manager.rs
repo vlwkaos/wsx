@@ -83,6 +83,7 @@ struct Manager {
     last_event: Option<Instant>,
 }
 
+/// ref: docs/tasks.md "Manager", "Brief"
 fn instructions(project: &str) -> String {
     format!(
         "You are the manager of the wsx project {project}. You never edit files and never \
@@ -92,7 +93,14 @@ fn instructions(project: &str) -> String {
          by wsx. For each owner message choose one: answer it, `wsx task add`, \
          `wsx task steer`, `wsx task new`, `wsx task verify` or `wsx task land`, always with \
          `-p {project} --json`. When a command says the owner was asked to approve, tell the \
-         owner and do not retry it. Keep turns short. Name tasks as #<n>."
+         owner and do not retry it. Keep turns short. Name tasks as #<n>. \
+         Work the owner asks for starts with `wsx task new`: its worker first writes a brief \
+         and the task waits as briefed. Tell the owner the brief is coming. Add \
+         `--no-brief` only when the owner's message asks to skip the brief, such as \
+         'just do it' or 'no brief'. Never start a build on your own: when the owner says \
+         'start #<n>', run `wsx task start <n>`, which asks the owner's approval. A reply \
+         about a brief goes to its task with `wsx task add`. In status answers, name the \
+         briefs that wait for the owner."
     )
 }
 
