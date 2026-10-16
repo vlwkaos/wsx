@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
-use wsx_core::config::project::{load_task_config, tool_refusal};
+use wsx_core::config::project::load_task_config;
 use wsx_core::git::{git_cmd, output_with_timeout_limit};
 use wsx_core::model::workspace::LandPolicy;
 use wsx_core::runtime;
@@ -19,15 +19,14 @@ use wsx_core::task::{
     brief::{self, Brief, BriefFile},
     copy::{self, Rebase},
     now_unix_ms, passed, report,
-    store::{TaskDir, BRIEF_FILE, BRIEF_TEXT_FILE, REPORT_FILE, RESULT_FILE},
-    verification, view, CheckResult, HostRequest, HostResponse, LogEvent, MessageKind, Phase,
-    TaskRecord, TaskState, Verdict, WorkerResult, MAX_MESSAGE_BYTES,
+    store::{self, TaskDir, BRIEF_FILE, BRIEF_TEXT_FILE, REPORT_FILE, RESULT_FILE},
+    verification, view, Access, Actor, CheckResult, HostRequest, HostResponse, LogEvent,
+    MessageKind, Phase, TaskRecord, TaskState, Verdict, WorkerResult, MAX_MESSAGE_BYTES,
 };
 
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 const CHECK_OUTPUT_BYTES: usize = 8 * 1024;
 const MAX_RESULT_BYTES: usize = 256 * 1024;
-const MAX_TOOL_BYTES: usize = 256;
 
 enum Event {
     Request(HostRequest, Sender<HostResponse>),
@@ -59,6 +58,11 @@ struct Host {
     last_result: Option<WorkerResult>,
     /// Tool calls denied in that turn.
     last_denials: Vec<String>,
+    /// What the sandbox stopped in the running turn, and the hosts its commands reached.
+    stops: Vec<Access>,
+    reached: std::collections::BTreeSet<String>,
+    /// What the latest blocked result asks for.
+    last_asks: Vec<Access>,
     landing: Option<Landing>,
     started: Instant,
 }
@@ -85,6 +89,9 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         stop_requested: false,
         last_result: None,
         last_denials: Vec::new(),
+        stops: Vec::new(),
+        reached: Default::default(),
+        last_asks: Vec::new(),
         landing: None,
         started: Instant::now(),
     };
@@ -161,7 +168,16 @@ impl Host {
             HostRequest::Status => Ok("".to_string()),
             HostRequest::Steer { text } => self.steer(text),
             HostRequest::Add { text } => self.add(text),
-            HostRequest::Allow { tool } => self.allow(tool),
+            HostRequest::Grant {
+                access,
+                project,
+                by,
+            } => self.grant(access, project, by),
+            HostRequest::Revoke {
+                access,
+                project,
+                by,
+            } => self.revoke(access, project, by),
             HostRequest::Stop => self.stop(),
             HostRequest::Start => self.start(),
             HostRequest::Land { skip_verify } => self.land(skip_verify),
@@ -231,26 +247,100 @@ impl Host {
         }
     }
 
-    fn allow(&mut self, tool: String) -> Result<String> {
-        if tool.is_empty() || tool.len() > MAX_TOOL_BYTES || tool.chars().any(char::is_control) {
-            bail!("a tool pattern must be 1..{MAX_TOOL_BYTES} bytes without control characters");
+    /// Add a grant; a blocked task resumes with it. A project grant is already in the
+    /// project's file (`owner::prepare_request`), so only the log names it here.
+    fn grant(&mut self, access: Access, project: bool, by: Actor) -> Result<String> {
+        access.check().map_err(anyhow::Error::msg)?;
+        if !project && !self.record.grants.contains(&access) {
+            self.record.grants.push(access.clone());
         }
-        if let Some(reason) = tool_refusal(&tool) {
-            bail!("{tool}: {reason}");
-        }
-        if !self.record.tools.contains(&tool) {
-            self.record.tools.push(tool.clone());
-        }
-        self.log(LogEvent::Allowed { tool: tool.clone() });
+        self.log(LogEvent::Granted {
+            access: access.clone(),
+            project,
+            by,
+        });
         self.restart_needed = true;
+        let what = access.describe();
         if self.record.state == TaskState::Blocked && !self.turn_active {
+            let who = match by {
+                Actor::Owner => "The owner",
+                Actor::Manager => "The manager",
+            };
             self.start_turn(&format!(
-                "The owner allowed {tool}. Retry what was denied and continue the task."
+                "{who} allowed you to {what}. Retry what was stopped and continue the task."
             ));
-            return Ok(format!("allowed {tool} and resumed the task"));
+            return Ok(format!("may now {what}; resumed the task"));
         }
         self.save();
-        Ok(format!("allowed {tool}; it applies from the next turn"))
+        Ok(format!("may now {what} from the next turn"))
+    }
+
+    fn revoke(&mut self, access: Access, project: bool, by: Actor) -> Result<String> {
+        self.record.grants.retain(|kept| *kept != access);
+        self.log(LogEvent::Revoked {
+            access: access.clone(),
+            project,
+            by,
+        });
+        self.restart_needed = true;
+        self.save();
+        Ok(format!(
+            "may no longer {} from the next turn",
+            access.describe()
+        ))
+    }
+
+    /// A refused write as the folder to grant: `~/.cargo` for a hidden folder in home,
+    /// otherwise the parent folder, or the file itself when its parent is home or the root.
+    /// None for the working copy and the main repository's git folder, which are never granted.
+    fn write_ask(&self, printed: &str) -> Option<Access> {
+        let path = normalize(&self.record.working_copy.join(printed));
+        if path.starts_with(&self.record.working_copy)
+            || path.starts_with(self.record.project_path.join(".git"))
+        {
+            return None;
+        }
+        let home = dirs::home_dir();
+        let shown = match home
+            .as_deref()
+            .and_then(|home| path.strip_prefix(home).ok())
+        {
+            Some(rest) => {
+                let first = rest
+                    .components()
+                    .next()?
+                    .as_os_str()
+                    .to_string_lossy()
+                    .into_owned();
+                match rest.parent() {
+                    _ if first.starts_with('.') => format!("~/{first}"),
+                    Some(parent) if parent.as_os_str().is_empty() => {
+                        format!("~/{}", rest.display())
+                    }
+                    Some(parent) => format!("~/{}", parent.display()),
+                    None => return None,
+                }
+            }
+            None => match path.parent() {
+                Some(parent) if parent.parent().is_some() => parent.display().to_string(),
+                _ => path.display().to_string(),
+            },
+        };
+        let access = Access::Write { path: shown };
+        access.check().is_ok().then_some(access)
+    }
+
+    /// What the turn's stops ask for: hosts no command reached and write folders, once each.
+    fn turn_asks(&self, denied_writes: &[String]) -> Vec<Access> {
+        let mut asks: Vec<Access> = Vec::new();
+        let written = denied_writes.iter().filter_map(|path| self.write_ask(path));
+        for ask in self.stops.iter().cloned().chain(written) {
+            let reached = matches!(&ask, Access::Network { host } if self.reached.contains(host));
+            if !reached && !asks.contains(&ask) {
+                asks.push(ask);
+            }
+        }
+        asks
     }
 
     fn stop(&mut self) -> Result<String> {
@@ -321,8 +411,9 @@ impl Host {
             self.generation += 1;
             let generation = self.generation;
             self.stop_requested = false;
+            let project_grants = store::read_grants(&self.record.project_id)?;
             self.agent = Some(ClaudeAgent::spawn(
-                &Launch::worker(&self.record)?,
+                &Launch::worker(&self.record, &project_grants)?,
                 &session,
                 resume,
                 self.events.clone(),
@@ -334,6 +425,8 @@ impl Host {
             .context("the agent is not running")?
             .send(text)?;
         self.turn_active = true;
+        self.stops.clear();
+        self.reached.clear();
         // ^ A conflict turn shows as `conflict` until its result, so lists say why it runs.
         if self.record.state != TaskState::Conflict {
             self.set_state(TaskState::Working);
@@ -354,6 +447,17 @@ impl Host {
                 self.log(LogEvent::Agent { text });
             }
             Some(AgentLine::Result(result)) => self.on_result(result),
+            Some(AgentLine::Stopped(access)) => {
+                let access = match access {
+                    Access::Write { path } => self.write_ask(&path),
+                    other => Some(other),
+                };
+                if let Some(access) = access.filter(|access| !self.stops.contains(access)) {
+                    self.say(&format!("sandbox stopped: {}", access.describe()));
+                    self.stops.push(access);
+                }
+            }
+            Some(AgentLine::Reached(hosts)) => self.reached.extend(hosts),
             None => {
                 self.agent = None;
                 if self.turn_active && !self.stop_requested {
@@ -391,7 +495,7 @@ impl Host {
         self.log(LogEvent::Result {
             status: result.status.clone(),
             summary: result.summary.clone(),
-            usage: Some(turn.usage),
+            usage: Some(turn.usage.clone()),
             denials: turn.denials.clone(),
         });
         self.say(&format!(
@@ -400,12 +504,18 @@ impl Host {
             first_line(&result.summary)
         ));
         self.last_denials = turn.denials.clone();
+        self.last_asks = if result.status == "blocked" {
+            self.turn_asks(&turn.denied_writes)
+        } else {
+            Vec::new()
+        };
         self.write_result(&result, &[]);
         self.last_result = Some(result.clone());
         // ^ Only the worker's own word blocks a task. Denials it worked around are evidence.
         if result.status == "blocked" {
             self.log(LogEvent::Blocked {
                 denials: turn.denials,
+                asks: self.last_asks.clone(),
             });
             self.set_state(TaskState::Blocked);
             return;
@@ -939,6 +1049,7 @@ impl Host {
             "result": result,
             "checks": checks,
             "denials": self.last_denials,
+            "asks": self.last_asks,
         }))
         .unwrap_or_default();
         if bytes.len() > MAX_RESULT_BYTES {
@@ -1124,4 +1235,19 @@ fn run_check(working_copy: &Path, command: &str, timeout: Duration) -> CheckResu
             output: error.to_string(),
         },
     }
+}
+
+/// `path` without `.` and `..` parts, without touching the disk.
+fn normalize(path: &Path) -> std::path::PathBuf {
+    let mut clean = std::path::PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                clean.pop();
+            }
+            other => clean.push(other),
+        }
+    }
+    clean
 }

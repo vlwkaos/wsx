@@ -3,13 +3,16 @@
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 use wsx_core::config::project::tool_refusal;
-use wsx_core::task::{brief, copy, store, worker_result_schema, Phase, TaskRecord, TurnUsage};
+use wsx_core::task::{
+    brief, copy, store, worker_result_schema, Access, Phase, TaskRecord, TurnUsage,
+};
 
 /// Longest stdout line the host reads; a longer one (a huge tool result) is skipped.
 const MAX_LINE_BYTES: u64 = 4 * 1024 * 1024;
@@ -45,6 +48,11 @@ pub enum AgentLine {
     Init(String),
     Progress(String),
     Result(TurnResult),
+    /// A tool result shows the sandbox stopped a host or a write; a path is as the
+    /// command printed it.
+    Stopped(Access),
+    /// A command that listed these hosts ran without an error: they need no grant.
+    Reached(Vec<String>),
 }
 
 pub struct TurnResult {
@@ -53,6 +61,8 @@ pub struct TurnResult {
     pub text: String,
     pub structured: Option<Value>,
     pub denials: Vec<String>,
+    /// Paths of file-tool calls that were denied.
+    pub denied_writes: Vec<String>,
     pub usage: TurnUsage,
 }
 
@@ -124,14 +134,20 @@ impl Launch {
     }
 
     /// A brief turn reads only and returns a brief; a build turn edits and returns a result.
-    pub fn worker(record: &TaskRecord) -> Result<Self> {
-        let boundary = worker_boundary(record)?;
+    /// `project_grants` are the project's `grants.json`; the record holds the task's own.
+    pub fn worker(record: &TaskRecord, project_grants: &[Access]) -> Result<Self> {
+        let grants: Vec<&Access> = record.grants.iter().chain(project_grants).collect();
+        let boundary = worker_boundary(record, &grants)?;
         // ^ Records from before the sandbox hold Bash rules and bare Edit and Write: drop them.
         let tools = record
             .tools
             .iter()
             .filter(|tool| tool_refusal(tool).is_none())
             .cloned()
+            .chain(grants.iter().filter_map(|grant| match grant {
+                Access::Tool { rule } => Some(rule.clone()),
+                _ => None,
+            }))
             .collect();
         let mut launch = Self::new(&boundary, &record.model, tools, worker_instructions(record));
         launch.schema = Some(match record.phase {
@@ -179,7 +195,7 @@ fn settings(boundary: &Boundary) -> Value {
 
 /// A worker writes its working copy and the git paths its commits need in the main
 /// repository; a brief turn writes nothing. ref: docs/tasks.md "Permissions"
-fn worker_boundary(record: &TaskRecord) -> Result<Boundary> {
+fn worker_boundary(record: &TaskRecord, grants: &[&Access]) -> Result<Boundary> {
     let (common, admin) = copy::git_dirs(&record.working_copy)?;
     let default_ref = format!("refs/heads/{}", record.default_branch);
     let mut deny_writes = vec![
@@ -203,6 +219,18 @@ fn worker_boundary(record: &TaskRecord) -> Result<Boundary> {
                 .map(|path| path.display().to_string()),
             );
             writes.extend(record.sandbox.allow_write.iter().cloned());
+            writes.extend(grants.iter().filter_map(|grant| match grant {
+                Access::Write { path } => Some(path.clone()),
+                _ => None,
+            }));
+        }
+    }
+    let mut domains = record.sandbox.allowed_domains.clone();
+    for grant in grants {
+        if let Access::Network { host } = grant {
+            if !domains.contains(host) {
+                domains.push(host.clone());
+            }
         }
     }
     let mut deny_edits = kept_from_edits(&record.project_path, Some(&record.working_copy));
@@ -214,7 +242,7 @@ fn worker_boundary(record: &TaskRecord) -> Result<Boundary> {
             .iter()
             .map(|path| path.display().to_string())
             .collect(),
-        domains: record.sandbox.allowed_domains.clone(),
+        domains,
         excluded: Vec::new(),
         deny_edits,
     })
@@ -342,6 +370,7 @@ impl ClaudeAgent {
         let stdout = child.stdout.take().context("claude has no stdout")?;
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
+            let mut listed = HashMap::new();
             loop {
                 let mut line = Vec::new();
                 match (&mut reader)
@@ -355,7 +384,13 @@ impl ClaudeAgent {
                         }
                     }
                     Ok(_) => {
-                        if let Some(parsed) = parse_line(&line) {
+                        let Ok(value) = serde_json::from_slice::<Value>(&line) else {
+                            continue;
+                        };
+                        let lines = parse_line(&value)
+                            .into_iter()
+                            .chain(access_lines(&value, &mut listed));
+                        for parsed in lines {
                             if events.send(wrap(Some(parsed))).is_err() {
                                 return;
                             }
@@ -420,8 +455,7 @@ fn skip_line(reader: &mut impl BufRead) -> std::io::Result<bool> {
     }
 }
 
-fn parse_line(line: &[u8]) -> Option<AgentLine> {
-    let value: Value = serde_json::from_slice(line).ok()?;
+fn parse_line(value: &Value) -> Option<AgentLine> {
     match value.get("type")?.as_str()? {
         "system" if value.get("subtype")?.as_str()? == "init" => Some(AgentLine::Init(
             value.get("session_id")?.as_str()?.to_string(),
@@ -438,18 +472,128 @@ fn parse_line(line: &[u8]) -> Option<AgentLine> {
                 .get("is_error")
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
-            subtype: str_field(&value, "subtype"),
-            text: str_field(&value, "result"),
+            subtype: str_field(value, "subtype"),
+            text: str_field(value, "result"),
             structured: value.get("structured_output").cloned(),
-            denials: value
-                .get("permission_denials")
-                .and_then(Value::as_array)
-                .map(|denials| denials.iter().map(denial_text).collect())
-                .unwrap_or_default(),
-            usage: turn_usage(&value),
+            denials: denials(value).map(denial_text).collect(),
+            denied_writes: denials(value)
+                .filter(|denial| {
+                    FILE_TOOLS.contains(
+                        &denial
+                            .get("tool_name")
+                            .and_then(Value::as_str)
+                            .unwrap_or(""),
+                    )
+                })
+                .filter_map(|denial| denial.pointer("/tool_input/file_path")?.as_str())
+                .map(str::to_string)
+                .collect(),
+            usage: turn_usage(value),
         })),
         _ => None,
     }
+}
+
+const FILE_TOOLS: [&str; 4] = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
+/// How macOS and Linux refuse a write the sandbox does not allow.
+const REFUSED_WRITE: [&str; 2] = ["Operation not permitted", "Read-only file system"];
+
+fn denials(value: &Value) -> impl Iterator<Item = &Value> {
+    value
+        .get("permission_denials")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+}
+
+/// What the sandbox stopped, read from tool results. `listed` keeps the hosts a pending
+/// command named in `allowed_domains`, by tool use, until its result.
+/// ref: docs/tasks.md "Permissions"
+fn access_lines(value: &Value, listed: &mut HashMap<String, Vec<String>>) -> Vec<AgentLine> {
+    let items = value
+        .pointer("/message/content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+    let mut lines = Vec::new();
+    match value.get("type").and_then(Value::as_str) {
+        Some("assistant") => {
+            for item in items.filter(|item| item["type"] == "tool_use") {
+                let hosts: Vec<String> = item
+                    .pointer("/input/allowed_domains")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|host| host.as_str().map(str::to_string))
+                    .collect();
+                if let (Some(id), false) = (item["id"].as_str(), hosts.is_empty()) {
+                    listed.insert(id.to_string(), hosts);
+                }
+            }
+        }
+        Some("user") => {
+            for item in items.filter(|item| item["type"] == "tool_result") {
+                let text = match &item["content"] {
+                    Value::String(text) => text.clone(),
+                    Value::Array(parts) => parts
+                        .iter()
+                        .filter_map(|part| part["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    _ => String::new(),
+                };
+                let failed = item["is_error"].as_bool().unwrap_or(false);
+                if let Some(hosts) = item["tool_use_id"]
+                    .as_str()
+                    .and_then(|id| listed.remove(id))
+                {
+                    if !failed {
+                        lines.push(AgentLine::Reached(hosts));
+                    }
+                }
+                lines.extend(
+                    violation_hosts(&text).map(|host| AgentLine::Stopped(Access::Network { host })),
+                );
+                lines.extend(
+                    refused_paths(&text).map(|path| AgentLine::Stopped(Access::Write { path })),
+                );
+            }
+        }
+        _ => {}
+    }
+    lines
+}
+
+/// Hosts in `<sandbox_violations>` lines such as `deny network-outbound example.com:443 (...)`.
+fn violation_hosts(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.split("<sandbox_violations>")
+        .skip(1)
+        .filter_map(|block| block.split("</sandbox_violations>").next())
+        .flat_map(str::lines)
+        .filter_map(|line| {
+            line.split("network-outbound ")
+                .nth(1)?
+                .split_whitespace()
+                .next()
+        })
+        .map(|target| match target.rsplit_once(':') {
+            Some((host, port)) if port.bytes().all(|b| b.is_ascii_digit()) => host.to_string(),
+            _ => target.to_string(),
+        })
+}
+
+/// Paths in lines such as `touch: /a/b: Operation not permitted` or `Unable to create
+/// '/a/b.lock': Operation not permitted`: the last absolute path before the error.
+fn refused_paths(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.lines().filter_map(|line| {
+        let at = REFUSED_WRITE.iter().find_map(|error| line.find(error))?;
+        let before = line[..at].trim_end_matches([':', ' ']);
+        let (start, _) = before.char_indices().rfind(|(index, c)| {
+            *c == '/' && (*index == 0 || before[..*index].ends_with([' ', '\'', '"', '`']))
+        })?;
+        let path = before[start..].trim_end_matches(['\'', '"', '`']);
+        (path.len() > 1).then(|| path.to_string())
+    })
 }
 
 fn turn_usage(value: &Value) -> TurnUsage {

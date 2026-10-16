@@ -3,7 +3,7 @@
 //!
 //! The manager host is the only writer of these files; `wsx task chat` reads the log.
 
-use super::{TaskState, TurnUsage};
+use super::{Access, TaskState, TurnUsage};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -98,6 +98,17 @@ pub enum ApprovalAction {
     Discard,
     /// `start`: build a briefed task.
     Start,
+    /// `allow`: a project-wide grant or a tool rule the manager asked for.
+    Grant,
+}
+
+/// What a `Grant` request would give.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrantAsk {
+    pub access: Access,
+    /// For every task of the project, not only the named one.
+    #[serde(default)]
+    pub project_wide: bool,
 }
 
 /// One line of `approvals.jsonl`.
@@ -115,6 +126,8 @@ pub enum ApprovalLine {
         skip_verify: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grant: Option<GrantAsk>,
         unix_ms: u64,
     },
     Decision {

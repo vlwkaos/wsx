@@ -5,7 +5,7 @@ use super::{now_unix_ms, LogEntry, LogEvent, TaskRecord};
 use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -591,6 +591,60 @@ pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
     }
     Ok(files)
 }
+const GRANTS_FILE: &str = "grants.json";
+const MAX_GRANTS_BYTES: u64 = 64 * 1024;
+
+/// The project's grants, which every task of it gets at its next agent start.
+pub fn read_grants(project_id: &str) -> Result<Vec<super::Access>> {
+    let path = project_dir(project_id)?.join(GRANTS_FILE);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let bytes = read_bounded(&path, MAX_GRANTS_BYTES)?;
+    serde_json::from_slice(&bytes).with_context(|| format!("{} is not valid", path.display()))
+}
+
+/// Change the project's grants under a lock on the file; returns whether they changed.
+pub fn change_grants(
+    project_id: &str,
+    change: impl FnOnce(&mut Vec<super::Access>) -> bool,
+) -> Result<bool> {
+    let path = ensure_project_dir(project_id)?.join(GRANTS_FILE);
+    let mut file = open_nofollow(
+        &path,
+        OpenOptions::new().read(true).write(true).create(true),
+    )?;
+    // SAFETY: flock on an open descriptor; released when `file` closes.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("cannot lock {}", path.display()));
+    }
+    let mut bytes = Vec::new();
+    (&file).take(MAX_GRANTS_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_GRANTS_BYTES {
+        bail!("{} is larger than {MAX_GRANTS_BYTES} bytes", path.display());
+    }
+    let mut grants: Vec<super::Access> = if bytes.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("{} is not valid", path.display()))?
+    };
+    if !change(&mut grants) {
+        return Ok(false);
+    }
+    let bytes = serde_json::to_vec_pretty(&grants)?;
+    if bytes.len() as u64 > MAX_GRANTS_BYTES {
+        bail!("the project grants would pass {MAX_GRANTS_BYTES} bytes");
+    }
+    file.set_len(0)?;
+    file.seek(std::io::SeekFrom::Start(0))?;
+    file.write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("cannot write {}", path.display()))?;
+    Ok(true)
+}
+
 const MAX_APPROVALS_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Append an approval line under a lock on the file. A `Request` with an empty id gets
