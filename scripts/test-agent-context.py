@@ -116,6 +116,20 @@ def record(role, entry, parent, text):
     'message':{'content':text}})+'\n')
 tty.setraw(0)
 sys.stdout.write('\x1b[?2004h'); sys.stdout.flush()
+if (root / (name+'.ask-trust')).exists():
+ # Claude's folder trust question: no hook reports until it is answered, "No" is first.
+ choice = 0
+ def ask():
+  sys.stdout.write('\x1b[2J\x1b[H Quick safety check: Is this a project you created or one you trust?\r\n'
+   +(' ❯ ' if choice == 0 else '   ')+'No, exit\r\n'+(' ❯ ' if choice == 1 else '   ')+'Yes, I trust this folder\r\n'
+   +' Enter to confirm\r\n'); sys.stdout.flush()
+ ask()
+ while True:
+  key = os.read(0,16)
+  if key == b'\x1b[B': choice = 1; ask()
+  elif key == b'\r':
+   if choice == 0: sys.exit(0)
+   (root / (name+'.trusted')).write_text('yes'); sys.stdout.write('\x1b[2J\x1b[H'); break
 record('assistant', 'before', None, 'an older message that is not a result')
 draft, pending, leaf, turn = '', b'', 'before', 0
 report('idle')
@@ -349,6 +363,20 @@ for X in $A $B; do "$WSX" agent wait $X --result --timeout 30 --json > result-$X
         assert report['worktree_created'] and report['session_created'] and report['pane_id'] and report['exchange'] is None
         assert 'session peek %d' % report['session_id'] in report['next'] and Path(report['worktree']).is_dir()
         assert "stopped at step 'ready'" in late.stderr
+        assert report['error']['reason'] == 'no_agent_report' and 'cat' in report['error']['screen']
+        # The folder trust question stops the start at once and is answered only on request.
+        (work / 'run/fixture-w-trust.ask-trust').write_text('')
+        asked_at = time.monotonic()
+        asked = json.loads(cli('agent','start','w/trust','-p','fixture','--agent',agent,'trust task','--key','t1',
+            '--ready-timeout','60','--json',ok=False).stdout)
+        assert time.monotonic() - asked_at < 15 and asked['error']['reason'] == 'folder_trust_question', asked
+        assert 'Yes, I trust this folder' in asked['error']['screen'] and '--accept-folder-trust' in asked['next']
+        assert not asked['folder_trust_accepted'] and not (work / 'run/fixture-w-trust.trusted').exists()
+        trusted = json.loads(cli('agent','start','w/trust','-p','fixture','--agent',agent,'trust task','--key','t1',
+            '--accept-folder-trust','--json').stdout)
+        assert trusted['folder_trust_accepted'] and trusted['session_id'] == asked['session_id'], trusted
+        assert (work / 'run/fixture-w-trust.trusted').exists() and trusted['exchange']['key'] == 't1'
+        until(lambda: [text.splitlines()[-1] for text in received('fixture-w-trust')] == ['trust task'],'trusted worker received its task')
         # Without a command there is nothing to start, and nothing is made.
         assert 'no agent command' in cli('agent','start','w/none','-p','fixture','no command','--json',ok=False).stderr
         assert git(fixture,'show-ref','--verify','--quiet','refs/heads/w/none',ok=False).returncode != 0
@@ -445,7 +473,7 @@ for X in $A $B; do "$WSX" agent wait $X --result --timeout 30 --json > result-$X
         if success: shutil.rmtree(work)
         else: print('diagnostics retained at '+str(work),file=sys.stderr)
     print(json.dumps({'result':'PASS','seconds':round(time.monotonic()-started,2),'model_calls':0,'skipped':skipped,
-        'journey':'worktree retry without a leftover branch, session identities, prompt from file and standard input, slow delivery, once-per-key request and continuation, result of a round and its refusal, one-line manager with agent start and wait --any, late failure report, scoped exchanges, manager status, released-daemon refusal'}))
+        'journey':'worktree retry without a leftover branch, session identities, prompt from file and standard input, slow delivery, once-per-key request and continuation, result of a round and its refusal, one-line manager with agent start and wait --any, late failure report, folder trust question, scoped exchanges, manager status, released-daemon refusal'}))
 
 
 def main():

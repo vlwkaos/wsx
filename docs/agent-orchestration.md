@@ -21,7 +21,7 @@ wsx session delete "$(jq .session_id a.json)" --json
 
 ### Start a worker in one call
 
-`wsx agent start <branch> -p <project> [--from <ref>] [--agent <command>] [--name <session>] (<prompt> | - | --prompt-file <path>) [--writer] [--write-claim <path>] [--key <text>] [--timeout <s>] [--ready-timeout <s>] [--json]`
+`wsx agent start <branch> -p <project> [--from <ref>] [--agent <command>] [--name <session>] (<prompt> | - | --prompt-file <path>) [--writer] [--write-claim <path>] [--key <text>] [--timeout <s>] [--ready-timeout <s>] [--accept-folder-trust] [--json]`
 
 | Step | What it does | When it already exists |
 |---|---|---|
@@ -32,8 +32,19 @@ wsx session delete "$(jq .session_id a.json)" --json
 
 - The agent command is the project's `worktree.defaultSession.command`. `--agent <command>` gives it for one call. There is no other setting. Without a command, nothing is made.
 - The session name is `--name`, or the first word of the command.
-- The output has `project`, `branch`, `worktree`, `worktree_created`, `session_id`, `session_label`, `session_created`, `pane_id`, `agent` and `exchange`.
+- The output has `project`, `branch`, `worktree`, `worktree_created`, `session_id`, `session_label`, `session_created`, `pane_id`, `agent`, `folder_trust_accepted` and `exchange`.
 - A failure after the worktree step prints the same object with `error` (`step` and `message`) and `next`, and exits with 1. Nothing is deleted. The same command continues from what exists.
+- A failure at the ready step adds `error.reason` and `error.screen`, the last 20 non-empty lines of the pane (at most 2048 bytes). Reasons: `folder_trust_question`, `no_agent_report`, `agent_not_idle`, `agent_cannot_prompt`, `session_exited`.
+
+#### Folder trust question
+
+Claude and Codex ask whether to trust a folder they have not seen, so every new worktree asks. No agent hook runs before the answer, so the agent cannot report.
+
+1. Without `--accept-folder-trust`, the ready step stops as soon as the question is on the screen, with reason `folder_trust_question`. Nothing is answered.
+2. Review the worktree. Then repeat the same command with `--accept-folder-trust`.
+3. With the flag, wsx moves the highlighted choice to the trust choice and presses Enter, once per call. Claude highlights "No, exit" first. When no trust choice is found, the step stops with the same reason.
+
+Security effect of `--accept-folder-trust`: the answer is the agent's own trust decision, and the agent saves it in its own settings (Claude for the folder, Codex for the repository root). The agent can then read, edit and run files in that folder, and the folder's own agent settings, hooks and MCP servers can run code without a model request. Use it only for worktrees made from branches you trust. wsx writes no agent settings itself.
 
 ### Prompt sources
 
@@ -157,7 +168,7 @@ python3 -B scripts/test-agent-context.py --wsx <target>/debug/wsx --daemon <targ
 cargo test --locked -p wsx-core --test agent_memory_contract
 ```
 
-The same script runs a second journey on its own daemon (`--only orchestration` runs it alone). Its workers are fake agents that write their own history files. It checks: a failed `git worktree add` leaves no branch and the retry succeeds; prompts from a file and standard input with their refusals; a delivery that the worker holds for 7 seconds returns its exchange while a keyed repeat delivers nothing more; a result and its refusal when the round has no message; one shell line that starts two workers in two new worktrees, waits with `--any` and reads each result without a lookup command; the report of a late failure; scoped lists; the status keys; and that an older wsxd (released 0.30.1 or 0.31.0, or a revision 28 build) refuses the keyed requests and is not replaced (`--released <dir>`, skipped with a note when the binaries are absent).
+The same script runs a second journey on its own daemon (`--only orchestration` runs it alone). Its workers are fake agents that write their own history files. It checks: a failed `git worktree add` leaves no branch and the retry succeeds; prompts from a file and standard input with their refusals; a delivery that the worker holds for 7 seconds returns its exchange while a keyed repeat delivers nothing more; a result and its refusal when the round has no message; one shell line that starts two workers in two new worktrees, waits with `--any` and reads each result without a lookup command; the report of a late failure with its screen; the folder trust question that stops the start at once and is answered only with `--accept-folder-trust`; scoped lists; the status keys; and that an older wsxd (released 0.30.1 or 0.31.0, or a revision 28 build) refuses the keyed requests and is not replaced (`--released <dir>`, skipped with a note when the binaries are absent).
 
 The model-free journey uses an isolated daemon, real PTYs, independent provider-native files and a documented-keyboard actor. It checks native-only context absent from the screen, bounds, exact scope, refusal, the actual submitted request and preserved multiline stash, empty-editor continuation, an unconfirmed stash binding with no delivered prompt, capability/generation/round-fenced native receipts, lifecycle separate from completion, duplicate receipt idempotence, shutdown, and no bootstrap. It does not prove an arbitrary remote Claude version or customized keymap. Verify that host's installed version and binding before relying on the option there.
 
