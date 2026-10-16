@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Contract tests for the external Git review provider."""
 import importlib.util
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -20,14 +21,22 @@ class GitReviewTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = pathlib.Path(self.temp.name)
         self.git("init", "-q")
+        top = subprocess.run(["git", "-C", str(self.root), "rev-parse", "--show-toplevel"], check=True,
+                             env=self.env(), stdout=subprocess.PIPE, text=True).stdout.strip()
+        self.assertEqual(os.path.realpath(top), os.path.realpath(self.root), "fixture git escaped")
         self.git("config", "user.name", "Fixture")
         self.git("config", "user.email", "fixture@example.invalid")
         (self.root / "file.txt").write_text("before\n")
         self.git("add", "file.txt")
         self.git("commit", "-qm", "fixture")
 
+    def env(self):
+        # ^ A fixture git command must never reach the repository this test runs in.
+        return dict(os.environ, GIT_CEILING_DIRECTORIES=str(self.root.parent))
+
     def git(self, *args):
-        subprocess.run(["git", "-C", str(self.root), *args], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "-C", str(self.root), *args], check=True, env=self.env(),
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def request(self, **extra):
         return dict(api_version=1, worktree_path=str(self.root), comparison="working_against_head",

@@ -39,7 +39,7 @@ def main():
         env = {'HOME': str(work / 'h'), 'XDG_CONFIG_HOME': str(work / 'c'), 'XDG_STATE_HOME': str(work / 's'),
             'XDG_CACHE_HOME': str(work / 'cache'), 'WSX_SOCKET': str(address), 'WSX_DAEMON_BIN': str(wsxd),
             'WSX_REPORT_BIN': str(wsx), 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
-            'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8'}
+            'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'GIT_CEILING_DIRECTORIES': str(work)}
         subprocess.run(['git', 'init', '-q', '-b', 'main', str(work / 'p')], env=env, check=True, timeout=5)
         def call(method, params=None):
             with socket.socket(socket.AF_UNIX) as conn:

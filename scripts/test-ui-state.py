@@ -172,7 +172,8 @@ def main():
         env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work/'c'),
                'XDG_CACHE_HOME': str(work/'cache'), 'WSX_SOCKET': str(state/'wsx/wsx.sock'),
                'WSX_DAEMON_BIN': str(wsxd), 'SHELL': '/bin/sh', 'TERM': 'xterm-256color',
-               'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(work)}
+               'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(work),
+               'GIT_CEILING_DIRECTORIES': str(work)}
         subprocess.run(['git', 'init', '-q', '-b', 'main', str(project)], env=env, check=True)
 
         def call(method, params=None):

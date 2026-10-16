@@ -106,7 +106,9 @@ def run(wsx, wsxd, work, owned):
     env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
            'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_SOCKET': str(daemon_socket),
            'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
-           'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp)}
+           'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp),
+           # ^ A fixture git command must never reach the repository this script runs in.
+           'GIT_CEILING_DIRECTORIES': str(work)}
     owned['env'] = env
 
     def git(*argv, cwd=project, ok=True):
@@ -117,6 +119,7 @@ def run(wsx, wsxd, work, owned):
         return result.stdout.strip()
 
     git('init', '-q', '-b', 'main')
+    assert os.path.realpath(git('rev-parse', '--show-toplevel')) == os.path.realpath(project), 'fixture git escaped'
     (project / 'wsx.config.yml').write_text(CONFIG)
     (project / '.gitignore').write_text('target/\n')
     (project / 'README').write_text('fixture\n')

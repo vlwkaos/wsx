@@ -66,6 +66,12 @@ def parse_args(argv):
     return options, allowed, disallowed
 
 
+def own_repo():
+    """A fixture commit must land in this working copy, never in a repository above it."""
+    top = subprocess.run(['git', 'rev-parse', '--show-toplevel'], capture_output=True, text=True).stdout.strip()
+    assert os.path.realpath(top) == os.path.realpath(os.getcwd()), ('fixture git escaped', os.getcwd(), top)
+
+
 def rest_of_line(text, word):
     line = next(line for line in text.splitlines() if word in line.split())
     return line.split(word, 1)[1].strip()
@@ -208,6 +214,7 @@ def main():
             name = words[words.index('WORK') + 1]
             emit({'type': 'assistant', 'message': {'content': [
                 {'type': 'tool_use', 'name': 'Write', 'input': {'file_path': name, 'content': 'x'}}]}})
+            own_repo()
             with open(name, 'w') as out:
                 out.write('\n'.join([text] + steers) + '\n')
             subprocess.run(['git', 'add', name], check=True)
@@ -216,6 +223,7 @@ def main():
         if not blocked and 'LINE' in words:
             at = words.index('LINE')
             name, number = words[at + 1], int(words[at + 2])
+            own_repo()
             with open(name) as source:
                 lines = source.read().splitlines()
             lines[number - 1] = text.replace('\n', ' ')

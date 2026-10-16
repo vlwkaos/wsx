@@ -90,6 +90,8 @@ env.update({
     "SHELL": "/bin/sh",
     # A fresh pane must not inherit a Claude nesting marker from wsxd's parent.
     "CLAUDE_CODE_CHILD_SESSION": "parent-only-marker",
+    # ^ A fixture git command must never reach the repository this script runs in.
+    "GIT_CEILING_DIRECTORIES": str(WORK),
 })
 subprocess.run(["git", "init", "-q", "-b", "main", str(PROJECT)], check=True, env=env)
 
@@ -101,6 +103,7 @@ def git(*args):
     ).stdout.strip()
 
 
+assert os.path.realpath(git("rev-parse", "--show-toplevel")) == os.path.realpath(PROJECT), "fixture git escaped"
 # ^ `git worktree add` needs a commit; the second commit separates `--from` from HEAD.
 git("commit", "-q", "--allow-empty", "-m", "base")
 BASE_COMMIT = git("rev-parse", "HEAD")
