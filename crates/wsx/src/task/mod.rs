@@ -3,7 +3,9 @@
 
 mod claude;
 pub mod host;
+mod hosting;
 mod ledger;
+pub mod manager;
 
 use crate::cli::{
     existing_daemon_snapshot, load_config, load_full_workspace, resolve_project, PromptSource,
@@ -16,8 +18,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::LandPolicy;
+use wsx_core::task::manager::{ManagerEvent, ManagerRequest, ManagerResponse};
+use wsx_core::task::store::ManagerDir;
 use wsx_core::task::{
-    call_host, copy, now_unix_ms,
+    call_host, call_socket, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
     DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord,
     TaskState, Verdict, MAX_MESSAGE_BYTES,
@@ -166,8 +170,35 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Start the project's manager agent, or report the running one
+    Manager {
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send a message to the project's manager; returns at once with its id
+    Say {
+        #[command(flatten)]
+        text: PromptSource,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read the manager conversation, after a message id
+    Chat {
+        #[arg(long, value_name = "ID")]
+        after: Option<u64>,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     #[command(hide = true)]
     Host { project_id: String, task: String },
+    #[command(hide = true)]
+    ManagerHost { project_id: String },
 }
 
 impl TaskCmd {
@@ -186,14 +217,18 @@ impl TaskCmd {
             | Self::Deploy { json, .. }
             | Self::Release { json, .. }
             | Self::Deployed { json, .. } => *json,
+            Self::Manager { json, .. } | Self::Say { json, .. } | Self::Chat { json, .. } => *json,
             Self::Ledger { .. } => true,
-            Self::Host { .. } => false,
+            Self::Host { .. } | Self::ManagerHost { .. } => false,
         }
     }
 
     /// Commands that read files or a host socket and never need wsxd.
     pub fn without_daemon(&self) -> bool {
-        !matches!(self, Self::New { .. } | Self::Close { .. })
+        !matches!(
+            self,
+            Self::New { .. } | Self::Close { .. } | Self::Manager { .. } | Self::Say { .. }
+        )
     }
 }
 
@@ -307,6 +342,27 @@ pub fn run(command: TaskCmd) -> Result<()> {
         ),
         TaskCmd::Deployed { project, json } => deployed(project.as_deref(), json),
         TaskCmd::Ledger { project } => ledger::ledger(project.as_deref()),
+        TaskCmd::Manager { project, json } => {
+            let (started, dir) = ensure_manager(project.as_deref())?;
+            let state = if started { "started" } else { "running" };
+            if json {
+                print_json(&json!({ "state": state, "socket": dir.socket_path() }))
+            } else {
+                println!("manager {state}");
+                Ok(())
+            }
+        }
+        TaskCmd::Say {
+            text,
+            project,
+            json,
+        } => say(project.as_deref(), text.read(MAX_MESSAGE_BYTES)?, json),
+        TaskCmd::Chat {
+            after,
+            project,
+            json,
+        } => chat(project.as_deref(), after, json),
+        TaskCmd::ManagerHost { project_id } => manager::run(&project_id),
         TaskCmd::Host { project_id, task } => {
             host::run(&project_id, store::parse_task_number(&task)?)
         }
@@ -345,6 +401,16 @@ fn project_entry(name: Option<&str>) -> Result<(String, PathBuf)> {
                 .join(", ")
         ),
     }
+}
+
+/// The registered project whose task folder is `project_id`.
+fn project_by_id(project_id: &str) -> Result<(String, PathBuf)> {
+    load_config()?
+        .projects
+        .into_iter()
+        .find(|project| store::project_id(&project.name, &project.path) == project_id)
+        .map(|project| (project.name, project.path))
+        .with_context(|| format!("no registered project has the task ID {project_id}"))
 }
 
 fn open(project: Option<&str>, task: &str) -> Result<TaskDir> {
@@ -976,4 +1042,101 @@ fn deploy_status(
         };
     }
     Ok(out)
+}
+
+const MANAGER_START_WAIT: Duration = Duration::from_secs(10);
+/// Most entries `chat` prints at once.
+const MAX_CHAT_ENTRIES: usize = 200;
+
+/// Reuse the project's manager host, or start one in a hidden session in the main checkout.
+/// Returns whether it was started.
+fn ensure_manager(project: Option<&str>) -> Result<(bool, ManagerDir)> {
+    let (name, main) = project_entry(project)?;
+    let project_id = store::project_id(&name, &main);
+    let dir = ManagerDir::open(&project_id)?;
+    let status = || {
+        call_socket::<_, ManagerResponse>(&dir.socket_path(), &ManagerRequest::Status, HOST_TIMEOUT)
+    };
+    if status().is_ok() {
+        return Ok((false, dir));
+    }
+    let (config, _) = load_full_workspace()?;
+    let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+    let argv = vec![
+        exe.to_string_lossy().into_owned(),
+        "task".into(),
+        "manager-host".into(),
+        project_id,
+    ];
+    ops::create_session_launch(&config, &main, "task-manager".into(), argv, None)
+        .context("the manager did not start; no session was left running")?;
+    let deadline = Instant::now() + MANAGER_START_WAIT;
+    while Instant::now() < deadline {
+        if status().is_ok() {
+            return Ok((true, dir));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    bail!(
+        "the manager session started but its host does not answer; look at session task-manager in {}",
+        main.display()
+    )
+}
+
+fn say(project: Option<&str>, text: String, json: bool) -> Result<()> {
+    let (_, dir) = ensure_manager(project)?;
+    let response: ManagerResponse = call_socket(
+        &dir.socket_path(),
+        &ManagerRequest::Say { text },
+        HOST_TIMEOUT,
+    )?;
+    if json {
+        print_json(&serde_json::to_value(&response)?)?;
+    } else {
+        println!(
+            "message {}: {}",
+            response.id.map_or("-".into(), |id| id.to_string()),
+            response.message
+        );
+    }
+    if !response.ok {
+        bail!("the manager refused the message: {}", response.message);
+    }
+    Ok(())
+}
+
+/// The conversation after message `after`: messages, replies, rotations and stops.
+fn chat(project: Option<&str>, after: Option<u64>, json: bool) -> Result<()> {
+    let (name, main) = project_entry(project)?;
+    let dir = ManagerDir::open(&store::project_id(&name, &main))?;
+    let log = dir.read_log()?;
+    let start = after
+        .and_then(|after| log.iter().position(|entry| entry.id() == Some(after)))
+        .map_or(0, |index| index + 1);
+    let mut entries: Vec<_> = log[start..]
+        .iter()
+        .filter(|entry| {
+            !matches!(
+                entry.event,
+                ManagerEvent::Delivered { .. } | ManagerEvent::Agent { .. }
+            )
+        })
+        .collect();
+    let skipped = entries.len().saturating_sub(MAX_CHAT_ENTRIES);
+    entries.drain(..skipped);
+    if json {
+        return print_json(&json!({ "entries": entries, "skipped": skipped }));
+    }
+    for entry in entries {
+        match &entry.event {
+            ManagerEvent::Message { id, from, text } => println!("[{id}] {from:?}: {text}"),
+            ManagerEvent::Reply { id, text, .. } => println!("[{id}] manager: {text}"),
+            ManagerEvent::Rotated { tokens } => {
+                println!("(new conversation after {tokens} tokens)")
+            }
+            ManagerEvent::Stopped { reason } => println!("(manager stopped: {reason})"),
+            _ => {}
+        }
+    }
+    Ok(())
 }

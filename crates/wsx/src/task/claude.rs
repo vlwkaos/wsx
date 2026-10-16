@@ -59,6 +59,34 @@ pub struct ClaudeAgent {
     stdin: ChildStdin,
 }
 
+/// What one agent process runs with. Workers and the manager differ only here.
+pub struct Launch {
+    pub cwd: std::path::PathBuf,
+    pub model: String,
+    pub tools: Vec<String>,
+    /// JSON Schema of the final result, when the turn must end with structured output.
+    pub schema: Option<Value>,
+    pub instructions: String,
+    /// Set on top of `KEPT_ENV`.
+    pub env: Vec<(String, std::ffi::OsString)>,
+    /// Put first on `PATH`, so the agent's commands find this wsx build.
+    pub path_prefix: Option<std::path::PathBuf>,
+}
+
+impl Launch {
+    pub fn worker(record: &TaskRecord) -> Self {
+        Self {
+            cwd: record.working_copy.clone(),
+            model: record.model.clone(),
+            tools: record.tools.clone(),
+            schema: Some(worker_result_schema()),
+            instructions: worker_instructions(record),
+            env: Vec::new(),
+            path_prefix: None,
+        }
+    }
+}
+
 fn worker_instructions(record: &TaskRecord) -> String {
     format!(
         "You are a task worker in a separate working copy on branch {}. \
@@ -73,7 +101,7 @@ impl ClaudeAgent {
     /// Start the agent. `resume` names a conversation that already exists;
     /// otherwise `session` becomes the new conversation's ID.
     pub fn spawn<E: Send + 'static>(
-        record: &TaskRecord,
+        launch: &Launch,
         session: &str,
         resume: bool,
         events: Sender<E>,
@@ -93,11 +121,9 @@ impl ClaudeAgent {
                 "--permission-mode",
                 "default",
                 "--model",
-                &record.model,
-                "--json-schema",
-                &worker_result_schema().to_string(),
+                &launch.model,
                 "--append-system-prompt",
-                &worker_instructions(record),
+                &launch.instructions,
                 // ^ Worker commits carry no AI attribution; `attribution` replaced
                 // `includeCoAuthoredBy`, which older builds still read.
                 "--settings",
@@ -108,8 +134,11 @@ impl ClaudeAgent {
             } else {
                 ["--session-id", session]
             });
-        if !record.tools.is_empty() {
-            command.arg("--allowedTools").args(&record.tools);
+        if let Some(schema) = &launch.schema {
+            command.args(["--json-schema", &schema.to_string()]);
+        }
+        if !launch.tools.is_empty() {
+            command.arg("--allowedTools").args(&launch.tools);
         }
         command.env_clear();
         for name in KEPT_ENV {
@@ -117,10 +146,22 @@ impl ClaudeAgent {
                 command.env(name, value);
             }
         }
+        if let Some(prefix) = &launch.path_prefix {
+            let mut paths = vec![prefix.clone()];
+            paths.extend(
+                std::env::var_os("PATH")
+                    .iter()
+                    .flat_map(std::env::split_paths),
+            );
+            command.env("PATH", std::env::join_paths(paths)?);
+        }
+        for (name, value) in &launch.env {
+            command.env(name, value);
+        }
         // ^ No terminal to edit in: `git rebase --continue` and `git commit` keep their message.
         command.env("GIT_EDITOR", "true");
         let mut child = command
-            .current_dir(&record.working_copy)
+            .current_dir(&launch.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -247,6 +288,7 @@ fn turn_usage(value: &Value) -> TurnUsage {
         input_tokens: count("/usage/input_tokens"),
         output_tokens: count("/usage/output_tokens"),
         cache_read_tokens: count("/usage/cache_read_input_tokens"),
+        cache_creation_tokens: count("/usage/cache_creation_input_tokens"),
         cost_micro_usd: value
             .get("total_cost_usd")
             .and_then(Value::as_f64)

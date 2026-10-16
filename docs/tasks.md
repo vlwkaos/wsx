@@ -95,6 +95,20 @@ With `tasks.land.policy: pr`, the first `land` of a ready task applies the same 
 
 When it would pass 16 KiB, the least urgent open tasks are left out and counted in `open_omitted`.
 
+## Manager
+
+```sh
+wsx task manager -p <project> --json             # start the manager, or report the running one
+wsx task say -p <project> "<text>" --json        # or `-` or --prompt-file; returns {id} at once
+wsx task chat -p <project> [--after <id>] --json # messages, replies, rotations
+```
+
+One manager per project runs as hidden `wsx task manager-host <project-id>` in a wsxd session `task-manager` in the main checkout (no working copy); `say` starts it when it is not running. Its agent uses `tasks.manager` (`model`, default `sonnet`; `rotateTokens`, default 150000), project and local settings only, and the tools `Read Grep Glob Bash(wsx task:*)`. Its instructions: never edit files or run builds; read `wsx task ledger` first; for each owner message answer, add, steer, start, verify or land; keep turns short; name tasks `#<n>`. Its environment is the worker allowlist plus `XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME WSX_SOCKET WSX_DAEMON_BIN` (so its `wsx task` commands reach this project) and `WSX_TASK_ACTOR=manager`; the host puts its own `wsx` first on `PATH`.
+
+- `manager/log.jsonl` (rolls to `log.1.jsonl` past 8 MiB) has `message{id, from: owner|events, text}`, `delivered{ids}`, `reply{id, to, text, usage}`, `agent` (its commands), `rotated{tokens}` and `stopped`. `manager/state.json` keeps the conversation, the next id and what was already reported.
+- One turn at a time. Waiting owner messages go together in one turn, each headed with its id, before waiting events.
+- After a reply whose context (input, cache read and cache write tokens) passes `rotateTokens`, the next turn starts a fresh conversation and the log has `rotated`; the ledger carries the state.
+
 ## Deploy and release
 
 ```sh
@@ -119,6 +133,7 @@ tasks:
   land: { policy: local-merge, remote: origin }   # or policy: pr
   deploy: { command: "sh deploy.sh" }
   release: { command: "sh release.sh" }
+  manager: { adapter: claude, model: sonnet, rotateTokens: 150000 }
 ```
 
 Defaults: adapter `claude`, model `sonnet`, tools `Read Glob Grep Edit Write` plus `Bash(git add|commit|status|diff|log:*)`, no checks. Up to 64 tools and 64 checks; `checkTimeoutSeconds` is 1..86400; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.

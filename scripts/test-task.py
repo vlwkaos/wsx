@@ -567,6 +567,48 @@ def run(wsx, wsxd, work, owned):
     for n in (ready_task, blocked_task):
         js('task', 'close', n, '--discard')
 
+    # 20. The manager: started by the first say, answers from the ledger, acts through wsx task.
+    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text()
+                                            + '  manager: { model: fake-manager, rotateTokens: 100000 }\n')
+    git('commit', '-q', '-am', 'manager config')
+
+    def chat(after=None):
+        return js('task', 'chat', *(['--after', after] if after is not None else []))['entries']
+
+    def reply_to(message_id):
+        return wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and message_id in e['to']), None),
+                    'reply to %s' % message_id)
+
+    running = js('task', 'new', 'SLOW SLOW SLOW WORK r.txt')['id']
+    asked = js('task', 'say', 'STATUS')
+    assert asked['ok'] and asked['id'] == 1, asked
+    assert ('#%d working' % running) in reply_to(asked['id'])['text']
+    launch = next(t for t in traces() if t.get('launch') and t.get('manager'))
+    assert launch['allowed'] == ['Read', 'Grep', 'Glob', 'Bash(wsx task:*)'] and launch['model'] == 'fake-manager'
+    assert launch['actor'] == 'manager' and 'WSX_PANE_ID' not in launch['wsx_env']
+    assert launch['cwd'] == str(project)
+    assert js('task', 'manager')['state'] == 'running'
+    # A new task and an add to the running one, each by a wsx task command the manager runs.
+    started = js('task', 'say', 'RUN wsx task new "WORK s1.txt" -p demo --json')
+    assert 'ran: wsx task new' in reply_to(started['id'])['text']
+    manager_task = max(row['id'] for row in js('task', 'list')['tasks'])
+    assert wait_state(manager_task, 'ready', 'failed')['state'] == 'ready'
+    added = js('task', 'say', 'RUN wsx task add %d "WORK s2.txt" -p demo --json' % running)
+    assert '-> 0' in reply_to(added['id'])['text']
+    assert wait_state(running, 'ready', 'failed')['state'] == 'ready'
+    assert [e['mode'] for e in log(running) if e['kind'] == 'message'] == ['prompt', 'add']
+    # Rotation: past rotateTokens the next turn starts a fresh conversation.
+    big = js('task', 'say', 'BIG')
+    reply_to(big['id'])
+    assert wait(lambda: any(e['kind'] == 'rotated' for e in chat()), 'rotated')
+    after_rotation = js('task', 'say', 'STATUS')
+    reply_to(after_rotation['id'])
+    manager_launches = [t for t in traces() if t.get('launch') and t.get('manager')]
+    assert not manager_launches[-1]['resume'] and manager_launches[-1]['session'] != launch['session']
+    assert [e['id'] for e in chat(after=big['id']) if e['kind'] == 'message'] == [after_rotation['id']]
+    for n in (running, manager_task):
+        js('task', 'close', n, '--discard')
+
 
 if __name__ == '__main__':
     main()

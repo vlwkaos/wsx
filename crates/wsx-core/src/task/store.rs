@@ -394,3 +394,88 @@ pub fn task_numbers(project_id: &str) -> Result<Vec<u32>> {
     numbers.sort_unstable();
     Ok(numbers)
 }
+
+const MANAGER_DIR: &str = "manager";
+const MANAGER_LOG: &str = "log.jsonl";
+const MANAGER_OLD_LOG: &str = "log.1.jsonl";
+const MANAGER_STATE: &str = "state.json";
+const MANAGER_SOCKET: &str = "manager.sock";
+/// The manager log rolls over to `log.1.jsonl` past this size; one old file is kept.
+const MAX_MANAGER_LOG_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_MANAGER_STATE_BYTES: u64 = 256 * 1024;
+
+/// The project manager's folder, `tasks/<project-id>/manager/`.
+#[derive(Debug, Clone)]
+pub struct ManagerDir {
+    pub project_id: String,
+    pub path: PathBuf,
+}
+
+impl ManagerDir {
+    /// Open the folder, creating it owner-only when it is missing.
+    pub fn open(project_id: &str) -> Result<Self> {
+        let path = ensure_project_dir(project_id)?.join(MANAGER_DIR);
+        create_private_dir(&path)?;
+        Ok(Self {
+            project_id: project_id.into(),
+            path,
+        })
+    }
+
+    pub fn socket_path(&self) -> PathBuf {
+        self.path.join(MANAGER_SOCKET)
+    }
+
+    pub fn append(&self, event: super::manager::ManagerEvent) -> Result<()> {
+        let path = self.path.join(MANAGER_LOG);
+        if fs::symlink_metadata(&path).is_ok_and(|meta| meta.len() > MAX_MANAGER_LOG_BYTES) {
+            fs::rename(&path, self.path.join(MANAGER_OLD_LOG))
+                .with_context(|| format!("cannot roll over {}", path.display()))?;
+        }
+        let mut line = serde_json::to_vec(&super::manager::ManagerEntry {
+            unix_ms: now_unix_ms(),
+            event,
+        })?;
+        if line.len() > MAX_LOG_LINE_BYTES {
+            bail!("manager log entry is larger than {MAX_LOG_LINE_BYTES} bytes");
+        }
+        line.push(b'\n');
+        open_nofollow(&path, OpenOptions::new().append(true).create(true))?
+            .write_all(&line)
+            .with_context(|| format!("cannot append to {}", path.display()))
+    }
+
+    /// The old log, then the current one; unreadable lines are skipped.
+    pub fn read_log(&self) -> Result<Vec<super::manager::ManagerEntry>> {
+        let mut entries = Vec::new();
+        for name in [MANAGER_OLD_LOG, MANAGER_LOG] {
+            let path = self.path.join(name);
+            if !path.exists() {
+                continue;
+            }
+            let bytes = read_bounded(&path, MAX_MANAGER_LOG_BYTES + MAX_LOG_LINE_BYTES as u64)?;
+            entries.extend(
+                bytes
+                    .split(|byte| *byte == b'\n')
+                    .filter_map(|line| serde_json::from_slice(line).ok()),
+            );
+        }
+        Ok(entries)
+    }
+
+    pub fn read_state(&self) -> Result<super::manager::ManagerState> {
+        let path = self.path.join(MANAGER_STATE);
+        if !path.exists() {
+            return Ok(Default::default());
+        }
+        serde_json::from_slice(&read_bounded(&path, MAX_MANAGER_STATE_BYTES)?)
+            .with_context(|| format!("cannot parse {}", path.display()))
+    }
+
+    pub fn write_state(&self, state: &super::manager::ManagerState) -> Result<()> {
+        write_atomic(
+            &self.path.join(MANAGER_STATE),
+            &serde_json::to_vec_pretty(state)?,
+        )
+    }
+}

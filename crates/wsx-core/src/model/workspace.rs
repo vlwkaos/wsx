@@ -75,6 +75,10 @@ pub struct TaskConfig {
     /// Shell commands that deploy or release one default-branch commit.
     pub deploy_command: Option<String>,
     pub release_command: Option<String>,
+    /// The project manager (`tasks.manager`).
+    pub manager_model: String,
+    /// Context size after which the manager's next turn starts a fresh conversation.
+    pub manager_rotate_tokens: u64,
 }
 
 /// How `wsx task land` brings a task onto the default branch (docs/tasks.md "Landing").
@@ -111,6 +115,8 @@ impl Default for TaskConfig {
             land_remote: "origin".into(),
             deploy_command: None,
             release_command: None,
+            manager_model: "sonnet".into(),
+            manager_rotate_tokens: 150_000,
         }
     }
 }
