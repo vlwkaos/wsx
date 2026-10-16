@@ -467,13 +467,13 @@ function TaskSheet({ project, task, onClose }) {
   };
   const move = (event) => {
     if (drag.current?.id !== event.pointerId) return;
-    dialog.current.style.setProperty("--sheet-drag", `${Math.max(0, event.clientY - drag.current.y)}px`);
+    dialog.current.style.translate = `0 ${Math.max(0, event.clientY - drag.current.y)}px`;
   };
   const up = (event) => {
     if (drag.current?.id !== event.pointerId) return;
     const moved = event.clientY - drag.current.y;
     drag.current = null;
-    dialog.current.style.removeProperty("--sheet-drag");
+    dialog.current.style.translate = "";
     if (moved > 80) onClose();
   };
   return html`

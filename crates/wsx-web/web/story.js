@@ -13,7 +13,7 @@ const branchName = (ref) => (ref ?? "").replace(/^refs\/(heads|remotes)\//, "");
 const short = (commit) => (commit ?? "").slice(0, 8);
 
 // An open ledger row's state in words, as the owner would say it.
-export function openWords(row) {
+function openWords(row) {
   switch (row.state) {
     case "blocked": return "waits for you";
     case "ready": return row.human_verify > 0 && row.verification?.result !== "pass" ? "ready to verify" : "ready to land";
@@ -37,7 +37,7 @@ function deployWords(status, kind, default_branch) {
 }
 
 // The brief's folded line: "3 open · 1 needs you · main 2 ahead of deploy".
-export function briefLine(ledger, needs) {
+function briefLine(ledger, needs) {
   const open = ledger.open.length + (ledger.open_omitted ?? 0);
   const parts = [open ? `${open} open` : "No open tasks"];
   if (needs) parts.push(`${needs} ${needs === 1 ? "needs" : "need"} you`);
@@ -143,13 +143,13 @@ export function ProjectBrief({ project, overview, onExplained }) {
     </details>`;
 }
 
-export const STEPS = ["Asked", "Working", "Checks", "Ready", "Verified", "Landed", "Deployed"];
+const STEPS = ["Asked", "Working", "Checks", "Ready", "Verified", "Landed", "Deployed"];
 // Indexes into STEPS.
 const [ASKED, WORKING, CHECKS, READY, VERIFIED, LANDED, DEPLOYED] = [0, 1, 2, 3, 4, 5, 6];
 
 // Where a task is on `Asked → … → Deployed`: the last step reached, a step where it stopped
 // (with the word), and steps that do not apply.
-export function storySteps(detail) {
+function storySteps(detail) {
   const items = detail.result?.human_verify?.length ?? 0;
   const passed = detail.verification?.result === "pass";
   const checksFailed = (detail.checks ?? []).some((check) => check.exit !== 0);
@@ -172,7 +172,7 @@ export function storySteps(detail) {
 }
 
 // One sentence: what happens next in this state, and who acts.
-export function nextWords(detail) {
+function nextWords(detail) {
   const items = detail.result?.human_verify?.length ?? 0;
   const passed = detail.verification?.result === "pass";
   const main = detail.default_branch ?? "the default branch";

@@ -496,10 +496,11 @@ body[data-keyboard] .chat:has(.slash) .tray { display: none; }
 .more-menu a:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
 .manager .log-wrap { overflow: hidden; }
 /* The task sheet: over the chat from the bottom, about 85% of the visible height; on a wide
-   screen a panel at the right. A swipe down on its top moves it with the finger. */
+   screen a panel at the right. A swipe down on its top moves it with the finger (an inline
+   `translate`). Its top follows the visible viewport as `.app` does. */
 .task-sheet {
-  position: fixed; inset: auto 0 0 0; margin: 0; padding: 0; width: 100%; max-width: none;
-  top: calc(var(--viewport-top, 0px) + var(--viewport-height, 100dvh) * 0.15 + var(--sheet-drag, 0px));
+  position: fixed; inset: var(--viewport-top, 0) 0 auto 0; padding: 0; width: 100%; max-width: none;
+  margin: calc(var(--viewport-height, 100dvh) * 0.15) 0 0 0;
   height: calc(var(--viewport-height, 100dvh) * 0.85); max-height: none;
   display: flex; flex-direction: column; border: 0; border-top: var(--border-width) solid var(--color-hairline);
   border-radius: var(--radius-sheet) var(--radius-sheet) 0 0; background: var(--color-bg); color: var(--color-text);
@@ -514,13 +515,11 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 /* ^ The sheet gives Back the focus when it opens; its ring stays inside the screen edge. */
 .task-sheet .bar .icon-button:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
 .task-sheet .task-page { flex: 1; min-height: 0; }
-@media (min-width: 900px) {
-  .task-sheet {
-    inset: 0 0 0 auto; top: 0; width: min(100%, calc(var(--size-rail) * 2)); height: 100%;
-    border-top: 0; border-left: var(--border-width) solid var(--color-hairline); border-radius: 0;
-  }
-  .task-sheet-top { display: none; }
+.app[data-wide] .task-sheet {
+  inset: 0 0 0 auto; margin: 0; width: min(100%, calc(var(--size-rail) * 2)); height: 100%;
+  border-top: 0; border-left: var(--border-width) solid var(--color-hairline); border-radius: 0;
 }
+.app[data-wide] .task-sheet-top { display: none; }
 /* Home: one row per project, what needs the owner first. */
 .count {
   flex: 0 0 auto; min-width: calc(var(--space-4) * 1.25); padding: 0 var(--space-1); border-radius: var(--space-4);
@@ -566,7 +565,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 
 /* Hook: .brief, .story — show-me context: where the project and a task stand, in words
    (docs/web-client.md "Project brief and task story"). Folded, the brief is one line. */
-.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.visually-hidden { position: absolute; width: var(--border-width); height: var(--border-width); overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .brief { flex: 0 0 auto; max-height: calc(100% * var(--strip-share)); overflow-y: auto; overscroll-behavior: contain; border-bottom: var(--border-width) solid var(--color-hairline); font-size: var(--font-size-sm); }
 .brief-line {
   display: flex; align-items: center; gap: var(--space-1); min-height: var(--size-control); padding: 0 var(--column-inset, var(--space-4));
