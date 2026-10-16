@@ -87,6 +87,60 @@ pub struct ManagerState {
     pub decisions_seen: u64,
 }
 
+/// What the manager asked the owner to approve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalAction {
+    Land,
+    Deploy,
+    Release,
+    /// `close --discard`
+    Discard,
+}
+
+/// One line of `approvals.jsonl`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ApprovalLine {
+    Request {
+        id: String,
+        action: ApprovalAction,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revision: Option<u32>,
+        #[serde(default)]
+        skip_verify: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
+        unix_ms: u64,
+    },
+    Decision {
+        id: String,
+        approved: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        /// What running the approved action said, or why it was not run.
+        outcome: String,
+        unix_ms: u64,
+    },
+}
+
+/// Requests with no decision yet, oldest first.
+pub fn pending_approvals(lines: &[ApprovalLine]) -> Vec<&ApprovalLine> {
+    lines
+        .iter()
+        .filter(|line| {
+            let ApprovalLine::Request { id, .. } = line else {
+                return false;
+            };
+            !lines.iter().any(|other| {
+                matches!(other, ApprovalLine::Decision { id: decided, .. } if decided == id)
+            })
+        })
+        .collect()
+}
+
 /// One request on `manager/manager.sock`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]

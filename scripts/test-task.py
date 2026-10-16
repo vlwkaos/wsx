@@ -644,6 +644,43 @@ def run(wsx, wsxd, work, owned):
     for n in (first, second, unseen):
         js('task', 'close', n, '--discard')
 
+    # 22. Approvals: what the manager may not do alone becomes a request the owner decides.
+    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text().replace('  land: { policy: pr }\n', ''))
+    git('commit', '-q', '-am', 'back to local-merge')
+    ap = js('task', 'new', 'WORK ap.txt')['id']
+    assert wait_state(ap, 'ready', 'failed')['state'] == 'ready'
+    asked = js('task', 'say', 'RUN wsx task land %d -p demo --json' % ap)
+    assert 'the owner was asked (a1)' in reply_to(asked['id'])['text']
+    assert show(ap)['state'] == 'ready'
+    pending = js('task', 'ledger')['approvals']
+    assert [(p['id'], p['action'], p['task'], p['revision']) for p in pending] == [('a1', 'land', ap, 1)], pending
+    approved = js('task', 'approve', 'a1')
+    assert approved['ok'] and approved['result']['state'] == 'landed', approved
+    assert show(ap)['state'] == 'landed'
+    heard = wait(lambda: events_with('approval a1 (land #%d) approved; done' % ap), 'approval event')
+    assert 'noted events' in reply_to(heard[0]['id'])['text']
+    # close --discard by the manager always asks; the owner denies it with a note.
+    keep = js('task', 'new', 'WORK keep.txt')['id']
+    assert wait_state(keep, 'ready', 'failed')['state'] == 'ready'
+    asked = js('task', 'say', 'RUN wsx task close %d --discard -p demo --json' % keep)
+    assert 'the owner was asked (a2)' in reply_to(asked['id'])['text']
+    js('task', 'deny', 'a2', '--note', 'keep it for now')
+    wait(lambda: events_with('approval a2 (discard #%d) denied; keep it for now' % keep), 'deny event')
+    assert show(keep)['state'] == 'ready' and Path(show(keep)['record']['working_copy']).exists()
+    # The manager cannot decide its own request.
+    asked = js('task', 'say', 'RUN wsx task land %d -p demo --json\nRUN wsx task approve a3 -p demo --json' % keep)
+    text = reply_to(asked['id'])['text']
+    assert 'the owner was asked (a3)' in text and 'is for the owner' in text, text
+    # An approval for a revision the task has moved past is not run.
+    js('task', 'add', keep, 'WORK keep2.txt')
+    assert wait_state(keep, 'ready', 'failed')['revision'] == 2
+    moved = cli('task', 'approve', 'a3', '--json', ok=False)
+    assert 'moved from r1 to r2' in moved.stderr and show(keep)['state'] == 'ready'
+    assert 'no pending approval a3' in cli('task', 'approve', 'a3', ok=False).stderr
+    assert js('task', 'ledger')['approvals'] == []
+    js('task', 'close', ap)
+    js('task', 'close', keep, '--discard')
+
 
 if __name__ == '__main__':
     main()

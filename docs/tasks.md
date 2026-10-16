@@ -111,6 +111,19 @@ One manager per project runs as hidden `wsx task manager-host <project-id>` in a
 - Restart: `state.json` records the reported state of each task only when its message is logged, and `delivered` marks what reached the agent. A restarted host queues logged messages that were never delivered and reports changes it has not reported, so no event is lost. Its first start takes the existing tasks as they are, without events.
 - After a reply whose context (input, cache read and cache write tokens) passes `rotateTokens`, the next turn starts a fresh conversation and the log has `rotated`; the ledger carries the state.
 
+## Approvals
+
+`tasks.land.approve`, `tasks.deploy.approve` and `tasks.release.approve` (default `true`) decide whether the manager may land, deploy or release alone. A `wsx task` command run with `WSX_TASK_ACTOR=manager` (the manager host sets it for its agent) that needs approval does not act: it appends `request{id: a<n>, action, task, revision, skip_verify, commit}` to `tasks/<project-id>/approvals.jsonl` and answers that the owner was asked. `close --discard` by the manager always asks. The ledger lists pending requests under `approvals`.
+
+```sh
+wsx task approve a3 -p <project> --json            # run the action as the owner would
+wsx task deny a3 [--note <text>] -p <project> --json
+```
+
+Both refuse when `WSX_TASK_ACTOR=manager`. `approve` refuses a land or discard for a task that moved past the requested revision (recorded as not run; ask again). Otherwise it runs the action as its own `wsx task ... --json` command without the actor mark and records `decision{id, approved, note, outcome}`. Decisions reach the manager as events (`approval a3 (land #5) approved; done: ...`). Writers lock the file; requests are numbered under that lock.
+
+This is a guard against the manager's mistakes, not a security boundary: the manager's tools allow every `wsx task` command, and anything running as the owner can leave out `WSX_TASK_ACTOR`. An OS sandbox per agent comes later.
+
 ## Deploy and release
 
 ```sh
@@ -132,9 +145,9 @@ tasks:
   agent: { adapter: claude, model: sonnet, tools: [Read, Edit, "Bash(cargo test:*)"] }
   checks: ["cargo fmt --check"]
   checkTimeoutSeconds: 1200
-  land: { policy: local-merge, remote: origin }   # or policy: pr
-  deploy: { command: "sh deploy.sh" }
-  release: { command: "sh release.sh" }
+  land: { policy: local-merge, remote: origin, approve: true }   # or policy: pr
+  deploy: { command: "sh deploy.sh", approve: true }
+  release: { command: "sh release.sh", approve: true }
   manager: { adapter: claude, model: sonnet, rotateTokens: 150000 }
 ```
 

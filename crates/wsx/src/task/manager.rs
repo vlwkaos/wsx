@@ -12,11 +12,12 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::runtime;
+use wsx_core::task::manager::ApprovalLine;
 use wsx_core::task::manager::{
     Author, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState, Seen,
 };
 use wsx_core::task::store::ManagerDir;
-use wsx_core::task::store::RESULT_FILE;
+use wsx_core::task::store::{self, RESULT_FILE};
 use wsx_core::task::TaskState;
 use wsx_core::task::MAX_MESSAGE_BYTES;
 
@@ -74,6 +75,8 @@ struct Manager {
     started: Instant,
     /// Task states as last seen, including ones not yet reported.
     observed: BTreeMap<u32, Seen>,
+    /// Approval decisions seen, including ones not yet reported.
+    observed_decisions: u64,
     /// Event lines not yet logged as a message, and when the last one came.
     pending_events: Vec<String>,
     last_event: Option<Instant>,
@@ -114,6 +117,7 @@ pub fn run(project_id: &str) -> Result<()> {
         pane: hosting::own_pane(),
         started: Instant::now(),
         observed: BTreeMap::new(),
+        observed_decisions: 0,
         pending_events: Vec::new(),
         last_event: None,
     };
@@ -213,11 +217,16 @@ impl Manager {
             }
         }
         match self.state.seen.clone() {
-            Some(seen) => self.observed = seen,
+            Some(seen) => {
+                self.observed = seen;
+                self.observed_decisions = self.state.decisions_seen;
+            }
             None => {
                 // ^ First start: what already happened is the baseline, not news.
                 self.observed = self.current_tasks().into_iter().collect();
+                self.observed_decisions = self.decisions().len() as u64;
                 self.state.seen = Some(self.observed.clone());
+                self.state.decisions_seen = self.observed_decisions;
                 self.save();
             }
         }
@@ -241,8 +250,58 @@ impl Manager {
             .collect()
     }
 
+    fn decisions(&self) -> Vec<ApprovalLine> {
+        store::read_approvals(&self.dir.project_id).unwrap_or_default()
+    }
+
+    /// Turn new approval decisions into event lines.
+    fn watch_approvals(&mut self) {
+        let lines = self.decisions();
+        let decisions: Vec<&ApprovalLine> = lines
+            .iter()
+            .filter(|line| matches!(line, ApprovalLine::Decision { .. }))
+            .collect();
+        for decision in decisions.iter().skip(self.observed_decisions as usize) {
+            let ApprovalLine::Decision {
+                id,
+                approved,
+                note,
+                outcome,
+                ..
+            } = decision
+            else {
+                continue;
+            };
+            let asked = lines.iter().find_map(|line| match line {
+                ApprovalLine::Request {
+                    id: requested,
+                    action,
+                    task,
+                    ..
+                } if requested == id => Some(format!(
+                    "{action:?}{}",
+                    task.map_or(String::new(), |task| format!(" #{task}"))
+                )),
+                _ => None,
+            });
+            let verdict = if *approved {
+                format!("approved; {outcome}")
+            } else {
+                format!("denied; {}", note.as_deref().unwrap_or("no note"))
+            };
+            self.pending_events.push(format!(
+                "approval {id} ({}) {}",
+                asked.unwrap_or_default().to_ascii_lowercase(),
+                super::ledger::clip(&verdict, EVENT_SUMMARY_CHARS * 2)
+            ));
+            self.last_event = Some(Instant::now());
+        }
+        self.observed_decisions = decisions.len() as u64;
+    }
+
     /// Turn task state changes into event lines.
     fn watch_tasks(&mut self) {
+        self.watch_approvals();
         let Ok(tasks) = super::project_tasks(&self.dir.project_id) else {
             return;
         };
@@ -292,6 +351,7 @@ impl Manager {
             Ok(_) => {
                 self.pending_events.clear();
                 self.state.seen = Some(self.observed.clone());
+                self.state.decisions_seen = self.observed_decisions;
                 self.save();
             }
             Err(error) => self.say(&format!("cannot log the events: {error:#}")),
