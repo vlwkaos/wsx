@@ -23,10 +23,10 @@ const draftFor = (id) => {
 };
 function keepDraft(id) {
   const all = stored();
-  const { text, attachments } = drafts.get(id);
+  const { text, attachments, pending } = drafts.get(id);
   // Only a message that was not delivered: a delivered one may never match the saved text.
-  const pending = drafts.get(id).pending?.failure != null ? drafts.get(id).pending : null;
-  if (text || attachments.length || pending) all[id] = { text, attachments, pending };
+  const failed = pending?.failure != null ? pending : null;
+  if (text || attachments.length || failed) all[id] = { text, attachments, pending: failed };
   else delete all[id];
   try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(all)); } catch { /* a private window keeps the draft in memory only */ }
 }
@@ -89,7 +89,6 @@ const EMPTY_WORDS = {
   history_unreadable: "No messages yet.",
   no_readable_messages: "No messages yet.",
 };
-// Exchange states where the last sent message did not go the expected way.
 // What the latest exchange says under the last message of the conversation. A failed
 // delivery is not here: that message never reached the conversation, so the pending message
 // or the waiting one says it.
