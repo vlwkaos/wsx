@@ -589,12 +589,6 @@ pub fn create_session(
     session_label: Option<String>,
     command: Option<String>,
 ) -> Result<(SessionId, String)> {
-    let client = Client::local();
-    let (snapshot, worktree_id) =
-        snapshot_with_worktree(runtime_snapshot()?, worktree_path, || {
-            let discovery = discover_workspace(config)?;
-            synchronize_discovery(&discovery)
-        })?;
     let base = session_label
         .filter(|label| !label.trim().is_empty())
         .or_else(|| {
@@ -603,6 +597,24 @@ pub fn create_session(
                 .and_then(|command| command.split_whitespace().next().map(str::to_owned))
         })
         .unwrap_or_else(|| project_name.to_owned());
+    create_session_launch(config, worktree_path, base, Vec::new(), command)
+}
+
+/// Create a session whose pane runs `argv` directly (empty: the login shell),
+/// optionally typing `initial_input` into it. The label gets a suffix when taken.
+pub fn create_session_launch(
+    config: &GlobalConfig,
+    worktree_path: &Path,
+    base: String,
+    argv: Vec<String>,
+    initial_input: Option<String>,
+) -> Result<(SessionId, String)> {
+    let client = Client::local();
+    let (snapshot, worktree_id) =
+        snapshot_with_worktree(runtime_snapshot()?, worktree_path, || {
+            let discovery = discover_workspace(config)?;
+            synchronize_discovery(&discovery)
+        })?;
     let used = snapshot
         .sessions
         .iter()
@@ -618,8 +630,8 @@ pub fn create_session(
     let response = client.call(&Request::SessionCreate {
         worktree_id,
         label: label.clone(),
-        command: Vec::new(),
-        initial_input: command,
+        command: argv,
+        initial_input,
         rows: 24,
         cols: 80,
     })?;
