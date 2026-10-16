@@ -280,6 +280,8 @@ struct State {
     persistence_dirty: bool,
     recovery_in_progress: bool,
     stopping: bool,
+    /// Exchange rounds that the PTY is taking now. A live handoff waits for none.
+    deliveries_in_flight: usize,
 }
 struct Daemon {
     state: Mutex<State>,
@@ -946,6 +948,7 @@ fn new_state(persisted: Persisted) -> State {
         stop_reason: None,
         persistence_dirty: false,
         recovery_in_progress: false,
+        deliveries_in_flight: 0,
         stopping: false,
     }
 }
@@ -1147,15 +1150,16 @@ struct HandoffTarget {
 
 fn take_ready_handoff(daemon: &Daemon) -> Option<HandoffTarget> {
     // ^ The accept loop calls this on every pass. A handoff starts between mutations, so
-    // while one runs (a prompt delivery waits for the agent to read its PTY) this pass is
-    // skipped and the loop keeps accepting connections, among them that agent's reports.
+    // while one runs this pass is skipped and the loop keeps accepting connections.
     let _mutation = match daemon.mutation_lock.try_lock() {
         Ok(guard) => guard,
         Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         Err(std::sync::TryLockError::WouldBlock) => return None,
     };
     let mut state = lock(&daemon.state);
-    if state.stopping || state.handoff_in_progress {
+    // ^ A delivery releases the mutation lock during its PTY write; its PTY must not move
+    // to the successor before the outcome is recorded.
+    if state.stopping || state.handoff_in_progress || state.deliveries_in_flight > 0 {
         return None;
     }
     let binary_id = state.replacement_target.clone()?;
@@ -2444,6 +2448,8 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Response {
 }
 
 fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiError> {
+    // ^ An exchange delivery takes the mutation lock itself and releases it while the PTY
+    // takes the prompt: see deliver_exchange_round.
     let _mutation = (!matches!(
         &request,
         Request::Hello { .. }
@@ -2453,6 +2459,12 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             | Request::AgentExchangeWait { .. }
             | Request::PluginList
             | Request::LifecycleStatus
+            | Request::AgentExchangeCreate { .. }
+            | Request::AgentExchangeCreateStashingDraft { .. }
+            | Request::AgentExchangeCreateKeyed { .. }
+            | Request::AgentExchangeContinue { .. }
+            | Request::AgentExchangeContinueStashingDraft { .. }
+            | Request::AgentExchangeContinueKeyed { .. }
     ))
     .then(|| lock(&daemon.mutation_lock));
     if !matches!(&request, Request::Hello { .. } | Request::LifecycleStatus)
@@ -4986,7 +4998,7 @@ fn validate_draft_target(agent: &AgentInfo, runtime: &TerminalRuntime) -> Result
     Ok(())
 }
 
-fn stash_claude_draft(runtime: &TerminalRuntime) -> Result<(), ApiError> {
+fn stash_claude_draft(runtime: &TerminalRuntime, deadline: Instant) -> Result<(), ApiError> {
     let before = runtime
         .agent_observation()
         .map_err(|_| api("editor_unavailable", "cannot observe Claude editor"))?;
@@ -4995,10 +5007,10 @@ fn stash_claude_draft(runtime: &TerminalRuntime) -> Result<(), ApiError> {
         return Ok(());
     }
     runtime
-        .write(b"\x13")
+        .write_within(b"\x13", deadline)
         .map_err(|_| api("editor_unavailable", "cannot stash Claude editor"))?;
-    let deadline = Instant::now() + Duration::from_millis(500);
-    while Instant::now() < deadline {
+    let observe_until = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < observe_until {
         let after = runtime
             .agent_observation()
             .map_err(|_| api("editor_unavailable", "cannot observe stashed Claude editor"))?;
@@ -5019,9 +5031,141 @@ fn stash_claude_draft(runtime: &TerminalRuntime) -> Result<(), ApiError> {
 fn deliver_agent_exchange(
     runtime: &TerminalRuntime,
     input: &str,
+    deadline: Instant,
 ) -> Result<(), wsx_terminal::TerminalError> {
-    runtime.paste(input)?;
-    runtime.write(b"\r")
+    runtime.paste_within(input, deadline)?;
+    runtime.write_within(b"\r", deadline)
+}
+
+/// Upper bound of the PTY write of one round. A healthy agent takes a 64 KiB prompt in
+/// milliseconds. An agent that stops reading must not hold its pane and a live handoff.
+const AGENT_EXCHANGE_WRITE_LIMIT: Duration = Duration::from_secs(10);
+
+/// The locks a delivery holds, or the exchange that a repeated key already made.
+enum DeliveryLocks<'a> {
+    Held(MutexGuard<'a, ()>, MutexGuard<'a, ()>),
+    Repeat(Box<AgentExchange>),
+}
+
+/// Take the mutation lock and the pane-operation lock of a delivery. Other requests take
+/// the mutation lock first and then wait for the pane, so a delivery never waits for its
+/// pane while it holds the mutation lock: a slow delivery to that pane would hold every
+/// change. `repeat` finds the exchange of a repeated key, which is returned at once: the
+/// key is saved with the submitted round, also while that round is still in the PTY. A
+/// continuation key is compared before the revision, because a repeat carries a newer one.
+fn lock_delivery<'a>(
+    daemon: &'a Daemon,
+    operation: &'a Mutex<()>,
+    repeat: impl Fn(&State) -> Option<&AgentExchange>,
+) -> DeliveryLocks<'a> {
+    loop {
+        let mutation = lock(&daemon.mutation_lock);
+        if let Some(exchange) = repeat(&lock(&daemon.state)).cloned() {
+            return DeliveryLocks::Repeat(Box::new(exchange));
+        }
+        match operation.try_lock() {
+            Ok(guard) => return DeliveryLocks::Held(mutation, guard),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                return DeliveryLocks::Held(mutation, poisoned.into_inner())
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        drop(mutation);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Ends a delivery's hold on live handoff, also when recording its outcome fails.
+struct DeliveryInFlight<'a>(&'a Daemon);
+
+impl Drop for DeliveryInFlight<'_> {
+    fn drop(&mut self) {
+        let mut state = lock(&self.0.state);
+        state.deliveries_in_flight = state.deliveries_in_flight.saturating_sub(1);
+    }
+}
+
+/// Write the persisted `round` of exchange `id` to its PTY and record whether it arrived.
+/// ^ docs/agent-orchestration.md "Idempotent delivery": the mutation lock is released while the PTY
+/// takes the prompt, so other changes, among them the agent's own reports, go on while an
+/// agent reads slowly. `deliveries_in_flight` keeps a live handoff from starting until the
+/// outcome is recorded. The pane-operation lock is released before the mutation lock is
+/// taken again, because other requests take the mutation lock first.
+#[allow(clippy::too_many_arguments)]
+fn deliver_exchange_round(
+    daemon: &Daemon,
+    mutation: MutexGuard<'_, ()>,
+    operation: MutexGuard<'_, ()>,
+    mut state: MutexGuard<'_, State>,
+    id: AgentExchangeId,
+    round: u32,
+    runtime: &TerminalRuntime,
+    stash_draft: bool,
+    input: &str,
+) -> Result<Response, ApiError> {
+    let delivery_sha256 = format!("{:x}", Sha256::digest(input.as_bytes()));
+    let deadline_unix_ms = state
+        .persisted
+        .agent_exchanges
+        .iter()
+        .find(|exchange| exchange.id == id)
+        .map_or(0, |exchange| exchange.deadline_unix_ms);
+    state.deliveries_in_flight += 1;
+    let _in_flight = DeliveryInFlight(daemon);
+    drop(state);
+    drop(mutation);
+    let remaining = Duration::from_millis(deadline_unix_ms.saturating_sub(unix_time_millis()));
+    let deadline = Instant::now() + remaining.min(AGENT_EXCHANGE_WRITE_LIMIT);
+    let stashed = if stash_draft {
+        stash_claude_draft(runtime, deadline)
+    } else {
+        Ok(())
+    };
+    let delivered = stashed.and_then(|()| {
+        deliver_agent_exchange(runtime, input, deadline)
+            .map_err(|error| api("terminal_write_failed", error.to_string()))
+    });
+    drop(operation);
+    let _mutation = lock(&daemon.mutation_lock);
+    let mut state = lock(&daemon.state);
+    let current = state
+        .persisted
+        .agent_exchanges
+        .iter()
+        .find(|exchange| exchange.id == id)
+        .cloned()
+        .ok_or_else(|| api("not_found", "agent exchange not found"))?;
+    // ^ A change made during the write, such as an expiry, keeps its own outcome.
+    if current.state != AgentExchangeState::Submitted || current.round != round {
+        return Ok(Response::AgentExchange {
+            exchange: current,
+            frame: None,
+        });
+    }
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    let exchange = persisted
+        .agent_exchanges
+        .iter_mut()
+        .find(|exchange| exchange.id == id)
+        .expect("exchange found above");
+    record_delivery(exchange, delivered, delivery_sha256);
+    exchange.updated_unix_ms = unix_time_millis();
+    exchange.revision = revision;
+    let response = exchange.clone();
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    publish(
+        daemon,
+        &mut state,
+        revision,
+        "agent_exchange.delivery",
+        id.0,
+    );
+    Ok(Response::AgentExchange {
+        exchange: response,
+        frame: None,
+    })
 }
 
 fn expire_due_agent_exchanges(daemon: &Daemon, state: &mut State) -> Result<(), ApiError> {
@@ -5112,27 +5256,30 @@ fn create_agent_exchange_with(
     validate_exchange_key(key.as_deref())?;
     let timeout_ms = validate_exchange_timeout(timeout_ms)?;
     let operation_lock = terminal_operation_lock(daemon, pane_id);
-    let _operation = lock(&operation_lock);
-    let mut state = lock(&daemon.state);
-    expire_due_agent_exchanges(daemon, &mut state)?;
-    // ^ The first request holds the pane-operation lock until its delivery is recorded,
-    // so a repeat that arrives during a slow delivery waits here and then finds it.
-    if let Some(existing) =
+    let (mutation, operation) = match lock_delivery(daemon, &operation_lock, |state| {
         key.as_deref().and_then(|key| {
             state.persisted.agent_exchanges.iter().find(|exchange| {
                 exchange.pane_id == pane_id && exchange.key.as_deref() == Some(key)
             })
         })
-    {
-        return Ok(Response::AgentExchange {
-            exchange: existing.clone(),
-            frame: None,
-        });
+    }) {
+        DeliveryLocks::Held(mutation, operation) => (mutation, operation),
+        DeliveryLocks::Repeat(exchange) => {
+            return Ok(Response::AgentExchange {
+                exchange: *exchange,
+                frame: None,
+            })
+        }
+    };
+    let mut state = lock(&daemon.state);
+    if state.handoff_in_progress {
+        return Err(api("daemon_replacing", "wsxd live handoff is in progress"));
     }
-    if state.stopping || state.handoff_in_progress {
+    expire_due_agent_exchanges(daemon, &mut state)?;
+    if state.stopping {
         return Err(api(
             "daemon_unavailable",
-            "wsxd cannot start an exchange during shutdown or handoff",
+            "wsxd cannot start an exchange during shutdown",
         ));
     }
     let pane = state
@@ -5263,45 +5410,17 @@ fn create_agent_exchange_with(
     );
 
     let text = input.terminal_text(id, 1, access);
-    let delivery_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
-    // ^ PTY readers notify through daemon.state between reads. Keep the mutation
-    // and pane-operation fences, but release state while waiting for editor ACK and
-    // while the PTY takes the prompt: an agent that reads slowly must not stop reads.
-    drop(state);
-    let stashed = if stash_draft {
-        stash_claude_draft(&runtime)
-    } else {
-        Ok(())
-    };
-    let delivered = stashed.and_then(|()| {
-        deliver_agent_exchange(&runtime, &text)
-            .map_err(|error| api("terminal_write_failed", error.to_string()))
-    });
-    let mut state = lock(&daemon.state);
-    let revision = state.revision.saturating_add(1);
-    let mut persisted = state.persisted.clone();
-    let exchange = persisted
-        .agent_exchanges
-        .iter_mut()
-        .find(|exchange| exchange.id == id)
-        .expect("new exchange remains persisted");
-    record_delivery(exchange, delivered, delivery_sha256);
-    exchange.updated_unix_ms = unix_time_millis();
-    exchange.revision = revision;
-    let response = exchange.clone();
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
-    publish(
+    deliver_exchange_round(
         daemon,
-        &mut state,
-        revision,
-        "agent_exchange.delivery",
-        id.0,
-    );
-    Ok(Response::AgentExchange {
-        exchange: response,
-        frame: None,
-    })
+        mutation,
+        operation,
+        state,
+        id,
+        1,
+        &runtime,
+        stash_draft,
+        &text,
+    )
 }
 
 #[cfg(test)]
@@ -5347,8 +5466,25 @@ fn continue_agent_exchange_with(
         .map(|exchange| exchange.pane_id)
         .ok_or_else(|| api("not_found", "agent exchange not found"))?;
     let operation_lock = terminal_operation_lock(daemon, pane_id);
-    let _operation = lock(&operation_lock);
+    let (mutation, operation) = match lock_delivery(daemon, &operation_lock, |state| {
+        state
+            .persisted
+            .agent_exchanges
+            .iter()
+            .find(|exchange| exchange.id == id && key.is_some() && exchange.continue_key == key)
+    }) {
+        DeliveryLocks::Held(mutation, operation) => (mutation, operation),
+        DeliveryLocks::Repeat(exchange) => {
+            return Ok(Response::AgentExchange {
+                exchange: *exchange,
+                frame: None,
+            })
+        }
+    };
     let mut state = lock(&daemon.state);
+    if state.handoff_in_progress {
+        return Err(api("daemon_replacing", "wsxd live handoff is in progress"));
+    }
     let previous = state
         .persisted
         .agent_exchanges
@@ -5356,14 +5492,6 @@ fn continue_agent_exchange_with(
         .find(|exchange| exchange.id == id)
         .cloned()
         .ok_or_else(|| api("not_found", "agent exchange not found"))?;
-    // ^ A repeat carries a newer revision than the first request saw, so the key is
-    // compared before the revision.
-    if key.is_some() && previous.continue_key == key {
-        return Ok(Response::AgentExchange {
-            exchange: previous,
-            frame: None,
-        });
-    }
     expect_revision(previous.revision, expected_revision)?;
     if !previous.can_continue()
         || matches!(
@@ -5436,43 +5564,17 @@ fn continue_agent_exchange_with(
         id.0,
     );
     let text = input.terminal_text(id, next_round, previous.access);
-    let delivery_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
-    // ^ Match initial delivery: a fragmented PTY frame must complete its callbacks.
-    drop(state);
-    let stashed = if stash_draft {
-        stash_claude_draft(&runtime)
-    } else {
-        Ok(())
-    };
-    let delivered = stashed.and_then(|()| {
-        deliver_agent_exchange(&runtime, &text)
-            .map_err(|error| api("terminal_write_failed", error.to_string()))
-    });
-    let mut state = lock(&daemon.state);
-    let revision = state.revision.saturating_add(1);
-    let mut persisted = state.persisted.clone();
-    let exchange = persisted
-        .agent_exchanges
-        .iter_mut()
-        .find(|exchange| exchange.id == id)
-        .unwrap();
-    record_delivery(exchange, delivered, delivery_sha256);
-    exchange.updated_unix_ms = unix_time_millis();
-    exchange.revision = revision;
-    let response = exchange.clone();
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
-    publish(
+    deliver_exchange_round(
         daemon,
-        &mut state,
-        revision,
-        "agent_exchange.delivery",
-        id.0,
-    );
-    Ok(Response::AgentExchange {
-        exchange: response,
-        frame: None,
-    })
+        mutation,
+        operation,
+        state,
+        id,
+        next_round,
+        &runtime,
+        stash_draft,
+        &text,
+    )
 }
 
 /// The outcome of one round's PTY delivery. Only a successful delivery publishes the
@@ -7252,6 +7354,7 @@ mod tests {
                 stop_reason: None,
                 persistence_dirty: false,
                 recovery_in_progress: false,
+                deliveries_in_flight: 0,
                 stopping: false,
             }),
             mutation_lock: Mutex::new(()),
