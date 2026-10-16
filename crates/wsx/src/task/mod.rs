@@ -25,10 +25,10 @@ use wsx_core::task::view::{
     overlaps, project_tasks, task_summary, verification_value, MAX_RESULT_READ_BYTES,
 };
 use wsx_core::task::{
-    call_host, copy, now_unix_ms,
+    brief, call_host, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
-    DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord,
-    TaskState, Verdict, MAX_MESSAGE_BYTES,
+    DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind, Phase, TaskRecord,
+    TaskState, Verdict, BRIEF_TOOLS, MAX_MESSAGE_BYTES,
 };
 use wsx_core::{ops, runtime};
 
@@ -45,6 +45,17 @@ pub enum TaskCmd {
         /// Start from this branch, tag or commit instead of the default branch
         #[arg(long, value_name = "REF")]
         from: Option<String>,
+        /// Build at once, without a brief first (logged); only when the owner asks for it
+        #[arg(long)]
+        no_brief: bool,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Build a briefed task against its rewritten prompt
+    Start {
+        task: String,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -234,6 +245,7 @@ impl TaskCmd {
             | Self::Add { json, .. }
             | Self::Allow { json, .. }
             | Self::Stop { json, .. }
+            | Self::Start { json, .. }
             | Self::Land { json, .. }
             | Self::Verify { json, .. }
             | Self::Close { json, .. }
@@ -274,9 +286,30 @@ pub fn run(command: TaskCmd) -> Result<()> {
         TaskCmd::New {
             prompt,
             from,
+            no_brief,
             project,
             json,
-        } => new(prompt, from.as_deref(), project.as_deref(), json),
+        } => new(prompt, from.as_deref(), no_brief, project.as_deref(), json),
+        TaskCmd::Start {
+            task,
+            project,
+            json,
+        } => {
+            let dir = open(project.as_deref(), &task)?;
+            // ^ The build is the owner's decision: the manager asks (docs/tasks.md "Brief").
+            if acting_as_manager() {
+                let record = dir.read_record()?;
+                return ask_owner(
+                    &dir.project_id,
+                    ApprovalAction::Start,
+                    Some(&record),
+                    false,
+                    None,
+                    json,
+                );
+            }
+            send(&dir, HostRequest::Start, json)
+        }
         TaskCmd::List { project, all, json } => list(project.as_deref(), all, json),
         TaskCmd::Show {
             task,
@@ -491,7 +524,13 @@ fn print_json(value: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-fn new(prompt: PromptSource, from: Option<&str>, project: Option<&str>, json: bool) -> Result<()> {
+fn new(
+    prompt: PromptSource,
+    from: Option<&str>,
+    no_brief: bool,
+    project: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let prompt = prompt.read(MAX_MESSAGE_BYTES)?;
     let (config, workspace) = load_full_workspace()?;
     let project = resolve_project(&workspace, project)?;
@@ -511,6 +550,19 @@ fn new(prompt: PromptSource, from: Option<&str>, project: Option<&str>, json: bo
             }
         };
     let now = now_unix_ms();
+    let skipped = if no_brief {
+        Some("flag")
+    } else if !settings.brief {
+        Some("config")
+    } else {
+        None
+    };
+    let mut brief_tools: Vec<String> = BRIEF_TOOLS.iter().map(|tool| tool.to_string()).collect();
+    for tool in settings.brief_tools {
+        if !brief_tools.contains(&tool) {
+            brief_tools.push(tool);
+        }
+    }
     let record = TaskRecord {
         id,
         project: project.name.clone(),
@@ -524,6 +576,12 @@ fn new(prompt: PromptSource, from: Option<&str>, project: Option<&str>, json: bo
         adapter: settings.adapter,
         model: settings.model,
         tools: settings.tools,
+        phase: if skipped.is_some() {
+            Phase::Build
+        } else {
+            Phase::Brief
+        },
+        brief_tools,
         checks: settings.checks,
         check_timeout_secs: settings.check_timeout_secs,
         agent_session: None,
@@ -546,6 +604,17 @@ fn new(prompt: PromptSource, from: Option<&str>, project: Option<&str>, json: bo
             mode: MessageKind::Prompt,
             text: prompt,
         })?;
+        if let Some(by) = skipped {
+            dir.append(LogEvent::BriefSkipped {
+                by: by.into(),
+                actor: if acting_as_manager() {
+                    "manager"
+                } else {
+                    "owner"
+                }
+                .into(),
+            })?;
+        }
         let exe = std::env::current_exe().context("cannot find the wsx binary")?;
         let argv = vec![
             exe.to_string_lossy().into_owned(),
@@ -652,12 +721,16 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
     let report = dir.file(REPORT_FILE);
     let report = report.exists().then_some(report);
+    let brief_text = dir.file(store::BRIEF_TEXT_FILE);
+    let brief_text = brief_text.exists().then_some(brief_text);
     let host = call_host(&dir.socket_path(), &HostRequest::Status, HOST_TIMEOUT).is_ok();
     let mut summary = task_summary(dir, &record);
     if json {
         summary["record"] = serde_json::to_value(&record)?;
         summary["result"] = result.unwrap_or(serde_json::Value::Null);
         summary["report"] = json!(report);
+        summary["brief"] = json!(brief::read(dir));
+        summary["brief_text"] = json!(brief_text);
         summary["log"] = json!(dir.file(store::LOG_FILE));
         summary["host_running"] = json!(host);
         summary["socket"] = json!(dir.socket_path());
@@ -694,6 +767,9 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
             result["result"]["status"].as_str().unwrap_or_default(),
             result["result"]["summary"].as_str().unwrap_or_default()
         );
+    }
+    if let Some(brief_text) = brief_text {
+        println!("brief:        {}", brief_text.display());
     }
     if let Some(report) = report {
         println!("report:       {}", report.display());

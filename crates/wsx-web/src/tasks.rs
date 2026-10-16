@@ -114,6 +114,8 @@ pub fn overview(scope: &Scope) -> Value {
         let (rank, mut row) = match record.state {
             TaskState::Blocked => (0, item("blocked")),
             TaskState::Conflict => (1, item("conflict")),
+            // ^ A brief waits for the owner's start, ranked with approval requests.
+            TaskState::Briefed => (2, item("brief")),
             TaskState::Failed => (1, item("failed")),
             TaskState::Ready => {
                 let checks = result["result"]["human_verify"]
@@ -427,6 +429,8 @@ fn actions(state: TaskState, unverified: bool) -> Vec<&'static str> {
     match state {
         TaskState::Starting | TaskState::Working | TaskState::Checking => vec!["steer", "add"],
         TaskState::Blocked => vec!["add", "allow"],
+        // ^ An add to a brief is a talk-through turn; the worker answers and may revise it.
+        TaskState::Briefed => vec!["start", "add"],
         // ^ The host refuses to land a revision whose Human Verify items have no pass.
         TaskState::Ready if unverified => vec!["verify", "add"],
         TaskState::Ready => vec!["land", "add"],
@@ -593,7 +597,7 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
                 ));
             }
         }
-        HostRequest::Land { .. } => {}
+        HostRequest::Land { .. } | HostRequest::Start => {}
         HostRequest::Status | HostRequest::Stop | HostRequest::Close { .. } => {
             return Err(Fault::new(400, "unsupported", "not a web action"));
         }

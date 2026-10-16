@@ -16,11 +16,12 @@ use wsx_core::git::{git_cmd, output_with_timeout_limit};
 use wsx_core::model::workspace::LandPolicy;
 use wsx_core::runtime;
 use wsx_core::task::{
+    brief::{self, Brief, BriefFile},
     copy::{self, Rebase},
     now_unix_ms, passed, report,
-    store::{TaskDir, REPORT_FILE, RESULT_FILE},
-    verification, CheckResult, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord,
-    TaskState, Verdict, WorkerResult, MAX_MESSAGE_BYTES,
+    store::{TaskDir, BRIEF_FILE, BRIEF_TEXT_FILE, REPORT_FILE, RESULT_FILE},
+    verification, view, CheckResult, HostRequest, HostResponse, LogEvent, MessageKind, Phase,
+    TaskRecord, TaskState, Verdict, WorkerResult, MAX_MESSAGE_BYTES,
 };
 
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -119,7 +120,10 @@ impl Host {
         match self.record.state {
             TaskState::Starting => {
                 let prompt = self.dir.prompt()?.context("the task log has no prompt")?;
-                self.start_turn(&prompt);
+                match self.record.phase {
+                    Phase::Brief => self.start_turn(&brief_request(&prompt)),
+                    Phase::Build => self.start_turn(&prompt),
+                }
             }
             TaskState::Working | TaskState::Checking => {
                 // ^ A restarted pane cannot rejoin a turn of the process it lost.
@@ -161,6 +165,7 @@ impl Host {
             HostRequest::Add { text } => self.add(text),
             HostRequest::Allow { tool } => self.allow(tool),
             HostRequest::Stop => self.stop(),
+            HostRequest::Start => self.start(),
             HostRequest::Land { skip_verify } => self.land(skip_verify),
             HostRequest::Verify { result, note } => self.verify(result, note),
             HostRequest::Close { discard } => {
@@ -214,6 +219,11 @@ impl Host {
     }
 
     fn deliver_or_queue(&mut self, text: String) -> String {
+        // ^ Before the build, an add is a talk-through: the worker answers and may revise the brief.
+        let text = match self.record.phase {
+            Phase::Brief => talk_request(&text),
+            Phase::Build => text,
+        };
         if self.turn_active || self.record.state == TaskState::Checking {
             self.pending.push_back(text);
             "queued until the current turn ends".into()
@@ -227,8 +237,13 @@ impl Host {
         if tool.is_empty() || tool.len() > MAX_TOOL_BYTES || tool.chars().any(char::is_control) {
             bail!("a tool pattern must be 1..{MAX_TOOL_BYTES} bytes without control characters");
         }
-        if !self.record.tools.contains(&tool) {
-            self.record.tools.push(tool.clone());
+        // ^ During the brief an allowed tool joins the brief turns' tools only.
+        let tools = match self.record.phase {
+            Phase::Brief => &mut self.record.brief_tools,
+            Phase::Build => &mut self.record.tools,
+        };
+        if !tools.contains(&tool) {
+            tools.push(tool.clone());
         }
         self.log(LogEvent::Allowed { tool: tool.clone() });
         self.restart_needed = true;
@@ -260,6 +275,29 @@ impl Host {
         } else {
             format!("stopped and dropped {dropped} queued add(s); the next add resumes")
         })
+    }
+
+    /// Build the latest brief's rewritten prompt. The agent restarts with the build's
+    /// tools and result schema and resumes the conversation, so it keeps what it read.
+    fn start(&mut self) -> Result<String> {
+        if self.record.phase != Phase::Brief || self.record.state != TaskState::Briefed {
+            bail!(
+                "task t{} is {}; only a briefed task starts",
+                self.record.id,
+                self.record.state.as_str()
+            );
+        }
+        let file = brief::read(&self.dir).context("the task has no readable brief")?;
+        let prompt = file.brief.rewritten_prompt.trim().to_string();
+        self.record.phase = Phase::Build;
+        self.restart_needed = true;
+        self.log(LogEvent::Started {
+            version: file.version,
+            prompt: prompt.clone(),
+        });
+        self.say(&format!("build of brief v{} started", file.version));
+        self.start_turn(&build_request(file.version, &prompt));
+        Ok(format!("started the build of brief v{}", file.version))
     }
 
     fn start_turn(&mut self, text: &str) {
@@ -335,6 +373,10 @@ impl Host {
 
     fn on_result(&mut self, turn: TurnResult) {
         self.turn_active = false;
+        if self.record.phase == Phase::Brief {
+            self.on_brief(turn);
+            return;
+        }
         let mut result = turn
             .structured
             .and_then(|value| serde_json::from_value::<WorkerResult>(value).ok())
@@ -373,6 +415,66 @@ impl Host {
             return;
         }
         self.start_checks();
+    }
+
+    /// A brief turn ended: save the brief and wait for the owner, or fail with the reason.
+    /// Edits the worker tried are denied and logged with the brief.
+    fn on_brief(&mut self, turn: TurnResult) {
+        let saved = match turn.structured {
+            Some(value) => serde_json::from_value::<Brief>(value)
+                .map_err(|error| format!("the brief does not parse: {error}"))
+                .and_then(|brief| brief.check().map(|()| brief))
+                .and_then(|brief| self.save_brief(brief).map_err(|error| format!("{error:#}"))),
+            None if turn.text.is_empty() => Err(format!(
+                "the agent ended with {} and no brief",
+                turn.subtype
+            )),
+            None => Err(turn.text),
+        };
+        match saved {
+            Ok((version, answer)) => {
+                self.say(&format!("brief v{version} ready"));
+                self.log(LogEvent::Brief {
+                    version,
+                    answer,
+                    usage: Some(turn.usage),
+                    denials: turn.denials,
+                });
+                self.set_state(TaskState::Briefed);
+            }
+            Err(reason) => {
+                self.say(&format!("no brief: {}", first_line(&reason)));
+                self.log(LogEvent::Result {
+                    status: "failed".into(),
+                    summary: reason,
+                    usage: Some(turn.usage),
+                    denials: turn.denials,
+                });
+                self.set_state(TaskState::Failed);
+            }
+        }
+        if !self.pending.is_empty() {
+            let text: Vec<String> = self.pending.drain(..).collect();
+            self.start_turn(&text.join("\n\n"));
+        }
+    }
+
+    /// Write `brief.json` and `brief.md` as the next version; returns it and the answer.
+    fn save_brief(&self, brief: Brief) -> Result<(u32, String)> {
+        let version = brief::read(&self.dir).map_or(1, |file| file.version + 1);
+        let answer = brief.answer.trim().to_string();
+        let file = BriefFile { version, brief };
+        let bytes = serde_json::to_vec_pretty(&file)?;
+        if bytes.len() > brief::MAX_BRIEF_BYTES {
+            bail!("the brief is larger than {} bytes", brief::MAX_BRIEF_BYTES);
+        }
+        let title = view::title(&self.dir).unwrap_or_default();
+        self.dir.write_file(BRIEF_FILE, &bytes)?;
+        self.dir.write_file(
+            BRIEF_TEXT_FILE,
+            brief::render(self.record.id, &title, &file).as_bytes(),
+        )?;
+        Ok((version, answer))
     }
 
     fn start_checks(&mut self) {
@@ -902,7 +1004,7 @@ impl Host {
             | TaskState::Working
             | TaskState::Checking
             | TaskState::Conflict => runtime::AgentState::Working,
-            TaskState::Blocked => runtime::AgentState::Blocked,
+            TaskState::Blocked | TaskState::Briefed => runtime::AgentState::Blocked,
             TaskState::Ready | TaskState::InReview | TaskState::Landed => runtime::AgentState::Done,
             TaskState::Failed => runtime::AgentState::Error,
             TaskState::Stopped | TaskState::Closed => runtime::AgentState::Idle,
@@ -945,6 +1047,49 @@ fn check_message(text: &str) -> Result<()> {
         bail!("the message is larger than the limit of {MAX_MESSAGE_BYTES} bytes");
     }
     Ok(())
+}
+
+/// The first turn of a task with a brief: the owner's request and what the brief must answer.
+/// ref: docs/tasks.md "Brief"
+fn brief_request(prompt: &str) -> String {
+    format!(
+        "Before anything is built, write a brief for this task. Change no file: only read, \
+         search and run read-only commands.\n\n\
+         The owner asks:\n\n{prompt}\n\n\
+         Answer as a top professional in this field would, for this repository:\n\
+         1. additions: what a top professional would do here that the owner is not asking for, \
+         and why it matters here.\n\
+         2. raw_material: the rawest primary sources they would start from instead of what was \
+         already digested: code paths, logs, specs, data, upstream docs. Give paths or links, not \
+         summaries, and check that they exist.\n\
+         3. methods: the specific methods and tools they would use, by name.\n\
+         4. independent_check: what, other than you or the owner, would show the result is \
+         right: a test, a real run, a measurement, a reference implementation, a standard.\n\
+         5. concepts: each term or technique the owner is likely new to here, in two or three \
+         plain sentences; none when there is none.\n\
+         6. rewritten_prompt: the owner's request rewritten to ask for exactly that. It becomes \
+         the build prompt, so it must be complete on its own.\n\
+         7. open_questions: only the questions whose answer changes the work.\n\
+         Leave answer empty. Write for the owner: short sentences and plain words."
+    )
+}
+
+/// An owner's reply to a brief.
+fn talk_request(text: &str) -> String {
+    format!(
+        "The owner replies to the brief:\n\n{text}\n\n\
+         Answer the owner in `answer`: explain, and teach a concept when they ask about one. \
+         Then return the whole brief again, revised where the reply changes it. Still change no file."
+    )
+}
+
+/// The first build turn after `start`.
+fn build_request(version: u32, prompt: &str) -> String {
+    format!(
+        "The owner approved brief v{version}. The build starts now; you may edit files. \
+         Build this:\n\n{prompt}\n\n\
+         Commit your changes with git before you finish, and return the result."
+    )
 }
 
 fn first_line(text: &str) -> &str {

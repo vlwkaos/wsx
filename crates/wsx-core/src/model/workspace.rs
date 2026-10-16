@@ -66,6 +66,10 @@ pub struct TaskConfig {
     pub adapter: String,
     pub model: String,
     pub tools: Vec<String>,
+    /// Whether a new task first returns a brief and waits for `start` (docs/tasks.md "Brief").
+    pub brief: bool,
+    /// Project read-only commands added to the brief turn's fixed tools; the owner keeps them read-only.
+    pub brief_tools: Vec<String>,
     pub checks: Vec<String>,
     /// Seconds one check may run before its process group is killed.
     pub check_timeout_secs: u64,
@@ -113,6 +117,8 @@ impl Default for TaskConfig {
             ]
             .map(String::from)
             .into(),
+            brief: true,
+            brief_tools: Vec::new(),
             checks: Vec::new(),
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
             land_policy: LandPolicy::LocalMerge,

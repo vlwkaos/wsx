@@ -61,6 +61,8 @@ struct TasksFile {
     release: Option<TaskCommandFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     manager: Option<TaskManagerFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    brief: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -102,6 +104,8 @@ struct TaskAgentFile {
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<String>>,
+    #[serde(rename = "briefTools", skip_serializing_if = "Option::is_none")]
+    brief_tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -278,6 +282,13 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         if let Some(tools) = agent.tools {
             config.tools = validate_list(tools, "tasks.agent.tools", MAX_TASK_WORD_BYTES)?;
         }
+        if let Some(tools) = agent.brief_tools {
+            config.brief_tools =
+                validate_list(tools, "tasks.agent.briefTools", MAX_TASK_WORD_BYTES)?;
+        }
+    }
+    if let Some(brief) = file.brief {
+        config.brief = brief;
     }
     config.checks = validate_list(file.checks, "tasks.checks", MAX_DEFAULT_COMMAND_BYTES)?;
     if let Some(seconds) = file.check_timeout_seconds {

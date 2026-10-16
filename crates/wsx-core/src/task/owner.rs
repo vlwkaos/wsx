@@ -79,6 +79,7 @@ pub fn action_name(action: ApprovalAction) -> &'static str {
         ApprovalAction::Deploy => "deploy",
         ApprovalAction::Release => "release",
         ApprovalAction::Discard => "close --discard",
+        ApprovalAction::Start => "start",
     }
 }
 
@@ -151,6 +152,10 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
             task.unwrap_or_default().to_string(),
             "--discard".into(),
         ]),
+        // ^ The host refuses a task that is no longer briefed; the outcome records why.
+        ApprovalAction::Start => {
+            argv.extend(["start".into(), task.unwrap_or_default().to_string()]);
+        }
         ApprovalAction::Deploy | ApprovalAction::Release => {
             argv.push(action_name(action).into());
             if let Some(commit) = commit {

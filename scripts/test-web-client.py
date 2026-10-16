@@ -2383,6 +2383,7 @@ capabilities = ["terminal_view"]
 
 
 TASK_CONFIG = '''tasks:
+  brief: false
   agent:
     model: fake-model
     tools: [Read, Edit]

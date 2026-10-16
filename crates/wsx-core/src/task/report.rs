@@ -57,17 +57,25 @@ pub fn render(
 
     out.push_str("## Asked\n\n");
     for entry in log {
-        if let LogEvent::Message { mode, text } = &entry.event {
-            let label = match mode {
-                MessageKind::Prompt => "Prompt",
-                MessageKind::Steer => "Steer",
-                MessageKind::Add => "Add",
-                MessageKind::Verify => "Human verification (fail)",
-            };
-            let _ = writeln!(out, "**{label}**\n");
-            fenced(&mut out, text);
-            out.push('\n');
-        }
+        let (label, text) = match &entry.event {
+            LogEvent::Message { mode, text } => (
+                match mode {
+                    MessageKind::Prompt => "Prompt".to_string(),
+                    MessageKind::Steer => "Steer".into(),
+                    MessageKind::Add => "Add".into(),
+                    MessageKind::Verify => "Human verification (fail)".into(),
+                },
+                text,
+            ),
+            // ^ The build ran against the brief's rewritten prompt, not the first one.
+            LogEvent::Started { version, prompt } => {
+                (format!("Build prompt (brief v{version})"), prompt)
+            }
+            _ => continue,
+        };
+        let _ = writeln!(out, "**{label}**\n");
+        fenced(&mut out, text);
+        out.push('\n');
     }
 
     let _ = writeln!(out, "## Summary\n\nWorker status: `{}`\n", result.status);
