@@ -74,7 +74,7 @@ export const isAgent = (session) => Boolean(session.agent);
 // ^ A task worker (`task-<n>`) or the project manager (`task-manager`): its task or the
 // project chat shows it, so the session lists leave it out (docs/web-client.md "Home").
 // The hosts report as providers `task` and `manager`; the name covers a host not yet reporting.
-export const isTaskSession = (session) =>
+const isTaskSession = (session) =>
   ["task", "manager"].includes(session.agent?.provider) || /^task-(\d+|manager)$/.test(session.label);
 // The sessions a list shows.
 export const listedSessions = (sessions) => sessions.filter((session) => !isTaskSession(session));
@@ -173,7 +173,7 @@ export function replaceRoute(event, hash) {
   event.preventDefault();
   replaceHash(hash);
 }
-export function replaceHash(hash) {
+function replaceHash(hash) {
   if (location.hash === hash) return;
   const oldURL = location.href;
   history.replaceState(history.state, "", hash);

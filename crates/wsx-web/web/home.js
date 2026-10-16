@@ -9,7 +9,7 @@ const URGENCY = { blocked: 0, conflict: 1, failed: 1, approval: 2, verify: 3, la
 
 // Projects with needs first, by their most urgent kind and then their oldest need of that
 // kind; then the rest by their last activity, newest first.
-export function homeOrder(projects, tasks) {
+function homeOrder(projects, tasks) {
   const rows = projects.map((project) => {
     const overview = tasks[project.id];
     const needs = overview?.needs ?? [];
