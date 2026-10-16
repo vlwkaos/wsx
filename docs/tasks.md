@@ -31,7 +31,7 @@ wsx task close <n> [--discard] --json
 
 - `<project-id>` is `<name-slug>-<first 8 hex of sha256(project path)>`. Numbers come from a locked `next` counter and are never reused, also after a failed start.
 - One writer: the CLI writes before the host starts and after it exits; the host writes everything in between.
-- States: `starting, working, blocked, checking, ready, failed, stopped, conflict, landed, closed`. `landed` and `closed` are not open.
+- States: `starting, working, blocked, checking, ready, failed, stopped, conflict, in_review, landed, closed`. `landed` and `closed` are not open.
 - A prompt, steer or add is at most 64 KiB.
 - Each revision records `base` (the merge base with the default branch, so it follows a rebase) and the paths changed in `base..r<k>`: at most 500 paths and 32 KiB in `paths`, the full count in `paths_total`.
 - `list --json` gives each open task `overlaps: [{id, count, complete}]`, the other open tasks that changed a path it changed; `show --json` adds up to 20 shared `paths` per task. `complete` is false when a side kept fewer paths than it changed.
@@ -80,6 +80,10 @@ After each result that is not blocked the host runs `tasks.checks` with `/bin/sh
 4. fast-forward the default branch: `git merge --ff-only` in the checkout that has it checked out, refused with the changed files named when that checkout has tracked changes; `git update-ref` with the old tip as guard when no checkout has it;
 5. log `landed{commit}` and set `landed`. After a rebase the task goes from `checking` straight to `landed`, or to `ready` with `land_stopped`.
 
+## Landing (`pr`)
+
+With `tasks.land.policy: pr`, the first `land` of a ready task applies the same verify and commit gates, pushes `HEAD` to `wsx/t<n>` on `tasks.land.remote` (default `origin`, `--force-with-lease`), runs `gh pr create --base <default> --head wsx/t<n> --title <first prompt line, 72 chars> --body-file report.md`, records `pr_url` and `pr_revision`, logs `in_review{url, revision}` and sets `in_review`. The branch is not rebased first; the remote shows and merges conflicts. A later `land` runs `gh pr view <url> --json state,mergeCommit`: `MERGED` logs `landed{commit: mergeCommit.oid}` and sets `landed` (the local default branch is not changed); `CLOSED` logs `pr_closed` and the task stays `in_review`; an open PR gets the newer revision pushed when the task is `ready` with one, otherwise the answer says it is still open. Push and `gh` each have 120 s.
+
 ## Deploy and release
 
 ```sh
@@ -88,7 +92,7 @@ wsx task release -p <project> [--commit <ref>] --json   # tasks.release.command
 wsx task deployed -p <project> --json
 ```
 
-`deploy` and `release` make a temporary detached working copy of one commit (default: the default branch tip) beside the main checkout, run the command there with `/bin/sh -c` and `WSX_DEPLOY_COMMIT`, record `{kind, commit, exit, unix_ms, duration_ms}` in `tasks/<project-id>/deploys.jsonl`, then `cargo clean` and remove the copy. They never run in a task's working copy. With `--json` the command's output goes to stderr. `deployed` gives, per kind, the last successful commit, how many default-branch commits it lacks (`behind`) and how many attempts failed since (`failed_since`).
+`deploy` and `release` make a temporary detached working copy of one commit (default: the default branch tip) beside the main checkout, run the command there with `/bin/sh -c` and `WSX_DEPLOY_COMMIT`, record `{kind, commit, exit, unix_ms, duration_ms}` in `tasks/<project-id>/deploys.jsonl`, then `cargo clean` and remove the copy. They never run in a task's working copy. With `--json` the command's output goes to stderr. Under the `pr` policy the local default branch can lag, so `deploy`, `release` and `deployed` first fetch it from `tasks.land.remote` and use `<remote>/<default>` as the default commit and as the base of `behind`; `local-merge` stays local. `deployed` gives, per kind, the last successful commit, how many default-branch commits it lacks (`behind`) and how many attempts failed since (`failed_since`).
 
 ## Close
 
