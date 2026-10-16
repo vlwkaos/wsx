@@ -31,6 +31,8 @@ wsx task close <n> [--discard] --json
 - One writer: the CLI writes before the host starts and after it exits; the host writes everything in between.
 - States: `starting, working, blocked, checking, ready, failed, stopped, closed`.
 - A prompt, steer or add is at most 64 KiB.
+- Each revision records `base` (the merge base with the default branch, so it follows a rebase) and the paths changed in `base..r<k>`: at most 500 paths and 32 KiB in `paths`, the full count in `paths_total`.
+- `list --json` gives each open task `overlaps: [{id, count, complete}]`, the other open tasks that changed a path it changed; `show --json` adds up to 20 shared `paths` per task. `complete` is false when a side kept fewer paths than it changed.
 
 ## Working copy
 

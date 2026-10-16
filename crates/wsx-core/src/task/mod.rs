@@ -29,6 +29,11 @@ pub enum TaskState {
 }
 
 impl TaskState {
+    /// Still part of the project's work: counted for overlap and listed by default.
+    pub fn is_open(self) -> bool {
+        !matches!(self, Self::Closed)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Starting => "starting",
@@ -65,6 +70,11 @@ pub struct TaskRecord {
     pub agent_session: Option<String>,
     pub state: TaskState,
     pub revision: u32,
+    /// Paths changed in `base..r<revision>`, capped; `paths_total` keeps the full count.
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub paths_total: u32,
     pub created_unix_ms: u64,
     pub updated_unix_ms: u64,
 }
@@ -122,6 +132,10 @@ pub enum LogEvent {
     Revision {
         revision: u32,
         commit: String,
+        #[serde(default)]
+        base: String,
+        #[serde(default)]
+        paths_total: u32,
     },
     Stopped {
         reason: String,

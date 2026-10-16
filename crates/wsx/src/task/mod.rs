@@ -333,6 +333,8 @@ fn new(prompt: PromptSource, from: Option<&str>, project: Option<&str>, json: bo
         agent_session: None,
         state: TaskState::Starting,
         revision: 0,
+        paths: Vec::new(),
+        paths_total: 0,
         created_unix_ms: now,
         updated_unix_ms: now,
     };
@@ -422,18 +424,70 @@ fn task_summary(dir: &TaskDir, record: &TaskRecord) -> serde_json::Value {
     })
 }
 
+/// Every task of a project with its record, or the error that hid it.
+fn project_tasks(project_id: &str) -> Result<Vec<(TaskDir, Result<TaskRecord>)>> {
+    store::task_numbers(project_id)?
+        .into_iter()
+        .map(|id| {
+            let dir = TaskDir::open(project_id, id)?;
+            let record = dir.read_record();
+            Ok((dir, record))
+        })
+        .collect()
+}
+
+/// Paths shown per overlapping task in `show`.
+const OVERLAP_PATHS_SHOWN: usize = 20;
+
+/// The other open tasks that changed a path this task changed. Paths are capped per
+/// record, so `complete` is false when either side kept fewer paths than it changed.
+fn overlaps(record: &TaskRecord, others: &[&TaskRecord], with_paths: bool) -> serde_json::Value {
+    let mine: std::collections::HashSet<&str> = record.paths.iter().map(String::as_str).collect();
+    let rows: Vec<_> = others
+        .iter()
+        .filter(|other| other.id != record.id && other.state.is_open())
+        .filter_map(|other| {
+            let common: Vec<&str> = other
+                .paths
+                .iter()
+                .map(String::as_str)
+                .filter(|path| mine.contains(path))
+                .collect();
+            if common.is_empty() {
+                return None;
+            }
+            let complete = record.paths.len() as u32 == record.paths_total
+                && other.paths.len() as u32 == other.paths_total;
+            let mut row = json!({ "id": other.id, "count": common.len(), "complete": complete });
+            if with_paths {
+                row["paths"] = json!(common.iter().take(OVERLAP_PATHS_SHOWN).collect::<Vec<_>>());
+            }
+            Some(row)
+        })
+        .collect();
+    json!(rows)
+}
+
 fn list(project: Option<&str>, all: bool, json: bool) -> Result<()> {
     let (name, path) = project_entry(project)?;
-    let project_id = store::project_id(&name, &path);
+    let tasks = project_tasks(&store::project_id(&name, &path))?;
+    let records: Vec<&TaskRecord> = tasks
+        .iter()
+        .filter_map(|(_, record)| record.as_ref().ok())
+        .collect();
     let mut rows = Vec::new();
-    for id in store::task_numbers(&project_id)? {
-        let dir = TaskDir::open(&project_id, id)?;
-        match dir.read_record() {
-            Ok(record) if all || record.state != TaskState::Closed => {
-                rows.push(task_summary(&dir, &record))
+    for (dir, record) in &tasks {
+        match record {
+            Ok(record) if all || record.state.is_open() => {
+                let mut row = task_summary(dir, record);
+                row["paths_total"] = json!(record.paths_total);
+                if record.state.is_open() {
+                    row["overlaps"] = overlaps(record, &records, false);
+                }
+                rows.push(row);
             }
             Ok(_) => {}
-            Err(error) => rows.push(json!({ "id": id, "error": format!("{error:#}") })),
+            Err(error) => rows.push(json!({ "id": dir.id, "error": format!("{error:#}") })),
         }
     }
     if json {
@@ -472,6 +526,16 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
         summary["report"] = json!(report);
         summary["log"] = json!(dir.file(store::LOG_FILE));
         summary["host_running"] = json!(host);
+        let tasks = project_tasks(&dir.project_id)?;
+        let records: Vec<&TaskRecord> = tasks
+            .iter()
+            .filter_map(|(_, record)| record.as_ref().ok())
+            .collect();
+        summary["overlaps"] = if record.state.is_open() {
+            overlaps(&record, &records, true)
+        } else {
+            json!([])
+        };
         return print_json(&summary);
     }
     println!(

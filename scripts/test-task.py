@@ -26,6 +26,13 @@ CONFIG = '''tasks:
     - "test ! -e broken.txt"
 '''
 
+LAND_CONFIG = '''tasks:
+  agent:
+    tools: [Read, Edit]
+  checks:
+    - "test ! -e broken.txt"
+'''
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -326,7 +333,22 @@ def run(wsx, wsxd, work, owned):
     assert '`sleep 37`: timed out' in Path(failed['report']).read_text()
     assert not leftovers('sleep 37')
     js('task', 'close', timed['id'])
-    (project / 'wsx.config.yml').write_text(CONFIG)
+
+    # M2: the landing steps use a committed config without the a.txt check.
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
+    git('commit', '-q', '-am', 'land config')
+
+    # 14. Each revision records its paths; list and show report overlap between open tasks.
+    x1 = js('task', 'new', 'WORK x.txt alpha')['id']
+    y1 = js('task', 'new', 'WORK y.txt')['id']
+    x2 = js('task', 'new', 'WORK x.txt beta')['id']
+    for n in (x1, y1, x2):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
+    assert show(x1)['record']['paths'] == ['x.txt'] and show(x1)['record']['paths_total'] == 1
+    rows = {row['id']: row for row in js('task', 'list')['tasks']}
+    assert rows[x1]['overlaps'] == [{'id': x2, 'count': 1, 'complete': True}], rows[x1]
+    assert rows[y1]['overlaps'] == [] and rows[x2]['overlaps'][0]['id'] == x1
+    assert show(x2)['overlaps'] == [{'id': x1, 'count': 1, 'complete': True, 'paths': ['x.txt']}]
 
 
 if __name__ == '__main__':
