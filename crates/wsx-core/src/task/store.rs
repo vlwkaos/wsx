@@ -339,6 +339,44 @@ impl TaskDir {
     }
 }
 
+pub const DEPLOYS_FILE: &str = "deploys.jsonl";
+/// Deploy records are read from the end of the file only.
+const MAX_DEPLOYS_READ_BYTES: u64 = 1024 * 1024;
+
+/// Append one deploy or release record to `tasks/<project-id>/deploys.jsonl`.
+pub fn append_deploy(project_id: &str, record: &super::DeployRecord) -> Result<()> {
+    let path = ensure_project_dir(project_id)?.join(DEPLOYS_FILE);
+    let mut line = serde_json::to_vec(record)?;
+    line.push(b'\n');
+    open_nofollow(&path, OpenOptions::new().append(true).create(true))?
+        .write_all(&line)
+        .with_context(|| format!("cannot append to {}", path.display()))
+}
+
+/// The project's deploy and release records, oldest first, from the last MiB of the file.
+pub fn read_deploys(project_id: &str) -> Result<Vec<super::DeployRecord>> {
+    let path = project_dir(project_id)?.join(DEPLOYS_FILE);
+    let mut file = match open_nofollow(&path, OpenOptions::new().read(true)) {
+        Ok(file) => file,
+        Err(_) if !path.exists() => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let size = file.metadata()?.len();
+    let start = size.saturating_sub(MAX_DEPLOYS_READ_BYTES);
+    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let mut lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
+    if start > 0 && !lines.is_empty() {
+        // ^ The first line may start mid-record.
+        lines.remove(0);
+    }
+    Ok(lines
+        .into_iter()
+        .filter_map(|line| serde_json::from_slice(line).ok())
+        .collect())
+}
+
 /// All task numbers of a project, ascending.
 pub fn task_numbers(project_id: &str) -> Result<Vec<u32>> {
     let dir = project_dir(project_id)?;

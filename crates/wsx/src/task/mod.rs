@@ -8,13 +8,15 @@ use crate::cli::{existing_daemon_snapshot, load_config, load_full_workspace, res
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use serde_json::json;
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::{
     call_host, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
-    HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
+    DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord,
+    TaskState, MAX_MESSAGE_BYTES,
 };
 use wsx_core::{ops, runtime};
 
@@ -114,6 +116,33 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Run tasks.deploy.command in a temporary copy of one default-branch commit and record it
+    Deploy {
+        /// Commit, tag or branch to deploy; default: the default branch tip
+        #[arg(long, value_name = "REF")]
+        commit: Option<String>,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run tasks.release.command the same way and record it
+    Release {
+        /// Commit, tag or branch to release; default: the default branch tip
+        #[arg(long, value_name = "REF")]
+        commit: Option<String>,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the last deployed and released commits and how far each is behind
+    Deployed {
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     #[command(hide = true)]
     Host { project_id: String, task: String },
 }
@@ -129,7 +158,10 @@ impl TaskCmd {
             | Self::Allow { json, .. }
             | Self::Stop { json, .. }
             | Self::Land { json, .. }
-            | Self::Close { json, .. } => *json,
+            | Self::Close { json, .. }
+            | Self::Deploy { json, .. }
+            | Self::Release { json, .. }
+            | Self::Deployed { json, .. } => *json,
             Self::Host { .. } => false,
         }
     }
@@ -264,6 +296,27 @@ pub fn run(command: TaskCmd) -> Result<()> {
             project,
             json,
         } => close(&open(project.as_deref(), &task)?, discard, json),
+        TaskCmd::Deploy {
+            commit,
+            project,
+            json,
+        } => deploy(
+            DeployKind::Deploy,
+            project.as_deref(),
+            commit.as_deref(),
+            json,
+        ),
+        TaskCmd::Release {
+            commit,
+            project,
+            json,
+        } => deploy(
+            DeployKind::Release,
+            project.as_deref(),
+            commit.as_deref(),
+            json,
+        ),
+        TaskCmd::Deployed { project, json } => deployed(project.as_deref(), json),
         TaskCmd::Host { project_id, task } => {
             host::run(&project_id, store::parse_task_number(&task)?)
         }
@@ -388,7 +441,7 @@ fn new(prompt: PromptSource, from: Option<&str>, project: Option<&str>, json: bo
         Ok(())
     })();
     if let Err(error) = started {
-        let _ = copy::remove(&project.path, &record.working_copy, &record.branch);
+        let _ = copy::remove(&project.path, &record.working_copy, Some(&record.branch));
         let _ = dir.remove();
         return Err(error.context(format!(
             "task t{id} did not start; its working copy and branch were removed"
@@ -682,7 +735,7 @@ fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
         if record.working_copy.join("Cargo.toml").exists() {
             cargo_clean(&record.working_copy);
         }
-        copy::remove(&main, &record.working_copy, &record.branch).with_context(|| {
+        copy::remove(&main, &record.working_copy, Some(&record.branch)).with_context(|| {
             format!(
                 "task t{} is closed but its working copy remains; run `wsx task close {} --discard` again",
                 record.id, record.id
@@ -748,4 +801,130 @@ fn delete_revision_refs(main: &Path, id: u32) {
             .args(["update-ref", "-d", reference])
             .status();
     }
+}
+
+fn kind_name(kind: DeployKind) -> &'static str {
+    match kind {
+        DeployKind::Deploy => "deploy",
+        DeployKind::Release => "release",
+    }
+}
+
+/// Run the project's deploy or release command in a temporary copy of one commit.
+/// ^ Never from a task's working copy: what runs is always a default-branch commit.
+fn deploy(kind: DeployKind, project: Option<&str>, commit: Option<&str>, json: bool) -> Result<()> {
+    let name = kind_name(kind);
+    let (project_name, main) = project_entry(project)?;
+    let settings =
+        load_task_config(&main).map_err(|error| anyhow::anyhow!("{error}; nothing was run"))?;
+    let command = match kind {
+        DeployKind::Deploy => settings.deploy_command,
+        DeployKind::Release => settings.release_command,
+    }
+    .with_context(|| {
+        format!("tasks.{name}.command is not set in wsx.config.yml; nothing was run")
+    })?;
+    let default_branch = ops::detect_default_branch(&main);
+    let revision = commit.map_or_else(|| format!("refs/heads/{default_branch}"), str::to_string);
+    let project_id = store::project_id(&project_name, &main);
+    let path = copy::working_copy_path_named(&main, &format!("{name}-{}", std::process::id()))?;
+    let commit = copy::create_detached(&main, &revision, &path)
+        .map_err(|error| error.context(format!("nothing was run or recorded for this {name}")))?;
+    let started = Instant::now();
+    // ^ JSON callers parse stdout, so the command writes to stderr then.
+    let stdout = if json {
+        std::process::Stdio::from(std::io::stderr().as_fd().try_clone_to_owned()?)
+    } else {
+        std::process::Stdio::inherit()
+    };
+    let status = std::process::Command::new("/bin/sh")
+        .args(["-c", &command])
+        .current_dir(&path)
+        .env("WSX_DEPLOY_COMMIT", &commit)
+        .stdin(std::process::Stdio::null())
+        .stdout(stdout)
+        .status();
+    let duration_ms = started.elapsed().as_millis() as u64;
+    if path.join("Cargo.toml").exists() {
+        cargo_clean(&path);
+    }
+    let removed = copy::remove(&main, &path, None);
+    let exit = match &status {
+        Ok(status) => status.code(),
+        Err(_) => None,
+    };
+    let record = DeployRecord {
+        kind,
+        commit: commit.clone(),
+        exit,
+        unix_ms: now_unix_ms(),
+        duration_ms,
+    };
+    store::append_deploy(&project_id, &record)?;
+    removed.with_context(|| {
+        format!(
+            "the {name} was recorded, but its copy {} remains",
+            path.display()
+        )
+    })?;
+    let status = status
+        .with_context(|| format!("cannot run tasks.{name}.command; recorded with no exit code"))?;
+    if json {
+        print_json(&serde_json::to_value(&record)?)?;
+    } else {
+        println!(
+            "{name} of {commit:.12}: exit {}",
+            exit.map_or("none".into(), |code| code.to_string())
+        );
+    }
+    if !status.success() {
+        bail!("tasks.{name}.command failed ({status}); the failure is recorded and nothing else changed");
+    }
+    Ok(())
+}
+
+/// The last successful deploy and release and how many default-branch commits each lacks.
+fn deployed(project: Option<&str>, json: bool) -> Result<()> {
+    let (project_name, main) = project_entry(project)?;
+    let records = store::read_deploys(&store::project_id(&project_name, &main))?;
+    let default_branch = ops::detect_default_branch(&main);
+    let tip = copy::resolve_commit(&main, &format!("refs/heads/{default_branch}"))?;
+    let mut out = json!({ "project": project_name, "default_branch": default_branch, "tip": tip });
+    for kind in [DeployKind::Deploy, DeployKind::Release] {
+        let last = records
+            .iter()
+            .rev()
+            .find(|record| record.kind == kind && record.exit == Some(0));
+        let failed_since = records
+            .iter()
+            .rev()
+            .take_while(|record| last.is_none_or(|last| !std::ptr::eq(*record, last)))
+            .filter(|record| record.kind == kind)
+            .count();
+        out[kind_name(kind)] = match last {
+            None => json!({ "commit": null, "failed_since": failed_since }),
+            Some(record) => json!({
+                "commit": record.commit,
+                "unix_ms": record.unix_ms,
+                "behind": copy::unlanded_commits(&main, &tip, &record.commit).ok(),
+                "failed_since": failed_since,
+            }),
+        };
+    }
+    if json {
+        return print_json(&out);
+    }
+    for kind in [DeployKind::Deploy, DeployKind::Release] {
+        let entry = &out[kind_name(kind)];
+        match entry["commit"].as_str() {
+            Some(commit) => println!(
+                "{:<8} {:.12}  {} commit(s) behind {default_branch}",
+                kind_name(kind),
+                commit,
+                entry["behind"]
+            ),
+            None => println!("{:<8} none", kind_name(kind)),
+        }
+    }
+    Ok(())
 }

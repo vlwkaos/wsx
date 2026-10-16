@@ -72,6 +72,9 @@ pub struct TaskConfig {
     pub land_policy: LandPolicy,
     /// Remote the `pr` policy pushes to.
     pub land_remote: String,
+    /// Shell commands that deploy or release one default-branch commit.
+    pub deploy_command: Option<String>,
+    pub release_command: Option<String>,
 }
 
 /// How `wsx task land` brings a task onto the default branch (docs/tasks.md "Landing").
@@ -106,6 +109,8 @@ impl Default for TaskConfig {
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
             land_policy: LandPolicy::LocalMerge,
             land_remote: "origin".into(),
+            deploy_command: None,
+            release_command: None,
         }
     }
 }

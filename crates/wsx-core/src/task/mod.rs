@@ -225,6 +225,23 @@ pub fn now_unix_ms() -> u64 {
         .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
+/// One line of `deploys.jsonl`: a deploy or release of one commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployRecord {
+    pub kind: DeployKind,
+    pub commit: String,
+    pub exit: Option<i32>,
+    pub unix_ms: u64,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployKind {
+    Deploy,
+    Release,
+}
+
 /// One request on a host's `host.sock`; one JSON line per connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
