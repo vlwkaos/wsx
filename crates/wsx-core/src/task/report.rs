@@ -148,13 +148,7 @@ pub fn render(
 
     out.push_str("## Human Verify\n\n");
     let verdict = super::verification(log, revision);
-    let passed = matches!(
-        verdict.map(|entry| &entry.event),
-        Some(LogEvent::Verified {
-            result: Verdict::Pass,
-            ..
-        })
-    );
+    let passed = super::passed(log, revision);
     if result.human_verify.is_empty() {
         out.push_str("None reported.\n\n");
     }

@@ -384,6 +384,12 @@ def run(wsx, wsxd, work, owned):
     assert not refused['ok'] and 'README' in refused['message'] and 'land again' in refused['message'], refused
     assert show(y1)['state'] == 'ready'
     git('checkout', '--', 'README')
+    # Uncommitted work in the task's own copy refuses too: wsx commits nothing for the worker.
+    y1_copy = Path(show(y1)['record']['working_copy'])
+    (y1_copy / 'README').write_text('uncommitted\n')
+    refused = land(y1, ok=False)
+    assert 'uncommitted changes: README' in refused['message'], refused
+    git('checkout', '--', 'README', cwd=y1_copy)
     # y1 is on the tip: fast-forward. x1 then rebases onto the moved main without conflict.
     landed = land(y1)
     assert landed['ok'] and landed['state'] == 'landed', landed
