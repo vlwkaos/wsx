@@ -30,6 +30,8 @@ function homeOrder(projects, tasks, sessions) {
 // The project's agent sessions in words, most urgent group first: "claude in main exited",
 // "2 working", "claude in main done 5m ago". Null without one.
 const SESSION_GROUPS = ["blocked", "error", "exited", "working", "done", "idle", "unknown"];
+// Session states that need the owner: their words take the state's tone.
+const SESSION_ATTENTION = ["blocked", "error", "exited"];
 function sessionWords(agents, now) {
   for (const key of SESSION_GROUPS) {
     const group = agents.filter((session) => stateOf(session).key === key)
@@ -39,7 +41,7 @@ function sessionWords(agents, now) {
     const done = key === "done" && group[0].state_since_unix_ms ? ago(now - group[0].state_since_unix_ms) : null;
     const since = done ? ` ${done === "now" ? "just now" : done}` : "";
     const who = group.length === 1 ? `${group[0].agent.provider} in ${group[0].branch}` : `${group.length}`;
-    return { text: `${who} ${word}${since}`, tone: ["blocked", "error", "exited"].includes(key) ? tone : null, key };
+    return { text: `${who} ${word}${since}`, tone: SESSION_ATTENTION.includes(key) ? tone : null, key };
   }
   return null;
 }
@@ -49,7 +51,7 @@ function sessionWords(agents, now) {
 function statusLine({ overview, first, agents }, now) {
   if (first) return { text: needWords(first), tone: needTone(first) };
   const sessions = sessionWords(agents, now);
-  if (sessions && ["blocked", "error", "exited", "working"].includes(sessions.key)) return sessions;
+  if (sessions && (SESSION_ATTENTION.includes(sessions.key) || sessions.key === "working")) return sessions;
   if (overview?.last_reply) return { text: overview.last_reply };
   if (sessions) return sessions;
   // ^ Until its tasks are read, a project's row claims nothing about them.

@@ -453,10 +453,7 @@ impl Host {
                 self.set_state(TaskState::Failed);
             }
         }
-        if !self.pending.is_empty() {
-            let text: Vec<String> = self.pending.drain(..).collect();
-            self.start_turn(&text.join("\n\n"));
-        }
+        self.deliver_pending();
     }
 
     /// Write `brief.json` and `brief.md` as the next version; returns it and the answer.
@@ -557,6 +554,11 @@ impl Host {
                 self.set_state(TaskState::Failed);
             }
         }
+        self.deliver_pending();
+    }
+
+    /// Send the messages queued during the turn or the checks as one new turn.
+    fn deliver_pending(&mut self) {
         if !self.pending.is_empty() {
             let text: Vec<String> = self.pending.drain(..).collect();
             self.start_turn(&text.join("\n\n"));
