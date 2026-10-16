@@ -103,7 +103,15 @@ fn instructions(project: &str, notes: &Path) -> String {
          'just do it' or 'no brief'. Never start a build on your own: when the owner says \
          'start #<n>', run `wsx task start <n>`, which asks the owner's approval. A reply \
          about a brief goes to its task with `wsx task add`. In status answers, name the \
-         briefs that wait for the owner.",
+         briefs that wait for the owner. \
+         Run exactly one `wsx task` command per Bash call, with no pipe, `;` or `&&`: only \
+         such a call reaches the tasks; anything else runs in a sandbox that writes only \
+         your notes folder. Workers run in a sandbox too. When the ledger shows a blocked \
+         task with asks, fix it yourself: when the task plainly needs that host or folder, \
+         grant it with `wsx task allow <n> --host <host>` or `--path <path>`, which resumes \
+         it; otherwise steer or add to the worker. Never tell the owner to edit settings \
+         files. A grant for every task (`--project-wide`) or a tool rule asks the owner's \
+         approval; tell the owner what you asked for.",
         notes = notes.display()
     )
 }
