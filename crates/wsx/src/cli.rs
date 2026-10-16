@@ -92,6 +92,11 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: WebCmd,
     },
+    /// Headless worker tasks: new, list, show, steer, add, allow, stop, close (docs/tasks.md)
+    Task {
+        #[command(subcommand)]
+        subcommand: crate::task::TaskCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -170,6 +175,7 @@ impl Command {
                 subcommand,
                 DaemonCmd::Stop { json: true, .. } | DaemonCmd::Restart { json: true }
             ),
+            Command::Task { subcommand } => subcommand.json_output(),
             _ => false,
         }
     }
@@ -1008,6 +1014,7 @@ pub fn run(cmd: Command) -> Result<()> {
             DaemonCmd::Recover => cmd_daemon_recover(),
         },
         Command::Routine { subcommand } => cmd_routine(subcommand),
+        Command::Task { subcommand } => crate::task::run(subcommand),
         Command::Web { subcommand } => match subcommand {
             WebCmd::Serve { site } => wsx_web::serve(site.named()),
             WebCmd::Pair { site } => wsx_web::pair(site.named()),
@@ -1397,7 +1404,7 @@ mod routine_output_tests {
 
 // --- Helpers ---
 
-fn load_config() -> Result<GlobalConfig> {
+pub(crate) fn load_config() -> Result<GlobalConfig> {
     let (config, warning) = GlobalConfig::load()?;
     if let Some(w) = warning {
         eprintln!("warning: {}", w);
@@ -1405,7 +1412,7 @@ fn load_config() -> Result<GlobalConfig> {
     Ok(config)
 }
 
-fn load_full_workspace() -> Result<(GlobalConfig, WorkspaceState)> {
+pub(crate) fn load_full_workspace() -> Result<(GlobalConfig, WorkspaceState)> {
     let config = load_config()?;
     let workspace = ops::load_full_workspace(&config)?;
     Ok((config, workspace))
@@ -2058,7 +2065,10 @@ fn resolve_projects<'a>(
         .collect())
 }
 
-fn resolve_project<'a>(workspace: &'a WorkspaceState, name: Option<&str>) -> Result<&'a Project> {
+pub(crate) fn resolve_project<'a>(
+    workspace: &'a WorkspaceState,
+    name: Option<&str>,
+) -> Result<&'a Project> {
     match name {
         Some(n) => workspace
             .projects
@@ -2507,7 +2517,7 @@ struct ContextOptions {
 }
 
 // ^ Observation only: read the existing daemon and never start or replace wsxd.
-fn existing_daemon_snapshot() -> Result<runtime::Snapshot> {
+pub(crate) fn existing_daemon_snapshot() -> Result<runtime::Snapshot> {
     let client = runtime::Client::new(runtime::default_socket_path());
     match client.call(&runtime::Request::Snapshot)? {
         runtime::Response::Snapshot(snapshot) => Ok(snapshot),

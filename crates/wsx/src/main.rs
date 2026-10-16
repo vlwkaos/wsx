@@ -10,6 +10,7 @@ mod repo_scan;
 mod review;
 mod search;
 mod session_state;
+mod task;
 mod terminal_surface;
 #[cfg(test)]
 mod terminal_surface_tests;
@@ -48,7 +49,8 @@ fn main() -> Result<()> {
                     subcommand: cli::SessionCmd::Current { .. },
                 }
         )
-    ) {
+    ) || matches!(&args.command, Some(cli::Command::Task { subcommand }) if subcommand.without_daemon())
+    {
         return cli::run(args.command.expect("matched Some"));
     }
     match args.command {
