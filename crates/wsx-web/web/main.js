@@ -10,7 +10,7 @@ import { applyScheme, Notices } from "./ui.js";
 import { Pair } from "./pair.js";
 import { Inbox } from "./inbox.js";
 import { Project, Projects, ProjectSessions } from "./projects.js";
-import { loadTasks, Manager } from "./tasks.js";
+import { loadTasks, Manager, noteDecisions } from "./tasks.js";
 import { Session } from "./session.js";
 import { Files } from "./files.js";
 import { Settings } from "./settings.js";
@@ -162,7 +162,10 @@ function start(session) {
       events.dispatchEvent(new CustomEvent("history", { detail: {} }));
       if (can("task_view")) loadTasks();
     },
-    tasks: (data) => update({ tasks: { ...state.tasks, [data.project]: data } }),
+    tasks: (data) => {
+      noteDecisions(data);
+      update({ tasks: { ...state.tasks, [data.project]: data } });
+    },
     task: (data) => events.dispatchEvent(new CustomEvent("task", { detail: data })),
     manager: (data) => events.dispatchEvent(new CustomEvent("manager", { detail: data })),
     page: (data) => events.dispatchEvent(new CustomEvent("page", { detail: data })),
