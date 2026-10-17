@@ -14,7 +14,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::runtime;
-use wsx_core::task::manager::ApprovalLine;
+use wsx_core::task::manager::{instructions_digest, ApprovalLine};
 use wsx_core::task::manager::{
     Author, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState, Seen,
 };
@@ -28,6 +28,9 @@ const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 /// Events within this long of each other, or during a turn, become one message.
 const EVENT_QUIET: Duration = Duration::from_secs(3);
 const EVENT_TITLE_CHARS: usize = 80;
+/// The handover of a fresh conversation: this many last messages and replies, each clipped.
+const HANDOVER_ENTRIES: usize = 4;
+const HANDOVER_CHARS: usize = 600;
 const EVENT_SUMMARY_CHARS: usize = 160;
 
 /// Task states the manager hears about.
@@ -470,15 +473,31 @@ impl Manager {
     }
 
     fn send_turn(&mut self, text: &str) -> Result<()> {
+        let mut text = text.to_string();
         if self.agent.is_none() {
+            let launch = self.launch()?;
+            let digest = instructions_digest(&launch.instructions);
+            // ^ Claude keeps the system prompt a conversation began with, also on resume:
+            // new instructions need a new conversation (docs/tasks.md "Manager").
+            if self.state.agent_session.is_some()
+                && self.state.instructions.as_deref() != Some(&digest)
+            {
+                self.rotate(0, Some("the manager's instructions changed".into()));
+            }
             let (session, resume) = match &self.state.agent_session {
                 Some(session) => (session.clone(), true),
                 None => (new_session_id()?, false),
             };
+            if !resume && self.state.handover {
+                text = self.handover() + &text;
+                self.state.handover = false;
+            }
+            self.state.instructions = Some(digest);
+            self.save();
             self.generation += 1;
             let generation = self.generation;
             self.agent = Some(ClaudeAgent::spawn(
-                &self.launch()?,
+                &launch,
                 &session,
                 resume,
                 self.events.clone(),
@@ -488,7 +507,7 @@ impl Manager {
         self.agent
             .as_mut()
             .context("the manager agent is not running")?
-            .send(text)
+            .send(&text)
     }
 
     /// The manager's Bash writes only its notes folder; its `wsx task` commands leave the
@@ -496,7 +515,8 @@ impl Manager {
     fn launch(&self) -> Result<Launch> {
         let exe = std::env::current_exe().context("cannot find the wsx binary")?;
         let notes = self.dir.notes()?;
-        let broker_socket = self.dir.broker_path();
+        // ^ The folder exists: the host bound the socket before any launch.
+        let broker_socket = hosting::real_socket_path(&self.dir.broker_path());
         let boundary = Boundary {
             cwd: self.main.clone(),
             writes: vec![notes.display().to_string()],
@@ -565,15 +585,52 @@ impl Manager {
             usage: Some(result.usage),
         });
         if context > self.rotate_tokens {
-            // ^ The ledger carries the state; a fresh conversation loses nothing it needs.
-            if let Some(agent) = self.agent.take() {
-                agent.stop();
-            }
-            self.state.agent_session = None;
-            self.save();
-            self.log(ManagerEvent::Rotated { tokens: context });
+            self.rotate(context, None);
         }
         self.report(runtime::AgentState::Done);
+    }
+
+    /// End the conversation; the next turn starts a fresh one with a short handover.
+    /// ^ The ledger carries the state; a fresh conversation loses nothing it needs.
+    fn rotate(&mut self, tokens: u64, reason: Option<String>) {
+        if let Some(agent) = self.agent.take() {
+            agent.stop();
+        }
+        self.state.agent_session = None;
+        self.state.instructions = None;
+        self.state.handover = true;
+        self.save();
+        self.log(ManagerEvent::Rotated { tokens, reason });
+    }
+
+    /// The last exchanges of the log, so a fresh conversation knows what was just said.
+    fn handover(&self) -> String {
+        let log = self.dir.read_log().unwrap_or_default();
+        let mut lines: Vec<String> = log
+            .iter()
+            .rev()
+            .filter_map(|entry| match &entry.event {
+                ManagerEvent::Message {
+                    from: Author::Owner,
+                    text,
+                    ..
+                } => Some(format!("Owner: {}", clip(text, HANDOVER_CHARS))),
+                ManagerEvent::Reply { text, .. } => {
+                    Some(format!("You: {}", clip(text, HANDOVER_CHARS)))
+                }
+                _ => None,
+            })
+            .take(HANDOVER_ENTRIES)
+            .collect();
+        if lines.is_empty() {
+            return String::new();
+        }
+        lines.reverse();
+        format!(
+            "Handover (this is a new conversation; the last exchanges before it, read the \
+             ledger for the state):\n{}\n\n",
+            lines.join("\n")
+        )
     }
 
     fn save(&mut self) {

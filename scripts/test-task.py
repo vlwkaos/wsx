@@ -88,11 +88,13 @@ def run(wsx, wsxd, work, owned):
     # so the hosts' sockets must live elsewhere (docs/tasks.md "Store").
     base = work / ('long-project-folder-' + 'p' * 40)
     home, state, project, bin_dir = work / 'h', work / ('state-' + 's' * 40), base / 'project', work / 'bin'
-    # ^ Its own TMPDIR: the host sockets' folder goes away with the run.
+    # ^ Its own TMPDIR: the host sockets' folder goes away with the run. It is reached through
+    # a link, as macOS `/var/folders/...` is a link to `/private/var/...`.
     tmp = work / 't'
     base.mkdir(mode=0o700)
-    for path in (home, state, project, bin_dir, tmp):
+    for path in (home, state, project, bin_dir, work / 't-real'):
         path.mkdir(mode=0o700)
+    tmp.symlink_to(work / 't-real')
     config_dir = (home / 'Library/Application Support/wsx' if sys.platform == 'darwin'
                   else work / 'c/wsx')
     config_dir.mkdir(parents=True)
@@ -642,6 +644,8 @@ def run(wsx, wsxd, work, owned):
     assert launch['mode'] == 'auto' and 'excludedCommands' not in sandbox, sandbox
     broker = sandbox['network']['allowUnixSockets']
     assert len(broker) == 1 and Path(broker[0]).is_socket() and len(broker[0]) < 104, broker
+    # ^ The sandbox matches the real path: the rule names the socket through the real folder.
+    assert broker[0] == os.path.realpath(broker[0]) and '/t-real/' in broker[0], broker
     assert len(sandbox['filesystem']['allowWrite']) == 1 and sandbox['filesystem']['allowWrite'][0].endswith('/manager/notes')
     assert Path(sandbox['filesystem']['allowWrite'][0]).is_dir() and sandbox['filesystem']['denyWrite'] == [str(project)]
     assert 'Edit(/%s/**)' % project in launch['settings']['permissions']['deny'], launch['settings']
@@ -730,6 +734,33 @@ def run(wsx, wsxd, work, owned):
     assert js('task', 'manager')['state'] == 'started'
     late = wait(lambda: events_with('#%d ready r1' % unseen), 'event after restart')
     assert 'noted events' in reply_to(late[0]['id'])['text']
+    # The same instructions resume the conversation; other ones start a new conversation that
+    # opens with the last exchanges (Claude keeps a conversation's first system prompt). A
+    # state written by a host from before the instructions digest stands for changed ones.
+    launches = [t for t in traces() if t.get('launch') and t.get('manager')]
+    assert launches[-1]['resume'], launches[-1]
+    manager_socket = js('task', 'manager')['socket']
+    cli('session', 'delete', 'task-manager', '-p', 'demo')
+    wait(lambda: not Path(manager_socket).exists() or
+         subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
+    state_file = manager_log.parent / 'state.json'
+    older = json.loads(state_file.read_text())
+    assert older['agent_session'] and older.pop('instructions'), older
+    state_file.write_text(json.dumps(older))
+    changed = js('task', 'say', 'STATUS after the change')
+    reply_to(changed['id'])
+    fresh = [t for t in traces() if t.get('launch') and t.get('manager')][-1]
+    assert not fresh['resume'] and fresh['session'] != launches[-1]['session'], fresh
+    rotated = [e for e in manager_entries() if e['kind'] == 'rotated']
+    assert rotated[-1].get('reason') == "the manager's instructions changed", rotated
+    opened = [t['message'] for t in traces() if t.get('manager') and 'message' in t and 'STATUS after the change' in t['message']]
+    assert opened and opened[0].startswith('Handover (this is a new conversation') and 'You: noted events' in opened[0], opened
+    resumed = js('task', 'say', 'STATUS again')
+    reply_to(resumed['id'])
+    assert not any(t.get('launch') and t.get('manager') and t['session'] != fresh['session']
+                   for t in traces()[traces().index(fresh) + 1:]), 'same launch keeps its conversation'
+    opened = [t['message'] for t in traces() if t.get('manager') and 'message' in t and 'STATUS again' in t['message']]
+    assert opened and not opened[0].startswith('Handover'), opened
     for n in (first, second, unseen):
         js('task', 'close', n, '--discard')
 

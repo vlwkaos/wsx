@@ -7,7 +7,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Sender};
 use std::time::Duration;
 use wsx_core::runtime;
@@ -36,6 +36,15 @@ pub fn bind(socket: &Path) -> Result<UnixListener> {
         UnixListener::bind(socket).with_context(|| format!("cannot bind {}", socket.display()))?;
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
     Ok(listener)
+}
+
+/// The socket's path through the real folder: on macOS `/var` and `/tmp` are links to
+/// `/private/...`, and a sandbox rule matches only the real path. The folder must exist.
+pub fn real_socket_path(socket: &Path) -> PathBuf {
+    match (socket.parent().map(Path::canonicalize), socket.file_name()) {
+        (Some(Ok(folder)), Some(name)) => folder.join(name),
+        _ => socket.to_path_buf(),
+    }
 }
 
 /// Serve one JSON request per connection: hand it to the host's loop as an event and
