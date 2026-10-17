@@ -605,7 +605,8 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', p2, '--discard')
 
     # 19. The ledger: open tasks by attention order, recent ones, deploys, the main checkout.
-    ready_task = js('task', 'new', 'WORK l.txt')['id']
+    # ^ The worker doubts a check it could not run; the ledger says what the host's checks did.
+    ready_task = js('task', 'new', 'WORK l.txt could not run the browser test')['id']
     blocked_task = js('task', 'new', 'NEEDS WebSearch WORK m.txt')['id']
     wait_state(ready_task, 'ready', 'failed')
     wait_state(blocked_task, 'blocked')
@@ -613,7 +614,8 @@ def run(wsx, wsxd, work, owned):
     ledger = json.loads(raw)
     assert len(raw.encode()) <= 16 * 1024 and ledger['open_omitted'] == 0
     assert [(row['id'], row['state']) for row in ledger['open']] == [(blocked_task, 'blocked'), (ready_task, 'ready')]
-    assert ledger['open'][1]['summary'] == 'did: WORK l.txt' and ledger['open'][1]['human_verify'] == 0
+    assert ledger['open'][1]['summary'] == 'did: WORK l.txt could not run the browser test' and ledger['open'][1]['human_verify'] == 0
+    assert ledger['open'][1]['checks'] == [{'command': 'test ! -e broken.txt', 'outcome': 'passed'}], ledger['open'][1]
     assert 0 < len(ledger['recent']) <= 10 and all(row['state'] in ('landed', 'closed') for row in ledger['recent'])
     assert ledger['deploys']['deploy']['commit'] == merged and ledger['main']['branch'] == 'main'
     assert ledger['main']['changed_files'] >= 1  # scratch.txt is untracked in the main checkout
@@ -637,7 +639,10 @@ def run(wsx, wsxd, work, owned):
     assert asked['ok'] and asked['id'] == 1, asked
     assert ('#%d working' % running) in reply_to(asked['id'])['text']
     launch = next(t for t in traces() if t.get('launch') and t.get('manager'))
-    assert launch['allowed'] == ['Read', 'Glob', 'Grep'] and launch['model'] == 'fake-manager'
+    # ^ Its file tools may write one file, the project page (docs/tasks.md "Project page").
+    page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md')
+    assert launch['allowed'] == ['Read', 'Glob', 'Grep', 'Edit(/%s)' % page, 'Write(/%s)' % page], launch['allowed']
+    assert launch['model'] == 'fake-manager' and Path(page).read_text().startswith('# demo\n\n## Goal')
     # ^ Its Bash is plain sandboxed Bash that writes only its notes folder and reaches one socket,
     # the manager host's broker, which runs its `wsx task` commands.
     sandbox = launch['settings']['sandbox']
@@ -653,7 +658,8 @@ def run(wsx, wsxd, work, owned):
     # Its rules for briefs: start work with one, skip it only on the owner's word, never start a build alone.
     for rule in ('the brief is coming', "`--no-brief` only when the owner's message asks", 'Never start a build on your own',
                  '`wsx task start <n>`, which asks', 'name the briefs that wait',
-                 'also in a pipe or with a heredoc', 'grant it with `wsx task allow <n> --host <host>`',
+                 'also in a pipe or with a heredoc', 'give each check as passed or failed from them',
+                 "trust them over the worker's own words", 'grant it with `wsx task allow <n> --host <host>`',
                  'Never tell the owner to edit settings'):
         assert rule in launch['instructions'], rule
     assert launch['cwd'] == str(project)
@@ -720,6 +726,8 @@ def run(wsx, wsxd, work, owned):
     assert waiting['busy'] and 'queued' in waiting['message'], waiting
     merged = wait(lambda: events_with('#%d ready r1' % first, '#%d ready r1' % second), 'merged events')
     assert len(merged) == 1, merged
+    # ^ An event names the host's checks before the worker's own words.
+    assert '#%d ready r1: NOOP; checks 1 of 1 passed; worker says: did: NOOP' % first in merged[0]['text'], merged
     delivered = [e['ids'] for e in manager_entries() if e['kind'] == 'delivered']
     assert delivered.index([waiting['id']]) < delivered.index([merged[0]['id']]), delivered
     assert 'noted events' in reply_to(merged[0]['id'])['text']

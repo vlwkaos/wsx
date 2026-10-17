@@ -650,7 +650,7 @@ impl Host {
         if bytes.len() > brief::MAX_BRIEF_BYTES {
             bail!("the brief is larger than {} bytes", brief::MAX_BRIEF_BYTES);
         }
-        let title = view::title(&self.dir).unwrap_or_default();
+        let title = view::title(&self.dir, &self.record).unwrap_or_default();
         self.dir.write_file(BRIEF_FILE, &bytes)?;
         self.dir.write_file(
             BRIEF_TEXT_FILE,
@@ -929,10 +929,7 @@ impl Host {
             self.verify_gate(skip_verify)?;
             self.require_committed()?;
             copy::push(&self.record.working_copy, remote, &self.record.branch)?;
-            let title = self
-                .dir
-                .prompt()?
-                .and_then(|prompt| prompt.lines().next().map(str::to_string))
+            let title = view::title(&self.dir, &self.record)
                 .unwrap_or_else(|| format!("Task t{}", self.record.id));
             let title: String = title.chars().take(PR_TITLE_CHARS).collect();
             let report_path = self.dir.file(REPORT_FILE);

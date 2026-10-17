@@ -49,6 +49,9 @@ pub enum TaskCmd {
         /// Build at once, without a brief first (logged); only when the owner asks for it
         #[arg(long)]
         no_brief: bool,
+        /// A short title in plain words (at most 60 characters); default: the prompt's first line
+        #[arg(long)]
+        title: Option<String>,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -300,9 +303,17 @@ pub fn run(command: TaskCmd) -> Result<()> {
             prompt,
             from,
             no_brief,
+            title,
             project,
             json,
-        } => new(prompt, from.as_deref(), no_brief, project.as_deref(), json),
+        } => new(
+            prompt,
+            from.as_deref(),
+            no_brief,
+            title.as_deref(),
+            project.as_deref(),
+            json,
+        ),
         TaskCmd::Start {
             task,
             project,
@@ -587,10 +598,12 @@ fn new(
     prompt: PromptSource,
     from: Option<&str>,
     no_brief: bool,
+    title: Option<&str>,
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let prompt = prompt.read(MAX_MESSAGE_BYTES)?;
+    let title = title.map(wsx_core::task::view::checked_title).transpose()?;
     let (config, workspace) = load_full_workspace()?;
     let project = resolve_project(&workspace, project)?;
     let settings = load_task_config(&project.path)
@@ -645,6 +658,7 @@ fn new(
         paths_total: 0,
         pr_url: None,
         pr_revision: None,
+        title,
         created_unix_ms: now,
         updated_unix_ms: now,
     };

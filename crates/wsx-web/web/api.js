@@ -41,7 +41,7 @@ export const pageId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().to
 
 export function openEvents(handlers) {
   const stream = new EventSource(resolve(`api/events?page=${encodeURIComponent(pageId)}`));
-  for (const name of ["workspace", "history", "exchange", "daemon", "resync", "revoked", "tasks", "task", "manager"]) {
+  for (const name of ["workspace", "history", "exchange", "daemon", "resync", "revoked", "tasks", "task", "manager", "page"]) {
     stream.addEventListener(name, (event) => handlers[name]?.(JSON.parse(event.data)));
   }
   stream.onopen = () => handlers.up?.();

@@ -587,6 +587,7 @@ pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
     let mut files = vec![
         dir.join(APPROVALS_FILE),
         dir.join(MANAGER_DIR).join(MANAGER_LOG),
+        dir.join(PAGE_FILE),
     ];
     for id in task_numbers(project_id)? {
         let task = dir.join(id.to_string());
@@ -597,6 +598,48 @@ pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
     }
     Ok(files)
 }
+pub const PAGE_FILE: &str = "page.md";
+pub const MAX_PAGE_BYTES: u64 = 256 * 1024;
+
+/// `tasks/<project-id>/page.md`, the project's one-page picture that the manager edits.
+/// ref: docs/tasks.md "Project page"
+pub fn page_path(project_id: &str) -> Result<PathBuf> {
+    Ok(project_dir(project_id)?.join(PAGE_FILE))
+}
+
+/// Create the page with its sections when it is missing, owner-only; an existing page stays.
+pub fn ensure_page(project_id: &str, project: &str) -> Result<PathBuf> {
+    let path = ensure_project_dir(project_id)?.join(PAGE_FILE);
+    let skeleton = format!(
+        "# {project}\n\n## Goal\n\n_Not written yet._\n\n## Tasks\n\n```mermaid\ngraph LR\n  start[No tasks yet]\n```\n\n## Decisions\n\n_None yet._\n\n## Open questions\n\n_None yet._\n"
+    );
+    match open_nofollow(&path, OpenOptions::new().write(true).create_new(true)) {
+        Ok(mut file) => file
+            .write_all(skeleton.as_bytes())
+            .with_context(|| format!("cannot write {}", path.display()))?,
+        Err(_) if path.is_file() => {}
+        Err(error) => return Err(error),
+    }
+    Ok(path)
+}
+
+/// The page's text and when it last changed, or none when it is missing.
+pub fn read_page(project_id: &str) -> Result<Option<(String, u64)>> {
+    let path = page_path(project_id)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = read_bounded(&path, MAX_PAGE_BYTES)?;
+    let modified = fs::symlink_metadata(&path)?
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64);
+    Ok(Some((
+        String::from_utf8_lossy(&bytes).into_owned(),
+        modified,
+    )))
+}
+
 const GRANTS_FILE: &str = "grants.json";
 const MAX_GRANTS_BYTES: u64 = 64 * 1024;
 

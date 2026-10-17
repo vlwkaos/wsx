@@ -45,24 +45,84 @@ pub fn read_result(dir: &TaskDir) -> Option<Value> {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
-/// The first line of the task's prompt, at most 120 characters.
-pub fn title(dir: &TaskDir) -> Option<String> {
+/// What wsx ran on the task's latest revision, each check as `passed`, `failed` or
+/// `timed out`: the manager states these, not the worker's words (docs/tasks.md "Ledger").
+pub fn check_outcomes(result: &Value) -> Vec<(String, &'static str)> {
+    result["checks"]
+        .as_array()
+        .map(|checks| {
+            checks
+                .iter()
+                .map(|check| {
+                    let outcome = if check["timed_out"].as_bool() == Some(true) {
+                        "timed out"
+                    } else if check["exit"].as_i64() == Some(0) {
+                        "passed"
+                    } else {
+                        "failed"
+                    };
+                    (
+                        clip(check["command"].as_str().unwrap_or_default(), 120),
+                        outcome,
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The longest `task new --title`. ref: docs/tasks.md "Store"
+pub const MAX_TITLE_CHARS: usize = 60;
+
+/// A `--title` as given, trimmed; refused when empty, too long or with control characters.
+pub fn checked_title(title: &str) -> Result<String> {
+    let title = title.trim();
+    if title.is_empty() {
+        anyhow::bail!("the title is empty");
+    }
+    if title.chars().count() > MAX_TITLE_CHARS {
+        anyhow::bail!("the title is longer than {MAX_TITLE_CHARS} characters");
+    }
+    if title.chars().any(char::is_control) {
+        anyhow::bail!("the title has control characters");
+    }
+    Ok(title.to_string())
+}
+
+/// The task's title: its `--title`, else the first line of its prompt without a leading
+/// `Owner <word>:` (how the manager's prompts open), at most 120 characters.
+pub fn title(dir: &TaskDir, record: &TaskRecord) -> Option<String> {
+    if let Some(title) = &record.title {
+        return Some(title.clone());
+    }
     dir.prompt().ok().flatten().map(|prompt| {
-        prompt
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .chars()
-            .take(TITLE_CHARS)
-            .collect()
+        let line = prompt.lines().next().unwrap_or_default().trim();
+        strip_owner(line).chars().take(TITLE_CHARS).collect()
     })
+}
+
+/// `Owner report: tool permission` → `tool permission`; anything else stays.
+fn strip_owner(line: &str) -> &str {
+    let Some(rest) = line.strip_prefix("Owner ") else {
+        return line;
+    };
+    match rest.split_once(':') {
+        Some((word, after))
+            if !word.is_empty()
+                && word.chars().all(char::is_alphanumeric)
+                && !after.trim().is_empty() =>
+        {
+            after.trim_start()
+        }
+        _ => line,
+    }
 }
 
 pub fn task_summary(dir: &TaskDir, record: &TaskRecord) -> Value {
     json!({
         "id": record.id,
         "state": record.state,
-        "title": title(dir),
+        "title": title(dir, record),
         "branch": record.branch,
         "revision": record.revision,
         "updated_unix_ms": record.updated_unix_ms,

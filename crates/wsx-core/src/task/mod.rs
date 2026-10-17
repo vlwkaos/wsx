@@ -169,6 +169,9 @@ pub struct TaskRecord {
     pub pr_url: Option<String>,
     #[serde(default)]
     pub pr_revision: Option<u32>,
+    /// `task new --title`; without one the title comes from the prompt (`view::title`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub created_unix_ms: u64,
     pub updated_unix_ms: u64,
 }

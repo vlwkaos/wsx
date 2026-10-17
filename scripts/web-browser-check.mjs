@@ -149,15 +149,15 @@ if (mode === "restart") {
     await pause(100);
   }
   // The page says so once and does not reload by itself: the draft stays in the field.
-  await until("!!document.querySelector('.notice-build button')", "the page did not offer the new build", 300);
+  await until("!!document.querySelector('.build-pill')", "the page did not offer the new build", 300);
   if ((await evaluate("document.querySelector('.composer-field').value")) !== "typed before the new build") await fail("the offer of a new build took the draft");
   await sound("new build offered");
   await shot("new-build");
   const buildB = (await evaluate("fetch('api/session').then((r) => r.json())")).build.id;
   if (buildB === buildA) await fail(`the server came back as the same build ${buildA}`);
-  await evaluate("document.querySelector('.notice-build button').click()");
+  await evaluate("document.querySelector('.build-pill').click()");
   await until(`new URL(document.querySelector('script[type=module]')?.src ?? location.href).pathname.includes('/${buildB}/') && !!document.querySelector('.app')`, "Reload did not load the new build", 300);
-  if (await count(".notice-build")) await fail("the new build still offers a reload");
+  if (await count(".build-pill")) await fail("the new build still offers a reload");
   if ((await evaluate("document.querySelector('.composer-field')?.value")) !== "typed before the new build") await fail("the draft did not survive the reload");
   await go("#/settings");
   await until("!!document.querySelector('.facts')", "Settings shows no version");

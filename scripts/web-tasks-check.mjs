@@ -1,21 +1,25 @@
 #!/usr/bin/env node
 // Real-browser check of manager mode on the page (docs/web-client.md "Tasks"), driven over the
 // Chrome DevTools Protocol. Called by `test-web-client.py --part tasks --browser`.
-//   web-tasks-check.mjs <site-url> <code> <project-id> <capture-dir> <home order> [slop-audit.js] [plans-id]
+//   web-tasks-check.mjs <site-url> <code> <project-id> <capture-dir> <home order> <slop-audit.js|""> <plans-id> <restart-file>
 // <home order> is the project names as home must list them, comma-separated. <plans-id> is a
 // project whose #1 waits as briefed (rewritten prompt WORK keys.txt), for the brief journey.
-// The project has: #1 and #4 blocked on a tool, #2 ready with Human Verify, #3 ready to land,
-// and two pending approvals: a1 lands #3, a2 discards #4 (shown as "Approve land #3", "Approve discard #4"). Each capture is saved with the slop audit and, on a phone, the
-// mobile audit of /ui-view-standards beside it (WSX_MOBILE_AUDIT names the mobile audit).
+// The project has: #1 and #4 blocked on a host, #2 ready with Human Verify, #3 ready to land,
+// #5 closed after a long report the manager heard of, #6 working (its prompt opens with
+// "Owner asked:"), and two pending approvals: a1 lands #3, a2 discards #4 (shown as
+// "Approve land #3", "Approve discard #4"). Writing <restart-file> asks the test to restart
+// the server with another site name, so it serves another build; it writes <restart-file>.done.
+// Each capture is saved with the slop audit and, on a phone, the mobile audit of
+// /ui-view-standards beside it (WSX_MOBILE_AUDIT names the mobile audit).
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { launch } from "./web-cdp.mjs";
 
-const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg] = process.argv.slice(2);
+const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile] = process.argv.slice(2);
 const project = Number(projectArg);
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = await launch({
-  captures, prefix: "tasks-", timeoutSeconds: 240,
+  captures, prefix: "tasks-", timeoutSeconds: 300,
 });
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
@@ -57,7 +61,7 @@ async function sound(label) {
   const seen = await evaluate(`(() => {
     const free = (node) => node.closest('.code-block pre, .table-wrap, .diagram, .timeline-output');
     const wide = [...document.querySelectorAll('#app *')].filter((node) => !free(node) && node.getBoundingClientRect().right > innerWidth + 0.5);
-    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .tray, .brief, .slash, .task-sheet')
+    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .reservoir, .slash, .task-sheet')
       && /auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1);
     return { wide: wide.slice(0, 3).map((node) => node.className || node.tagName), scrollers: scrollers.map((node) => node.className),
       raw: /\\b(null|undefined|NaN)\\b/.test(document.querySelector('#app').innerText), page: document.scrollingElement.scrollTop + document.scrollingElement.scrollLeft };
@@ -112,27 +116,33 @@ async function pair() {
   await until("!!document.querySelector('.app')", "the app did not open after pairing");
 }
 
-// The task story as words: what was asked, the step marked current (with its stop word),
-// each step's state, and what happens next.
-const story = () => evaluate(`(() => { const words = (li) => li.querySelector('.story-name').textContent + (li.querySelector('.story-word')?.textContent ?? '');
+// The task story as words: the steps shown (with a stop word), the current one, and the sentence.
+const story = () => evaluate(`(() => { const words = (li) => li.querySelector('.story-name').textContent + (li.querySelector('.story-word') ? ' ' + li.querySelector('.story-word').textContent : '');
   const current = document.querySelector('.story-steps [aria-current=step]');
-  return { asked: document.querySelector('.story-asked')?.textContent.trim(), current: current && words(current),
-    steps: [...document.querySelectorAll('.story-steps li')].map((li) => li.dataset.step).join(), next: document.querySelector('.story-next')?.textContent.trim() }; })()`);
-// The cards in the conversation: [label, context, action labels], in the order shown.
-const cards = () => evaluate(`[...document.querySelectorAll('.log .need-card')].map((card) => [
-  ((card.querySelector('.need-id')?.textContent ?? '') + ' ' + card.querySelector('.row-label').textContent).trim(), card.querySelector('.row-context').textContent,
-  [...card.querySelectorAll('.need-action')].map((node) => node.textContent.trim()).join('+')])`);
-const trayLines = () => text(".tray-line .tray-words");
-// ^ innerText: the button holds "+N" for two lines and for one line, and CSS shows one.
-const trayMore = () => evaluate("document.querySelector('.tray-more')?.innerText.trim() ?? ''");
-const trayVisible = () => evaluate("[...document.querySelectorAll('.tray-line')].filter((node) => node.getBoundingClientRect().height > 0).length");
-const cardOf = (label) => `[...document.querySelectorAll('.log .need-card')].find((card) => ((card.querySelector('.need-id')?.textContent ?? '') + ' ' + card.querySelector('.row-label').textContent).trim().startsWith(${JSON.stringify(label)}))`;
-const sheetOpen = () => evaluate("!!document.querySelector('dialog.task-sheet[open]')");
+  return { shown: [...document.querySelectorAll('.story-steps li')].map(words).join(' → '), current: current && words(current),
+    next: document.querySelector('.story-next')?.textContent.trim(), asked: !!document.querySelector('.story-asked') }; })()`);
+// The reservoir's rows: [chip, title, context, actions], in the order shown.
+const rows = () => evaluate(`[...document.querySelectorAll('.reservoir-list .need')].map((row) => [
+  row.querySelector('.task-chip')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, row.querySelector('.row-context')?.textContent ?? '',
+  [...row.querySelectorAll('.need-action')].map((node) => node.textContent.trim()).join('+')])`);
+const rowOf = (label) => `[...document.querySelectorAll('.reservoir-list .need')].find((row) => ((row.querySelector('.task-chip')?.textContent.trim() ?? '') + ' ' + row.querySelector('.row-label').textContent).trim().startsWith(${JSON.stringify(label)}))`;
+const reservoirWords = () => evaluate("document.querySelector('.reservoir-words')?.textContent ?? ''");
+async function openReservoir() {
+  if (!(await evaluate("!!document.querySelector('.reservoir[data-open]')"))) await click(".reservoir-head");
+  await until("!!document.querySelector('.reservoir-list, .facts-line')", "the reservoir did not open");
+}
+async function closeReservoir() {
+  if (await evaluate("!!document.querySelector('.reservoir[data-open]')")) await click(".reservoir-head");
+}
 const sheetState = () => evaluate("document.querySelector('.task-sheet .bar-state')?.textContent ?? ''");
+const atEnd = "(() => { const log = document.querySelector('.log'); return log.scrollHeight - log.scrollTop - log.clientHeight < 2; })()";
+const bubbles = () => evaluate(`[...document.querySelectorAll('.log .bubble')].map((node) => ({ side: node.dataset.side, first: node.hasAttribute('data-first'),
+  last: node.hasAttribute('data-last'), author: node.querySelector('.bubble-author')?.textContent ?? '', text: node.querySelector('.bubble-box').textContent.trim().replace(/\\s+/g, ' ') }))`);
 
 await resize([390, 844, 2]);
 await pair();
 const chat = `#/p/${project}`;
+const page = (n) => `#/p/${project}/t/${n}`;
 
 // --- Home: one row per project, needs first, then by activity; the bottom bar is Home and Settings.
 await go("#/");
@@ -141,14 +151,13 @@ await until("document.querySelectorAll('.home-row').length >= 3", "home does not
 await until(`[...document.querySelectorAll('.home-row .row-label')].map((node) => node.textContent).join() === ${JSON.stringify(homeOrder)}`, "home did not settle in the expected order", 30);
 const homeRows = await evaluate(`[...document.querySelectorAll('.home-row')].map((row) => ({ name: row.querySelector('.row-label').textContent,
   count: row.querySelector('.count')?.textContent ?? '', status: row.querySelector('.row-context').textContent, state: row.querySelector('.row-state').textContent }))`);
-if (homeRows.map((row) => row.name).join() !== homeOrder) await fail(`home lists ${JSON.stringify(homeRows)}, not ${homeOrder}`);
 const uiRow = homeRows.find((row) => row.name === "ui");
 if (uiRow.count !== "6" || uiRow.status !== "#1 needs to reach crates.io" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
 const calmRow = homeRows.at(-1);
 if (calmRow.name !== "calm" || calmRow.count || calmRow.status !== "No tasks yet" || calmRow.state) await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
 const plansRow = homeRows.find((row) => row.name === "plans");
 // ^ #1 waits as briefed; #2, built by the API checks, is ready to land.
-if (plansArg && (plansRow?.status !== "Brief ready #1" || plansRow.count !== "2")) await fail(`the plans row reads ${JSON.stringify(plansRow)}`);
+if (plansRow?.status !== "Brief ready #1" || plansRow.count !== "2") await fail(`the plans row reads ${JSON.stringify(plansRow)}`);
 // Projects with agent sessions and no task: the sessions in words, and the time of the newest.
 const sessionRows = { busy: "2 working", quiet: "claude in main done just now", gone: "claude in main exited" };
 for (const [name, status] of Object.entries(sessionRows)) {
@@ -156,13 +165,14 @@ for (const [name, status] of Object.entries(sessionRows)) {
   if (row?.status !== status || row.count || !/ago|now/.test(row.state)) await fail(`the ${name} row reads ${JSON.stringify(row)}, not "${status}" with a time`);
 }
 if ((await text(".tabbar a")).join() !== "Home,Settings") await fail(`the bottom bar is ${await text(".tabbar a")}`);
+// ^ The server runs this page's build: no new-version pill.
+if (await count(".build-pill")) await fail("the new-version pill shows on the same build");
 await shot("home");
 // "All sessions": the session inbox, without task workers and the manager.
 await evaluate("[...document.querySelectorAll('.home-more a')].find((node) => node.textContent === 'All sessions').click()");
 await until("location.hash === '#/sessions' && /All sessions/.test(document.querySelector('.bar-label')?.textContent ?? '')", "All sessions did not open");
 const listedSessions = await text(".rows .row-context");
 if (listedSessions.some((line) => /\btask-(\d+|manager)\b|\b(task|manager)$/.test(line))) await fail(`the session list shows task sessions: ${JSON.stringify(listedSessions)}`);
-await shot("sessions");
 await evaluate("document.querySelector('.bar a.icon-button').click()");
 await until("location.hash === '#/' && !!document.querySelector('.home-row')", "Back did not return home");
 await go("#/settings");
@@ -171,119 +181,158 @@ await until("[...document.querySelectorAll('.settings a')].some((node) => node.t
 await go("#/");
 await until("!!document.querySelector('.home-row')", "home did not come back");
 await evaluate(`[...document.querySelectorAll('.home-row')].find((row) => row.querySelector('.row-label').textContent === 'ui').click()`);
-await until(`location.hash === ${JSON.stringify(chat)} && !!document.querySelector('.composer-field') && document.querySelectorAll('.log .need-card').length >= 6`, "a home row did not open the chat with its cards");
+await until(`location.hash === ${JSON.stringify(chat)} && !!document.querySelector('.composer-field') && !!document.querySelector('.reservoir-head') && !!document.querySelector('.log .bubble')`, "a home row did not open the chat");
 if (await count(".tabbar")) await fail("the chat shows the bottom bar");
 
 // "Since you left": this device left the project two hours ago; the line names what happened.
 await go("#/");
 await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 }))`);
 await go(chat);
-await until("/Since you left: .*#1 #2 #3 #4 started.* repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')", "no since-you-left line");
-await shot("project-since", ".composer-send");
+await until("/Since you left: .*#1 #2 #3 #4.* started.* repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')", "no since-you-left line");
 await evaluate("[...document.querySelectorAll('.since button')].find((node) => node.textContent === 'Dismiss').click()");
 await until("!document.querySelector('.since')", "Dismiss did not close the line");
-await go("#/");
-await go(chat);
-await pause(500);
-if (await count(".since")) await fail("a return within a minute shows a since-you-left line");
-await until("document.querySelectorAll('.log .need-card').length >= 6", "the chat did not reopen");
 
-// --- The chat: no strip; each open item is a card in the conversation, in time order, with
-// its buttons; an approval reads as its action; the tray shows two lines and "+N".
-if (await count(".needs")) await fail("the chat still has the strip");
-let shown = await cards();
-if (shown.map((card) => card[0].split(" ").slice(0, 3).join(" ")).join() !== "#1 NEEDS_HOST crates.io,#2 WORK a.txt,#3 WORK b.txt,#4 NEEDS_HOST crates.io,Approve land #3,Approve discard #4") await fail(`the cards are ${JSON.stringify(shown)}`);
-// ^ A blocked card names what the sandbox stopped, never a command (docs/web-client.md "Tasks").
-if (!shown[0].join(" ").includes("needs to reach crates.io") || /Bash\(|curl/.test(shown[0].join(" "))) await fail(`the blocked card reads ${JSON.stringify(shown[0])}`);
-const actionsOf = Object.fromEntries(shown.map((card) => [card[0].split(" ").slice(0, 3).join(" "), card[2]]));
-if (actionsOf["#1 NEEDS_HOST crates.io"] !== "Allow+Allow for project+Answer" || actionsOf["Approve land #3"] !== "Deny+Approve" || actionsOf["#2 WORK a.txt"] !== "Verify" || actionsOf["#3 WORK b.txt"] !== "Land") await fail(`the card buttons are ${JSON.stringify(actionsOf)}`);
-// ^ Three actions must not squeeze a card's words: they wrap under them.
-const squeezed = await evaluate("[...document.querySelectorAll('.log .need-card')].filter((card) => card.querySelectorAll('.need-action').length >= 3).map((card) => Math.round(card.querySelector('.row-main').getBoundingClientRect().width)).filter((width) => width < 200)");
-if (squeezed.length) await fail(`a card with three actions leaves its words ${squeezed}px`);
-const named = await evaluate("[...document.querySelectorAll('.log .need-card')].map((card) => card.textContent).find((words) => /\\ba[12]\\b/.test(words))");
-if (named) await fail(`a card names an approval by its id: ${named}`);
-if ((await trayLines()).join() !== "#1 needs to reach crates.io,#4 needs to reach crates.io,Approve land #3,Approve discard #4,#2 is ready to verify,#3 is ready to land") await fail(`the tray reads ${await trayLines()}`);
-if (await trayVisible() !== 2 || await trayMore() !== "+4") await fail(`the tray shows ${await trayVisible()} lines and ${await trayMore()}`);
-// --- The project brief: one line, unfolded on a tap.
-await until("!!document.querySelector('.brief-text')", "the project shows no brief");
-const folded = (await text(".brief-text"))[0];
-if (folded !== "4 open · 6 need you · deploy up to date") await fail(`the folded brief reads ${folded}`);
+// --- The chat reads like a messaging app: no cards, no tray, no strip, no Explain; the
+// header names the manager only when it matters.
+for (const gone of [".need-card", ".tray", ".brief", ".story-explain", ".events"]) {
+  if (await count(gone)) await fail(`the chat still has ${gone}`);
+}
+if (await evaluate("/Explain/.test(document.querySelector('#app').innerText)")) await fail("the chat still offers Explain");
+if (await evaluate("document.querySelector('.manager .bar-state')?.textContent ?? ''")) await fail(`an idle manager is named in the header: ${await evaluate("document.querySelector('.manager .bar-state').textContent")}`);
+// The owner's message on the right, the manager's reply on the left with its author, and #5's
+// long report as one bubble by "#5 worker" with its header, folded until "Show all".
+let shown = await bubbles();
+const ownerAsk = shown.find((bubble) => bubble.side === "out" && bubble.text.startsWith("RUN wsx task land 3"));
+const managerReply = shown.find((bubble) => bubble.side === "in" && bubble.author === "Manager");
+if (!ownerAsk || ownerAsk.author || !managerReply) await fail(`the bubbles are ${JSON.stringify(shown)}`);
+const report = `[...document.querySelectorAll('.log .bubble')].find((node) => node.querySelector('.bubble-author')?.textContent === '#5 worker')`;
+await until(`!!${report}`, "the long report has no worker bubble");
+const head = await evaluate(`${report}.querySelector('.bubble-head').textContent.trim().replace(/\\s+/g, ' ')`);
+if (head !== "#5 · done") await fail(`the report's header reads ${head}`);
+if (!(await evaluate(`${report}.querySelector('.bubble-body').hasAttribute('data-clamped')`))) await fail("the long report is not folded");
 await shot("project", ".composer-send");
-// --- Jump to latest on the manager chat: the brief and the tray load above the log after it
-// scrolled to its end and must not leave the end hidden; a log scrolled up shows the button.
-const atEnd = "(() => { const log = document.querySelector('.log'); return log.scrollHeight - log.scrollTop - log.clientHeight < 2; })()";
-const scrollable = await evaluate("(() => { const log = document.querySelector('.log'); return log.scrollHeight - log.clientHeight; })()");
-if (scrollable < 100) await fail(`the manager chat is too short to scroll (${scrollable} px)`);
+await evaluate(`${report}.querySelector('.bubble-more').click()`);
+await until(`${report}.querySelector('.bubble-body').hasAttribute('data-open') && /line 30 of the report/.test(${report}.textContent)`, "Show all did not open the report");
+await evaluate(`${report}.querySelector('.bubble-more').click()`);
+// The chat opens at its newest message; scrolled up, it shows Jump to latest.
 await until(atEnd, "the manager chat did not open at its end");
-if (await count(".jump")) await fail("the jump button shows on a chat at its end");
-await click(".brief-line");
-await pause(300);
-if (!await evaluate(atEnd) || await count(".jump")) await fail("unfolding the brief took the manager chat off its end");
-await click(".brief-line");
-await pause(300);
-if (!await evaluate(atEnd) || await count(".jump")) await fail("folding the brief took the manager chat off its end");
 await evaluate("document.querySelector('.log').scrollTop = 0");
 await until("!!document.querySelector('.jump')", "no jump button after scrolling the manager chat up");
 await click(".jump");
 await until(`!document.querySelector('.jump') && ${atEnd}`, "Jump to latest did not go to the end of the manager chat");
-await click(".brief-line");
-const openLines = await text(".brief-list[aria-label='Open tasks'] li");
-// ^ The title and the state are two flex items, so their texts meet without a space.
-const expected = [/^#1 .*waits for you$/, /^#4 .*waits for you$/, /^#2 WORK a\.txt HVready to verify$/, /^#3 WORK b\.txtready to land$/];
-if (openLines.length !== 4 || !expected.every((pattern, index) => pattern.test(openLines[index]))) await fail(`the brief lists ${JSON.stringify(openLines)}`);
-const briefBody = (await text(".brief-body"))[0];
-if (!/Deploy: [0-9a-f]{8}, up to date with main\./.test(briefBody) || !/Main checkout on main, /.test(briefBody)) await fail(`the brief says ${briefBody}`);
-await shot("brief-open", ".composer-send");
-await click(".brief-line");
-// The top row: ⋯ holds Sessions (Files where granted); the worktree list hides task sessions.
+
+// --- The reservoir: one line over the composer; a tap opens one row per item with its one
+// action; the running task's chip pulses; its title has no "Owner asked:"; the deploy and the
+// main checkout under the list. Opening it keeps the chat at its end.
+if (await reservoirWords() !== "6 need you · 1 working") await fail(`the reservoir reads ${await reservoirWords()}`);
+if (await count(".reservoir-list")) await fail("the reservoir is open before a tap");
+await openReservoir();
+await pause(300);
+if (!(await evaluate(atEnd))) await fail(`opening the reservoir took the chat off its end: ${JSON.stringify(await evaluate("(() => { const log = document.querySelector('.log'); return { top: log.scrollTop, height: log.scrollHeight, client: log.clientHeight, jump: !!document.querySelector('.jump') }; })()"))}`);
+const listedRows = await rows();
+const rowWords = listedRows.map((row) => `${row[0]} ${row[3]}`);
+const expectedRows = ["#1 Allow", "#4 Allow", " Deny+Approve", " Deny+Approve", "#2 Verify", "#3 Land", "#6 "];
+if (rowWords.join("|") !== expectedRows.join("|")) await fail(`the reservoir rows are ${JSON.stringify(listedRows)}`);
+if (listedRows[0][2] !== "needs to reach crates.io" || listedRows[2][1] !== "Approve land #3" || listedRows[3][1] !== "Approve discard #4") await fail(`the reservoir rows read ${JSON.stringify(listedRows)}`);
+if (!/^keep a worker busy WAIT /.test(listedRows[6][1])) await fail(`the running task's title is ${listedRows[6][1]}`);
+if (!(await evaluate(`${rowOf("#6")}.querySelector('.task-chip .mark[data-running]')`))) await fail("the running task's chip does not pulse");
+const chipName = await evaluate(`${rowOf("#1")}.querySelector('.task-chip').getAttribute('aria-label')`);
+if (chipName !== "#1, blocked") await fail(`a chip's accessible name is ${chipName}`);
+const facts = (await text(".facts-line"))[0] ?? "";
+if (!/Deploy: [0-9a-f]{8}, up to date with main\./.test(facts) || !/Main checkout on main, /.test(facts)) await fail(`the reservoir's facts read ${facts}`);
+await shot("reservoir-open", ".composer-send");
+await resize([390, 420, 2]);
+await shot("reservoir-short", ".composer-send");
+await resize([390, 844, 2]);
+// Act in place: Allow #1 grants its host and resumes it; Approve land #3 lands it. The chat
+// stays at its end, and the settled items become muted lines that join when close together.
+await evaluate(`${rowOf("#1")}.querySelector('.need-action').click()`);
+await until("[...document.querySelectorAll('.notice')].some((node) => /#1:/.test(node.textContent))", "Allow in the reservoir showed no outcome");
+// ^ #1 works for a moment, then is ready to land: either way it no longer waits for the host.
+await until(`(${rowOf("#1")}?.querySelector('.row-context')?.textContent ?? '') !== 'needs to reach crates.io'`, "#1 still waits for its host after Allow", 60);
+await evaluate(`${rowOf("Approve land #3")}.querySelectorAll('.need-action')[1].click()`);
+await until("[...document.querySelectorAll('.notice')].some((node) => /Approved land #3/.test(node.textContent))", "Approve showed no outcome");
+await until(`!${rowOf("Approve land #3")} && !${rowOf("#3")}`, "the reservoir kept the approved landing", 300);
+await until("[...document.querySelectorAll('.status-line')].some((node) => /Approved land #3 · .*#3 landed|#3 landed · .*Approved land #3/.test(node.textContent))", "the approval and the landing are not one line", 300);
+if (!(await evaluate(atEnd)) || await count(".jump")) await fail("acting in the reservoir moved the chat");
+if (await count(".need-card, .tray")) await fail("an action brought back a card or the tray");
+await shot("reservoir-acted", ".composer-send");
+await closeReservoir();
+
+// --- The ⋯ menu: Page and Sessions; the worktree list hides task sessions.
 await click(".more-button");
-if ((await text(".more-menu a")).join() !== "Sessions") await fail(`the ⋯ menu offers ${await text(".more-menu a")}`);
+if ((await text(".more-menu a")).join() !== "Page,Sessions") await fail(`the ⋯ menu offers ${await text(".more-menu a")}`);
 await shot("more-menu", ".composer-send");
-await click(".more-menu a");
+await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Sessions').click()");
 await until(`location.hash === '#/p/${project}/sessions' && !!document.querySelector('.worktree')`, "Sessions did not open the worktree list");
 const worktreeSessions = await text(".worktree .row-session-name");
 if (worktreeSessions.some((name) => /^task-/.test(name))) await fail(`the worktree list shows task sessions: ${worktreeSessions}`);
 await evaluate("document.querySelector('.bar a.icon-button').click()");
-await until(`location.hash === ${JSON.stringify(chat)} && !!document.querySelector('.need-card')`, "Back did not return to the chat");
+await until(`location.hash === ${JSON.stringify(chat)} && !!document.querySelector('.reservoir-head')`, "Back did not return to the chat");
 
-// --- The manager chat: a reply with task chips.
-await typeInto(".composer-field", "STATUS");
+// --- The project page: markdown and a mermaid graph in the sheet, with its last change.
+await click(".more-button");
+await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Page').click()");
+await until(`location.hash === '#/p/${project}/page' && !!document.querySelector('dialog.task-sheet[open] .project-page h1')`, "Page did not open the project page");
+await until("!!document.querySelector('.project-page .diagram img')", "the page's mermaid graph did not draw", 30);
+if (!/^Updated /.test(await sheetState())) await fail(`the page's top row reads ${await sheetState()}`);
+const pageHeads = await text(".project-page h2");
+if (pageHeads.join() !== "Goal,Tasks,Decisions,Open questions") await fail(`the page's sections are ${pageHeads}`);
+await shot("page");
+await key("Escape", 27);
+await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Escape did not close the page");
+
+// --- A turn of the manager: two messages group on the right; while it runs a typing bubble
+// ends the chat and the header says "typing"; the reply edits the page (with a link to it),
+// has short chips (the same task twice as two plain chips) and a table that scrolls inside it.
+await typeInto(".composer-field", "SLOW TABLE");
 await click(".composer-send");
-for (let attempt = 0; !(await evaluate("[...document.querySelectorAll('.message:not(.message-user) .task-chip')].length >= 3")); attempt++) {
-  if (attempt > 300) {
-    const api = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json())`);
-    await fail(`the reply has no task chips; the chat API has ${JSON.stringify(api).slice(0, 600)}; the page has ${(await text(".log > *")).join(" | ").slice(0, 400)}`);
-  }
-  await pause(100);
-}
-const chips = await text(".message:not(.message-user) .task-chip");
-if (!chips.some((chip) => /^#1 blocked NEEDS/.test(chip))) await fail(`the chips read ${JSON.stringify(chips)}`);
-if (await evaluate("document.querySelector('.composer-field').value") !== "") await fail("the sent message stayed in the field");
+// ^ A send in flight ignores another tap: the field clears when the server has the message.
+await until("document.querySelector('.composer-field').value === ''", "the first message was not sent");
+await typeInto(".composer-field", "PAGE Goal Ship the chat");
+await click(".composer-send");
+await until("document.querySelector('.composer-field').value === ''", "the second message was not sent");
+await until("!!document.querySelector('.log .typing') && document.querySelector('.manager .bar-state')?.textContent === 'typing'", "no typing bubble while the manager's turn runs", 30);
+const typing = await evaluate("({ author: document.querySelector('.log .typing').closest('.bubble').querySelector('.bubble-author').textContent, said: document.querySelector('.log .typing .visually-hidden').textContent })");
+if (typing.author !== "Manager" || typing.said !== "Manager is typing") await fail(`the typing bubble reads ${JSON.stringify(typing)}`);
+if (await evaluate("document.querySelector('.log .bubble:last-child .typing') === null")) await fail("the typing bubble is not the last message");
+await shot("typing", ".composer-send");
+const sentPair = (await bubbles()).filter((bubble) => bubble.side === "out").slice(-2);
+if (sentPair.length !== 2 || sentPair[0].last || sentPair[1].first || !sentPair[1].last) await fail(`two owner messages did not group: ${JSON.stringify(sentPair)}`);
+await until("[...document.querySelectorAll('.log .bubble[data-side=in]')].some((node) => !!node.querySelector('.table-wrap'))", "the reply with a table did not arrive", 60);
+const tableReply = "[...document.querySelectorAll('.log .bubble[data-side=in]')].find((node) => !!node.querySelector('.table-wrap'))";
+const inside = await evaluate(`(() => { const bubble = ${tableReply}.querySelector('.bubble-box').getBoundingClientRect(), table = ${tableReply}.querySelector('.table-wrap');
+  const box = table.getBoundingClientRect(); return { right: box.right <= bubble.right + 0.5, scrolls: table.scrollWidth > table.clientWidth }; })()`);
+if (!inside.right || !inside.scrolls) await fail(`the table does not stay inside its bubble: ${JSON.stringify(inside)}`);
+const replyChips = await evaluate(`[...${tableReply}.querySelectorAll('.task-chip')].map((chip) => chip.textContent.trim())`);
+if (replyChips.filter((chip) => chip === "#4").length !== 2 || replyChips.some((chip) => !/^#\d+$/.test(chip))) await fail(`the reply's chips read ${JSON.stringify(replyChips)}`);
+await until("!document.querySelector('.log .typing')", "the typing bubble stayed after the reply", 30);
+if (await evaluate("document.querySelector('.manager .bar-state')?.textContent ?? ''")) await fail("the header still names the manager after its turn");
 await shot("project-reply", ".composer-send");
-// Explain in the brief: the fixed owner message, visible in the chat.
-await click(".brief-line");
-await click(".brief .story-explain");
-await until("[...document.querySelectorAll('.message-user')].some((node) => node.textContent.trim() === 'Explain where the project stands in plain words')", "Explain in the brief sent no message");
-await click(".brief-line");
+// The second message's reply links "project page"; the page has the manager's edit.
+await until("document.querySelectorAll('.log .page-link').length > 0", "the reply about the page has no link", 60);
+await evaluate("[...document.querySelectorAll('.log .page-link')].at(-1).click()");
+await until("/Ship the chat/.test(document.querySelector('.project-page')?.textContent ?? '')", "the page does not show the manager's edit", 30);
+await key("Escape", 27);
+await until("!document.querySelector('dialog.task-sheet')", "Escape did not close the page");
 
 // --- The task sheet: a chip opens it over the chat; Escape, Back and a swipe down close it, the
 // composer keeps its draft and gets the focus back.
 await typeInto(".composer-field", "a draft that stays");
-await evaluate("[...document.querySelectorAll('.message:not(.message-user) .task-chip')].find((chip) => chip.textContent.startsWith('#2')).click()");
+await evaluate("[...document.querySelectorAll('.log .task-chip')].find((chip) => chip.textContent.trim() === '#2').click()");
 await until(`location.hash === '#/p/${project}/t/2' && !!document.querySelector('dialog.task-sheet[open] .story')`, "a chip did not open the task sheet");
 const sheetBox = await evaluate("(() => { const r = document.querySelector('dialog.task-sheet').getBoundingClientRect(); return { top: Math.round(r.top), height: Math.round(r.height) }; })()");
 if (Math.abs(sheetBox.height - 844 * 0.85) > 2 || Math.abs(sheetBox.top - 844 * 0.15) > 2) await fail(`the sheet is not 85% high: ${JSON.stringify(sheetBox)}`);
-await shot("sheet");
 await key("Escape", 27);
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Escape did not close the sheet");
 const kept = await evaluate("({ value: document.querySelector('.composer-field').value, focused: document.activeElement === document.querySelector('.composer-field') })");
 if (kept.value !== "a draft that stays" || !kept.focused) await fail(`after the sheet the composer has ${JSON.stringify(kept)}`);
-await evaluate(`${cardOf("#2")}.querySelector('.row-open').click()`);
-await until("!!document.querySelector('dialog.task-sheet[open] .story')", "a card title did not open the sheet");
+await go(page(2));
+await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the sheet did not open again");
 await evaluate("document.querySelector('.task-sheet .bar .icon-button').click()");
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Back did not close the sheet");
-await evaluate(`${cardOf("#2")}.querySelector('.row-open').click()`);
-await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the sheet did not open again");
+await go(page(2));
+await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the sheet did not open a third time");
 const grip = await evaluate("(() => { const r = document.querySelector('.task-sheet-top').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()");
 await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: grip.x, y: grip.y }] });
 for (let step = 1; step <= 6; step++) await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: grip.x, y: grip.y + step * 30 }] });
@@ -293,124 +342,83 @@ if (await evaluate("document.querySelector('.composer-field').value") !== "a dra
 await typeInto(".composer-field", "");
 
 // --- The `#` picker: every task, filtered by number or words, a pick inserts `#n `.
+const taskCount = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((view) => view.tasks.length)`);
 await typeInto(".composer-field", "land #");
-await until("document.querySelectorAll('.slash-option').length === 4", "the # picker did not list the tasks");
-const listed = await text(".slash-option .slash-name");
-if (listed.join() !== "#4,#1,#3,#2") await fail(`the picker lists ${listed}`);
-await shot("picker", ".composer-send");
+await until(`document.querySelectorAll('.slash-option').length === ${taskCount}`, "the # picker did not list the tasks");
 await typeInto(".composer-field", "land #hv");
 await until("document.querySelectorAll('.slash-option').length === 1", "the picker does not filter by words");
 await key("Enter", 13);
 await until("document.querySelector('.composer-field').value === 'land #2 '", "Enter did not insert the task");
 if (await count(".slash")) await fail("the picker stayed open after a pick");
-await typeInto(".composer-field", "#9");
+await typeInto(".composer-field", "#qqq");
 await until("(document.querySelector('.slash-note')?.textContent ?? '') === 'No task matches that.'", "no note for a picker without matches");
 await key("Escape", 27);
 await until("!document.querySelector('.slash')", "Escape did not close the picker");
 await typeInto(".composer-field", "#");
-await until("document.querySelectorAll('.slash-option').length === 4", "the picker did not reopen");
-// With the keyboard up: the picker keeps to 3.5 rows, the tray to one line, part of the chat stays in view.
+await until(`document.querySelectorAll('.slash-option').length === ${taskCount}`, "the picker did not reopen");
+// With the keyboard up: the picker keeps to 3.5 rows above the composer, the reservoir steps aside.
 await keyboard(420);
 await pause(300);
 const fit = await evaluate(`(() => { const box = (selector) => document.querySelector(selector).getBoundingClientRect();
-  return { list: Math.round(box('.slash').height), row: Math.round(box('.slash-option').height), log: Math.round(box('.log-wrap').height),
-    composer: Math.round(box('.composer').bottom), visible: Math.round(visualViewport.offsetTop + visualViewport.height) }; })()`);
-if (fit.list > fit.row * 3.5 + 2 || Math.abs(fit.composer - fit.visible) > 1) await fail(`the picker does not fit above the keyboard: ${JSON.stringify(fit)}`);
+  return { list: Math.round(box('.slash').height), row: Math.round(box('.slash-option').height),
+    composer: Math.round(box('.composer').bottom), visible: Math.round(visualViewport.offsetTop + visualViewport.height),
+    reservoir: document.querySelector('.reservoir')?.getBoundingClientRect().height ?? 0 }; })()`);
+if (fit.list > fit.row * 3.5 + 2 || Math.abs(fit.composer - fit.visible) > 1 || fit.reservoir) await fail(`the picker does not fit above the keyboard: ${JSON.stringify(fit)}`);
 await shot("picker-keyboard", ".composer-send");
 await typeInto(".composer-field", "");
-if (await trayVisible() !== 1 || await trayMore() !== "+5") await fail(`with the keyboard up the tray shows ${await trayVisible()} lines and ${await trayMore()}`);
 await shot("project-keyboard", ".composer-send");
 await evaluate("document.activeElement.blur()");
 await keyboard(null);
 await resize([390, 420, 2]);
 await shot("project-short", ".composer-send");
-
-// --- Cards act: Answer keeps its draft on failure; Approve turns the card into one muted line in
-// place and the tray drops it. A tray line scrolls to its card.
 await resize([390, 844, 2]);
-await go("#/");
-await go(chat);
-await until("document.querySelectorAll('.log .need-card').length >= 6", "the cards did not come back");
-await click(".tray-more");
-await evaluate("[...document.querySelectorAll('.tray-line')].find((node) => node.textContent.startsWith('Approve land #3')).click()");
-await until(`${cardOf("Approve land #3")}?.hasAttribute('data-flash') && (() => { const card = ${cardOf("Approve land #3")}.getBoundingClientRect(), log = document.querySelector('.log').getBoundingClientRect(); return card.top >= log.top && card.bottom <= log.bottom; })()`, "a tray line did not bring its card into view");
-await shot("tray-open", ".composer-send");
-await click(".tray-more");
-await evaluate(`${cardOf("#1")}.querySelector('.need-action:last-child').click()`);
-await until("!!document.querySelector('.need-card .need-form input')", "Answer did not open its field");
-await typeInto(".need-card .need-form input", "NOOP use the default");
-await shot("card-answer", ".composer-send");
-await evaluate("document.querySelector('.need-card .need-form').requestSubmit()");
-await until("!document.querySelector('.need-form')", "the answer was not sent");
-await until("[...document.querySelectorAll('.notice')].some((node) => /#1:/.test(node.textContent))", "the answer's outcome was not shown");
-const approveAt = await evaluate(`[...document.querySelectorAll('.log > *')].indexOf(${cardOf("Approve land #3")})`);
-await evaluate(`${cardOf("Approve land #3")}.querySelectorAll('.need-action')[1].click()`);
-await until("[...document.querySelectorAll('.notice')].some((node) => /Approved land #3/.test(node.textContent))", "Approve showed no outcome");
-await until(`!${cardOf("Approve land #3")} && [...document.querySelectorAll('.log > *')][${approveAt}]?.matches('.resolved') && /Approved land #3/.test([...document.querySelectorAll('.log > *')][${approveAt}].textContent)`, "the approved card did not turn into a line in place", 300);
-await until("![...document.querySelectorAll('.tray-line')].some((node) => node.textContent.startsWith('Approve land #3'))", "the tray kept the approved item", 300);
-await until("[...document.querySelectorAll('.resolved')].some((node) => /#3/.test(node.textContent) && /landed/.test(node.textContent))", "#3 landed is not a line after the approval", 300);
-await shot("cards-after-actions", ".composer-send");
 
-// --- The task sheet of #2: the report in its sections, Fail needs a note, Pass, then Land.
-const page = (n) => `#/p/${project}/t/${n}`;
+// --- The task sheet of #2: two steps of progress, one sentence, the report under plain
+// headings, Fail needs a note, Pass, then Land. No Explain, no "Asked:".
 await go(page(2));
 await until("document.querySelectorAll('.task-sheet .task-section').length >= 7", "the task sheet did not show the report");
 let told = await story();
-if (told.asked !== "Asked: WORK a.txt HV" || told.current !== "Ready" || told.steps !== "done,done,done,done,todo,todo,todo"
-  || told.next !== "What happens next: Check the 1 item below, then Pass to allow landing.") await fail(`the story of a task to verify reads ${JSON.stringify(told)}`);
-const headings = await text(".task-section > .label");
+if (told.asked || told.shown !== "Checks → Ready" || told.current !== "Ready" || told.next !== "Check the 1 item below, then Pass to allow landing.") await fail(`the story of a task to verify reads ${JSON.stringify(told)}`);
+const headings = await text(".task-section > .task-heading");
 if (headings.slice(0, 7).join() !== "Asked,Summary,Decisions,Changes,Evidence,Human Verify,Left open") await fail(`the report sections are ${headings}`);
+if (await count(".task-sheet .label, .task-sheet .story-explain")) await fail("the sheet still has uppercase labels or Explain");
 if ((await text(".verify button")).join() !== "Fail,Pass r1") await fail(`the verify buttons are ${await text(".verify button")}`);
-if ([...(await text(".task-actions button"))].join() !== "Review") await fail(`a task to verify offers ${await text(".task-actions button")}`);
 await shot("task-verify");
-await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Review').click()");
-await pause(300);
-if (!(await evaluate("(() => { const r = document.querySelector('.verify').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()"))) await fail("Review did not bring the verdict into view");
-await shot("task-review");
 await evaluate("[...document.querySelectorAll('.verify button')].find((node) => node.textContent === 'Fail').click()");
 await until("!!document.querySelector('.verify-note textarea')", "Fail did not ask for a note");
 await evaluate("document.querySelector('.verify-note').requestSubmit()");
 await pause(300);
 if (!(await count(".verify-note"))) await fail("a fail without a note was sent");
 await typeInto(".verify-note textarea", "HV NOOP the file has no text");
-await shot("task-fail-note");
 await evaluate("document.querySelector('.verify-note').requestSubmit()");
 await until("[...document.querySelectorAll('.notice')].some((node) => /#2:/.test(node.textContent))", "the fail showed no outcome");
 // The note went to the worker: a new revision r2 with its own Human Verify item, then Pass.
 await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '').startsWith('ready · r2')", "#2 did not come back as r2", 300);
 await until("[...document.querySelectorAll('.verify button')].some((node) => node.textContent === 'Pass r2')", "no Pass r2 on the task page", 300);
 await evaluate("[...document.querySelectorAll('.verify button')].find((node) => node.textContent === 'Pass r2').click()");
-await until("!document.querySelector('.verify') && /Verdict on r2: pass/.test(document.querySelector('.task-section[aria-label=\"Human Verify\"]')?.textContent ?? '')", "the pass is not in the report", 300);
 await until("[...document.querySelectorAll('.task-actions button')].some((node) => node.textContent === 'Land r2')", "no Land r2 on the task page", 300);
 await click(".timeline-head");
 const timeline = await text(".timeline-what");
 if (!timeline.includes("Verified r1: fail") || !timeline.includes("Human verification (fail)") || !timeline.includes("Revision r2")) await fail(`the timeline reads ${timeline}`);
-await shot("task-timeline");
 await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Land r2').click()");
 await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '').startsWith('landed')", "#2 did not land", 300);
-if (await count(".task-message")) await fail("a landed task still offers a message field");
+told = await story();
+if (told.shown !== "Verified → Landed" || !/^Landed on main; the last deploy does not have it yet \(the deploy is \d+ commits? behind\)\.$/.test(told.next)) await fail(`the story of a landed task reads ${JSON.stringify(told)}`);
 await shot("task-landed");
-told = await story();
-if (told.current !== "Landed" || told.steps !== "done,done,done,done,done,done,todo"
-  || !/^What happens next: Landed on main; the last deploy does not have it yet \(the deploy is \d+ commits? behind\)\.$/.test(told.next)) await fail(`the story of a landed task reads ${JSON.stringify(told)}`);
-// Explain in the story: the fixed message about this task, and the chat to read the answer.
-await click(".story .story-explain");
-await until(`location.hash === ${JSON.stringify(chat)} && [...document.querySelectorAll('.message-user')].some((node) => node.querySelector('.task-chip-id')?.textContent === '#2' && /^Explain #2.* in plain words: why, what changed, risks$/.test(node.textContent.trim()))`, "Explain in the story sent no message");
-await until("/main \\d+ ahead of deploy/.test(document.querySelector('.brief-text')?.textContent ?? '')", "the brief does not say the deploy is behind");
 
-// --- The task page of #4: Deny the discard, then Allow for project the host it needs.
+// --- #4: a pending approval first; a stop reads as the step and its word. Deny, then Allow
+// for project.
 await go(page(4));
-await until("/The manager asks: Approve discard #4/.test(document.querySelector('.task-actions')?.textContent ?? '')", "#4 shows no pending approval");
+await until("!!document.querySelector('.task-actions button[aria-label=\"Approve discard #4\"]')", "#4 shows no pending approval");
+// ^ The story says what an action is for; its row holds the buttons alone.
+if ((await text(".task-actions p")).length) await fail(`an action row repeats the story: ${await text(".task-actions p")}`);
 told = await story();
-if (told.current !== "Working blocked" || told.next !== "What happens next: The manager asks: Approve discard #4. Approve or Deny it above.") await fail(`the story of a blocked task with an approval reads ${JSON.stringify(told)}`);
+if (told.shown !== "Asked → Working blocked" || told.next !== "The manager asks: Approve discard #4. Approve or Deny it above.") await fail(`the story of a blocked task with an approval reads ${JSON.stringify(told)}`);
 await shot("task-blocked", ".composer-send");
 await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Deny').click()");
-await until("!/Approve discard #4/.test(document.querySelector('.task-actions')?.textContent ?? '')", "the denied approval stayed", 300);
+await until("!document.querySelector('.task-actions button[aria-label=\"Approve discard #4\"]')", "the denied approval stayed", 300);
 told = await story();
-if (told.next !== "What happens next: The worker waits for you to let it reach crates.io, or to answer.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
-const asking = await text(".task-actions .task-row");
-if (!asking.join(" ").includes("#4 needs to reach crates.io.") || await count(".task-actions input")) await fail(`the ask row reads ${JSON.stringify(asking)}`);
-await shot("task-ask", ".composer-send");
+if (told.next !== "The worker waits for you to let it reach crates.io, or to answer.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
 await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Allow for project').click()");
 await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '').startsWith('ready')", "#4 did not resume after Allow", 300);
 
@@ -424,81 +432,53 @@ await until("!!document.querySelector('dialog.task-sheet[open] .story') && !!doc
 if (await evaluate("history.state?.depth") !== 1) await fail(`a deep link sits at depth ${await evaluate("JSON.stringify(history.state)")}`);
 await evaluate("history.back()");
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Back after a deep link did not close the sheet");
-if (await evaluate("history.state?.depth ?? 0") !== 0) await fail(`after the sheet the chat is not the first entry: ${await evaluate("JSON.stringify(history.state)")}`);
 
-// --- A brief (docs/tasks.md "Brief"): its card with Reply and Start, a reply from the card, the
-// sheet with the sections, folded concepts and the talk-through, a reply there, then Start.
-if (plansArg) {
-  const plans = Number(plansArg);
-  const briefSheet = `#/p/${plans}/t/1`;
-  // ^ The actions above spent this device's burst (10, then one per 3 s); this part sends three.
-  await pause(9000);
-  await go(`#/p/${plans}`);
-  await until(`!!(${cardOf("#1")})`, "the brief has no card");
-  let [card] = await cards();
-  if (card[1] !== "brief ready · WORK keys.txt" || card[2] !== "Reply+Start") await fail(`the brief card reads ${JSON.stringify(card)}`);
-  if ((await trayLines())[0] !== "Brief ready #1") await fail(`the tray reads ${await trayLines()}`);
-  await shot("brief-card", ".composer-send");
-  await evaluate(`[...(${cardOf("#1")}).querySelectorAll('.need-action')].find((node) => node.textContent.trim() === 'Reply').click()`);
-  await until(`(${cardOf("#1")}).querySelector('.need-form input')?.placeholder === 'Reply to the brief'`, "Reply did not open a field");
-  await typeInto(".need-card .need-form input", "Why a file? REVISE WORK keys2.txt");
-  await evaluate("document.querySelector('.need-card .need-form').requestSubmit()");
-  await until(`(${cardOf("#1")})?.querySelector('.row-context').textContent === 'brief ready · WORK keys2.txt'`, "the reply did not revise the brief", 60);
-  // The project summary names the waiting brief in words.
-  await click(".brief-line");
-  await until("[...document.querySelectorAll('.brief-list[aria-label=\"Open tasks\"] li')].some((node) => /^#1 .*brief ready$/.test(node.textContent.trim()))", "the project summary does not name the waiting brief");
-  await click(".brief-line");
-  // The sheet: story at Brief, Start, the sections in order, concepts folded, the talk-through.
-  await go(briefSheet);
-  await until("!!document.querySelector('dialog.task-sheet[open] .task-talk')", "the brief sheet has no talk-through");
-  told = await story();
-  if (told.current !== "Brief" || told.steps !== "done,done,todo,todo,todo,skipped,todo,todo"
-    || told.next !== "What happens next: The brief is ready. Read it, reply to talk it through, or Start the build.") await fail(`the story of a brief reads ${JSON.stringify(told)}`);
-  const titles = await evaluate("[...document.querySelectorAll('.task-sheet .task-section > .label')].map((node) => node.textContent)");
-  // ^ The fixture has no open question, so that section is left out.
-  if (titles.slice(0, 7).join() !== "What a top professional would add,Raw material,Methods and tools,Independent check,Concepts to know,Rewritten prompt,Talk-through") await fail(`the brief sections are ${titles}`);
-  if (await evaluate("document.querySelector('.task-concept').open")) await fail("a concept is not folded");
-  await click(".task-concept-term");
-  if (!(await evaluate("document.querySelector('.task-concept').open"))) await fail("a concept does not unfold");
-  const talk = await text(".task-talk li");
-  if (talk.length !== 2 || !talk[0].startsWith("You") || !talk[1].startsWith("Worker, brief v2") || !talk[1].includes("answered: Why a file?")) await fail(`the talk-through reads ${JSON.stringify(talk)}`);
-  if ((await text(".task-actions button")).join() !== "Start the build") await fail(`a brief offers ${await text(".task-actions button")}`);
-  if (await sheetState() !== "brief ready · brief v2") await fail(`the brief sheet's state reads ${await sheetState()}`);
-  if (await evaluate("document.querySelector('.task-message .composer-field').placeholder") !== "Reply to the brief") await fail("the sheet's field is not a reply to the brief");
-  await shot("brief-sheet", ".composer-send");
-  await resize([390, 420, 2]);
-  await shot("brief-sheet", ".composer-send");
-  await resize([390, 844, 2]);
-  // A reply in the sheet: the answer joins the talk-through.
-  await typeInto(".task-message .composer-field", "And the shortcut? REVISE WORK keys3.txt");
-  await click(".task-message .composer-send");
-  await until("document.querySelectorAll('.task-talk li').length === 4", "the sheet's reply got no answer", 60);
-  // ^ The answer is logged just before the task is briefed again and Start comes back.
-  await until("[...document.querySelectorAll('.task-actions button')].some((node) => node.textContent === 'Start the build')", "Start did not come back after the answer", 60);
-  await click(".task-sheet .task-actions button");
-  await pause(500);
-  const startError = await text(".task-sheet .error");
-  if (startError.length) await fail(`Start failed: ${startError}`);
-  await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '').startsWith('ready')", "Start did not build the brief", 300);
-  told = await story();
-  if (told.current !== "Ready" || !told.steps.startsWith("done,done,done,done,done")) await fail(`the story after the build reads ${JSON.stringify(told)}`);
-  if ((await text(".task-fold > .timeline-head")).join() !== "Brief v3") await fail(`the built task's brief is ${await text(".task-fold > .timeline-head")}`);
-  if (await evaluate("document.querySelector('.task-fold').open")) await fail("the built task's brief is not folded");
-  await click(".timeline-head:not(.task-fold > *)");
-  const built = await text(".timeline-what");
-  if (!built.includes("Brief v3") || !built.includes("Build started from brief v3")) await fail(`the built task's timeline reads ${built}`);
-  await shot("brief-built");
-  await key("Escape", 27);
-  await until("!document.querySelector('dialog.task-sheet')", "Escape did not close the brief sheet");
-  await go(chat);
-  await until("document.querySelectorAll('.log .need-card').length >= 1", "the ui chat did not come back");
-}
+// --- A brief (docs/tasks.md "Brief"): its reservoir row with Start, the sheet with the
+// sections and folded concepts, a reply there answered as "Brief v2", then Start.
+const plans = Number(plansArg);
+const briefSheet = `#/p/${plans}/t/1`;
+// ^ The actions above spent this device's burst (10, then one per 3 s); this part sends two.
+await pause(9000);
+await go(`#/p/${plans}`);
+await until("!!document.querySelector('.reservoir-head')", "plans has no reservoir");
+await openReservoir();
+await until(`!!${rowOf("#1")}`, "the brief has no reservoir row");
+const briefRow = (await rows()).find((row) => row[0] === "#1");
+if (briefRow[2] !== "brief ready" || briefRow[3] !== "Start") await fail(`the brief's row reads ${JSON.stringify(briefRow)}`);
+await shot("brief-row", ".composer-send");
+await closeReservoir();
+await go(briefSheet);
+await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the brief sheet did not open");
+told = await story();
+if (told.shown !== "Asked → Brief" || told.next !== "The brief is ready. Read it, reply to talk it through, or Start the build.") await fail(`the story of a brief reads ${JSON.stringify(told)}`);
+const titles = await evaluate("[...document.querySelectorAll('.task-sheet .task-section > .task-heading')].map((node) => node.textContent)");
+// ^ The fixture has no open question, so that section is left out.
+if (titles.slice(0, 6).join() !== "What a top professional would add,Raw material,Methods and tools,Independent check,Concepts to know,Rewritten prompt") await fail(`the brief sections are ${titles}`);
+if (await evaluate("document.querySelector('.task-concept').open")) await fail("a concept is not folded");
+if ((await text(".task-actions button")).join() !== "Start the build") await fail(`a brief offers ${await text(".task-actions button")}`);
+if (await evaluate("document.querySelector('.task-message .composer-field').placeholder") !== "Reply to the brief") await fail("the sheet's field is not a reply to the brief");
+await shot("brief-sheet", ".composer-send");
+await typeInto(".task-message .composer-field", "Why a file? REVISE WORK keys2.txt");
+await click(".task-message .composer-send");
+await until("document.querySelectorAll('.task-talk .bubble').length === 2", "the sheet's reply got no answer", 60);
+const talk = await evaluate("[...document.querySelectorAll('.task-talk .bubble')].map((node) => ({ side: node.dataset.side, author: node.querySelector('.bubble-author')?.textContent ?? '', tag: node.querySelector('.bubble-tag')?.textContent ?? '', text: node.querySelector('.bubble-box').textContent }))");
+if (talk[0].side !== "out" || talk[1].author !== "#1 worker" || talk[1].tag !== "Brief v2" || !talk[1].text.includes("answered: Why a file?")) await fail(`the talk reads ${JSON.stringify(talk)}`);
+if (await count(".task-sheet .label")) await fail("the brief sheet still has a Talk-through label");
+await until("[...document.querySelectorAll('.task-actions button')].some((node) => node.textContent === 'Start the build')", "Start did not come back after the answer", 60);
+await resize([390, 420, 2]);
+await shot("brief-sheet", ".composer-send");
+await resize([390, 844, 2]);
+await click(".task-sheet .task-actions button");
+await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '').startsWith('ready')", "Start did not build the brief", 300);
+if ((await text(".task-fold > .timeline-head")).join() !== "Brief v2") await fail(`the built task's brief is ${await text(".task-fold > .timeline-head")}`);
+await key("Escape", 27);
+await until("!document.querySelector('dialog.task-sheet')", "Escape did not close the brief sheet");
 
-// --- Wide and narrow; on a wide screen the sheet is a panel at the right.
-for (const next of [[320, 568, 2], [1280, 800, 1]]) {
-  await resize(next);
-  await shot("project", ".composer-send");
-}
+// --- Wide: the chat in its column, the sheet a panel at the right.
+await go(chat);
+await until("!!document.querySelector('.reservoir-head')", "the ui chat did not come back");
+await resize([1280, 800, 1]);
+await shot("project", ".composer-send");
 await go(page(3));
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the sheet did not open on a wide screen");
 const panel = await evaluate("(() => { const r = document.querySelector('dialog.task-sheet').getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), height: Math.round(r.height) }; })()");
@@ -506,10 +486,41 @@ if (panel.right !== 1280 || panel.left < 640 || panel.height !== 800) await fail
 await shot("sheet");
 await key("Escape", 27);
 await until("!document.querySelector('dialog.task-sheet')", "Escape did not close the wide sheet");
+await go(`#/p/${project}/page`);
+await until("!!document.querySelector('.project-page .diagram img')", "the wide page did not draw its graph", 30);
+await shot("page");
+await key("Escape", 27);
+await resize([390, 844, 2]);
+
+// --- A new build on the server: a pill until it is tapped; the tap reloads at the same route
+// with the composer's draft.
+await go(chat);
+await until("!!document.querySelector('.composer-field')", "the chat did not come back for the reload");
+await typeInto(".composer-field", "a draft across the reload");
+const before = await evaluate("new URL(document.querySelector('script[type=module]').src).pathname");
+// ^ The server is down for a moment: its failed requests are not page defects.
+const quietFrom = problems.length;
+fs.writeFileSync(restartFile, "restart");
+const restarted = Date.now();
+while (!fs.existsSync(`${restartFile}.done`)) {
+  if (Date.now() - restarted > 60_000) await fail("the server was not restarted");
+  await pause(200);
+}
+await until("!!document.querySelector('.build-pill')", "no new-version pill after the server's build changed", 60);
+if ((await text(".build-pill"))[0] !== "New version · Reload") await fail(`the pill reads ${await text(".build-pill")}`);
+await shot("new-version", ".composer-send");
+await evaluate("window.__beforeReload = true");
+await click(".build-pill");
+await until(`!window.__beforeReload && !!document.querySelector('.composer-field') && location.hash === ${JSON.stringify(chat)}`, "the pill did not reload at the same route", 30);
+const after = await evaluate("new URL(document.querySelector('script[type=module]').src).pathname");
+if (after === before) await fail(`the reload kept the old build ${before}`);
+await until("document.querySelector('.composer-field').value === 'a draft across the reload'", "the reload lost the composer's draft");
+if (await count(".build-pill")) await fail("the pill stayed after the reload");
+problems.splice(quietFrom);
 
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
-console.log(`tasks page: since-you-left, the project brief (folded line, open tasks, deploy, main checkout, deploy behind after a landing, Explain), the task story (to verify, landed and not deployed, blocked with and without an approval, Explain), home in order with All sessions and Settings, cards in the chat with their buttons, the tray (two lines, one with the keyboard up, a tap scrolls to the card), the ⋯ menu, a reply with task chips, the # picker (filter, pick, no match, Escape, keyboard up), Answer and Approve on cards (a line in place, the tray updates), the task sheet (85%, Escape, Back, swipe, draft kept, report sections, Fail with and without a note, Pass, timeline, Land, Deny, Allow), the deep link, the wide sheet panel; ${audits.length} captures`);
+console.log(`tasks page: home and All sessions, since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, the reservoir (count, open, rows with one action, a pulsing working chip, a stripped title, facts, Allow and Approve in place without moving the chat, joined status lines), the ⋯ menu, the project page (markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (85%, Escape, Back, swipe, draft kept, two steps, plain headings, Fail with and without a note, Pass, Land, approval first, Deny, Allow for project), the # picker, the deep link, the brief (reservoir row, sections, talk as bubbles with Brief v2, Start), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

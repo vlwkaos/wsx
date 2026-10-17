@@ -18,6 +18,7 @@ Launched with the brief schema it writes a brief instead and builds nothing:
   REWRITE <words>  the rewritten prompt is the rest of the line
   REVISE <words>   (a reply) the rewritten prompt becomes the rest of the line
   NOBRIEF          end the turn without a brief
+  WAIT <file>      (a build) keep working until <file> exists, at most 10 minutes
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
 conflict with the line "resolved".
 Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE.
@@ -25,6 +26,8 @@ Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE.
 Started with the manager's instructions it is a scripted manager instead: per turn
   RUN <command>  run that shell command (the wsx task commands it names) and quote its output
   SCRIPT         (a line) run the rest of the message as one shell script, heredocs too
+  TABLE          answer with a wide markdown table that names #4 twice and #2
+  PAGE <section> <words>  replace that section of the project page (its Edit rule names it)
   STATUS         answer from `wsx task ledger`
   SLOW           take about 3 s
   BIG            report a 200k-token context, so the host rotates the conversation
@@ -172,7 +175,19 @@ def brief_turn(text, session, allowed, disallowed, current):
     return current
 
 
-def manager_turn(text, project):
+def edit_page(allowed, section, words):
+    # ^ The manager's file tools may write the page alone: `Edit(//<path>)`.
+    page = next(rule[len('Edit(/'):-1] for rule in allowed if rule.startswith('Edit(/'))
+    with open(page) as source:
+        text = source.read()
+    head = '## %s\n\n' % section
+    start = text.index(head) + len(head)
+    end = text.find('\n\n', start)
+    with open(page, 'w') as out:
+        out.write(text[:start] + words + text[end:])
+
+
+def manager_turn(text, project, allowed):
     replies = []
     if 'SLOW' in text.split():
         time.sleep(3)
@@ -183,6 +198,15 @@ def manager_turn(text, project):
         if line.startswith('RUN '):
             done = subprocess.run(line[4:], shell=True, capture_output=True, text=True)
             replies.append('ran: %s -> %d %s' % (line[4:], done.returncode, (done.stdout + done.stderr).strip()[:300]))
+    for line in text.splitlines():
+        if line.startswith('PAGE '):
+            _, section, words = line.split(' ', 2)
+            edit_page(allowed, section, words)
+            replies.append('I updated the %s of the project page.' % section)
+    if 'TABLE' in text.split():
+        cell = 'a long cell that keeps going ' * 4
+        replies.append('Where things stand:\n\n| Task | State | Note |\n|---|---|---|\n'
+                       '| #4 | blocked | %s |\n| #4 | asks | %s |\n| #2 | ready | %s |' % (cell, cell, cell))
     if 'STATUS' in text.split():
         ledger = json.loads(subprocess.run(['wsx', 'task', 'ledger', '-p', project], capture_output=True,
                                            text=True, check=True).stdout)
@@ -217,7 +241,8 @@ def main():
         text = json.loads(line)['message']['content']
         trace({'message': text, 'session': session, 'manager': project is not None})
         if project is not None:
-            answer = manager_turn(text, project)
+            # ^ A handover quotes earlier messages; only the messages after it are this turn's.
+            answer = manager_turn(text.split('\n\n', 1)[1] if text.startswith('Handover') else text, project, allowed)
             # ^ A line of its own: a handover quotes earlier messages as `Owner: BIG`.
             context = 200000 if 'BIG' in text.splitlines() else 5000
             emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': answer,
@@ -243,6 +268,11 @@ def main():
                     steers.append(steer)
                     trace({'steer_in_turn': steer})
                     emit({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'noted: ' + steer}]}})
+        if 'WAIT' in words:
+            release = words[words.index('WAIT') + 1]
+            deadline = time.monotonic() + 600
+            while not os.path.exists(release) and time.monotonic() < deadline:
+                time.sleep(0.2)
         denials = []
         if 'NEEDS' in words:
             rule = words[words.index('NEEDS') + 1]

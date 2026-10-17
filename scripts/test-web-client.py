@@ -2516,6 +2516,16 @@ def task_journey(args):
             js('task', 'say', 'RUN wsx task land 3 -p ui --json\nRUN wsx task close 4 --discard -p ui --json', '-p', 'ui')
             wait(lambda: len(json.loads(cli('task', 'ledger', '-p', 'ui').stdout)['approvals'] or []) == 2,
                  'approval requests in ui', timeout=30)
+            # #5: a long report the manager hears of (one worker bubble, folded), then closed.
+            # #6: works until the run ends; its prompt opens as the manager's prompts do.
+            long_report = 'WORK c.txt\n' + '\n'.join('line %d of the report' % n for n in range(1, 31))
+            assert js('task', 'new', long_report, '-p', 'ui')['id'] == 5
+            wait(lambda: js('task', 'show', 5, '-p', 'ui')['state'] == 'ready', 'ui #5')
+            wait(lambda: any('#5 ready r1' in e.get('text', '') for e in js('task', 'chat', '-p', 'ui')['entries']),
+                 'the manager heard of #5', timeout=30)
+            js('task', 'close', 5, '--discard', '-p', 'ui')
+            js('task', 'new', 'Owner asked: keep a worker busy WAIT ' + str(work / 'release'), '-p', 'ui')
+            wait(lambda: js('task', 'show', 6, '-p', 'ui')['state'] == 'working', 'ui #6 working')
             # A deploy of the default branch tip: the brief says it is up to date until a task lands.
             assert js('task', 'deploy', '-p', 'ui')['exit'] == 0
             # Sessions without tasks, oldest first: an agent that exited (`gone`), one done
@@ -2562,7 +2572,7 @@ def task_journey(args):
             'viewer': (json.dumps([str(project)]), '"task_view", "push"'),
             'plain': (json.dumps([str(other)]), '"chat_send", "push"'),
         }
-        files, sites = {}, {}
+        files, sites, servers = {}, {}, {}
         for name, (projects_value, capabilities) in grants.items():
             files[name] = work / (name + '.toml')
             files[name].write_text(f'''id = "{name}"
@@ -2583,8 +2593,8 @@ digest_quiet_seconds = 3
 digest_max_seconds = 6
 ''')
             files[name].chmod(0o600)
-            start(work, [str(wsx), 'web', 'serve', '--site', str(files[name])], env=env, cwd=project,
-                  stdout=subprocess.DEVNULL, stderr=(work / (name + '.log')).open('a'))
+            servers[name] = start(work, [str(wsx), 'web', 'serve', '--site', str(files[name])], env=env, cwd=project,
+                                  stdout=subprocess.DEVNULL, stderr=(work / (name + '.log')).open('a'))
             sites[name] = Site(ports[name], '')
         for site in sites.values():
             wait(lambda: _up(site), 'web server')
@@ -2594,6 +2604,8 @@ digest_max_seconds = 6
             assert status == 200, body
             site.cookie = headers['set-cookie'].split(';')[0]
         owner, viewer, plain = sites['owner'], sites['viewer'], sites['plain']
+        # ^ The browser check restarts the owner's server under another name (a new build).
+        owner_name = 'owner'
         session = owner.request('GET', '/api/session')[1]
         assert 'task_view' in session['site']['capabilities'] and 'task_act' in session['site']['capabilities']
         events = Events(owner)
@@ -2715,6 +2727,24 @@ digest_max_seconds = 6
         empty = steady(owner, 'GET', '/api/tasks/%d' % ids['calm'])[1]
         assert empty['needs'] == [] and empty['resolutions'] == [] and empty['last_reply'] is None and empty['last_unix_ms'] is None, empty
         ok('manager: say starts it, reply in the chat, approve runs once and records the outcome, deny with a note, since, resolutions, last reply')
+        # The project page: the manager host writes its sections once; a project without a
+        # manager has none. A title: `--title` as given, else the prompt's first line without
+        # a leading "Owner <word>:" (docs/tasks.md "Store").
+        page = steady(owner, 'GET', '/api/tasks/%d/page' % demo)[1]
+        assert page['text'].startswith('# demo\n\n## Goal') and '```mermaid' in page['text'] and page['unix_ms'] > 0, page
+        assert steady(owner, 'GET', '/api/tasks/%d/page' % ids['calm'])[1] == {'text': None, 'unix_ms': None}
+        assert steady(viewer, 'GET', '/api/tasks/%d/page' % ids['ui'])[0] == 404
+        for title, refusal in (('  ', 'the title is empty'), ('x' * 61, 'longer than 60 characters'), ('a\tb', 'control characters')):
+            refused = cli('task', 'new', 'WORK t.txt', '--title', title, '-p', 'demo', expect=1)
+            assert refusal in refused.stderr, refused.stderr
+        titled = js('task', 'new', 'Owner report: WORK t.txt', '--title', ' Short words ', '-p', 'demo')['id']
+        stripped = js('task', 'new', 'Owner report: tool permission for WORK u.txt\nmore', '-p', 'demo')['id']
+        for n in (titled, stripped):
+            wait(lambda: task_state(n) == 'ready', 'titled task %d' % n)
+            js('task', 'close', n, '--discard', '-p', 'demo')
+        titles = {row['id']: row['title'] for row in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['tasks']}
+        assert titles[titled] == 'Short words' and titles[stripped] == 'tool permission for WORK u.txt', titles
+        ok('project page: written by the manager host, none without a manager, 404 outside the grant; titles: --title, its refusals, "Owner report:" left out')
 
         # --- Refusals: the capability and the grant come from the site file only.
         for method, route, body in (('POST', '/api/tasks/%d/say' % demo, {'text': 'hi'}),
@@ -2763,6 +2793,10 @@ digest_max_seconds = 6
         assert status == 409 and 'only a briefed task starts' in refused['error']['message'], refused
         ok('task brief: a need with the rewritten prompt, sections and actions, a talk-through as reply and answer, Start builds the revised prompt, a second Start refused, viewers cannot start')
         if args.browser:
+            # #5's long report: one worker bubble's data, its full summary, on the events message.
+            reports = [r for e in steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]['entries'] for r in e.get('reports', [])]
+            assert [(r['task'], r['state'], r['head']) for r in reports] == [(5, 'ready', 'done')], reports
+            assert reports[0]['summary'].startswith('did: WORK c.txt') and 'line 30 of the report' in reports[0]['summary'], reports
             args.captures.mkdir(parents=True, exist_ok=True)
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
@@ -2780,10 +2814,32 @@ digest_max_seconds = 6
             assert home_order == ['ui', 'plans', 'demo', 'calm'], home_order
             # ^ Projects with sessions and no task follow by their newest session (created in this order).
             home_order[-1:-1] = ['busy', 'quiet', 'gone']
+            # The page asks for a server with another build by writing this file: the owner's
+            # server restarts under another site name, which is part of the page files' digest.
+            restart = work / 'restart-owner'
+
+            def restart_owner():
+                while not restart.exists():
+                    if servers['owner'].poll() is not None:
+                        return
+                    time.sleep(0.2)
+                stop(servers['owner'])
+                files['owner'].write_text(files['owner'].read_text().replace('name = "owner"', 'name = "owner next"'))
+                servers['owner'] = start(work, [str(wsx), 'web', 'serve', '--site', str(files['owner'])], env=env, cwd=project,
+                                         stdout=subprocess.DEVNULL, stderr=(work / 'owner.log').open('a'))
+                wait(lambda: _up(owner), 'restarted web server')
+                (work / 'restart-owner.done').write_text('done')
+            restarter = threading.Thread(target=restart_owner, daemon=True)
+            restarter.start()
             result = check(work, [node, str(ROOT / 'scripts/web-tasks-check.mjs'), owner.origin + '/', browser_code,
                                   str(ids['ui']), str(args.captures), ','.join(home_order),
-                                  str(audit) if audit.exists() else '', str(ids['plans'])], timeout=300)
+                                  str(audit) if audit.exists() else '', str(ids['plans']), str(restart)], timeout=360)
             assert result.returncode == 0, result.stdout + result.stderr
+            # ^ The server restarted: the event stream starts again for the checks after.
+            assert (work / 'restart-owner.done').exists()
+            events = Events(owner)
+            events.expect('workspace')
+            owner_name = 'owner next'
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
 
         # --- Task notifications: at once after the merge window, a digest after a quiet time,
@@ -2812,7 +2868,7 @@ digest_max_seconds = 6
         merged = new_pushes(1, 'blocked push')
         time.sleep(4)
         assert len(pushes()) == baseline + 1, pushes()[baseline:]
-        assert merged[0]['title'] == 'owner: demo' and merged[0]['url'] == '#/p/%d' % demo, merged
+        assert merged[0]['title'] == owner_name + ': demo' and merged[0]['url'] == '#/p/%d' % demo, merged
         assert merged[0]['body'] == '#%d blocked · #%d blocked' % (first, second) and merged[0]['tag'].endswith('-now'), merged
         baseline += 1
         for n in (first, second):
@@ -2854,7 +2910,7 @@ digest_max_seconds = 6
         wait(lambda: js('task', 'show', other, '-p', 'ui')['state'] == 'blocked', 'ui blocked')
         elsewhere = new_pushes(1, 'push for the other project')
         time.sleep(4)
-        assert len(pushes()) == baseline + 1 and elsewhere[0]['title'] == 'owner: ui', pushes()[baseline:]
+        assert len(pushes()) == baseline + 1 and elsewhere[0]['title'] == owner_name + ': ui', pushes()[baseline:]
         assert elsewhere[0]['body'] == '#%d blocked' % other and elsewhere[0]['url'] == '#/p/%d/t/%d' % (ids['ui'], other), elsewhere
         baseline += 1
         # The page goes away: its presence goes with its stream.
