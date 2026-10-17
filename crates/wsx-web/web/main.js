@@ -85,7 +85,7 @@ function Screen({ route }) {
   // ^ The chat and the chat with a task's sheet are one Manager, so opening and closing the
   // sheet keeps the conversation, its scroll and the composer's draft.
   if (route.screen === "project" || route.screen === "task") {
-    return can("task_view") ? html`<${Manager} key=${route.id} project=${route.id} task=${route.task ?? null} />` : html`<${Project} key=${route.id} id=${route.id} />`;
+    return can("task_view") ? html`<${Manager} key=${route.id} project=${route.id} task=${route.task ?? null} page=${Boolean(route.page)} />` : html`<${Project} key=${route.id} id=${route.id} />`;
   }
   if (route.screen === "sessions") return html`<${ProjectSessions} key=${route.id} id=${route.id} />`;
   if (route.screen === "settings") return html`<${Settings} />`;
@@ -165,6 +165,7 @@ function start(session) {
     tasks: (data) => update({ tasks: { ...state.tasks, [data.project]: data } }),
     task: (data) => events.dispatchEvent(new CustomEvent("task", { detail: data })),
     manager: (data) => events.dispatchEvent(new CustomEvent("manager", { detail: data })),
+    page: (data) => events.dispatchEvent(new CustomEvent("page", { detail: data })),
     revoked: () => location.reload(),
     down: () => update({ online: false }),
     // A reconnected stream may have missed task changes.

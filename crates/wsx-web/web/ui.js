@@ -46,8 +46,7 @@ export function Notices() {
   return html`
     <div class="notices" role="status" aria-live="polite">
       ${!store.online && html`<p class="notice" data-tone="attention">Connection lost. Reconnecting…</p>`}
-      ${store.newBuild && html`<p class="notice notice-build"><span>A new version of this page is ready.</span>
-        <button class="link-action" type="button" onClick=${reloadForBuild}>Reload</button></p>`}
+      ${store.newBuild && html`<button class="build-pill" type="button" onClick=${reloadForBuild}>New version · Reload</button>`}
       ${toasts.slice(-2).map((entry) => html`<p class="notice">${entry.text}</p>`)}
     </div>`;
 }

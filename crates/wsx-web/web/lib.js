@@ -46,6 +46,14 @@ export function ago(ms) {
   return `${Math.floor(minutes / 1440)}d ago`;
 }
 
+// A message's time: the clock today, the date and the clock before.
+export function clock(ms) {
+  const date = new Date(ms);
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date().toDateString() === date.toDateString() ? time
+    : `${date.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+}
+
 // The present time, renewed every second while `active` is true.
 export function useNow(active) {
   const [now, setNow] = useState(Date.now());
@@ -61,17 +69,27 @@ export function useNow(active) {
 // A conversation log that keeps its reader at the end only while the reader is at the end.
 // `log` is the scroller's ref callback; `atEnd` is a ref the page may set (a sent message goes
 // to the end); `away` shows the jump button. The log is also pinned when its own box changes
-// size (a brief or tray above it appears, the keyboard opens): that fires no scroll event.
+// size (the reservoir under it opens, the keyboard opens): that fires no scroll event.
 export function useFollowEnd() {
   const node = useRef(null);
   const atEnd = useRef(true);
   const watcher = useRef(null);
   const [away, setAway] = useState(false);
+  const height = useRef(0);
   const pin = () => { if (atEnd.current && node.current) node.current.scrollTop = node.current.scrollHeight; };
   const scrolled = () => {
     const element = node.current;
     // A scroll event may still arrive after the view closed.
     if (!element) return;
+    // ^ A box that changed height (a panel opened under it) scrolls without the reader:
+    // a log at its end stays there. The event can come before the resize observer.
+    if (element.clientHeight !== height.current) {
+      height.current = element.clientHeight;
+      if (atEnd.current) {
+        pin();
+        return;
+      }
+    }
     atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
     setAway(!atEnd.current);
   };
@@ -80,7 +98,12 @@ export function useFollowEnd() {
     watcher.current = null;
     node.current = element;
     if (!element) return;
-    watcher.current = new ResizeObserver(() => { if (atEnd.current) pin(); else scrolled(); });
+    height.current = element.clientHeight;
+    watcher.current = new ResizeObserver(() => {
+      if (!atEnd.current) return scrolled();
+      height.current = element.clientHeight;
+      pin();
+    });
     watcher.current.observe(element);
   }, []);
   const toEnd = () => { atEnd.current = true; pin(); setAway(false); };

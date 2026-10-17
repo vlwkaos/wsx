@@ -1,7 +1,9 @@
 //! The ledger: the bounded project state the manager reads before it acts, and the web
 //! client's project brief. ref: docs/tasks.md "Ledger"
 
-use super::view::{attention, clip, overlaps, project_tasks, read_result, task_summary};
+use super::view::{
+    attention, check_outcomes, clip, overlaps, project_tasks, read_result, task_summary,
+};
 use super::{brief, copy, store, verification, DeployKind, Phase, TaskRecord};
 use crate::config::project::load_task_config;
 use crate::model::workspace::{LandPolicy, TaskConfig};
@@ -57,6 +59,10 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
                 "verification": verdict,
                 "human_verify": result.as_ref().map_or(0, |r| r["result"]["human_verify"].as_array().map_or(0, Vec::len)),
                 "summary": result.as_ref().and_then(|r| r["result"]["summary"].as_str()).map(|s| clip(s, SUMMARY_CHARS)),
+                // ^ What the host ran; it outranks the worker's summary (docs/tasks.md "Ledger").
+                "checks": result.as_ref().map(check_outcomes).unwrap_or_default().into_iter()
+                    .map(|(command, outcome)| json!({ "command": command, "outcome": outcome }))
+                    .collect::<Vec<_>>(),
                 "pr_url": record.pr_url,
                 "phase": record.phase,
                 // ^ What a blocked task asks for; the manager may grant it (docs/tasks.md "Permissions").

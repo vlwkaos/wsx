@@ -85,7 +85,7 @@ pub fn overview(scope: &Scope) -> Value {
     let mut titles: HashMap<u32, String> = HashMap::new();
     for (dir, record) in &tasks {
         let Ok(record) = record else { continue };
-        let title = view::title(dir).unwrap_or_default();
+        let title = view::title(dir, record).unwrap_or_default();
         titles.insert(record.id, title.clone());
         let order = view::attention(record.state);
         listed.push((
@@ -461,13 +461,12 @@ fn actions(state: TaskState, unverified: bool) -> Vec<&'static str> {
     }
 }
 
-/// The talk-through before the build, in order: the owner's replies to the brief and the
-/// worker's answers. A reply is an add or steer logged before `started`.
+/// The owner's messages to the worker after the prompt, in order, with the worker's answers
+/// to the brief (`version`): replies to the brief and later adds read as one conversation.
 fn talk(log: &[task::LogEntry]) -> Value {
     let mut rows = Vec::new();
     for entry in log {
         match &entry.event {
-            LogEvent::Started { .. } => break,
             LogEvent::Message {
                 mode: MessageKind::Add | MessageKind::Steer,
                 text,
@@ -536,6 +535,25 @@ pub fn chat(scope: &Scope, after: Option<u64>) -> Outcome<Value> {
         .collect();
     let skipped = entries.len().saturating_sub(CHAT_ENTRIES);
     entries.drain(..skipped);
+    let mut logs: HashMap<u32, Vec<task::LogEntry>> = HashMap::new();
+    let entries: Vec<Value> = entries
+        .into_iter()
+        .map(|entry| {
+            let mut value = serde_json::to_value(entry).unwrap_or_default();
+            if let ManagerEvent::Message {
+                from: task::manager::Author::Events,
+                text,
+                ..
+            } = &entry.event
+            {
+                let reports = worker_reports(scope, text, entry.unix_ms, &mut logs);
+                if !reports.is_empty() {
+                    value["reports"] = json!(reports);
+                }
+            }
+            value
+        })
+        .collect();
     let status = call_socket::<_, ManagerResponse>(
         &dir.socket_path(),
         &ManagerRequest::Status,
@@ -550,6 +568,86 @@ pub fn chat(scope: &Scope, after: Option<u64>) -> Outcome<Value> {
         "busy": busy,
         "activity": if busy { activity } else { None },
     }))
+}
+
+/// A worker's report for each events line that carries a worker result (`#3 ready r2: …`):
+/// the full summary of the result logged before the events message, or the brief's
+/// rewritten prompt. ref: docs/web-client.md "Project screen"
+fn worker_reports(
+    scope: &Scope,
+    text: &str,
+    at: u64,
+    logs: &mut HashMap<u32, Vec<task::LogEntry>>,
+) -> Vec<Value> {
+    let mut reports = Vec::new();
+    for line in text.lines() {
+        let mut words = line.splitn(3, ' ');
+        let (Some(id), Some(state), Some(revision)) = (words.next(), words.next(), words.next())
+        else {
+            continue;
+        };
+        let Some(id) = id.strip_prefix('#').and_then(|id| id.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some(revision) = revision
+            .strip_prefix('r')
+            .and_then(|rest| rest.split(':').next()?.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if !matches!(state, "ready" | "failed" | "blocked" | "briefed") {
+            continue;
+        }
+        let Ok(dir) = open_task(scope, id) else {
+            continue;
+        };
+        let log = logs
+            .entry(id)
+            .or_insert_with(|| dir.read_log().unwrap_or_default());
+        let before = log.iter().rev().filter(|entry| entry.unix_ms <= at);
+        let report = if state == "briefed" {
+            let version = before.clone().find_map(|entry| match &entry.event {
+                LogEvent::Brief { version, .. } => Some(*version),
+                _ => None,
+            });
+            brief::read(&dir)
+                .filter(|file| Some(file.version) == version)
+                .map(|file| {
+                    (
+                        format!("brief v{}", file.version),
+                        file.brief.rewritten_prompt,
+                    )
+                })
+        } else {
+            before
+                .clone()
+                .find_map(|entry| match &entry.event {
+                    LogEvent::Result {
+                        status, summary, ..
+                    } => Some((status.clone(), summary.clone())),
+                    _ => None,
+                })
+                .map(|(status, summary)| match state {
+                    "failed" => ("failed".to_string(), summary),
+                    _ => (status, summary),
+                })
+        };
+        if let Some((head, summary)) = report.filter(|(_, summary)| !summary.trim().is_empty()) {
+            reports.push(json!({
+                "task": id, "state": state, "revision": revision, "head": head, "summary": summary,
+            }));
+        }
+    }
+    reports
+}
+
+/// The project page (docs/tasks.md "Project page"): its text and last change, or `null`s.
+pub fn page(scope: &Scope) -> Outcome<Value> {
+    let page = store::read_page(&scope.store).map_err(internal)?;
+    Ok(match page {
+        Some((text, unix_ms)) => json!({ "text": text, "unix_ms": unix_ms }),
+        None => json!({ "text": null, "unix_ms": null }),
+    })
 }
 
 /// What happened since `after` (ms): the tasks that started, landed, blocked, conflicted
@@ -982,7 +1080,12 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
             let Some(parent) = path.parent() else {
                 continue;
             };
-            if parent.file_name().is_some_and(|name| name == "manager") {
+            if path
+                .file_name()
+                .is_some_and(|name| name == store::PAGE_FILE)
+            {
+                crate::events::publish_json(app, "page", json!({ "project": scope.project }));
+            } else if parent.file_name().is_some_and(|name| name == "manager") {
                 crate::events::publish_json(app, "manager", json!({ "project": scope.project }));
             } else if let Some(id) = parent
                 .file_name()

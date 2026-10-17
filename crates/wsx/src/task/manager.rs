@@ -20,7 +20,7 @@ use wsx_core::task::manager::{
 };
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
-use wsx_core::task::view::{clip, project_tasks, read_result};
+use wsx_core::task::view::{self, clip, project_tasks, read_result};
 use wsx_core::task::{brief, TaskState, MAX_MESSAGE_BYTES};
 
 use wsx_core::task::owner::ACTOR_ENV;
@@ -28,6 +28,14 @@ const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 /// Events within this long of each other, or during a turn, become one message.
 const EVENT_QUIET: Duration = Duration::from_secs(3);
 const EVENT_TITLE_CHARS: usize = 80;
+/// A message in a handover: one line, clipped, so a quote never reads as a new message.
+fn one_line(text: &str) -> String {
+    clip(
+        &text.split_whitespace().collect::<Vec<_>>().join(" "),
+        HANDOVER_CHARS,
+    )
+}
+
 /// The handover of a fresh conversation: this many last messages and replies, each clipped.
 const HANDOVER_ENTRIES: usize = 4;
 const HANDOVER_CHARS: usize = 600;
@@ -82,7 +90,7 @@ struct Manager {
 }
 
 /// ref: docs/tasks.md "Manager", "Brief"
-fn instructions(project: &str, notes: &Path) -> String {
+fn instructions(project: &str, notes: &Path, page: &Path) -> String {
     format!(
         "You are the manager of the wsx project {project}. You never edit the project's \
          files and never run builds or tests; workers do that in their own tasks. You may \
@@ -93,13 +101,18 @@ fn instructions(project: &str, notes: &Path) -> String {
          `wsx task steer`, `wsx task new`, `wsx task verify` or `wsx task land`, always with \
          `-p {project} --json`. When a command says the owner was asked to approve, tell the \
          owner and do not retry it. Keep turns short. Name tasks as #<n>. \
-         Work the owner asks for starts with `wsx task new`: its worker first writes a brief \
-         and the task waits as briefed. Tell the owner the brief is coming. Add \
+         Work the owner asks for starts with `wsx task new --title <title>`: the title is \
+         a few plain words of at most 60 characters that name the work, never starting \
+         with 'Owner'. Its worker first writes a brief and the task waits as briefed. Tell the owner the brief is coming. Add \
          `--no-brief` only when the owner's message asks to skip the brief, such as \
          'just do it' or 'no brief'. Never start a build on your own: when the owner says \
          'start #<n>', run `wsx task start <n>`, which asks the owner's approval. A reply \
          about a brief goes to its task with `wsx task add`. In status answers, name the \
          briefs that wait for the owner. \
+         The ledger's `checks` (and 'checks n of m passed' in an event) are what wsx \
+         ran on the task's latest revision. When you report a task, give each check as \
+         passed or failed from them, and trust them over the worker's own words about \
+         what it could not run or verify; quote the worker only for what no check covers. \
          Your Bash runs in a sandbox that writes only your notes folder; `wsx task` \
          commands reach the tasks from there, also in a pipe or with a heredoc, and no other \
          `wsx` command runs. Workers run in a sandbox too. When the ledger shows a blocked \
@@ -107,8 +120,14 @@ fn instructions(project: &str, notes: &Path) -> String {
          grant it with `wsx task allow <n> --host <host>` or `--path <path>`, which resumes \
          it; otherwise steer or add to the worker. Never tell the owner to edit settings \
          files. A grant for every task (`--project-wide`) or a tool rule asks the owner's \
-         approval; tell the owner what you asked for.",
-        notes = notes.display()
+         approval; tell the owner what you asked for. \
+         The project page {page} is the owner's one-page picture of the project: the goal, \
+         the tasks and how they relate as a mermaid graph, the decisions and the open \
+         questions. When one of them changes, update that section in place with the Edit \
+         tool; never rewrite the whole file, and never create another page. Workers do not \
+         write it. When a reply points to it, call it the project page.",
+        notes = notes.display(),
+        page = page.display()
     )
 }
 
@@ -355,22 +374,33 @@ impl Manager {
             if !is_event_state(record.state) {
                 continue;
             }
-            let title = dir.prompt().ok().flatten().unwrap_or_default();
+            let title = view::title(&dir, &record).unwrap_or_default();
             let summary = if record.state == TaskState::Briefed {
                 brief::read(&dir)
                     .map(|file| format!("brief v{}: {}", file.version, file.brief.rewritten_prompt))
+                    .unwrap_or_default()
             } else {
-                read_result(&dir)
-                    .and_then(|value| value["result"]["summary"].as_str().map(str::to_string))
-            }
-            .unwrap_or_default();
+                // ^ The checks the host ran come before the worker's own words.
+                let result = read_result(&dir).unwrap_or_default();
+                let checks = view::check_outcomes(&result);
+                let passed = checks
+                    .iter()
+                    .filter(|(_, outcome)| *outcome == "passed")
+                    .count();
+                let words = result["result"]["summary"].as_str().unwrap_or_default();
+                let worker = format!("worker says: {}", clip(words, EVENT_SUMMARY_CHARS));
+                match checks.len() {
+                    0 => worker,
+                    total => format!("checks {passed} of {total} passed; {worker}"),
+                }
+            };
             self.pending_events.push(format!(
                 "#{} {} r{}: {}; {}",
                 record.id,
                 record.state.as_str(),
                 record.revision,
                 clip(&title, EVENT_TITLE_CHARS),
-                clip(&summary, EVENT_SUMMARY_CHARS),
+                summary,
             ));
             self.last_event = Some(Instant::now());
         }
@@ -517,6 +547,9 @@ impl Manager {
         let notes = self.dir.notes()?;
         // ^ The folder exists: the host bound the socket before any launch.
         let broker_socket = hosting::real_socket_path(&self.dir.broker_path());
+        let page = store::ensure_page(&self.dir.project_id, &self.project)?;
+        // ^ Claude resolves symlinks such as /tmp → /private/tmp before it matches a rule.
+        let page = page.canonicalize().unwrap_or(page);
         let boundary = Boundary {
             cwd: self.main.clone(),
             writes: vec![notes.display().to_string()],
@@ -528,8 +561,12 @@ impl Manager {
         let mut launch = Launch::new(
             &boundary,
             &self.model,
-            Vec::new(),
-            instructions(&self.project, &notes),
+            // ^ `//` starts an absolute path in a rule; one file, never a folder.
+            vec![
+                format!("Edit(/{})", page.display()),
+                format!("Write(/{})", page.display()),
+            ],
+            instructions(&self.project, &notes, &page),
         );
         // ^ The agent's `wsx task` commands go to this host (broker.rs), which runs them as
         // the manager actor outside the sandbox; the actor mark stays for the approval rules.
@@ -614,10 +651,8 @@ impl Manager {
                     from: Author::Owner,
                     text,
                     ..
-                } => Some(format!("Owner: {}", clip(text, HANDOVER_CHARS))),
-                ManagerEvent::Reply { text, .. } => {
-                    Some(format!("You: {}", clip(text, HANDOVER_CHARS)))
-                }
+                } => Some(format!("Owner: {}", one_line(text))),
+                ManagerEvent::Reply { text, .. } => Some(format!("You: {}", one_line(text))),
                 _ => None,
             })
             .take(HANDOVER_ENTRIES)
