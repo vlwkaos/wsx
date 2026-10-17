@@ -21,20 +21,30 @@ export function setScheme(value) {
   applyScheme();
 }
 
-// A result message that clears itself, for outcomes that need no action.
+// One notice over the screen at a time, never in the layout: an outcome clears itself after a
+// few seconds; a failure the owner must act on stays until dismissed, and a later outcome does
+// not hide it (docs/web-client.md "Notices").
+const TOAST_MS = 4000;
 let toasts = [];
 const watchers = new Set();
-export function toast(text) {
-  const entry = { text };
-  toasts = [...toasts, entry];
-  for (const watcher of watchers) watcher();
-  setTimeout(() => {
-    toasts = toasts.filter((other) => other !== entry);
-    for (const watcher of watchers) watcher();
-  }, 4000);
+const changed = () => { for (const watcher of watchers) watcher(); };
+export function toast(text, { failure = false } = {}) {
+  const entry = { text, failure };
+  toasts = [...toasts.filter((other) => other.failure), entry];
+  changed();
+  if (!failure) {
+    setTimeout(() => {
+      toasts = toasts.filter((other) => other !== entry);
+      changed();
+    }, TOAST_MS);
+  }
 }
+const dismiss = (entry) => {
+  toasts = toasts.filter((other) => other !== entry);
+  changed();
+};
 
-// One line per condition, above the screen. A lost connection stays until it is back.
+// A lost connection stays until it is back; then the newest failure, else the newest outcome.
 export function Notices() {
   const store = useStore();
   const [, renew] = useState(0);
@@ -43,12 +53,17 @@ export function Notices() {
     watchers.add(watcher);
     return () => watchers.delete(watcher);
   }, []);
+  const shown = toasts.findLast((entry) => entry.failure) ?? toasts.at(-1);
   return html`
     <div class="notices" role="status" aria-live="polite">
-      ${!store.online && html`<p class="notice" data-tone="attention">Connection lost. Reconnecting…</p>`}
-      ${store.newBuild && html`<button class="build-pill" type="button" onClick=${reloadForBuild}>New version · Reload</button>`}
-      ${toasts.slice(-2).map((entry) => html`<p class="notice">${entry.text}</p>`)}
-    </div>`;
+      ${!store.online ? html`<p class="notice" data-tone="attention">Connection lost. Reconnecting…</p>`
+        : shown && html`
+          <p class="notice" data-tone=${shown.failure ? "danger" : null} role=${shown.failure ? "alert" : null}>
+            <span class="notice-text">${shown.text}</span>
+            ${shown.failure && html`<button class="link-action" type="button" onClick=${() => dismiss(shown)}>Dismiss</button>`}
+          </p>`}
+    </div>
+    ${store.newBuild && html`<button class="build-pill" type="button" onClick=${reloadForBuild}>New version · Reload</button>`}`;
 }
 
 // Modal confirmation on the native <dialog>: focus is trapped while it is open,

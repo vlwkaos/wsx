@@ -636,8 +636,18 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .sheet::backdrop { background: var(--color-overlay); }
 .sheet-title { font-size: var(--font-size-md); font-weight: var(--font-weight-strong); margin-bottom: var(--space-2); }
 .sheet-actions { justify-content: flex-end; padding: var(--space-4) 0 0; }
-.notices { flex: 0 0 auto; }
-.notice { padding: var(--space-2) var(--space-4); font-size: var(--font-size-sm); background: var(--color-surface); border-bottom: var(--border-width) solid var(--color-hairline); }
+/* Over the screen under the top row, never in the layout: showing one moves nothing. */
+.notices {
+  position: fixed; z-index: 3; left: 50%; transform: translateX(-50%);
+  top: calc(var(--viewport-top, 0%) + env(safe-area-inset-top) + var(--size-bar) + var(--space-2));
+  width: min(calc(100% - 2 * var(--space-4)), var(--size-prose)); pointer-events: none;
+}
+.notice {
+  display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); pointer-events: auto;
+  font-size: var(--font-size-sm); background: var(--color-raised); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
+}
+.notice-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.notice .link-action { flex: 0 0 auto; }
 /* A newer build on the server: a small pill over the top of the screen until it is tapped,
    never a line that moves the screen (docs/web-client.md "Build"). */
 .build-pill {

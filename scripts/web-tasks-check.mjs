@@ -247,11 +247,13 @@ await resize([390, 844, 2]);
 // Act in place: Allow #1 grants its host and resumes it; Approve land #3 lands it. The chat
 // stays at its end, and the settled items become muted lines that join when close together.
 await evaluate(`${rowOf("#1")}.querySelector('.need-action').click()`);
-await until("[...document.querySelectorAll('.notice')].some((node) => /#1:/.test(node.textContent))", "Allow in the reservoir showed no outcome");
+// ^ The chat says what Allow did as a status line; no notice repeats it.
+await until("[...document.querySelectorAll('.status-line')].some((node) => /#1 may reach crates\\.io \\(owner\\)/.test(node.textContent))", "Allow in the reservoir left no status line", 60);
+if (await evaluate("[...document.querySelectorAll('.notice')].some((node) => /#1:/.test(node.textContent))")) await fail("a notice repeats the status line of Allow");
 // ^ #1 works for a moment, then is ready to land: either way it no longer waits for the host.
 await until(`(${rowOf("#1")}?.querySelector('.row-context')?.textContent ?? '') !== 'needs to reach crates.io'`, "#1 still waits for its host after Allow", 60);
 await evaluate(`${rowOf("Approve land #3")}.querySelectorAll('.need-action')[1].click()`);
-await until("[...document.querySelectorAll('.notice')].some((node) => /Approved land #3/.test(node.textContent))", "Approve showed no outcome");
+if (await evaluate("[...document.querySelectorAll('.notice')].some((node) => /Approved land #3/.test(node.textContent))")) await fail("a notice repeats the status line of Approve");
 await until(`!${rowOf("Approve land #3")} && !${rowOf("#3")}`, "the reservoir kept the approved landing", 300);
 await until("[...document.querySelectorAll('.status-line')].some((node) => /Approved land #3 · .*#3 landed|#3 landed · .*Approved land #3/.test(node.textContent))", "the approval and the landing are not one line", 300);
 if (!(await evaluate(atEnd)) || await count(".jump")) await fail("acting in the reservoir moved the chat");
@@ -391,7 +393,6 @@ await pause(300);
 if (!(await count(".verify-note"))) await fail("a fail without a note was sent");
 await typeInto(".verify-note textarea", "HV NOOP the file has no text");
 await evaluate("document.querySelector('.verify-note').requestSubmit()");
-await until("[...document.querySelectorAll('.notice')].some((node) => /#2:/.test(node.textContent))", "the fail showed no outcome");
 // The note went to the worker: a new revision r2 with its own Human Verify item, then Pass.
 await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '').startsWith('ready · r2')", "#2 did not come back as r2", 300);
 await until("[...document.querySelectorAll('.verify button')].some((node) => node.textContent === 'Pass r2')", "no Pass r2 on the task page", 300);
@@ -421,6 +422,44 @@ told = await story();
 if (told.next !== "The worker waits for you to let it reach crates.io, or to answer.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
 await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Allow for project').click()");
 await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '').startsWith('ready')", "#4 did not resume after Allow", 300);
+
+// --- Notices lie over the screen, one at a time. An approved action that did not run stays
+// until dismissed, also when a later outcome comes; an outcome clears itself.
+await go(chat);
+await until("!!document.querySelector('.reservoir-head')", "the chat did not come back for the notices");
+await typeInto(".composer-field", "RUN wsx task land 6 -p ui --json");
+await click(".composer-send");
+await openReservoir();
+await until(`!!${rowOf("Approve land #6")}`, "the manager's request to land #6 has no row", 60);
+const barTop = await evaluate("Math.round(document.querySelector('.manager .bar').getBoundingClientRect().top)");
+await evaluate(`${rowOf("Approve land #6")}.querySelectorAll('.need-action')[1].click()`);
+await until("[...document.querySelectorAll('.notice[data-tone=danger]')].some((node) => /^Land #6 did not run: failed: /.test(node.querySelector('.notice-text').textContent))", "the failed approval left no notice", 60);
+await closeReservoir();
+const overlay = await evaluate(`({ count: document.querySelectorAll('.notice').length, fixed: getComputedStyle(document.querySelector('.notices')).position,
+  top: Math.round(document.querySelector('.manager .bar').getBoundingClientRect().top), dismiss: !!document.querySelector('.notice[data-tone=danger] button') })`);
+if (overlay.count !== 1 || overlay.fixed !== "fixed" || overlay.top !== barTop || !overlay.dismiss) await fail(`the notice is not one overlay with Dismiss: ${JSON.stringify(overlay)} (top row was at ${barTop})`);
+await shot("notice-failure", ".composer-send");
+// A later outcome (a message to a task) does not hide the failure; it waits past the outcome's time.
+await go(page(4));
+await until("!!document.querySelector('.task-message .composer-field')", "#4 offers no message field");
+await typeInto(".task-message .composer-field", "NOOP and a note");
+await click(".task-message .composer-send");
+await pause(5000);
+if (!(await evaluate("/Land #6 did not run/.test(document.querySelector('.notice')?.textContent ?? '')"))) await fail("a later outcome or the time hid the failure");
+await key("Escape", 27);
+await until("!document.querySelector('dialog.task-sheet')", "Escape did not close #4");
+await evaluate("document.querySelector('.notice[data-tone=danger] button').click()");
+await until("!document.querySelector('.notice')", "Dismiss did not clear the failure");
+// An outcome alone clears itself.
+await go(page(4));
+await until("!!document.querySelector('.task-message .composer-field')", "#4 offers no message field again");
+await pause(3000);
+await typeInto(".task-message .composer-field", "NOOP once more");
+await click(".task-message .composer-send");
+await until("[...document.querySelectorAll('.notice')].some((node) => /^#4: /.test(node.textContent))", "a message to #4 showed no outcome");
+await until("!document.querySelector('.notice')", "the outcome did not clear itself", 80);
+await key("Escape", 27);
+await until("!document.querySelector('dialog.task-sheet')", "Escape did not close #4 again");
 
 // --- A deep link to a task opens the chat with the sheet over it; Back closes the sheet, then
 // the chat is the first entry, so the next Back leaves the page.

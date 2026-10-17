@@ -16,9 +16,11 @@ export async function loadTasks(project) {
   try {
     if (project == null) {
       const all = await api("api/tasks");
+      all.forEach(noteDecisions);
       update({ tasks: Object.fromEntries(all.map((overview) => [overview.project, overview])) });
     } else {
       const overview = await api(`api/tasks/${project}`);
+      noteDecisions(overview);
       update({ tasks: { ...state.tasks, [project]: overview } });
     }
   } catch { /* the next tasks event brings it */ }
@@ -96,12 +98,28 @@ const actionOf = (key) => {
   return pending.get(key);
 };
 
-// What a fixed action did, as a notice: wsx's own answer, or the decision.
+// Actions whose outcome the chat already shows as a status line ("Approved land #3",
+// "#1 may reach crates.io (owner)", "#2 passed verification of r1", "#3 landed").
+const SAID_IN_CHAT = new Set(["approve", "deny", "allow", "verify"]);
+
+// What a fixed action did, as a notice: wsx's own answer, unless the chat says it already.
 export function announce(name, action, answer) {
-  // ^ An approval is named by its label, "Approve land #3": the notice says what was decided.
-  const decided = (word) => name.startsWith("Approve ") ? name.replace(/^Approve /, `${word} `) : `${name} ${word.toLowerCase()}`;
-  toast(action === "approve" ? `${decided("Approved")}; it runs now.`
-    : action === "deny" ? `${decided("Denied")}.` : `${name}: ${answer.message || "done"}`);
+  if (SAID_IN_CHAT.has(action) || (action === "land" && answer.state === "landed")) return;
+  toast(`${name}: ${answer.message || "done"}`);
+}
+
+// An approved action that did not run is a failure the owner acts on: it stays until
+// dismissed. Decisions seen before this page loaded say nothing.
+const seenDecisions = new Map();
+export function noteDecisions(overview) {
+  const known = seenDecisions.get(overview.project);
+  seenDecisions.set(overview.project, new Set((overview.decisions ?? []).map((decision) => decision.approval)));
+  if (!known) return;
+  for (const decision of overview.decisions ?? []) {
+    if (known.has(decision.approval) || !decision.approved || decision.outcome?.startsWith("done")) continue;
+    const what = [decision.action, decision.task != null && `#${decision.task}`].filter(Boolean).join(" ");
+    toast(`${what.charAt(0).toUpperCase()}${what.slice(1)} did not run: ${decision.outcome}`, { failure: true });
+  }
 }
 
 // One fixed action. A success says what wsx did and clears the draft; a failure keeps it.
