@@ -635,18 +635,21 @@ def run(wsx, wsxd, work, owned):
     assert asked['ok'] and asked['id'] == 1, asked
     assert ('#%d working' % running) in reply_to(asked['id'])['text']
     launch = next(t for t in traces() if t.get('launch') and t.get('manager'))
-    assert launch['allowed'] == ['Read', 'Glob', 'Grep', 'Bash(wsx task *)'] and launch['model'] == 'fake-manager'
-    # ^ Its `wsx task` commands leave the sandbox; its own Bash writes only its notes folder.
+    assert launch['allowed'] == ['Read', 'Glob', 'Grep'] and launch['model'] == 'fake-manager'
+    # ^ Its Bash is plain sandboxed Bash that writes only its notes folder and reaches one socket,
+    # the manager host's broker, which runs its `wsx task` commands.
     sandbox = launch['settings']['sandbox']
-    assert launch['mode'] == 'auto' and sandbox['excludedCommands'] == ['wsx task *'], sandbox
+    assert launch['mode'] == 'auto' and 'excludedCommands' not in sandbox, sandbox
+    broker = sandbox['network']['allowUnixSockets']
+    assert len(broker) == 1 and Path(broker[0]).is_socket() and len(broker[0]) < 104, broker
     assert len(sandbox['filesystem']['allowWrite']) == 1 and sandbox['filesystem']['allowWrite'][0].endswith('/manager/notes')
     assert Path(sandbox['filesystem']['allowWrite'][0]).is_dir() and sandbox['filesystem']['denyWrite'] == [str(project)]
     assert 'Edit(/%s/**)' % project in launch['settings']['permissions']['deny'], launch['settings']
-    assert launch['actor'] == 'manager' and 'WSX_PANE_ID' not in launch['wsx_env']
+    assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     # Its rules for briefs: start work with one, skip it only on the owner's word, never start a build alone.
     for rule in ('the brief is coming', "`--no-brief` only when the owner's message asks", 'Never start a build on your own',
                  '`wsx task start <n>`, which asks', 'name the briefs that wait',
-                 'one `wsx task` command per Bash call', 'grant it with `wsx task allow <n> --host <host>`',
+                 'also in a pipe or with a heredoc', 'grant it with `wsx task allow <n> --host <host>`',
                  'Never tell the owner to edit settings'):
         assert rule in launch['instructions'], rule
     assert launch['cwd'] == str(project)
@@ -658,6 +661,27 @@ def run(wsx, wsxd, work, owned):
     assert wait_state(manager_task, 'ready', 'failed')['state'] == 'ready'
     added = js('task', 'say', 'RUN wsx task add %d "WORK s2.txt" -p demo --json' % running)
     assert '-> 0' in reply_to(added['id'])['text']
+    # Any command shape reaches the broker: `;`, a heredoc with a multi-line prompt, a pipe.
+    script = js('task', 'say', "SCRIPT\nwsx task ledger -p demo --json >/dev/null; wsx task new -p demo --no-brief --json - <<'EOF'\n"
+                "WORK h1.txt\nsecond line of the prompt\nEOF\nwsx task list -p demo --json | grep -c '\"id\"' >/dev/null && echo piped")
+    answer = reply_to(script['id'])['text']
+    assert answer.startswith('script -> 0') and answer.rstrip().endswith('piped'), answer
+    heredoc_task = max(row['id'] for row in js('task', 'list')['tasks'])
+    first = next(e for e in log(heredoc_task) if e['kind'] == 'message')
+    assert first['text'] == 'WORK h1.txt\nsecond line of the prompt', first
+    assert [(e['by'], e['actor']) for e in log(heredoc_task) if e['kind'] == 'brief_skipped'] == [('flag', 'manager')]
+    assert wait_state(heredoc_task, 'ready', 'failed')['state'] == 'ready'
+    # Under the broker no other command runs, neither in the CLI nor at the host.
+    refused = js('task', 'say', 'RUN wsx --version\nRUN wsx task host %s 1' % launch['cwd'])
+    text = reply_to(refused['id'])['text']
+    assert 'ran: wsx --version -> 2 wsx: the manager may run only `wsx task` commands' in text, text
+    assert 'ran: wsx task host' in text and "-> 2 wsx: `wsx task host` is not for the manager" in text, text
+    with socket.socket(socket.AF_UNIX) as raw:
+        raw.connect(broker[0])
+        raw.sendall(json.dumps({'argv': ['daemon', 'stop'], 'stdin': None, 'cwd': str(project)}).encode())
+        raw.shutdown(socket.SHUT_WR)
+        direct = json.loads(raw.makefile().read())
+    assert direct['code'] == 2 and 'only `wsx task` commands' in direct['stderr'], direct
     assert wait_state(running, 'ready', 'failed')['state'] == 'ready'
     assert [e['mode'] for e in log(running) if e['kind'] == 'message'] == ['prompt', 'add']
     # Rotation: past rotateTokens the next turn starts a fresh conversation.
@@ -669,7 +693,7 @@ def run(wsx, wsxd, work, owned):
     manager_launches = [t for t in traces() if t.get('launch') and t.get('manager')]
     assert not manager_launches[-1]['resume'] and manager_launches[-1]['session'] != launch['session']
     assert [e['id'] for e in chat(after=big['id']) if e['kind'] == 'message' and e['from'] == 'owner'] == [after_rotation['id']]
-    for n in (running, manager_task):
+    for n in (running, manager_task, heredoc_task):
         js('task', 'close', n, '--discard')
 
     # 21. Events: task state changes reach the manager, merged while it is busy; an owner

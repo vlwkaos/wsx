@@ -489,6 +489,12 @@ impl ManagerDir {
         socket_for('m', &self.path.join(MANAGER_SOCKET))
     }
 
+    /// The socket on which the manager host runs the manager agent's `wsx task` commands.
+    /// ref: docs/tasks.md "Permissions"
+    pub fn broker_path(&self) -> PathBuf {
+        socket_for('b', &self.path.join("broker.sock"))
+    }
+
     /// `manager/notes/`, the only folder the manager's commands may write; created owner-only.
     pub fn notes(&self) -> Result<PathBuf> {
         let path = self.path.join("notes");

@@ -4,9 +4,8 @@
 
 use super::claude::{
     kept_from_edits, new_session_id, AgentLine, Boundary, ClaudeAgent, Launch, TurnResult,
-    MANAGER_COMMAND,
 };
-use super::hosting;
+use super::{broker, hosting};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
@@ -24,15 +23,6 @@ use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{clip, project_tasks, read_result};
 use wsx_core::task::{brief, TaskState, MAX_MESSAGE_BYTES};
 
-/// Variables the manager's own `wsx task` commands need to reach this project's state
-/// and daemon. Pane identity (`WSX_PANE_ID`, the generation) is never passed on.
-const MANAGER_ENV: [&str; 5] = [
-    "XDG_STATE_HOME",
-    "XDG_CONFIG_HOME",
-    "XDG_CACHE_HOME",
-    "WSX_SOCKET",
-    "WSX_DAEMON_BIN",
-];
 use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 /// Events within this long of each other, or during a turn, become one message.
@@ -107,9 +97,9 @@ fn instructions(project: &str, notes: &Path) -> String {
          'start #<n>', run `wsx task start <n>`, which asks the owner's approval. A reply \
          about a brief goes to its task with `wsx task add`. In status answers, name the \
          briefs that wait for the owner. \
-         Run exactly one `wsx task` command per Bash call, with no pipe, `;` or `&&`: only \
-         such a call reaches the tasks; anything else runs in a sandbox that writes only \
-         your notes folder. Workers run in a sandbox too. When the ledger shows a blocked \
+         Your Bash runs in a sandbox that writes only your notes folder; `wsx task` \
+         commands reach the tasks from there, also in a pipe or with a heredoc, and no other \
+         `wsx` command runs. Workers run in a sandbox too. When the ledger shows a blocked \
          task with asks, fix it yourself: when the task plainly needs that host or folder, \
          grant it with `wsx task allow <n> --host <host>` or `--path <path>`, which resumes \
          it; otherwise steer or add to the worker. Never tell the owner to edit settings \
@@ -124,6 +114,7 @@ pub fn run(project_id: &str) -> Result<()> {
     let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
     let dir = ManagerDir::open(project_id)?;
     let listener = hosting::bind(&dir.socket_path())?;
+    let brokered = hosting::bind(&dir.broker_path())?;
     let state = dir.read_state()?;
     let (events, receiver) = channel();
     let mut manager = Manager {
@@ -158,6 +149,9 @@ pub fn run(project_id: &str) -> Result<()> {
             Duration::from_secs(15),
         )
     });
+    let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+    let folder = manager.main.clone();
+    std::thread::spawn(move || broker::serve(brokered, exe, folder));
     std::thread::spawn(move || {
         while events.send(Event::Tick).is_ok() {
             std::thread::sleep(Duration::from_secs(1));
@@ -175,6 +169,7 @@ pub fn run(project_id: &str) -> Result<()> {
             agent.stop();
         }
         let _ = std::fs::remove_file(manager.dir.socket_path());
+        let _ = std::fs::remove_file(manager.dir.broker_path());
         let error = binary.exec();
         anyhow::bail!("cannot start the replaced wsx binary: {error}");
     }
@@ -501,25 +496,27 @@ impl Manager {
     fn launch(&self) -> Result<Launch> {
         let exe = std::env::current_exe().context("cannot find the wsx binary")?;
         let notes = self.dir.notes()?;
+        let broker_socket = self.dir.broker_path();
         let boundary = Boundary {
             cwd: self.main.clone(),
             writes: vec![notes.display().to_string()],
             deny_writes: vec![self.main.display().to_string()],
             domains: Vec::new(),
-            excluded: vec![MANAGER_COMMAND.into()],
+            unix_sockets: vec![broker_socket.display().to_string()],
             deny_edits: kept_from_edits(&self.main, None),
         };
         let mut launch = Launch::new(
             &boundary,
             &self.model,
-            vec![format!("Bash({MANAGER_COMMAND})")],
+            Vec::new(),
             instructions(&self.project, &notes),
         );
-        launch.env = MANAGER_ENV
-            .iter()
-            .filter_map(|name| std::env::var_os(name).map(|value| (name.to_string(), value)))
-            .collect();
-        launch.env.push((ACTOR_ENV.into(), "manager".into()));
+        // ^ The agent's `wsx task` commands go to this host (broker.rs), which runs them as
+        // the manager actor outside the sandbox; the actor mark stays for the approval rules.
+        launch.env = vec![
+            (broker::BROKER_ENV.into(), broker_socket.into_os_string()),
+            (ACTOR_ENV.into(), "manager".into()),
+        ];
         launch.path_prefix = exe.parent().map(Path::to_path_buf);
         Ok(launch)
     }

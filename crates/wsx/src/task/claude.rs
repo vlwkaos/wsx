@@ -98,8 +98,8 @@ pub struct Boundary {
     pub writes: Vec<String>,
     pub deny_writes: Vec<String>,
     pub domains: Vec<String>,
-    /// Commands that run outside the sandbox; each also needs an allowed tool rule.
-    pub excluded: Vec<String>,
+    /// Unix sockets Bash may connect to (the manager's broker).
+    pub unix_sockets: Vec<String>,
     pub deny_edits: Vec<PathBuf>,
 }
 
@@ -107,8 +107,6 @@ pub struct Boundary {
 /// working directory and its classifier reviews them elsewhere, while a bare `Write`
 /// rule would allow every path.
 const BASE_TOOLS: [&str; 3] = ["Read", "Glob", "Grep"];
-/// The manager's own commands, which leave the sandbox (`excludedCommands`).
-pub const MANAGER_COMMAND: &str = "wsx task *";
 /// Denied in a brief turn even when a project's settings allow them.
 const BRIEF_DENIED_TOOLS: [&str; 3] = ["Edit", "Write", "NotebookEdit"];
 
@@ -168,13 +166,13 @@ fn settings(boundary: &Boundary) -> Value {
         "failIfUnavailable": true,
         "autoAllowBashIfSandboxed": true,
         // ^ From `--settings` this also makes the sandbox admin-required, so a repository's
-        // own settings cannot add hosts, write paths or excluded commands.
+        // own settings cannot add hosts, write paths or sockets.
         "allowUnsandboxedCommands": false,
         "network": { "allowedDomains": boundary.domains },
         "filesystem": { "allowWrite": boundary.writes, "denyWrite": boundary.deny_writes },
     });
-    if !boundary.excluded.is_empty() {
-        sandbox["excludedCommands"] = json!(boundary.excluded);
+    if !boundary.unix_sockets.is_empty() {
+        sandbox["network"]["allowUnixSockets"] = json!(boundary.unix_sockets);
     }
     json!({
         // ^ Agent commits carry no AI attribution; `attribution` replaced
@@ -246,7 +244,7 @@ fn worker_boundary(record: &TaskRecord, grants: &[&Access]) -> Result<Boundary> 
             .map(|path| path.display().to_string())
             .collect(),
         domains,
-        excluded: Vec::new(),
+        unix_sockets: Vec::new(),
         deny_edits,
     })
 }
