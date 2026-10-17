@@ -218,7 +218,8 @@ def main():
         trace({'message': text, 'session': session, 'manager': project is not None})
         if project is not None:
             answer = manager_turn(text, project)
-            context = 200000 if 'BIG' in text.split() else 5000
+            # ^ A line of its own: a handover quotes earlier messages as `Owner: BIG`.
+            context = 200000 if 'BIG' in text.splitlines() else 5000
             emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': answer,
                   'session_id': session, 'permission_denials': [],
                   'usage': {'input_tokens': context, 'output_tokens': 10}, 'total_cost_usd': 0.001})

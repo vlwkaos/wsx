@@ -393,7 +393,7 @@ function Entry({ project, entry }) {
   if (entry.kind === "reply") {
     return html`<article class="message"><${Markdown} text=${entry.text} words=${withChips(project)} /></article>`;
   }
-  if (entry.kind === "rotated") return html`<p class="note">New conversation after ${entry.tokens.toLocaleString()} tokens; the ledger carries the state.</p>`;
+  if (entry.kind === "rotated") return html`<p class="note">${entry.reason ? `New conversation: ${entry.reason}` : `New conversation after ${entry.tokens.toLocaleString()} tokens`}; the ledger carries the state.</p>`;
   if (entry.kind === "stopped") return html`<p class="note" data-tone="danger">The manager stopped: ${entry.reason}</p>`;
   return null;
 }

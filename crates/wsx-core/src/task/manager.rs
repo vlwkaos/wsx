@@ -40,9 +40,12 @@ pub enum ManagerEvent {
     Agent {
         text: String,
     },
-    /// The context passed `rotateTokens`: the next turn starts a fresh conversation.
+    /// The context passed `rotateTokens`, or the launch changed (`reason`): the next turn
+    /// starts a fresh conversation.
     Rotated {
         tokens: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     /// The agent process ended outside a reply.
     Stopped {
@@ -85,6 +88,21 @@ pub struct ManagerState {
     pub seen: Option<BTreeMap<u32, Seen>>,
     /// Approval decisions already turned into events.
     pub decisions_seen: u64,
+    /// The digest of the instructions the conversation in `agent_session` began with.
+    /// Claude keeps a conversation's first system prompt also on resume, so other
+    /// instructions start a new conversation; settings, tools and model apply at every start.
+    pub instructions: Option<String>,
+    /// A rotation happened: the next fresh conversation opens with the last exchanges.
+    pub handover: bool,
+}
+
+/// A stable digest of an agent's instructions, to tell whether a conversation began with them.
+pub fn instructions_digest(instructions: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(instructions.as_bytes())[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// What the manager asked the owner to approve.

@@ -1189,7 +1189,11 @@ fn chat(project: Option<&str>, after: Option<u64>, json: bool) -> Result<()> {
         match &entry.event {
             ManagerEvent::Message { id, from, text } => println!("[{id}] {from:?}: {text}"),
             ManagerEvent::Reply { id, text, .. } => println!("[{id}] manager: {text}"),
-            ManagerEvent::Rotated { tokens } => {
+            ManagerEvent::Rotated {
+                reason: Some(reason),
+                ..
+            } => println!("(new conversation: {reason})"),
+            ManagerEvent::Rotated { tokens, .. } => {
                 println!("(new conversation after {tokens} tokens)")
             }
             ManagerEvent::Stopped { reason } => println!("(manager stopped: {reason})"),
