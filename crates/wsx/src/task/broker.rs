@@ -87,13 +87,8 @@ fn forward(socket: &Path, argv: Vec<String>) -> Result<i32> {
     stream.set_read_timeout(Some(RUN_LIMIT + Duration::from_secs(30)))?;
     stream.write_all(&serde_json::to_vec(&Request { argv, stdin, cwd })?)?;
     stream.shutdown(std::net::Shutdown::Write)?;
-    let mut bytes = Vec::new();
-    stream
-        .take(MAX_RESPONSE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .context("the manager host did not answer")?;
     let response: Response =
-        serde_json::from_slice(&bytes).context("the manager host's answer is not valid")?;
+        read_one(&stream, MAX_RESPONSE_BYTES).context("the manager host did not answer")?;
     print!("{}", response.stdout);
     eprint!("{}", response.stderr);
     let _ = std::io::stdout().flush();
@@ -110,28 +105,39 @@ pub fn serve(listener: UnixListener, exe: PathBuf, fallback_cwd: PathBuf) {
     }
 }
 
+// ^ Each side reads one JSON value, never up to the end of the stream: on macOS a socket's
+// close-on-exec is set after it is opened, so a `wsx` child started meanwhile by another
+// command may hold a copy, and the end would wait for that child. `shutdown` ends the
+// socket whatever holds a copy.
 fn answer(mut stream: UnixStream, exe: &Path, fallback: &Path) {
+    let started = std::time::Instant::now();
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-    let mut bytes = Vec::new();
-    let response = match (&mut stream)
-        .take(MAX_REQUEST_BYTES + 1)
-        .read_to_end(&mut bytes)
-    {
-        Err(error) => refused(format!("cannot read the request: {error}")),
-        Ok(_) if bytes.len() as u64 > MAX_REQUEST_BYTES => refused(format!(
-            "the request is larger than {MAX_REQUEST_BYTES} bytes"
+    let response = match read_one::<Request>(&stream, MAX_REQUEST_BYTES) {
+        // ^ The time tells a slow client from a broken one.
+        Err(error) => refused(format!(
+            "cannot read the request after {} ms: {error:#}",
+            started.elapsed().as_millis()
         )),
-        Ok(_) => match serde_json::from_slice::<Request>(&bytes) {
-            Err(error) => refused(format!("the request is not valid: {error}")),
-            Ok(request) => match allowed(&request.argv) {
-                Err(error) => refused(format!("{error:#}")),
-                Ok(()) => run(exe, request, fallback)
-                    .unwrap_or_else(|error| refused(format!("{error:#}"))),
-            },
+        Ok(request) => match allowed(&request.argv) {
+            Err(error) => refused(format!("{error:#}")),
+            Ok(()) => {
+                run(exe, request, fallback).unwrap_or_else(|error| refused(format!("{error:#}")))
+            }
         },
     };
     if let Ok(line) = serde_json::to_vec(&response) {
         let _ = stream.write_all(&line);
+    }
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+}
+
+/// One JSON value from the stream, at most `limit` bytes, without waiting for its end.
+fn read_one<T: serde::de::DeserializeOwned>(stream: &UnixStream, limit: u64) -> Result<T> {
+    let reader = std::io::BufReader::new(stream.take(limit));
+    let mut values = serde_json::Deserializer::from_reader(reader).into_iter::<T>();
+    match values.next() {
+        Some(value) => value.context("not a valid message"),
+        None => bail!("the message is empty or larger than {limit} bytes"),
     }
 }
 
