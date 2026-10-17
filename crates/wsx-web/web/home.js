@@ -99,7 +99,6 @@ export function Home({ rail }) {
       ${!rail && html`<h1 class="title">Home</h1>`}
       <div class="scroll">
         ${body}
-        <p class="home-more"><a class="link-action" href="#/sessions">All sessions</a></p>
       </div>
     </div>`;
 }

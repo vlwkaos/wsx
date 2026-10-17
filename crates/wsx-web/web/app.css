@@ -547,7 +547,6 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
   text-align: center; font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); font-variant-numeric: tabular-nums;
 }
 .count[data-tone="attention"] { background: var(--color-attention); color: var(--color-bg); }
-.home-more { padding: var(--space-4); }
 .task-chip, .markdown .task-chip {
   display: inline-flex; align-items: center; gap: var(--space-1); padding: 0 var(--space-1);
   border-radius: calc(var(--radius-key) / 2); background: var(--color-surface); text-decoration: none; vertical-align: baseline;
@@ -594,6 +593,18 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 /* Hook: .story — where a task stands, in words (docs/web-client.md "Project brief and task
    story"): the step before and the current one, and what happens next. */
 .visually-hidden { position: absolute; width: var(--border-width); height: var(--border-width); overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* Hook: .adopted — a project's worktrees without a task, read only; in the chat a strip that
+   scrolls inside itself and folds to one line. */
+.adopted-line {
+  display: flex; align-items: center; gap: var(--space-1); min-height: var(--size-control); padding: 0 var(--column-inset, var(--space-4));
+  cursor: pointer; list-style: none; color: var(--color-muted); font-size: var(--font-size-sm);
+}
+.adopted-line::-webkit-details-marker { display: none; }
+.adopted[open] > .adopted-line .icon { transform: rotate(90deg); }
+.adopted-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adopted { border-bottom: var(--border-width) solid var(--color-hairline); }
+.adopted-strip { flex: 0 0 auto; max-height: calc(100% * var(--strip-share) / 2); overflow-y: auto; overscroll-behavior: contain; }
+.adopted-strip .row-link { padding-inline: var(--column-inset, var(--space-4)); }
 .story { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere; }
 .story-steps { list-style: none; margin: 0; padding: 0; display: flex; align-items: baseline; gap: var(--space-2); font-size: var(--font-size-sm); }
 .story-steps li { display: inline-flex; align-items: baseline; gap: var(--space-1); color: var(--color-muted); }
