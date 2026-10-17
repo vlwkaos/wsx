@@ -23,6 +23,8 @@ use app::App;
 use clap::Parser;
 
 fn main() -> Result<()> {
+    // ^ The manager agent's commands go to its host before anything else runs (broker.rs).
+    task::broker::forward_if_brokered();
     let args = cli::Args::parse();
     reject_nested_tui(
         args.command.as_ref(),

@@ -24,6 +24,7 @@ Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE.
 
 Started with the manager's instructions it is a scripted manager instead: per turn
   RUN <command>  run that shell command (the wsx task commands it names) and quote its output
+  SCRIPT         (a line) run the rest of the message as one shell script, heredocs too
   STATUS         answer from `wsx task ledger`
   SLOW           take about 3 s
   BIG            report a 200k-token context, so the host rotates the conversation
@@ -175,6 +176,9 @@ def manager_turn(text, project):
     replies = []
     if 'SLOW' in text.split():
         time.sleep(3)
+    if '\nSCRIPT\n' in '\n' + text:
+        done = subprocess.run(('\n' + text).split('\nSCRIPT\n', 1)[1], shell=True, capture_output=True, text=True)
+        return 'script -> %d %s' % (done.returncode, (done.stdout + done.stderr).strip()[:600])
     for line in text.splitlines():
         if line.startswith('RUN '):
             done = subprocess.run(line[4:], shell=True, capture_output=True, text=True)

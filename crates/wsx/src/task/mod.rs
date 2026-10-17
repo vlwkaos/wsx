@@ -1,6 +1,7 @@
 //! `wsx task`: start a headless worker and steer, read and close it.
 //! ref: docs/tasks.md
 
+pub mod broker;
 mod claude;
 pub mod host;
 mod hosting;
