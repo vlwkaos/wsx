@@ -10,12 +10,12 @@
 // "Approve land #3", "Approve discard #4"). Writing <restart-file> asks the test to restart
 // the server with another site name, so it serves another build; it writes <restart-file>.done.
 // Each capture is saved with the slop audit and, on a phone, the mobile audit of
-// /ui-view-standards beside it (WSX_MOBILE_AUDIT names the mobile audit).
+// /ui-view-standards beside it (scripts/mobile-audit.js, or the file WSX_MOBILE_AUDIT names).
 // <adopted-session> is a done agent session ("old chat") in the project's plain git worktree
 // `old-work`, which no task owns; the project's task copies are on `wsx/t<n>`.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { launch } from "./web-cdp.mjs";
 
 const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile, adoptedArg] = process.argv.slice(2);
@@ -25,7 +25,7 @@ const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = aw
 });
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
-const mobilePath = process.env.WSX_MOBILE_AUDIT ?? path.join(os.homedir(), ".claude/skills/ui-view-standards/scripts/mobile-audit.js");
+const mobilePath = process.env.WSX_MOBILE_AUDIT ?? fileURLToPath(new URL("./mobile-audit.js", import.meta.url));
 const mobileSource = fs.existsSync(mobilePath) ? fs.readFileSync(mobilePath, "utf8") : null;
 if (!mobileSource) await fail(`no mobile audit at ${mobilePath}; set WSX_MOBILE_AUDIT`);
 let size = [390, 844, 2];

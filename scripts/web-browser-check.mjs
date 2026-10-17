@@ -5,8 +5,8 @@
 //   down <site-url> <code> <capture-dir> [slop-audit.js]     (wsxd is stopped)
 // Each capture is saved with the slop audit of /ui-view-standards beside it.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { launch } from "./web-cdp.mjs";
 
 const [mode, siteUrl, code, ...rest] = process.argv.slice(2);
@@ -19,8 +19,8 @@ const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = aw
 });
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
-// The phone layout audit of the ui-view-standards skill (reference/MOBILE.md), when installed.
-const mobilePath = process.env.WSX_MOBILE_AUDIT ?? path.join(os.homedir(), ".claude/skills/ui-view-standards/scripts/mobile-audit.js");
+// The phone layout audit of the ui-view-standards skill (scripts/mobile-audit.js, or WSX_MOBILE_AUDIT).
+const mobilePath = process.env.WSX_MOBILE_AUDIT ?? fileURLToPath(new URL("./mobile-audit.js", import.meta.url));
 const mobileSource = fs.existsSync(mobilePath) ? fs.readFileSync(mobilePath, "utf8") : null;
 const SIZES = [[320, 568, 2], [390, 844, 2], [1280, 800, 1]];
 let size = SIZES[0];
