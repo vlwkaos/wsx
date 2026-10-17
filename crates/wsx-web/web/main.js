@@ -3,7 +3,7 @@
 // Wide (900 px and more): a left rail with the home list (the inbox or the projects without
 // task_view), the rest beside it.
 import { api, openEvents, pageId } from "./api.js";
-import { html, render, useEffect, useState } from "./lib.js";
+import { html, render, useEffect, useRef, useState } from "./lib.js";
 import { can, events, noteBuild, parseRoute, shows, stackUnder, state, trackHistory, update, useRoute, useStore } from "./store.js";
 import { Home } from "./home.js";
 import { applyScheme, Notices } from "./ui.js";
@@ -15,10 +15,11 @@ import { Session } from "./session.js";
 import { Files } from "./files.js";
 import { Settings } from "./settings.js";
 
-// ^ With task_view home is one row per project, so a Projects tab would repeat it; a project's
-// worktrees and shells are a tap away in its chat (⋯ Sessions), every session in "All sessions".
+// ^ With task_view home lists the projects, one row each. Sessions (the inbox) and
+// Projects (each project's worktrees and sessions) stay one tap away beside it, so work that
+// no task owns is never hidden (docs/web-client.md "Screens").
 const tabs = () => can("task_view")
-  ? [["home", "#/", "Home"], ["settings", "#/settings", "Settings"]]
+  ? [["home", "#/", "Home"], ["inbox", "#/sessions", "Sessions"], ["projects", "#/projects", "Projects"], ["settings", "#/settings", "Settings"]]
   : [["home", "#/", "Inbox"], ["projects", "#/projects", "Projects"], ["settings", "#/settings", "Settings"]];
 
 function useWide() {
@@ -98,9 +99,10 @@ function App() {
   useStore();
   const route = useRoute();
   const wide = useWide();
+  const lastList = useRef("home");
   const top = tabs().some(([name]) => name === route.screen) || (route.screen === "inbox" && !can("task_view"));
   useEffect(() => {
-    const titles = { home: can("task_view") ? "Home" : "Inbox", inbox: can("task_view") ? "All sessions" : "Inbox",
+    const titles = { home: can("task_view") ? "Home" : "Inbox", inbox: can("task_view") ? "Sessions" : "Inbox",
       projects: "Projects", settings: "Settings", files: "Files" };
     const session = route.screen === "session" && state.sessions.find((candidate) => candidate.id === route.id);
     const project = ["project", "sessions", "task"].includes(route.screen) && state.projects.find((candidate) => candidate.id === route.id);
@@ -114,21 +116,29 @@ function App() {
         ${top && html`<${Tabs} current=${route.screen} />`}
       </div>`;
   }
-  // The rail keeps the list the main area was reached from; with task_view it is always home.
-  const list = can("task_view") ? "home" : ["projects", "project", "files", "sessions", "task"].includes(route.screen) ? "projects" : "inbox";
+  // The rail keeps the list the main area was reached from. With task_view a session or the
+  // files keep the list they were opened from, and a project's chat has home.
+  let list;
+  if (!can("task_view")) list = ["projects", "project", "files", "sessions", "task"].includes(route.screen) ? "projects" : "inbox";
+  else if (["home", "project", "task"].includes(route.screen)) list = "home";
+  else if (route.screen === "inbox") list = "inbox";
+  else if (["projects", "sessions"].includes(route.screen)) list = "projects";
+  else list = lastList.current;
+  lastList.current = list;
   const railList = { home: html`<${Home} rail />`, projects: html`<${Projects} rail />`, inbox: html`<${Inbox} rail />` }[list];
-  const listScreen = route.screen === "home" || route.screen === "projects" || (route.screen === "inbox" && !can("task_view"));
+  const listScreen = route.screen === "home" || route.screen === "projects" || route.screen === "inbox";
+  const railTab = can("task_view") || list !== "inbox" ? list : "home";
   return html`
     <div class="app" data-wide>
       <aside class="rail">
-        <div class="rail-head"><span class="rail-name">${state.site.name}</span><${Tabs} current=${top ? route.screen : list === "inbox" ? "home" : list} rail /></div>
+        <div class="rail-head"><span class="rail-name">${state.site.name}</span><${Tabs} current=${top ? route.screen : railTab} rail /></div>
         <div class="rail-body">${railList}</div>
       </aside>
       <div class="stage">
         <${Notices} />
         <main class="screen" id="main">
           ${listScreen
-            ? html`<p class="placeholder">${!can("task_view") && (shows("chat") || shows("terminal")) ? "Choose a session." : "Choose a project."}</p>`
+            ? html`<p class="placeholder">${(!can("task_view") || list === "inbox") && (shows("chat") || shows("terminal")) ? "Choose a session." : "Choose a project."}</p>`
             : html`<${Screen} route=${route} />`}
         </main>
       </div>

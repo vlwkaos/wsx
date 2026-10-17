@@ -1,9 +1,8 @@
 // Inbox: every session by what it needs: your answer, nothing yet, a look, or nothing at all.
-// The home screen without task_view; with it, "All sessions" (#/sessions) under home.
+// The home screen without task_view; with it, the Sessions tab (#/sessions) beside home.
 import { api } from "./api.js";
 import { elapsed, html, Icon, useNow, useState } from "./lib.js";
 import { can, isAgent, isNew, listedSessions, sessionLink, shows, stateOf, useStore } from "./store.js";
-import { Back } from "./ui.js";
 
 // One session. Left: a state mark. Middle: the work first, project › worktree, then the
 // session and its provider, and for a working session what it does. Right: the state
@@ -113,9 +112,7 @@ export function Inbox({ rail }) {
             </div>`)}
         </section>` : null}`;
   }
-  const top = !rail && (can("task_view")
-    ? html`<header class="bar"><${Back} fallback="#/" /><div class="bar-title"><span class="bar-label">All sessions</span></div></header>`
-    : html`<h1 class="title">Inbox</h1>`);
+  const top = !rail && html`<h1 class="title">${can("task_view") ? "Sessions" : "Inbox"}</h1>`;
   return html`
     <div class="page">
       ${top}

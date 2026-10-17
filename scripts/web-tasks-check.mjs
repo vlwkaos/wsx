@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Real-browser check of manager mode on the page (docs/web-client.md "Tasks"), driven over the
 // Chrome DevTools Protocol. Called by `test-web-client.py --part tasks --browser`.
-//   web-tasks-check.mjs <site-url> <code> <project-id> <capture-dir> <home order> <slop-audit.js|""> <plans-id> <restart-file>
+//   web-tasks-check.mjs <site-url> <code> <project-id> <capture-dir> <home order> <slop-audit.js|""> <plans-id> <restart-file> <adopted-session>
 // <home order> is the project names as home must list them, comma-separated. <plans-id> is a
 // project whose #1 waits as briefed (rewritten prompt WORK keys.txt), for the brief journey.
 // The project has: #1 and #4 blocked on a host, #2 ready with Human Verify, #3 ready to land,
@@ -11,12 +11,14 @@
 // the server with another site name, so it serves another build; it writes <restart-file>.done.
 // Each capture is saved with the slop audit and, on a phone, the mobile audit of
 // /ui-view-standards beside it (WSX_MOBILE_AUDIT names the mobile audit).
+// <adopted-session> is a done agent session ("old chat") in the project's plain git worktree
+// `old-work`, which no task owns; the project's task copies are on `wsx/t<n>`.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { launch } from "./web-cdp.mjs";
 
-const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile] = process.argv.slice(2);
+const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile, adoptedArg] = process.argv.slice(2);
 const project = Number(projectArg);
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = await launch({
   captures, prefix: "tasks-", timeoutSeconds: 300,
@@ -61,7 +63,7 @@ async function sound(label) {
   const seen = await evaluate(`(() => {
     const free = (node) => node.closest('.code-block pre, .table-wrap, .diagram, .timeline-output');
     const wide = [...document.querySelectorAll('#app *')].filter((node) => !free(node) && node.getBoundingClientRect().right > innerWidth + 0.5);
-    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .reservoir, .slash, .task-sheet')
+    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .reservoir, .adopted-strip, .slash, .task-sheet')
       && /auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1);
     return { wide: wide.slice(0, 3).map((node) => node.className || node.tagName), scrollers: scrollers.map((node) => node.className),
       raw: /\\b(null|undefined|NaN)\\b/.test(document.querySelector('#app').innerText), page: document.scrollingElement.scrollTop + document.scrollingElement.scrollLeft };
@@ -144,7 +146,31 @@ await pair();
 const chat = `#/p/${project}`;
 const page = (n) => `#/p/${project}/t/${n}`;
 
-// --- Home: one row per project, needs first, then by activity; the bottom bar is Home and Settings.
+// The tabs to the inbox and the projects: each one link in the bar, inside the first screen.
+const TABS = "Home,Sessions,Projects,Settings";
+async function tabsInView() {
+  const bar = phone() ? ".tabbar a" : ".rail-tabs a";
+  if ((await text(bar)).join() !== TABS) await fail(`the tabs at ${size[0]}x${size[1]} are ${await text(bar)}`);
+  const out = await evaluate(`[...document.querySelectorAll(${JSON.stringify(bar)})].filter((node) => { const r = node.getBoundingClientRect();
+    return !(r.width > 0 && r.height >= 24 && r.top >= 0 && r.bottom <= innerHeight + 0.5 && r.left >= 0 && r.right <= innerWidth + 0.5); }).map((node) => node.textContent)`);
+  if (out.length) await fail(`at ${size[0]}x${size[1]} these tabs are not in the first screen: ${out}`);
+}
+// The adopted strip or section: [branch, context, state] per row.
+const adoptedRows = () => evaluate(`[...document.querySelectorAll('.adopted .row')].map((row) => [row.querySelector('.row-worktree').textContent,
+  row.querySelector('.row-context').textContent, row.querySelector('.row-state')?.innerText.trim().replace(/\\s+/g, ' ') ?? ''])`);
+async function adoptedOnly(where) {
+  await until("document.querySelectorAll('.adopted .row').length > 0", `${where} shows no adopted item`);
+  const rows = await adoptedRows();
+  // ^ Only the plain worktree: the task copies (wsx/t<n>) are the tasks', the main checkout has
+  // only the manager, and an item never repeats.
+  if (rows.length !== 1 || rows[0][0] !== "old-work" || rows[0][1] !== "old chat · claude" || !/^done (now|\d+[mhd] ago)$/.test(rows[0][2])) {
+    await fail(`${where}: the adopted items are ${JSON.stringify(rows)}`);
+  }
+  if (await count(".adopted button, .adopted input, .adopted .new-session, .adopted .link-action")) await fail(`${where}: an adopted item has a control`);
+  if (await evaluate("document.querySelector('.adopted .row a').getAttribute('href')") !== `#/s/${adoptedArg}/chat`) await fail(`${where}: the adopted row does not open its session`);
+}
+
+// --- Home: one row per project, needs first, then by activity; the bottom bar is Home, Sessions, Projects and Settings.
 await go("#/");
 await until("document.querySelectorAll('.home-row').length >= 3", "home does not list the projects");
 // ^ The task summaries load after the projects; the order settles when they are in.
@@ -164,25 +190,43 @@ for (const [name, status] of Object.entries(sessionRows)) {
   const row = homeRows.find((item) => item.name === name);
   if (row?.status !== status || row.count || !/ago|now/.test(row.state)) await fail(`the ${name} row reads ${JSON.stringify(row)}, not "${status}" with a time`);
 }
-if ((await text(".tabbar a")).join() !== "Home,Settings") await fail(`the bottom bar is ${await text(".tabbar a")}`);
+await tabsInView();
 // ^ The server runs this page's build: no new-version pill.
 if (await count(".build-pill")) await fail("the new-version pill shows on the same build");
 await shot("home");
-// "All sessions": the session inbox, without task workers and the manager.
-await evaluate("[...document.querySelectorAll('.home-more a')].find((node) => node.textContent === 'All sessions').click()");
-await until("location.hash === '#/sessions' && /All sessions/.test(document.querySelector('.bar-label')?.textContent ?? '')", "All sessions did not open");
+// Sessions, one tap from home: the session inbox, without task workers and the manager, with
+// the adopted worktree's session.
+await click(".tabbar a[href='#/sessions']");
+await until("location.hash === '#/sessions' && document.querySelector('h1.title')?.textContent === 'Sessions'", "the Sessions tab did not open the inbox");
 const listedSessions = await text(".rows .row-context");
 if (listedSessions.some((line) => /\btask-(\d+|manager)\b|\b(task|manager)$/.test(line))) await fail(`the session list shows task sessions: ${JSON.stringify(listedSessions)}`);
+if (!listedSessions.includes("old chat · claude")) await fail(`the session list misses the adopted session: ${JSON.stringify(listedSessions)}`);
+if ((await text(".tabbar a[aria-current=page]")).join() !== "Sessions") await fail("the Sessions tab is not marked current");
+await shot("sessions");
+// Projects, one tap from home: a project opens its worktrees, not its chat; the adopted
+// worktree is a read-only item at the top.
+await click(".tabbar a[href='#/']");
+await until("location.hash === '#/' && !!document.querySelector('.home-row')", "the Home tab did not return home");
+await click(".tabbar a[href='#/projects']");
+await until("location.hash === '#/projects' && document.querySelectorAll('.row-open').length >= 3", "the Projects tab did not open the projects");
+await evaluate(`[...document.querySelectorAll('.row-open')].find((node) => node.querySelector('.row-label').textContent === 'ui').click()`);
+await until(`location.hash === '#/p/${project}/sessions' && !!document.querySelector('.worktree')`, "a project in Projects did not open its worktrees");
+await adoptedOnly("the worktree list");
+await shot("project-worktrees");
 await evaluate("document.querySelector('.bar a.icon-button').click()");
-await until("location.hash === '#/' && !!document.querySelector('.home-row')", "Back did not return home");
-await go("#/settings");
-await until("[...document.querySelectorAll('.settings a')].some((node) => node.textContent === 'All sessions')", "Settings has no All sessions link");
+await until("location.hash === '#/projects'", "Back from the worktrees did not return to Projects");
 // A row opens the project's chat.
 await go("#/");
 await until("!!document.querySelector('.home-row')", "home did not come back");
 await evaluate(`[...document.querySelectorAll('.home-row')].find((row) => row.querySelector('.row-label').textContent === 'ui').click()`);
 await until(`location.hash === ${JSON.stringify(chat)} && !!document.querySelector('.composer-field') && !!document.querySelector('.reservoir-head') && !!document.querySelector('.log .bubble')`, "a home row did not open the chat");
 if (await count(".tabbar")) await fail("the chat shows the bottom bar");
+// The chat shows the adopted worktree too; a tap opens its session, and Back returns.
+await adoptedOnly("the project chat");
+await click(".adopted .row a");
+await until(`location.hash === '#/s/${adoptedArg}/chat'`, "the adopted item did not open its session");
+await evaluate("history.back()");
+await until(`location.hash === ${JSON.stringify(chat)} && !!document.querySelector('.adopted')`, "Back did not return from the adopted session");
 
 // "Since you left": this device left the project two hours ago; the line names what happened.
 await go("#/");
@@ -513,6 +557,24 @@ if ((await text(".task-fold > .timeline-head")).join() !== "Brief v2") await fai
 await key("Escape", 27);
 await until("!document.querySelector('dialog.task-sheet')", "Escape did not close the brief sheet");
 
+// --- Narrow and wide: the tabs in the first screen, Projects to the worktrees with the adopted item.
+for (const next of [[320, 568, 2], [1280, 800, 1]]) {
+  await resize(next);
+  await go("#/");
+  await until("!!document.querySelector('.home-row')", "home did not open");
+  await tabsInView();
+  await shot("home");
+  // ^ On a wide screen the rail keeps the list it was reached from.
+  await click(`${phone() ? ".tabbar" : ".rail-tabs"} a[href='#/projects']`);
+  await until(`location.hash === '#/projects' && !!document.querySelector('${phone() ? "" : ".rail "}.row-open')`, "the Projects tab did not open");
+  await evaluate(`[...document.querySelectorAll('.row-open')].find((node) => node.querySelector('.row-label').textContent === 'ui').click()`);
+  await until(`location.hash === '#/p/${project}/sessions' && !!document.querySelector('.adopted')`, "Projects did not open the worktrees");
+  await adoptedOnly(`the worktree list at ${size[0]}x${size[1]}`);
+  if (!phone() && (await text(".rail-tabs a[aria-current=page]")).join() !== "Projects") await fail("the rail does not keep Projects for the worktrees");
+  await shot("project-worktrees");
+  await go(chat);
+  await until("!!document.querySelector('.composer-field')", "the chat did not come back");
+}
 // --- Wide: the chat in its column, the sheet a panel at the right.
 await go(chat);
 await until("!!document.querySelector('.reservoir-head')", "the ui chat did not come back");
@@ -560,6 +622,6 @@ problems.splice(quietFrom);
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
-console.log(`tasks page: home and All sessions, since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, the reservoir (count, open, rows with one action, a pulsing working chip, a stripped title, facts, Allow and Approve in place without moving the chat, joined status lines), the ⋯ menu, the project page (markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (85%, Escape, Back, swipe, draft kept, two steps, plain headings, Fail with and without a note, Pass, Land, approval first, Deny, Allow for project), the # picker, the deep link, the brief (reservoir row, sections, talk as bubbles with Brief v2, Start), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions and Projects tabs in the first screen, adopted worktree items (no task copy, read only, opens its session), since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, the reservoir (count, open, rows with one action, a pulsing working chip, a stripped title, facts, Allow and Approve in place without moving the chat, joined status lines), the ⋯ menu, the project page (markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (85%, Escape, Back, swipe, draft kept, two steps, plain headings, Fail with and without a note, Pass, Land, approval first, Deny, Allow for project), the # picker, the deep link, the brief (reservoir row, sections, talk as bubbles with Brief v2, Start), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

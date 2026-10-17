@@ -2559,6 +2559,39 @@ def task_journey(args):
                     return pane.get('agent') and (pane['exited'] or then == 'stay')
                 wait(reported, '%s session %s' % (name, then))
                 time.sleep(0.05)
+            # An adopted worktree: `ui` gets a plain git worktree that no task owns, synced to wsxd
+            # as a wsx client does (`wsx status` lists the git worktrees), with an agent session.
+            adopted_path = work / 'ui-old'
+            subprocess.run(['git', 'worktree', 'add', '-q', '-b', 'old-work', str(adopted_path)],
+                           cwd=other, env=env, check=True, capture_output=True, timeout=20)
+            adopted_path = adopted_path.resolve()
+            cli('status', '--json')
+            current = call('snapshot', None)['data']
+            ui_worktrees = {Path(item['path']).name: item for item in current['worktrees'] if names[item['project_id']] == 'ui'}
+            # ^ wsxd lists the task copies and the plain worktree after the sync.
+            assert {'ui', 'ui-old', 'ui-t1', 'ui-t2', 'ui-t3', 'ui-t4'} <= set(ui_worktrees), sorted(ui_worktrees)
+            assert ui_worktrees['ui-old']['branch'] == 'old-work' and ui_worktrees['ui-t1']['branch'] == 'wsx/t1', ui_worktrees
+            created = call('session_create', {'worktree_id': ui_worktrees['ui-old']['id'], 'label': 'old chat',
+                'command': [sys.executable, str(agent_script), 'done', 'stay'], 'rows': 12, 'cols': 80})
+            assert created['type'] == 'created', created
+            adopted_session = created['data']['id']
+
+            def adopted_reported():
+                current = call('snapshot', None)['data']
+                pane_id = next(s['primary_pane'] for s in current['sessions'] if s['id'] == adopted_session)
+                return next(p for p in current['panes'] if p['id'] == pane_id).get('agent')
+            wait(adopted_reported, 'adopted session reported')
+
+            def adopted_git():
+                listing = subprocess.run(['git', 'worktree', 'list', '--porcelain'], cwd=other, env=env, check=True,
+                                         capture_output=True, text=True, timeout=20).stdout
+                block = next(part for part in listing.split('\n\n') if part.split('\n', 1)[0].endswith('/ui-old'))
+                head = subprocess.run(['git', 'rev-parse', 'refs/heads/old-work'], cwd=other, env=env, check=True,
+                                      capture_output=True, text=True, timeout=20).stdout.strip()
+                status = subprocess.run(['git', 'status', '--porcelain'], cwd=adopted_path, env=env, check=True,
+                                        capture_output=True, text=True, timeout=20).stdout
+                return block, head, status
+            adopted_before = adopted_git()
 
         push = start(work, [node, str(ROOT / 'scripts/web-push-fixture.mjs'), str(work / 'push.jsonl')],
                      stdout=subprocess.PIPE, text=True)
@@ -2622,6 +2655,9 @@ digest_max_seconds = 6
         # Chips and the `#` picker: attention order, then the newest first.
         assert [row['id'] for row in overview['tasks']] == [1, 3, 2], overview['tasks']
         assert overview['tasks'][2]['title'] == 'WORK a.txt HV'
+        # Every task's branch, from each record: a worktree on one is a task's, never adopted.
+        branches = sorted(js('task', 'show', n, '-p', 'demo')['branch'] for n in (1, 2, 3))
+        assert overview['task_branches'] == branches == ['wsx/t1', 'wsx/t2', 'wsx/t3'], overview['task_branches']
         everything = steady(owner, 'GET', '/api/tasks')[1]
         assert sorted(item['project'] for item in everything) == sorted(ids.values()), everything
         detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
@@ -2833,7 +2869,7 @@ digest_max_seconds = 6
             restarter.start()
             result = check(work, [node, str(ROOT / 'scripts/web-tasks-check.mjs'), owner.origin + '/', browser_code,
                                   str(ids['ui']), str(args.captures), ','.join(home_order),
-                                  str(audit) if audit.exists() else '', str(ids['plans']), str(restart)], timeout=360)
+                                  str(audit) if audit.exists() else '', str(ids['plans']), str(restart), str(adopted_session)], timeout=360)
             assert result.returncode == 0, result.stdout + result.stderr
             # ^ The server restarted: the event stream starts again for the checks after.
             assert (work / 'restart-owner.done').exists()
@@ -2841,6 +2877,11 @@ digest_max_seconds = 6
             events.expect('workspace')
             owner_name = 'owner next'
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
+            # ^ The page only read the adopted worktree: the same git entry, branch head and files.
+            assert adopted_git() == adopted_before, (adopted_git(), adopted_before)
+            kept = next(item for item in call('snapshot', None)['data']['sessions'] if item['id'] == adopted_session)
+            assert kept['label'] == 'old chat' and kept['worktree_id'] == ui_worktrees['ui-old']['id'], kept
+            ok('adopted worktree: its git worktree entry, branch head, status and session are unchanged after the page')
 
         # --- Task notifications: at once after the merge window, a digest after a quiet time,
         # never to a device whose page shows the project.

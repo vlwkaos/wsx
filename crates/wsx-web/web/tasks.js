@@ -8,6 +8,7 @@ import { Back, toast } from "./ui.js";
 import { grow, isolate, release, Suggestions } from "./chat.js";
 import { Bubble, conversation, StatusLine, Typing } from "./bubbles.js";
 import { ProjectFacts } from "./story.js";
+import { Adopted } from "./adopted.js";
 import { TaskPage } from "./task.js";
 import { ProjectPage } from "./page.js";
 
@@ -579,6 +580,7 @@ export function Manager({ project: id, task, page }) {
         <div class="bar-tools"><${More} project=${project} /></div>
       </header>
       <div class="chat">
+        <${Adopted} project=${project} strip />
         <${SinceLine} project=${id} />
         <div class="log-wrap">
           <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation with the manager" tabindex="0">

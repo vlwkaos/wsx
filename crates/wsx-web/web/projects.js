@@ -1,9 +1,10 @@
 // Projects: every project this site may reach. A project opens its worktrees and
-// their sessions; Files and New session stay on each row.
+// their sessions (with task_view too, not its chat); Files and New session stay on each row.
 import { html, useNow } from "./lib.js";
 import { can, listedSessions, shows, stateOf, useStore } from "./store.js";
 import { NewSession, SessionRow } from "./inbox.js";
 import { Back } from "./ui.js";
+import { Adopted } from "./adopted.js";
 
 const counted = (count) => (count === 1 ? "1 session" : `${count} sessions`);
 // How many task items wait for the owner in a project, after its session count.
@@ -28,7 +29,7 @@ export function Projects({ rail }) {
         ${store.projects.map((project) => html`
           <li class="row" key=${project.id}>
             <div class="row-link" aria-current=${rail && Number(open) === project.id ? "page" : null}>
-              <a class="row-main row-open" href=${`#/p/${project.id}`}>
+              <a class="row-main row-open" href=${can("task_view") ? `#/p/${project.id}/sessions` : `#/p/${project.id}`}>
                 <span class="row-label">${project.name}</span>
                 <span class="row-context">${counted(count(project))}${waiting(store, project)}</span>
               </a>
@@ -75,6 +76,7 @@ export function Project({ id, back = "#/projects" }) {
         <div class="bar-tools">${filesLink(project)}</div>
       </header>
       <div class="scroll">
+        ${can("task_view") && html`<${Adopted} project=${project} />`}
         ${worktrees.map((worktree) => {
           const own = sessions.filter((session) => session.worktree === worktree.id);
           return html`

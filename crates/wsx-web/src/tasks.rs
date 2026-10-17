@@ -186,6 +186,16 @@ pub fn overview(scope: &Scope) -> Value {
         ));
     }
     needs.sort_by_key(|(rank, order, _)| (*rank, *order));
+    // ^ Every task's branch, before the cut of `tasks`: a worktree on one of them is a task's,
+    // never an adopted item (docs/web-client.md "Project screen").
+    let mut task_branches: Vec<&str> = tasks
+        .iter()
+        .filter_map(|(_, record)| record.as_ref().ok())
+        .map(|record| record.branch.as_str())
+        .filter(|branch| !branch.is_empty())
+        .collect();
+    task_branches.sort_unstable();
+    task_branches.dedup();
     listed.sort_by_key(|(order, recent, _)| (*order, *recent));
     listed.truncate(TASKS_LISTED);
     // ^ The latest manager entry and reply, for the home row (docs/web-client.md "Home").
@@ -210,6 +220,7 @@ pub fn overview(scope: &Scope) -> Value {
         "working": working,
         "stopped": stopped,
         "tasks": listed.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
+        "task_branches": task_branches,
         "decisions": decisions(&lines),
         "resolutions": resolutions(&tasks, &lines, now),
         "last_reply": last_reply,
