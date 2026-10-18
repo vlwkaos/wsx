@@ -265,7 +265,9 @@ function Reservoir({ project, items, tasks }) {
     if (Date.now() - done.at > CLEAR_MS || !here) return;
     const next = keys[Math.min(done.index, keys.length - 1)];
     const row = next && node.current?.querySelector(`.need[data-key="${CSS.escape(next)}"]`);
-    (row?.querySelector(".need-action, .row-open") ?? node.current?.querySelector(".reservoir-head"))?.focus({ preventScroll: true });
+    // ^ The row's action first; its title only when the site may not act.
+    const target = row?.querySelector(".need-action") ?? row?.querySelector(".row-open") ?? node.current?.querySelector(".reservoir-head");
+    target?.focus({ preventScroll: true });
   }, [keys.join(), heard]);
   if (!items.length && !working.length && !tasks.length) return null;
   const onDone = (key, index) => {
