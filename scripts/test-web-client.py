@@ -2500,8 +2500,15 @@ def task_journey(args):
         wait_state(1, 'blocked')
         wait_state(2, 'ready')
         wait_state(3, 'ready')
-        # Two briefs in `plans`: #1 for the page, #2 for the API.
-        assert js('task', 'new', 'Let me jump between projects from the keyboard, without the mouse REWRITE WORK keys.txt',
+        # Two briefs in `plans`: #1 for the page, #2 for the API. #1 is a real brief
+        # (scripts/fixtures/task-brief.json) with an open question whose second paragraph a model
+        # indented by four spaces, and a method with a fenced command.
+        real_brief = json.loads((Path(__file__).parent / 'fixtures' / 'task-brief.json').read_text())
+        real_brief['open_questions'] = ['Keep the old list?\n\n    An indented paragraph that is prose, not code.', *real_brief['open_questions']]
+        real_brief['methods'] = [*real_brief['methods'], 'Run the check:\n\n```sh\ncargo nextest run\n```']
+        brief_file = work / 'brief.json'
+        brief_file.write_text(json.dumps(real_brief))
+        assert js('task', 'new', 'Let me jump between projects from the keyboard, without the mouse REWRITE WORK keys.txt\nBRIEF_FILE %s' % brief_file,
                   '-p', 'plans')['id'] == 1
         assert js('task', 'new', 'REWRITE WORK two.txt', '-p', 'plans')['id'] == 2
         for n in (1, 2):
@@ -2665,10 +2672,9 @@ digest_max_seconds = 6
         assert detail['result']['human_verify'] == [{'check': 'open the file', 'pass_if': 'it has text'}]
         for heading in ('## Asked', '## Summary', '## Decisions', '## Changes', '## Evidence', '## Human Verify', '## Left open'):
             assert heading in detail['report'], (heading, detail['report'][:400])
-        kinds = [entry['kind'] for entry in detail['timeline']['entries']]
-        assert kinds[:2] == ['created', 'message'] and 'result' in kinds and 'revision' in kinds, kinds
+        assert 'timeline' not in detail, list(detail)
         assert detail['verification'] is None and detail['overlaps'] == []
-        ok('read models: needs-you order (blocked, verify, land), denials, report sections, timeline, actions by state')
+        ok('read models: needs-you order (blocked, verify, land), denials, report sections, no timeline, actions by state')
 
         # --- Fixed actions go straight to the task host.
         def act(n, action, body, site=owner, project=demo):
@@ -2775,12 +2781,27 @@ digest_max_seconds = 6
             assert refusal in refused.stderr, refused.stderr
         titled = js('task', 'new', 'Owner report: WORK t.txt', '--title', ' Short words ', '-p', 'demo')['id']
         stripped = js('task', 'new', 'Owner report: tool permission for WORK u.txt\nmore', '-p', 'demo')['id']
-        for n in (titled, stripped):
+        # ^ A lead-in with brackets (and a colon in them) names its subject; a bare one gives
+        # way to the next line; a `--title` loses it too; `Owner:` alone is not a lead-in.
+        bracketed = js('task', 'new', 'Owner report (UX failures: how a task asks):\n1. WORK v.txt', '-p', 'demo')['id']
+        bare = js('task', 'new', 'Owner request:\n\nWORK w.txt now', '-p', 'demo')['id']
+        retitled = js('task', 'new', 'WORK x.txt', '--title', 'Owner asked: short words', '-p', 'demo')['id']
+        plain = js('task', 'new', "Owner: Alice's WORK y.txt", '-p', 'demo')['id']
+        made = (titled, stripped, bracketed, bare, retitled, plain)
+        for n in made:
             wait(lambda: task_state(n) == 'ready', 'titled task %d' % n)
             js('task', 'close', n, '--discard', '-p', 'demo')
+        expected = {titled: 'Short words', stripped: 'tool permission for WORK u.txt', bracketed: 'UX failures: how a task asks',
+                    bare: 'WORK w.txt now', retitled: 'short words', plain: "Owner: Alice's WORK y.txt"}
         titles = {row['id']: row['title'] for row in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['tasks']}
-        assert titles[titled] == 'Short words' and titles[stripped] == 'tool permission for WORK u.txt', titles
-        ok('project page: written by the manager host, none without a manager, 404 outside the grant; titles: --title, its refusals, "Owner report:" left out')
+        listed = {row['id']: row['title'] for row in js('task', 'list', '-p', 'demo', '--all')['tasks']}
+        assert all(titles[n] == listed[n] == title for n, title in expected.items()), (titles, listed)
+        # ^ Only the shown title changes: the record and the prompt keep what was written.
+        record = Path(js('task', 'show', retitled, '-p', 'demo')['log']).parent / 'task.json'
+        assert json.loads(record.read_text())['title'] == 'Owner asked: short words'
+        logged = Path(js('task', 'show', bracketed, '-p', 'demo')['log']).read_text().splitlines()
+        assert json.loads(logged[1])['text'].startswith('Owner report (UX failures: how a task asks):'), logged[1]
+        ok('project page: written by the manager host, none without a manager, 404 outside the grant; titles: --title, its refusals, "Owner <words>:" left out when shown and kept on disk')
 
         # --- Refusals: the capability and the grant come from the site file only.
         for method, route, body in (('POST', '/api/tasks/%d/say' % demo, {'text': 'hi'}),

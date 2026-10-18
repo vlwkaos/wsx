@@ -36,7 +36,6 @@ const LAST_REPLY_CHARS: usize = 120;
 /// The home row's last reply and activity come from this much of the manager log's end.
 const MANAGER_TAIL_BYTES: u64 = 64 * 1024;
 const CHAT_ENTRIES: usize = 200;
-const TIMELINE_ENTRIES: usize = 300;
 const MAX_REPORT_BYTES: u64 = 1024 * 1024;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -385,7 +384,7 @@ fn deployed(scope: &Scope, landed: Option<&str>) -> Value {
     json!({ "configured": true, "deployed": has_landed, "behind": deploy["behind"] })
 }
 
-/// One task: its report, timeline, overlaps and the actions its state allows.
+/// One task: its report, brief, talk, overlaps and the actions its state allows.
 pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     let dir = open_task(scope, task)?;
     let record = dir.read_record().map_err(internal)?;
@@ -420,7 +419,6 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     summary["phase"] = json!(record.phase);
     summary["brief"] = json!(brief::read(&dir));
     summary["talk"] = talk(&log);
-    summary["timeline"] = timeline(&log);
     summary["overlaps"] = if record.state.is_open() {
         view::overlaps(&record, &records, true)
     } else {
@@ -491,30 +489,6 @@ fn talk(log: &[task::LogEntry]) -> Value {
         }
     }
     json!(rows)
-}
-
-/// The log without agent progress: each run of progress lines becomes one `steps` entry
-/// with its count and last line.
-fn timeline(log: &[task::LogEntry]) -> Value {
-    let mut rows: Vec<Value> = Vec::new();
-    for entry in log {
-        if let LogEvent::Agent { text } = &entry.event {
-            match rows.last_mut() {
-                Some(last) if last["kind"] == "steps" => {
-                    last["count"] = json!(last["count"].as_u64().unwrap_or(0) + 1);
-                    last["last"] = json!(text);
-                    last["unix_ms"] = json!(entry.unix_ms);
-                }
-                _ => rows.push(
-                    json!({ "kind": "steps", "count": 1, "last": text, "unix_ms": entry.unix_ms }),
-                ),
-            }
-            continue;
-        }
-        rows.push(serde_json::to_value(entry).unwrap_or_default());
-    }
-    let skipped = rows.len().saturating_sub(TIMELINE_ENTRIES);
-    json!({ "entries": rows.split_off(skipped), "skipped": skipped })
 }
 
 /// The manager conversation after message `after`, and whether it runs or thinks.

@@ -1,13 +1,15 @@
-// The project page: one markdown file with a mermaid graph that the manager keeps up to date
-// with the Edit tool, shown in the sheet over the chat (docs/tasks.md "Project page",
-// docs/web-client.md "Project page").
+// The project page: the deploy, the release and the main checkout in words, then one markdown
+// file with a mermaid graph that the manager keeps up to date with the Edit tool, shown in the
+// sheet over the chat (docs/tasks.md "Project page", docs/web-client.md "Project page").
 import { api } from "./api.js";
 import { ago, html, Icon, useEffect, useNow, useRef, useState } from "./lib.js";
-import { events } from "./store.js";
+import { events, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { withChips } from "./tasks.js";
+import { ProjectFacts } from "./story.js";
 
 export function ProjectPage({ project, onClose, grip }) {
+  const overview = useStore().tasks[project];
   const [page, setPage] = useState(null);
   const [failure, setFailure] = useState("");
   const live = useRef(true);
@@ -35,10 +37,11 @@ export function ProjectPage({ project, onClose, grip }) {
         </div>
       </header>
       <div class="scroll project-page">
+        <${ProjectFacts} project=${project} overview=${overview} />
         ${failure ? html`<p class="error empty" role="alert">${failure}</p>`
           : !page ? html`<p class="empty">Loading…</p>`
           : page.text == null ? html`<p class="empty">No page yet. The manager writes it once it starts.</p>`
-          : html`<div class="task-body"><${Markdown} text=${page.text} words=${withChips(project)} /></div>`}
+          : html`<div class="task-body"><${Markdown} text=${page.text} words=${withChips(project)} prose /></div>`}
       </div>
     </div>`;
 }

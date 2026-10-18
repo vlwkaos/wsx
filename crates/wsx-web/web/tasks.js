@@ -1,13 +1,13 @@
-// Manager mode on a project: the manager chat as messages with short task chips, what is open
-// in one reservoir over the composer, the `#` task picker, and a task's or the project page's
-// sheet over the chat (docs/web-client.md "Tasks"). Fixed actions go straight to wsx.
+// Manager mode on a project: the manager chat as messages with short task chips, what needs
+// the owner and what runs in one reservoir over the composer, the `#` task picker, and a
+// task's or the project page's sheet over the chat (docs/web-client.md "Tasks"). Fixed actions
+// go straight to wsx.
 import { api } from "./api.js";
 import { html, Icon, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, events, leaveFor, shows, state, touch, update, useStore } from "./store.js";
 import { Back, toast } from "./ui.js";
 import { grow, isolate, release, Suggestions } from "./chat.js";
 import { Bubble, conversation, StatusLine, Typing } from "./bubbles.js";
-import { ProjectFacts } from "./story.js";
 import { Adopted } from "./adopted.js";
 import { TaskPage } from "./task.js";
 import { ProjectPage } from "./page.js";
@@ -131,13 +131,15 @@ async function act(project, item, action, body = {}) {
   const answer = await api(path, { method: "POST", json: body });
   const name = item.kind === "approval" ? item.label : `#${item.task}`;
   announce(name, action, answer);
-  loadTasks(project);
+  // ^ Awaited, so the row has left the list when the reservoir moves the focus on.
+  await loadTasks(project);
   return answer;
 }
 
 // One open item in the reservoir: its chip (an approval names its task in its label), its
-// title and what it waits for, with its one action. The title opens the task's sheet, where the other actions are.
-function NeedRow({ project, item }) {
+// title and what it waits for, with its one action. The title opens the task's sheet, where the
+// other actions are. `onDone` hears of a success, so the focus moves to the next row.
+function NeedRow({ project, item, index, onDone }) {
   const key = `${project}/${itemKey(item)}`;
   const draft = actionOf(key);
   const [, renew] = useState(0);
@@ -153,6 +155,7 @@ function NeedRow({ project, item }) {
       await act(project, item, action, body);
       draft.field = null;
       draft.text = "";
+      onDone(itemKey(item), index);
     } catch (failure) {
       draft.error = failure.message;
     }
@@ -177,6 +180,7 @@ function NeedRow({ project, item }) {
     refresh();
     try {
       for (const ask of asks) await act(project, item, "allow", grantBody(ask, false));
+      onDone(itemKey(item), index);
     } catch (failure) {
       draft.error = failure.message;
     }
@@ -207,7 +211,7 @@ function NeedRow({ project, item }) {
     <span class="row-label">${label}</span>
     ${context && html`<span class="row-context">${context}</span>`}`;
   return html`
-    <li class="need">
+    <li class="need" data-key=${itemKey(item)}>
       <div class="row-link">
         ${item.task != null && item.kind !== "approval" ? html`<${TaskChip} project=${project} id=${item.task} />`
           : html`<span class="mark" data-tone=${KIND_TONE[item.kind]} aria-hidden="true"></span>`}
@@ -236,33 +240,67 @@ const RunningRow = ({ project, task }) => html`
     </div>
   </li>`;
 
-// Everything open, in one place over the composer: "3 need you · 2 working", a tap opens the
-// list. It never moves the chat.
-function Reservoir({ project, items, tasks, overview }) {
+// ^ A row that leaves later than this after its action was not cleared by it: no focus move.
+const CLEAR_MS = 5000;
+
+// The decision list, pinned over the composer (docs/web-client.md "Project screen"). Closed it
+// is one line: "2 need you · #6 <title> +1 more". Open, every item that waits for the owner in
+// the server's order, each with its one action, then the tasks that run. A cleared row leaves
+// and the focus moves to the next row's action. It never moves the chat.
+function Reservoir({ project, items, tasks }) {
   const [open, setOpen] = useState(false);
+  const node = useRef();
+  const cleared = useRef(null);
+  // ^ The reload may remove the row before its action returns: `onDone` runs the effect again.
+  const [heard, hear] = useState(0);
   const working = tasks.filter(running);
+  const keys = items.map(itemKey);
+  useLayoutEffect(() => {
+    const done = cleared.current;
+    if (!done || keys.includes(done.key)) return;
+    cleared.current = null;
+    // ^ Only when the focus was in the list, or left with the removed button.
+    const focus = document.activeElement;
+    const here = !focus || focus === document.body || node.current?.contains(focus);
+    if (Date.now() - done.at > CLEAR_MS || !here) return;
+    const next = keys[Math.min(done.index, keys.length - 1)];
+    const row = next && node.current?.querySelector(`.need[data-key="${CSS.escape(next)}"]`);
+    (row?.querySelector(".need-action, .row-open") ?? node.current?.querySelector(".reservoir-head"))?.focus({ preventScroll: true });
+  }, [keys.join(), heard]);
   if (!items.length && !working.length && !tasks.length) return null;
-  const parts = [];
-  if (items.length) parts.push(`${items.length} ${items.length === 1 ? "needs" : "need"} you`);
-  if (working.length) parts.push(`${working.length} working`);
-  const words = parts.length ? parts.join(" · ") : "Nothing needs you";
+  const onDone = (key, index) => {
+    cleared.current = { key, index, at: Date.now() };
+    hear((count) => count + 1);
+  };
+  // ^ The newest running task is the one with the highest number: stable while it works.
+  const newest = working.reduce((last, task) => (!last || task.id > last.id ? task : last), null);
+  const need = items.length ? `${items.length} ${items.length === 1 ? "needs" : "need"} you` : "";
   return html`
-    <section class="reservoir" aria-label="Open items" data-open=${open ? "" : null}>
+    <section class="reservoir" ref=${node} aria-label="Needs you and running" data-open=${open ? "" : null}>
       <button class="reservoir-head" type="button" aria-expanded=${open} aria-controls="reservoir-list" onClick=${() => setOpen(!open)}>
         ${items.length ? html`<span class="mark" data-tone="attention" aria-hidden="true"></span>` : null}
-        ${working.length ? html`<span class="mark" data-tone="accent" data-running="" aria-hidden="true"></span>` : null}
-        <span class="reservoir-words">${words}</span>
+        <span class="reservoir-words">
+          ${need || (newest ? "" : "Nothing needs you")}
+          ${newest && html`
+            ${need && html`<span class="reservoir-sep" aria-hidden="true">·</span>`}
+            <span class="task-chip"><span class="mark" data-tone="accent" data-running="" aria-hidden="true"></span>#${newest.id}</span>
+            <span class="reservoir-title">${newest.title}</span>`}
+        </span>
+        ${working.length > 1 && html`<span class="reservoir-more">+${working.length - 1} more</span>`}
         <${Icon} name="chevron" />
       </button>
-      ${open && html`
+      ${open && (items.length || working.length) ? html`
         <div class="reservoir-body" id="reservoir-list">
-          ${items.length || working.length ? html`
-            <ul class="reservoir-list">
-              ${items.map((item) => html`<${NeedRow} key=${itemKey(item)} project=${project} item=${item} />`)}
+          ${items.length ? html`
+            <ul class="reservoir-list" aria-label="Needs you">
+              ${items.map((item, index) => html`<${NeedRow} key=${itemKey(item)} project=${project} item=${item} index=${index} onDone=${onDone} />`)}
+            </ul>` : null}
+          ${working.length ? html`
+            <h2 class="label reservoir-label">Running</h2>
+            <ul class="reservoir-list" aria-label="Running">
               ${working.map((task) => html`<${RunningRow} key=${`run-${task.id}`} project=${project} task=${task} />`)}
             </ul>` : null}
-          <${ProjectFacts} project=${project} overview=${overview} />
-        </div>`}
+        </div>` : null}
     </section>`;
 }
 
@@ -594,7 +632,7 @@ export function Manager({ project: id, task, page }) {
           ${away && html`<button class="jump" type="button" onClick=${toEnd}><${Icon} name="down" />Jump to latest</button>`}
         </div>
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
-        <${Reservoir} project=${id} items=${items} tasks=${overview?.tasks ?? []} overview=${overview} />
+        <${Reservoir} project=${id} items=${items} tasks=${overview?.tasks ?? []} />
         ${can("task_act") && html`<${ManagerComposer} project=${id} busy=${typing} field=${field}
           onSent=${(message) => { atEnd.current = true; setSent(message); load(); }} />`}
       </div>
