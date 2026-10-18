@@ -18,3 +18,6 @@ tasks:
     - cargo build -p wsx -p wsx-daemon
     - python3 -B scripts/test-task.py
     - python3 -B scripts/test-web-client.py --part tasks --browser
+  deploy:
+    command: sh scripts/deploy-web-live.sh
+    approve: true
