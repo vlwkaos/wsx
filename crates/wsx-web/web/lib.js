@@ -54,6 +54,15 @@ export function clock(ms) {
     : `${date.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
 }
 
+// The first sentence of a text, on one line, at most about 200 characters: what a worker's
+// summary says first ("did x. Then y" → "did x.").
+export function firstSentence(text) {
+  const line = (text ?? "").trim().split("\n")[0].trim();
+  const end = /[.!?](\s|$)/.exec(line);
+  const sentence = end ? line.slice(0, end.index + 1) : line;
+  return sentence.length > 200 ? `${sentence.slice(0, 199).trimEnd()}…` : sentence;
+}
+
 // The present time, renewed every second while `active` is true.
 export function useNow(active) {
   const [now, setNow] = useState(Date.now());

@@ -52,6 +52,8 @@ function statusLine({ overview, first, agents }, now) {
   if (first) return { text: needWords(first), tone: needTone(first) };
   const sessions = sessionWords(agents, now);
   if (sessions && (SESSION_ATTENTION.includes(sessions.key) || sessions.key === "working")) return sessions;
+  // ^ What only the owner can check waits for them, before a release (docs/tasks.md "To check").
+  if (overview?.to_check) return { text: `${overview.to_check} to check` };
   if (overview?.last_reply) return { text: overview.last_reply };
   if (sessions) return sessions;
   // ^ Until its tasks are read, a project's row claims nothing about them.

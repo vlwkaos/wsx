@@ -4,9 +4,10 @@
 //   web-tasks-check.mjs <site-url> <code> <project-id> <capture-dir> <home order> <slop-audit.js|""> <plans-id> <restart-file> <adopted-session>
 // <home order> is the project names as home must list them, comma-separated. <plans-id> is a
 // project whose #1 waits as briefed (rewritten prompt WORK keys.txt), for the brief journey.
-// The project has: #1 and #4 blocked on a host, #2 ready with Human Verify, #3 ready to land,
-// #5 closed after a long report the manager heard of, #6 working (its prompt opens with
-// "Owner asked:"), and two pending approvals: a1 lands #3, a2 discards #4 (shown as
+// The project lands by hand and has: #1 and #4 blocked on a host, #2 ready with an item to
+// check, #3 ready, #5 closed after a long report the manager heard of, #6 working (its prompt
+// opens with "Owner asked:"), #7 and #8 landed with an item each to check (#7's summary has two
+// sentences), and two pending approvals: a1 lands #3, a2 discards #4 (shown as
 // "Approve land #3", "Approve discard #4"). Writing <restart-file> asks the test to restart
 // the server with another site name, so it serves another build; it writes <restart-file>.done.
 // Each capture is saved with the slop audit and, on a phone, the mobile audit of
@@ -118,11 +119,11 @@ async function pair() {
   await until("!!document.querySelector('.app')", "the app did not open after pairing");
 }
 
-// The task story as words: the steps shown (with a stop word), the current one, and the sentence.
-const story = () => evaluate(`(() => { const words = (li) => li.querySelector('.story-name').textContent + (li.querySelector('.story-word') ? ' ' + li.querySelector('.story-word').textContent : '');
-  const current = document.querySelector('.story-steps [aria-current=step]');
-  return { shown: [...document.querySelectorAll('.story-steps li')].map(words).join(' → '), current: current && words(current),
-    next: document.querySelector('.story-next')?.textContent.trim(), asked: !!document.querySelector('.story-asked') }; })()`);
+// The top of the task sheet as words: what changed, what to know next, and whether a step path is left.
+const story = () => evaluate(`({ summary: document.querySelector('.story-summary')?.textContent.trim() ?? '',
+  next: document.querySelector('.story-next')?.textContent.trim() ?? '', steps: document.querySelectorAll('.story-steps').length })`);
+// A task's "done" bubble, by the header of the worker's report.
+const workerBubble = (n) => `[...document.querySelectorAll('.log .bubble')].find((node) => node.querySelector('.bubble-head')?.textContent.trim().replace(/\\s+/g, ' ') === '#${n} · done')`;
 // The reservoir's rows: [chip, title, context, actions], in the order shown.
 const rows = () => evaluate(`[...document.querySelectorAll('.reservoir-list .need')].map((row) => [
   row.querySelector('.task-chip')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, row.querySelector('.row-context')?.textContent ?? '',
@@ -252,7 +253,7 @@ if (!ownerAsk || ownerAsk.author || !managerReply) await fail(`the bubbles are $
 const report = `[...document.querySelectorAll('.log .bubble')].find((node) => node.querySelector('.bubble-author')?.textContent === '#5 worker')`;
 await until(`!!${report}`, "the long report has no worker bubble");
 const head = await evaluate(`${report}.querySelector('.bubble-head').textContent.trim().replace(/\\s+/g, ' ')`);
-if (head !== "#5 · done") await fail(`the report's header reads ${head}`);
+if (head !== "#5 · ready") await fail(`the report's header reads ${head}`);
 if (!(await evaluate(`${report}.querySelector('.bubble-body').hasAttribute('data-clamped')`))) await fail("the long report is not folded");
 await shot("project", ".composer-send");
 await evaluate(`${report}.querySelector('.bubble-more').click()`);
@@ -264,24 +265,40 @@ await evaluate("document.querySelector('.log').scrollTop = 0");
 await until("!!document.querySelector('.jump')", "no jump button after scrolling the manager chat up");
 await click(".jump");
 await until(`!document.querySelector('.jump') && ${atEnd}`, "Jump to latest did not go to the end of the manager chat");
+// A landed task is one worker bubble "#7 · done" with its first sentence; Show all opens the
+// rest. No muted line repeats the landing.
+await until(`!!${workerBubble(7)} && !!${workerBubble(8)}`, "the landed tasks have no worker bubbles");
+const done = await evaluate(`({ head: ${workerBubble(7)}.querySelector('.bubble-head').textContent.trim().replace(/\\s+/g, ' '),
+  body: ${workerBubble(7)}.querySelector('.bubble-body').textContent.trim(), more: !!${workerBubble(7)}.querySelector('.bubble-more'),
+  short: !!${workerBubble(8)}.querySelector('.bubble-more') })`);
+if (done.head !== "#7 · done" || done.body !== "did: WORK d.txt HV done." || !done.more || done.short) await fail(`the done bubble reads ${JSON.stringify(done)}`);
+if (await evaluate("[...document.querySelectorAll('.status-line')].some((node) => /#[78] (landed|done)/.test(node.textContent))")) await fail("a muted line repeats a landing");
+await evaluate(`${workerBubble(7)}.querySelector('.bubble-more').click()`);
+await until(`/More words follow/.test(${workerBubble(7)}.querySelector('.bubble-body').textContent)`, "Show all did not open the done bubble");
+await evaluate(`${workerBubble(7)}.querySelector('.bubble-more').click()`);
+await until(atEnd, "the done bubble moved the chat");
 
 // --- The reservoir: one line over the composer; a tap opens one row per item with its one
 // action; the running task's chip pulses; its title has no "Owner asked:"; the deploy and the
 // main checkout under the list. Opening it keeps the chat at its end.
-if (await reservoirWords() !== "6 need you · 1 working") await fail(`the reservoir reads ${await reservoirWords()}`);
+if (await reservoirWords() !== "6 need you · 1 working · 2 to check") await fail(`the reservoir reads ${await reservoirWords()}`);
 if (await count(".reservoir-list")) await fail("the reservoir is open before a tap");
 await openReservoir();
 await pause(300);
 if (!(await evaluate(atEnd))) await fail(`opening the reservoir took the chat off its end: ${JSON.stringify(await evaluate("(() => { const log = document.querySelector('.log'); return { top: log.scrollTop, height: log.scrollHeight, client: log.clientHeight, jump: !!document.querySelector('.jump') }; })()"))}`);
 const listedRows = await rows();
 const rowWords = listedRows.map((row) => `${row[0]} ${row[3]}`);
-const expectedRows = ["#1 Allow", "#4 Allow", " Deny+Approve", " Deny+Approve", "#2 Verify", "#3 Land", "#6 "];
+// ^ Done tasks (#7, #8) are not in it; the To check list is one row at its end.
+const expectedRows = ["#1 Allow", "#4 Allow", " Deny+Approve", " Deny+Approve", "#2 Land", "#3 Land", "#6 ", " "];
 if (rowWords.join("|") !== expectedRows.join("|")) await fail(`the reservoir rows are ${JSON.stringify(listedRows)}`);
-if (listedRows[0][2] !== "needs to reach crates.io" || listedRows[2][1] !== "Approve land #3" || listedRows[3][1] !== "Approve discard #4") await fail(`the reservoir rows read ${JSON.stringify(listedRows)}`);
+if (listedRows[0][2] !== "needs to reach crates.io" || listedRows[2][1] !== "Approve land #3" || listedRows[3][1] !== "Approve discard #4" || listedRows[2][2] !== "WORK b.txt"
+  || listedRows[4][2] !== "ready to land" || listedRows[7][1] !== "2 to check") await fail(`the reservoir rows read ${JSON.stringify(listedRows)}`);
 if (!/^keep a worker busy WAIT /.test(listedRows[6][1])) await fail(`the running task's title is ${listedRows[6][1]}`);
 if (!(await evaluate(`${rowOf("#6")}.querySelector('.task-chip .mark[data-running]')`))) await fail("the running task's chip does not pulse");
 const chipName = await evaluate(`${rowOf("#1")}.querySelector('.task-chip').getAttribute('aria-label')`);
-if (chipName !== "#1, blocked") await fail(`a chip's accessible name is ${chipName}`);
+if (chipName !== "#1, needs you") await fail(`a chip's accessible name is ${chipName}`);
+const runningName = await evaluate(`${rowOf("#6")}.querySelector('.task-chip').getAttribute('aria-label')`);
+if (runningName !== "#6, working") await fail(`a working chip's accessible name is ${runningName}`);
 const facts = (await text(".facts-line"))[0] ?? "";
 if (!/Deploy: [0-9a-f]{8}, up to date with main\./.test(facts) || !/Main checkout on main, /.test(facts)) await fail(`the reservoir's facts read ${facts}`);
 await shot("reservoir-open", ".composer-send");
@@ -299,7 +316,10 @@ await until(`(${rowOf("#1")}?.querySelector('.row-context')?.textContent ?? '') 
 await evaluate(`${rowOf("Approve land #3")}.querySelectorAll('.need-action')[1].click()`);
 if (await evaluate("[...document.querySelectorAll('.notice')].some((node) => /Approved land #3/.test(node.textContent))")) await fail("a notice repeats the status line of Approve");
 await until(`!${rowOf("Approve land #3")} && !${rowOf("#3")}`, "the reservoir kept the approved landing", 300);
-await until("[...document.querySelectorAll('.status-line')].some((node) => /Approved land #3 · .*#3 landed|#3 landed · .*Approved land #3/.test(node.textContent))", "the approval and the landing are not one line", 300);
+// ^ The approval is a muted line; the landing is #3's "done" bubble, not a second line.
+await until("[...document.querySelectorAll('.status-line')].some((node) => /Approved land #3/.test(node.textContent))", "the approval left no muted line", 300);
+await until(`!!${workerBubble(3)}`, "the landing of #3 has no done bubble", 300);
+if (await evaluate("[...document.querySelectorAll('.status-line')].some((node) => /#3 landed/.test(node.textContent))")) await fail("a muted line repeats the landing of #3");
 if (!(await evaluate(atEnd)) || await count(".jump")) await fail("acting in the reservoir moved the chat");
 if (await count(".need-card, .tray")) await fail("an action brought back a card or the tray");
 await shot("reservoir-acted", ".composer-send");
@@ -391,10 +411,11 @@ await typeInto(".composer-field", "");
 const taskCount = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((view) => view.tasks.length)`);
 await typeInto(".composer-field", "land #");
 await until(`document.querySelectorAll('.slash-option').length === ${taskCount}`, "the # picker did not list the tasks");
-await typeInto(".composer-field", "land #hv");
+// ^ Words of one title: only #6 keeps a worker busy.
+await typeInto(".composer-field", "land #busy");
 await until("document.querySelectorAll('.slash-option').length === 1", "the picker does not filter by words");
 await key("Enter", 13);
-await until("document.querySelector('.composer-field').value === 'land #2 '", "Enter did not insert the task");
+await until("document.querySelector('.composer-field').value === 'land #6 '", "Enter did not insert the task");
 if (await count(".slash")) await fail("the picker stayed open after a pick");
 await typeInto(".composer-field", "#qqq");
 await until("(document.querySelector('.slash-note')?.textContent ?? '') === 'No task matches that.'", "no note for a picker without matches");
@@ -419,36 +440,39 @@ await resize([390, 420, 2]);
 await shot("project-short", ".composer-send");
 await resize([390, 844, 2]);
 
-// --- The task sheet of #2: two steps of progress, one sentence, the report under plain
-// headings, Fail needs a note, Pass, then Land. No Explain, no "Asked:".
+// --- The task sheet of #2: the stage, one sentence of what changed and the one action; the
+// report folded (Changes, Evidence, To check, Left open) and History folded. No verdict, no
+// Asked, no revision number. Land, then its item is live under To check.
 await go(page(2));
-await until("document.querySelectorAll('.task-sheet .task-section').length >= 7", "the task sheet did not show the report");
+await until("document.querySelectorAll('.task-sheet .task-fold').length >= 4", "the task sheet did not show the folded report");
 let told = await story();
-if (told.asked || told.shown !== "Checks → Ready" || told.current !== "Ready" || told.next !== "Check the 1 item below, then Pass to allow landing.") await fail(`the story of a task to verify reads ${JSON.stringify(told)}`);
-const headings = await text(".task-section > .task-heading");
-if (headings.slice(0, 7).join() !== "Asked,Summary,Decisions,Changes,Evidence,Human Verify,Left open") await fail(`the report sections are ${headings}`);
-if (await count(".task-sheet .label, .task-sheet .story-explain")) await fail("the sheet still has uppercase labels or Explain");
-if ((await text(".verify button")).join() !== "Fail,Pass r1") await fail(`the verify buttons are ${await text(".verify button")}`);
-await shot("task-verify");
-await evaluate("[...document.querySelectorAll('.verify button')].find((node) => node.textContent === 'Fail').click()");
-await until("!!document.querySelector('.verify-note textarea')", "Fail did not ask for a note");
-await evaluate("document.querySelector('.verify-note').requestSubmit()");
-await pause(300);
-if (!(await count(".verify-note"))) await fail("a fail without a note was sent");
-await typeInto(".verify-note textarea", "HV NOOP the file has no text");
-await evaluate("document.querySelector('.verify-note').requestSubmit()");
-// The note went to the worker: a new revision r2 with its own Human Verify item, then Pass.
-await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '').startsWith('ready · r2')", "#2 did not come back as r2", 300);
-await until("[...document.querySelectorAll('.verify button')].some((node) => node.textContent === 'Pass r2')", "no Pass r2 on the task page", 300);
-await evaluate("[...document.querySelectorAll('.verify button')].find((node) => node.textContent === 'Pass r2').click()");
-await until("[...document.querySelectorAll('.task-actions button')].some((node) => node.textContent === 'Land r2')", "no Land r2 on the task page", 300);
-await click(".timeline-head");
-const timeline = await text(".timeline-what");
-if (!timeline.includes("Verified r1: fail") || !timeline.includes("Human verification (fail)") || !timeline.includes("Revision r2")) await fail(`the timeline reads ${timeline}`);
-await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Land r2').click()");
-await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '').startsWith('landed')", "#2 did not land", 300);
+if (told.steps || told.summary !== "did: WORK a.txt HV" || told.next !== "Land it to put it on main.") await fail(`the top of a ready task reads ${JSON.stringify(told)}`);
+if (await sheetState() !== "needs you") await fail(`a ready task's state reads ${await sheetState()}`);
+const folds = await text(".task-sheet .task-fold > .timeline-head");
+if (folds.join("|") !== "Changes|Evidence · 1 check passed|To check · 1 after it lands|Left open · 1") await fail(`the folds read ${JSON.stringify(folds)}`);
+const sheetWords = await evaluate("document.querySelector('dialog.task-sheet').innerText");
+if (/Asked|Human Verify|Decisions|Review|Pass r\d|Verified/.test(sheetWords)) await fail(`the sheet still shows the verdict or old sections: ${sheetWords}`);
+if (await count(".task-sheet .label, .task-sheet .story-explain, .verify, .verify-note")) await fail("the sheet still has labels, Explain or the Verify panel");
+if ((await text(".task-actions button")).join() !== "Land") await fail(`a ready task offers ${await text(".task-actions button")}`);
+if (await evaluate("/\\br\\d+\\b/.test(document.querySelector('.task-sheet .bar').textContent + document.querySelector('.task-actions').textContent)")) await fail("the sheet names a revision");
+await shot("task-sheet", ".composer-send");
+// Evidence opens to the checks and what the worker showed; More shows the decisions.
+await evaluate("[...document.querySelectorAll('.task-fold > .timeline-head')].find((node) => node.textContent.startsWith('Evidence')).click()");
+await until("/test ! -e broken\\.txt/.test(document.querySelector('.task-fold[open]')?.textContent ?? '') && /the fixture ran/.test(document.querySelector('.task-fold[open]').textContent)", "Evidence did not open to the checks and the worker's evidence");
+await evaluate("document.querySelector('.story .link-action').click()");
+await until("/Decided: fake choice \\(fixture\\)\\./.test(document.querySelector('.story').textContent)", "More did not show the decisions");
+await shot("task-sheet-open");
+await evaluate("document.querySelector('.story .link-action').click()");
+await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Land').click()");
+await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '') === 'done'", "#2 did not land", 300);
 told = await story();
-if (told.shown !== "Verified → Landed" || !/^Landed on main; the last deploy does not have it yet \(the deploy is \d+ commits? behind\)\.$/.test(told.next)) await fail(`the story of a landed task reads ${JSON.stringify(told)}`);
+if (told.next !== "On main; the last deploy does not have it yet.") await fail(`the top of a done task reads ${JSON.stringify(told)}`);
+await until("[...document.querySelectorAll('.task-fold > .timeline-head')].some((node) => node.textContent === 'To check · 1 open')", "#2's item is not open under To check", 60);
+await evaluate("[...document.querySelectorAll('.task-fold > .timeline-head')].find((node) => node.textContent.startsWith('To check')).click()");
+if ((await text(".task-fold[open] .check-item .need-action")).join() !== "Fail,Pass") await fail(`#2's item offers ${await text(".task-fold[open] .check-item .need-action")}`);
+await evaluate("document.querySelector('.timeline > .timeline-head').click()");
+const history = await text(".timeline-what");
+if ((await text(".timeline > .timeline-head")).join() !== "History" || !history.includes("Landed") || history.some((line) => /Verified|without verification/.test(line))) await fail(`the history reads ${history}`);
 await shot("task-landed");
 
 // --- #4: a pending approval first; a stop reads as the step and its word. Deny, then Allow
@@ -458,14 +482,14 @@ await until("!!document.querySelector('.task-actions button[aria-label=\"Approve
 // ^ The story says what an action is for; its row holds the buttons alone.
 if ((await text(".task-actions p")).length) await fail(`an action row repeats the story: ${await text(".task-actions p")}`);
 told = await story();
-if (told.shown !== "Asked → Working blocked" || told.next !== "The manager asks: Approve discard #4. Approve or Deny it above.") await fail(`the story of a blocked task with an approval reads ${JSON.stringify(told)}`);
+if (told.next !== "The manager asks: Approve discard #4." || await sheetState() !== "needs you") await fail(`the top of a blocked task with an approval reads ${JSON.stringify(told)}`);
 await shot("task-blocked", ".composer-send");
 await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Deny').click()");
 await until("!document.querySelector('.task-actions button[aria-label=\"Approve discard #4\"]')", "the denied approval stayed", 300);
 told = await story();
 if (told.next !== "The worker waits for you to let it reach crates.io, or to answer.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
 await evaluate("[...document.querySelectorAll('.task-actions button')].find((node) => node.textContent === 'Allow for project').click()");
-await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '').startsWith('ready')", "#4 did not resume after Allow", 300);
+await until("document.querySelector('.story-next')?.textContent === 'Land it to put it on main.'", "#4 did not resume after Allow", 300);
 
 // --- Notices lie over the screen, one at a time. An approved action that did not run stays
 // until dismissed, also when a later outcome comes; an outcome clears itself.
@@ -505,6 +529,40 @@ await until("!document.querySelector('.notice')", "the outcome did not clear its
 await key("Escape", 27);
 await until("!document.querySelector('dialog.task-sheet')", "Escape did not close #4 again");
 
+// --- To check: the reservoir's row opens the list; Fail needs a note and starts a task that
+// fixes it; Pass; All passed empties the list.
+// ^ The actions above spent this device's burst (10, then one per 3 s); this part sends three.
+await pause(9000);
+await go(chat);
+await until("!!document.querySelector('.reservoir-head')", "the chat did not come back for To check");
+await openReservoir();
+await until(`!!${rowOf("3 to check")}`, "the reservoir has no To check row", 60);
+await evaluate(`${rowOf("3 to check")}.querySelector('.row-open').click()`);
+await until(`location.hash === '#/p/${project}/checks' && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open");
+const listed = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [node.querySelector('.task-chip').textContent.trim(), node.querySelector('.check-what').textContent, node.querySelector('.check-pass').textContent])");
+if (JSON.stringify(listed) !== JSON.stringify([["#7", "open the file", "Passes if it has text"], ["#8", "open the file", "Passes if it has text"], ["#2", "open the file", "Passes if it has text"]])) await fail(`the To check list reads ${JSON.stringify(listed)}`);
+if (await sheetState() !== "3 open") await fail(`the list's top row reads ${await sheetState()}`);
+await shot("to-check", ".composer-send");
+const firstItem = "document.querySelector('.check-item')";
+await evaluate(`[...${firstItem}.querySelectorAll('.need-action')].find((node) => node.textContent === 'Fail').click()`);
+await until(`!!${firstItem}.querySelector('.need-form input')`, "Fail did not ask for a note");
+await evaluate(`${firstItem}.querySelector('.need-form').requestSubmit()`);
+await pause(300);
+if (await count(".check-item") !== 3) await fail("a fail without a note was sent");
+await typeInto(".check-item .need-form input", "the text is cut off");
+await shot("to-check-fail", ".composer-send");
+await evaluate(`${firstItem}.querySelector('.need-form').requestSubmit()`);
+await until("document.querySelectorAll('.check-item').length === 2", "the failed item stayed in the list", 60);
+await evaluate(`[...${firstItem}.querySelectorAll('.need-action')].find((node) => node.textContent === 'Pass').click()`);
+await until("document.querySelectorAll('.check-item').length === 1", "the passed item stayed in the list", 60);
+await evaluate("document.querySelector('.check-all button').click()");
+await until("(document.querySelector('dialog.task-sheet .empty')?.textContent ?? '') === 'Nothing to check.'", "All passed did not empty the list", 60);
+await shot("to-check-done");
+await key("Escape", 27);
+await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Escape did not close the To check list");
+await until("[...document.querySelectorAll('.status-line')].some((node) => /#7 failed a check; #\\d+ fixes it/.test(node.textContent))", "the chat does not say which task fixes the failed check", 60);
+await until("!/to check/.test(document.querySelector('.reservoir-words')?.textContent ?? '')", "the reservoir still counts items to check", 60);
+
 // --- A deep link to a task opens the chat with the sheet over it; Back closes the sheet, then
 // the chat is the first entry, so the next Back leaves the page.
 // ^ Through a blank page: a navigation that changes only the hash stays in this document.
@@ -533,7 +591,7 @@ await closeReservoir();
 await go(briefSheet);
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the brief sheet did not open");
 told = await story();
-if (told.shown !== "Asked → Brief" || told.next !== "The brief is ready. Read it, reply to talk it through, or Start the build.") await fail(`the story of a brief reads ${JSON.stringify(told)}`);
+if (told.next !== "The brief is ready. Read it, reply to talk it through, or Start the build.") await fail(`the top of a brief reads ${JSON.stringify(told)}`);
 const titles = await evaluate("[...document.querySelectorAll('.task-sheet .task-section > .task-heading')].map((node) => node.textContent)");
 // ^ The fixture has no open question, so that section is left out.
 if (titles.slice(0, 6).join() !== "What a top professional would add,Raw material,Methods and tools,Independent check,Concepts to know,Rewritten prompt") await fail(`the brief sections are ${titles}`);
@@ -552,8 +610,8 @@ await resize([390, 420, 2]);
 await shot("brief-sheet", ".composer-send");
 await resize([390, 844, 2]);
 await click(".task-sheet .task-actions button");
-await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '').startsWith('ready')", "Start did not build the brief", 300);
-if ((await text(".task-fold > .timeline-head")).join() !== "Brief v2") await fail(`the built task's brief is ${await text(".task-fold > .timeline-head")}`);
+await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '') === 'needs you' && !!document.querySelector('.story-summary')", "Start did not build the brief", 300);
+if ((await text(".task-fold > .timeline-head")).at(-1) !== "Brief v2") await fail(`the built task's brief is ${await text(".task-fold > .timeline-head")}`);
 await key("Escape", 27);
 await until("!document.querySelector('dialog.task-sheet')", "Escape did not close the brief sheet");
 
@@ -622,6 +680,6 @@ problems.splice(quietFrom);
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
-console.log(`tasks page: home with the Sessions and Projects tabs in the first screen, adopted worktree items (no task copy, read only, opens its session), since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, the reservoir (count, open, rows with one action, a pulsing working chip, a stripped title, facts, Allow and Approve in place without moving the chat, joined status lines), the ⋯ menu, the project page (markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (85%, Escape, Back, swipe, draft kept, two steps, plain headings, Fail with and without a note, Pass, Land, approval first, Deny, Allow for project), the # picker, the deep link, the brief (reservoir row, sections, talk as bubbles with Brief v2, Start), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions and Projects tabs in the first screen, adopted worktree items (no task copy, read only, opens its session), since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, the reservoir (count, open, rows with one action, a pulsing working chip, a stripped title, facts, Allow and Approve in place without moving the chat, joined status lines), the ⋯ menu, the project page (markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no verdict or revision, Land, the item live after landing, History, approval first, Deny, Allow for project), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the # picker, the deep link, the brief (reservoir row, sections, talk as bubbles with Brief v2, Start), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

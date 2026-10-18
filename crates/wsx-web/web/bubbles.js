@@ -1,7 +1,7 @@
 // The manager chat as messages: one bubble per owner message, manager reply and worker
 // report, each with its author and time, and task changes as grouped muted lines
 // (docs/web-client.md "Project screen").
-import { clock, html, useLayoutEffect, useRef, useState } from "./lib.js";
+import { clock, firstSentence, html, useLayoutEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { TaskChip } from "./tasks.js";
 
@@ -10,7 +10,7 @@ const GROUP_MS = 5 * 60_000;
 // Status lines this close together read as one line.
 const LINE_MS = 60_000;
 
-const EVENT_WORDS = { briefed: "brief ready", in_review: "in review" };
+const EVENT_WORDS = { briefed: "brief ready", in_review: "in review", landed: "done" };
 
 // One line written by wsx in its short form: `#3 ready r2: title; summary` → `#3 ready`,
 // `approval a3 (land #5) approved; done` → `Approved land #5`.
@@ -77,6 +77,20 @@ export function conversation(entries, resolutions) {
   return joined;
 }
 
+// A done task's report: its first sentence, and the whole summary on Show all.
+function Sentence({ id, text, words }) {
+  const [open, setOpen] = useState(false);
+  const sentence = firstSentence(text);
+  return html`
+    <div class="bubble-body" id=${id}>
+      ${open ? html`<${Markdown} text=${text} words=${words} />` : html`<p class="prose">${words(sentence)}</p>`}
+    </div>
+    ${sentence !== text.trim() && html`
+      <button class="link-action bubble-more" type="button" aria-expanded=${open} aria-controls=${id} onClick=${() => setOpen(!open)}>
+        ${open ? "Show less" : "Show all"}
+      </button>`}`;
+}
+
 // A long message folds after about twelve lines; "Show all" opens it.
 function Fold({ id, children }) {
   const body = useRef();
@@ -104,7 +118,8 @@ export function Bubble({ project, row, words }) {
     const { report } = row;
     body = html`
       <p class="bubble-head"><${TaskChip} project=${project} id=${report.task} />${" "}<span class="bubble-state">· ${report.head}</span></p>
-      <${Fold} id=${id}><${Markdown} text=${report.summary} words=${words} /></${Fold}>`;
+      ${report.state === "landed" ? html`<${Sentence} id=${id} text=${report.summary} words=${words} />`
+        : html`<${Fold} id=${id}><${Markdown} text=${report.summary} words=${words} /></${Fold}>`}`;
   } else if (out) {
     body = html`<${Fold} id=${id}><p class="prose">${words(row.entry.text)}</p></${Fold}>`;
   } else {
