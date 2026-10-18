@@ -9,7 +9,10 @@ live="$main/.work/web-live"
 test -x "$live/wsx" || { echo "no live site at $live" >&2; exit 1; }
 command -v pm2 >/dev/null || { echo "pm2 is not on PATH" >&2; exit 1; }
 
-cargo build --release --locked -p wsx
+cargo build --release --locked -p wsx -p wsx-daemon
+# ^ wsxd sits next to wsx so the web build and the daemon it hands off to stay one revision.
+cp target/release/wsxd "$live/wsxd.new"
+mv "$live/wsxd.new" "$live/wsxd"
 cp target/release/wsx "$live/wsx.new"
 rm -f "$live/wsx.previous"
 mv "$live/wsx" "$live/wsx.previous"
