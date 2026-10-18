@@ -2384,8 +2384,11 @@ capabilities = ["terminal_view"]
                       'checks': checks}, indent=1))
 
 
+# ^ Ready tasks land by hand here, so the fixture keeps tasks that wait at ready; test-task.py
+# covers the default auto land.
 TASK_CONFIG = '''tasks:
   brief: false
+  land: { auto: false }
   agent:
     model: fake-model
     tools: [WebFetch]
@@ -2493,7 +2496,7 @@ def task_journey(args):
 
         daemon = start(work, [str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait(path.exists, 'daemon')
-        # The fixture store: #1 blocked on a host, #2 ready with Human Verify, #3 ready to land.
+        # The fixture store: #1 blocked on a host, #2 ready with a Human Verify item, #3 ready to land.
         assert js('task', 'new', 'NEEDS_HOST crates.io WORK m.txt', '-p', 'demo')['id'] == 1
         assert js('task', 'new', 'WORK a.txt HV', '-p', 'demo')['id'] == 2
         assert js('task', 'new', 'WORK b.txt', '-p', 'demo')['id'] == 3
@@ -2526,6 +2529,13 @@ def task_journey(args):
             js('task', 'close', 5, '--discard', '-p', 'ui')
             js('task', 'new', 'Owner asked: keep a worker busy WAIT ' + str(work / 'release'), '-p', 'ui')
             wait(lambda: js('task', 'show', 6, '-p', 'ui')['state'] == 'working', 'ui #6 working')
+            # #7 and #8 landed with an item each to check; the manager hears of both ("#7 · done").
+            for n, prompt in ((7, 'WORK d.txt HV done. More words follow'), (8, 'WORK e.txt HV')):
+                assert js('task', 'new', prompt, '-p', 'ui')['id'] == n
+                wait(lambda: js('task', 'show', n, '-p', 'ui')['state'] == 'ready', 'ui #%d' % n)
+                assert js('task', 'land', n, '-p', 'ui')['state'] == 'landed'
+            wait(lambda: sum('#%d landed r1' % n in e.get('text', '') for n in (7, 8) for e in js('task', 'chat', '-p', 'ui')['entries']) == 2,
+                 'the manager heard of #7 and #8', timeout=30)
             # A deploy of the default branch tip: the brief says it is up to date until a task lands.
             assert js('task', 'deploy', '-p', 'ui')['exit'] == 0
             # Sessions without tasks, oldest first: an agent that exited (`gone`), one done
@@ -2649,9 +2659,11 @@ digest_max_seconds = 6
         # --- Read models: the strip order, the working count, the chip list.
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         kinds = [(item['kind'], item.get('task')) for item in overview['needs']]
-        assert kinds == [('blocked', 1), ('verify', 2), ('land', 3)], kinds
+        assert kinds[0] == ('blocked', 1) and sorted(kinds[1:]) == [('land', 2), ('land', 3)], kinds
         assert overview['needs'][0]['asks'] == [{'kind': 'network', 'host': 'crates.io'}], overview['needs'][0]
-        assert overview['needs'][1]['human_verify'] == 1 and overview['working'] == 0
+        assert overview['needs'][1]['reason'] == 'ready to land' and overview['working'] == 0 and overview['to_check'] == 0, overview
+        # Three states for the owner; the store's own states stay in the record.
+        assert {row['id']: row['stage'] for row in overview['tasks']} == {1: 'needs_you', 2: 'needs_you', 3: 'needs_you'}
         # Chips and the `#` picker: attention order, then the newest first.
         assert [row['id'] for row in overview['tasks']] == [1, 3, 2], overview['tasks']
         assert overview['tasks'][2]['title'] == 'WORK a.txt HV'
@@ -2661,41 +2673,42 @@ digest_max_seconds = 6
         everything = steady(owner, 'GET', '/api/tasks')[1]
         assert sorted(item['project'] for item in everything) == sorted(ids.values()), everything
         detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
-        assert detail['state'] == 'ready' and detail['actions'] == ['verify', 'add'], detail['actions']
+        assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'add'], detail['actions']
+        assert detail['land_reason'] == 'ready to land' and detail['to_check'] == [] and detail['fixes'] is None, detail
         assert detail['result']['human_verify'] == [{'check': 'open the file', 'pass_if': 'it has text'}]
-        for heading in ('## Asked', '## Summary', '## Decisions', '## Changes', '## Evidence', '## Human Verify', '## Left open'):
-            assert heading in detail['report'], (heading, detail['report'][:400])
+        headings = [line for line in detail['report'].splitlines() if line.startswith('## ')]
+        assert headings == ['## Summary', '## Changes', '## Evidence', '## To check', '## Left open'], headings
         kinds = [entry['kind'] for entry in detail['timeline']['entries']]
         assert kinds[:2] == ['created', 'message'] and 'result' in kinds and 'revision' in kinds, kinds
-        assert detail['verification'] is None and detail['overlaps'] == []
-        ok('read models: needs-you order (blocked, verify, land), denials, report sections, timeline, actions by state')
+        assert 'verification' not in detail and detail['overlaps'] == []
+        ok('read models: three stages, needs-you order (blocked, then land with its reason), denials, report sections, timeline, actions by state')
 
         # --- Fixed actions go straight to the task host.
         def act(n, action, body, site=owner, project=demo):
             return steady(site, 'POST', '/api/tasks/%d/t/%d/%s' % (project, n, action), body)
 
-        status, body = act(2, 'verify', {'result': 'fail'})
-        assert status == 400 and body['error']['code'] == 'note_required', body
+        # ^ No per-task verdict: the route is gone, and so is its body field.
+        assert act(2, 'verify', {})[0] == 404
+        assert act(2, 'land', {'result': 'pass'})[0] == 422
         assert act(2, 'add', {'text': '  '})[0] == 400
         assert act(2, 'add', {'text': 'x' * (64 * 1024 + 1)})[0] == 413
         assert act(1, 'allow', {'host': 'bad host'})[0] == 400
         assert act(1, 'allow', {'tool': 'Bash(make:*)'})[0] == 422  # no tool rules from the web
         assert act(1, 'allow', {'host': 'a.example', 'path': '~/.x'})[0] == 400
-        assert act(2, 'verify', {'result': 'maybe'})[0] == 422
         assert act(2, 'explode', {})[0] == 404 and act(99, 'add', {'text': 'hi'})[0] == 404
-        status, body = act(3, 'verify', {'result': 'pass', 'note': 'looked'})
-        assert status == 200, body
         status, body = act(1, 'land', {})
         assert status == 409 and body['error']['code'] == 'refused', body
         status, body = act(2, 'land', {})
-        assert status == 409 and 'verif' in body['error']['message'], body
-        status, body = act(2, 'verify', {'result': 'pass'})
-        assert status == 200 and body['state'] == 'ready', body
-        events.expect('task', lambda data: data == {'project': demo, 'task': 2})
-        events.expect('tasks', lambda data: data['project'] == demo and
-                      [(item['kind'], item.get('task')) for item in data['needs']][:3] == [('blocked', 1), ('land', 2), ('land', 3)])
-        status, body = act(2, 'land', {})
         assert status == 200 and body['state'] == 'landed', body
+        # The landing adds #2's item to the project's To check list; #2 is done.
+        events.expect('task', lambda data: data == {'project': demo, 'task': 2})
+        events.expect('tasks', lambda data: data['project'] == demo and data['to_check'] == 1 and
+                      all(item.get('task') != 2 for item in data['needs']))
+        listed = steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']
+        assert [(i['id'], i['task'], i['title'], i['check'], i['state']) for i in listed] == [
+            ('c1', 2, 'WORK a.txt HV', 'open the file', 'open')], listed
+        landed = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
+        assert landed['stage'] == 'done' and [i['id'] for i in landed['to_check']] == ['c1'] and landed['actions'] == [], landed
         status, body = act(1, 'allow', {'host': 'crates.io'})
         assert status == 200 and body['message'] == 'may now reach crates.io; resumed the task', body
         wait_state(1, 'ready')
@@ -2713,7 +2726,7 @@ digest_max_seconds = 6
         assert status == 200, body
         wait(lambda: 'steer words' in (work / 'fake-claude.trace').read_text(), 'steer reached the turn')
         wait_state(4, 'ready')
-        ok('actions: verify (fail needs a note), land refused then landed, allow resumes, add reaches the worker, steer reaches the turn')
+        ok('actions: no verdict route, land refused then landed with its item to check, allow resumes, add reaches the worker, steer reaches the turn')
 
         # --- The manager: say starts it, the reply arrives in the chat, events follow.
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS'})
@@ -2753,10 +2766,10 @@ digest_max_seconds = 6
         # What was settled, newest first, one line each; the home row's last reply and activity.
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         settled = [row['text'] for row in overview['resolutions']]
-        for line in ('Denied discard #1', 'Approved land #3', '#3 landed', '#2 landed', '#2 passed verification of r1',
-                     '#3 passed verification of r1', '#1 may reach crates.io (owner)'):
+        for line in ('Denied discard #1', 'Approved land #3', '#1 may reach crates.io (owner)'):
             assert line in settled, (line, settled)
-        assert settled.index('Denied discard #1') < settled.index('#3 landed') < settled.index('#2 landed'), settled
+        # ^ A landing is the worker's "done" bubble in the chat, never a line.
+        assert settled.index('Denied discard #1') < settled.index('Approved land #3') and not any('landed' in line for line in settled), settled
         stamps = [row['unix_ms'] for row in overview['resolutions']]
         assert stamps == sorted(stamps, reverse=True) and overview['resolutions'][0]['task'] == 1, overview['resolutions']
         assert overview['last_reply'] and len(overview['last_reply']) <= 121 and overview['last_unix_ms'] >= stamps[0], overview
@@ -2781,6 +2794,41 @@ digest_max_seconds = 6
         titles = {row['id']: row['title'] for row in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['tasks']}
         assert titles[titled] == 'Short words' and titles[stripped] == 'tool permission for WORK u.txt', titles
         ok('project page: written by the manager host, none without a manager, 404 outside the grant; titles: --title, its refusals, "Owner report:" left out')
+
+        # --- To check (docs/tasks.md "To check"): pass one, fail one with a note (a linked fix
+        # task starts), pass the rest; the owner's alone.
+        made = []
+        for prompt in ('WORK h.txt HV', 'WORK i.txt HV'):
+            made.append(js('task', 'new', prompt, '-p', 'demo')['id'])
+            wait(lambda: task_state(made[-1]) == 'ready', 'demo #%d' % made[-1])
+            assert js('task', 'land', made[-1], '-p', 'demo')['state'] == 'landed'
+        assert [i['id'] for i in steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']] == ['c1', 'c2', 'c3']
+
+        def decide(item, decision, body=None, site=owner):
+            return steady(site, 'POST', '/api/tasks/%d/checks/%s/%s' % (demo, item, decision), body or {})
+        assert decide('c1', 'pass', site=viewer)[0] == 403
+        assert steady(viewer, 'GET', '/api/tasks/%d/checks' % ids['ui'])[0] == 404
+        assert decide('c1', 'maybe')[0] == 404 and decide('x1', 'pass')[0] == 404 and decide('all', 'fail')[0] == 404
+        status, body = decide('c1', 'fail')
+        assert status == 400 and body['error']['code'] == 'note_required', body
+        status, body = decide('c9', 'pass')
+        assert status == 409 and 'no item c9' in body['error']['message'], body
+        status, body = decide('c1', 'pass')
+        assert status == 200 and body['open'] == 2 and body['changed'][0]['state'] == 'passed', body
+        assert decide('c1', 'pass')[0] == 409
+        status, body = decide('c2', 'fail', {'note': 'the text is cut off'})
+        assert status == 200, body
+        fix = body['changed'][0]['fix_task']
+        fixing = steady(owner, 'GET', '/api/tasks/%d/t/%d' % (demo, fix))[1]
+        assert fixing['title'] == 'Fix: open the file' and fixing['fixes']['id'] == 'c2' and fixing['fixes']['note'] == 'the text is cut off', fixing
+        status, body = decide('all', 'pass')
+        assert status == 200 and body['open'] == 0 and [c['id'] for c in body['changed']] == ['c3'], body
+        overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
+        assert overview['to_check'] == 0 and '#%d failed a check; #%d fixes it' % (made[0], fix) in [
+            row['text'] for row in overview['resolutions']], overview['resolutions']
+        wait(lambda: task_state(fix) in ('ready', 'failed'), 'the fix task')
+        js('task', 'close', fix, '--discard', '-p', 'demo')
+        ok('to check: listed with titles, pass, fail needs a note and starts a linked fix task, all passed, refusals (viewer, grant, unknown id or decision)')
 
         # --- Refusals: the capability and the grant come from the site file only.
         for method, route, body in (('POST', '/api/tasks/%d/say' % demo, {'text': 'hi'}),
@@ -2831,14 +2879,16 @@ digest_max_seconds = 6
         if args.browser:
             # #5's long report: one worker bubble's data, its full summary, on the events message.
             reports = [r for e in steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]['entries'] for r in e.get('reports', [])]
-            assert [(r['task'], r['state'], r['head']) for r in reports] == [(5, 'ready', 'done')], reports
+            # ^ The project lands by hand, so the manager may also have heard of #7 or #8 at ready.
+            heard = [(r['task'], r['state'], r['head']) for r in reports]
+            assert heard[0] == (5, 'ready', 'ready') and [r for r in heard if r[1] == 'landed'] == [(7, 'landed', 'done'), (8, 'landed', 'done')], reports
             assert reports[0]['summary'].startswith('did: WORK c.txt') and 'line 30 of the report' in reports[0]['summary'], reports
             args.captures.mkdir(parents=True, exist_ok=True)
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
             # Home's order by its rule: needs first (most urgent kind, then the oldest need of it),
             # then the last activity, newest first (docs/web-client.md "Home").
-            urgency = {'blocked': 0, 'conflict': 1, 'failed': 1, 'approval': 2, 'brief': 2, 'verify': 3, 'land': 4, 'review': 4}
+            urgency = {'blocked': 0, 'failed': 1, 'stopped': 1, 'approval': 2, 'brief': 2, 'land': 3}
             def home_key(name):
                 view = steady(owner, 'GET', '/api/tasks/%d' % ids[name])[1]
                 if not view['needs']:
@@ -2846,7 +2896,7 @@ digest_max_seconds = 6
                 rank = min(urgency[item['kind']] for item in view['needs'])
                 return (0, rank, min(item['unix_ms'] for item in view['needs'] if urgency[item['kind']] == rank))
             home_order = sorted((name for name in ids if name in ('ui', 'demo', 'plans', 'calm')), key=home_key)
-            # ^ A brief ranks with approval requests, so `plans` comes before demo's verify and land.
+            # ^ A brief ranks with approval requests, so `plans` comes before demo's land.
             assert home_order == ['ui', 'plans', 'demo', 'calm'], home_order
             # ^ Projects with sessions and no task follow by their newest session (created in this order).
             home_order[-1:-1] = ['busy', 'quiet', 'gone']

@@ -563,10 +563,19 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .project-page { padding-top: var(--space-3); }
 .task-row code { font-family: var(--font-terminal); font-size: var(--font-size-sm); }
 .task-body { padding: 0 var(--space-4); max-width: calc(var(--size-prose) + 2 * var(--space-4)); }
-.verify .actions { justify-content: flex-end; }
-.verify-note { padding: 0 var(--space-4); display: flex; flex-direction: column; }
-.verify-note textarea { min-height: calc(var(--size-control) * 2); padding: var(--space-2) var(--space-3); resize: vertical; }
-.verify-note .actions { padding-inline: 0; }
+/* A closed fold says what it holds: "4 checks passed", "2 open". */
+.fold-note { font-weight: normal; color: var(--color-muted); }
+/* Hook: .check-list — the To check list (docs/web-client.md "To check"): each item with its
+   task, the check and when it passes, then Pass and Fail. */
+.check-intro { padding: var(--space-3) var(--column-inset, var(--space-4)) 0; font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
+.check-list { list-style: none; margin: 0; padding: 0; }
+.check-item + .check-item { border-top: var(--border-width) solid var(--color-hairline); }
+.check-line { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3) var(--column-inset, var(--space-4)); }
+.check-words { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); overflow-wrap: anywhere; }
+.check-what { font-weight: var(--font-weight-medium); }
+.check-pass { font-size: var(--font-size-sm); color: var(--color-muted); }
+.check-item[data-state="passed"] .check-what, .check-item[data-state="failed"] .check-what { color: var(--color-muted); }
+.check-all { justify-content: flex-end; padding: var(--space-3) var(--column-inset, var(--space-4)); }
 .task-overlaps { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); overflow-wrap: anywhere; }
 .timeline-head { display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; min-height: var(--size-control); padding-block: 0; }
 .timeline-head::-webkit-details-marker { display: none; }
@@ -590,8 +599,8 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .app:not([data-wide]) .task-steer { margin-left: auto; }
 .app:not([data-wide]) .task-message .task-steer + .composer-send { margin-left: var(--space-2); }
 
-/* Hook: .story — where a task stands, in words (docs/web-client.md "Project brief and task
-   story"): the step before and the current one, and what happens next. */
+/* Hook: .story — where a task stands, in words (docs/web-client.md "Task sheet"): one sentence
+   of what changed, and what the owner should know next. */
 .visually-hidden { position: absolute; width: var(--border-width); height: var(--border-width); overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* Hook: .adopted — a project's worktrees without a task, read only; in the chat a strip that
    scrolls inside itself and folds to one line. */
@@ -606,11 +615,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .adopted-strip { flex: 0 0 auto; max-height: calc(100% * var(--strip-share) / 2); overflow-y: auto; overscroll-behavior: contain; }
 .adopted-strip .row-link { padding-inline: var(--column-inset, var(--space-4)); }
 .story { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere; }
-.story-steps { list-style: none; margin: 0; padding: 0; display: flex; align-items: baseline; gap: var(--space-2); font-size: var(--font-size-sm); }
-.story-steps li { display: inline-flex; align-items: baseline; gap: var(--space-1); color: var(--color-muted); }
-.story-steps li + li::before { content: "→"; color: var(--color-faint); }
-.story-steps li[aria-current="step"] { font-weight: var(--font-weight-strong); }
-.story-steps li[aria-current="step"]:not([data-tone]) { color: var(--color-text); }
+.story .link-action { align-self: flex-start; }
 
 /* Hook: .code, .crumbs — a project's files. */
 .crumbs { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-1); overflow-x: auto; scrollbar-width: none; white-space: nowrap; }

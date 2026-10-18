@@ -1,17 +1,18 @@
-// One task, in its sheet over the project chat: its story, its actions, its report with Pass and
-// Fail at the Human Verify items, the files it shares with other tasks, and its timeline
-// (docs/web-client.md "Task sheet").
+// One task, in its sheet over the project chat: what changed and the one action when it needs
+// the owner, then its report folded (Changes, Evidence, To check, Left open), the files it
+// shares with other tasks, and its history (docs/web-client.md "Task sheet").
 import { api } from "./api.js";
 import { clock, html, Icon, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, events, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { grow, isolate, release } from "./chat.js";
-import { announce, askWords, grantBody, loadTasks, taskLink, taskState, TaskChip, withChips } from "./tasks.js";
+import { announce, askWords, grantBody, loadTasks, taskStage, TaskChip, withChips } from "./tasks.js";
 import { Bubble } from "./bubbles.js";
 import { TaskStory } from "./story.js";
+import { CheckRow } from "./checks.js";
 
 const short = (commit) => (commit ?? "").slice(0, 8);
-const MESSAGE_WORDS = { prompt: "Asked", steer: "Steered", add: "Added", verify: "Human verification (fail)" };
+const MESSAGE_WORDS = { prompt: "Asked", steer: "Steered", add: "Added" };
 
 // One log entry in words: [what, detail, tone].
 function described(entry) {
@@ -35,9 +36,8 @@ function described(entry) {
     case "revision": return [`Revision r${entry.revision}`, `${short(entry.commit)} · ${entry.paths_total} ${entry.paths_total === 1 ? "file" : "files"}`];
     case "stopped": return ["Stopped", entry.reason];
     case "closed": return [entry.discarded ? "Closed and discarded" : "Closed", ""];
-    case "verified": return [`Verified r${entry.revision}: ${entry.result}`, entry.carried_from != null ? `carried from r${entry.carried_from}` : entry.note ?? "",
-      entry.result === "pass" ? "accent" : "danger"];
-    case "verify_skipped": return [`Landed r${entry.revision} without verification`, "", "attention"];
+    // ^ Per-task verdicts from before M4f show nothing (docs/tasks.md "To check").
+    case "verified": case "verify_skipped": return null;
     case "conflict": return [`Conflict onto ${short(entry.onto)}`, entry.paths.join(", "), "danger"];
     case "land_stopped": return ["Landing stopped", entry.reason, "danger"];
     case "landed": return ["Landed", short(entry.commit), "accent"];
@@ -50,13 +50,33 @@ function described(entry) {
   }
 }
 
-// The report as its sections; the title and state line are in the top row already.
+// The report by section name; the title and the state are in the top row already.
 function sections(report) {
-  if (!report) return [];
-  return report.split(/^## /m).slice(1).map((part) => {
+  if (!report) return {};
+  return Object.fromEntries(report.split(/^## /m).slice(1).map((part) => {
     const end = part.indexOf("\n");
-    return { title: part.slice(0, end).trim(), body: part.slice(end + 1).trim() };
-  });
+    return [part.slice(0, end).trim(), part.slice(end + 1).trim()];
+  }));
+}
+
+// The report's folds, in the order of report.md after its summary; sections of older reports
+// (Asked, Decisions, Human Verify) are not shown.
+const FOLDS = ["Changes", "Evidence", "To check", "Left open"];
+const items = (body) => body.split("\n").filter((line) => line.startsWith("- ")).length;
+// A fold's text: Evidence without its first line (the note says it); To check items before
+// the landing as plain items, not checkboxes nobody can tick.
+const foldBody = (title, body) => title === "Evidence" ? body.split("\n").slice(1).join("\n").trim()
+  : title === "To check" ? body.replace(/^- \[ \] /gm, "- ") : body;
+// What a fold says while closed: "4 checks passed", "2 open", "nothing".
+function foldNote(title, body, detail) {
+  if (title === "Evidence") return body.split("\n")[0].replace(/\.$/, "").replace(/ \(`tasks.checks`\)$/, "");
+  if (title === "To check") {
+    const open = detail.to_check.filter((item) => item.state === "open").length;
+    if (detail.to_check.length) return open ? `${open} open` : "all checked";
+    return items(body) ? `${items(body)} after it lands` : "nothing";
+  }
+  if (title === "Left open") return items(body) ? String(items(body)) : "nothing";
+  return "";
 }
 
 // An action's draft and error, kept while the page re-renders; a success clears the draft.
@@ -80,35 +100,6 @@ function useAction(detail) {
     return ok;
   };
   return { busy, error, run };
-}
-
-function Verify({ detail, act }) {
-  const [failing, setFailing] = useState(false);
-  const note = useRef();
-  useEffect(() => { if (failing) note.current.focus(); }, [failing]);
-  const path = `api/tasks/${detail.project}/t/${detail.id}/verify`;
-  const fail = (event) => {
-    event.preventDefault();
-    const text = note.current.value.trim();
-    if (text) act.run("verify", path, { result: "fail", note: text }, () => setFailing(false));
-  };
-  return html`
-    <div class="verify">
-      ${failing && html`
-        <form class="verify-note" onSubmit=${fail}>
-          <textarea class="input" ref=${note} rows="3" aria-label="What is wrong" placeholder="What is wrong (goes to the worker)"></textarea>
-          <div class="actions">
-            <button class="button" type="button" onClick=${() => setFailing(false)}>Cancel</button>
-            <button class="button" type="submit" disabled=${Boolean(act.busy)}>Send fail</button>
-          </div>
-        </form>`}
-      ${!failing && html`
-        <div class="actions">
-          <button class="button" type="button" disabled=${Boolean(act.busy)} onClick=${() => setFailing(true)}>Fail</button>
-          <button class="button" type="button" disabled=${Boolean(act.busy)}
-            onClick=${() => act.run("verify", path, { result: "pass" })}>Pass r${detail.revision}</button>
-        </div>`}
-    </div>`;
 }
 
 // The brief's sections in the order the owner reads them (docs/tasks.md "Brief"); an empty one
@@ -250,8 +241,8 @@ export function TaskPage({ project, task, onClose, grip }) {
       <button class="icon-button" type="button" aria-label="Back to the chat" onClick=${onClose}><${Icon} name="back" /></button>
       <div class="bar-title">
         <span class="bar-label">#${task}${detail?.title ? ` ${detail.title}` : ""}</span>
-        ${detail && html`<span class="bar-state" data-tone=${taskState(detail.state)[1]}>${taskState(detail.state)[0]}${detail.phase === "brief"
-          ? (detail.brief ? ` · brief v${detail.brief.version}` : "") : ` · r${detail.revision}`}</span>`}
+        ${detail && html`<span class="bar-state" data-tone=${taskStage(detail)[1]}>${taskStage(detail)[0]}${detail.phase === "brief" && detail.brief
+          ? ` · brief v${detail.brief.version}` : ""}</span>`}
       </div>
       ${worker && html`<div class="bar-tools"><a class="link-action bar-link" href=${`#/s/${worker.id}/terminal`}>Session</a></div>`}
     </header>`;
@@ -260,7 +251,7 @@ export function TaskPage({ project, task, onClose, grip }) {
   const actions = detail.actions;
   const approvals = detail.approvals.map((request) => html`
     <div class="task-row" key=${request.id}>
-      ${detail.approvals.length > 1 && html`<p>${request.label}${request.revision != null ? ` r${request.revision}` : ""}</p>`}
+      ${detail.approvals.length > 1 && html`<p>${request.label}</p>`}
       ${can("task_act") && html`
         <div class="actions">
           <button class="button" type="button" disabled=${Boolean(act.busy)} aria-label=${`Deny: ${request.label}`}
@@ -289,15 +280,9 @@ export function TaskPage({ project, task, onClose, grip }) {
     <div class="task-row">
       ${detail.state === "in_review" && html`<p>In review: <a href=${detail.pr_url} target="_blank" rel="noopener noreferrer">${detail.pr_url}</a></p>`}
       <div class="actions"><button class="button" type="button" disabled=${Boolean(act.busy)}
-        onClick=${() => act.run("land", `api/tasks/${project}/t/${task}/land`, {})}>${act.busy === "land" ? "Landing…" : detail.state === "in_review" ? "Check pull request" : `Land r${detail.revision}`}</button></div>
+        onClick=${() => act.run("land", `api/tasks/${project}/t/${task}/land`, {})}>${act.busy === "land" ? "Landing…" : detail.state === "in_review" ? "Check pull request" : "Land"}</button></div>
     </div>`;
   // ^ The story above says what each action is for; a row holds the buttons alone.
-  // The verdict is the main action of a task to verify, but its items are at the report's end.
-  const review = actions.includes("verify") && html`
-    <div class="task-row">
-      <div class="actions"><button class="button" type="button"
-        onClick=${() => document.getElementById("human-verify")?.scrollIntoView({ block: "start" })}>Review</button></div>
-    </div>`;
   const brief = detail.brief;
   const start = actions.includes("start") && brief && html`
     <div class="task-row">
@@ -305,28 +290,32 @@ export function TaskPage({ project, task, onClose, grip }) {
         onClick=${() => act.run("start", `api/tasks/${project}/t/${task}/start`, {})}>${act.busy === "start" ? "Starting…" : "Start the build"}</button></div>
     </div>`;
   const briefing = detail.phase === "brief";
+  const report = sections(detail.report);
   const entries = detail.timeline.entries;
   return html`
     <div class="page task-page">
       ${top}
       <div class="scroll">
-        <${TaskStory} detail=${detail} />
-        ${(approvals.length || allow || land || review || start) && html`
-          <section class="task-actions" aria-label="Actions">${approvals}${start}${allow}${review}${land}</section>`}
+        <${TaskStory} detail=${detail} words=${words} />
+        ${(approvals.length || allow || land || start) && html`
+          <section class="task-actions" aria-label="Actions">${approvals}${start}${allow}${land}</section>`}
         ${briefing && brief && html`<${BriefSections} brief=${brief.brief} words=${words} />`}
         ${briefing && !brief && detail.state !== "failed" && html`<p class="empty">The worker is writing the brief. Nothing is built before you start it.</p>`}
 
-        ${sections(detail.report).map((section) => html`
-          <section class="task-section" key=${section.title} aria-label=${section.title}
-            id=${section.title === "Human Verify" ? "human-verify" : null}>
-            <h2 class="task-heading">${section.title}</h2>
-            <div class="task-body"><${Markdown} text=${section.body} words=${words} /></div>
-            ${section.title === "Human Verify" && actions.includes("verify") && can("task_act") && html`<${Verify} detail=${detail} act=${act} />`}
-          </section>`)}
-        ${!detail.report && detail.result?.summary ? html`
-          <section class="task-section" aria-label="The worker's summary">
-            <div class="task-body"><${Markdown} text=${[detail.result.summary, detail.result.notes].filter(Boolean).join("\n\n")} words=${words} /></div>
-          </section>` : null}
+        ${FOLDS.filter((title) => report[title] != null).map((title) => {
+          const note = foldNote(title, report[title], detail);
+          // ^ Landed items are live: Pass and Fail act on the project's list.
+          const live = title === "To check" && detail.to_check.length;
+          return html`
+            <details class="task-section task-fold" key=${title}>
+              <summary class="task-heading timeline-head"><${Icon} name="chevron" />${title}${note && html`<span class="fold-note"> · ${note}</span>`}</summary>
+              ${live ? html`
+                <ul class="check-list">${detail.to_check.map((item) => html`
+                  <${CheckRow} key=${item.id} project=${project} item=${item} revision=${detail.revision} onChanged=${load} />`)}
+                </ul>`
+                : html`<div class="task-body"><${Markdown} text=${foldBody(title, report[title])} words=${words} /></div>`}
+            </details>`;
+        })}
         ${!briefing && !detail.report && !detail.result?.summary && html`<p class="empty">No report yet: the worker has not finished a revision.</p>`}
         ${!briefing && brief && html`
           <details class="task-section task-fold">
@@ -346,11 +335,13 @@ export function TaskPage({ project, task, onClose, grip }) {
             </ul>
           </section>` : null}
         <details class="task-section timeline">
-          <summary class="task-heading timeline-head"><${Icon} name="chevron" />Timeline · ${entries.length} ${entries.length === 1 ? "entry" : "entries"}</summary>
+          <summary class="task-heading timeline-head"><${Icon} name="chevron" />History</summary>
           ${detail.timeline.skipped ? html`<p class="note">${detail.timeline.skipped} earlier entries are not shown.</p>` : null}
           <ol class="timeline-list">
             ${entries.map((entry, index) => {
-              const [what, more, tone] = described(entry);
+              const said = described(entry);
+              if (!said) return null;
+              const [what, more, tone] = said;
               return html`
                 <li key=${index}>
                   <span class="time">${clock(entry.unix_ms)}</span>

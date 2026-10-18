@@ -11,6 +11,7 @@ import { ProjectFacts } from "./story.js";
 import { Adopted } from "./adopted.js";
 import { TaskPage } from "./task.js";
 import { ProjectPage } from "./page.js";
+import { ChecksPage } from "./checks.js";
 
 // Every granted project's overview, or one project's.
 export async function loadTasks(project) {
@@ -27,19 +28,16 @@ export async function loadTasks(project) {
   } catch { /* the next tasks event brings it */ }
 }
 
-// A task state in words, and the tone that repeats it.
-const STATES = {
-  starting: ["starting", "accent"], working: ["working", "accent"], checking: ["checking", "accent"], briefed: ["brief ready", "attention"],
-  blocked: ["blocked", "attention"], ready: ["ready", "accent"], failed: ["failed", "danger"],
-  conflict: ["conflict", "danger"], stopped: ["stopped", "muted"], in_review: ["in review", "muted"],
-  landed: ["landed", "muted"], closed: ["closed", "muted"],
+// The three states the owner sees, and the tone that repeats each (docs/web-client.md "Tasks");
+// the server maps the store's states to them.
+const STAGES = {
+  working: ["working", "accent"], needs_you: ["needs you", "attention"], done: ["done", "muted"], closed: ["closed", "muted"],
 };
-export const taskState = (key) => STATES[key] ?? [key, "muted"];
+export const taskStage = (task) => STAGES[task?.stage] ?? [task?.stage ?? "", "muted"];
 export const taskLink = (project, task) => `#/p/${project}/t/${task}`;
 
-// A task that runs now: its chip and its reservoir row pulse.
-const RUNNING = new Set(["starting", "working", "checking"]);
-export const running = (task) => RUNNING.has(task?.state);
+// A task the agents work on: its chip and its reservoir row pulse.
+export const running = (task) => task?.stage === "working";
 
 // `#12` in any text: the number and a state dot, the state in its accessible name and the
 // title on hover. The title shows in the sheet and the reservoir, not in the text.
@@ -47,7 +45,7 @@ export function TaskChip({ project, id }) {
   const store = useStore();
   const task = store.tasks[project]?.tasks.find((candidate) => candidate.id === id);
   if (!task) return html`<a class="task-chip" href=${taskLink(project, id)}>#${id}</a>`;
-  const [word, tone] = taskState(task.state);
+  const [word, tone] = taskStage(task);
   return html`
     <a class="task-chip" href=${taskLink(project, id)} title=${task.title} aria-label=${`#${id}, ${word}`}>
       <span class="mark" data-tone=${tone} data-running=${running(task) ? "" : null} aria-hidden="true"></span>#${id}
@@ -66,18 +64,12 @@ export function withChips(project) {
   return chipWords.get(project);
 }
 
-// What each Needs-you item is, in words.
-const KIND_WORDS = {
-  blocked: "needs an answer", conflict: "conflict", failed: "failed", verify: "ready to verify",
-  land: "ready to land", review: "in review", brief: "brief ready",
-};
-const KIND_TONE = { blocked: "attention", conflict: "danger", failed: "danger", approval: "attention", brief: "attention", verify: "accent", land: "accent", review: "muted" };
+// What each Needs-you item is, in words; a ready task says why it did not land by itself.
+const KIND_WORDS = { blocked: "needs an answer", failed: "failed", stopped: "stopped", brief: "brief ready" };
+const KIND_TONE = { blocked: "attention", failed: "danger", stopped: "attention", approval: "attention", brief: "attention", land: "accent" };
 // One open item in words, as the owner would read it: "#4 needs an answer", "Approve land #3",
 // "Brief ready #2".
-const NEED_WORDS = {
-  blocked: "needs an answer", conflict: "has a conflict", failed: "failed", verify: "is ready to verify",
-  land: "is ready to land", review: "is in review",
-};
+const NEED_WORDS = { blocked: "needs an answer", failed: "failed", stopped: "was stopped", land: "is ready to land" };
 export const needWords = (item) => item.kind === "approval" ? item.label
   : item.kind === "brief" ? `Brief ready #${item.task}`
   : item.kind === "blocked" && item.asks?.length ? `#${item.task} needs to ${askWords(item.asks)}`
@@ -99,9 +91,9 @@ const actionOf = (key) => {
   return pending.get(key);
 };
 
-// Actions whose outcome the chat already shows as a status line ("Approved land #3",
-// "#1 may reach crates.io (owner)", "#2 passed verification of r1", "#3 landed").
-const SAID_IN_CHAT = new Set(["approve", "deny", "allow", "verify"]);
+// Actions whose outcome the chat already shows ("Approved land #3", "#1 may reach crates.io
+// (owner)", the worker's "#3 · done").
+const SAID_IN_CHAT = new Set(["approve", "deny", "allow"]);
 
 // What a fixed action did, as a notice: wsx's own answer, unless the chat says it already.
 export function announce(name, action, answer) {
@@ -188,20 +180,18 @@ function NeedRow({ project, item }) {
   let actions = null;
   if (acting && item.kind === "blocked" && asks.length) {
     actions = button("Allow", grant, { "aria-label": `Allow #${item.task} to ${askWords(asks)}` });
-  } else if (acting && ["blocked", "failed", "conflict"].includes(item.kind)) {
+  } else if (acting && ["blocked", "failed", "stopped"].includes(item.kind)) {
     actions = button("Answer", open, { "aria-expanded": draft.field === "answer", "aria-label": `Answer #${item.task}` });
   } else if (acting && item.kind === "approval") {
     actions = html`${button("Deny", () => run("deny"), { "aria-label": `Deny: ${item.label}` })}${button("Approve", () => run("approve"), { "aria-label": item.label })}`;
   } else if (acting && item.kind === "brief") {
     actions = button("Start", () => run("start"), { "aria-label": `Start the build of #${item.task}` });
-  } else if (acting && (item.kind === "land" || item.kind === "review")) {
-    actions = button(item.kind === "land" ? "Land" : "Check", () => run("land"), { "aria-label": `${item.kind === "land" ? "Land" : "Check the pull request of"} #${item.task}` });
-  } else if (item.kind === "verify" && item.task != null) {
-    actions = html`<a class="button need-action" href=${taskLink(project, item.task)}>Verify</a>`;
+  } else if (acting && item.kind === "land") {
+    actions = button("Land", () => run("land"), { "aria-label": `Land #${item.task}` });
   }
   // ^ An approval reads as the action it asks for, never as its id (docs/web-client.md "Tasks").
-  const context = item.kind === "approval" ? [item.revision != null && `r${item.revision}`, item.title ?? item.commit].filter(Boolean).join(" · ")
-    : asks.length ? `needs to ${askWords(asks)}` : KIND_WORDS[item.kind];
+  const context = item.kind === "approval" ? item.title ?? item.commit ?? ""
+    : asks.length ? `needs to ${askWords(asks)}` : item.kind === "land" ? item.reason : KIND_WORDS[item.kind];
   const label = item.kind === "approval" ? item.label : item.title;
   const body = html`
     <span class="row-label">${label}</span>
@@ -227,39 +217,67 @@ function NeedRow({ project, item }) {
     </li>`;
 }
 
-// A task that runs, in the reservoir: its chip and title; the chip pulses.
-const RunningRow = ({ project, task }) => html`
+// What a working task does when it is more than work: a conflict or a pull request.
+const WORKING_WORDS = { conflict: "resolving a conflict", in_review: "pull request open" };
+
+// A working task in the reservoir: its chip and title; the chip pulses. A pull request has Check.
+function RunningRow({ project, task }) {
+  const [busy, setBusy] = useState(false);
+  const check = async () => {
+    setBusy(true);
+    try { await act(project, { task: task.id }, "land"); } catch (failure) { toast(`#${task.id}: ${failure.message}`, { failure: true }); }
+    setBusy(false);
+  };
+  return html`
+    <li class="need">
+      <div class="row-link">
+        <${TaskChip} project=${project} id=${task.id} />
+        <a class="row-main row-open" href=${taskLink(project, task.id)}><span class="row-label">${task.title}</span>
+          ${WORKING_WORDS[task.state] && html`<span class="row-context">${WORKING_WORDS[task.state]}</span>`}</a>
+        ${task.state === "in_review" && can("task_act") && html`<span class="row-actions">
+          <button class="button need-action" type="button" disabled=${busy} onClick=${check}
+            aria-label=${`Check the pull request of #${task.id}`}>Check</button></span>`}
+      </div>
+    </li>`;
+}
+
+// The To check list in one row: its count, opening the list's sheet.
+const CheckingRow = ({ project, count }) => html`
   <li class="need">
     <div class="row-link">
-      <${TaskChip} project=${project} id=${task.id} />
-      <a class="row-main row-open" href=${taskLink(project, task.id)}><span class="row-label">${task.title}</span><span class="row-context">${taskState(task.state)[0]}</span></a>
+      <span class="mark" data-tone="attention" aria-hidden="true"></span>
+      <a class="row-main row-open" href=${`#/p/${project}/checks`}><span class="row-label">${count} to check</span>
+        <span class="row-context">for a person, before a release</span></a>
     </div>
   </li>`;
 
-// Everything open, in one place over the composer: "3 need you · 2 working", a tap opens the
-// list. It never moves the chat.
+// Everything open, in one place over the composer: "3 need you · 2 working · 5 to check", a
+// tap opens the list. Done tasks are not in it. It never moves the chat.
 function Reservoir({ project, items, tasks, overview }) {
   const [open, setOpen] = useState(false);
   const working = tasks.filter(running);
-  if (!items.length && !working.length && !tasks.length) return null;
+  const checking = overview?.to_check ?? 0;
+  if (!items.length && !working.length && !tasks.length && !checking) return null;
   const parts = [];
   if (items.length) parts.push(`${items.length} ${items.length === 1 ? "needs" : "need"} you`);
   if (working.length) parts.push(`${working.length} working`);
+  if (checking) parts.push(`${checking} to check`);
   const words = parts.length ? parts.join(" · ") : "Nothing needs you";
   return html`
     <section class="reservoir" aria-label="Open items" data-open=${open ? "" : null}>
       <button class="reservoir-head" type="button" aria-expanded=${open} aria-controls="reservoir-list" onClick=${() => setOpen(!open)}>
-        ${items.length ? html`<span class="mark" data-tone="attention" aria-hidden="true"></span>` : null}
+        ${items.length || checking ? html`<span class="mark" data-tone="attention" aria-hidden="true"></span>` : null}
         ${working.length ? html`<span class="mark" data-tone="accent" data-running="" aria-hidden="true"></span>` : null}
         <span class="reservoir-words">${words}</span>
         <${Icon} name="chevron" />
       </button>
       ${open && html`
         <div class="reservoir-body" id="reservoir-list">
-          ${items.length || working.length ? html`
+          ${items.length || working.length || checking ? html`
             <ul class="reservoir-list">
               ${items.map((item) => html`<${NeedRow} key=${itemKey(item)} project=${project} item=${item} />`)}
               ${working.map((task) => html`<${RunningRow} key=${`run-${task.id}`} project=${project} task=${task} />`)}
+              ${checking ? html`<${CheckingRow} key="checks" project=${project} count=${checking} />` : null}
             </ul>` : null}
           <${ProjectFacts} project=${project} overview=${overview} />
         </div>`}
@@ -368,7 +386,7 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
       ${error && html`<p class="error" role="alert">${error}</p>`}
       ${listOpen && html`<${Suggestions} label="Tasks" active=${active} onHover=${setActive} onPick=${pick}
         options=${options.map((task) => ({ key: task.id, name: `#${task.id}`, description: task.title,
-          source: taskState(task.state)[0], tone: taskState(task.state)[1], task }))}
+          source: taskStage(task)[0], tone: taskStage(task)[1], task }))}
         notes=${[!options.length && (tasks.length ? "No task matches that." : "This project has no task yet.")]} />`}
       <div class="composer-row" onPointerDown=${focusField}>
         <div class="composer-input">
@@ -495,7 +513,7 @@ function Sheet({ label, onClose, children }) {
 
 // The project screen with task_view: the manager chat as messages, what is open in the
 // reservoir, and with a task or the page in the route its sheet over the chat.
-export function Manager({ project: id, task, page }) {
+export function Manager({ project: id, task, page, checks }) {
   const store = useStore();
   const project = store.projects.find((candidate) => candidate.id === id);
   const overview = store.tasks[id];
@@ -541,11 +559,12 @@ export function Manager({ project: id, task, page }) {
     return () => events.removeEventListener("manager", changed);
   }, [id]);
   // Closing the sheet gives the focus back to the composer.
-  const sheetWas = useRef(task ?? page);
+  const sheet = task ?? (page || checks || null);
+  const sheetWas = useRef(sheet);
   useEffect(() => {
-    if (sheetWas.current && !(task ?? page)) field.current?.focus({ preventScroll: true });
-    sheetWas.current = task ?? page;
-  }, [task, page]);
+    if (sheetWas.current && !sheet) field.current?.focus({ preventScroll: true });
+    sheetWas.current = sheet;
+  }, [sheet]);
 
   if (!project) {
     return html`
@@ -605,6 +624,10 @@ export function Manager({ project: id, task, page }) {
       ${page && html`
         <${Sheet} key="page" label="Project page" onClose=${() => leaveFor(`#/p/${id}`)}>
           ${(grip) => html`<${ProjectPage} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}
+        </${Sheet}>`}
+      ${checks && html`
+        <${Sheet} key="checks" label="To check" onClose=${() => leaveFor(`#/p/${id}`)}>
+          ${(grip) => html`<${ChecksPage} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}
         </${Sheet}>`}
     </div>`;
 }

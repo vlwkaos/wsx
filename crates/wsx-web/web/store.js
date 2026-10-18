@@ -107,12 +107,13 @@ export function markSeen(session) {
 // Routes: #/ (home: the projects with task_view, else the inbox), #/sessions (the inbox),
 // #/projects, #/settings, #/s/<id>/chat|terminal, #/p/<id> (the manager with task_view, else the
 // sessions), #/p/<id>/sessions, #/p/<id>/files, #/p/<id>/t/<task> (the manager with the task's sheet),
-// #/p/<id>/page (the manager with the project page's sheet).
+// #/p/<id>/page (the manager with the project page's sheet), #/p/<id>/checks (with the To check list).
 export function parseRoute(hash) {
   const [, first = "", second, third, fourth] = hash.split("/");
   if (first === "s" && Number(second)) return { screen: "session", id: Number(second), tab: third === "terminal" ? "terminal" : "chat" };
   if (first === "p" && Number(second) && third === "t" && Number(fourth)) return { screen: "task", id: Number(second), task: Number(fourth) };
   if (first === "p" && Number(second) && third === "page") return { screen: "task", id: Number(second), task: null, page: true };
+  if (first === "p" && Number(second) && third === "checks") return { screen: "task", id: Number(second), task: null, checks: true };
   if (first === "p" && Number(second)) {
     return { screen: { files: "files", sessions: "sessions" }[third] ?? "project", id: Number(second) };
   }
