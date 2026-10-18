@@ -145,7 +145,7 @@ async function lean(where) {
 // The sheet's open sections and the ones folded under Details, by heading.
 const sheetParts = () => evaluate(`(() => { const heads = (nodes) => [...nodes].map((node) => node.textContent.trim());
   const fold = document.querySelector('.task-sheet details.task-fold');
-  return { open: heads(document.querySelectorAll('.task-sheet .scroll > .task-section > .task-heading')),
+  return { open: heads(document.querySelectorAll('.task-sheet .scroll > .task-section:not(.task-fold) > .task-heading')),
     details: fold ? heads(fold.querySelectorAll(':scope > .task-section > .task-heading, :scope > .task-part')) : null, folded: fold ? !fold.open : null }; })()`);
 // The reservoir's rows: [chip, title, context, actions], in the order shown.
 const rows = () => evaluate(`[...document.querySelectorAll('.reservoir-list .need')].map((row) => [
@@ -168,7 +168,9 @@ const focused = () => evaluate(`(() => { const node = document.activeElement; co
 async function clearRow(label, action, seconds = 60) {
   const key = await evaluate(`${rowOf(label)}.dataset.key`);
   if (!key) await fail(`the row ${label} has no item key`);
-  await evaluate(`[...${rowOf(label)}.querySelectorAll('.need-action')].find((node) => node.textContent.trim() === ${JSON.stringify(action)}).click()`);
+  // ^ As a pointer or a key press does, the button takes the focus before it acts.
+  await evaluate(`(() => { const button = [...${rowOf(label)}.querySelectorAll('.need-action')].find((node) => node.textContent.trim() === ${JSON.stringify(action)});
+    button.focus(); button.click(); })()`);
   await until(`!document.querySelector('.reservoir .need[data-key=${JSON.stringify(key)}]')`, `${action} did not clear the row ${label} (${key})`, seconds);
   await until("!!document.activeElement?.closest('.reservoir .need .need-action, .reservoir .need .row-open, .reservoir-head')", `after ${action} on ${label} the focus is not on the next row`, 10);
   const now = await focused();
