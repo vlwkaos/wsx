@@ -640,6 +640,9 @@ await shot("brief-sheet", ".composer-send");
 await resize([390, 844, 2]);
 await key("Escape", 27);
 await until(`location.hash === '#/p/${plans}' && !document.querySelector('dialog.task-sheet')`, "Escape did not close the brief sheet");
+// ^ Closing the sheet gives the composer the focus after the next paint: wait for it, or it
+// takes the focus back from the row button pressed below.
+await until("document.activeElement?.classList.contains('composer-field') && !document.activeElement.closest('dialog')", "closing the brief sheet did not focus the composer");
 await openReservoir();
 moved = await clearRow("#1", "Start");
 if (`${moved[0]} ${moved[2]}` !== "#2 Land") await fail(`after Start #1 the focus is on ${JSON.stringify(moved)}`);
