@@ -6,6 +6,7 @@
 //! and after it has exited.
 
 pub mod brief;
+pub mod checks;
 pub mod copy;
 pub mod ledger;
 pub mod manager;
@@ -172,6 +173,9 @@ pub struct TaskRecord {
     /// `task new --title`; without one the title comes from the prompt (`view::title`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The `checks.jsonl` item whose fail started this task (docs/tasks.md "To check").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixes: Option<String>,
     pub created_unix_ms: u64,
     pub updated_unix_ms: u64,
 }
@@ -182,7 +186,7 @@ pub enum MessageKind {
     Prompt,
     Steer,
     Add,
-    /// The owner's note on a failed human verification, sent to the worker.
+    /// A verdict note from before M4f; old logs only.
     Verify,
 }
 
@@ -263,17 +267,14 @@ pub enum LogEvent {
     Closed {
         discarded: bool,
     },
-    /// A human verdict on one revision, or a pass carried over a rebase.
+    /// A per-task verdict from before M4f; old logs only, shown nowhere.
     Verified {
+        #[serde(default)]
         revision: u32,
-        result: Verdict,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        note: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        carried_from: Option<u32>,
     },
-    /// `land --skip-verify` landed a revision without a pass.
+    /// `land --skip-verify` from before M4f; old logs only.
     VerifySkipped {
+        #[serde(default)]
         revision: u32,
     },
     Conflict {
@@ -317,32 +318,6 @@ pub enum LogEvent {
         version: u32,
         prompt: String,
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Verdict {
-    Pass,
-    Fail,
-}
-
-/// True when the verdict that applies to `revision` is a pass.
-pub fn passed(log: &[LogEntry], revision: u32) -> bool {
-    matches!(
-        verification(log, revision).map(|entry| &entry.event),
-        Some(LogEvent::Verified {
-            result: Verdict::Pass,
-            ..
-        })
-    )
-}
-
-/// The verdict that applies to `revision`: the latest one recorded for it.
-/// A new revision has none until someone verifies it or a pass is carried.
-pub fn verification(log: &[LogEntry], revision: u32) -> Option<&LogEntry> {
-    log.iter().rev().find(|entry| {
-        matches!(&entry.event, LogEvent::Verified { revision: verified, .. } if *verified == revision)
-    })
 }
 
 impl LogEvent {
@@ -423,13 +398,8 @@ pub enum HostRequest {
     Stop,
     /// Build the brief's rewritten prompt.
     Start,
-    Land {
-        skip_verify: bool,
-    },
-    Verify {
-        result: Verdict,
-        note: Option<String>,
-    },
+    /// Land the ready revision. Fields of older callers (`skip_verify`) are ignored.
+    Land {},
     Close {
         discard: bool,
     },
@@ -519,6 +489,9 @@ pub struct WorkerResult {
     pub status: String,
     pub summary: String,
     pub decisions: Vec<Decision>,
+    /// What the worker proved, each with the command or capture that shows it.
+    pub evidence: Vec<Evidence>,
+    /// Only what needs a person: look, feel, a real device, real data.
     pub human_verify: Vec<HumanVerify>,
     pub left_open: Vec<String>,
     pub notes: String,
@@ -529,6 +502,14 @@ pub struct WorkerResult {
 pub struct Decision {
     pub choice: String,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Evidence {
+    pub check: String,
+    /// The command that was run, or the capture's path.
+    pub proof: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -552,11 +533,12 @@ pub fn worker_result_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["status", "summary", "decisions", "human_verify", "left_open", "notes"],
+        "required": ["status", "summary", "decisions", "evidence", "human_verify", "left_open", "notes"],
         "properties": {
             "status": { "type": "string", "enum": ["done", "blocked", "failed"] },
             "summary": text,
             "decisions": { "type": "array", "items": pair("choice", "reason") },
+            "evidence": { "type": "array", "items": pair("check", "proof") },
             "human_verify": { "type": "array", "items": pair("check", "pass_if") },
             "left_open": { "type": "array", "items": text },
             "notes": text,

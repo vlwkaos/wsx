@@ -150,13 +150,13 @@ fn require_real_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn project_dir(project_id: &str) -> Result<PathBuf> {
+pub(super) fn project_dir(project_id: &str) -> Result<PathBuf> {
     validate_project_id(project_id)?;
     Ok(tasks_root().join(project_id))
 }
 
 /// Create `tasks/<project-id>/` and its parents, each owner-only.
-fn ensure_project_dir(project_id: &str) -> Result<PathBuf> {
+pub(super) fn ensure_project_dir(project_id: &str) -> Result<PathBuf> {
     let root = tasks_root();
     if let Some(wsx) = root.parent() {
         DirBuilder::new()
@@ -171,7 +171,7 @@ fn ensure_project_dir(project_id: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
-fn open_nofollow(path: &Path, options: &mut OpenOptions) -> Result<File> {
+pub(super) fn open_nofollow(path: &Path, options: &mut OpenOptions) -> Result<File> {
     options
         .custom_flags(libc::O_NOFOLLOW)
         .mode(0o600)
@@ -179,7 +179,7 @@ fn open_nofollow(path: &Path, options: &mut OpenOptions) -> Result<File> {
         .with_context(|| format!("cannot open {}", path.display()))
 }
 
-fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
+pub(super) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let file = open_nofollow(path, OpenOptions::new().read(true))?;
     let mut bytes = Vec::new();
     file.take(limit + 1)
@@ -588,6 +588,7 @@ pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
         dir.join(APPROVALS_FILE),
         dir.join(MANAGER_DIR).join(MANAGER_LOG),
         dir.join(PAGE_FILE),
+        dir.join(super::checks::CHECKS_FILE),
     ];
     for id in task_numbers(project_id)? {
         let task = dir.join(id.to_string());

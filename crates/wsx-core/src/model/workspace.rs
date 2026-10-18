@@ -78,7 +78,11 @@ pub struct TaskConfig {
     pub land_remote: String,
     /// Whether the manager's land, deploy and release need the owner's approval.
     pub land_approve: bool,
+    /// Whether the host lands a task as soon as its checks pass (docs/tasks.md "Landing").
+    pub land_auto: bool,
     pub deploy_approve: bool,
+    /// Whether the deployed site is public: open "To check" items then stop a deploy.
+    pub deploy_public: bool,
     pub release_approve: bool,
     /// Shell commands that deploy or release one default-branch commit.
     pub deploy_command: Option<String>,
@@ -122,7 +126,9 @@ impl Default for TaskConfig {
             land_policy: LandPolicy::LocalMerge,
             land_remote: "origin".into(),
             land_approve: true,
+            land_auto: true,
             deploy_approve: true,
+            deploy_public: false,
             release_approve: true,
             deploy_command: None,
             release_command: None,

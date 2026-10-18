@@ -177,7 +177,6 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
         action,
         task,
         revision,
-        skip_verify,
         commit,
         grant,
         ..
@@ -198,9 +197,6 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
     match action {
         ApprovalAction::Land => {
             argv.extend(["land".into(), task.unwrap_or_default().to_string()]);
-            if skip_verify {
-                argv.push("--skip-verify".into());
-            }
         }
         ApprovalAction::Discard => argv.extend([
             "close".into(),

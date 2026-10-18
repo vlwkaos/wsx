@@ -301,6 +301,9 @@ fn worker_instructions(record: &TaskRecord) -> String {
          search and run read-only commands, change no file, and return the brief in the \
          requested structure. When a message says the build starts, build it and commit \
          your changes with git before you finish. Build and test what you change. \
+         Prove what you can: each check a command, a test or a capture shows goes to \
+         `evidence` with that command or the capture's path. Put in `human_verify` only \
+         what needs a person: how it looks or feels, a real device, real data. \
          Your commands run in a sandbox: they write only in this working copy, and a \
          host that is not allowed fails with a sandbox_violations note; when the task \
          needs that host, run the command again with the host listed. Keep file edits in \

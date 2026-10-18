@@ -12,8 +12,10 @@ wsx task add <n> "<text>" --json                 # after the turn (queued while 
 wsx task allow <n> --host <host> | --path <path> | "<rule>" [--project-wide] --json   # grant; resumes a blocked task
 wsx task revoke <n> --host <host> | --path <path> | "<rule>" [--project-wide] --json  # from the next turn
 wsx task stop <n> --json                         # interrupt; the next add resumes the conversation
-wsx task verify <n> pass|fail [--note <text>] --json   # human verdict on the current revision
-wsx task land <n> [--skip-verify] --json         # onto the default branch by tasks.land.policy
+wsx task land <n> --json                         # onto the default branch by tasks.land.policy (a ready task lands by itself by default)
+wsx task check -p <project> [--json]             # the open "To check" items
+wsx task check pass <id>... | --all --json       # owner only
+wsx task check fail <id> --note <text> --json    # owner only; starts a task that fixes it
 wsx task close <n> [--discard] --json
 ```
 
@@ -64,7 +66,7 @@ A host follows a deploy of wsx. It records the identity (device, inode, size, mo
 
 - Steer: a stream-json user message during a turn. Claude does not save it in its history, so the host logs it. A steer with no running turn is sent as an add.
 - Only the worker's own `status: blocked` makes the task `blocked` (no checks run). Tool calls Claude denied (`permission_denials`) are evidence: they are logged on the `result` event, listed in `result.json` (`denials`, also in `show --json`) and under Evidence in the report, and checks still run.
-- Result schema: `{status: done|blocked|failed, summary, decisions[{choice, reason}], human_verify[{check, pass_if}], left_open[], notes}`.
+- Result schema: `{status: done|blocked|failed, summary, decisions[{choice, reason}], evidence[{check, proof}], human_verify[{check, pass_if}], left_open[], notes}`.
 
 ## Permissions
 
@@ -99,27 +101,35 @@ The worker's system prompt is the same in both phases, because Claude records a 
 
 ## Checks, revisions and report
 
-After each result that is not blocked the host runs `tasks.checks` with `/bin/sh -c` in the working copy (`tasks.checkTimeoutSeconds`, default 1200, and 8 KiB of output each, no `WSX_*`; a timed-out check's process group is killed), then sets `refs/wsx/task/<n>/r<k>` to the worker's HEAD. The host commits nothing; the worker commits. `ready` needs worker status `done` and every check at exit 0; otherwise `failed`. When the worker said `done` but a check failed, the host first sends the failure back: it logs `check_retry{revision, attempt, commands}` and starts a worker turn with each failed command, how it ended and the last 3 KiB of its output; the checks run again on the result as a new revision. After 2 such turns the task is `failed` as before; a message from the owner or the manager (an add, a grant that resumes, `start`) allows 2 more. A landing's checks are never retried. `report.md` has Asked, Summary, Decisions, Changes (`base..r<k>` commits and diffstat, plus uncommitted files), Evidence, Human Verify and Left open, built from the log, git and `result.json` only.
+After each result that is not blocked the host runs `tasks.checks` with `/bin/sh -c` in the working copy (`tasks.checkTimeoutSeconds`, default 1200, and 8 KiB of output each, no `WSX_*`; a timed-out check's process group is killed), then sets `refs/wsx/task/<n>/r<k>` to the worker's HEAD. The host commits nothing; the worker commits. `ready` needs worker status `done` and every check at exit 0; otherwise `failed`. When the worker said `done` but a check failed, the host first sends the failure back: it logs `check_retry{revision, attempt, commands}` and starts a worker turn with each failed command, how it ended and the last 3 KiB of its output; the checks run again on the result as a new revision. After 2 such turns the task is `failed` as before; a message from the owner or the manager (an add, a grant that resumes, `start`) allows 2 more. A landing's checks are never retried. The worker proves what it can: its result has `evidence` (`{check, proof}`, the command or capture path) for each check a command, a test or a capture shows, and `human_verify` only for what needs a person (look, feel, a real device, real data). `report.md` has Summary (with one "Decided:" line when the worker made decisions), Changes (`base..r<k>` commits and diffstat, plus uncommitted files), Evidence ("4 checks passed", each check, then the worker's evidence), To check (the `human_verify` items) and Left open, built from the log, git and `result.json` only.
 
-## Human verification
+## To check
 
-`wsx task verify <n> pass|fail [--note <text>]` logs `verified{revision, result, note}` for the current revision through the host. The verdict that applies is the latest one for the record's revision, so a new revision has none: it needs a new verdict or a carried pass (see Landing). A fail needs `--note`; the note is logged verbatim as a `verify` message (Asked shows it as "Human verification (fail)") and goes to the worker, as a steer during a turn or as an add after it. `report.md` ticks the Human Verify items on a pass and ends the section with the verdict, its time and note; `show --json` has `verification`.
+There is no verdict per task: a task the checks prove lands, and what needs a person waits in one list per project, `tasks/<project-id>/checks.jsonl`. When a task lands, its host adds the `human_verify` items of the landed revision as `{id: c<n>, task, revision, commit, check, pass_if, state: open, note, fix_task, unix_ms}`, once per task and revision, before it sets `landed` (items of a revision whose landing conflicted are kept when the resolving turn leaves them out). The file only grows, under a lock: a later line with the same id is the item's current row.
+
+- `wsx task check` lists the open items; `show --json` has the task's items as `to_check`; the ledger counts them.
+- `check pass <id>...` or `--all` marks open items `passed`; an unknown or settled id refuses the whole call.
+- `check fail <id> --note <text>` starts a task with `--no-brief` titled "Fix: <check>" whose prompt holds the check, `pass_if`, the note and the original `report.md` path; the new record has `fixes: c<n>`, and the item gets `state: failed`, the note and `fix_task`.
+- Both refuse with `WSX_TASK_ACTOR=manager`: checking is the owner's.
+- Old logs with `verified` or `verify_skipped` still read; nothing shows them.
 
 ## Landing (`local-merge`, the default policy)
 
 `wsx task land <n>` asks the host to:
 
-1. refuse unless the task is `ready`, and when the result has Human Verify items and the current revision has no `pass` (`--skip-verify` lands anyway and logs `verify_skipped`);
+1. refuse unless the task is `ready`;
 2. refuse when the worker left uncommitted tracked changes;
 3. when the branch does not contain the default branch tip, rebase it there in the working copy:
-   - a conflict aborts the rebase, logs `conflict{onto, paths}`, and starts a worker turn that rebases and resolves. The state stays `conflict` until the result; the normal checks then make it `ready`, and the caller lands again;
-   - a clean rebase reruns the checks as a new revision and lands when they pass. A `pass` on the old revision is carried (`verified{carried_from}`) only when the default branch changed none of the task's paths since its old base; otherwise the new revision needs a new verdict. A failure logs `land_stopped`;
+   - a conflict aborts the rebase, logs `conflict{onto, paths}`, and starts a worker turn that rebases and resolves. The state stays `conflict` until the result; the normal checks then make it `ready`, and it lands again (by itself under auto land);
+   - a clean rebase reruns the checks as a new revision and lands when they pass. A failure logs `land_stopped`;
 4. fast-forward the default branch: `git merge --ff-only` in the checkout that has it checked out, refused with the changed files named when that checkout has tracked changes; `git update-ref` with the old tip as guard when no checkout has it;
-5. log `landed{commit}` and set `landed`. After a rebase the task goes from `checking` straight to `landed`, or to `ready` with `land_stopped`.
+5. add the To check items, log `landed{commit}` and set `landed`. After a rebase the task goes from `checking` straight to `landed`, or to `ready` with `land_stopped`.
+
+**Auto land** (`tasks.land.auto`, default `true`): when the checks of a result pass and at least one check is declared, the host lands at once by the policy, without an owner or a manager and without approval; the task goes from `checking` to `landed` (or `conflict`, `in_review`) without a stop at `ready`. A landing that stops (a dirty main checkout, uncommitted work) logs `land_stopped` and leaves the task `ready`. With no checks nothing proves the work, so the task waits `ready` for a land by hand; so does every ready task with `auto: false`, and an old `ready` task when its host restarts.
 
 ## Landing (`pr`)
 
-With `tasks.land.policy: pr`, the first `land` of a ready task applies the same verify and commit gates, pushes `HEAD` to `wsx/t<n>` on `tasks.land.remote` (default `origin`, `--force-with-lease`), runs `gh pr create --base <default> --head wsx/t<n> --title <first prompt line, 72 chars> --body-file report.md`, records `pr_url` and `pr_revision`, logs `in_review{url, revision}` and sets `in_review`. The branch is not rebased first; the remote shows and merges conflicts. A later `land` runs `gh pr view <url> --json state,mergeCommit`: `MERGED` logs `landed{commit: mergeCommit.oid}` and sets `landed` (the local default branch is not changed); `CLOSED` logs `pr_closed` and the task stays `in_review`; an open PR gets the newer revision pushed when the task is `ready` with one, otherwise the answer says it is still open. Push and `gh` each have 120 s.
+With `tasks.land.policy: pr`, the first `land` of a ready task (or its auto land) applies the same commit gate, pushes `HEAD` to `wsx/t<n>` on `tasks.land.remote` (default `origin`, `--force-with-lease`), runs `gh pr create --base <default> --head wsx/t<n> --title <first prompt line, 72 chars> --body-file report.md`, records `pr_url` and `pr_revision`, logs `in_review{url, revision}` and sets `in_review`. The branch is not rebased first; the remote shows and merges conflicts. A later `land` runs `gh pr view <url> --json state,mergeCommit`: `MERGED` logs `landed{commit: mergeCommit.oid}` and sets `landed` (the local default branch is not changed); `CLOSED` logs `pr_closed` and the task stays `in_review`; an open PR gets the newer revision pushed when the task is `ready` with one, otherwise the answer says it is still open. Push and `gh` each have 120 s.
 
 ## Project page
 
@@ -129,7 +139,8 @@ With `tasks.land.policy: pr`, the first `land` of a ready task applies the same 
 
 `wsx task ledger -p <project>` prints JSON of at most 16 KiB, the manager's source of truth:
 
-- `open`: each open task with number, title (80 chars), state, revision, overlaps, the current verdict (without its note), the Human Verify item count, the last result summary (240 chars), `checks` (each check of the latest result as `{command, outcome: passed|failed|timed out}`, the command at most 120 chars), `pr_url`, `phase`, the `asks` of a blocked task and, before the build, `brief{version, rewritten_prompt}` (240 chars), in attention order (blocked, failed, conflict, briefed, ready, in_review, working, stopped);
+- `auto_land` and `to_check` (the count of open items);
+- `open`: each open task with number, title (80 chars), state, revision, overlaps, the Human Verify item count of its latest result, the last result summary (240 chars), `checks` (each check of the latest result as `{command, outcome: passed|failed|timed out}`, the command at most 120 chars), `pr_url`, `phase`, the `asks` of a blocked task and, before the build, `brief{version, rewritten_prompt}` (240 chars), in attention order (blocked, failed, conflict, briefed, ready, in_review, working, stopped);
 - `recent`: the last 10 landed or closed tasks;
 - `deploys`: the `deployed` status, with `configured` per kind (whether its command is set); under `pr` it uses the last fetched `<remote>/<default>` and does not fetch;
 - `main`: the main checkout's path, branch and number of changed files (tracked or new).
@@ -144,11 +155,11 @@ wsx task say -p <project> "<text>" --json        # or `-` or --prompt-file; retu
 wsx task chat -p <project> [--after <id>] --json # messages, replies, rotations
 ```
 
-One manager per project runs as hidden `wsx task manager-host <project-id>` in a wsxd session `task-manager` in the main checkout (no working copy); `say` starts it when it is not running. Its agent uses `tasks.manager` (`model`, default `sonnet`; `rotateTokens`, default 150000), project and local settings only, the tools `Read Glob Grep`, plain sandboxed Bash and the manager boundary (see Permissions). Its instructions: never edit the project's files or run builds; keep notes only in `manager/notes/`; read `wsx task ledger` first; for each owner message answer, add, steer, start, verify or land; keep turns short; name tasks `#<n>`. Asked for work, it runs `task new` (brief on), tells the owner the brief is coming and never starts a build alone; it adds `--no-brief` only when the owner's message asks to skip the brief ("just do it", "no brief"); on "start #n" it runs `task start <n>`, which asks the owner's approval; a reply about a brief goes to the task as an `add`; status answers name the briefs that wait; `wsx task` commands work in any command shape, and no other `wsx` command runs; a blocked task with asks it fixes itself, by granting the host or folder for that task when the task plainly needs it, or by steering or adding, and never tells the owner to edit settings files; a project-wide grant or a tool rule asks the owner; `task new` gets `--title` with a few plain words, never starting "Owner"; a task's checks are stated as passed or failed from the ledger's `checks` (and an event's count), which outrank the worker's own words about what it could not run or verify; the project page is updated in place (see Project page). A running manager keeps the instructions its conversation started with until it rotates. Its environment is the worker allowlist plus `WSX_TASK_BROKER` and `WSX_TASK_ACTOR=manager`; the host puts its own `wsx` first on `PATH` and runs the commands with its own environment (see Permissions).
+One manager per project runs as hidden `wsx task manager-host <project-id>` in a wsxd session `task-manager` in the main checkout (no working copy); `say` starts it when it is not running. Its agent uses `tasks.manager` (`model`, default `sonnet`; `rotateTokens`, default 150000), project and local settings only, the tools `Read Glob Grep`, plain sandboxed Bash and the manager boundary (see Permissions). Its instructions: never edit the project's files or run builds; keep notes only in `manager/notes/`; read `wsx task ledger` first; for each owner message answer, add, steer, start or land; a task whose checks pass lands by itself, so it lands only a ready task that waits and never asks the owner to verify a task; the To check list is the owner's (it never passes or fails items), a release waits for it (it tells the owner the count), and a worker that leaves for a person what a command could prove is told to prove it; keep turns short; name tasks `#<n>`. Asked for work, it runs `task new` (brief on), tells the owner the brief is coming and never starts a build alone; it adds `--no-brief` only when the owner's message asks to skip the brief ("just do it", "no brief"); on "start #n" it runs `task start <n>`, which asks the owner's approval; a reply about a brief goes to the task as an `add`; status answers name the briefs that wait; `wsx task` commands work in any command shape, and no other `wsx` command runs; a blocked task with asks it fixes itself, by granting the host or folder for that task when the task plainly needs it, or by steering or adding, and never tells the owner to edit settings files; a project-wide grant or a tool rule asks the owner; `task new` gets `--title` with a few plain words, never starting "Owner"; a task's checks are stated as passed or failed from the ledger's `checks` (and an event's count), which outrank the worker's own words about what it could not run or verify; the project page is updated in place (see Project page). A running manager keeps the instructions its conversation started with until it rotates. Its environment is the worker allowlist plus `WSX_TASK_BROKER` and `WSX_TASK_ACTOR=manager`; the host puts its own `wsx` first on `PATH` and runs the commands with its own environment (see Permissions).
 
 - `manager/log.jsonl` (rolls to `log.1.jsonl` past 8 MiB) has `message{id, from: owner|events, text}`, `delivered{ids}`, `reply{id, to, text, usage}`, `agent` (its commands), `rotated{tokens}` and `stopped`. `manager/state.json` keeps the conversation, the digest of its instructions, the next id and what was already reported.
 - One turn at a time. Waiting owner messages go together in one turn, each headed with its id, before waiting events.
-- Events: the host checks the task records every second. A change of (state, revision) into `ready`, `briefed`, `blocked`, `failed`, `conflict`, `in_review` or `landed` becomes a line written by wsx, `#<n> <state> r<k>: <title, 80 chars>; checks <passed> of <total> passed; worker says: <summary, 160 chars>` (without the checks part when there are none); for `briefed` it ends `brief v<k>: <rewritten prompt>`. Lines are logged as one `events` message when 3 s have passed since the last one and no turn runs, so events during a turn or close together arrive merged.
+- Events: the host checks the task records every second. A change of (state, revision) into `ready`, `briefed`, `blocked`, `failed`, `conflict`, `in_review` or `landed` becomes a line written by wsx, `#<n> <state> r<k>: <title, 80 chars>; checks <passed> of <total> passed; worker says: <summary, 160 chars>` (without the checks part when there are none); `landed` adds "; <n> to check" when the landing added items; for `briefed` it ends `brief v<k>: <rewritten prompt>`. Lines are logged as one `events` message when 3 s have passed since the last one and no turn runs, so events during a turn or close together arrive merged.
 - Restart: `state.json` records the reported state of each task only when its message is logged, and `delivered` marks what reached the agent. A restarted host queues logged messages that were never delivered and reports changes it has not reported, so no event is lost. Its first start takes the existing tasks as they are, without events.
 - After a reply whose context (input, cache read and cache write tokens) passes `rotateTokens`, the next turn starts a fresh conversation and the log has `rotated`; the ledger carries the state.
 - Claude keeps the system prompt a conversation began with, also on `--resume`; settings, tools and model apply at every start. `state.json` keeps a digest of the instructions the conversation began with (`instructions`). A host whose instructions differ, or a state without the digest (from an older host), starts a fresh conversation and logs `rotated{tokens: 0, reason}`.
@@ -159,7 +170,7 @@ The web client shows the manager chat, the tasks, their reports and their fixed 
 
 ## Approvals
 
-`tasks.land.approve`, `tasks.deploy.approve` and `tasks.release.approve` (default `true`) decide whether the manager may land, deploy or release alone. A `wsx task` command run with `WSX_TASK_ACTOR=manager` (the manager host sets it for its agent) that needs approval does not act: it appends `request{id: a<n>, action, task, revision, skip_verify, commit}` to `tasks/<project-id>/approvals.jsonl` and answers that the owner was asked. `close --discard` and `start` by the manager always ask: the build of a brief is the owner's decision. So do its project-wide grants and tool rules (`request{action: grant, grant{access, project_wide}}`, not tied to a revision); see Permissions. The ledger lists pending requests under `approvals`.
+`tasks.land.approve`, `tasks.deploy.approve` and `tasks.release.approve` (default `true`) decide whether the manager may land, deploy or release alone. A `wsx task` command run with `WSX_TASK_ACTOR=manager` (the manager host sets it for its agent) that needs approval does not act: it appends `request{id: a<n>, action, task, revision, commit}` to `tasks/<project-id>/approvals.jsonl` and answers that the owner was asked. `close --discard` and `start` by the manager always ask: the build of a brief is the owner's decision. So do its project-wide grants and tool rules (`request{action: grant, grant{access, project_wide}}`, not tied to a revision); see Permissions. The ledger lists pending requests under `approvals`.
 
 ```sh
 wsx task approve a3 -p <project> --json            # run the action as the owner would
@@ -178,7 +189,7 @@ wsx task release -p <project> [--commit <ref>] --json   # tasks.release.command
 wsx task deployed -p <project> --json
 ```
 
-`deploy` and `release` make a temporary detached working copy of one commit (default: the default branch tip) beside the main checkout, run the command there with `/bin/sh -c` and `WSX_DEPLOY_COMMIT`, record `{kind, commit, exit, unix_ms, duration_ms}` in `tasks/<project-id>/deploys.jsonl`, then `cargo clean` and remove the copy. They never run in a task's working copy. With `--json` the command's output goes to stderr. Under the `pr` policy the local default branch can lag, so `deploy`, `release` and `deployed` first fetch it from `tasks.land.remote` and use `<remote>/<default>` as the default commit and as the base of `behind`; `local-merge` stays local. `deployed` gives, per kind, whether its command is set (`configured`), the last successful commit, how many default-branch commits it lacks (`behind`) and how many attempts failed since (`failed_since`).
+`release` refuses while To check items are open, and so does `deploy` with `tasks.deploy.public: true`, before anything runs or is asked; a deploy that is not public runs and its answer ends "<n> to check on the deployed site". `deploy` and `release` make a temporary detached working copy of one commit (default: the default branch tip) beside the main checkout, run the command there with `/bin/sh -c` and `WSX_DEPLOY_COMMIT`, record `{kind, commit, exit, unix_ms, duration_ms}` in `tasks/<project-id>/deploys.jsonl`, then `cargo clean` and remove the copy. They never run in a task's working copy. With `--json` the command's output goes to stderr. Under the `pr` policy the local default branch can lag, so `deploy`, `release` and `deployed` first fetch it from `tasks.land.remote` and use `<remote>/<default>` as the default commit and as the base of `behind`; `local-merge` stays local. `deployed` gives, per kind, whether its command is set (`configured`), the last successful commit, how many default-branch commits it lacks (`behind`) and how many attempts failed since (`failed_since`).
 
 ## Close
 
@@ -193,8 +204,8 @@ tasks:
   sandbox: { allowedDomains: [crates.io, "*.npmjs.org"], allowWrite: ["~/.cargo/registry"] }
   checks: ["cargo fmt --check"]
   checkTimeoutSeconds: 1200
-  land: { policy: local-merge, remote: origin, approve: true }   # or policy: pr
-  deploy: { command: "sh deploy.sh", approve: true }
+  land: { policy: local-merge, remote: origin, approve: true, auto: true }   # or policy: pr
+  deploy: { command: "sh deploy.sh", approve: true, public: false }
   release: { command: "sh release.sh", approve: true }
   manager: { adapter: claude, model: sonnet, rotateTokens: 150000 }
 ```

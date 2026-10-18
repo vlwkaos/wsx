@@ -96,6 +96,9 @@ struct TaskCommandFile {
     command: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     approve: Option<bool>,
+    /// Deploy only: the deployed site is public, so open "To check" items stop it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -103,6 +106,8 @@ struct TaskCommandFile {
 struct TaskLandFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     approve: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     policy: Option<LandPolicy>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -326,8 +331,18 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
     if let Some(approve) = file.deploy.as_ref().and_then(|deploy| deploy.approve) {
         config.deploy_approve = approve;
     }
+    if let Some(public) = file.deploy.as_ref().and_then(|deploy| deploy.public) {
+        config.deploy_public = public;
+    }
     if let Some(approve) = file.release.as_ref().and_then(|release| release.approve) {
         config.release_approve = approve;
+    }
+    if file
+        .release
+        .as_ref()
+        .is_some_and(|release| release.public.is_some())
+    {
+        return Err("tasks.release.public is not a setting: a release is always public".into());
     }
     config.deploy_command = file
         .deploy
@@ -380,6 +395,9 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
     if let Some(land) = file.land {
         if let Some(approve) = land.approve {
             config.land_approve = approve;
+        }
+        if let Some(auto) = land.auto {
+            config.land_auto = auto;
         }
         if let Some(policy) = land.policy {
             config.land_policy = policy;
