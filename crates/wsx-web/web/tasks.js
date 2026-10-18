@@ -282,11 +282,11 @@ function Reservoir({ project, items, tasks }) {
         <span class="reservoir-words">
           ${need || (newest ? "" : "Nothing needs you")}
           ${newest && html`
-            ${need && html`<span class="reservoir-sep" aria-hidden="true">·</span>`}
-            <span class="task-chip"><span class="mark" data-tone="working" data-running="" aria-hidden="true"></span>#${newest.id}</span>
+            ${need && html`${" "}<span class="reservoir-sep" aria-hidden="true">·</span>${" "}`}
+            <span class="task-chip"><span class="mark" data-tone="working" data-running="" aria-hidden="true"></span>#${newest.id}</span>${" "}
             <span class="reservoir-title">${newest.title}</span>`}
         </span>
-        ${working.length > 1 && html`<span class="reservoir-more">+${working.length - 1} more</span>`}
+        ${working.length > 1 && html`${" "}<span class="reservoir-more">+${working.length - 1} more</span>`}
         <${Icon} name="chevron" />
       </button>
       ${open && (items.length || working.length) ? html`
