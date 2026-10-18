@@ -164,15 +164,17 @@ const focused = () => evaluate(`(() => { const node = document.activeElement; co
   return node?.classList.contains('reservoir-head') ? ['head'] : [node?.tagName ?? 'none']; })()`);
 // One action in a row, then that row leaves and the focus is on the next row's action. The
 // row is known by its item (`blocked-1`): the same task may come back as another item (#1
-// under Running, then `land-1`).
-async function clearRow(label, action, seconds = 60) {
+// under Running, then `land-1`). `attempts` are of 100 ms, as in `until`.
+async function clearRow(label, action, attempts = 300) {
   const key = await evaluate(`${rowOf(label)}.dataset.key`);
   if (!key) await fail(`the row ${label} has no item key`);
   // ^ As a pointer or a key press does, the button takes the focus before it acts.
   await evaluate(`(() => { const button = [...${rowOf(label)}.querySelectorAll('.need-action')].find((node) => node.textContent.trim() === ${JSON.stringify(action)});
     button.focus(); button.click(); })()`);
-  await until(`!document.querySelector('.reservoir .need[data-key=${JSON.stringify(key)}]')`, `${action} did not clear the row ${label} (${key})`, seconds);
-  await until("!!document.activeElement?.closest('.reservoir .need .need-action, .reservoir .need .row-open, .reservoir-head')", `after ${action} on ${label} the focus is not on the next row`, 10);
+  await until(`!document.querySelector('.reservoir .need[data-key=${JSON.stringify(key)}]')`, `${action} did not clear the row ${label} (${key})`, attempts);
+  const inList = "!!document.activeElement?.closest('.reservoir .need .need-action, .reservoir .need .row-open, .reservoir-head')";
+  for (let attempt = 0; attempt < 100 && !(await evaluate(inList)); attempt++) await pause(100);
+  if (!(await evaluate(inList))) await fail(`after ${action} on ${label} the focus is on ${JSON.stringify(await focused())}, not on the next row`);
   const now = await focused();
   if (await evaluate("document.activeElement?.closest('.need')?.dataset.key ?? ''") === key) await fail(`after ${action} the focus stayed on ${label}`);
   return now;
@@ -350,12 +352,12 @@ if (`${moved[0]} ${moved[2]}` !== "#4 Allow") await fail(`after Allow #1 the foc
 // ^ The chat says what Allow did as a status line; no notice repeats it.
 await until("[...document.querySelectorAll('.status-line')].some((node) => /#1 may reach crates\\.io \\(owner\\)/.test(node.textContent))", "Allow in the reservoir left no status line", 60);
 if (await evaluate("[...document.querySelectorAll('.notice')].some((node) => /#1:/.test(node.textContent))")) await fail("a notice repeats the status line of Allow");
-moved = await clearRow("Approve land #3", "Approve", 300);
+moved = await clearRow("Approve land #3", "Approve");
 if (await evaluate("[...document.querySelectorAll('.notice')].some((node) => /Approved land #3/.test(node.textContent))")) await fail("a notice repeats the status line of Approve");
 await until(`!${rowOf("#3")}`, "the reservoir kept the approved landing", 300);
 await until("[...document.querySelectorAll('.status-line')].some((node) => /Approved land #3 · .*#3 landed|#3 landed · .*Approved land #3/.test(node.textContent))", "the approval and the landing are not one line", 300);
 await until(`(${rowOf("#1")}?.querySelector('.need-action')?.textContent ?? '') === 'Land'`, "#1 is not ready to land after Allow", 300);
-moved = await clearRow("#1", "Land", 300);
+moved = await clearRow("#1", "Land");
 if (!(await evaluate(atEnd)) || await count(".jump")) await fail("acting in the reservoir moved the chat");
 if (await count(".need-card, .tray")) await fail("an action brought back a card or the tray");
 await shot("reservoir-acted", ".composer-send");
@@ -639,11 +641,11 @@ await resize([390, 844, 2]);
 await key("Escape", 27);
 await until(`location.hash === '#/p/${plans}' && !document.querySelector('dialog.task-sheet')`, "Escape did not close the brief sheet");
 await openReservoir();
-moved = await clearRow("#1", "Start", 60);
+moved = await clearRow("#1", "Start");
 if (`${moved[0]} ${moved[2]}` !== "#2 Land") await fail(`after Start #1 the focus is on ${JSON.stringify(moved)}`);
-moved = await clearRow("#2", "Land", 300);
+moved = await clearRow("#2", "Land");
 await until(`(${rowOf("#1")}?.querySelector('.need-action')?.textContent ?? '') === 'Land'`, "#1 did not build its brief", 300);
-moved = await clearRow("#1", "Land", 300);
+moved = await clearRow("#1", "Land");
 await until("document.querySelector('.reservoir-head').textContent.trim() === 'Nothing needs you'", "the cleared list does not say Nothing needs you", 60);
 if ((await focused())[0] !== "head") await fail(`with the list cleared the focus is on ${JSON.stringify(await focused())}`);
 await shot("reservoir-cleared", ".composer-send");

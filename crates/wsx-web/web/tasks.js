@@ -131,15 +131,15 @@ async function act(project, item, action, body = {}) {
   const answer = await api(path, { method: "POST", json: body });
   const name = item.kind === "approval" ? item.label : `#${item.task}`;
   announce(name, action, answer);
-  // ^ Awaited, so the row has left the list when the reservoir moves the focus on.
   await loadTasks(project);
   return answer;
 }
 
 // One open item in the reservoir: its chip (an approval names its task in its label), its
 // title and what it waits for, with its one action. The title opens the task's sheet, where the
-// other actions are. `onDone` hears of a success, so the focus moves to the next row.
-function NeedRow({ project, item, index, onDone }) {
+// other actions are. `onActing` says an action started, `onFailed` that it failed: the
+// reservoir moves the focus on when the row leaves, before or after the action's answer.
+function NeedRow({ project, item, index, onActing, onFailed }) {
   const key = `${project}/${itemKey(item)}`;
   const draft = actionOf(key);
   const [, renew] = useState(0);
@@ -151,12 +151,13 @@ function NeedRow({ project, item, index, onDone }) {
     draft.busy = true;
     draft.error = "";
     refresh();
+    onActing(itemKey(item), index);
     try {
       await act(project, item, action, body);
       draft.field = null;
       draft.text = "";
-      onDone(itemKey(item), index);
     } catch (failure) {
+      onFailed(itemKey(item));
       draft.error = failure.message;
     }
     draft.busy = false;
@@ -178,10 +179,11 @@ function NeedRow({ project, item, index, onDone }) {
     draft.busy = true;
     draft.error = "";
     refresh();
+    onActing(itemKey(item), index);
     try {
       for (const ask of asks) await act(project, item, "allow", grantBody(ask, false));
-      onDone(itemKey(item), index);
     } catch (failure) {
+      onFailed(itemKey(item));
       draft.error = failure.message;
     }
     draft.busy = false;
@@ -247,17 +249,15 @@ const RunningRow = ({ project, task }) => html`
 function Reservoir({ project, items, tasks }) {
   const [open, setOpen] = useState(false);
   const node = useRef();
+  // ^ The row whose action runs: a `tasks` event may remove it long before the answer comes.
   const cleared = useRef(null);
-  // ^ The reload may remove the row before its action returns: `onDone` runs the effect again.
-  const [heard, hear] = useState(0);
   const working = tasks.filter(running);
   const keys = items.map(itemKey);
   useLayoutEffect(() => {
     const done = cleared.current;
     if (!done || keys.includes(done.key)) return;
     cleared.current = null;
-    // ^ The row may leave on a later `tasks` event (a start reaches the host after its answer):
-    // the focus moves then too, but only when it is still in the list or left with the button.
+    // ^ Only when the focus is still in the list, or left with the removed button.
     const focus = document.activeElement;
     if (focus && focus !== document.body && !node.current?.contains(focus)) return;
     const next = keys[Math.min(done.index, keys.length - 1)];
@@ -265,12 +265,10 @@ function Reservoir({ project, items, tasks }) {
     // ^ The row's action first; its title only when the site may not act.
     const target = row?.querySelector(".need-action") ?? row?.querySelector(".row-open") ?? node.current?.querySelector(".reservoir-head");
     target?.focus({ preventScroll: true });
-  }, [keys.join(), heard]);
+  }, [keys.join()]);
   if (!items.length && !working.length && !tasks.length) return null;
-  const onDone = (key, index) => {
-    cleared.current = { key, index };
-    hear((count) => count + 1);
-  };
+  const onActing = (key, index) => { cleared.current = { key, index }; };
+  const onFailed = (key) => { if (cleared.current?.key === key) cleared.current = null; };
   // ^ The newest running task is the one with the highest number: stable while it works.
   const newest = working.reduce((last, task) => (!last || task.id > last.id ? task : last), null);
   const need = items.length ? `${items.length} ${items.length === 1 ? "needs" : "need"} you` : "";
@@ -292,7 +290,7 @@ function Reservoir({ project, items, tasks }) {
         <div class="reservoir-body" id="reservoir-list">
           ${items.length ? html`
             <ul class="reservoir-list" aria-label="Needs you">
-              ${items.map((item, index) => html`<${NeedRow} key=${itemKey(item)} project=${project} item=${item} index=${index} onDone=${onDone} />`)}
+              ${items.map((item, index) => html`<${NeedRow} key=${itemKey(item)} project=${project} item=${item} index=${index} onActing=${onActing} onFailed=${onFailed} />`)}
             </ul>` : null}
           ${working.length ? html`
             <h2 class="label reservoir-label">Running</h2>
