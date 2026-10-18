@@ -113,6 +113,19 @@ async function shot(name, primary) {
   await capture(file);
 }
 
+// Every working state on screen has the one working color (--color-working in app.css): marks,
+// pulses, typing dots and words. `least` is how many working elements this screen must show.
+async function oneWorkingColor(where, least) {
+  const seen = await evaluate(`(() => {
+    const probe = Object.assign(document.createElement('span'), { style: 'color: var(--color-working)' });
+    document.body.append(probe); const working = getComputedStyle(probe).color; probe.remove();
+    const paint = (node) => node.matches('.mark, .pulse, .typing-dot') ? getComputedStyle(node).backgroundColor : getComputedStyle(node).color;
+    const nodes = [...document.querySelectorAll('[data-tone=working], .pulse, .typing-dot')];
+    return { working, count: nodes.length, off: nodes.filter((node) => paint(node) !== working).map((node) => node.className || node.tagName),
+      accentRunning: document.querySelectorAll('.mark[data-running]:not([data-tone=working])').length }; })()`);
+  if (seen.count < least || seen.off.length || seen.accentRunning) await fail(`${where}: working states do not share one color: ${JSON.stringify(seen)}`);
+}
+
 async function pair() {
   await send("Page.navigate", { url: siteUrl });
   await until("!!document.querySelector('#pair-code')", "pairing form did not render");
@@ -216,6 +229,7 @@ for (const [name, status] of Object.entries(sessionRows)) {
   if (row?.status !== status || row.count || !/ago|now/.test(row.state)) await fail(`the ${name} row reads ${JSON.stringify(row)}, not "${status}" with a time`);
 }
 await tabsInView();
+await oneWorkingColor("home", 1);
 // ^ The server runs this page's build: no new-version pill.
 if (await count(".build-pill")) await fail("the new-version pill shows on the same build");
 await shot("home");
@@ -227,6 +241,7 @@ const listedSessions = await text(".rows .row-context");
 if (listedSessions.some((line) => /\btask-(\d+|manager)\b|\b(task|manager)$/.test(line))) await fail(`the session list shows task sessions: ${JSON.stringify(listedSessions)}`);
 if (!listedSessions.includes("old chat · claude")) await fail(`the session list misses the adopted session: ${JSON.stringify(listedSessions)}`);
 if ((await text(".tabbar a[aria-current=page]")).join() !== "Sessions") await fail("the Sessions tab is not marked current");
+await oneWorkingColor("the session rows", 2);
 await shot("sessions");
 // Projects, one tap from home: a project opens its worktrees, not its chat; the adopted
 // worktree is a read-only item at the top.
@@ -300,6 +315,7 @@ const line = await evaluate(`(() => { const head = document.querySelector('.rese
     cut: title.scrollWidth > title.clientWidth, right: head.getBoundingClientRect().right <= innerWidth + 0.5 }; })()`);
 if (line.height > line.control + 1 || !line.pulse || !line.right) await fail(`the closed line is not one line with a pulsing chip: ${JSON.stringify(line)}`);
 if (await count(".reservoir-list")) await fail("the reservoir is open before a tap");
+await oneWorkingColor("the closed reservoir and the chat's chips", 1);
 await openReservoir();
 await pause(300);
 if (!(await evaluate(atEnd))) await fail(`opening the reservoir took the chat off its end: ${JSON.stringify(await evaluate("(() => { const log = document.querySelector('.log'); return { top: log.scrollTop, height: log.scrollHeight, client: log.clientHeight, jump: !!document.querySelector('.jump') }; })()"))}`);
@@ -379,6 +395,7 @@ await until("!!document.querySelector('.log .typing') && document.querySelector(
 const typing = await evaluate("({ author: document.querySelector('.log .typing').closest('.bubble').querySelector('.bubble-author').textContent, said: document.querySelector('.log .typing .visually-hidden').textContent })");
 if (typing.author !== "Manager" || typing.said !== "Manager is typing") await fail(`the typing bubble reads ${JSON.stringify(typing)}`);
 if (await evaluate("document.querySelector('.log .bubble:last-child .typing') === null")) await fail("the typing bubble is not the last message");
+await oneWorkingColor("a typing manager", 4);
 await shot("typing", ".composer-send");
 const sentPair = (await bubbles()).filter((bubble) => bubble.side === "out").slice(-2);
 if (sentPair.length !== 2 || sentPair[0].last || sentPair[1].first || !sentPair[1].last) await fail(`two owner messages did not group: ${JSON.stringify(sentPair)}`);
@@ -696,6 +713,6 @@ problems.splice(quietFrom);
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
-console.log(`tasks page: home with the Sessions and Projects tabs in the first screen, adopted worktree items (no task copy, read only, opens its session), since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, no facts, Allow, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, no steps, timeline or Review, Human Verify first and Details closed, Fail with and without a note, Pass, Land, approval in the sentence, Deny, Allow for project), the # picker, the deep link, the brief (reservoir row, Open questions and Additions first, Details closed, indented prose as prose and a fence as code, talk as bubbles with Brief v2, Start, Land and Land cleared to Nothing needs you), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions and Projects tabs in the first screen, adopted worktree items (no task copy, read only, opens its session), since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, one working color on home, the session rows, the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, no facts, Allow, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, no steps, timeline or Review, Human Verify first and Details closed, Fail with and without a note, Pass, Land, approval in the sentence, Deny, Allow for project), the # picker, the deep link, the brief (reservoir row, Open questions and Additions first, Details closed, indented prose as prose and a fence as code, talk as bubbles with Brief v2, Start, Land and Land cleared to Nothing needs you), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

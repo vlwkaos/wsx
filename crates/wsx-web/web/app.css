@@ -103,12 +103,17 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 }
 .row-actions { flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-3); }
 .new { color: var(--color-accent); font-weight: var(--font-weight-medium); }
-/* State is always a word; the mark and the tone repeat it. */
+/* State is always a word; the mark and the tone repeat it. Every working state (a task or a
+   session at work, the manager typing, the pulse) has one color, set here only: the theme's
+   accent, also inside a `data-scheme` part (docs/web-themes.md "Tokens"). */
+:root, [data-scheme] { --color-working: var(--color-accent); }
 .mark { flex: 0 0 auto; width: calc(var(--space-1) * 1.5); height: calc(var(--space-1) * 1.5); border-radius: 50%; background: var(--color-faint); }
 .mark[data-tone="accent"] { background: var(--color-accent); }
+.mark[data-tone="working"] { background: var(--color-working); }
 .mark[data-tone="attention"] { background: var(--color-attention); }
 .mark[data-tone="danger"] { background: var(--color-danger); }
 [data-tone="accent"]:not(.mark) { color: var(--color-accent); }
+[data-tone="working"]:not(.mark) { color: var(--color-working); }
 [data-tone="attention"]:not(.mark) { color: var(--color-attention); }
 [data-tone="danger"]:not(.mark) { color: var(--color-danger); }
 .group-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-4) 0; }
@@ -306,7 +311,7 @@ div.steps .steps-summary { cursor: default; }
 .working { display: flex; align-items: center; gap: var(--space-2); font-size: var(--font-size-sm); color: var(--color-muted); }
 .working-activity { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The only looping motion, and only while an agent works or writes. */
-.pulse { flex: 0 0 auto; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-accent); }
+.pulse { flex: 0 0 auto; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-working); }
 @media (prefers-reduced-motion: no-preference) {
   .pulse, .mark[data-running] { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
   .typing-dot { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
@@ -488,7 +493,7 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .bubble .markdown > .diagram { width: 100%; min-width: 0; }
 /* The manager writes: three dots. They pulse only where motion is welcome. */
 .typing { display: inline-flex; align-items: center; gap: var(--space-1); min-height: calc(var(--font-size-md) * var(--line-height-prose)); }
-.typing-dot { width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-muted); }
+.typing-dot { width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-working); }
 .status-line { align-self: center; max-width: var(--size-prose); font-size: var(--font-size-sm); color: var(--color-muted); text-align: center; overflow-wrap: anywhere; }
 .page-link { color: var(--color-accent); }
 /* What needs the owner and what runs, pinned over the composer: one line, a tap opens the

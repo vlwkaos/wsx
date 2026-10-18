@@ -29,7 +29,7 @@ export async function loadTasks(project) {
 
 // A task state in words, and the tone that repeats it.
 const STATES = {
-  starting: ["starting", "accent"], working: ["working", "accent"], checking: ["checking", "accent"], briefed: ["brief ready", "attention"],
+  starting: ["starting", "working"], working: ["working", "working"], checking: ["checking", "working"], briefed: ["brief ready", "attention"],
   blocked: ["blocked", "attention"], ready: ["ready", "accent"], failed: ["failed", "danger"],
   conflict: ["conflict", "danger"], stopped: ["stopped", "muted"], in_review: ["in review", "muted"],
   landed: ["landed", "muted"], closed: ["closed", "muted"],
@@ -283,7 +283,7 @@ function Reservoir({ project, items, tasks }) {
           ${need || (newest ? "" : "Nothing needs you")}
           ${newest && html`
             ${need && html`<span class="reservoir-sep" aria-hidden="true">·</span>`}
-            <span class="task-chip"><span class="mark" data-tone="accent" data-running="" aria-hidden="true"></span>#${newest.id}</span>
+            <span class="task-chip"><span class="mark" data-tone="working" data-running="" aria-hidden="true"></span>#${newest.id}</span>
             <span class="reservoir-title">${newest.title}</span>`}
         </span>
         ${working.length > 1 && html`<span class="reservoir-more">+${working.length - 1} more</span>`}
@@ -613,7 +613,7 @@ export function Manager({ project: id, task, page }) {
         <${Back} fallback="#/" />
         <div class="bar-title">
           <span class="bar-label">${project.name}</span>
-          ${managerWord && html`<span class="bar-state" data-tone=${typing ? "accent" : "danger"}>${managerWord}</span>`}
+          ${managerWord && html`<span class="bar-state" data-tone=${typing ? "working" : "danger"}>${managerWord}</span>`}
         </div>
         <div class="bar-tools"><${More} project=${project} /></div>
       </header>
