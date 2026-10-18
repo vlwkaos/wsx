@@ -140,8 +140,6 @@ pub enum ApprovalLine {
         task: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         revision: Option<u32>,
-        #[serde(default)]
-        skip_verify: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

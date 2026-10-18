@@ -83,6 +83,11 @@ pub fn router(app: Shared) -> Router {
                 "/api/tasks/{project}/approvals/{id}/{decision}",
                 post(task_decide),
             )
+            .route("/api/tasks/{project}/checks", get(tasks_checks))
+            .route(
+                "/api/tasks/{project}/checks/{id}/{decision}",
+                post(task_check),
+            )
             .route("/api/media", put(media_put))
             .route("/api/files", get(files_list))
             // A text file is at most 1 MiB and a write carries the old and the new text.
@@ -943,8 +948,6 @@ struct ActInput {
     host: Option<String>,
     path: Option<String>,
     project: bool,
-    result: Option<wsx_core::task::Verdict>,
-    note: Option<String>,
 }
 
 async fn task_act(
@@ -973,11 +976,7 @@ async fn task_act(
             project: input.project,
             by: wsx_core::task::Actor::Owner,
         },
-        "verify" => HostRequest::Verify {
-            result: input.result.ok_or_else(|| missing("result"))?,
-            note: input.note.filter(|note| !note.trim().is_empty()),
-        },
-        "land" => HostRequest::Land { skip_verify: false },
+        "land" => HostRequest::Land {},
         // ^ The owner's own start: direct actions bypass the manager and its approval.
         "start" => HostRequest::Start,
         _ => return Err(Fault::not_found()),
@@ -1017,6 +1016,32 @@ async fn task_decide(
             _ => Err(Fault::not_found()),
         }
     })
+}
+
+async fn tasks_checks(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(project): UrlPath<u64>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, false)?;
+    blocking(|| crate::tasks::checks(&crate::tasks::scope(&app, project)?)).map(Json)
+}
+
+/// Pass or fail one "To check" item, or pass them all (`all/pass`).
+async fn task_check(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    UrlPath((project, id, decision)): UrlPath<(u64, String, String)>,
+    Json(input): Json<DecideInput>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, true)?;
+    act_budget(&app, &device)?;
+    let scope = blocking(|| crate::tasks::scope(&app, project))?;
+    // ^ A fail starts a task, which waits for its host for a few seconds.
+    tokio::task::spawn_blocking(move || crate::tasks::check(&scope, &id, &decision, input.note))
+        .await
+        .map_err(|_| Fault::new(500, "task_action", "the action stopped unexpectedly"))?
+        .map(Json)
 }
 
 fn media_fault(error: MediaError) -> Fault {

@@ -169,12 +169,3 @@ pub fn overlaps(record: &TaskRecord, others: &[&TaskRecord], with_paths: bool) -
         .collect();
     json!(rows)
 }
-
-/// The verdict that applies to `revision`, with its time, or null.
-pub fn verification_value(log: &[super::LogEntry], revision: u32) -> Value {
-    super::verification(log, revision).map_or(Value::Null, |entry| {
-        let mut value = serde_json::to_value(&entry.event).unwrap_or_default();
-        value["unix_ms"] = json!(entry.unix_ms);
-        value
-    })
-}

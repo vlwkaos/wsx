@@ -18,18 +18,17 @@ use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
+use wsx_core::task::checks::{self, CheckItem};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
 use wsx_core::task::manager::{ApprovalAction, ApprovalLine, GrantAsk, ManagerEvent};
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::store::ManagerDir;
-use wsx_core::task::view::{
-    overlaps, project_tasks, task_summary, verification_value, MAX_RESULT_READ_BYTES,
-};
+use wsx_core::task::view::{overlaps, project_tasks, task_summary, MAX_RESULT_READ_BYTES};
 use wsx_core::task::{
     brief, call_host, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
     Access, Actor, DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind,
-    Phase, TaskRecord, TaskState, Verdict, MAX_MESSAGE_BYTES,
+    Phase, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
 };
 use wsx_core::{ops, runtime};
 
@@ -130,25 +129,9 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Record a human verdict on the current revision; a fail goes to the worker
-    Verify {
-        task: String,
-        #[arg(value_enum)]
-        result: VerdictArg,
-        /// What was checked, or for a fail what is wrong (required for a fail)
-        #[arg(long)]
-        note: Option<String>,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
     /// Bring a ready task onto the default branch by the project's landing policy
     Land {
         task: String,
-        /// Land although Human Verify items have no pass for this revision (logged)
-        #[arg(long)]
-        skip_verify: bool,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -163,6 +146,15 @@ pub enum TaskCmd {
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
+        json: bool,
+    },
+    /// List what the owner has to check of the landed tasks, or pass or fail items (owner only)
+    Check {
+        #[command(subcommand)]
+        action: Option<CheckAction>,
+        #[arg(short, long, global = true)]
+        project: Option<String>,
+        #[arg(long, global = true)]
         json: bool,
     },
     /// Run tasks.deploy.command in a temporary copy of one default-branch commit and record it
@@ -263,7 +255,7 @@ impl TaskCmd {
             | Self::Stop { json, .. }
             | Self::Start { json, .. }
             | Self::Land { json, .. }
-            | Self::Verify { json, .. }
+            | Self::Check { json, .. }
             | Self::Close { json, .. }
             | Self::Deploy { json, .. }
             | Self::Release { json, .. }
@@ -283,6 +275,10 @@ impl TaskCmd {
         !matches!(
             self,
             Self::New { .. }
+                | Self::Check {
+                    action: Some(CheckAction::Fail { .. }),
+                    ..
+                }
                 | Self::Close { .. }
                 | Self::Manager { .. }
                 | Self::Say { .. }
@@ -291,10 +287,22 @@ impl TaskCmd {
     }
 }
 
-#[derive(Clone, Copy, clap::ValueEnum)]
-pub enum VerdictArg {
-    Pass,
-    Fail,
+#[derive(Subcommand)]
+pub enum CheckAction {
+    /// The named items passed, or every open item with --all
+    Pass {
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        ids: Vec<String>,
+        #[arg(long)]
+        all: bool,
+    },
+    /// The item failed: a new task fixes it (no brief), linked to the item
+    Fail {
+        id: String,
+        /// What is wrong; the new task gets it
+        #[arg(long)]
+        note: String,
+    },
 }
 
 pub fn run(command: TaskCmd) -> Result<()> {
@@ -327,7 +335,6 @@ pub fn run(command: TaskCmd) -> Result<()> {
                     &dir.project_id,
                     ApprovalAction::Start,
                     Some(&record),
-                    false,
                     None,
                     None,
                     json,
@@ -378,7 +385,6 @@ pub fn run(command: TaskCmd) -> Result<()> {
                     &dir.project_id,
                     ApprovalAction::Grant,
                     Some(&record),
-                    false,
                     None,
                     Some(GrantAsk {
                         access,
@@ -419,26 +425,13 @@ pub fn run(command: TaskCmd) -> Result<()> {
             project,
             json,
         } => send(&open(project.as_deref(), &task)?, HostRequest::Stop, json),
-        TaskCmd::Verify {
-            task,
-            result,
-            note,
+        TaskCmd::Check {
+            action,
             project,
             json,
-        } => send(
-            &open(project.as_deref(), &task)?,
-            HostRequest::Verify {
-                result: match result {
-                    VerdictArg::Pass => Verdict::Pass,
-                    VerdictArg::Fail => Verdict::Fail,
-                },
-                note,
-            },
-            json,
-        ),
+        } => check(action, project.as_deref(), json),
         TaskCmd::Land {
             task,
-            skip_verify,
             project,
             json,
         } => {
@@ -451,13 +444,12 @@ pub fn run(command: TaskCmd) -> Result<()> {
                     &dir.project_id,
                     ApprovalAction::Land,
                     Some(&record),
-                    skip_verify,
                     None,
                     None,
                     json,
                 );
             }
-            send(&dir, HostRequest::Land { skip_verify }, json)
+            send(&dir, HostRequest::Land {}, json)
         }
         TaskCmd::Close {
             task,
@@ -473,7 +465,6 @@ pub fn run(command: TaskCmd) -> Result<()> {
                     &dir.project_id,
                     ApprovalAction::Discard,
                     Some(&record),
-                    false,
                     None,
                     None,
                     json,
@@ -604,6 +595,37 @@ fn new(
 ) -> Result<()> {
     let prompt = prompt.read(MAX_MESSAGE_BYTES)?;
     let title = title.map(wsx_core::task::view::checked_title).transpose()?;
+    let (dir, record, state) = create(prompt, from, no_brief, title, None, project)?;
+    let id = dir.id;
+    if json {
+        return print_json(&json!({
+            "id": id,
+            "project": record.project,
+            "state": state,
+            "branch": record.branch,
+            "base": record.base,
+            "working_copy": record.working_copy,
+            "task_dir": dir.path,
+        }));
+    }
+    println!("task t{id} {}", state.as_str());
+    println!("branch:       {}", record.branch);
+    println!("working copy: {}", record.working_copy.display());
+    if state == TaskState::Starting {
+        println!("the host has not answered yet; check it with `wsx task show {id}`");
+    }
+    Ok(())
+}
+
+/// Create a task and start its host; `fixes` names the "To check" item it fixes.
+fn create(
+    prompt: String,
+    from: Option<&str>,
+    no_brief: bool,
+    title: Option<String>,
+    fixes: Option<String>,
+    project: Option<&str>,
+) -> Result<(TaskDir, TaskRecord, TaskState)> {
     let (config, workspace) = load_full_workspace()?;
     let project = resolve_project(&workspace, project)?;
     let settings = load_task_config(&project.path)
@@ -659,6 +681,7 @@ fn new(
         pr_url: None,
         pr_revision: None,
         title,
+        fixes,
         created_unix_ms: now,
         updated_unix_ms: now,
     };
@@ -708,24 +731,109 @@ fn new(
         )));
     }
     let state = wait_for_host(&dir).map_or(TaskState::Starting, |response| response.state);
+    Ok((dir, record, state))
+}
+
+/// `wsx task check`: list the open items, or pass or fail them (docs/tasks.md "To check").
+fn check(action: Option<CheckAction>, project: Option<&str>, json: bool) -> Result<()> {
+    let (name, main) = project_entry(project)?;
+    let project_id = store::project_id(&name, &main);
+    let changed = match action {
+        None => {
+            let items = checks::open_items(&project_id)?;
+            if json {
+                return print_json(&json!({ "project": name, "open": items }));
+            }
+            if items.is_empty() {
+                println!("nothing to check in {name}");
+            }
+            for item in items {
+                println!(
+                    "{:<5} #{:<4} {} (pass if: {})",
+                    item.id, item.task, item.check, item.pass_if
+                );
+            }
+            return Ok(());
+        }
+        Some(CheckAction::Pass { ids, all }) => {
+            owner_only("check pass")?;
+            let ids = if all { Vec::new() } else { ids };
+            checks::pass(&project_id, &ids)?
+        }
+        Some(CheckAction::Fail { id, note }) => {
+            owner_only("check fail")?;
+            vec![fail_check(&name, &project_id, &id, &note)?]
+        }
+    };
+    let open = checks::open_items(&project_id)?.len();
+    let message = match changed.as_slice() {
+        [item] if item.fix_task.is_some() => format!(
+            "{} failed; #{} fixes it. {open} to check",
+            item.id,
+            item.fix_task.unwrap_or_default()
+        ),
+        items => format!("{} passed. {open} to check", items.len()),
+    };
     if json {
-        return print_json(&json!({
-            "id": id,
-            "project": record.project,
-            "state": state,
-            "branch": record.branch,
-            "base": record.base,
-            "working_copy": record.working_copy,
-            "task_dir": dir.path,
-        }));
+        return print_json(
+            &json!({ "ok": true, "changed": changed, "open": open, "message": message }),
+        );
     }
-    println!("task t{id} {}", state.as_str());
-    println!("branch:       {}", record.branch);
-    println!("working copy: {}", record.working_copy.display());
-    if state == TaskState::Starting {
-        println!("the host has not answered yet; check it with `wsx task show {id}`");
-    }
+    println!("{message}");
     Ok(())
+}
+
+/// A failed item starts a task that fixes it, without a brief, and links both.
+fn fail_check(project: &str, project_id: &str, id: &str, note: &str) -> Result<CheckItem> {
+    let note = note.trim();
+    if note.is_empty() {
+        bail!("a fail needs --note saying what is wrong; the new task gets it");
+    }
+    if note.len() > checks::MAX_NOTE_BYTES {
+        bail!("the note is larger than {} bytes", checks::MAX_NOTE_BYTES);
+    }
+    let item = checks::find_open(&checks::read(project_id)?, id)?.clone();
+    let report = TaskDir::open(project_id, item.task)?.file(REPORT_FILE);
+    let prompt = format!(
+        "Fix what the owner found when checking #{task} after it landed.\n\n\
+         Check: {check}\nPass if: {pass_if}\nThe owner wrote: {note}\n\n\
+         The report of #{task}: {report}\n\n\
+         Find the cause, fix it, prove what a command or a capture can prove, and commit.",
+        task = item.task,
+        check = item.check,
+        pass_if = item.pass_if,
+        report = report.display(),
+    );
+    let (dir, ..) = create(
+        prompt,
+        None,
+        true,
+        Some(fix_title(&item.check)),
+        Some(item.id.clone()),
+        Some(project),
+    )?;
+    checks::fail(project_id, id, note, dir.id).with_context(|| {
+        format!(
+            "#{} was started to fix {id}, but the item was not marked failed",
+            dir.id
+        )
+    })
+}
+
+/// "Fix: <check>" within the title limit, on one line.
+fn fix_title(check: &str) -> String {
+    let words: String = check
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let title = format!("Fix: {}", words.trim());
+    let limit = wsx_core::task::view::MAX_TITLE_CHARS;
+    if title.chars().count() <= limit {
+        return title;
+    }
+    let mut short: String = title.chars().take(limit - 1).collect();
+    short.push('…');
+    short
 }
 
 fn wait_for_host(dir: &TaskDir) -> Option<HostResponse> {
@@ -802,8 +910,10 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
         summary["log"] = json!(dir.file(store::LOG_FILE));
         summary["host_running"] = json!(host);
         summary["socket"] = json!(dir.socket_path());
-        let log = dir.read_log()?;
-        summary["verification"] = verification_value(&log, record.revision);
+        summary["to_check"] = json!(checks::read(&dir.project_id)?
+            .into_iter()
+            .filter(|item| item.task == record.id)
+            .collect::<Vec<_>>());
         let tasks = project_tasks(&dir.project_id)?;
         let records: Vec<&TaskRecord> = tasks
             .iter()
@@ -1029,6 +1139,18 @@ fn deploy(kind: DeployKind, project: Option<&str>, commit: Option<&str>, json: b
     .with_context(|| {
         format!("tasks.{name}.command is not set in wsx.config.yml; nothing was run")
     })?;
+    let project_id = store::project_id(&project_name, &main);
+    // ^ Only public output waits for what the owner has to check (docs/tasks.md "To check").
+    let to_check = checks::open_items(&project_id)?.len();
+    let public = match kind {
+        DeployKind::Deploy => settings.deploy_public,
+        DeployKind::Release => true,
+    };
+    if public && to_check > 0 {
+        bail!(
+            "{to_check} item(s) to check are open; the owner checks them first (`wsx task check`). Nothing was run"
+        );
+    }
     let approve = match kind {
         DeployKind::Deploy => settings.deploy_approve,
         DeployKind::Release => settings.release_approve,
@@ -1038,15 +1160,7 @@ fn deploy(kind: DeployKind, project: Option<&str>, commit: Option<&str>, json: b
             DeployKind::Deploy => ApprovalAction::Deploy,
             DeployKind::Release => ApprovalAction::Release,
         };
-        return ask_owner(
-            &store::project_id(&project_name, &main),
-            action,
-            None,
-            false,
-            commit,
-            None,
-            json,
-        );
+        return ask_owner(&project_id, action, None, commit, None, json);
     }
     let revision = match commit {
         Some(commit) => commit.to_string(),
@@ -1054,7 +1168,6 @@ fn deploy(kind: DeployKind, project: Option<&str>, commit: Option<&str>, json: b
             error.context(format!("nothing was run or recorded for this {name}"))
         })?,
     };
-    let project_id = store::project_id(&project_name, &main);
     let path = copy::working_copy_path_named(&main, &format!("{name}-{}", std::process::id()))?;
     let commit = copy::create_detached(&main, &revision, &path)
         .map_err(|error| error.context(format!("nothing was run or recorded for this {name}")))?;
@@ -1097,13 +1210,19 @@ fn deploy(kind: DeployKind, project: Option<&str>, commit: Option<&str>, json: b
     })?;
     let status = status
         .with_context(|| format!("cannot run tasks.{name}.command; recorded with no exit code"))?;
+    let mut message = format!(
+        "{name} of {commit:.12}: exit {}",
+        exit.map_or("none".into(), |code| code.to_string())
+    );
+    if status.success() && to_check > 0 {
+        message.push_str(&format!("; {to_check} to check on the deployed site"));
+    }
     if json {
-        print_json(&serde_json::to_value(&record)?)?;
+        let mut value = serde_json::to_value(&record)?;
+        value["message"] = json!(message);
+        print_json(&value)?;
     } else {
-        println!(
-            "{name} of {commit:.12}: exit {}",
-            exit.map_or("none".into(), |code| code.to_string())
-        );
+        println!("{message}");
     }
     if !status.success() {
         bail!("tasks.{name}.command failed ({status}); the failure is recorded and nothing else changed");
@@ -1267,7 +1386,6 @@ fn ask_owner(
     project_id: &str,
     action: ApprovalAction,
     task: Option<&TaskRecord>,
-    skip_verify: bool,
     commit: Option<&str>,
     grant: Option<GrantAsk>,
     json: bool,
@@ -1283,7 +1401,6 @@ fn ask_owner(
             action,
             task: task.map(|record| record.id),
             revision,
-            skip_verify,
             commit: commit.map(str::to_string),
             grant,
             unix_ms: now_unix_ms(),

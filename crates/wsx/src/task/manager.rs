@@ -21,7 +21,7 @@ use wsx_core::task::manager::{
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
-use wsx_core::task::{brief, TaskState, MAX_MESSAGE_BYTES};
+use wsx_core::task::{brief, checks, TaskState, MAX_MESSAGE_BYTES};
 
 use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -98,7 +98,7 @@ fn instructions(project: &str, notes: &Path, page: &Path) -> String {
          `wsx task ledger -p {project}`: it is the source of truth, not your memory. \
          Messages headed 'Owner' come from the owner; messages headed 'Events' are written \
          by wsx. For each owner message choose one: answer it, `wsx task add`, \
-         `wsx task steer`, `wsx task new`, `wsx task verify` or `wsx task land`, always with \
+         `wsx task steer`, `wsx task new` or `wsx task land`, always with \
          `-p {project} --json`. When a command says the owner was asked to approve, tell the \
          owner and do not retry it. Keep turns short. Name tasks as #<n>. \
          Work the owner asks for starts with `wsx task new --title <title>`: the title is \
@@ -113,6 +113,14 @@ fn instructions(project: &str, notes: &Path, page: &Path) -> String {
          ran on the task's latest revision. When you report a task, give each check as \
          passed or failed from them, and trust them over the worker's own words about \
          what it could not run or verify; quote the worker only for what no check covers. \
+         A task whose checks pass lands by itself when the ledger's `auto_land` is true; run \
+         `wsx task land` only for a ready task that waits. Never ask the owner to verify a \
+         task. What only a person can check (look, feel, a real device, real data) goes to \
+         the project's To check list (`wsx task check -p {project} --json`, the ledger's \
+         `to_check`), which the owner works through at their own time; never pass or fail \
+         items yourself. A release refuses while items are open: tell the owner how many \
+         are open and ask them to check those first. When a worker leaves for a person what \
+         a command, a test or a capture could prove, tell that worker to prove it. \
          Your Bash runs in a sandbox that writes only your notes folder; `wsx task` \
          commands reach the tasks from there, also in a pipe or with a heredoc, and no other \
          `wsx` command runs. Workers run in a sandbox too. When the ledger shows a blocked \
@@ -389,10 +397,20 @@ impl Manager {
                     .count();
                 let words = result["result"]["summary"].as_str().unwrap_or_default();
                 let worker = format!("worker says: {}", clip(words, EVENT_SUMMARY_CHARS));
-                match checks.len() {
+                let mut summary = match checks.len() {
                     0 => worker,
                     total => format!("checks {passed} of {total} passed; {worker}"),
+                };
+                // ^ A landing adds its Human Verify items to the project's To check list.
+                if record.state == TaskState::Landed {
+                    let open = checks::open_items(&self.dir.project_id).map_or(0, |items| {
+                        items.iter().filter(|item| item.task == record.id).count()
+                    });
+                    if open > 0 {
+                        summary.push_str(&format!("; {open} to check"));
+                    }
                 }
+                summary
             };
             self.pending_events.push(format!(
                 "#{} {} r{}: {}; {}",

@@ -325,6 +325,7 @@ def main():
               'session_id': session, 'permission_denials': denials,
               'structured_output': {'status': status, 'summary': summary,
                                     'decisions': [{'choice': 'fake choice', 'reason': 'fixture'}],
+                                    'evidence': [{'check': 'the fixture ran', 'proof': 'fake-claude-stream.py'}] if status == 'done' else [],
                                     'human_verify': [{'check': 'open the file', 'pass_if': 'it has text'}] if 'HV' in words else [],
                                     'left_open': ['nothing real'], 'notes': ''}})
 

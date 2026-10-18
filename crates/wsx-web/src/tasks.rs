@@ -18,11 +18,11 @@ use std::{
 use wsx_core::config::project::load_task_config;
 use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
-    self, brief, call_host_waiting, call_socket, copy, ledger,
+    self, brief, call_host_waiting, call_socket, checks, copy, ledger,
     manager::{pending_approvals, ApprovalLine, ManagerEvent, ManagerRequest, ManagerResponse},
     owner,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
-    view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, Verdict, MAX_MESSAGE_BYTES,
+    view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
 };
 
 const SUMMARY_CHARS: usize = 240;
@@ -71,6 +71,43 @@ fn internal(error: anyhow::Error) -> Fault {
     Fault::new(500, "task_store", format!("{error:#}"))
 }
 
+/// The three states the owner sees (docs/web-client.md "Tasks"); the store keeps the rest.
+/// A ready task waits for a land by hand: auto land is off, there are no checks, or it stopped.
+fn stage(state: TaskState) -> &'static str {
+    match state {
+        TaskState::Starting
+        | TaskState::Working
+        | TaskState::Checking
+        | TaskState::Conflict
+        | TaskState::InReview => "working",
+        TaskState::Briefed
+        | TaskState::Blocked
+        | TaskState::Failed
+        | TaskState::Stopped
+        | TaskState::Ready => "needs_you",
+        TaskState::Landed => "done",
+        TaskState::Closed => "closed",
+    }
+}
+
+/// Why a ready task waits for the owner: its landing stopped, it has no checks, or the
+/// project lands by hand.
+fn land_reason(dir: &TaskDir, record: &TaskRecord) -> String {
+    let log = dir.read_log().unwrap_or_default();
+    let stopped = log.iter().rev().find_map(|entry| match &entry.event {
+        LogEvent::LandStopped { reason } => Some(Some(reason.clone())),
+        LogEvent::Revision { .. } => Some(None),
+        _ => None,
+    });
+    if let Some(Some(reason)) = stopped {
+        return format!("could not land: {}", view::clip(&reason, SUMMARY_CHARS));
+    }
+    if record.checks.is_empty() {
+        return "no checks; land by hand".into();
+    }
+    "ready to land".into()
+}
+
 fn open_task(scope: &Scope, task: u32) -> Outcome<TaskDir> {
     TaskDir::open(&scope.store, task).map_err(|_| Fault::not_found())
 }
@@ -81,7 +118,7 @@ pub fn overview(scope: &Scope) -> Value {
     let now = task::now_unix_ms();
     let mut needs: Vec<(u8, u64, Value)> = Vec::new();
     let mut listed: Vec<(u8, u64, Value)> = Vec::new();
-    let (mut working, mut stopped) = (0, 0);
+    let mut working = 0;
     let mut titles: HashMap<u32, String> = HashMap::new();
     for (dir, record) in &tasks {
         let Ok(record) = record else { continue };
@@ -92,13 +129,13 @@ pub fn overview(scope: &Scope) -> Value {
             order,
             u64::MAX - record.updated_unix_ms,
             json!({
-                "id": record.id, "title": title, "state": record.state,
+                "id": record.id, "title": title, "state": record.state, "stage": stage(record.state),
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
             }),
         ));
         let result = matches!(
             record.state,
-            TaskState::Blocked | TaskState::Failed | TaskState::Ready
+            TaskState::Blocked | TaskState::Failed | TaskState::Ready | TaskState::Stopped
         )
         .then(|| view::read_result(dir))
         .flatten()
@@ -112,38 +149,24 @@ pub fn overview(scope: &Scope) -> Value {
         };
         let (rank, mut row) = match record.state {
             TaskState::Blocked => (0, item("blocked")),
-            TaskState::Conflict => (1, item("conflict")),
             // ^ A brief waits for the owner's start, ranked with approval requests.
             TaskState::Briefed => (2, item("brief")),
             TaskState::Failed => (1, item("failed")),
+            TaskState::Stopped => (1, item("stopped")),
             TaskState::Ready => {
-                let checks = result["result"]["human_verify"]
-                    .as_array()
-                    .map_or(0, Vec::len);
-                let log = dir.read_log().unwrap_or_default();
-                if checks > 0 && !task::passed(&log, record.revision) {
-                    let mut row = item("verify");
-                    row["human_verify"] = json!(checks);
-                    (3, row)
-                } else {
-                    (4, item("land"))
-                }
+                let mut row = item("land");
+                row["reason"] = json!(land_reason(dir, record));
+                (3, row)
             }
-            TaskState::InReview => {
-                let mut row = item("review");
-                row["pr_url"] = json!(record.pr_url);
-                (4, row)
-            }
-            TaskState::Landed => continue,
-            TaskState::Starting | TaskState::Working | TaskState::Checking => {
+            TaskState::Starting
+            | TaskState::Working
+            | TaskState::Checking
+            | TaskState::Conflict
+            | TaskState::InReview => {
                 working += 1;
                 continue;
             }
-            TaskState::Stopped => {
-                stopped += 1;
-                continue;
-            }
-            TaskState::Closed => continue,
+            TaskState::Landed | TaskState::Closed => continue,
         };
         if record.state == TaskState::Blocked {
             row["denials"] = result["denials"].clone();
@@ -166,7 +189,6 @@ pub fn overview(scope: &Scope) -> Value {
             action,
             task,
             revision,
-            skip_verify,
             commit,
             unix_ms,
             ..
@@ -180,7 +202,7 @@ pub fn overview(scope: &Scope) -> Value {
             json!({
                 "kind": "approval", "approval": id, "action": owner::action_name(*action),
                 "label": owner::approval_label(line),
-                "task": task, "revision": revision, "skip_verify": skip_verify, "commit": commit,
+                "task": task, "revision": revision, "commit": commit,
                 "title": task.and_then(|task| titles.get(&task)), "unix_ms": unix_ms,
             }),
         ));
@@ -218,11 +240,12 @@ pub fn overview(scope: &Scope) -> Value {
         "project": scope.project,
         "needs": needs.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
         "working": working,
-        "stopped": stopped,
+        // ^ What the owner checks of landed tasks (docs/tasks.md "To check").
+        "to_check": checks::open_items(&scope.store).map_or(0, |items| items.len()),
         "tasks": listed.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
         "task_branches": task_branches,
         "decisions": decisions(&lines),
-        "resolutions": resolutions(&tasks, &lines, now),
+        "resolutions": resolutions(&scope.store, &tasks, &lines, now),
         "last_reply": last_reply,
         "last_unix_ms": last_unix_ms,
     })
@@ -231,6 +254,7 @@ pub fn overview(scope: &Scope) -> Value {
 /// What the owner or the manager settled, newest first, one line each ("#4 may reach
 /// crates.io (owner)", "Approved land #3"): the chat shows a resolved card as this line.
 fn resolutions(
+    store_id: &str,
     tasks: &[(TaskDir, anyhow::Result<TaskRecord>)],
     lines: &[ApprovalLine],
     now: u64,
@@ -270,16 +294,7 @@ fn resolutions(
                         task::Actor::Manager => "manager",
                     }
                 ),
-                LogEvent::Verified {
-                    revision,
-                    result,
-                    carried_from: None,
-                    ..
-                } => match result {
-                    Verdict::Pass => format!("#{id} passed verification of r{revision}"),
-                    Verdict::Fail => format!("#{id} failed verification of r{revision}"),
-                },
-                LogEvent::Landed { .. } => format!("#{id} landed"),
+                // ^ A landing is the worker's "done" bubble in the chat, not a line.
                 LogEvent::Closed { discarded: true } => format!("#{id} was closed and discarded"),
                 LogEvent::Closed { discarded: false } => format!("#{id} was closed"),
                 LogEvent::Agent { .. } => continue,
@@ -312,6 +327,16 @@ fn resolutions(
         let label = owner::approval_label(request);
         let word = if *approved { "Approved" } else { "Denied" };
         rows.push((*unix_ms, task, label.replacen("Approve", word, 1)));
+    }
+    // ^ A failed check says which task fixes it; passes are the owner's own taps.
+    for item in checks::read(store_id).unwrap_or_default() {
+        if let (checks::CheckState::Failed, Some(fix)) = (item.state, item.fix_task) {
+            rows.push((
+                item.unix_ms,
+                Some(item.task),
+                format!("#{} failed a check; #{fix} fixes it", item.task),
+            ));
+        }
     }
     rows.sort_by_key(|(unix_ms, _, _)| std::cmp::Reverse(*unix_ms));
     rows.truncate(RESOLUTIONS_SHOWN);
@@ -406,7 +431,6 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
         .into_iter()
         .filter(|line| matches!(line, ApprovalLine::Request { task: Some(id), .. } if *id == task))
         .collect();
-    let human_verify = result["result"]["human_verify"].clone();
     let mut summary = view::task_summary(&dir, &record);
     summary["project"] = json!(scope.project);
     summary["created_unix_ms"] = json!(record.created_unix_ms);
@@ -426,7 +450,20 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     } else {
         json!([])
     };
-    summary["verification"] = view::verification_value(&log, record.revision);
+    summary["stage"] = json!(stage(record.state));
+    if record.state == TaskState::Ready {
+        summary["land_reason"] = json!(land_reason(&dir, &record));
+    }
+    // ^ This task's items of the project's "To check" list, and the task a fail started.
+    let items = checks::read(&scope.store).unwrap_or_default();
+    summary["to_check"] = json!(items
+        .iter()
+        .filter(|item| item.task == task)
+        .collect::<Vec<_>>());
+    summary["fixes"] = json!(record
+        .fixes
+        .as_ref()
+        .and_then(|id| items.iter().find(|item| &item.id == id)));
     let landed = log.iter().rev().find_map(|entry| match &entry.event {
         LogEvent::Landed { commit } => Some(commit.clone()),
         _ => None,
@@ -444,12 +481,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
         })
         .collect::<Vec<_>>());
     summary["actions"] = if can_act {
-        // ^ A revision with a pass needs no verdict; a new revision brings the buttons back.
-        let unverified = human_verify
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-            && !task::passed(&log, record.revision);
-        json!(actions(record.state, unverified))
+        json!(actions(record.state))
     } else {
         json!([])
     };
@@ -457,14 +489,12 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
 }
 
 /// The actions a task's state allows. The host still decides; this only picks buttons.
-fn actions(state: TaskState, unverified: bool) -> Vec<&'static str> {
+fn actions(state: TaskState) -> Vec<&'static str> {
     match state {
         TaskState::Starting | TaskState::Working | TaskState::Checking => vec!["steer", "add"],
         TaskState::Blocked => vec!["add", "allow"],
         // ^ An add to a brief is a talk-through turn; the worker answers and may revise it.
         TaskState::Briefed => vec!["start", "add"],
-        // ^ The host refuses to land a revision whose Human Verify items have no pass.
-        TaskState::Ready if unverified => vec!["verify", "add"],
         TaskState::Ready => vec!["land", "add"],
         TaskState::Failed | TaskState::Conflict | TaskState::Stopped => vec!["add"],
         TaskState::InReview => vec!["land", "add"],
@@ -606,7 +636,7 @@ fn worker_reports(
         else {
             continue;
         };
-        if !matches!(state, "ready" | "failed" | "blocked" | "briefed") {
+        if !matches!(state, "ready" | "failed" | "blocked" | "briefed" | "landed") {
             continue;
         }
         let Ok(dir) = open_task(scope, id) else {
@@ -640,6 +670,9 @@ fn worker_reports(
                 })
                 .map(|(status, summary)| match state {
                     "failed" => ("failed".to_string(), summary),
+                    // ^ Ready waits for a land by hand; landed is the task done.
+                    "ready" => ("ready".to_string(), summary),
+                    "landed" => ("done".to_string(), summary),
                     _ => (status, summary),
                 })
         };
@@ -731,17 +764,6 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
                 .check()
                 .map_err(|reason| Fault::new(400, "invalid_grant", reason))?;
         }
-        HostRequest::Verify { result, note } => {
-            if let Some(note) = note {
-                message(note, "the note")?;
-            } else if *result == Verdict::Fail {
-                return Err(Fault::new(
-                    400,
-                    "note_required",
-                    "a fail needs a note that says what is wrong",
-                ));
-            }
-        }
         HostRequest::Land { .. } | HostRequest::Start => {}
         HostRequest::Status
         | HostRequest::Stop
@@ -771,6 +793,66 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
         return Err(Fault::new(409, "refused", response.message));
     }
     Ok(json!({ "ok": true, "state": response.state, "message": response.message }))
+}
+
+/// The open "To check" items with their task's title, oldest first.
+pub fn checks(scope: &Scope) -> Outcome<Value> {
+    let items = checks::open_items(&scope.store).map_err(internal)?;
+    let rows: Vec<Value> = items
+        .iter()
+        .map(|item| {
+            let mut row = json!(item);
+            row["title"] = json!(open_task(scope, item.task)
+                .ok()
+                .and_then(|dir| view::title(&dir, &dir.read_record().ok()?)));
+            row
+        })
+        .collect();
+    Ok(json!({ "open": rows }))
+}
+
+/// Pass or fail an item as the owner, through `wsx task check` so a fail starts its task
+/// the way the CLI does. `all` with `pass` passes every open item.
+pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> Outcome<Value> {
+    let valid_id = id == "all"
+        || id
+            .strip_prefix('c')
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    if !valid_id {
+        return Err(Fault::not_found());
+    }
+    let mut argv: Vec<String> = vec!["task".into(), "check".into()];
+    match (decision, id) {
+        ("pass", "all") => argv.extend(["pass".into(), "--all".into()]),
+        ("pass", id) => argv.extend(["pass".into(), id.into()]),
+        ("fail", "all") => return Err(Fault::not_found()),
+        ("fail", id) => {
+            let note = message(note.as_deref().unwrap_or_default(), "the note").map_err(|_| {
+                Fault::new(
+                    400,
+                    "note_required",
+                    "a fail needs a note that says what is wrong",
+                )
+            })?;
+            argv.extend(["fail".into(), id.into(), "--note".into(), note]);
+        }
+        _ => return Err(Fault::not_found()),
+    }
+    argv.extend(["-p".into(), scope.name.clone(), "--json".into()]);
+    let wsx = std::env::current_exe().map_err(|error| internal(error.into()))?;
+    let output = std::process::Command::new(wsx)
+        .args(&argv)
+        .env_remove(owner::ACTOR_ENV)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| internal(error.into()))?;
+    if !output.status.success() {
+        let said = String::from_utf8_lossy(&output.stderr);
+        let said = said.trim().trim_start_matches("Error: ");
+        return Err(Fault::new(409, "refused", view::clip(said, SUMMARY_CHARS)));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|_| internal(anyhow::anyhow!("wsx task check did not print JSON")))
 }
 
 /// Give the manager an owner message, starting it when it does not run.
@@ -1057,7 +1139,8 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
             .collect();
         notice(scope, watch);
         // ^ A working agent appends a progress line about every second. Only a ready task's
-        // log can change the overview (its verdict), and the overview reads those logs whole.
+        // log can change the overview (a landing that stopped), and the overview reads those
+        // logs whole.
         let ready = |id: u32| {
             watch
                 .seen

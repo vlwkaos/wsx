@@ -18,9 +18,11 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-# ^ Parts 1-22 build at once (`brief: false`); part 23 turns the brief on.
+# ^ Parts 1-22 build at once (`brief: false`); part 23 turns the brief on. Parts other than 16
+# land by hand (`land.auto: false`) so a ready task stays ready.
 CONFIG = '''tasks:
   brief: false
+  land: { auto: false }
   agent:
     model: fake-model
     tools: [WebFetch]
@@ -51,6 +53,7 @@ else:
 
 LAND_CONFIG = '''tasks:
   brief: false
+  land: { auto: false }
   agent:
     tools: [WebFetch]
   checks:
@@ -255,11 +258,11 @@ def run(wsx, wsxd, work, owned):
     commit = git('rev-parse', 'refs/wsx/task/1/r1')
     assert commit == git('rev-parse', 'wsx/t1')
     report = Path(ready['report']).read_text()
-    for section in ('## Asked', '## Summary', '## Decisions', '## Changes', '## Evidence',
-                    '## Human Verify', '## Left open'):
-        assert section in report, section
-    assert report.index('SLOW WORK a.txt') < report.index('use capitals')
+    sections = [line for line in report.splitlines() if line.startswith('## ')]
+    assert sections == ['## Summary', '## Changes', '## Evidence', '## To check', '## Left open'], sections
+    assert 'Decided: fake choice (fixture).' in report and '2 checks passed' in report, report
     assert '`test -f a.txt`: exit 0' in report and 'add a.txt' in report
+    assert '- the fixture ran: `fake-claude-stream.py`' in report and 'Nothing needs a person.' in report
     agent = wait(lambda: (a := pane_agent(1)) and a['state'] == 'done' and a, 'agent done')
     assert agent['provider'] == 'task'
 
@@ -465,57 +468,69 @@ def run(wsx, wsxd, work, owned):
         assert js('task', 'close', n)['state'] == 'closed'
         assert not git('branch', '--list', 'wsx/t%d' % n)
 
-    # 16. Human Verify items gate landing; --skip-verify is logged. With main not checked
-    # out, the ref moves with the old tip as guard.
-    hv = js('task', 'new', 'WORK z.txt HV')['id']
-    assert wait_state(hv, 'ready', 'failed')['state'] == 'ready'
-    assert 'Human Verify' in land(hv, ok=False)['message']
+    # 16. Auto land (the default; docs/tasks.md "Landing"): a ready task lands by itself with no
+    # owner action, its Human Verify items join the To check list, and a conflict lands after
+    # the worker's fix. With main not checked out, the ref moves with the old tip as guard.
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', ''))
+    git('commit', '-q', '-am', 'auto land')
+    # ^ The task records main as its default branch at `new`; main is left during the turn.
+    hv = js('task', 'new', 'SLOW WORK z.txt HV')['id']
     git('switch', '-q', '-c', 'parking')
-    assert land(hv, '--skip-verify')['state'] == 'landed'
-    assert any(e['kind'] == 'verify_skipped' for e in log(hv))
-    assert main_has('z.txt') and git('rev-parse', '--abbrev-ref', 'HEAD') == 'parking'
+    landed_hv = wait_state(hv, 'landed', 'ready', 'failed')
+    assert landed_hv['state'] == 'landed' and main_has('z.txt'), landed_hv
+    assert git('rev-parse', '--abbrev-ref', 'HEAD') == 'parking'
+    assert [e['kind'] for e in log(hv)].count('landed') == 1
+    item = js('task', 'check')['open']
+    assert [(i['id'], i['task'], i['check'], i['pass_if'], i['state']) for i in item] == [
+        ('c1', hv, 'open the file', 'it has text', 'open')], item
+    assert item[0]['commit'] == git('rev-parse', 'main') and item[0]['revision'] == 1
+    assert show(hv)['to_check'][0]['id'] == 'c1'
+    report = Path(show(hv)['report']).read_text()
+    assert '## To check\n\n- [ ] open the file (pass if: it has text)' in report and 'State `landed`' in report, report
     git('switch', '-q', 'main')
-    js('task', 'close', hv)
-
-    # 16b. Human verification is bound to a revision.
-    v = js('task', 'new', 'WORK v.txt HV')['id']
-    assert wait_state(v, 'ready', 'failed')['revision'] == 1
-    assert 'needs --note' in json.loads(cli('task', 'verify', v, 'fail', '--json', ok=False).stdout)['message']
-    passed = js('task', 'verify', v, 'pass', '--note', 'looked at v.txt')
-    assert passed['ok'] and show(v)['verification']['result'] == 'pass'
-    report = Path(show(v)['report']).read_text()
-    assert '- [x] open the file' in report and 'Verdict on r1: **pass**' in report, report
-    # A fail reaches the worker as the owner's words; its new revision has no verdict.
-    js('task', 'verify', v, 'fail', '--note', 'wrong colour WORK v2.txt HV')
-    assert any(t.get('message', '').startswith('Human verification of r1 failed') for t in traces())
-    again = wait_state(v, 'ready', 'failed')
-    assert again['revision'] == 2 and again['verification'] is None, again
-    assert [e['text'] for e in log(v) if e.get('mode') == 'verify'] == ['wrong colour WORK v2.txt HV']
-    report = Path(again['report']).read_text()
-    assert 'Human verification (fail)' in report and 'Verdict on r2: not verified' in report
-    js('task', 'verify', v, 'pass')
-    # Carried: main moves by a task on other paths, so v's pass survives its rebase.
-    u = js('task', 'new', 'WORK u.txt')['id']
-    assert wait_state(u, 'ready', 'failed')['state'] == 'ready' and land(u)['state'] == 'landed'
-    assert land(v)['ok']
-    landed_v = wait_state(v, 'landed', 'ready', 'failed')
-    assert landed_v['state'] == 'landed' and landed_v['verification']['carried_from'] == 2, landed_v
-    # Cleared: main changed big.txt too (another line), so the rebased revision needs a new pass.
-    c1 = js('task', 'new', 'LINE big.txt 1 HV')['id']
-    c2 = js('task', 'new', 'LINE big.txt 9')['id']
-    for n in (c1, c2):
-        assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
-    js('task', 'verify', c1, 'pass')
-    assert land(c2)['state'] == 'landed'
-    assert land(c1)['ok']
-    stopped = wait_state(c1, 'ready', 'landed', 'failed')
-    assert any(e['kind'] == 'land_stopped' for e in log(c1))
-    assert stopped['state'] == 'ready' and stopped['revision'] == 2 and stopped['verification'] is None, stopped
-    js('task', 'verify', c1, 'pass')
-    assert land(c1)['state'] == 'landed'
-    assert git('show', 'main:big.txt').splitlines()[0].startswith('LINE big.txt 1')
-    for n in (u, v, c1, c2):
+    # Two tasks on one file: whichever lands second conflicts, the worker resolves it, and it
+    # lands by itself.
+    a1 = js('task', 'new', 'WORK x.txt alpha HV')['id']
+    a2 = js('task', 'new', 'WORK x.txt beta HV')['id']
+    for n in (a1, a2):
+        assert wait_state(n, 'landed', 'failed')['state'] == 'landed', show(n)
+    conflicts = [n for n in (a1, a2) if any(e['kind'] == 'conflict' for e in log(n))]
+    assert len(conflicts) == 1 and git('show', 'main:x.txt') == 'resolved', conflicts
+    assert len(js('task', 'check')['open']) == 3
+    # No checks: nothing proves the work, so a ready task waits for a land by hand.
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', '').replace(
+        '  checks:\n    - "test ! -e broken.txt"\n', ''))
+    git('commit', '-q', '-am', 'no checks')
+    unchecked = js('task', 'new', 'WORK n.txt')['id']
+    assert wait_state(unchecked, 'ready', 'landed', 'failed')['state'] == 'ready'
+    time.sleep(1)
+    assert show(unchecked)['state'] == 'ready' and land(unchecked)['state'] == 'landed'
+    # Pass one item, then fail one: the fail starts a linked fix task without a brief.
+    passed = js('task', 'check', 'pass', 'c1')
+    assert [c['state'] for c in passed['changed']] == ['passed'] and passed['open'] == 2, passed
+    assert 'already passed' in cli('task', 'check', 'pass', 'c1', '--json', ok=False).stderr
+    assert 'no item c9' in cli('task', 'check', 'pass', 'c9', ok=False).stderr
+    manager_env = dict(env, WSX_TASK_ACTOR='manager')
+    refused = subprocess.run([str(wsx), 'task', 'check', 'pass', '--all'], cwd=project, env=manager_env,
+                             capture_output=True, text=True)
+    assert refused.returncode != 0 and 'for the owner' in refused.stderr, refused.stderr
+    assert 'needs --note' in cli('task', 'check', 'fail', 'c2', '--note', ' ', ok=False).stderr
+    failed = js('task', 'check', 'fail', 'c2', '--note', 'the text is cut off')
+    (failed_item,) = failed['changed']
+    fix = failed_item['fix_task']
+    assert failed_item['state'] == 'failed' and failed_item['note'] == 'the text is cut off' and fix, failed
+    fixing = show(fix)
+    assert fixing['record']['fixes'] == 'c2' and fixing['title'] == 'Fix: open the file', fixing
+    assert [(e['by'], e['actor']) for e in log(fix) if e['kind'] == 'brief_skipped'] == [('flag', 'owner')]
+    prompt = next(e['text'] for e in log(fix) if e.get('mode') == 'prompt')
+    task_of_c2 = failed_item['task']
+    assert 'the text is cut off' in prompt and show(task_of_c2)['report'] in prompt and 'Pass if: it has text' in prompt, prompt
+    wait_state(fix, 'ready', 'landed', 'failed')
+    assert [i['id'] for i in js('task', 'check')['open']] == ['c3']
+    for n in (hv, a1, a2, unchecked, fix):
         js('task', 'close', n)
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
+    git('commit', '-q', '-am', 'land by hand')
 
     # 17. Deploy and release records. Each runs in a temporary copy of a default-branch commit.
     unset = cli('task', 'deploy', ok=False)
@@ -527,6 +542,18 @@ def run(wsx, wsxd, work, owned):
 ''')
     git('commit', '-q', '-am', 'deploy config')
     assert js('task', 'deployed')['deploy']['commit'] is None
+    # Open items stop only public output: a release, and a deploy marked public.
+    refused = cli('task', 'release', '--json', ok=False)
+    assert '1 item(s) to check are open' in refused.stderr and 'Nothing was run' in refused.stderr, refused.stderr
+    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text().replace(
+        '  deploy:\n', '  deploy:\n    public: true\n'))
+    assert 'to check are open' in cli('task', 'deploy', ok=False).stderr
+    git('checkout', '--', 'wsx.config.yml')
+    assert not (base / 'deploy.log').exists()
+    deployed = js('task', 'deploy')
+    assert deployed['message'].endswith('; 1 to check on the deployed site'), deployed
+    (base / 'deploy.log').unlink()
+    assert js('task', 'check', 'pass', '--all')['open'] == 0
     deployed = js('task', 'deploy')
     tip = git('rev-parse', 'main')
     assert deployed['commit'] == tip and deployed['exit'] == 0, deployed
@@ -555,7 +582,8 @@ def run(wsx, wsxd, work, owned):
     (bin_dir / 'gh').write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(work / 'gh.py') + ' "$@"\n')
     (bin_dir / 'gh').chmod(0o755)
     (work / 'gh.py').write_text(FAKE_GH.replace('STATE', str(gh_state)).replace('LOG', str(gh_log)))
-    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text() + '  land: { policy: pr }\n')
+    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text().replace(
+        '  land: { auto: false }\n', '  land: { auto: false, policy: pr }\n'))
     git('commit', '-q', '-am', 'pr policy')
     git('push', '-q', 'origin', 'main')
 
@@ -570,7 +598,7 @@ def run(wsx, wsxd, work, owned):
     create = gh_calls()[0]
     assert create['args'][:2] == ['pr', 'create'] and url == 'https://example.invalid/pr/1'
     assert create['args'][create['args'].index('--head') + 1] == 'wsx/t%d' % p1
-    assert create['args'][create['args'].index('--title') + 1] == 'WORK p.txt' and '## Asked' in create['body']
+    assert create['args'][create['args'].index('--title') + 1] == 'WORK p.txt' and '## Summary' in create['body']
     assert git('rev-parse', 'refs/heads/wsx/t%d' % p1, cwd=remote) == git('rev-parse', 'wsx/t%d' % p1)
     assert 'still open' in land(p1)['message']
     # New work on an open PR: a later land pushes the new revision to it.
@@ -613,6 +641,7 @@ def run(wsx, wsxd, work, owned):
     raw = cli('task', 'ledger').stdout
     ledger = json.loads(raw)
     assert len(raw.encode()) <= 16 * 1024 and ledger['open_omitted'] == 0
+    assert ledger['to_check'] == 0 and ledger['auto_land'] is False and 'verification' not in ledger['open'][0]
     assert [(row['id'], row['state']) for row in ledger['open']] == [(blocked_task, 'blocked'), (ready_task, 'ready')]
     assert ledger['open'][1]['summary'] == 'did: WORK l.txt could not run the browser test' and ledger['open'][1]['human_verify'] == 0
     assert ledger['open'][1]['checks'] == [{'command': 'test ! -e broken.txt', 'outcome': 'passed'}], ledger['open'][1]
@@ -773,7 +802,8 @@ def run(wsx, wsxd, work, owned):
         js('task', 'close', n, '--discard')
 
     # 22. Approvals: what the manager may not do alone becomes a request the owner decides.
-    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text().replace('  land: { policy: pr }\n', ''))
+    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text().replace(
+        '  land: { auto: false, policy: pr }\n', '  land: { auto: false }\n'))
     git('commit', '-q', '-am', 'back to local-merge')
     ap = js('task', 'new', 'WORK ap.txt')['id']
     assert wait_state(ap, 'ready', 'failed')['state'] == 'ready'
@@ -868,7 +898,9 @@ def run(wsx, wsxd, work, owned):
     assert [e['text'] for e in log(b) if e['kind'] == 'message' and e['mode'] == 'prompt'] == \
         ['Fix the fixture EDIT README REWRITE WORK b1.txt']
     report = Path(ready['report']).read_text()
-    assert report.index('Fix the fixture EDIT') < report.index('**Build prompt (brief v2)**') < report.index('## Summary')
+    # ^ The report starts at the summary: the brief and the prompts are in the log and brief.md.
+    assert [line for line in report.splitlines() if line.startswith('## ')][0] == '## Summary', report
+    assert '## Asked' not in report and 'brief v2' in report, report
     assert 'only a briefed task starts' in cli('task', 'start', b, ok=False).stdout
     js('task', 'close', b, '--discard')
     # A brief turn without a brief fails; the next reply asks again.

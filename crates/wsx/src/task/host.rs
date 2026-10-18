@@ -17,11 +17,12 @@ use wsx_core::model::workspace::LandPolicy;
 use wsx_core::runtime;
 use wsx_core::task::{
     brief::{self, Brief, BriefFile},
+    checks,
     copy::{self, Rebase},
-    now_unix_ms, passed, report,
+    now_unix_ms, report,
     store::{self, TaskDir, BRIEF_FILE, BRIEF_TEXT_FILE, REPORT_FILE, RESULT_FILE},
-    verification, view, Access, Actor, CheckResult, HostRequest, HostResponse, LogEvent,
-    MessageKind, Phase, TaskRecord, TaskState, Verdict, WorkerResult, MAX_MESSAGE_BYTES,
+    view, Access, Actor, CheckResult, HostRequest, HostResponse, LogEvent, MessageKind, Phase,
+    TaskRecord, TaskState, WorkerResult, MAX_MESSAGE_BYTES,
 };
 
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -40,13 +41,6 @@ enum Event {
     /// `None` when the agent process of that generation ended.
     Agent(u64, Option<AgentLine>),
     ChecksDone(Vec<CheckResult>),
-}
-
-/// A `land` waiting for the checks of its rebased revision.
-struct Landing {
-    skip_verify: bool,
-    /// The verified revision whose pass carries to the rebased one, with its note.
-    carried: Option<(u32, Option<String>)>,
 }
 
 struct Host {
@@ -75,7 +69,11 @@ struct Host {
     /// The file this host runs from, and whether it must exec its replacement.
     binary: Option<hosting::Binary>,
     reexec: bool,
-    landing: Option<Landing>,
+    /// A `land` waits for the checks of its rebased revision.
+    landing: bool,
+    /// The Human Verify items of the revision whose landing conflicted: the turn that
+    /// resolves it rarely repeats them, and they still need a person.
+    carried_verify: Vec<wsx_core::task::HumanVerify>,
     started: Instant,
 }
 
@@ -111,7 +109,8 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         check_retries: 0,
         binary: hosting::Binary::capture(),
         reexec: false,
-        landing: None,
+        landing: false,
+        carried_verify: Vec::new(),
         started: Instant::now(),
     };
     // ^ A pr landing pushes and calls gh, each bounded by 120 s.
@@ -232,8 +231,7 @@ impl Host {
             } => self.revoke(access, project, by),
             HostRequest::Stop => self.stop(),
             HostRequest::Start => self.start(),
-            HostRequest::Land { skip_verify } => self.land(skip_verify),
-            HostRequest::Verify { result, note } => self.verify(result, note),
+            HostRequest::Land {} => self.land(false),
             HostRequest::Close { discard } => {
                 if let Some(agent) = self.agent.take() {
                     agent.stop();
@@ -696,16 +694,7 @@ impl Host {
                 } else {
                     TaskState::Failed
                 };
-                let landing = self.landing.take();
-                if let Some((from, note)) = landing.as_ref().and_then(|l| l.carried.clone()) {
-                    self.say(&format!("carried the pass of r{from} to r{revision}"));
-                    self.log(LogEvent::Verified {
-                        revision,
-                        result: Verdict::Pass,
-                        note,
-                        carried_from: Some(from),
-                    });
-                }
+                let landing = std::mem::take(&mut self.landing);
                 // ^ Readers act on the state: the result and report must be complete before it.
                 self.write_result(&result, &results);
                 self.write_report(state);
@@ -719,11 +708,12 @@ impl Host {
                 match landing {
                     // ^ A worker that says done but fails a check gets the failure back,
                     // bounded, before the task fails. ref: docs/tasks.md "Checks, revisions and report"
-                    None if state == TaskState::Failed
-                        && result.status == "done"
-                        && !failed.is_empty()
-                        && self.pending.is_empty()
-                        && self.check_retries < MAX_CHECK_RETRIES =>
+                    false
+                        if state == TaskState::Failed
+                            && result.status == "done"
+                            && !failed.is_empty()
+                            && self.pending.is_empty()
+                            && self.check_retries < MAX_CHECK_RETRIES =>
                     {
                         self.check_retries += 1;
                         let attempt = self.check_retries;
@@ -738,24 +728,27 @@ impl Host {
                         let text = check_retry_request(&failed, attempt);
                         self.start_turn(&text);
                     }
-                    None => self.set_state(state),
-                    Some(landing) => {
+                    // ^ A ready task lands at once when the project lands by itself and has
+                    // checks to prove it; it goes from checking to landed without a stop at
+                    // ready. A message that waits for the worker comes first: its answer is a
+                    // new revision, which lands in turn. ref: docs/tasks.md "Landing"
+                    false
+                        if state == TaskState::Ready
+                            && !results.is_empty()
+                            && self.pending.is_empty()
+                            && self.auto_land() =>
+                    {
+                        let landed = self.land(true);
+                        self.finish_landing(landed, state);
+                    }
+                    false => self.set_state(state),
+                    true => {
                         let finished = if state == TaskState::Ready {
-                            self.verify_gate(landing.skip_verify)
-                                .and_then(|()| self.fast_forward())
+                            self.fast_forward()
                         } else {
                             Err(anyhow::anyhow!("checks failed on the rebased revision"))
                         };
-                        match finished {
-                            Ok(message) => self.say(&message),
-                            Err(error) => {
-                                self.say(&format!("landing stopped: {error:#}"));
-                                self.log(LogEvent::LandStopped {
-                                    reason: format!("{error:#}"),
-                                });
-                                self.set_state(state);
-                            }
-                        }
+                        self.finish_landing(finished, state);
                     }
                 }
             }
@@ -765,6 +758,25 @@ impl Host {
             }
         }
         self.deliver_pending();
+    }
+
+    /// Whether the project lands ready tasks by itself (`tasks.land.auto`).
+    fn auto_land(&self) -> bool {
+        load_task_config(&self.record.project_path).is_ok_and(|settings| settings.land_auto)
+    }
+
+    /// Say what a landing did, or log why it stopped and settle the task in `state`.
+    fn finish_landing(&mut self, finished: Result<String>, state: TaskState) {
+        match finished {
+            Ok(message) => self.say(&message),
+            Err(error) => {
+                self.say(&format!("landing stopped: {error:#}"));
+                self.log(LogEvent::LandStopped {
+                    reason: format!("{error:#}"),
+                });
+                self.set_state(state);
+            }
+        }
     }
 
     /// Send the messages queued during the turn or the checks as one new turn.
@@ -799,63 +811,15 @@ impl Host {
         }
     }
 
-    /// Record a human verdict on the current revision. A fail goes to the worker.
-    fn verify(&mut self, result: Verdict, note: Option<String>) -> Result<String> {
-        let revision = self.record.revision;
-        if revision == 0 {
-            bail!(
-                "task t{} has no revision yet; verify after its first result",
-                self.record.id
-            );
-        }
-        let note = note.filter(|note| !note.trim().is_empty());
-        if let Some(note) = &note {
-            check_message(note)?;
-        }
-        if result == Verdict::Fail && note.is_none() {
-            bail!("a fail needs --note saying what is wrong; the worker gets it");
-        }
-        self.log(LogEvent::Verified {
-            revision,
-            result,
-            note: note.clone(),
-            carried_from: None,
-        });
-        self.write_report(self.record.state);
-        let Some(note) = note.filter(|_| result == Verdict::Fail) else {
-            return Ok(format!("r{revision} passed human verification"));
-        };
-        self.log(LogEvent::Message {
-            mode: MessageKind::Verify,
-            text: note.clone(),
-        });
-        let text = format!(
-            "Human verification of r{revision} failed. The owner wrote:\n\n{note}\n\nFix it, commit, and report."
-        );
-        if self.turn_active {
-            self.agent
-                .as_mut()
-                .context("the agent is not running")?
-                .send(&text)?;
-            return Ok(format!(
-                "r{revision} failed; the note steered the running turn"
-            ));
-        }
-        Ok(format!(
-            "r{revision} failed; the note was sent to the worker: {}",
-            self.deliver_or_queue(text)
-        ))
-    }
-
     /// Land the current revision on the default branch (docs/tasks.md "Landing").
-    fn land(&mut self, skip_verify: bool) -> Result<String> {
+    /// `auto`: the checks of this revision just passed, so the task is not yet `ready`.
+    fn land(&mut self, auto: bool) -> Result<String> {
         let settings =
             load_task_config(&self.record.project_path).map_err(|error| anyhow::anyhow!(error))?;
         if settings.land_policy == LandPolicy::Pr {
-            return self.land_pr(skip_verify, &settings.land_remote);
+            return self.land_pr(auto, &settings.land_remote);
         }
-        self.require_ready()?;
-        self.verify_gate(skip_verify)?;
+        self.require_ready(auto)?;
         self.require_committed()?;
         let working_copy = self.record.working_copy.clone();
         let tip = self.default_tip()?;
@@ -863,9 +827,9 @@ impl Host {
         if copy::is_ancestor(&working_copy, &tip, &head)? {
             return self.fast_forward();
         }
-        let (old_revision, old_base) = (self.record.revision, self.record.base.clone());
         match copy::rebase(&working_copy, &tip)? {
             Rebase::Conflict(paths) => {
+                self.carried_verify = self.current_result().human_verify;
                 self.log(LogEvent::Conflict {
                     onto: tip.clone(),
                     paths: paths.clone(),
@@ -880,17 +844,18 @@ impl Host {
                     paths = paths.join(", "),
                 ));
                 Ok(format!(
-                    "the rebase onto {} conflicted in {}; the worker is resolving it. Land again when the task is ready",
+                    "the rebase onto {} conflicted in {}; the worker is resolving it{}",
                     self.record.default_branch,
-                    paths.join(", ")
+                    paths.join(", "),
+                    if self.auto_land() {
+                        ", and the task lands when its checks pass"
+                    } else {
+                        ". Land again when the task is ready"
+                    }
                 ))
             }
             Rebase::Done => {
-                let carried = self.carried_pass(old_revision, &old_base, &tip);
-                self.landing = Some(Landing {
-                    skip_verify,
-                    carried,
-                });
+                self.landing = true;
                 self.start_checks();
                 Ok(format!(
                     "rebased onto {} at {tip:.12}; checks run on the new revision and it lands when they pass",
@@ -900,8 +865,8 @@ impl Host {
         }
     }
 
-    fn require_ready(&self) -> Result<()> {
-        if self.record.state != TaskState::Ready {
+    fn require_ready(&self, auto: bool) -> Result<()> {
+        if !auto && self.record.state != TaskState::Ready {
             bail!(
                 "task t{} is {}; only a ready task lands",
                 self.record.id,
@@ -923,10 +888,9 @@ impl Host {
     }
 
     /// `pr` policy: push and open a pull request, then on a later land read whether it merged.
-    fn land_pr(&mut self, skip_verify: bool, remote: &str) -> Result<String> {
+    fn land_pr(&mut self, auto: bool, remote: &str) -> Result<String> {
         let Some(url) = self.record.pr_url.clone() else {
-            self.require_ready()?;
-            self.verify_gate(skip_verify)?;
+            self.require_ready(auto)?;
             self.require_committed()?;
             copy::push(&self.record.working_copy, remote, &self.record.branch)?;
             let title = view::title(&self.dir, &self.record)
@@ -959,7 +923,8 @@ impl Host {
                 .to_string();
             return Ok(self.pushed(url, "opened"));
         };
-        if !matches!(self.record.state, TaskState::InReview | TaskState::Ready) {
+        let ready = auto || self.record.state == TaskState::Ready;
+        if !ready && self.record.state != TaskState::InReview {
             bail!(
                 "task t{} is {}; land it again when it is ready or in review",
                 self.record.id,
@@ -979,10 +944,7 @@ impl Host {
                     .filter(|oid| !oid.is_empty())
                     .context("gh reports the PR merged but names no merge commit")?
                     .to_string();
-                self.log(LogEvent::Landed {
-                    commit: commit.clone(),
-                });
-                self.set_state(TaskState::Landed);
+                self.landed(&commit);
                 Ok(format!("{url} merged as {commit:.12}; landed"))
             }
             "CLOSED" => {
@@ -992,10 +954,7 @@ impl Host {
                     "{url} was closed without a merge; reopen it, or close the task with --discard"
                 ))
             }
-            _ if self.record.state == TaskState::Ready
-                && self.record.pr_revision != Some(self.record.revision) =>
-            {
-                self.verify_gate(skip_verify)?;
+            _ if ready && self.record.pr_revision != Some(self.record.revision) => {
                 self.require_committed()?;
                 copy::push(&self.record.working_copy, remote, &self.record.branch)?;
                 Ok(self.pushed(url, "updated"))
@@ -1024,53 +983,6 @@ impl Host {
         )
     }
 
-    /// Refuse a revision with Human Verify items and no pass, unless the caller skips it (logged).
-    fn verify_gate(&mut self, skip_verify: bool) -> Result<()> {
-        let items = self.current_result().human_verify.len();
-        if items == 0 {
-            return Ok(());
-        }
-        let revision = self.record.revision;
-        let log = self.dir.read_log()?;
-        if passed(&log, revision) {
-            return Ok(());
-        }
-        if skip_verify {
-            self.log(LogEvent::VerifySkipped { revision });
-            return Ok(());
-        }
-        bail!(
-            "r{revision} has {items} Human Verify item(s) and no pass; check them and run `wsx task verify {} pass`, or land with --skip-verify",
-            self.record.id
-        )
-    }
-
-    /// A pass on `revision` carries over a rebase only when the default branch changed
-    /// none of the task's paths between the old base and `tip`.
-    fn carried_pass(
-        &self,
-        revision: u32,
-        old_base: &str,
-        tip: &str,
-    ) -> Option<(u32, Option<String>)> {
-        let log = self.dir.read_log().ok()?;
-        let LogEvent::Verified {
-            result: Verdict::Pass,
-            note,
-            ..
-        } = &verification(&log, revision)?.event
-        else {
-            return None;
-        };
-        let (upstream, total) =
-            copy::changed_paths(&self.record.working_copy, old_base, tip).ok()?;
-        // ^ Capped lists cannot prove that no path is shared.
-        let complete = upstream.len() as u32 == total
-            && self.record.paths.len() as u32 == self.record.paths_total;
-        let shared = upstream.iter().any(|path| self.record.paths.contains(path));
-        (complete && !shared).then(|| (revision, note.clone()))
-    }
-
     fn fast_forward(&mut self) -> Result<String> {
         let tip = self.default_tip()?;
         let head = copy::resolve_commit(&self.record.working_copy, "HEAD")?;
@@ -1080,14 +992,36 @@ impl Host {
             &tip,
             &head,
         )?;
-        self.log(LogEvent::Landed {
-            commit: head.clone(),
-        });
-        self.set_state(TaskState::Landed);
+        self.landed(&head);
         Ok(format!(
             "landed r{} on {} at {head:.12}",
             self.record.revision, self.record.default_branch
         ))
+    }
+
+    /// The revision is on the default branch: its Human Verify items join the project's
+    /// "To check" list before readers see `landed` (docs/tasks.md "To check").
+    fn landed(&mut self, commit: &str) {
+        let mut verify = self.current_result().human_verify;
+        for item in std::mem::take(&mut self.carried_verify) {
+            if !verify.iter().any(|known| known.check == item.check) {
+                verify.push(item);
+            }
+        }
+        if let Err(error) = checks::collect(
+            &self.record.project_id,
+            self.record.id,
+            self.record.revision,
+            commit,
+            &verify,
+        ) {
+            self.say(&format!("cannot add the items to check: {error:#}"));
+        }
+        self.log(LogEvent::Landed {
+            commit: commit.to_string(),
+        });
+        self.write_report(TaskState::Landed);
+        self.set_state(TaskState::Landed);
     }
 
     /// The worker result of the current revision, from `result.json`.

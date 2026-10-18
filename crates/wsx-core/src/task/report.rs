@@ -1,7 +1,7 @@
 //! `report.md` of one revision, built only from the log, git and the result.
 //! ref: docs/tasks.md "Report"
 
-use super::{LogEntry, LogEvent, MessageKind, TaskRecord, Verdict, WorkerResult};
+use super::{LogEvent, TaskRecord, WorkerResult};
 use crate::git::{git_cmd, output_with_timeout_limit};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -55,41 +55,16 @@ pub fn render(
         short(commit)
     );
 
-    out.push_str("## Asked\n\n");
-    for entry in log {
-        let (label, text) = match &entry.event {
-            LogEvent::Message { mode, text } => (
-                match mode {
-                    MessageKind::Prompt => "Prompt".to_string(),
-                    MessageKind::Steer => "Steer".into(),
-                    MessageKind::Add => "Add".into(),
-                    MessageKind::Verify => "Human verification (fail)".into(),
-                },
-                text,
-            ),
-            // ^ The build ran against the brief's rewritten prompt, not the first one.
-            LogEvent::Started { version, prompt } => {
-                (format!("Build prompt (brief v{version})"), prompt)
-            }
-            _ => continue,
-        };
-        let _ = writeln!(out, "**{label}**\n");
-        fenced(&mut out, text);
-        out.push('\n');
-    }
-
     let _ = writeln!(out, "## Summary\n\nWorker status: `{}`\n", result.status);
     let _ = writeln!(out, "{}\n", nonempty(&result.summary));
-
-    out.push_str("## Decisions\n\n");
-    if result.decisions.is_empty() {
-        out.push_str("None reported.\n\n");
-    }
-    for decision in &result.decisions {
-        let _ = writeln!(out, "- {}: {}", decision.choice, decision.reason);
-    }
+    // ^ Decisions belong to the summary when there are any (docs/tasks.md "Checks, revisions and report").
     if !result.decisions.is_empty() {
-        out.push('\n');
+        let decided: Vec<String> = result
+            .decisions
+            .iter()
+            .map(|decision| format!("{} ({})", decision.choice, decision.reason))
+            .collect();
+        let _ = writeln!(out, "Decided: {}.\n", decided.join("; "));
     }
 
     out.push_str("## Changes\n\n");
@@ -126,6 +101,8 @@ pub fn render(
     match checks {
         None => out.push_str("No checks are declared (`tasks.checks`).\n\n"),
         Some(results) => {
+            let passed = results.iter().filter(|check| check.exit == Some(0)).count();
+            let _ = writeln!(out, "{}\n", checks_line(passed, results.len()));
             for check in results {
                 let outcome = match (check.timed_out, check.exit) {
                     (true, _) => "timed out".to_string(),
@@ -141,6 +118,13 @@ pub fn render(
             out.push('\n');
         }
     }
+    if !result.evidence.is_empty() {
+        out.push_str("The worker showed:\n\n");
+        for item in &result.evidence {
+            let _ = writeln!(out, "- {}: `{}`", item.check, item.proof);
+        }
+        out.push('\n');
+    }
 
     let denials = log.iter().rev().find_map(|entry| match &entry.event {
         LogEvent::Result { denials, .. } => Some(denials),
@@ -154,56 +138,15 @@ pub fn render(
         out.push('\n');
     }
 
-    out.push_str("## Human Verify\n\n");
-    let verdict = super::verification(log, revision);
-    let passed = super::passed(log, revision);
+    out.push_str("## To check\n\n");
     if result.human_verify.is_empty() {
-        out.push_str("None reported.\n\n");
+        out.push_str("Nothing needs a person.\n\n");
     }
     for item in &result.human_verify {
-        let mark = if passed { 'x' } else { ' ' };
-        let _ = writeln!(out, "- [{mark}] {} (pass if: {})", item.check, item.pass_if);
+        let _ = writeln!(out, "- [ ] {} (pass if: {})", item.check, item.pass_if);
     }
     if !result.human_verify.is_empty() {
         out.push('\n');
-    }
-    match verdict {
-        Some(LogEntry {
-            unix_ms,
-            event:
-                LogEvent::Verified {
-                    result,
-                    note,
-                    carried_from,
-                    ..
-                },
-        }) => {
-            let result = match result {
-                Verdict::Pass => "pass",
-                Verdict::Fail => "fail",
-            };
-            let _ = write!(
-                out,
-                "Verdict on r{revision}: **{result}** at {}",
-                utc(*unix_ms)
-            );
-            if let Some(from) = carried_from {
-                let _ = write!(
-                    out,
-                    " (carried from r{from}; the default branch changed none of this task's paths)"
-                );
-            }
-            out.push('\n');
-            if let Some(note) = note {
-                out.push('\n');
-                fenced(&mut out, note);
-            }
-            out.push('\n');
-        }
-        _ if result.human_verify.is_empty() => {}
-        _ => {
-            let _ = writeln!(out, "Verdict on r{revision}: not verified\n");
-        }
     }
 
     out.push_str("## Left open\n\n");
@@ -219,24 +162,14 @@ pub fn render(
     out
 }
 
-/// `YYYY-MM-DD HH:MM UTC` from Unix milliseconds (days-to-civil, proleptic Gregorian).
-fn utc(unix_ms: u64) -> String {
-    let seconds = unix_ms / 1000;
-    let (days, rest) = ((seconds / 86_400) as i64, seconds % 86_400);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
-        rest / 3600,
-        rest / 60 % 60
-    )
+/// "4 checks passed", or "3 of 4 checks passed".
+pub fn checks_line(passed: usize, total: usize) -> String {
+    let noun = if total == 1 { "check" } else { "checks" };
+    if passed == total {
+        format!("{total} {noun} passed")
+    } else {
+        format!("{passed} of {total} {noun} passed")
+    }
 }
 
 fn short(commit: &str) -> &str {

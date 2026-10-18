@@ -4,7 +4,7 @@
 use super::view::{
     attention, check_outcomes, clip, overlaps, project_tasks, read_result, task_summary,
 };
-use super::{brief, copy, store, verification, DeployKind, Phase, TaskRecord};
+use super::{brief, checks, copy, store, DeployKind, Phase, TaskRecord};
 use crate::config::project::load_task_config;
 use crate::model::workspace::{LandPolicy, TaskConfig};
 use crate::ops;
@@ -40,13 +40,6 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
             continue;
         }
         let result = read_result(dir);
-        let log = dir.read_log().unwrap_or_default();
-        let verdict = verification(&log, record.revision).map(|entry| {
-            let mut value = serde_json::to_value(&entry.event).unwrap_or_default();
-            value["unix_ms"] = json!(entry.unix_ms);
-            value.as_object_mut().map(|fields| fields.remove("note"));
-            value
-        });
         open.push((
             attention(record.state),
             record.id,
@@ -56,7 +49,6 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
                 "state": record.state,
                 "revision": record.revision,
                 "overlaps": overlaps(record, &records, false),
-                "verification": verdict,
                 "human_verify": result.as_ref().map_or(0, |r| r["result"]["human_verify"].as_array().map_or(0, Vec::len)),
                 "summary": result.as_ref().and_then(|r| r["result"]["summary"].as_str()).map(|s| clip(s, SUMMARY_CHARS)),
                 // ^ What the host ran; it outranks the worker's summary (docs/tasks.md "Ledger").
@@ -81,14 +73,19 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
     open.sort_by_key(|(order, id, _)| (*order, *id));
     recent.sort_by_key(|(updated, _)| std::cmp::Reverse(*updated));
     recent.truncate(RECENT_TASKS);
+    let project_id = super::store::project_id(project_name, main);
     let mut ledger = json!({
         "project": project_name,
+        // ^ A ready task lands by itself unless this is false (docs/tasks.md "Landing").
+        "auto_land": settings.land_auto,
+        // ^ Open "To check" items: a release waits for them (docs/tasks.md "To check").
+        "to_check": checks::open_items(&project_id).map_or(0, |items| items.len()),
         "main": main_checkout(main),
         "deploys": deploy_status(project_name, main, &settings, false).unwrap_or(Value::Null),
         "recent": recent.into_iter().map(|(_, row)| row).collect::<Vec<_>>(),
         "open": open.iter().map(|(_, _, row)| row.clone()).collect::<Vec<_>>(),
         "open_omitted": 0,
-        "approvals": super::store::read_approvals(&super::store::project_id(project_name, main))
+        "approvals": super::store::read_approvals(&project_id)
             .map(|lines| json!(super::manager::pending_approvals(&lines)))
             .unwrap_or(Value::Null),
     });
