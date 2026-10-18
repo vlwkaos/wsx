@@ -240,9 +240,6 @@ const RunningRow = ({ project, task }) => html`
     </div>
   </li>`;
 
-// ^ A row that leaves later than this after its action was not cleared by it: no focus move.
-const CLEAR_MS = 5000;
-
 // The decision list, pinned over the composer (docs/web-client.md "Project screen"). Closed it
 // is one line: "2 need you · #6 <title> +1 more". Open, every item that waits for the owner in
 // the server's order, each with its one action, then the tasks that run. A cleared row leaves
@@ -259,10 +256,10 @@ function Reservoir({ project, items, tasks }) {
     const done = cleared.current;
     if (!done || keys.includes(done.key)) return;
     cleared.current = null;
-    // ^ Only when the focus was in the list, or left with the removed button.
+    // ^ The row may leave on a later `tasks` event (a start reaches the host after its answer):
+    // the focus moves then too, but only when it is still in the list or left with the button.
     const focus = document.activeElement;
-    const here = !focus || focus === document.body || node.current?.contains(focus);
-    if (Date.now() - done.at > CLEAR_MS || !here) return;
+    if (focus && focus !== document.body && !node.current?.contains(focus)) return;
     const next = keys[Math.min(done.index, keys.length - 1)];
     const row = next && node.current?.querySelector(`.need[data-key="${CSS.escape(next)}"]`);
     // ^ The row's action first; its title only when the site may not act.
@@ -271,7 +268,7 @@ function Reservoir({ project, items, tasks }) {
   }, [keys.join(), heard]);
   if (!items.length && !working.length && !tasks.length) return null;
   const onDone = (key, index) => {
-    cleared.current = { key, index, at: Date.now() };
+    cleared.current = { key, index };
     hear((count) => count + 1);
   };
   // ^ The newest running task is the one with the highest number: stable while it works.
