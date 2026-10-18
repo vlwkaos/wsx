@@ -162,13 +162,17 @@ async function openReservoir() {
 const focused = () => evaluate(`(() => { const node = document.activeElement; const row = node?.closest('.reservoir .need');
   if (row) return [row.querySelector('.task-chip')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, node.textContent.trim()];
   return node?.classList.contains('reservoir-head') ? ['head'] : [node?.tagName ?? 'none']; })()`);
-// One action in a row, then the row leaves and the focus is on the next row's action.
+// One action in a row, then that row leaves and the focus is on the next row's action. The
+// row is known by its item (`blocked-1`): the same task may come back as another item (#1
+// under Running, then `land-1`).
 async function clearRow(label, action, seconds = 60) {
+  const key = await evaluate(`${rowOf(label)}.dataset.key`);
+  if (!key) await fail(`the row ${label} has no item key`);
   await evaluate(`[...${rowOf(label)}.querySelectorAll('.need-action')].find((node) => node.textContent.trim() === ${JSON.stringify(action)}).click()`);
-  await until(`!${rowOf(label)}`, `${action} did not clear the row ${label}`, seconds);
+  await until(`!document.querySelector('.reservoir .need[data-key=${JSON.stringify(key)}]')`, `${action} did not clear the row ${label} (${key})`, seconds);
   await until("!!document.activeElement?.closest('.reservoir .need .need-action, .reservoir .need .row-open, .reservoir-head')", `after ${action} on ${label} the focus is not on the next row`, 10);
   const now = await focused();
-  if (now[0] !== "head" && `${now[0]} ${now[1]}`.trim().startsWith(label)) await fail(`after ${action} the focus stayed on ${label}`);
+  if (await evaluate("document.activeElement?.closest('.need')?.dataset.key ?? ''") === key) await fail(`after ${action} the focus stayed on ${label}`);
   return now;
 }
 async function closeReservoir() {
