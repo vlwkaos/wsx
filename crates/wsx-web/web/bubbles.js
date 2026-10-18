@@ -104,11 +104,11 @@ export function Bubble({ project, row, words }) {
     const { report } = row;
     body = html`
       <p class="bubble-head"><${TaskChip} project=${project} id=${report.task} />${" "}<span class="bubble-state">· ${report.head}</span></p>
-      <${Fold} id=${id}><${Markdown} text=${report.summary} words=${words} /></${Fold}>`;
+      <${Fold} id=${id}><${Markdown} text=${report.summary} words=${words} prose /></${Fold}>`;
   } else if (out) {
     body = html`<${Fold} id=${id}><p class="prose">${words(row.entry.text)}</p></${Fold}>`;
   } else {
-    body = html`<${Fold} id=${id}><${Markdown} text=${row.entry.text} words=${words} /></${Fold}>`;
+    body = html`<${Fold} id=${id}><${Markdown} text=${row.entry.text} words=${words} prose /></${Fold}>`;
   }
   return html`
     <article class="bubble" data-side=${out ? "out" : "in"} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null}

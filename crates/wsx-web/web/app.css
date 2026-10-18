@@ -491,20 +491,24 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .typing-dot { width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-muted); }
 .status-line { align-self: center; max-width: var(--size-prose); font-size: var(--font-size-sm); color: var(--color-muted); text-align: center; overflow-wrap: anywhere; }
 .page-link { color: var(--color-accent); }
-/* Everything open, pinned over the composer: one line, a tap opens the list. */
+/* What needs the owner and what runs, pinned over the composer: one line, a tap opens the
+   decision list. */
 .reservoir { flex: 0 0 auto; max-height: calc(100% * var(--strip-share)); display: flex; flex-direction: column; border-top: var(--border-width) solid var(--color-hairline); }
 .reservoir-head {
   flex: 0 0 auto; width: 100%; min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-2);
   padding: 0 var(--column-inset, var(--space-4)); border: 0; background: none; cursor: pointer; text-align: left; font-size: var(--font-size-sm);
 }
-.reservoir-words { flex: 1; min-width: 0; font-weight: var(--font-weight-medium); }
+.reservoir-words { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-2); font-weight: var(--font-weight-medium); white-space: nowrap; }
+.reservoir-sep { color: var(--color-faint); }
+.reservoir-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.reservoir-more { flex: 0 0 auto; color: var(--color-muted); }
 .reservoir[data-open] .reservoir-head .icon { transform: rotate(90deg); }
 .reservoir-head:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
 .reservoir-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: var(--space-2); }
 .reservoir-list { list-style: none; margin: 0; padding: 0; }
 .reservoir .row-link { padding-inline: var(--column-inset, var(--space-4)); }
 .reservoir .need + .need { border-top: var(--border-width) solid var(--color-hairline); }
-.facts-line { padding: var(--space-2) var(--column-inset, var(--space-4)) 0; font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
+.reservoir-label { padding: var(--space-3) var(--column-inset, var(--space-4)) var(--space-1); }
 /* With the keyboard up the reservoir steps aside while the `#` or `/` list is open. */
 body[data-keyboard] .chat:has(.slash) .reservoir { display: none; }
 .more { position: relative; }
@@ -555,25 +559,27 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .bubble-box .task-chip { background: var(--color-raised); }
 .bubble[data-side="out"] .bubble-box .task-chip { background: var(--color-surface); }
 
-/* Hook: .task-page — one task: actions, report sections, shared files, timeline. */
+/* Hook: .task-page — one task: what happens next with its actions, what the owner decides on,
+   the rest under Details, the talk. */
 .task-page .scroll { padding-bottom: var(--space-4); }
-.task-actions { border-bottom: var(--border-width) solid var(--color-hairline); }
-.task-row { padding: var(--space-3) var(--column-inset, var(--space-4)) 0; overflow-wrap: anywhere; }
-.task-row .actions { padding-inline: 0; justify-content: flex-end; }
+.task-next { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere; }
+.task-next .actions { padding: 0; justify-content: flex-end; }
+.task-approval { flex-basis: 100%; }
 .project-page { padding-top: var(--space-3); }
-.task-row code { font-family: var(--font-terminal); font-size: var(--font-size-sm); }
+.project-page .facts-line { padding: 0 var(--space-4) var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
 .task-body { padding: 0 var(--space-4); max-width: calc(var(--size-prose) + 2 * var(--space-4)); }
 .verify .actions { justify-content: flex-end; }
 .verify-note { padding: 0 var(--space-4); display: flex; flex-direction: column; }
 .verify-note textarea { min-height: calc(var(--size-control) * 2); padding: var(--space-2) var(--space-3); resize: vertical; }
 .verify-note .actions { padding-inline: 0; }
 .task-overlaps { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); overflow-wrap: anywhere; }
-.timeline-head { display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; min-height: var(--size-control); padding-block: 0; }
-.timeline-head::-webkit-details-marker { display: none; }
-.timeline[open] .timeline-head .icon, .task-fold[open] > .timeline-head .icon { transform: rotate(90deg); }
+.fold-head { display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; min-height: var(--size-control); padding-block: 0; }
+.fold-head::-webkit-details-marker { display: none; }
+.task-fold[open] > .fold-head .icon { transform: rotate(90deg); }
+.task-fold > .task-part { padding-top: var(--space-4); }
 /* The brief: lists of short items, concepts folded to their term, the talk-through as turns. */
 .task-brief-list { margin: 0; padding-inline-start: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); overflow-wrap: anywhere; }
-.task-brief-list code { font-family: var(--font-terminal); font-size: var(--font-size-sm); }
+.task-source { overflow-wrap: anywhere; font-weight: var(--font-weight-medium); }
 .task-concepts { display: flex; flex-direction: column; }
 .task-concept-term { display: flex; align-items: center; gap: var(--space-1); min-height: var(--size-control); cursor: pointer; list-style: none; font-weight: var(--font-weight-medium); }
 .task-concept-term::-webkit-details-marker { display: none; }
@@ -582,16 +588,10 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .task-talk { padding: var(--space-4) var(--space-4) 0; display: flex; flex-direction: column; gap: var(--space-3); }
 /* A section's name in plain case: the content under it speaks for the rest. */
 .task-heading { padding: var(--space-4) var(--space-4) var(--space-1); font-size: var(--font-size-sm); font-weight: var(--font-weight-strong); }
-.timeline-list { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); }
-.timeline-list li { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: var(--space-3); }
-.timeline-what { font-weight: var(--font-weight-medium); }
-.timeline-more { grid-column: 2; color: var(--color-muted); overflow-wrap: anywhere; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .task-steer { align-self: center; }
 .app:not([data-wide]) .task-steer { margin-left: auto; }
 .app:not([data-wide]) .task-message .task-steer + .composer-send { margin-left: var(--space-2); }
 
-/* Hook: .story — where a task stands, in words (docs/web-client.md "Project brief and task
-   story"): the step before and the current one, and what happens next. */
 .visually-hidden { position: absolute; width: var(--border-width); height: var(--border-width); overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* Hook: .adopted — a project's worktrees without a task, read only; in the chat a strip that
    scrolls inside itself and folds to one line. */
@@ -605,12 +605,6 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .adopted { border-bottom: var(--border-width) solid var(--color-hairline); }
 .adopted-strip { flex: 0 0 auto; max-height: calc(100% * var(--strip-share) / 2); overflow-y: auto; overscroll-behavior: contain; }
 .adopted-strip .row-link { padding-inline: var(--column-inset, var(--space-4)); }
-.story { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere; }
-.story-steps { list-style: none; margin: 0; padding: 0; display: flex; align-items: baseline; gap: var(--space-2); font-size: var(--font-size-sm); }
-.story-steps li { display: inline-flex; align-items: baseline; gap: var(--space-1); color: var(--color-muted); }
-.story-steps li + li::before { content: "→"; color: var(--color-faint); }
-.story-steps li[aria-current="step"] { font-weight: var(--font-weight-strong); }
-.story-steps li[aria-current="step"]:not([data-tone]) { color: var(--color-text); }
 
 /* Hook: .code, .crumbs — a project's files. */
 .crumbs { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-1); overflow-x: auto; scrollbar-width: none; white-space: nowrap; }

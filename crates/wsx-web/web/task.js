@@ -1,54 +1,15 @@
-// One task, in its sheet over the project chat: its story, its actions, its report with Pass and
-// Fail at the Human Verify items, the files it shares with other tasks, and its timeline
+// One task, in its sheet over the project chat: what happens next with its actions, then what
+// the owner decides on (a brief's open questions, or the Human Verify items with Pass and Fail
+// and the summary), the rest folded under Details, and the talk with the worker
 // (docs/web-client.md "Task sheet").
 import { api } from "./api.js";
-import { clock, html, Icon, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
+import { html, Icon, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, events, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { grow, isolate, release } from "./chat.js";
-import { announce, askWords, grantBody, loadTasks, taskLink, taskState, TaskChip, withChips } from "./tasks.js";
+import { announce, askWords, grantBody, loadTasks, taskState, TaskChip, withChips } from "./tasks.js";
 import { Bubble } from "./bubbles.js";
-import { TaskStory } from "./story.js";
-
-const short = (commit) => (commit ?? "").slice(0, 8);
-const MESSAGE_WORDS = { prompt: "Asked", steer: "Steered", add: "Added", verify: "Human verification (fail)" };
-
-// One log entry in words: [what, detail, tone].
-function described(entry) {
-  switch (entry.kind) {
-    case "created": return [`Created on ${entry.branch}`, `from ${short(entry.base)}`];
-    case "message": return [MESSAGE_WORDS[entry.mode] ?? "Message", entry.text];
-    case "steps": return [`${entry.count} ${entry.count === 1 ? "step" : "steps"}`, entry.last];
-    case "blocked": return ["Blocked", entry.asks?.length ? `needs to ${askWords(entry.asks)}`
-      : entry.denials.length ? `denied: ${entry.denials.join(", ")}` : "", "attention"];
-    case "allowed": return ["Allowed", entry.tool];
-    case "granted": return [`Allowed by the ${entry.by}${entry.project ? " for every task" : ""}`, askWords([entry.access]) || `use ${entry.access.rule}`];
-    case "revoked": return [`Taken back by the ${entry.by}`, askWords([entry.access]) || `use ${entry.access.rule}`];
-    case "result": return [`Result: ${entry.status}`, entry.summary, entry.status === "done" ? null : "danger"];
-    case "checks": {
-      const failed = entry.results.filter((check) => check.exit !== 0);
-      return [`Checks: ${entry.results.length - failed.length} of ${entry.results.length} passed`,
-        failed.map((check) => `${check.command}${check.timed_out ? " (timed out)" : ` (exit ${check.exit})`}`).join(", "), failed.length ? "danger" : null];
-    }
-    case "check_retry": return [`Checks failed on r${entry.revision}: sent back to the worker`,
-      `${entry.commands.join(", ")} (automatic retry ${entry.attempt} of 2)`, "attention"];
-    case "revision": return [`Revision r${entry.revision}`, `${short(entry.commit)} · ${entry.paths_total} ${entry.paths_total === 1 ? "file" : "files"}`];
-    case "stopped": return ["Stopped", entry.reason];
-    case "closed": return [entry.discarded ? "Closed and discarded" : "Closed", ""];
-    case "verified": return [`Verified r${entry.revision}: ${entry.result}`, entry.carried_from != null ? `carried from r${entry.carried_from}` : entry.note ?? "",
-      entry.result === "pass" ? "accent" : "danger"];
-    case "verify_skipped": return [`Landed r${entry.revision} without verification`, "", "attention"];
-    case "conflict": return [`Conflict onto ${short(entry.onto)}`, entry.paths.join(", "), "danger"];
-    case "land_stopped": return ["Landing stopped", entry.reason, "danger"];
-    case "landed": return ["Landed", short(entry.commit), "accent"];
-    case "in_review": return [`Pull request r${entry.revision}`, entry.url];
-    case "pr_closed": return ["Pull request closed", entry.url, "attention"];
-    case "brief": return [`Brief v${entry.version}`, entry.denials?.length ? `denied: ${entry.denials.join(", ")}` : entry.answer ?? ""];
-    case "brief_skipped": return ["Built without a brief", `${entry.by === "flag" ? "--no-brief" : "tasks.brief: false"} by the ${entry.actor}`];
-    case "started": return [`Build started from brief v${entry.version}`, entry.prompt, "accent"];
-    default: return [entry.kind, ""];
-  }
-}
+import { nextWords } from "./story.js";
 
 // The report as its sections; the title and state line are in the top row already.
 function sections(report) {
@@ -111,31 +72,54 @@ function Verify({ detail, act }) {
     </div>`;
 }
 
-// The brief's sections in the order the owner reads them (docs/tasks.md "Brief"); an empty one
-// is left out. Each concept folds to its term.
-function BriefSections({ brief, words }) {
-  const prose = (text) => html`<${Markdown} text=${text} words=${words} />`;
-  const list = (items, item) => items.length ? html`<ul class="task-brief-list">${items.map((entry, index) => html`<li key=${index}>${item(entry)}</li>`)}</ul>` : null;
+// One titled part of the sheet.
+const Section = ({ title, children }) => html`
+  <section class="task-section" aria-label=${title}>
+    <h2 class="task-heading">${title}</h2>
+    <div class="task-body">${children}</div>
+  </section>`;
+
+// The rest of a task, one tap away: closed until the owner opens it.
+const Details = ({ children }) => html`
+  <details class="task-section task-fold">
+    <summary class="task-heading fold-head"><${Icon} name="chevron" />Details</summary>
+    ${children}
+  </details>`;
+
+// A term or an item that folds to one line; a tap shows what it says.
+const Fold = ({ head, children }) => html`
+  <details class="task-concept">
+    <summary class="task-concept-term"><${Icon} name="chevron" /><span>${head}</span></summary>
+    <div class="task-concept-body">${children}</div>
+  </details>`;
+
+const list = (items, item) => items?.length
+  ? html`<ul class="task-brief-list">${items.map((entry, index) => html`<li key=${index}>${item(entry)}</li>`)}</ul>` : null;
+
+// What the owner decides a brief on (docs/tasks.md "Brief"): its open questions and its
+// additions, each one line that opens to its reason. An empty part is left out.
+function BriefDecide({ brief, words }) {
+  const prose = (text) => html`<${Markdown} text=${text} words=${words} prose />`;
+  return html`
+    ${brief.open_questions?.length ? html`<${Section} title="Open questions">${list(brief.open_questions, prose)}</${Section}>` : null}
+    ${brief.additions?.length ? html`
+      <${Section} title="Additions">
+        <div class="task-concepts">${brief.additions.map((entry, index) => html`<${Fold} key=${index} head=${entry.what}>${prose(entry.why)}</${Fold}>`)}</div>
+      </${Section}>` : null}`;
+}
+
+// The rest of a brief, for the Details fold. A source is a path or a link, shown as text.
+function BriefRest({ brief, words }) {
+  const prose = (text) => html`<${Markdown} text=${text} words=${words} prose />`;
   const parts = [
-    ["What a top professional would add", list(brief.additions, (entry) => html`<strong>${entry.what}</strong>${prose(entry.why)}`)],
-    ["Raw material", list(brief.raw_material, (entry) => html`<code class="path">${entry.source}</code>${prose(entry.why)}`)],
+    ["Raw material", list(brief.raw_material, (entry) => html`<p class="task-source">${entry.source}</p>${prose(entry.why)}`)],
     ["Methods and tools", list(brief.methods, prose)],
     ["Independent check", list(brief.independent_check, prose)],
-    ["Concepts to know", brief.concepts.length ? html`
-      <div class="task-concepts">${brief.concepts.map((entry, index) => html`
-        <details class="task-concept" key=${index}>
-          <summary class="task-concept-term"><${Icon} name="chevron" />${entry.term}</summary>
-          <div class="task-concept-body">${prose(entry.explanation)}</div>
-        </details>`)}
-      </div>` : null],
-    ["Rewritten prompt", prose(brief.rewritten_prompt)],
-    ["Open questions", list(brief.open_questions, prose)],
+    ["Concepts", brief.concepts?.length ? html`
+      <div class="task-concepts">${brief.concepts.map((entry, index) => html`<${Fold} key=${index} head=${entry.term}>${prose(entry.explanation)}</${Fold}>`)}</div>` : null],
+    ["Rewritten prompt", brief.rewritten_prompt ? prose(brief.rewritten_prompt) : null],
   ];
-  return parts.filter(([, body]) => body).map(([title, body]) => html`
-    <section class="task-section" key=${title} aria-label=${title}>
-      <h2 class="task-heading">${title}</h2>
-      <div class="task-body">${body}</div>
-    </section>`);
+  return parts.filter(([, body]) => body).map(([title, body]) => html`<${Section} key=${title} title=${title}>${body}</${Section}>`);
 }
 
 // The owner's messages to the worker and the worker's answers to the brief, as bubbles; an
@@ -258,17 +242,10 @@ export function TaskPage({ project, task, onClose, grip }) {
   if (!detail) return html`<div class="page">${top}<p class=${failure ? "error empty" : "empty"}>${failure || "Loading…"}</p></div>`;
 
   const actions = detail.actions;
-  const approvals = detail.approvals.map((request) => html`
-    <div class="task-row" key=${request.id}>
-      ${detail.approvals.length > 1 && html`<p>${request.label}${request.revision != null ? ` r${request.revision}` : ""}</p>`}
-      ${can("task_act") && html`
-        <div class="actions">
-          <button class="button" type="button" disabled=${Boolean(act.busy)} aria-label=${`Deny: ${request.label}`}
-            onClick=${() => act.run("deny", `api/tasks/${project}/approvals/${request.id}/deny`, {}, null, request.label)}>Deny</button>
-          <button class="button" type="button" disabled=${Boolean(act.busy)} aria-label=${request.label}
-            onClick=${() => act.run("approve", `api/tasks/${project}/approvals/${request.id}/approve`, {}, null, request.label)}>Approve</button>
-        </div>`}
-    </div>`);
+  const acting = can("task_act");
+  const busy = Boolean(act.busy);
+  const button = (label, onClick, extra = {}) => html`
+    <button class="button" type="button" disabled=${busy} onClick=${onClick} ...${extra}>${label}</button>`;
   // ^ What the block asks for, never a command; one grant per ask, the last one resumes the task.
   const asks = detail.asks ?? [];
   const grant = async (project_wide) => {
@@ -276,67 +253,61 @@ export function TaskPage({ project, task, onClose, grip }) {
       if (!await act.run("allow", `api/tasks/${project}/t/${task}/allow`, grantBody(ask, project_wide))) return;
     }
   };
-  const allow = actions.includes("allow") && asks.length > 0 && html`
-    <div class="task-row">
-      <div class="actions">
-        <button class="button" type="button" disabled=${Boolean(act.busy)} onClick=${() => grant(false)}
-          aria-label=${`Allow #${task} to ${askWords(asks)}`}>Allow</button>
-        <button class="button" type="button" disabled=${Boolean(act.busy)} onClick=${() => grant(true)}
-          aria-label=${`Allow every task of this project to ${askWords(asks)}`}>Allow for project</button>
-      </div>
-    </div>`;
-  const land = actions.includes("land") && html`
-    <div class="task-row">
-      ${detail.state === "in_review" && html`<p>In review: <a href=${detail.pr_url} target="_blank" rel="noopener noreferrer">${detail.pr_url}</a></p>`}
-      <div class="actions"><button class="button" type="button" disabled=${Boolean(act.busy)}
-        onClick=${() => act.run("land", `api/tasks/${project}/t/${task}/land`, {})}>${act.busy === "land" ? "Landing…" : detail.state === "in_review" ? "Check pull request" : `Land r${detail.revision}`}</button></div>
-    </div>`;
-  // ^ The story above says what each action is for; a row holds the buttons alone.
-  // The verdict is the main action of a task to verify, but its items are at the report's end.
-  const review = actions.includes("verify") && html`
-    <div class="task-row">
-      <div class="actions"><button class="button" type="button"
-        onClick=${() => document.getElementById("human-verify")?.scrollIntoView({ block: "start" })}>Review</button></div>
-    </div>`;
   const brief = detail.brief;
-  const start = actions.includes("start") && brief && html`
-    <div class="task-row">
-      <div class="actions"><button class="button" type="button" disabled=${Boolean(act.busy)}
-        onClick=${() => act.run("start", `api/tasks/${project}/t/${task}/start`, {})}>${act.busy === "start" ? "Starting…" : "Start the build"}</button></div>
-    </div>`;
+  // The sentence says what each action is for; the row under it holds the buttons alone.
+  const buttons = acting ? [
+    ...detail.approvals.map((request) => html`
+      ${detail.approvals.length > 1 && html`<p class="task-approval">${request.label}${request.revision != null ? ` r${request.revision}` : ""}</p>`}
+      ${button("Deny", () => act.run("deny", `api/tasks/${project}/approvals/${request.id}/deny`, {}, null, request.label), { "aria-label": `Deny: ${request.label}` })}
+      ${button("Approve", () => act.run("approve", `api/tasks/${project}/approvals/${request.id}/approve`, {}, null, request.label), { "aria-label": request.label })}`),
+    actions.includes("start") && brief && button(act.busy === "start" ? "Starting…" : "Start the build", () => act.run("start", `api/tasks/${project}/t/${task}/start`, {})),
+    actions.includes("allow") && asks.length > 0 && html`
+      ${button("Allow", () => grant(false), { "aria-label": `Allow #${task} to ${askWords(asks)}` })}
+      ${button("Allow for project", () => grant(true), { "aria-label": `Allow every task of this project to ${askWords(asks)}` })}`,
+    actions.includes("land") && button(act.busy === "land" ? "Landing…" : detail.state === "in_review" ? "Check pull request" : `Land r${detail.revision}`,
+      () => act.run("land", `api/tasks/${project}/t/${task}/land`, {})),
+  ].filter(Boolean) : [];
   const briefing = detail.phase === "brief";
-  const entries = detail.timeline.entries;
+  // The report's Human Verify and Summary come first; its other sections (Asked, Decisions,
+  // Changes, Evidence, ...) and a built task's brief wait under Details.
+  const report = sections(detail.report);
+  const verify = report.find((section) => section.title === "Human Verify");
+  const summary = report.find((section) => section.title === "Summary");
+  const rest = report.filter((section) => section !== verify && section !== summary);
+  const markdown = (text) => html`<${Markdown} text=${text} words=${words} prose />`;
+  const looseSummary = !detail.report && detail.result?.summary
+    ? [detail.result.summary, detail.result.notes].filter(Boolean).join("\n\n") : null;
+  const details = [
+    ...rest.map((section) => html`<${Section} key=${section.title} title=${section.title}>${markdown(section.body)}</${Section}>`),
+    !briefing && brief && html`
+      <h2 class="task-heading task-part" key="brief">Brief v${brief.version}</h2>
+      <${BriefDecide} brief=${brief.brief} words=${words} /><${BriefRest} brief=${brief.brief} words=${words} />`,
+  ].filter(Boolean);
   return html`
     <div class="page task-page">
       ${top}
       <div class="scroll">
-        <${TaskStory} detail=${detail} />
-        ${(approvals.length || allow || land || review || start) && html`
-          <section class="task-actions" aria-label="Actions">${approvals}${start}${allow}${review}${land}</section>`}
-        ${briefing && brief && html`<${BriefSections} brief=${brief.brief} words=${words} />`}
+        <section class="task-next" aria-label="What happens next">
+          <p>${nextWords(detail)}</p>
+          ${detail.state === "in_review" && detail.pr_url && html`<a href=${detail.pr_url} target="_blank" rel="noopener noreferrer">${detail.pr_url}</a>`}
+          ${buttons.length ? html`<div class="actions">${buttons}</div>` : null}
+        </section>
+        ${briefing && brief && html`
+          <${BriefDecide} brief=${brief.brief} words=${words} />
+          <${Details}><${BriefRest} brief=${brief.brief} words=${words} /></${Details}>`}
         ${briefing && !brief && detail.state !== "failed" && html`<p class="empty">The worker is writing the brief. Nothing is built before you start it.</p>`}
-
-        ${sections(detail.report).map((section) => html`
-          <section class="task-section" key=${section.title} aria-label=${section.title}
-            id=${section.title === "Human Verify" ? "human-verify" : null}>
-            <h2 class="task-heading">${section.title}</h2>
-            <div class="task-body"><${Markdown} text=${section.body} words=${words} /></div>
-            ${section.title === "Human Verify" && actions.includes("verify") && can("task_act") && html`<${Verify} detail=${detail} act=${act} />`}
-          </section>`)}
-        ${!detail.report && detail.result?.summary ? html`
-          <section class="task-section" aria-label="The worker's summary">
-            <div class="task-body"><${Markdown} text=${[detail.result.summary, detail.result.notes].filter(Boolean).join("\n\n")} words=${words} /></div>
-          </section>` : null}
-        ${!briefing && !detail.report && !detail.result?.summary && html`<p class="empty">No report yet: the worker has not finished a revision.</p>`}
-        ${!briefing && brief && html`
-          <details class="task-section task-fold">
-            <summary class="task-heading timeline-head"><${Icon} name="chevron" />Brief v${brief.version}</summary>
-            <${BriefSections} brief=${brief.brief} words=${words} />
-          </details>`}
+        ${verify && html`
+          <${Section} title="Human Verify">
+            ${markdown(verify.body)}
+            ${actions.includes("verify") && acting && html`<${Verify} detail=${detail} act=${act} />`}
+          </${Section}>`}
+        ${summary && html`<${Section} title="Summary">${markdown(summary.body)}</${Section}>`}
+        ${looseSummary && html`<${Section} title="Summary">${markdown(looseSummary)}</${Section}>`}
+        ${!briefing && !detail.report && !looseSummary && html`<p class="empty">No report yet: the worker has not finished a revision.</p>`}
+        ${details.length ? html`<${Details}>${details}</${Details}>` : null}
         ${detail.talk.length ? html`<${Talk} project=${project} id=${task} talk=${detail.talk} words=${words} />` : null}
-        ${detail.overlaps.length ? html`
-          <section class="task-section" aria-label="Shared files">
-            <h2 class="task-heading">Shared files</h2>
+        ${detail.state === "conflict" && detail.overlaps.length ? html`
+          <${Section} title="Shared files">
             <ul class="task-overlaps">
               ${detail.overlaps.map((overlap) => html`
                 <li key=${overlap.id}>
@@ -344,24 +315,9 @@ export function TaskPage({ project, task, onClose, grip }) {
                   ${" "}${overlap.count} ${overlap.count === 1 ? "path" : "paths"}${overlap.complete ? "" : " or more"}: <span class="path">${overlap.paths.join(", ")}</span>
                 </li>`)}
             </ul>
-          </section>` : null}
-        <details class="task-section timeline">
-          <summary class="task-heading timeline-head"><${Icon} name="chevron" />Timeline · ${entries.length} ${entries.length === 1 ? "entry" : "entries"}</summary>
-          ${detail.timeline.skipped ? html`<p class="note">${detail.timeline.skipped} earlier entries are not shown.</p>` : null}
-          <ol class="timeline-list">
-            ${entries.map((entry, index) => {
-              const [what, more, tone] = described(entry);
-              return html`
-                <li key=${index}>
-                  <span class="time">${clock(entry.unix_ms)}</span>
-                  <span class="timeline-what" data-tone=${tone}>${what}</span>
-                  ${more && html`<span class="timeline-more">${more}</span>`}
-                </li>`;
-            })}
-          </ol>
-        </details>
+          </${Section}>` : null}
       </div>
       ${act.error && html`<p class="error chat-error" role="alert">${act.error}</p>`}
-      ${can("task_act") && actions.includes("add") && html`<${Message} detail=${detail} act=${act} />`}
+      ${acting && actions.includes("add") && html`<${Message} detail=${detail} act=${act} />`}
     </div>`;
 }

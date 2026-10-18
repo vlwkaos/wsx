@@ -17,6 +17,8 @@ Each user message is a small script of words:
 Launched with the brief schema it writes a brief instead and builds nothing:
   REWRITE <words>  the rewritten prompt is the rest of the line
   REVISE <words>   (a reply) the rewritten prompt becomes the rest of the line
+  BRIEF_FILE <path>  the brief's other fields come from that JSON file (a real brief), also
+                   for the session's later replies
   NOBRIEF          end the turn without a brief
   WAIT <file>      (a build) keep working until <file> exists, at most 10 minutes
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
@@ -147,9 +149,21 @@ def try_edit(words, allowed, disallowed, denials):
     trace({'edited': name})
 
 
+def brief_source(words, session):
+    """The BRIEF_FILE of this session, kept beside the trace: a reply may run in a new process."""
+    known = TRACE + '.briefs'
+    briefs = json.load(open(known)) if os.path.exists(known) else {}
+    if 'BRIEF_FILE' in words:
+        briefs[session] = words[words.index('BRIEF_FILE') + 1]
+        with open(known, 'w') as out:
+            json.dump(briefs, out)
+    return briefs.get(session)
+
+
 def brief_turn(text, session, allowed, disallowed, current):
     """One brief turn: a brief whose rewritten prompt comes from REWRITE or REVISE."""
     words = text.split()
+    source = brief_source(words, session)
     denials = []
     try_edit(words, allowed, disallowed, denials)
     reply = text.startswith('The owner replies to the brief')
@@ -162,16 +176,17 @@ def brief_turn(text, session, allowed, disallowed, current):
               'session_id': session, 'permission_denials': denials})
         return current
     owner = text.split('\n\n')[1] if reply else ''
+    brief = json.load(open(source)) if source else {
+        'additions': [{'what': 'a regression test', 'why': 'it keeps the fix'}],
+        'raw_material': [{'source': 'README', 'why': 'the fixture'}],
+        'methods': ['git log -p'], 'independent_check': ['the check command exits 0'],
+        'concepts': [{'term': 'Working copy', 'explanation': 'A separate checkout. Nothing else changes.'}],
+        'open_questions': []}
+    brief.update({'rewritten_prompt': current or 'NOOP', 'answer': ('answered: ' + owner) if reply else ''})
     emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'brief',
           'session_id': session, 'permission_denials': denials,
           'usage': {'input_tokens': 900, 'output_tokens': 300}, 'total_cost_usd': 0.02,
-          'structured_output': {
-              'additions': [{'what': 'a regression test', 'why': 'it keeps the fix'}],
-              'raw_material': [{'source': 'README', 'why': 'the fixture'}],
-              'methods': ['git log -p'], 'independent_check': ['the check command exits 0'],
-              'concepts': [{'term': 'Working copy', 'explanation': 'A separate checkout. Nothing else changes.'}],
-              'rewritten_prompt': current or 'NOOP', 'open_questions': [],
-              'answer': ('answered: ' + owner) if reply else ''}})
+          'structured_output': brief})
     return current
 
 

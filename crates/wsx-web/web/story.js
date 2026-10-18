@@ -1,6 +1,6 @@
-// Show-me context: where the project stands (the brief, from the ledger) and where one task
-// stands (its story, from the record, the result and the log), in plain words written by wsx,
-// never by a model (docs/web-client.md "Project brief and task story").
+// Show-me context: where the project stands (from the ledger) and what happens next to one
+// task (from the record and the result), in plain words written by wsx, never by a model
+// (docs/web-client.md "Project brief and task story").
 import { api } from "./api.js";
 import { html, useEffect, useRef, useState } from "./lib.js";
 import { askWords } from "./tasks.js";
@@ -23,8 +23,8 @@ function deployWords(status, kind, default_branch) {
 // ^ The facts read git in the main checkout, so task changes refresh them at most this often.
 const FACTS_EVERY_MS = 2000;
 
-// The deploy, the release and the main checkout in words, at the bottom of the open
-// reservoir (docs/web-client.md "Project screen"). Read when it opens and as tasks change.
+// The deploy, the release and the main checkout in words, at the top of the project page
+// (docs/web-client.md "Project page"). Read when it opens and as tasks change.
 export function ProjectFacts({ project, overview }) {
   const [ledger, setLedger] = useState(null);
   const timer = useRef(null);
@@ -61,49 +61,13 @@ export function ProjectFacts({ project, overview }) {
     </div>`;
 }
 
-const STEPS = ["Asked", "Brief", "Working", "Checks", "Ready", "Verified", "Landed", "Deployed"];
-// Indexes into STEPS.
-const [ASKED, BRIEF, WORKING, CHECKS, READY, VERIFIED, LANDED, DEPLOYED] = [0, 1, 2, 3, 4, 5, 6, 7];
-
-// Where a task is on `Asked → … → Deployed`: the last step reached, a step where it stopped
-// (with the word), and steps that do not apply.
-function storySteps(detail) {
-  const items = detail.result?.human_verify?.length ?? 0;
-  const passed = detail.verification?.result === "pass";
-  const checksFailed = (detail.checks ?? []).some((check) => check.exit !== 0);
-  const skipped = new Set(items ? [] : [VERIFIED]);
-  if (!detail.deploy?.configured) skipped.add(DEPLOYED);
-  // ^ A task built without a brief (--no-brief, tasks.brief: false) shows no Brief step.
-  const hidden = detail.phase === "build" && !detail.brief ? BRIEF : null;
-  const at = (reached, stop = null, word = null) => ({ reached, stop, word, skipped, hidden });
-  if (detail.phase === "brief") {
-    switch (detail.state) {
-      case "blocked": case "stopped": case "failed": case "closed": return at(ASKED, BRIEF, detail.state);
-      default: return at(BRIEF);
-    }
-  }
-  switch (detail.state) {
-    case "starting": case "working": return at(WORKING);
-    case "checking": return at(CHECKS);
-    case "blocked": return at(ASKED, WORKING, "blocked");
-    case "stopped": return at(ASKED, WORKING, "stopped");
-    case "failed": return checksFailed ? at(WORKING, CHECKS, "failed") : at(ASKED, WORKING, "failed");
-    case "ready": return at(items && passed ? VERIFIED : READY);
-    case "conflict": return at(items ? VERIFIED : READY, LANDED, "conflict");
-    case "in_review": return at(items ? VERIFIED : READY, LANDED, "in review");
-    case "landed": return at(detail.deploy?.deployed ? DEPLOYED : LANDED);
-    case "closed": return detail.landed_commit ? at(detail.deploy?.deployed ? DEPLOYED : LANDED) : at(ASKED, WORKING, "closed");
-    default: return at(ASKED);
-  }
-}
-
 // One sentence: what happens next in this state, and who acts.
-function nextWords(detail) {
+export function nextWords(detail) {
   const items = detail.result?.human_verify?.length ?? 0;
   const passed = detail.verification?.result === "pass";
   const main = detail.default_branch ?? "the default branch";
   const asked = detail.approvals?.[0];
-  if (asked) return `The manager asks: ${asked.label}. Approve or Deny it above.`;
+  if (asked) return `The manager asks: ${asked.label}. Approve or Deny it below.`;
   if (detail.phase === "brief") {
     switch (detail.state) {
       case "briefed": return "The brief is ready. Read it, reply to talk it through, or Start the build.";
@@ -141,29 +105,4 @@ function nextWords(detail) {
     }
     default: return "";
   }
-}
-
-const STOP_TONE = { blocked: "attention", failed: "danger", conflict: "danger" };
-
-// The task story at the top of the task: the step before and the current one, and one
-// sentence on what happens next (docs/web-client.md "Project brief and task story").
-export function TaskStory({ detail }) {
-  const { reached, stop, word, skipped, hidden } = storySteps(detail);
-  const current = stop ?? reached;
-  const shown = STEPS.map((name, index) => ({ name, index }))
-    .filter(({ index }) => index !== hidden && index <= current && !(skipped.has(index) && index !== current));
-  const pair = shown.slice(-2);
-  return html`
-    <section class="story" aria-label="Where this task stands">
-      <ol class="story-steps" aria-label="Progress">
-        ${pair.map(({ name, index }) => {
-          const state = index === stop ? "stopped" : index === current ? "current" : "done";
-          return html`
-            <li key=${name} data-step=${state} data-tone=${index === stop ? STOP_TONE[word] : null} aria-current=${index === current ? "step" : null}>
-              <span class="story-name">${name}</span>${index === stop ? html`<span class="story-word">${word}</span>` : null}
-            </li>`;
-        })}
-      </ol>
-      <p class="story-next">${nextWords(detail)}</p>
-    </section>`;
 }
