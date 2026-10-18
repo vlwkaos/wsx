@@ -2786,13 +2786,13 @@ digest_max_seconds = 6
         bracketed = js('task', 'new', 'Owner report (UX failures: how a task asks):\n1. WORK v.txt', '-p', 'demo')['id']
         bare = js('task', 'new', 'Owner request:\n\nWORK w.txt now', '-p', 'demo')['id']
         retitled = js('task', 'new', 'WORK x.txt', '--title', 'Owner asked: short words', '-p', 'demo')['id']
-        plain = js('task', 'new', "Owner: Alice's WORK y.txt", '-p', 'demo')['id']
-        made = (titled, stripped, bracketed, bare, retitled, plain)
+        untouched = js('task', 'new', "Owner: Alice's WORK y.txt", '-p', 'demo')['id']
+        made = (titled, stripped, bracketed, bare, retitled, untouched)
         for n in made:
             wait(lambda: task_state(n) == 'ready', 'titled task %d' % n)
             js('task', 'close', n, '--discard', '-p', 'demo')
         expected = {titled: 'Short words', stripped: 'tool permission for WORK u.txt', bracketed: 'UX failures: how a task asks',
-                    bare: 'WORK w.txt now', retitled: 'short words', plain: "Owner: Alice's WORK y.txt"}
+                    bare: 'WORK w.txt now', retitled: 'short words', untouched: "Owner: Alice's WORK y.txt"}
         titles = {row['id']: row['title'] for row in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['tasks']}
         listed = {row['id']: row['title'] for row in js('task', 'list', '-p', 'demo', '--all')['tasks']}
         assert all(titles[n] == listed[n] == title for n, title in expected.items()), (titles, listed)
