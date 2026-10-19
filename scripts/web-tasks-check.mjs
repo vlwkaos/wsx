@@ -64,7 +64,7 @@ async function sound(label) {
   const seen = await evaluate(`(() => {
     const free = (node) => node.closest('.code-block pre, .table-wrap, .diagram, .timeline-output');
     const wide = [...document.querySelectorAll('#app *')].filter((node) => !free(node) && node.getBoundingClientRect().right > innerWidth + 0.5);
-    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .reservoir, .adopted-strip, .slash, .task-sheet')
+    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .reservoir, .slash, .task-sheet')
       && /auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1);
     return { wide: wide.slice(0, 3).map((node) => node.className || node.tagName), scrollers: scrollers.map((node) => node.className),
       raw: /\\b(null|undefined|NaN)\\b/.test(document.querySelector('#app').innerText), page: document.scrollingElement.scrollTop + document.scrollingElement.scrollLeft };
@@ -186,10 +186,11 @@ const plansRow = homeRows.find((row) => row.name === "plans");
 // ^ #1 waits as briefed; #2, built by the API checks, is ready to land.
 if (plansRow?.status !== "Brief ready #1" || plansRow.count !== "2") await fail(`the plans row reads ${JSON.stringify(plansRow)}`);
 // Projects with agent sessions and no task: the sessions in words, and the time of the newest.
-const sessionRows = { busy: "2 working", quiet: "claude in main done just now", gone: "claude in main exited" };
+// ^ `quiet` went done while the fixture was built, which can take over a minute.
+const sessionRows = { busy: /^2 working$/, quiet: /^claude in main done (just now|\d+m ago)$/, gone: /^claude in main exited$/ };
 for (const [name, status] of Object.entries(sessionRows)) {
   const row = homeRows.find((item) => item.name === name);
-  if (row?.status !== status || row.count || !/ago|now/.test(row.state)) await fail(`the ${name} row reads ${JSON.stringify(row)}, not "${status}" with a time`);
+  if (!status.test(row?.status ?? "") || row.count || !/ago|now/.test(row.state)) await fail(`the ${name} row reads ${JSON.stringify(row)}, not "${status}" with a time`);
 }
 await tabsInView();
 // ^ The server runs this page's build: no new-version pill.
@@ -222,12 +223,8 @@ await until("!!document.querySelector('.home-row')", "home did not come back");
 await evaluate(`[...document.querySelectorAll('.home-row')].find((row) => row.querySelector('.row-label').textContent === 'ui').click()`);
 await until(`location.hash === ${JSON.stringify(chat)} && !!document.querySelector('.composer-field') && !!document.querySelector('.reservoir-head') && !!document.querySelector('.log .bubble')`, "a home row did not open the chat");
 if (await count(".tabbar")) await fail("the chat shows the bottom bar");
-// The chat shows the adopted worktree too; a tap opens its session, and Back returns.
-await adoptedOnly("the project chat");
-await click(".adopted .row a");
-await until(`location.hash === '#/s/${adoptedArg}/chat'`, "the adopted item did not open its session");
-await evaluate("history.back()");
-await until(`location.hash === ${JSON.stringify(chat)} && !!document.querySelector('.adopted')`, "Back did not return from the adopted session");
+// The adopted worktrees belong on the worktree list, not on the chat.
+if (await count(".adopted")) await fail("the project chat shows the adopted worktrees");
 
 // "Since you left": this device left the project two hours ago; the line names what happened.
 await go("#/");
@@ -288,10 +285,11 @@ await pause(300);
 if (!(await evaluate(atEnd))) await fail(`opening the reservoir took the chat off its end: ${JSON.stringify(await evaluate("(() => { const log = document.querySelector('.log'); return { top: log.scrollTop, height: log.scrollHeight, client: log.clientHeight, jump: !!document.querySelector('.jump') }; })()"))}`);
 const listedRows = await rows();
 const rowWords = listedRows.map((row) => `${row[0]} ${row[3]}`);
-// ^ Done tasks (#7, #8) are not in it; the To check list is one row at its end.
+// ^ Done tasks (#7, #8) are not in it; the To check list is one row at its end. A task
+// without --title is named by its worker summary's first sentence ("did: WORK b.txt").
 const expectedRows = ["#1 Allow", "#4 Allow", " Deny+Approve", " Deny+Approve", "#2 Land", "#3 Land", "#6 ", " "];
 if (rowWords.join("|") !== expectedRows.join("|")) await fail(`the reservoir rows are ${JSON.stringify(listedRows)}`);
-if (listedRows[0][2] !== "needs to reach crates.io" || listedRows[2][1] !== "Approve land #3" || listedRows[3][1] !== "Approve discard #4" || listedRows[2][2] !== "WORK b.txt"
+if (listedRows[0][2] !== "needs to reach crates.io" || listedRows[2][1] !== "Approve land #3" || listedRows[3][1] !== "Approve discard #4" || listedRows[2][2] !== "did: WORK b.txt"
   || listedRows[4][2] !== "ready to land" || listedRows[7][1] !== "2 to check") await fail(`the reservoir rows read ${JSON.stringify(listedRows)}`);
 if (!/^keep a worker busy WAIT /.test(listedRows[6][1])) await fail(`the running task's title is ${listedRows[6][1]}`);
 if (!(await evaluate(`${rowOf("#6")}.querySelector('.task-chip .mark[data-running]')`))) await fail("the running task's chip does not pulse");
@@ -571,6 +569,10 @@ await until("location.href === 'about:blank'", "the blank page did not open");
 await send("Page.navigate", { url: `${siteUrl}#/p/${project}/t/3` });
 await until("!!document.querySelector('dialog.task-sheet[open] .story') && !!document.querySelector('.composer-field')", "a deep link did not open the chat with the sheet");
 if (await evaluate("history.state?.depth") !== 1) await fail(`a deep link sits at depth ${await evaluate("JSON.stringify(history.state)")}`);
+// One load reads the tasks once: no second `api/tasks`, and no read of the one project.
+await pause(1000);
+const taskReads = await evaluate(`performance.getEntriesByType('resource').map((entry) => new URL(entry.name).pathname).filter((path) => /\\/api\\/tasks(\\/\\d+)?$/.test(path))`);
+if (taskReads.length !== 1 || !taskReads[0].endsWith("/api/tasks")) await fail(`a load read the tasks as ${JSON.stringify(taskReads)}`);
 await evaluate("history.back()");
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Back after a deep link did not close the sheet");
 
@@ -680,6 +682,6 @@ problems.splice(quietFrom);
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
-console.log(`tasks page: home with the Sessions and Projects tabs in the first screen, adopted worktree items (no task copy, read only, opens its session), since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, the reservoir (count, open, rows with one action, a pulsing working chip, a stripped title, facts, Allow and Approve in place without moving the chat, joined status lines), the ⋯ menu, the project page (markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no verdict or revision, Land, the item live after landing, History, approval first, Deny, Allow for project), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the # picker, the deep link, the brief (reservoir row, sections, talk as bubbles with Brief v2, Start), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions and Projects tabs in the first screen, adopted worktree items (no task copy, read only, opens its session), since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, the reservoir (count, open, rows with one action, a pulsing working chip, a stripped title, facts, Allow and Approve in place without moving the chat, joined status lines), the ⋯ menu, the project page (markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no verdict or revision, Land, the item live after landing, History, approval first, Deny, Allow for project), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the # picker, the deep link (one read of the tasks), the brief (reservoir row, sections, talk as bubbles with Brief v2, Start), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

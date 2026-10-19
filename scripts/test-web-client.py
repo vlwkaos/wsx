@@ -2666,7 +2666,8 @@ digest_max_seconds = 6
         assert {row['id']: row['stage'] for row in overview['tasks']} == {1: 'needs_you', 2: 'needs_you', 3: 'needs_you'}
         # Chips and the `#` picker: attention order, then the newest first.
         assert [row['id'] for row in overview['tasks']] == [1, 3, 2], overview['tasks']
-        assert overview['tasks'][2]['title'] == 'WORK a.txt HV'
+        # ^ A task without --title is named by the first sentence of its worker's summary.
+        assert overview['tasks'][2]['title'] == 'did: WORK a.txt HV'
         # Every task's branch, from each record: a worktree on one is a task's, never adopted.
         branches = sorted(js('task', 'show', n, '-p', 'demo')['branch'] for n in (1, 2, 3))
         assert overview['task_branches'] == branches == ['wsx/t1', 'wsx/t2', 'wsx/t3'], overview['task_branches']
@@ -2706,7 +2707,7 @@ digest_max_seconds = 6
                       all(item.get('task') != 2 for item in data['needs']))
         listed = steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']
         assert [(i['id'], i['task'], i['title'], i['check'], i['state']) for i in listed] == [
-            ('c1', 2, 'WORK a.txt HV', 'open the file', 'open')], listed
+            ('c1', 2, 'did: WORK a.txt HV', 'open the file', 'open')], listed
         landed = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
         assert landed['stage'] == 'done' and [i['id'] for i in landed['to_check']] == ['c1'] and landed['actions'] == [], landed
         status, body = act(1, 'allow', {'host': 'crates.io'})
@@ -2777,8 +2778,9 @@ digest_max_seconds = 6
         assert empty['needs'] == [] and empty['resolutions'] == [] and empty['last_reply'] is None and empty['last_unix_ms'] is None, empty
         ok('manager: say starts it, reply in the chat, approve runs once and records the outcome, deny with a note, since, resolutions, last reply')
         # The project page: the manager host writes its sections once; a project without a
-        # manager has none. A title: `--title` as given, else the prompt's first line without
-        # a leading "Owner <word>:" (docs/tasks.md "Store").
+        # manager has none. A title: `--title` as given, else the first sentence of the
+        # worker's summary, else the prompt's first line without a leading "Owner <word>:"
+        # (docs/tasks.md "Store"; a task without a result is #6 of the browser fixture).
         page = steady(owner, 'GET', '/api/tasks/%d/page' % demo)[1]
         assert page['text'].startswith('# demo\n\n## Goal') and '```mermaid' in page['text'] and page['unix_ms'] > 0, page
         assert steady(owner, 'GET', '/api/tasks/%d/page' % ids['calm'])[1] == {'text': None, 'unix_ms': None}
@@ -2787,13 +2789,13 @@ digest_max_seconds = 6
             refused = cli('task', 'new', 'WORK t.txt', '--title', title, '-p', 'demo', expect=1)
             assert refusal in refused.stderr, refused.stderr
         titled = js('task', 'new', 'Owner report: WORK t.txt', '--title', ' Short words ', '-p', 'demo')['id']
-        stripped = js('task', 'new', 'Owner report: tool permission for WORK u.txt\nmore', '-p', 'demo')['id']
+        stripped = js('task', 'new', 'Owner report: tool permission. WORK u.txt\nmore', '-p', 'demo')['id']
         for n in (titled, stripped):
             wait(lambda: task_state(n) == 'ready', 'titled task %d' % n)
             js('task', 'close', n, '--discard', '-p', 'demo')
         titles = {row['id']: row['title'] for row in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['tasks']}
-        assert titles[titled] == 'Short words' and titles[stripped] == 'tool permission for WORK u.txt', titles
-        ok('project page: written by the manager host, none without a manager, 404 outside the grant; titles: --title, its refusals, "Owner report:" left out')
+        assert titles[titled] == 'Short words' and titles[stripped] == 'did: Owner report: tool permission.', titles
+        ok('project page: written by the manager host, none without a manager, 404 outside the grant; titles: --title, its refusals, the first sentence of the summary')
 
         # --- To check (docs/tasks.md "To check"): pass one, fail one with a note (a linked fix
         # task starts), pass the rest; the owner's alone.

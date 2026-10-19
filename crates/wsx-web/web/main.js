@@ -181,14 +181,14 @@ function start(session) {
     page: (data) => events.dispatchEvent(new CustomEvent("page", { detail: data })),
     revoked: () => location.reload(),
     down: () => update({ online: false }),
-    // A reconnected stream may have missed task changes.
+    // Tasks are read once the stream is open, so no change falls between the read and the
+    // stream; a reconnected stream may have missed changes.
     up: () => {
       update({ online: true });
       if (can("task_view")) loadTasks();
       tellPresence(true);
     },
   });
-  if (can("task_view")) loadTasks();
   const opened = parseRoute(location.hash);
   if (opened.screen === "task" && can("task_view")) stackUnder(`#/p/${opened.id}`);
   addEventListener("hashchange", () => tellPresence(false));

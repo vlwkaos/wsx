@@ -122,7 +122,7 @@ pub fn overview(scope: &Scope) -> Value {
     let mut titles: HashMap<u32, String> = HashMap::new();
     for (dir, record) in &tasks {
         let Ok(record) = record else { continue };
-        let title = view::title(dir, record).unwrap_or_default();
+        let title = view::readable_title(dir, record).unwrap_or_default();
         titles.insert(record.id, title.clone());
         let order = view::attention(record.state);
         listed.push((
@@ -432,6 +432,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
         .filter(|line| matches!(line, ApprovalLine::Request { task: Some(id), .. } if *id == task))
         .collect();
     let mut summary = view::task_summary(&dir, &record);
+    summary["title"] = json!(view::readable_title(&dir, &record));
     summary["project"] = json!(scope.project);
     summary["created_unix_ms"] = json!(record.created_unix_ms);
     summary["default_branch"] = json!(record.default_branch);
@@ -804,7 +805,7 @@ pub fn checks(scope: &Scope) -> Outcome<Value> {
             let mut row = json!(item);
             row["title"] = json!(open_task(scope, item.task)
                 .ok()
-                .and_then(|dir| view::title(&dir, &dir.read_record().ok()?)));
+                .and_then(|dir| view::readable_title(&dir, &dir.read_record().ok()?)));
             row
         })
         .collect();

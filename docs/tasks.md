@@ -38,7 +38,7 @@ wsx task close <n> [--discard] --json
 - One writer: the CLI writes before the host starts and after it exits; the host writes everything in between.
 - States: `starting, working, briefed, blocked, checking, ready, failed, stopped, conflict, in_review, landed, closed`. `landed` and `closed` are not open. `task.json` also has `phase`: `brief` until `start`, then `build` (records from before the brief read as `build`).
 - A prompt, steer or add is at most 64 KiB.
-- A task's title is `--title` (at most 60 characters, no control characters, kept in `task.json` as `title`), else the first line of its prompt without a leading `Owner <word>:`, at most 120 characters. Every title shown (ledger, events, the web, a pull request) comes from this rule, also for tasks from before `--title`.
+- A task's title is `--title` (at most 60 characters, no control characters, kept in `task.json` as `title`), else the first line of its prompt without a leading `Owner <word>:`, at most 120 characters. Every title in the ledger, events and a pull request comes from this rule, also for tasks from before `--title`. The web shows a task without `--title` by the first sentence of its latest worker summary while it has one (`view::readable_title`).
 - Each revision records `base` (the merge base with the default branch, so it follows a rebase) and the paths changed in `base..r<k>`: at most 500 paths and 32 KiB in `paths`, the full count in `paths_total`.
 - `list --json` gives each open task `overlaps: [{id, count, complete}]`, the other open tasks that changed a path it changed; `show --json` adds up to 20 shared `paths` per task. `complete` is false when a side kept fewer paths than it changed.
 
