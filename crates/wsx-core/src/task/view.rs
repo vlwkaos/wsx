@@ -89,6 +89,23 @@ pub fn checked_title(title: &str) -> Result<String> {
     Ok(title.to_string())
 }
 
+/// The name the web shows: the `--title`, else the first sentence of the worker's latest
+/// summary, else `title` (docs/web-client.md "Tasks"). Events, the ledger and a pull request
+/// keep `title`, which a worker's words never change.
+pub fn readable_title(dir: &TaskDir, record: &TaskRecord) -> Option<String> {
+    if record.title.is_some() {
+        return title(dir, record);
+    }
+    let summary = read_result(dir)
+        .and_then(|file| Some(file.get("result")?.get("summary")?.as_str()?.to_string()));
+    summary
+        .as_deref()
+        .map(first_sentence)
+        .filter(|sentence| !sentence.is_empty())
+        .map(|sentence| clip(&sentence, TITLE_CHARS))
+        .or_else(|| title(dir, record))
+}
+
 /// The task's title: its `--title`, else the first line of its prompt without a leading
 /// `Owner <word>:` (how the manager's prompts open), at most 120 characters.
 pub fn title(dir: &TaskDir, record: &TaskRecord) -> Option<String> {
@@ -99,6 +116,21 @@ pub fn title(dir: &TaskDir, record: &TaskRecord) -> Option<String> {
         let line = prompt.lines().next().unwrap_or_default().trim();
         strip_owner(line).chars().take(TITLE_CHARS).collect()
     })
+}
+
+/// The first sentence of the first line of `text`: up to a `.`, `!` or `?` followed by a
+/// space or the end ("Did x. Then y" → "Did x."), as the web's `firstSentence`.
+fn first_sentence(text: &str) -> String {
+    let line = text.trim().lines().next().unwrap_or_default().trim();
+    let end = line.char_indices().find(|&(index, mark)| {
+        matches!(mark, '.' | '!' | '?')
+            && line[index + mark.len_utf8()..]
+                .chars()
+                .next()
+                .is_none_or(char::is_whitespace)
+    });
+    end.map_or(line, |(index, mark)| &line[..index + mark.len_utf8()])
+        .to_string()
 }
 
 /// `Owner report: tool permission` → `tool permission`; anything else stays.

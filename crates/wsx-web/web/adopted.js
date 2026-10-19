@@ -1,5 +1,5 @@
 // Adopted: a project's worktrees that no task owns, with their agent sessions, read only
-// (docs/web-client.md "Project screen"). A session row opens the session; nothing here
+// (docs/web-client.md "Adopted worktrees"). A session row opens the session; nothing here
 // starts, renames, moves or closes a worktree or a session.
 import { ago, html, Icon, useNow, useState } from "./lib.js";
 import { isAgent, listedSessions, sessionLink, stateOf, useStore } from "./store.js";
@@ -27,7 +27,7 @@ export function adoptedOf(project, overview, sessions) {
 
 const counted = (count) => (count === 1 ? "1 worktree" : `${count} worktrees`);
 
-export function Adopted({ project, strip }) {
+export function Adopted({ project }) {
   const store = useStore();
   const now = useNow(true);
   const [open, setOpen] = useState(!folded.has(project.id));
@@ -73,7 +73,7 @@ export function Adopted({ project, strip }) {
     });
   });
   return html`
-    <details class=${strip ? "adopted adopted-strip" : "adopted"} open=${open} onToggle=${toggle} aria-label="Adopted">
+    <details class="adopted" open=${open} onToggle=${toggle} aria-label="Adopted">
       <summary class="adopted-line"><${Icon} name="chevron" /><span class="adopted-text">Adopted · ${counted(items.length)} without a task</span></summary>
       <ul class="rows">${rows}</ul>
     </details>`;

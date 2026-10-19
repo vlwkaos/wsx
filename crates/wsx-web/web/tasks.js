@@ -8,19 +8,26 @@ import { Back, toast } from "./ui.js";
 import { grow, isolate, release, Suggestions } from "./chat.js";
 import { Bubble, conversation, StatusLine, Typing } from "./bubbles.js";
 import { ProjectFacts } from "./story.js";
-import { Adopted } from "./adopted.js";
 import { TaskPage } from "./task.js";
 import { ProjectPage } from "./page.js";
 import { ChecksPage } from "./checks.js";
 
-// Every granted project's overview, or one project's.
-export async function loadTasks(project) {
+// Every granted project's overview, or one project's. `missing` reads one project only when
+// the read of every project (at the stream's open) ended without it.
+let readingAll = null;
+export async function loadTasks(project, { missing = false } = {}) {
   try {
     if (project == null) {
-      const all = await api("api/tasks");
+      readingAll = api("api/tasks");
+      const all = await readingAll;
       all.forEach(noteDecisions);
       update({ tasks: Object.fromEntries(all.map((overview) => [overview.project, overview])) });
     } else {
+      if (missing) {
+        if (!readingAll) return;
+        await readingAll.catch(() => {});
+        if (state.tasks[project]) return;
+      }
       const overview = await api(`api/tasks/${project}`);
       noteDecisions(overview);
       update({ tasks: { ...state.tasks, [project]: overview } });
@@ -552,7 +559,7 @@ export function Manager({ project: id, task, page, checks }) {
     }
   };
   useEffect(() => {
-    if (!overview) loadTasks(id);
+    if (!overview) loadTasks(id, { missing: true });
     load();
     const changed = (event) => { if (event.detail.project === id) load(); };
     events.addEventListener("manager", changed);
@@ -599,7 +606,6 @@ export function Manager({ project: id, task, page, checks }) {
         <div class="bar-tools"><${More} project=${project} /></div>
       </header>
       <div class="chat">
-        <${Adopted} project=${project} strip />
         <${SinceLine} project=${id} />
         <div class="log-wrap">
           <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation with the manager" tabindex="0">

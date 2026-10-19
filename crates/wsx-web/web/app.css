@@ -602,8 +602,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 /* Hook: .story — where a task stands, in words (docs/web-client.md "Task sheet"): one sentence
    of what changed, and what the owner should know next. */
 .visually-hidden { position: absolute; width: var(--border-width); height: var(--border-width); overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-/* Hook: .adopted — a project's worktrees without a task, read only; in the chat a strip that
-   scrolls inside itself and folds to one line. */
+/* Hook: .adopted — a project's worktrees without a task, read only; it folds to one line. */
 .adopted-line {
   display: flex; align-items: center; gap: var(--space-1); min-height: var(--size-control); padding: 0 var(--column-inset, var(--space-4));
   cursor: pointer; list-style: none; color: var(--color-muted); font-size: var(--font-size-sm);
@@ -612,8 +611,6 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .adopted[open] > .adopted-line .icon { transform: rotate(90deg); }
 .adopted-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .adopted { border-bottom: var(--border-width) solid var(--color-hairline); }
-.adopted-strip { flex: 0 0 auto; max-height: calc(100% * var(--strip-share) / 2); overflow-y: auto; overscroll-behavior: contain; }
-.adopted-strip .row-link { padding-inline: var(--column-inset, var(--space-4)); }
 .story { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere; }
 .story .link-action { align-self: flex-start; }
 
