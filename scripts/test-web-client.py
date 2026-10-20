@@ -124,7 +124,9 @@ def turn(text):
  if provider == 'claude' and text == '/compact':
   claude_compact(); return
  # The person's prompt as Claude Code 2.1.300 marks it; other turns keep the older record without the field.
- record('user', text, **({'promptSource':'typed'} if 'task notice' in text else {}))
+ # Claude Code 2.1.300 can save a pasted prompt inside a pasted_content wrapper (real transcript, 2026-10-20).
+ saved = '\n\n<pasted_content id="4666">\n'+text+'\n</pasted_content id="4666">\n' if provider == 'claude' and 'follow up' in text else text
+ record('user', saved, **({'promptSource':'typed'} if 'task notice' in text else {}))
  report('working')
  body = text.split('\n',1)[1] if text.startswith('[wsx exchange ') else text
  if 'make chart' in body:
@@ -1350,7 +1352,9 @@ capabilities = ["terminal_view"]
         status, exchange2 = owner.request('POST', chat + '/send', {'text': 'follow up'}, shape='stripped')
         assert status == 200 and exchange2['id'] == exchange['id'] and exchange2['round'] == 2
         wait(lambda: len(traces('owner')) == 2, 'continued delivery')
-        wait(lambda: len(messages(owner, sessions['owner'])['messages']) == 4, 'continued history')
+        continued = wait(lambda: (lambda data: data if len(data['messages']) == 4 else None)(messages(owner, sessions['owner'])), 'continued history')
+        # The fixture saved this one as a paste; the page shows the text that was sent, so its pending copy clears.
+        assert continued['messages'][2] == {'role': 'user', 'text': 'follow up', 'attachments': []}, continued['messages'][2]
         assert owner.request('POST', chat + '/send', {'text': '   '})[0] == 400
         assert owner.request('POST', chat + '/send', {'text': 'x' * 70000})[0] == 400
         assert owner.request('POST', '/api/chat/999999/send', {'text': 'nope'})[0] == 404
