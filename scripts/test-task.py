@@ -195,6 +195,10 @@ def run(wsx, wsxd, work, owned):
     for tools, word in (('["Bash(make:*)"]', 'the sandbox replaces Bash rules'), ('[Write]', 'file tools are always on')):
         (project / 'wsx.config.yml').write_text('tasks:\n  agent:\n    tools: %s\n' % tools)
         assert word in cli('task', 'new', 'WORK a.txt', ok=False).stderr
+    # ^ The manager's extra tools have the same refusals.
+    for tools in ('["Bash(git:*)"]', '[Edit]', '[MultiEdit]'):
+        (project / 'wsx.config.yml').write_text('tasks:\n  manager:\n    tools: %s\n' % tools)
+        assert 'tasks.manager.tools has' in cli('task', 'new', 'WORK a.txt', ok=False).stderr
     (project / 'wsx.config.yml').write_text('tasks:\n  agent:\n    briefTools: [Read]\n')
     assert 'briefTools was removed' in cli('task', 'new', 'WORK a.txt', ok=False).stderr
     (project / 'wsx.config.yml').write_text('tasks:\n  sandbox:\n    allowWrite: ["~/"]\n')
@@ -640,7 +644,7 @@ def run(wsx, wsxd, work, owned):
 
     # 20. The manager: started by the first say, answers from the ledger, acts through wsx task.
     (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text()
-                                            + '  manager: { model: fake-manager, rotateTokens: 100000 }\n')
+                                            + '  manager: { model: fake-manager, rotateTokens: 100000, tools: [mcp__docs__search] }\n')
     git('commit', '-q', '-am', 'manager config')
 
     def chat(after=None):
@@ -657,7 +661,9 @@ def run(wsx, wsxd, work, owned):
     launch = next(t for t in traces() if t.get('launch') and t.get('manager'))
     # ^ Its file tools may write one file, the project page (docs/tasks.md "Project page").
     page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md')
-    assert launch['allowed'] == ['Read', 'Glob', 'Grep', 'Edit(/%s)' % page, 'Write(/%s)' % page], launch['allowed']
+    # ^ It reads as a worker does (docs/tasks.md "Manager"), plus `tasks.manager.tools`.
+    assert launch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Edit(/%s)' % page, 'Write(/%s)' % page,
+                                 'mcp__docs__search'], launch['allowed']
     assert launch['model'] == 'fake-manager' and Path(page).read_text().startswith('# demo\n\n## Goal')
     # ^ Its Bash is plain sandboxed Bash that writes only its notes folder and reaches one socket,
     # the manager host's broker, which runs its `wsx task` commands.
@@ -671,6 +677,7 @@ def run(wsx, wsxd, work, owned):
     assert Path(sandbox['filesystem']['allowWrite'][0]).is_dir() and sandbox['filesystem']['denyWrite'] == [str(project)]
     assert 'Edit(/%s/**)' % project in launch['settings']['permissions']['deny'], launch['settings']
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
+    assert launch['git_optional_locks'] == '0', launch
     # Its rules for briefs: start work with one, skip it only on the owner's word, never start a build alone.
     for rule in ('`--model sonnet` may do', 'critical bug fix or heavy, complex work',
                  'fold those memos into', '/manager/notes/context.md',
@@ -678,7 +685,8 @@ def run(wsx, wsxd, work, owned):
                  '`wsx task start <n>`, which asks', 'name the briefs that wait',
                  'also in a pipe or with a heredoc', 'give each check as passed or failed from them',
                  "trust them over the worker's own words", 'grant it with `wsx task allow <n> --host <host>`',
-                 'Never tell the owner to edit settings'):
+                 'Never tell the owner to edit settings', 'read-only git in Bash',
+                 "read the task's verify state", 'in one step with `wsx task land <n> --skip-verify`'):
         assert rule in launch['instructions'], rule
     assert launch['cwd'] == str(project)
     assert js('task', 'manager')['state'] == 'running'

@@ -246,6 +246,7 @@ def main():
            'schema_required': json.loads(options['--json-schema']).get('required') if '--json-schema' in options else None,
            'mode': options.get('--permission-mode'), 'settings': json.loads(options.get('--settings', '{}')),
            'wsx_env': sorted(name for name in os.environ if name.startswith('WSX_')),
+           'git_optional_locks': os.environ.get('GIT_OPTIONAL_LOCKS'),
            'manager': project is not None, 'actor': os.environ.get('WSX_TASK_ACTOR'),
            'cwd': os.getcwd()})
     signal.signal(signal.SIGINT, lambda *_: (trace({'interrupted': True}), sys.exit(130)))

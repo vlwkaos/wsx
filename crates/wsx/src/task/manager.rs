@@ -67,6 +67,8 @@ struct Manager {
     main: PathBuf,
     model: String,
     rotate_tokens: u64,
+    /// `tasks.manager.tools`, added to the read-only ones.
+    tools: Vec<String>,
     state: ManagerState,
     events: Sender<Event>,
     agent: Option<ClaudeAgent>,
@@ -88,6 +90,10 @@ struct Manager {
     binary: Option<hosting::Binary>,
     reexec: bool,
 }
+
+/// Read-only tools the manager has beyond `Read Glob Grep`, so it loads context as a
+/// worker does. ref: docs/tasks.md "Manager"
+const MANAGER_TOOLS: [&str; 2] = ["WebFetch", "WebSearch"];
 
 /// The manager's lean project context in its notes folder. ref: docs/tasks.md "Memo"
 const CONTEXT_FILE: &str = "context.md";
@@ -118,8 +124,17 @@ fn instructions(project: &str, notes: &Path, page: &Path) -> String {
          what it could not run or verify; quote the worker only for what no check covers. \
          Your Bash runs in a sandbox that writes only your notes folder; `wsx task` \
          commands reach the tasks from there, also in a pipe or with a heredoc, and no other \
-         `wsx` command runs. Workers run in a sandbox too. When the ledger shows a blocked \
-         task with asks, fix it yourself: when the task plainly needs that host or folder, \
+         `wsx` command runs. Load context as a worker would, without editing or building: \
+         Read, Glob and Grep the project and the tasks' working copies, WebFetch and \
+         WebSearch, and read-only git in Bash (`git log`, `git show`, `git diff`, \
+         `git status`, also `git -C <working copy>`); never a git command that writes. \
+         Before you ask the owner to approve a land, read the task's verify state: the \
+         ledger's `human_verify` count and `verification`, and the items in \
+         `wsx task show <n> -p {project} --json` (`result.human_verify`). When it has Human \
+         Verify items without a pass and the owner has said to land first, ask for the land \
+         in one step with `wsx task land <n> --skip-verify`; when the owner has not, tell the \
+         owner the items to verify instead of asking for a land that would be refused. \
+         Workers run in a sandbox too. When the ledger shows a blocked task with asks, fix it yourself: when the task plainly needs that host or folder, \
          grant it with `wsx task allow <n> --host <host>` or `--path <path>`, which resumes \
          it; otherwise steer or add to the worker. Never tell the owner to edit settings \
          files. A grant for every task (`--project-wide`) or a tool rule asks the owner's \
@@ -157,6 +172,7 @@ pub fn run(project_id: &str) -> Result<()> {
         main,
         model: settings.manager_model,
         rotate_tokens: settings.manager_rotate_tokens,
+        tools: settings.manager_tools,
         state,
         events: events.clone(),
         agent: None,
@@ -574,10 +590,15 @@ impl Manager {
             &boundary,
             &self.model,
             // ^ `//` starts an absolute path in a rule; one file, never a folder.
-            vec![
-                format!("Edit(/{})", page.display()),
-                format!("Write(/{})", page.display()),
-            ],
+            MANAGER_TOOLS
+                .map(String::from)
+                .into_iter()
+                .chain([
+                    format!("Edit(/{})", page.display()),
+                    format!("Write(/{})", page.display()),
+                ])
+                .chain(self.tools.iter().cloned())
+                .collect(),
             instructions(&self.project, &notes, &page),
         );
         // ^ The agent's `wsx task` commands go to this host (broker.rs), which runs them as
@@ -585,6 +606,8 @@ impl Manager {
         launch.env = vec![
             (broker::BROKER_ENV.into(), broker_socket.into_os_string()),
             (ACTOR_ENV.into(), "manager".into()),
+            // ^ Its git reads must not try to refresh the index of a checkout it cannot write.
+            ("GIT_OPTIONAL_LOCKS".into(), "0".into()),
         ];
         launch.path_prefix = exe.parent().map(Path::to_path_buf);
         Ok(launch)
