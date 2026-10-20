@@ -815,3 +815,242 @@ fn restart_into_the_same_build_waits_only_for_a_tui_that_cannot_follow() {
     client.shutdown().unwrap();
     wait_for_socket_removal(&fixture.socket);
 }
+
+/// One project with one worktree, and a session per `(label, shell command)`; the primary
+/// pane of each, in order.
+fn sessions(client: &Client, name: &str, commands: &[(&str, &str)]) -> Vec<PaneId> {
+    let worktree = std::env::current_dir().unwrap();
+    client
+        .call(&Request::SynchronizeProjects {
+            projects: vec![ProjectSpec {
+                path: worktree.clone(),
+                name: name.into(),
+                worktrees: vec![WorktreeSpec {
+                    path: worktree,
+                    branch: "test".into(),
+                }],
+            }],
+        })
+        .unwrap();
+    let worktree_id = match client.call(&Request::Snapshot).unwrap() {
+        Response::Snapshot(snapshot) => snapshot.worktrees[0].id,
+        response => panic!("unexpected snapshot response: {response:?}"),
+    };
+    for (label, command) in commands {
+        client
+            .call(&Request::SessionCreate {
+                worktree_id,
+                label: (*label).into(),
+                command: vec!["/bin/sh".into(), "-c".into(), (*command).into()],
+                initial_input: None,
+                rows: 12,
+                cols: 60,
+            })
+            .unwrap();
+    }
+    let Response::Snapshot(snapshot) = client.call(&Request::Snapshot).unwrap() else {
+        panic!("no snapshot");
+    };
+    commands
+        .iter()
+        .map(|(label, _)| {
+            snapshot
+                .sessions
+                .iter()
+                .find(|session| session.label == *label)
+                .unwrap()
+                .primary_pane
+        })
+        .collect()
+}
+
+fn pane_exited(client: &Client, pane: PaneId) -> bool {
+    match client.call(&Request::Snapshot).unwrap() {
+        Response::Snapshot(snapshot) => snapshot
+            .panes
+            .iter()
+            .find(|candidate| candidate.id == pane)
+            .is_some_and(|candidate| candidate.exited),
+        response => panic!("unexpected snapshot response: {response:?}"),
+    }
+}
+
+fn lifecycle(client: &Client) -> wsx_core::runtime::DaemonLifecycle {
+    match client.call(&Request::LifecycleStatus).unwrap() {
+        Response::Lifecycle(status) => status,
+        response => panic!("unexpected lifecycle response: {response:?}"),
+    }
+}
+
+// docs/daemon-live-upgrade.md "Exited panes": a pane whose program exited used to fail the
+// whole handoff (its reader was gone, so the pause wrote into a closed pipe). It now goes
+// as its last screen; the live pane keeps its process.
+#[test]
+fn an_exited_pane_hands_off_as_its_last_screen() {
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_wsxd"));
+    let mut fixture = Fixture::new();
+    fixture.source = Some(fixture.command(&binary).spawn().unwrap());
+    wait_for_socket(&fixture.socket);
+    let client = Client::new(fixture.socket.clone());
+    let panes = sessions(
+        &client,
+        "exited",
+        &[
+            (
+                "live",
+                "printf 'pid=[%s]\\n' $$; while IFS= read -r line; do printf 'echo:%s:pid=[%s]\\n' \"$line\" $$; done",
+            ),
+            ("gone", "printf 'bye from the exited pane\\n'; exit 3"),
+        ],
+    );
+    let (live, gone) = (panes[0], panes[1]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !pane_exited(&client, gone) {
+        assert!(Instant::now() < deadline, "the gone pane did not exit");
+        thread::sleep(Duration::from_millis(50));
+    }
+    let stream = TerminalStream::connect(&client, live, 200, true, 12, 60).unwrap();
+    let pid = reported_pid(&frame_text(&stream, "pid=["));
+    drop(stream);
+    let old_epoch = lifecycle(&client).epoch;
+
+    // ^ Another file is another binary id: the handoff of an upgrade, not a restart.
+    let next = fixture.root.join("bin/next-wsxd");
+    fs::copy(&binary, &next).unwrap();
+    let identity = binary_identity(&next).unwrap();
+    assert_ne!(identity, lifecycle(&client).binary_id);
+    let restart = client
+        .call(&Request::PrepareHandoff {
+            target_binary_id: identity.clone(),
+            target_version: WSX_VERSION.into(),
+            target_protocol: PROTOCOL_VERSION,
+            target_daemon_revision: DAEMON_REVISION,
+            executable: next,
+            restart: true,
+        })
+        .unwrap();
+    assert!(
+        matches!(
+            restart,
+            Response::Replacement {
+                disposition: ReplacementDisposition::Stopping,
+                ..
+            }
+        ),
+        "{restart:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Ok(Response::Lifecycle(status)) = client.call(&Request::LifecycleStatus) {
+            if status.epoch != old_epoch {
+                break;
+            }
+            assert!(
+                status.last_handoff_error.is_none(),
+                "the handoff rolled back: {:?}",
+                status.last_handoff_error
+            );
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the handoff did not finish: {}",
+            fs::read_to_string(fixture.root.join("daemon.log")).unwrap_or_default()
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // Both panes are listed; the exited one still reads exited and shows its last screen.
+    assert_eq!(lifecycle(&client).binary_id, identity);
+    assert!(pane_exited(&client, gone));
+    assert!(!pane_exited(&client, live));
+    let raw = RawTerminalStream::connect_raw(&client, gone, 30_100, true, 0, 0).unwrap();
+    let (text, _) = raw_text(&raw, "bye from the exited pane");
+    assert!(text.contains("bye from the exited pane"), "{text:?}");
+    drop(raw);
+    let restarted = TerminalStream::connect(&client, live, 201, true, 12, 60).unwrap();
+    restarted
+        .try_send(TerminalClientMessage::Input(b"after\n".to_vec()))
+        .unwrap();
+    let output = frame_text(&restarted, "echo:after:pid=[");
+    assert_eq!(
+        reported_pid(&output[output.find("echo:after").unwrap()..]),
+        pid
+    );
+    drop(restarted);
+    client.shutdown().unwrap();
+    wait_for_socket_removal(&fixture.socket);
+}
+
+// docs/daemon-live-upgrade.md "A failed handoff": a target that exits before it takes the
+// handoff ends the wait at once; the daemon keeps serving and keeps the step and the error.
+#[test]
+fn a_failed_handoff_keeps_its_reason() {
+    use std::os::unix::fs::PermissionsExt;
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_wsxd"));
+    let mut fixture = Fixture::new();
+    fixture.source = Some(fixture.command(&binary).spawn().unwrap());
+    wait_for_socket(&fixture.socket);
+    let client = Client::new(fixture.socket.clone());
+    let panes = sessions(
+        &client,
+        "failed",
+        &[("live", "printf 'pid=[%s]\\n' $$; exec cat")],
+    );
+    let target = fixture.root.join("bin/broken-wsxd");
+    fs::write(&target, "#!/bin/sh\nexit 3\n").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+    let old_epoch = lifecycle(&client).epoch;
+    let started = Instant::now();
+    let response = client
+        .call(&Request::PrepareHandoff {
+            target_binary_id: binary_identity(&target).unwrap(),
+            target_version: WSX_VERSION.into(),
+            target_protocol: PROTOCOL_VERSION,
+            target_daemon_revision: DAEMON_REVISION,
+            executable: target,
+            restart: true,
+        })
+        .unwrap();
+    assert!(
+        matches!(
+            response,
+            Response::Replacement {
+                disposition: ReplacementDisposition::Stopping,
+                ..
+            }
+        ),
+        "{response:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let failure = loop {
+        if let Ok(Response::Lifecycle(status)) = client.call(&Request::LifecycleStatus) {
+            if let Some(failure) = status.last_handoff_error.clone() {
+                if status.replacement_target.is_none() {
+                    assert_eq!(status.epoch, old_epoch);
+                    break failure;
+                }
+            }
+        }
+        assert!(Instant::now() < deadline, "the handoff did not roll back");
+        thread::sleep(Duration::from_millis(50));
+    };
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the rollback waited out the timeout"
+    );
+    assert_eq!(failure.step, "send");
+    assert!(
+        failure
+            .error
+            .contains("the new wsxd exited before it took the handoff"),
+        "{failure:?}"
+    );
+    assert!(failure.unix_ms > 0);
+    // The daemon serves as before: the live pane is still there and running.
+    assert!(!pane_exited(&client, panes[0]));
+    let stream = TerminalStream::connect(&client, panes[0], 202, true, 12, 60).unwrap();
+    frame_text(&stream, "pid=[");
+    drop(stream);
+    client.shutdown().unwrap();
+    wait_for_socket_removal(&fixture.socket);
+}

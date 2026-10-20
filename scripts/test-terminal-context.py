@@ -220,27 +220,43 @@ def run_released_upgrade(tmux, released_wsx, released_daemon, wsx, wsxd, work, u
              "released Terminal")
         before = fx.call("lifecycle_status")["data"]
 
-        # The released daemon cannot restart into its own build. It must say so and stop nothing.
+        # This wsx cannot restart the released daemon into the released build: a release before
+        # revision 25 refuses it, a later one rolls the handoff back. Either way it says so and
+        # stops nothing.
         refused = fx.cli(wsx, "daemon", "restart", daemon_bin=released_daemon)
         assert refused.returncode != 0, refused
-        assert "cannot restart into the same build" in refused.stderr, refused.stderr
-        assert "nothing was stopped" in refused.stderr, refused.stderr
+        assert ("cannot restart into the same build" in refused.stderr and "nothing was stopped" in refused.stderr
+                or "could not hand off" in refused.stderr and "no session was stopped" in refused.stderr), refused.stderr
         guarded = fx.cli(wsx, "daemon", "stop", daemon_bin=released_daemon)
         assert guarded.returncode != 0 and "2 running session(s)" in guarded.stderr, guarded
         assert "wsx daemon restart" in guarded.stderr, guarded.stderr
         assert fx.epoch() == before["epoch"] and all(alive(pid) for pid in pids)
 
-        if unfit_daemon:
-            # A starting TUI asks for a handoff into a wsxd that refuses the transfer. The
-            # running daemon rolls back; the TUI must say so and open on the running daemon.
-            fx.tm("new-session", "-d", "-s", "unfit", "-x", "100", "-y", "24",
-                  "exec env WSX_DAEMON_BIN=" + shlex.quote(str(unfit_daemon)) + " " + shlex.quote(str(wsx)))
-            wait(lambda: any("did not finish" in row for row in fx.screen("unfit")), "rolled-back upgrade notice", timeout=45)
-            wait(lambda: "WORKSPACE" in "\n".join(fx.screen("unfit")) and "counter" in "\n".join(fx.screen("unfit")),
-                 "Workspace on the running daemon after a rollback")
-            fx.capture("rolled-back-upgrade", "unfit")
-            assert fx.epoch() == before["epoch"] and all(alive(pid) for pid in pids), "a rollback lost the daemon"
-            fx.keys("q", target="unfit")
+        if not unfit_daemon:
+            # ^ A wsxd that cannot take the handoff: it exits at once.
+            unfit_daemon = work / "unfit" / "wsxd"
+            unfit_daemon.parent.mkdir()
+            unfit_daemon.write_text("#!/bin/sh\nexit 3\n")
+            unfit_daemon.chmod(0o755)
+        # A starting TUI asks for a handoff into a wsxd that refuses the transfer. The running
+        # daemon rolls back; the TUI must say so and open on the running daemon
+        # (docs/daemon-live-upgrade.md "A failed automatic upgrade").
+        fx.tm("new-session", "-d", "-s", "unfit", "-x", "100", "-y", "24",
+              "exec env WSX_DAEMON_BIN=" + shlex.quote(str(unfit_daemon)) + " " + shlex.quote(str(wsx)))
+        wait(lambda: "wsxd upgrade failed" in "\n".join(fx.screen("unfit")), "rolled-back upgrade notice", timeout=45)
+        wait(lambda: "WORKSPACE" in "\n".join(fx.screen("unfit")) and "counter" in "\n".join(fx.screen("unfit")),
+             "Workspace on the running daemon after a rollback")
+        fx.capture("rolled-back-upgrade", "unfit")
+        assert fx.epoch() == before["epoch"] and all(alive(pid) for pid in pids), "a rollback lost the daemon"
+        fx.keys("q", target="unfit")
+        # The same protocol: a CLI command of the newer wsx works with the running daemon and
+        # says why the upgrade failed. It does not try that upgrade again for this daemon.
+        started = time.monotonic()
+        listed = fx.cli(wsx, "session", "list", daemon_bin=unfit_daemon)
+        assert listed.returncode == 0 and listed.stdout.count("demo/main") == 2, listed
+        assert "wsxd upgrade failed" in listed.stderr and "sessions keep running" in listed.stderr, listed.stderr
+        assert time.monotonic() - started < 10, "the failed upgrade was tried again"
+        assert fx.epoch() == before["epoch"], "a failed upgrade replaced the daemon"
 
         # The new build runs once. The daemon is replaced live under the open released TUI.
         upgraded = fx.cli(wsx, "session", "list", daemon_bin=wsxd)

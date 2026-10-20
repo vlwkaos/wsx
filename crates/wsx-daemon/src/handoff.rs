@@ -45,6 +45,10 @@ pub(super) struct Manifest {
     expected_daemon_revision: u32,
     pub persisted: super::Persisted,
     pub panes: Vec<PaneHandoff>,
+    /// Panes whose program exited: their screen, sent without a PTY. A successor that does
+    /// not know this field keeps their records without a screen.
+    #[serde(default)]
+    pub exited_panes: Vec<PaneHandoff>,
 }
 
 #[cfg(unix)]
@@ -59,6 +63,7 @@ pub(super) struct Received {
 pub(super) fn manifest(
     persisted: super::Persisted,
     panes: Vec<PaneHandoff>,
+    exited_panes: Vec<PaneHandoff>,
     expected_version: String,
     expected_protocol: u32,
     expected_daemon_revision: u32,
@@ -72,6 +77,7 @@ pub(super) fn manifest(
         expected_daemon_revision,
         persisted,
         panes,
+        exited_panes,
     }
 }
 
@@ -122,6 +128,7 @@ pub(super) fn spawn_import(executable: &Path, socket: &Path, token: &str) -> io:
 #[cfg(unix)]
 pub(super) fn accept_and_send(
     listener: UnixListener,
+    child: &mut Child,
     path: &Path,
     token: &str,
     manifest: &Manifest,
@@ -133,6 +140,12 @@ pub(super) fn accept_and_send(
         match listener.accept() {
             Ok(value) => break value,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                // ^ A successor that cannot start ends the wait at once and says how it ended.
+                if let Some(status) = child.try_wait()? {
+                    return Err(io::Error::other(format!(
+                        "the new wsxd exited before it took the handoff ({status})"
+                    )));
+                }
                 if Instant::now() >= deadline {
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
@@ -230,7 +243,7 @@ fn validate_manifest(manifest: &Manifest) -> io::Result<()> {
         || manifest.expected_protocol != super::PROTOCOL_VERSION
         || manifest.expected_daemon_revision != super::DAEMON_REVISION
         || !(current_version || legacy_identity_bridge)
-        || manifest.panes.len() > MAX_HANDOFF_PANES
+        || manifest.panes.len() + manifest.exited_panes.len() > MAX_HANDOFF_PANES
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -499,6 +512,7 @@ mod tests {
             expected_daemon_revision: super::super::DAEMON_REVISION,
             persisted: super::super::Persisted::default(),
             panes: Vec::new(),
+            exited_panes: Vec::new(),
         }
     }
 

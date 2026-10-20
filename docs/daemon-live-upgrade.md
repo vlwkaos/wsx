@@ -43,6 +43,23 @@ A handoff that fails rolls back in the source daemon. The client reads the rollb
 
 CLI commands show no screen. They keep the one-line notice.
 
+## A failed handoff
+
+A rolled-back handoff records `last_handoff_error` in the lifecycle status (revision 32 and later): `unix_ms`, the `step` that failed (`validate`, `pause`, `export`, `spawn`, `send`, `publish`, `ready`, `ownership` or `commit`) and the `error`. It also goes to the daemon's stderr, which is a log only where something keeps it; a daemon that `wsx` starts sends its stderr nowhere. `wsx runtime status` prints it as "Last handoff failed …", and `wsx daemon restart` names it in its error. An older daemon keeps no reason, so the client says "the running wsxd rolled back the handoff and did not say why".
+
+A successor that exits before it takes the handoff ends the wait at once ("the new wsxd exited before it took the handoff (exit status: 3)") instead of after the 30-second timeout.
+
+## A failed automatic upgrade
+
+A newer `wsx` upgrades the running daemon by itself. When that handoff rolls back and the running daemon speaks the same protocol, the newer `wsx` works with the running daemon (`Availability::UpgradeFailed`) instead of failing every command:
+
+- The TUI and the CLI say "wsxd upgrade failed: <reason>; sessions keep running" and that `wsx daemon restart` tries again. The CLI prints it on one line; `--json` callers get no notice.
+- The web server reads the same failure when it connects to `wsxd` and every 30 seconds. The page shows it as a notice that stays until dismissed (`docs/web-client.md` "Notices").
+- A feature that needs the newer revision says so where it is used, through the capability and revision checks it already has.
+- The failure is recorded in `<socket>.upgrade-failed` (`<epoch>|<target binary id>|<reason>`, owner-only). The client tries that upgrade again only for another daemon epoch or another target build, not on every command.
+
+With a different protocol the client still fails, because it cannot talk to the running daemon.
+
 ## A TUI follows the daemon
 
 A TUI records the file it was started from. When the daemon connection changes, and every 30 seconds, `crates/wsx/src/follow.rs` checks two facts:
@@ -92,9 +109,18 @@ A stream that ends without notice (`stream_disconnected`) reattaches the same wa
 
 The keyboard-state dump from libghostty also contains the visible screen. `TerminalRuntime::from_handoff_fd` applies it first, erases the text, and then writes the bounded history, so the screen is not doubled.
 
+## Exited panes
+
+A pane whose program exited keeps its runtime: its last screen and its exit. It has no PTY reader and no process group. Before revision 32 the handoff tried to pause that reader, the write into its closed wake pipe failed with "terminal I/O error: Broken pipe (os error 32)", and the whole handoff rolled back.
+
+From revision 32 the source sends an exited pane (one that has exited, or that exits while the readers pause) in the manifest's `exited_panes`: its handoff state without a PTY descriptor. It takes no part in the pause, the ownership transfer or the rollback. The successor rebuilds it with `TerminalRuntime::exited_from_handoff`: the same screen and history, no process, still exited. A successor that does not know `exited_panes` ignores the field and keeps the pane's record, which already says it exited, without a screen.
+
+A source daemon before revision 32 cannot do this, so its upgrade fails while it holds an exited pane. Before upgrading such a daemon, restart or close the exited panes.
+
 ## Verification
 
 - `crates/wsx-daemon/tests/live_handoff.rs` keeps a real `EventMonitor` and an open terminal stream attached. The handoff must report no blocker, the stream must end with `daemon_handoff`, and the monitor must reach the successor without a `Disconnected` signal. A second scenario restarts into the same build: a TUI below the target protocol defers it only when it does not follow, and the restart continues by itself when that TUI's presence expires.
+- In the same file, a live pane and an exited pane hand off into another copy of `wsxd` (another binary id): both stay listed, the exited one still reads exited and shows its last screen, and the live one keeps its shell's process ID. A target that exits at once rolls the handoff back within seconds; the daemon keeps serving, and `last_handoff_error` has step `send` and the exit.
 - `scripts/test-terminal-context.py` keeps a real TUI in Terminal mode through a refused stop, a same-build restart, a new install whose `wsx` cannot start, and the re-exec into the repaired install. After each step the PTY row must be unchanged, the mode line must still be Terminal, and typed input must reach the same shell. The re-exec must keep the process ID.
 
 ```bash
@@ -104,7 +130,7 @@ python3 scripts/test-terminal-context.py --next-wsx <dir>/wsx --next-daemon <dir
 python3 scripts/test-terminal-context.py --released-wsx <path>/wsx --released-daemon <path>/wsxd
 ```
 
-- With `--next-wsx`, the same script starts a TUI of the higher revision while an older window blocks the handoff. The upgrade screen must appear at 80x24 and 40x12 without the workspace, `q` must quit, `Enter` must open the old daemon, and the TUI must open on the new daemon by itself when the blocking window quits. With `--released-wsx` and `--next-daemon` it also starts a TUI whose handoff target refuses the transfer: the daemon rolls back and the TUI opens on it with a notice.
+- With `--next-wsx`, the same script starts a TUI of the higher revision while an older window blocks the handoff. The upgrade screen must appear at 80x24 and 40x12 without the workspace, `q` must quit, `Enter` must open the old daemon, and the TUI must open on the new daemon by itself when the blocking window quits. With `--released-wsx` it also starts a TUI whose handoff target refuses the transfer (`--next-daemon`, or a script that exits at once): the released daemon rolls back, the TUI opens on it with "wsxd upgrade failed", and a CLI command of this build then answers with the same notice, at once, without a new handoff and with the same daemon epoch.
 - `scripts/runtime-smoke.py` sends a request of a later release on a matching and on a mismatched connection, and stops a daemon with live sessions only with `--force`.
 
 ## Not covered yet

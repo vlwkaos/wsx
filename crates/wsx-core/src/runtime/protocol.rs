@@ -45,7 +45,10 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Revision 30 also takes a `!` shell line as a command round (capability `exchange_shell`).
 // Revision 31 takes prompt receipts: a round not taken ends `not_taken` (docs/agent-orchestration.md
 // "Taken, not typed").
-pub const DAEMON_REVISION: u32 = 31;
+// Revision 32 hands off a pane whose program exited as its last screen, without a PTY, and
+// keeps the step and error of a rolled-back handoff as `last_handoff_error`
+// (docs/daemon-live-upgrade.md "Exited panes", "A failed handoff").
+pub const DAEMON_REVISION: u32 = 32;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -946,6 +949,7 @@ mod tests {
                 replacement_target,
                 replacement_target_version,
                 replacement_blockers,
+                last_handoff_error: None,
                 ..
             }) if binary_id == "0.20.0:1:2:3:4"
                 && version.is_empty()
@@ -1005,6 +1009,7 @@ mod tests {
             replacement_target: Some("0.22.0:1:2:3:4".into()),
             replacement_target_version: "0.22.0".into(),
             replacement_blockers: vec![ReplacementBlocker::WorkingAgent],
+            last_handoff_error: None,
         });
         let encoded = serde_json::to_string(&response).unwrap();
         assert_eq!(

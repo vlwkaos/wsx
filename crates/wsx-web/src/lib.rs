@@ -54,6 +54,9 @@ pub(crate) struct App {
     approving: Mutex<std::collections::HashSet<String>>,
     /// When this server started, shown in Settings with the build.
     started_unix: u64,
+    /// Why the upgrade of the running wsxd into this build failed, while it is still that
+    /// daemon (docs/daemon-live-upgrade.md "A failed automatic upgrade").
+    upgrade_failed: Mutex<Option<String>>,
 }
 
 /// A page of a device, for "no push for the project a page of that device shows".
@@ -111,6 +114,7 @@ pub fn serve(named: Option<&str>) -> Result<()> {
         approving: Mutex::new(Default::default()),
         pages: Mutex::new(HashMap::new()),
         started_unix: devices::now_unix(),
+        upgrade_failed: Mutex::new(None),
         site,
     });
     tokio::runtime::Builder::new_multi_thread()

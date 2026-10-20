@@ -489,11 +489,20 @@ impl TerminalRuntime {
         .map_err(TerminalError::Io)
     }
 
+    /// The terminal's screen, history and modes for a live handoff. An exited terminal has
+    /// no process group to hand over: its state carries 0 and goes without a PTY
+    /// (docs/daemon-live-upgrade.md "Exited panes").
     #[cfg(unix)]
     pub fn handoff_state(&self) -> Result<TerminalHandoffState, TerminalError> {
-        let process_group = self.process_group_id().ok_or_else(|| {
-            TerminalError::Runtime("terminal process group is unavailable".into())
-        })?;
+        let process_group = match self.process_group_id() {
+            Some(group) => group,
+            None if self.exited() => 0,
+            None => {
+                return Err(TerminalError::Runtime(
+                    "terminal process group is unavailable".into(),
+                ))
+            }
+        };
         let revision = self.shared.revision.load(Ordering::Acquire);
         let mut emulator = lock(&self.shared.emulator);
         let Emulator {
@@ -560,28 +569,7 @@ impl TerminalRuntime {
             .map_err(|error| TerminalError::Pty(error.to_string()))?;
         let writer = Arc::new(Mutex::new(Some(writer)));
         let error = Arc::new(Mutex::new(None));
-        let mut emulator = make_emulator(
-            state.cols,
-            state.rows,
-            Arc::clone(&writer),
-            Arc::clone(&error),
-        )?;
-        if state.alternate_screen {
-            emulator.terminal.write(b"\x1b[?1049h");
-        }
-        // ^ docs/daemon-live-upgrade.md: the keyboard-state dump repeats the visible
-        // screen, so apply it first and erase its text before the bounded history.
-        emulator
-            .terminal
-            .write(state.keyboard_state_ansi.as_bytes());
-        emulator.terminal.write(b"\x1b[0m\x1b[H\x1b[2J\x1b[3J");
-        emulator.terminal.write(state.history_ansi.as_bytes());
-        for (mode, value) in &state.modes {
-            emulator.terminal.mode_set(*mode, *value)?;
-        }
-        let cursor = format!("\x1b[{};{}H", state.cursor_y + 1, state.cursor_x + 1);
-        emulator.terminal.write(cursor.as_bytes());
-        emulator.sync_input();
+        let emulator = restored_emulator(&state, Arc::clone(&writer), Arc::clone(&error))?;
         let (reader, reader_wake) = reader_control()?;
         {
             let mut reader_state = lock(&reader.state);
@@ -609,6 +597,38 @@ impl TerminalRuntime {
                 killer: Mutex::new(None),
                 process_group: Arc::new(std::sync::atomic::AtomicI32::new(state.process_group)),
             }),
+            selection_clock: Instant::now(),
+            preserve_process_on_drop: AtomicBool::new(false),
+        })
+    }
+
+    /// An exited terminal from a live handoff: its last screen and history, no PTY and no
+    /// process. Input goes nowhere; it reads as exited (docs/daemon-live-upgrade.md
+    /// "Exited panes").
+    #[cfg(unix)]
+    pub fn exited_from_handoff(
+        state: TerminalHandoffState,
+        notify: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Self, TerminalError> {
+        validate_dimensions(state.rows, state.cols)?;
+        let writer: Arc<Mutex<Option<Box<dyn Write + Send>>>> =
+            Arc::new(Mutex::new(Some(Box::new(io::sink()))));
+        let error = Arc::new(Mutex::new(None));
+        let emulator = restored_emulator(&state, Arc::clone(&writer), Arc::clone(&error))?;
+        Ok(Self {
+            pane_id: state.pane_id,
+            terminal_id: state.terminal_id,
+            shared: Arc::new(Shared {
+                emulator: Mutex::new(emulator),
+                writer,
+                error,
+                revision: AtomicU64::new(state.revision.max(1)),
+                exited: AtomicBool::new(true),
+                terminating: AtomicBool::new(false),
+                notify,
+                reader: Arc::new(ReaderControl::default()),
+            }),
+            process: None,
             selection_clock: Instant::now(),
             preserve_process_on_drop: AtomicBool::new(false),
         })
@@ -1472,6 +1492,34 @@ fn set_reader_paused(control: &ReaderControl, paused: bool, timeout: Duration) -
         }
     }
     Ok(())
+}
+
+/// An emulator with a handed-off screen: the keyboard state, the bounded history, the modes
+/// and the cursor.
+#[cfg(unix)]
+fn restored_emulator(
+    state: &TerminalHandoffState,
+    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    error: Arc<Mutex<Option<String>>>,
+) -> Result<Emulator, TerminalError> {
+    let mut emulator = make_emulator(state.cols, state.rows, writer, error)?;
+    if state.alternate_screen {
+        emulator.terminal.write(b"\x1b[?1049h");
+    }
+    // ^ docs/daemon-live-upgrade.md: the keyboard-state dump repeats the visible
+    // screen, so apply it first and erase its text before the bounded history.
+    emulator
+        .terminal
+        .write(state.keyboard_state_ansi.as_bytes());
+    emulator.terminal.write(b"\x1b[0m\x1b[H\x1b[2J\x1b[3J");
+    emulator.terminal.write(state.history_ansi.as_bytes());
+    for (mode, value) in &state.modes {
+        emulator.terminal.mode_set(*mode, *value)?;
+    }
+    let cursor = format!("\x1b[{};{}H", state.cursor_y + 1, state.cursor_x + 1);
+    emulator.terminal.write(cursor.as_bytes());
+    emulator.sync_input();
+    Ok(emulator)
 }
 
 #[cfg(unix)]

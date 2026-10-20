@@ -8,13 +8,20 @@ use crate::{
     App,
 };
 use serde_json::{json, Value};
-use std::{collections::HashMap, sync::Arc, thread, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 use wsx_core::runtime::{self, AgentState, Request, Response, TuiClientPresence};
 
 // Below the runtime client's 5 s read timeout.
 const POLL_MS: u64 = 2_000;
 // While an agent works and a page is open: a new tool line shows within about a second.
 const WORKING_POLL_MS: u64 = 800;
+// How often the server reads whether an upgrade of the running wsxd failed.
+const UPGRADE_CHECK: Duration = Duration::from_secs(30);
 
 /// A named server-sent event with a JSON body.
 #[derive(Clone)]
@@ -42,6 +49,7 @@ fn observe(app: Arc<App>) {
     let mut revision = 0;
     let mut first = true;
     let mut available = true;
+    let mut last_upgrade_check = Instant::now();
     let mut states: HashMap<u64, AgentState> = HashMap::new();
     // ^ Whether each session's agent was attached at the last look, for the conversation lines.
     let mut attached: HashMap<u64, bool> = HashMap::new();
@@ -106,9 +114,36 @@ fn observe(app: Arc<App>) {
                 continue;
             }
         };
-        if !available {
+        // ^ docs/daemon-live-upgrade.md "A failed automatic upgrade": another wsx tried to
+        // upgrade the running wsxd into this build and it rolled back. Read on each connect
+        // and every 30 s; pages hear of a change.
+        let mut failure_changed = false;
+        if first || last_upgrade_check.elapsed() >= UPGRADE_CHECK {
+            last_upgrade_check = Instant::now();
+            let failed = runtime::upgrade_failure(&app.client);
+            let mut known = app
+                .upgrade_failed
+                .lock()
+                .unwrap_or_else(|lock| lock.into_inner());
+            if *known != failed {
+                *known = failed;
+                failure_changed = true;
+            }
+        }
+        if !available || failure_changed {
             available = true;
-            publish(app, message("daemon", json!({ "available": true })));
+            let failed = app
+                .upgrade_failed
+                .lock()
+                .unwrap_or_else(|lock| lock.into_inner())
+                .clone();
+            publish(
+                app,
+                message(
+                    "daemon",
+                    json!({ "available": true, "upgrade_failed": failed }),
+                ),
+            );
         }
         let Ok(snapshot) = chat::snapshot(&app.client) else {
             continue;
