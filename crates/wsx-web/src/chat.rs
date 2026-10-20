@@ -349,6 +349,7 @@ impl Chat {
             "session": session_view(&target),
             "status": timeline.as_ref().map_or("no_agent", |timeline| timeline.status),
             "truncated": timeline.as_ref().is_some_and(|timeline| timeline.truncated),
+            "model": timeline.as_ref().and_then(|timeline| timeline.model.as_deref()),
             "items": items,
             "from": start.and(from).map(|(id, _)| id),
             "exchange": exchange.as_ref().map(exchange_view),
