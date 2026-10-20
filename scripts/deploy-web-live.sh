@@ -23,6 +23,8 @@ echo "installed ${WSX_DEPLOY_COMMIT:-this commit} at $live/wsx"
 # kills the app's process tree on restart. Restart once `wsx task deploy` has recorded the deploy
 # and removed this temporary copy (at most 120 s), from a process outside that tree.
 copy=$(pwd)
-nohup sh -c 'i=0; while [ -d "$1" ] && [ $i -lt 120 ]; do sleep 1; i=$((i+1)); done; pm2 restart wsx-web' \
-  restart "$copy" >/dev/null 2>&1 &
-echo "wsx-web restarts after the deploy is recorded"
+log="$live/restart.log"
+nohup sh -c 'i=0; while [ -d "$1" ] && [ $i -lt 120 ]; do sleep 1; i=$((i+1)); done
+  date; echo "copy gone after ${i}s"; pm2 restart wsx-web; echo "pm2 exit $?"' \
+  restart "$copy" >"$log" 2>&1 </dev/null &
+echo "wsx-web restarts after the deploy is recorded; see $log"
