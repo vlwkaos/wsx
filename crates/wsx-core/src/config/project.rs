@@ -88,6 +88,8 @@ struct TaskManagerFile {
     model: Option<String>,
     #[serde(rename = "rotateTokens", skip_serializing_if = "Option::is_none")]
     rotate_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -295,14 +297,7 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
             config.model = model;
         }
         if let Some(tools) = agent.tools {
-            config.tools = validate_list(tools, "tasks.agent.tools", MAX_TASK_WORD_BYTES)?;
-            if let Some((rule, reason)) = config
-                .tools
-                .iter()
-                .find_map(|tool| tool_refusal(tool).map(|reason| (tool, reason)))
-            {
-                return Err(format!("tasks.agent.tools has {rule}: {reason}; remove it"));
-            }
+            config.tools = validate_tools(tools, "tasks.agent.tools")?;
         }
         if agent.brief_tools.is_some() {
             return Err("tasks.agent.briefTools was removed: a brief turn runs Bash read-only in the sandbox; remove it".into());
@@ -376,6 +371,9 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
             }
             config.manager_rotate_tokens = tokens;
         }
+        if let Some(tools) = manager.tools {
+            config.manager_tools = validate_tools(tools, "tasks.manager.tools")?;
+        }
     }
     if let Some(land) = file.land {
         if let Some(approve) = land.approve {
@@ -394,6 +392,18 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
     }
     Ok(config)
+}
+
+/// Extra tool rules for an agent, each one `tool_refusal` accepts.
+fn validate_tools(tools: Vec<String>, field: &str) -> Result<Vec<String>, String> {
+    let tools = validate_list(tools, field, MAX_TASK_WORD_BYTES)?;
+    if let Some((rule, reason)) = tools
+        .iter()
+        .find_map(|tool| tool_refusal(tool).map(|reason| (tool, reason)))
+    {
+        return Err(format!("{field} has {rule}: {reason}; remove it"));
+    }
+    Ok(tools)
 }
 
 /// `Bash` or `Bash(...)`: the worker always has Bash, inside the sandbox.
