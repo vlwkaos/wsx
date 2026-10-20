@@ -267,12 +267,12 @@ async function chats() {
   // the step list holds the finished steps; a message waits.
   await openSession("working");
   await until("!!document.querySelector('.working') && !!document.querySelector('.queued')", "the working row or the queue did not show");
-  const working = await evaluate(`({ state: document.querySelector('.bar-state').textContent, activity: document.querySelector('.working-activity').textContent,
+  const working = await evaluate(`({ state: document.querySelector('.bar-state').firstChild.textContent, model: document.querySelector('.bar-model')?.textContent ?? '', activity: document.querySelector('.working-activity').textContent,
     live: [...document.querySelectorAll('.steps[data-live] .step')].map((step) => step.textContent.trim().replace(/\\s+/g, ' ')),
     send: document.querySelector('.composer .button-primary').textContent, stop: [...document.querySelectorAll('.working button')].map((b) => b.textContent).join(),
     queued: document.querySelector('.queued-text').textContent, switch: [...document.querySelectorAll('.switch a')].map((a) => a.textContent.trim() + (a.getAttribute('aria-current') ? '*' : '')).join(),
     pulse: getComputedStyle(document.querySelector('.pulse')).animationName })`);
-  if (working.state !== "working" || working.activity !== "List the files" || working.send !== "Queue" || working.stop !== "Stop"
+  if (working.state !== "working" || working.model !== " · claude-opus-5-5" || working.activity !== "List the files" || working.send !== "Queue" || working.stop !== "Stop"
     || working.queued !== "Also mention the new terminal in the notes" || working.switch !== "Chat*,Terminal"
     || working.live.join() !== "Thinking" || working.pulse !== "pulse") {
     await fail(`the working chat is wrong: ${JSON.stringify(working)}`);
@@ -381,7 +381,7 @@ async function chats() {
         composer: !!document.querySelector('.composer, .attention'), bottom: Math.round(innerHeight - box(sheet).bottom), log: Math.round(box(document.querySelector('.log')).height),
         screen: { rows: screen.textContent.split('\\n').length, font: getComputedStyle(screen).fontFamily.split(',')[0], space: getComputedStyle(screen).whiteSpace,
           wide: screen.scrollWidth > screen.clientWidth, cursor: screen.textContent.includes('❯ 1.'), high: box(screen).height },
-        under: box(document.querySelector('.bar-state')).top >= box(document.querySelector('.bar-label')).bottom - 1, state: document.querySelector('.bar-state').textContent }; })()`);
+        under: box(document.querySelector('.bar-state')).top >= box(document.querySelector('.bar-label')).bottom - 1, state: document.querySelector('.bar-state').firstChild.textContent }; })()`);
     if (asked.title !== title || asked.choices.join("|") !== choices.join("|") || asked.heights.some((height) => height < 44) || asked.widths.some((width) => width !== 0)
       || asked.filled || asked.focused || asked.composer || asked.keys !== "Enter,Escape,Up,Down" || asked.actions !== "Type an answer,Open terminal" || !asked.terminal.endsWith("/terminal")
       || (phone() && asked.capHeights.some((height) => height < 44))) {

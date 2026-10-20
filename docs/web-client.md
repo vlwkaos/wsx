@@ -124,7 +124,7 @@ The page is a set of ES modules served as written: Preact 10.29.7 and htm 3.1.1 
 
 ### Timeline
 
-`GET api/chat/<session>/timeline` answers `{session, status, truncated, items, from, exchange, queue, working}`. With `?from=<item id>&at=<its at_unix_ms>` the items start at that item when it is still in the timeline with the same time, and `from` names it; otherwise `from` is `null` and `items` is the whole timeline. The page asks from its last user message: items before the start of that turn do not change. On a 200 KB conversation this cut each read from about 215 KB to 16 KB.
+`GET api/chat/<session>/timeline` answers `{session, status, truncated, model, items, from, exchange, queue, working}`. `model` is the model named by the newest saved record that names one (Claude and Pi: each reply; Pi: a `model_change`; Codex: each `turn_context`), or `null`; the session's top row shows it after the state. A model switch shows once the provider saves it, for Claude with the next reply. With `?from=<item id>&at=<its at_unix_ms>` the items start at that item when it is still in the timeline with the same time, and `from` names it; otherwise `from` is `null` and `items` is the whole timeline. The page asks from its last user message: items before the start of that turn do not change. On a 200 KB conversation this cut each read from about 215 KB to 16 KB.
 
 | Item field | Content |
 |---|---|

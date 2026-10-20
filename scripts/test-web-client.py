@@ -62,6 +62,8 @@ def record(kind, content, **extra):
   line = {'type':'message','id':entry,'parentId':leaf,'timestamp':stamp,'message':{'role':kind,'content':content}}
  else:
   line = {'type':kind,'uuid':entry,'parentUuid':leaf,'sessionId':'fixture','timestamp':stamp,'message':{'role':kind,'content':content}}
+ # Both providers name the model on each reply (real transcripts, 2026-10-20).
+ if kind == 'assistant': line['message']['model'] = 'gpt-6.1-sol' if provider == 'pi' else 'claude-opus-5-5'
  line.update(extra)
  with history.open('a') as out: out.write(json.dumps(line)+'\n')
  leaf = entry
@@ -1344,6 +1346,7 @@ capabilities = ["terminal_view"]
         history = wait(lambda: (lambda data: data if len(data['messages']) == 2 else None)(messages(owner, sessions['owner'])), 'history')
         assert [(m['role'], m['text']) for m in history['messages']] == [
             ('user', 'hello from the phone\nsecond line'), ('assistant', 'echo: hello from the phone')]
+        assert history['model'] == 'claude-opus-5-5', history.get('model')
         # A done pane is lifecycle evidence only; it must not be shown as confirmed.
         assert history['exchange']['evidence'] == 'pane_lifecycle' and 'not confirmed' in history['exchange']['delivery']
         # The reply exists only in the native transcript, never on the fixture's screen.
@@ -1446,6 +1449,7 @@ capabilities = ["terminal_view"]
             assert summary['text'].startswith('## Goal\nFix the login redirect loop') and summary['text'].endswith('- Step 12 of the fix is done.'), summary
             assert summary['attachments'] == [] and summary['id'], summary
             assert compacted['items'][-1]['text'] == 'echo: after the compaction', compacted['items'][-1]
+            assert compacted['model'] == {'claude': 'claude-opus-5-5', 'pi': 'gpt-6.1-sol'}[provider], compacted.get('model')
             if provider == 'claude':
                 # A background-task notice is Claude's own record, not a message the person wrote.
                 settle(name)

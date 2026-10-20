@@ -487,9 +487,11 @@ function Question({ session, question, onAnswered }) {
     </section>`;
 }
 
-export function Chat({ session }) {
+export function Chat({ session, onModel }) {
   const id = session.id;
   const [data, setData] = useState(null);
+  // ^ The model of the newest reply, or of a switch the person made, for the top row.
+  useEffect(() => { if (data?.model) onModel?.(data.model); }, [data?.model]);
   const [failure, setFailure] = useState("");
   // New items keep the reader at the end only when the reader is at the end.
   const { log, atEnd, away, scrolled, toEnd } = useFollowEnd();
