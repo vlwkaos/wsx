@@ -89,6 +89,8 @@ pub struct Launch {
     pub env: Vec<(String, std::ffi::OsString)>,
     /// Put first on `PATH`, so the agent's commands find this wsx build.
     pub path_prefix: Option<PathBuf>,
+    /// `--plugin-dir`: the manager's plugin of the owner's skills.
+    pub plugin_dirs: Vec<PathBuf>,
 }
 
 /// What one role may write and reach. The OS enforces it on Bash; the file tools get
@@ -101,6 +103,9 @@ pub struct Boundary {
     /// Unix sockets Bash may connect to (the manager's broker).
     pub unix_sockets: Vec<String>,
     pub deny_edits: Vec<PathBuf>,
+    /// Tools denied by name in the settings, so the deny also binds subagents and a skill's
+    /// `allowed-tools`. A rule without a path never reaches the sandbox's `denyWrite`.
+    pub deny_tools: Vec<String>,
 }
 
 /// Tools of every role. Edit and Write are not listed: auto mode accepts them in the
@@ -128,6 +133,7 @@ impl Launch {
             instructions,
             env: Vec::new(),
             path_prefix: None,
+            plugin_dirs: Vec::new(),
         }
     }
 
@@ -189,6 +195,7 @@ fn settings(boundary: &Boundary) -> Value {
                     true => format!("Edit(/{}/**)", path.display()),
                     false => format!("Edit(/{})", path.display()),
                 })
+                .chain(boundary.deny_tools.iter().cloned())
                 .collect::<Vec<_>>(),
         },
     })
@@ -246,6 +253,7 @@ fn worker_boundary(record: &TaskRecord, grants: &[&Access]) -> Result<Boundary> 
         domains,
         unix_sockets: Vec::new(),
         deny_edits,
+        deny_tools: Vec::new(),
     })
 }
 
@@ -357,6 +365,9 @@ impl ClaudeAgent {
         }
         if !launch.disallowed.is_empty() {
             command.arg("--disallowedTools").args(&launch.disallowed);
+        }
+        for dir in &launch.plugin_dirs {
+            command.arg("--plugin-dir").arg(dir);
         }
         command.env_clear();
         for name in KEPT_ENV {
