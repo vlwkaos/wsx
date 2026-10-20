@@ -767,8 +767,10 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
     let text_is_notice = provider == "claude"
         && (text.starts_with("[Request interrupted by user")
             || text.starts_with("<local-command-stdout>")
-            || text.starts_with("<local-command-stderr>"));
-    // ^ A slash command Claude ran itself is saved in tags: show it as the person typed it.
+            || text.starts_with("<local-command-stderr>")
+            || text.starts_with("<bash-stdout>")
+            || text.starts_with("<bash-stderr>"));
+    // ^ A slash command or a `!` shell line is saved in tags: show it as the person typed it.
     let text = command_line(provider, role, &text).unwrap_or(text);
     let preserved = (provider == "claude")
         .then(|| record.get("compactMetadata")?.get("preservedSegment"))
@@ -821,10 +823,18 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
 }
 
 /// `/name args` from Claude's saved form of a slash command:
-/// `<command-name>/name</command-name> <command-message>…</command-message> <command-args>args</command-args>`.
+/// `<command-name>/name</command-name> <command-message>…</command-message> <command-args>args</command-args>`,
+/// and `! command` from a shell line, `<bash-input> command</bash-input>` (Claude Code 2.1.304).
 fn command_line(provider: &str, role: &str, text: &str) -> Option<String> {
     if provider != "claude" || role != "user" {
         return None;
+    }
+    // ^ The text after `!` is kept as typed, so the chat finds its pending message.
+    if let Some(shell) = text
+        .strip_prefix("<bash-input>")
+        .and_then(|rest| rest.strip_suffix("</bash-input>"))
+    {
+        return Some(format!("!{shell}"));
     }
     let inner = |tag: &str| {
         let start = text.find(&format!("<{tag}>"))? + tag.len() + 2;

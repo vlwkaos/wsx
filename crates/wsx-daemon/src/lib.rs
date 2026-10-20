@@ -3073,6 +3073,7 @@ fn capabilities() -> Capabilities {
         raw_terminal_stream: true,
         daemon_restart: true,
         exchange_command: true,
+        exchange_shell: true,
     }
 }
 
@@ -4843,6 +4844,17 @@ fn has_writer_claim_conflict(exchanges: &[AgentExchange], claims: &[PathBuf]) ->
     })
 }
 
+fn slash_command(line: &str) -> bool {
+    line.strip_prefix('/')
+        .is_some_and(|rest| rest.starts_with(|character: char| character.is_ascii_alphanumeric()))
+}
+
+/// `!` and a command, such as `! git status` or `!ls`.
+fn shell_line(line: &str) -> bool {
+    line.strip_prefix('!')
+        .is_some_and(|rest| !rest.trim().is_empty())
+}
+
 /// What one exchange round types into the agent's terminal.
 struct ExchangeInput {
     prompt: String,
@@ -4857,17 +4869,16 @@ impl ExchangeInput {
     fn validate(&self) -> Result<(), ApiError> {
         validate_exchange_prompt(&self.prompt)?;
         // ^ An agent runs a command only at the start of its input, so a command round
-        // carries no exchange line. It must be one short line that names a command.
+        // carries no exchange line. It must be one short line that names a command
+        // (`/name`) or a shell line (`!` and a command, docs/agent-orchestration.md "Commands").
         if self.command
             && (self.prompt.len() > MAX_EXCHANGE_COMMAND_BYTES
                 || self.prompt.contains(['\n', '\t'])
-                || !self.prompt.starts_with('/')
-                || !self.prompt[1..]
-                    .starts_with(|character: char| character.is_ascii_alphanumeric()))
+                || !(slash_command(&self.prompt) || shell_line(&self.prompt)))
         {
             return Err(api(
                 "invalid_prompt",
-                "a command must be one line of at most 256 bytes that starts with /name",
+                "a command must be one line of at most 256 bytes that starts with /name or !",
             ));
         }
         Ok(())

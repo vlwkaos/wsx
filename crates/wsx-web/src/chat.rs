@@ -585,10 +585,16 @@ impl Chat {
         let agent = attached_agent(&target)?;
         // ^ docs/web-client.md "Commands": a message that is one of the agent's commands
         // is typed as written, because an agent runs a command only at the start of its input.
-        let command = attachments.is_empty()
-            && prompt.starts_with('/')
-            && crate::commands::list(&agent.provider, target.worktree).has_command(&prompt);
-        if command && !snapshot.capabilities.exchange_command {
+        // A `!` line is Claude's shell mode, which also starts only at the start of the input.
+        let shell =
+            attachments.is_empty() && crate::commands::is_shell_line(&agent.provider, &prompt);
+        let command = shell
+            || attachments.is_empty()
+                && prompt.starts_with('/')
+                && crate::commands::list(&agent.provider, target.worktree).has_command(&prompt);
+        if command && !snapshot.capabilities.exchange_command
+            || shell && !snapshot.capabilities.exchange_shell
+        {
             return Err(Fault::new(
                 409,
                 "daemon_upgrade_required",
