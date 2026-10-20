@@ -208,16 +208,6 @@ pub fn overview(scope: &Scope) -> Value {
         ));
     }
     needs.sort_by_key(|(rank, order, _)| (*rank, *order));
-    // ^ Every task's branch, before the cut of `tasks`: a worktree on one of them is a task's,
-    // never an adopted item (docs/web-client.md "Project screen").
-    let mut task_branches: Vec<&str> = tasks
-        .iter()
-        .filter_map(|(_, record)| record.as_ref().ok())
-        .map(|record| record.branch.as_str())
-        .filter(|branch| !branch.is_empty())
-        .collect();
-    task_branches.sort_unstable();
-    task_branches.dedup();
     listed.sort_by_key(|(order, recent, _)| (*order, *recent));
     listed.truncate(TASKS_LISTED);
     // ^ The latest manager entry and reply, for the home row (docs/web-client.md "Home").
@@ -243,7 +233,6 @@ pub fn overview(scope: &Scope) -> Value {
         // ^ What the owner checks of landed tasks (docs/tasks.md "To check").
         "to_check": checks::open_items(&scope.store).map_or(0, |items| items.len()),
         "tasks": listed.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
-        "task_branches": task_branches,
         "decisions": decisions(&lines),
         "resolutions": resolutions(&scope.store, &tasks, &lines, now),
         "last_reply": last_reply,
@@ -410,7 +399,8 @@ fn deployed(scope: &Scope, landed: Option<&str>) -> Value {
     json!({ "configured": true, "deployed": has_landed, "behind": deploy["behind"] })
 }
 
-/// One task: its report, timeline, overlaps and the actions its state allows.
+/// One task: its report, brief, talk, timeline (the History fold), overlaps and the actions
+/// its state allows.
 pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     let dir = open_task(scope, task)?;
     let record = dir.read_record().map_err(internal)?;

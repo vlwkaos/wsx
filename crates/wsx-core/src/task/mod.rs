@@ -495,6 +495,9 @@ pub struct WorkerResult {
     pub human_verify: Vec<HumanVerify>,
     pub left_open: Vec<String>,
     pub notes: String,
+    /// Durable project knowledge a later task needs; empty when there is none. The manager
+    /// folds it into its notes on rotation. ref: docs/tasks.md "Memo"
+    pub memo: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -533,7 +536,7 @@ pub fn worker_result_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["status", "summary", "decisions", "evidence", "human_verify", "left_open", "notes"],
+        "required": ["status", "summary", "decisions", "evidence", "human_verify", "left_open", "notes", "memo"],
         "properties": {
             "status": { "type": "string", "enum": ["done", "blocked", "failed"] },
             "summary": text,
@@ -542,6 +545,7 @@ pub fn worker_result_schema() -> serde_json::Value {
             "human_verify": { "type": "array", "items": pair("check", "pass_if") },
             "left_open": { "type": "array", "items": text },
             "notes": text,
+            "memo": text,
         },
     })
 }

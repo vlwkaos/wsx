@@ -91,6 +91,9 @@ pub struct TaskConfig {
     pub manager_model: String,
     /// Context size after which the manager's next turn starts a fresh conversation.
     pub manager_rotate_tokens: u64,
+    /// Tools the manager gets beyond its read-only ones (`tasks.manager.tools`), never
+    /// `Bash(...)` or a bare file tool.
+    pub manager_tools: Vec<String>,
 }
 
 /// `tasks.sandbox`: what a worker's commands may reach beyond its working copy.
@@ -132,8 +135,9 @@ impl Default for TaskConfig {
             release_approve: true,
             deploy_command: None,
             release_command: None,
-            manager_model: "sonnet".into(),
+            manager_model: "opus".into(),
             manager_rotate_tokens: 150_000,
+            manager_tools: Vec::new(),
         }
     }
 }

@@ -95,6 +95,8 @@ pub struct Timeline {
     /// happened, or the first item when it is older than the items kept.
     pub items: Vec<Item>,
     pub truncated: bool,
+    /// The model of the newest record that names one: a reply, or a switch the person made.
+    pub model: Option<String>,
 }
 
 /// The agent's last message after one submitted input.
@@ -149,6 +151,7 @@ impl Reader {
                 path,
                 items: Vec::new(),
                 truncated: status == "output_limit",
+                model: None,
             },
         }
     }
@@ -528,6 +531,7 @@ fn timeline_of(loaded: Loaded, count: usize, budget: usize) -> Timeline {
         mut truncated,
         malformed,
     } = loaded;
+    let model = nodes.iter().rev().find_map(|node| node.model.clone());
     // Outcome of each call, and where the last turn starts: at the newest message
     // a person wrote. A call without a result is running only inside that turn.
     let mut results: HashMap<&str, bool> = HashMap::new();
@@ -649,6 +653,7 @@ fn timeline_of(loaded: Loaded, count: usize, budget: usize) -> Timeline {
         path: Some(path),
         items,
         truncated: truncated || malformed,
+        model,
     }
 }
 
@@ -675,6 +680,7 @@ struct Node {
     /// A record the provider wrote for itself in the person's name.
     meta: bool,
     steps: Vec<Step>,
+    model: Option<String>,
     /// A Claude compaction boundary that kept the newest records: the ids of the first
     /// and last kept record, and of the summary they follow.
     preserved: Option<Preserved>,
@@ -725,6 +731,7 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
     };
     if provider == "codex"
         && !summary
+        && kind != "turn_context"
         && !(kind == "response_item"
             && (message.get("type").and_then(Value::as_str) == Some("message")
                 || !steps.is_empty()))
@@ -774,6 +781,18 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
                 anchor: id("anchorUuid")?,
             })
         });
+    // ^ Where each provider names the model (real sessions, 2026-10-20): Claude and Pi on
+    // each reply, Pi's `model_change` when the person switches, Codex on each turn's context.
+    // Claude's own notices say `<synthetic>`.
+    let model = match kind {
+        "turn_context" if provider == "codex" => message.get("model"),
+        "model_change" => record.get("modelId"),
+        _ if role == "assistant" => message.get("model"),
+        _ => None,
+    }
+    .and_then(Value::as_str)
+    .filter(|model| !model.trim().is_empty() && !model.starts_with('<'))
+    .map(|model| clean(model, 80));
     // A codex record has no id of its own; its payload does.
     let id = record.get(key).or_else(|| message.get("id"));
     Some(Node {
@@ -796,6 +815,7 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
             || (provider == "claude"
                 && record.get("promptSource").and_then(Value::as_str) == Some("system")),
         steps,
+        model,
         preserved,
     })
 }

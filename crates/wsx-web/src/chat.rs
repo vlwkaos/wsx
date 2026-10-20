@@ -349,6 +349,7 @@ impl Chat {
             "session": session_view(&target),
             "status": timeline.as_ref().map_or("no_agent", |timeline| timeline.status),
             "truncated": timeline.as_ref().is_some_and(|timeline| timeline.truncated),
+            "model": timeline.as_ref().and_then(|timeline| timeline.model.as_deref()),
             "items": items,
             "from": start.and(from).map(|(id, _)| id),
             "exchange": exchange.as_ref().map(exchange_view),
@@ -881,6 +882,7 @@ fn private_name(relative: &Path) -> bool {
 
 /// Undo what `send` and the broker added to a user message, for display only.
 fn sent_message(text: &str, media: &Media) -> (String, Vec<Attachment>) {
+    let text = unwrap_paste(text);
     let body = match text.split_once('\n') {
         Some((first, rest)) if first.starts_with("[wsx exchange ") && first.ends_with(']') => rest,
         _ => text,
@@ -896,6 +898,23 @@ fn sent_message(text: &str, media: &Media) -> (String, Vec<Attachment>) {
         })
         .collect();
     (before.to_owned(), attachments)
+}
+
+/// Claude Code can save a pasted prompt as `<pasted_content id="N">\n…\n</pasted_content id="N">`;
+/// the broker's prompt is always a paste, so a wrapper around the whole message is undone.
+fn unwrap_paste(text: &str) -> &str {
+    let trimmed = text.trim_matches('\n');
+    let Some(rest) = trimmed.strip_prefix("<pasted_content id=\"") else {
+        return text;
+    };
+    let Some((id, inner)) = rest.split_once("\">\n") else {
+        return text;
+    };
+    let close = format!("\n</pasted_content id=\"{id}\">");
+    match inner.strip_suffix(close.as_str()) {
+        Some(inner) if !inner.contains("<pasted_content id=\"") => inner,
+        _ => text,
+    }
 }
 
 /// Transcript identity and size, used only to notice that history changed.

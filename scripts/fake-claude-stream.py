@@ -14,9 +14,12 @@ Each user message is a small script of words:
   NEEDS_HOST <host>  curl <host>: a sandbox violation and blocked unless the launch's allowedDomains has it
   NEEDS_PATH <path>  touch <path>: "Operation not permitted" and blocked unless an allowWrite folder holds it
   RETRY_HOST <host>  a violation, then the same command with allowed_domains that succeeds (no ask)
+  MEMO <words> return the rest of the line as the result's memo
 Launched with the brief schema it writes a brief instead and builds nothing:
   REWRITE <words>  the rewritten prompt is the rest of the line
   REVISE <words>   (a reply) the rewritten prompt becomes the rest of the line
+  BRIEF_FILE <path>  the brief's other fields come from that JSON file (a real brief), also
+                   for the session's later replies
   NOBRIEF          end the turn without a brief
   WAIT <file>      (a build) keep working until <file> exists, at most 10 minutes
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
@@ -27,7 +30,7 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   RUN <command>  run that shell command (the wsx task commands it names) and quote its output
   SCRIPT         (a line) run the rest of the message as one shell script, heredocs too
   TABLE          answer with a wide markdown table that names #4 twice and #2
-  PAGE <section> <words>  replace that section of the project page (its Edit rule names it)
+  PAGE <section> <words>  replace that section of the project page (its sandbox entry names it)
   STATUS         answer from `wsx task ledger`
   SLOW           take about 3 s
   BIG            report a 200k-token context, so the host rotates the conversation
@@ -147,9 +150,21 @@ def try_edit(words, allowed, disallowed, denials):
     trace({'edited': name})
 
 
+def brief_source(words, session):
+    """The BRIEF_FILE of this session, kept beside the trace: a reply may run in a new process."""
+    known = TRACE + '.briefs'
+    briefs = json.load(open(known)) if os.path.exists(known) else {}
+    if 'BRIEF_FILE' in words:
+        briefs[session] = words[words.index('BRIEF_FILE') + 1]
+        with open(known, 'w') as out:
+            json.dump(briefs, out)
+    return briefs.get(session)
+
+
 def brief_turn(text, session, allowed, disallowed, current):
     """One brief turn: a brief whose rewritten prompt comes from REWRITE or REVISE."""
     words = text.split()
+    source = brief_source(words, session)
     denials = []
     try_edit(words, allowed, disallowed, denials)
     reply = text.startswith('The owner replies to the brief')
@@ -162,22 +177,23 @@ def brief_turn(text, session, allowed, disallowed, current):
               'session_id': session, 'permission_denials': denials})
         return current
     owner = text.split('\n\n')[1] if reply else ''
+    brief = json.load(open(source)) if source else {
+        'additions': [{'what': 'a regression test', 'why': 'it keeps the fix'}],
+        'raw_material': [{'source': 'README', 'why': 'the fixture'}],
+        'methods': ['git log -p'], 'independent_check': ['the check command exits 0'],
+        'concepts': [{'term': 'Working copy', 'explanation': 'A separate checkout. Nothing else changes.'}],
+        'open_questions': []}
+    brief.update({'rewritten_prompt': current or 'NOOP', 'answer': ('answered: ' + owner) if reply else ''})
     emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'brief',
           'session_id': session, 'permission_denials': denials,
           'usage': {'input_tokens': 900, 'output_tokens': 300}, 'total_cost_usd': 0.02,
-          'structured_output': {
-              'additions': [{'what': 'a regression test', 'why': 'it keeps the fix'}],
-              'raw_material': [{'source': 'README', 'why': 'the fixture'}],
-              'methods': ['git log -p'], 'independent_check': ['the check command exits 0'],
-              'concepts': [{'term': 'Working copy', 'explanation': 'A separate checkout. Nothing else changes.'}],
-              'rewritten_prompt': current or 'NOOP', 'open_questions': [],
-              'answer': ('answered: ' + owner) if reply else ''}})
+          'structured_output': brief})
     return current
 
 
-def edit_page(allowed, section, words):
-    # ^ The manager's file tools may write the page alone: `Edit(//<path>)`.
-    page = next(rule[len('Edit(/'):-1] for rule in allowed if rule.startswith('Edit(/'))
+def edit_page(settings, section, words):
+    # ^ The manager's Bash may write one file, the page: the sandbox's one file entry.
+    page = next(path for path in settings['sandbox']['filesystem']['allowWrite'] if path.endswith('/page.md'))
     with open(page) as source:
         text = source.read()
     head = '## %s\n\n' % section
@@ -187,7 +203,7 @@ def edit_page(allowed, section, words):
         out.write(text[:start] + words + text[end:])
 
 
-def manager_turn(text, project, allowed):
+def manager_turn(text, project, settings):
     replies = []
     if 'SLOW' in text.split():
         time.sleep(3)
@@ -201,7 +217,7 @@ def manager_turn(text, project, allowed):
     for line in text.splitlines():
         if line.startswith('PAGE '):
             _, section, words = line.split(' ', 2)
-            edit_page(allowed, section, words)
+            edit_page(settings, section, words)
             replies.append('I updated the %s of the project page.' % section)
     if 'TABLE' in text.split():
         cell = 'a long cell that keeps going ' * 4
@@ -227,9 +243,12 @@ def main():
     trace({'launch': True, 'pid': os.getpid(), 'session': session, 'resume': '--resume' in options,
            'allowed': allowed, 'disallowed': disallowed, 'briefing': briefing, 'instructions': instructions,
            'schema': '--json-schema' in options, 'model': options.get('--model'),
+           'schema_required': json.loads(options['--json-schema']).get('required') if '--json-schema' in options else None,
            'mode': options.get('--permission-mode'), 'settings': json.loads(options.get('--settings', '{}')),
            'wsx_env': sorted(name for name in os.environ if name.startswith('WSX_')),
+           'git_optional_locks': os.environ.get('GIT_OPTIONAL_LOCKS'),
            'manager': project is not None, 'actor': os.environ.get('WSX_TASK_ACTOR'),
+           'plugin_dir': options.get('--plugin-dir'),
            'cwd': os.getcwd()})
     signal.signal(signal.SIGINT, lambda *_: (trace({'interrupted': True}), sys.exit(130)))
     emit({'type': 'system', 'subtype': 'init', 'session_id': session})
@@ -242,7 +261,8 @@ def main():
         trace({'message': text, 'session': session, 'manager': project is not None})
         if project is not None:
             # ^ A handover quotes earlier messages; only the messages after it are this turn's.
-            answer = manager_turn(text.split('\n\n', 1)[1] if text.startswith('Handover') else text, project, allowed)
+            answer = manager_turn(text.split('\n\n', 1)[1] if text.startswith('Handover') else text, project,
+                                    json.loads(options.get('--settings', '{}')))
             # ^ A line of its own: a handover quotes earlier messages as `Owner: BIG`.
             context = 200000 if 'BIG' in text.splitlines() else 5000
             emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': answer,
@@ -327,7 +347,8 @@ def main():
                                     'decisions': [{'choice': 'fake choice', 'reason': 'fixture'}],
                                     'evidence': [{'check': 'the fixture ran', 'proof': 'fake-claude-stream.py'}] if status == 'done' else [],
                                     'human_verify': [{'check': 'open the file', 'pass_if': 'it has text'}] if 'HV' in words else [],
-                                    'left_open': ['nothing real'], 'notes': ''}})
+                                    'left_open': ['nothing real'], 'notes': '',
+                                    'memo': rest_of_line(text, 'MEMO') if 'MEMO' in words else ''}})
 
 
 if __name__ == '__main__':
