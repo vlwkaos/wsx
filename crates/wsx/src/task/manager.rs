@@ -89,7 +89,10 @@ struct Manager {
     reexec: bool,
 }
 
-/// ref: docs/tasks.md "Manager", "Brief"
+/// The manager's lean project context in its notes folder. ref: docs/tasks.md "Memo"
+const CONTEXT_FILE: &str = "context.md";
+
+/// ref: docs/tasks.md "Manager", "Brief", "Memo"
 fn instructions(project: &str, notes: &Path, page: &Path) -> String {
     format!(
         "You are the manager of the wsx project {project}. You never edit the project's \
@@ -125,7 +128,16 @@ fn instructions(project: &str, notes: &Path, page: &Path) -> String {
          the tasks and how they relate as a mermaid graph, the decisions and the open \
          questions. When one of them changes, update that section in place with the Edit \
          tool; never rewrite the whole file, and never create another page. Workers do not \
-         write it. When a reply points to it, call it the project page.",
+         write it. When a reply points to it, call it the project page. \
+         Pick the worker's model with `wsx task new --model <name>`: `--model sonnet` may \
+         do when the owner's message is already a thorough brief; leave the default \
+         (opus) for a critical bug fix or heavy, complex work. \
+         {context} is your lean project context; read it when a conversation starts. \
+         Workers leave a `memo` of durable project knowledge on the ledger's recent tasks. \
+         When a message opens with 'Handover' (a new conversation after a rotation), \
+         first fold those memos into {context} with Bash: keep it lean, merge duplicates, \
+         drop what is stale, at most 60 lines.",
+        context = notes.join(CONTEXT_FILE).display(),
         notes = notes.display(),
         page = page.display()
     )
@@ -657,13 +669,11 @@ impl Manager {
             })
             .take(HANDOVER_ENTRIES)
             .collect();
-        if lines.is_empty() {
-            return String::new();
-        }
         lines.reverse();
+        // ^ Always sent after a rotation: it is the manager's cue to fold the memos.
         format!(
-            "Handover (this is a new conversation; the last exchanges before it, read the \
-             ledger for the state):\n{}\n\n",
+            "Handover (this is a new conversation; fold the ledger's memos into your context \
+             first; the last exchanges before it, read the ledger for the state):\n{}\n\n",
             lines.join("\n")
         )
     }

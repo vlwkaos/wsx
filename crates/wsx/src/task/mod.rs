@@ -52,6 +52,9 @@ pub enum TaskCmd {
         /// A short title in plain words (at most 60 characters); default: the prompt's first line
         #[arg(long)]
         title: Option<String>,
+        /// The worker's model; default: tasks.agent.model (opus)
+        #[arg(long, value_name = "NAME")]
+        model: Option<String>,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -304,6 +307,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             from,
             no_brief,
             title,
+            model,
             project,
             json,
         } => new(
@@ -311,6 +315,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             from.as_deref(),
             no_brief,
             title.as_deref(),
+            model.as_deref(),
             project.as_deref(),
             json,
         ),
@@ -599,11 +604,13 @@ fn new(
     from: Option<&str>,
     no_brief: bool,
     title: Option<&str>,
+    model: Option<&str>,
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let prompt = prompt.read(MAX_MESSAGE_BYTES)?;
     let title = title.map(wsx_core::task::view::checked_title).transpose()?;
+    let model = model.map(wsx_core::task::view::checked_model).transpose()?;
     let (config, workspace) = load_full_workspace()?;
     let project = resolve_project(&workspace, project)?;
     let settings = load_task_config(&project.path)
@@ -640,7 +647,7 @@ fn new(
         working_copy: working_copy.path.clone(),
         pane_id: None,
         adapter: settings.adapter,
-        model: settings.model,
+        model: model.unwrap_or(settings.model),
         tools: settings.tools,
         phase: if skipped.is_some() {
             Phase::Build

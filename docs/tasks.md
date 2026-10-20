@@ -3,7 +3,7 @@
 A task is one headless worker on its own branch and working copy. The caller never types into it. Every action is one CLI call; `--json` works on all of them. No wsxd protocol change.
 
 ```sh
-wsx task new "<prompt>" -p <project> [--from <ref>] [--no-brief] [--title <words>] --json   # or `-` (stdin) or --prompt-file <path>
+wsx task new "<prompt>" -p <project> [--from <ref>] [--no-brief] [--title <words>] [--model <name>] --json   # or `-` (stdin) or --prompt-file <path>
 wsx task start <n> --json                        # build a briefed task against its rewritten prompt
 wsx task list -p <project> [--all] --json
 wsx task show <n> -p <project> --json            # record, result.json, report path, host_running, socket
@@ -17,7 +17,7 @@ wsx task land <n> [--skip-verify] --json         # onto the default branch by ta
 wsx task close <n> [--discard] --json
 ```
 
-`-p` may be left out inside a project folder or when one project is registered. A task number is `3` or `t3`.
+`-p` may be left out inside a project folder or when one project is registered. A task number is `3` or `t3`. `new --model <name>` picks the worker's model (one word, at most 256 bytes, not starting with `-`); without it the task uses `tasks.agent.model` (default `opus`). The record keeps it for the brief and the build.
 
 ## Store
 
@@ -64,7 +64,7 @@ A host follows a deploy of wsx. It records the identity (device, inode, size, mo
 
 - Steer: a stream-json user message during a turn. Claude does not save it in its history, so the host logs it. A steer with no running turn is sent as an add.
 - Only the worker's own `status: blocked` makes the task `blocked` (no checks run). Tool calls Claude denied (`permission_denials`) are evidence: they are logged on the `result` event, listed in `result.json` (`denials`, also in `show --json`) and under Evidence in the report, and checks still run.
-- Result schema: `{status: done|blocked|failed, summary, decisions[{choice, reason}], human_verify[{check, pass_if}], left_open[], notes}`.
+- Result schema: `{status: done|blocked|failed, summary, decisions[{choice, reason}], human_verify[{check, pass_if}], left_open[], notes, memo}` (`memo`: see Memo; a result without it reads as empty).
 
 ## Permissions
 
@@ -130,11 +130,11 @@ With `tasks.land.policy: pr`, the first `land` of a ready task applies the same 
 `wsx task ledger -p <project>` prints JSON of at most 16 KiB, the manager's source of truth:
 
 - `open`: each open task with number, title (80 chars), state, revision, overlaps, the current verdict (without its note), the Human Verify item count, the last result summary (240 chars), `checks` (each check of the latest result as `{command, outcome: passed|failed|timed out}`, the command at most 120 chars), `pr_url`, `phase`, the `asks` of a blocked task and, before the build, `brief{version, rewritten_prompt}` (240 chars), in attention order (blocked, failed, conflict, briefed, ready, in_review, working, stopped);
-- `recent`: the last 10 landed or closed tasks;
+- `recent`: the last 10 landed or closed tasks, each with its worker's `memo` (600 chars) when it left one;
 - `deploys`: the `deployed` status, with `configured` per kind (whether its command is set); under `pr` it uses the last fetched `<remote>/<default>` and does not fetch;
 - `main`: the main checkout's path, branch and number of changed files (tracked or new).
 
-When it would pass 16 KiB, the least urgent open tasks are left out and counted in `open_omitted`.
+When it would pass 16 KiB, the memos are left out first, then the least urgent open tasks, counted in `open_omitted`.
 
 ## Manager
 
@@ -144,7 +144,7 @@ wsx task say -p <project> "<text>" --json        # or `-` or --prompt-file; retu
 wsx task chat -p <project> [--after <id>] --json # messages, replies, rotations
 ```
 
-One manager per project runs as hidden `wsx task manager-host <project-id>` in a wsxd session `task-manager` in the main checkout (no working copy); `say` starts it when it is not running. Its agent uses `tasks.manager` (`model`, default `sonnet`; `rotateTokens`, default 150000), project and local settings only, the tools `Read Glob Grep`, plain sandboxed Bash and the manager boundary (see Permissions). Its instructions: never edit the project's files or run builds; keep notes only in `manager/notes/`; read `wsx task ledger` first; for each owner message answer, add, steer, start, verify or land; keep turns short; name tasks `#<n>`. Asked for work, it runs `task new` (brief on), tells the owner the brief is coming and never starts a build alone; it adds `--no-brief` only when the owner's message asks to skip the brief ("just do it", "no brief"); on "start #n" it runs `task start <n>`, which asks the owner's approval; a reply about a brief goes to the task as an `add`; status answers name the briefs that wait; `wsx task` commands work in any command shape, and no other `wsx` command runs; a blocked task with asks it fixes itself, by granting the host or folder for that task when the task plainly needs it, or by steering or adding, and never tells the owner to edit settings files; a project-wide grant or a tool rule asks the owner; `task new` gets `--title` with a few plain words, never starting "Owner"; a task's checks are stated as passed or failed from the ledger's `checks` (and an event's count), which outrank the worker's own words about what it could not run or verify; the project page is updated in place (see Project page). A running manager keeps the instructions its conversation started with until it rotates. Its environment is the worker allowlist plus `WSX_TASK_BROKER` and `WSX_TASK_ACTOR=manager`; the host puts its own `wsx` first on `PATH` and runs the commands with its own environment (see Permissions).
+One manager per project runs as hidden `wsx task manager-host <project-id>` in a wsxd session `task-manager` in the main checkout (no working copy); `say` starts it when it is not running. Its agent uses `tasks.manager` (`model`, default `opus`; `rotateTokens`, default 150000), project and local settings only, the tools `Read Glob Grep`, plain sandboxed Bash and the manager boundary (see Permissions). Its instructions: never edit the project's files or run builds; keep notes only in `manager/notes/`; read `wsx task ledger` first; for each owner message answer, add, steer, start, verify or land; keep turns short; name tasks `#<n>`. Asked for work, it runs `task new` (brief on), tells the owner the brief is coming and never starts a build alone; it adds `--no-brief` only when the owner's message asks to skip the brief ("just do it", "no brief"); on "start #n" it runs `task start <n>`, which asks the owner's approval; a reply about a brief goes to the task as an `add`; status answers name the briefs that wait; `wsx task` commands work in any command shape, and no other `wsx` command runs; a blocked task with asks it fixes itself, by granting the host or folder for that task when the task plainly needs it, or by steering or adding, and never tells the owner to edit settings files; a project-wide grant or a tool rule asks the owner; `task new` gets `--title` with a few plain words, never starting "Owner"; a task's checks are stated as passed or failed from the ledger's `checks` (and an event's count), which outrank the worker's own words about what it could not run or verify; the project page is updated in place (see Project page); `task new` gets `--model sonnet` when the owner's message is already a thorough brief and keeps the default (opus) for a critical bug fix or heavy, complex work; memos are folded on rotation (see Memo). A running manager keeps the instructions its conversation started with until it rotates. Its environment is the worker allowlist plus `WSX_TASK_BROKER` and `WSX_TASK_ACTOR=manager`; the host puts its own `wsx` first on `PATH` and runs the commands with its own environment (see Permissions).
 
 - `manager/log.jsonl` (rolls to `log.1.jsonl` past 8 MiB) has `message{id, from: owner|events, text}`, `delivered{ids}`, `reply{id, to, text, usage}`, `agent` (its commands), `rotated{tokens}` and `stopped`. `manager/state.json` keeps the conversation, the digest of its instructions, the next id and what was already reported.
 - One turn at a time. Waiting owner messages go together in one turn, each headed with its id, before waiting events.
@@ -156,6 +156,16 @@ One manager per project runs as hidden `wsx task manager-host <project-id>` in a
 - A worker conversation is never rotated: it holds the task's work, and its rules that matter at run time (sandbox, tools) come with each start.
 
 The web client shows the manager chat, the tasks, their reports and their fixed actions, and notifies about them: [web-client.md](web-client.md) "Tasks".
+
+## Memo
+
+Durable project knowledge moves from workers to the manager, kept small:
+
+1. The worker's instructions: before a build finishes, put in the result's `memo` a short, lean memo of durable project knowledge a later task needs (a convention, a gotcha, a decision and its reason), a few lines at most; empty when there is none. It is kept in `result.json`.
+2. The ledger shows the memo on each `recent` task (see Ledger).
+3. After a rotation the fresh conversation's first message always opens with `Handover`, which asks the manager to fold the memos first. The manager's instructions: on a `Handover`, fold the ledger's memos into `manager/notes/context.md` with Bash (lean, duplicates merged, stale lines dropped, at most 60 lines); read that file when a conversation starts.
+
+Memos of tasks that left `recent` (more than 10 closed since the last rotation) are not folded.
 
 ## Approvals
 
@@ -196,10 +206,10 @@ tasks:
   land: { policy: local-merge, remote: origin, approve: true }   # or policy: pr
   deploy: { command: "sh deploy.sh", approve: true }
   release: { command: "sh release.sh", approve: true }
-  manager: { adapter: claude, model: sonnet, rotateTokens: 150000 }
+  manager: { adapter: claude, model: opus, rotateTokens: 150000 }
 ```
 
-Defaults: adapter `claude`, worker model `opus` (the manager keeps `sonnet`), no extra tools, `brief: true`, an empty sandbox list, no checks. `tasks.agent.tools` refuses `Bash(...)` (the sandbox replaces it) and bare `Edit`, `Write`, `NotebookEdit`, `MultiEdit` (they would skip the classifier); `briefTools` was removed and is refused with the reason. `allowedDomains` are host names with an optional `*.`; `allowWrite` paths are absolute or `~/`, below the root or home, without `.` or `..`. Up to 64 tools, 64 checks and 64 entries per sandbox list; `checkTimeoutSeconds` is 1..86400; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.
+Defaults: adapter `claude`, worker and manager model `opus` (`task new --model` overrides the worker's), no extra tools, `brief: true`, an empty sandbox list, no checks. `tasks.agent.tools` refuses `Bash(...)` (the sandbox replaces it) and bare `Edit`, `Write`, `NotebookEdit`, `MultiEdit` (they would skip the classifier); `briefTools` was removed and is refused with the reason. `allowedDomains` are host names with an optional `*.`; `allowWrite` paths are absolute or `~/`, below the root or home, without `.` or `..`. Up to 64 tools, 64 checks and 64 entries per sandbox list; `checkTimeoutSeconds` is 1..86400; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.
 
 ## Verify
 

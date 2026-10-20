@@ -126,7 +126,7 @@ impl Default for TaskConfig {
             release_approve: true,
             deploy_command: None,
             release_command: None,
-            manager_model: "sonnet".into(),
+            manager_model: "opus".into(),
             manager_rotate_tokens: 150_000,
         }
     }

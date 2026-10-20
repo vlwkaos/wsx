@@ -17,6 +17,7 @@ const MAX_LEDGER_BYTES: usize = 16 * 1024;
 const RECENT_TASKS: usize = 10;
 const SUMMARY_CHARS: usize = 240;
 const TITLE_CHARS: usize = 80;
+const MEMO_CHARS: usize = 600;
 
 /// The ledger of one project. ref: docs/tasks.md "Ledger"
 pub fn build(project_name: &str, main: &Path) -> Result<Value> {
@@ -33,10 +34,21 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         let summary = task_summary(dir, record);
         let title = clip(summary["title"].as_str().unwrap_or_default(), TITLE_CHARS);
         if !record.state.is_open() {
-            recent.push((
-                record.updated_unix_ms,
-                json!({ "id": record.id, "title": title, "state": record.state, "revision": record.revision }),
-            ));
+            let mut row = json!({ "id": record.id, "title": title, "state": record.state, "revision": record.revision });
+            // ^ The worker's memo; the manager folds it into its notes on rotation (docs/tasks.md "Memo").
+            if let Some(memo) = read_result(dir)
+                .as_ref()
+                .and_then(|r| {
+                    r["result"]["memo"]
+                        .as_str()
+                        .map(str::trim)
+                        .map(str::to_string)
+                })
+                .filter(|memo| !memo.is_empty())
+            {
+                row["memo"] = json!(clip_lines(&memo, MEMO_CHARS));
+            }
+            recent.push((record.updated_unix_ms, row));
             continue;
         }
         let result = read_result(dir);
@@ -92,7 +104,12 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
             .map(|lines| json!(super::manager::pending_approvals(&lines)))
             .unwrap_or(Value::Null),
     });
-    // ^ Least urgent open tasks go first when the ledger is over its size.
+    // ^ Memos go first, then the least urgent open tasks, when the ledger is over its size.
+    if serde_json::to_vec(&ledger)?.len() > MAX_LEDGER_BYTES {
+        for row in ledger["recent"].as_array_mut().expect("recent is an array") {
+            row.as_object_mut().map(|fields| fields.remove("memo"));
+        }
+    }
     let mut omitted = 0;
     while serde_json::to_vec(&ledger)?.len() > MAX_LEDGER_BYTES {
         let rows = ledger["open"].as_array_mut().expect("open is an array");
@@ -104,6 +121,14 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         ledger["open_omitted"] = json!(omitted);
     }
     Ok(ledger)
+}
+
+/// At most `chars` characters of `text`, its lines kept.
+fn clip_lines(text: &str, chars: usize) -> String {
+    match text.char_indices().nth(chars) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_string(),
+    }
 }
 
 /// The main checkout's branch and how many files it has changed (tracked or new).
