@@ -83,7 +83,7 @@ function Sentence({ id, text, words }) {
   const sentence = firstSentence(text);
   return html`
     <div class="bubble-body" id=${id}>
-      ${open ? html`<${Markdown} text=${text} words=${words} />` : html`<p class="prose">${words(sentence)}</p>`}
+      ${open ? html`<${Markdown} text=${text} words=${words} prose />` : html`<p class="prose">${words(sentence)}</p>`}
     </div>
     ${sentence !== text.trim() && html`
       <button class="link-action bubble-more" type="button" aria-expanded=${open} aria-controls=${id} onClick=${() => setOpen(!open)}>
@@ -119,11 +119,11 @@ export function Bubble({ project, row, words }) {
     body = html`
       <p class="bubble-head"><${TaskChip} project=${project} id=${report.task} />${" "}<span class="bubble-state">· ${report.head}</span></p>
       ${report.state === "landed" ? html`<${Sentence} id=${id} text=${report.summary} words=${words} />`
-        : html`<${Fold} id=${id}><${Markdown} text=${report.summary} words=${words} /></${Fold}>`}`;
+        : html`<${Fold} id=${id}><${Markdown} text=${report.summary} words=${words} prose /></${Fold}>`}`;
   } else if (out) {
     body = html`<${Fold} id=${id}><p class="prose">${words(row.entry.text)}</p></${Fold}>`;
   } else {
-    body = html`<${Fold} id=${id}><${Markdown} text=${row.entry.text} words=${words} /></${Fold}>`;
+    body = html`<${Fold} id=${id}><${Markdown} text=${row.entry.text} words=${words} prose /></${Fold}>`;
   }
   return html`
     <article class="bubble" data-side=${out ? "out" : "in"} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null}

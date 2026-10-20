@@ -62,6 +62,8 @@ def record(kind, content, **extra):
   line = {'type':'message','id':entry,'parentId':leaf,'timestamp':stamp,'message':{'role':kind,'content':content}}
  else:
   line = {'type':kind,'uuid':entry,'parentUuid':leaf,'sessionId':'fixture','timestamp':stamp,'message':{'role':kind,'content':content}}
+ # Both providers name the model on each reply (real transcripts, 2026-10-20).
+ if kind == 'assistant': line['message']['model'] = 'gpt-6.1-sol' if provider == 'pi' else 'claude-opus-5-5'
  line.update(extra)
  with history.open('a') as out: out.write(json.dumps(line)+'\n')
  leaf = entry
@@ -124,7 +126,9 @@ def turn(text):
  if provider == 'claude' and text == '/compact':
   claude_compact(); return
  # The person's prompt as Claude Code 2.1.300 marks it; other turns keep the older record without the field.
- record('user', text, **({'promptSource':'typed'} if 'task notice' in text else {}))
+ # Claude Code 2.1.300 can save a pasted prompt inside a pasted_content wrapper (real transcript, 2026-10-20).
+ saved = '\n\n<pasted_content id="4666">\n'+text+'\n</pasted_content id="4666">\n' if provider == 'claude' and 'follow up' in text else text
+ record('user', saved, **({'promptSource':'typed'} if 'task notice' in text else {}))
  report('working')
  body = text.split('\n',1)[1] if text.startswith('[wsx exchange ') else text
  if 'make chart' in body:
@@ -1342,6 +1346,7 @@ capabilities = ["terminal_view"]
         history = wait(lambda: (lambda data: data if len(data['messages']) == 2 else None)(messages(owner, sessions['owner'])), 'history')
         assert [(m['role'], m['text']) for m in history['messages']] == [
             ('user', 'hello from the phone\nsecond line'), ('assistant', 'echo: hello from the phone')]
+        assert history['model'] == 'claude-opus-5-5', history.get('model')
         # A done pane is lifecycle evidence only; it must not be shown as confirmed.
         assert history['exchange']['evidence'] == 'pane_lifecycle' and 'not confirmed' in history['exchange']['delivery']
         # The reply exists only in the native transcript, never on the fixture's screen.
@@ -1350,7 +1355,9 @@ capabilities = ["terminal_view"]
         status, exchange2 = owner.request('POST', chat + '/send', {'text': 'follow up'}, shape='stripped')
         assert status == 200 and exchange2['id'] == exchange['id'] and exchange2['round'] == 2
         wait(lambda: len(traces('owner')) == 2, 'continued delivery')
-        wait(lambda: len(messages(owner, sessions['owner'])['messages']) == 4, 'continued history')
+        continued = wait(lambda: (lambda data: data if len(data['messages']) == 4 else None)(messages(owner, sessions['owner'])), 'continued history')
+        # The fixture saved this one as a paste; the page shows the text that was sent, so its pending copy clears.
+        assert continued['messages'][2] == {'role': 'user', 'text': 'follow up', 'attachments': []}, continued['messages'][2]
         assert owner.request('POST', chat + '/send', {'text': '   '})[0] == 400
         assert owner.request('POST', chat + '/send', {'text': 'x' * 70000})[0] == 400
         assert owner.request('POST', '/api/chat/999999/send', {'text': 'nope'})[0] == 404
@@ -1442,6 +1449,7 @@ capabilities = ["terminal_view"]
             assert summary['text'].startswith('## Goal\nFix the login redirect loop') and summary['text'].endswith('- Step 12 of the fix is done.'), summary
             assert summary['attachments'] == [] and summary['id'], summary
             assert compacted['items'][-1]['text'] == 'echo: after the compaction', compacted['items'][-1]
+            assert compacted['model'] == {'claude': 'claude-opus-5-5', 'pi': 'gpt-6.1-sol'}[provider], compacted.get('model')
             if provider == 'claude':
                 # A background-task notice is Claude's own record, not a message the person wrote.
                 settle(name)
@@ -2503,8 +2511,15 @@ def task_journey(args):
         wait_state(1, 'blocked')
         wait_state(2, 'ready')
         wait_state(3, 'ready')
-        # Two briefs in `plans`: #1 for the page, #2 for the API.
-        assert js('task', 'new', 'Let me jump between projects from the keyboard, without the mouse REWRITE WORK keys.txt',
+        # Two briefs in `plans`: #1 for the page, #2 for the API. #1 is a real brief
+        # (scripts/fixtures/task-brief.json) with an open question whose second paragraph a model
+        # indented by four spaces, and a method with a fenced command.
+        real_brief = json.loads((Path(__file__).parent / 'fixtures' / 'task-brief.json').read_text())
+        real_brief['open_questions'] = ['Keep the old list?\n\n    An indented paragraph that is prose, not code.', *real_brief['open_questions']]
+        real_brief['methods'] = [*real_brief['methods'], 'Run the check:\n\n```sh\ncargo nextest run\n```']
+        brief_file = work / 'brief.json'
+        brief_file.write_text(json.dumps(real_brief))
+        assert js('task', 'new', 'Let me jump between projects from the keyboard, without the mouse REWRITE WORK keys.txt\nBRIEF_FILE %s' % brief_file,
                   '-p', 'plans')['id'] == 1
         assert js('task', 'new', 'REWRITE WORK two.txt', '-p', 'plans')['id'] == 2
         for n in (1, 2):
@@ -2569,12 +2584,12 @@ def task_journey(args):
                     return pane.get('agent') and (pane['exited'] or then == 'stay')
                 wait(reported, '%s session %s' % (name, then))
                 time.sleep(0.05)
-            # An adopted worktree: `ui` gets a plain git worktree that no task owns, synced to wsxd
+            # A plain worktree: `ui` gets a git worktree that no task owns, synced to wsxd
             # as a wsx client does (`wsx status` lists the git worktrees), with an agent session.
-            adopted_path = work / 'ui-old'
-            subprocess.run(['git', 'worktree', 'add', '-q', '-b', 'old-work', str(adopted_path)],
+            plain_path = work / 'ui-old'
+            subprocess.run(['git', 'worktree', 'add', '-q', '-b', 'old-work', str(plain_path)],
                            cwd=other, env=env, check=True, capture_output=True, timeout=20)
-            adopted_path = adopted_path.resolve()
+            plain_path = plain_path.resolve()
             cli('status', '--json')
             current = call('snapshot', None)['data']
             ui_worktrees = {Path(item['path']).name: item for item in current['worktrees'] if names[item['project_id']] == 'ui'}
@@ -2584,24 +2599,24 @@ def task_journey(args):
             created = call('session_create', {'worktree_id': ui_worktrees['ui-old']['id'], 'label': 'old chat',
                 'command': [sys.executable, str(agent_script), 'done', 'stay'], 'rows': 12, 'cols': 80})
             assert created['type'] == 'created', created
-            adopted_session = created['data']['id']
+            plain_session = created['data']['id']
 
-            def adopted_reported():
+            def plain_reported():
                 current = call('snapshot', None)['data']
-                pane_id = next(s['primary_pane'] for s in current['sessions'] if s['id'] == adopted_session)
+                pane_id = next(s['primary_pane'] for s in current['sessions'] if s['id'] == plain_session)
                 return next(p for p in current['panes'] if p['id'] == pane_id).get('agent')
-            wait(adopted_reported, 'adopted session reported')
+            wait(plain_reported, 'plain worktree session reported')
 
-            def adopted_git():
+            def plain_git():
                 listing = subprocess.run(['git', 'worktree', 'list', '--porcelain'], cwd=other, env=env, check=True,
                                          capture_output=True, text=True, timeout=20).stdout
                 block = next(part for part in listing.split('\n\n') if part.split('\n', 1)[0].endswith('/ui-old'))
                 head = subprocess.run(['git', 'rev-parse', 'refs/heads/old-work'], cwd=other, env=env, check=True,
                                       capture_output=True, text=True, timeout=20).stdout.strip()
-                status = subprocess.run(['git', 'status', '--porcelain'], cwd=adopted_path, env=env, check=True,
+                status = subprocess.run(['git', 'status', '--porcelain'], cwd=plain_path, env=env, check=True,
                                         capture_output=True, text=True, timeout=20).stdout
                 return block, head, status
-            adopted_before = adopted_git()
+            plain_before = plain_git()
 
         push = start(work, [node, str(ROOT / 'scripts/web-push-fixture.mjs'), str(work / 'push.jsonl')],
                      stdout=subprocess.PIPE, text=True)
@@ -2668,9 +2683,8 @@ digest_max_seconds = 6
         assert [row['id'] for row in overview['tasks']] == [1, 3, 2], overview['tasks']
         # ^ A task without --title is named by the first sentence of its worker's summary.
         assert overview['tasks'][2]['title'] == 'did: WORK a.txt HV'
-        # Every task's branch, from each record: a worktree on one is a task's, never adopted.
-        branches = sorted(js('task', 'show', n, '-p', 'demo')['branch'] for n in (1, 2, 3))
-        assert overview['task_branches'] == branches == ['wsx/t1', 'wsx/t2', 'wsx/t3'], overview['task_branches']
+        # ^ No Adopted list reads the task branches any more.
+        assert 'task_branches' not in overview, list(overview)
         everything = steady(owner, 'GET', '/api/tasks')[1]
         assert sorted(item['project'] for item in everything) == sorted(ids.values()), everything
         detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
@@ -2789,13 +2803,35 @@ digest_max_seconds = 6
             refused = cli('task', 'new', 'WORK t.txt', '--title', title, '-p', 'demo', expect=1)
             assert refusal in refused.stderr, refused.stderr
         titled = js('task', 'new', 'Owner report: WORK t.txt', '--title', ' Short words ', '-p', 'demo')['id']
-        stripped = js('task', 'new', 'Owner report: tool permission. WORK u.txt\nmore', '-p', 'demo')['id']
-        for n in (titled, stripped):
+        stripped = js('task', 'new', 'Owner report: tool permission for WORK u.txt\nmore', '-p', 'demo')['id']
+        # ^ A lead-in with brackets (and a colon in them) names its subject; a bare one gives
+        # way to the next line; a `--title` loses it too; `Owner:` alone is not a lead-in.
+        bracketed = js('task', 'new', 'Owner report (UX failures: how a task asks):\n1. WORK v.txt', '-p', 'demo')['id']
+        bare = js('task', 'new', 'Owner request:\n\nWORK w.txt now', '-p', 'demo')['id']
+        retitled = js('task', 'new', 'WORK x.txt', '--title', 'Owner asked: short words', '-p', 'demo')['id']
+        untouched = js('task', 'new', "Owner: Alice's WORK y.txt", '-p', 'demo')['id']
+        # ^ The web names a task without --title by its summary's first sentence.
+        sentence = js('task', 'new', 'Owner report: tool permission. WORK z.txt', '-p', 'demo')['id']
+        made = (titled, stripped, bracketed, bare, retitled, untouched, sentence)
+        for n in made:
             wait(lambda: task_state(n) == 'ready', 'titled task %d' % n)
             js('task', 'close', n, '--discard', '-p', 'demo')
+        expected = {titled: 'Short words', stripped: 'tool permission for WORK u.txt', bracketed: 'UX failures: how a task asks',
+                    bare: 'WORK w.txt now', retitled: 'short words', untouched: "Owner: Alice's WORK y.txt"}
         titles = {row['id']: row['title'] for row in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['tasks']}
-        assert titles[titled] == 'Short words' and titles[stripped] == 'did: Owner report: tool permission.', titles
-        ok('project page: written by the manager host, none without a manager, 404 outside the grant; titles: --title, its refusals, the first sentence of the summary')
+        listed = {row['id']: row['title'] for row in js('task', 'list', '-p', 'demo', '--all')['tasks']}
+        expected[sentence] = 'tool permission. WORK z.txt'
+        assert all(listed[n] == title for n, title in expected.items()), listed
+        shown = {titled: 'Short words', retitled: 'short words', stripped: 'did: Owner report: tool permission for WORK u.txt',
+                 bracketed: 'did: Owner report (UX failures: how a task asks):', bare: 'did: Owner request:',
+                 untouched: "did: Owner: Alice's WORK y.txt", sentence: 'did: Owner report: tool permission.'}
+        assert all(titles[n] == title for n, title in shown.items()), titles
+        # ^ Only the shown title changes: the record and the prompt keep what was written.
+        record = Path(js('task', 'show', retitled, '-p', 'demo')['log']).parent / 'task.json'
+        assert json.loads(record.read_text())['title'] == 'Owner asked: short words'
+        logged = Path(js('task', 'show', bracketed, '-p', 'demo')['log']).read_text().splitlines()
+        assert json.loads(logged[1])['text'].startswith('Owner report (UX failures: how a task asks):'), logged[1]
+        ok('project page: written by the manager host, none without a manager, 404 outside the grant; titles: --title, its refusals, "Owner <words>:" left out when shown and kept on disk, on the web the first sentence of the summary')
 
         # --- To check (docs/tasks.md "To check"): pass one, fail one with a note (a linked fix
         # task starts), pass the rest; the owner's alone.
@@ -2921,7 +2957,7 @@ digest_max_seconds = 6
             restarter.start()
             result = check(work, [node, str(ROOT / 'scripts/web-tasks-check.mjs'), owner.origin + '/', browser_code,
                                   str(ids['ui']), str(args.captures), ','.join(home_order),
-                                  str(audit) if audit.exists() else '', str(ids['plans']), str(restart), str(adopted_session)], timeout=360)
+                                  str(audit) if audit.exists() else '', str(ids['plans']), str(restart)], timeout=360)
             assert result.returncode == 0, result.stdout + result.stderr
             # ^ The server restarted: the event stream starts again for the checks after.
             assert (work / 'restart-owner.done').exists()
@@ -2929,11 +2965,11 @@ digest_max_seconds = 6
             events.expect('workspace')
             owner_name = 'owner next'
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
-            # ^ The page only read the adopted worktree: the same git entry, branch head and files.
-            assert adopted_git() == adopted_before, (adopted_git(), adopted_before)
-            kept = next(item for item in call('snapshot', None)['data']['sessions'] if item['id'] == adopted_session)
+            # ^ The page only read the plain worktree: the same git entry, branch head and files.
+            assert plain_git() == plain_before, (plain_git(), plain_before)
+            kept = next(item for item in call('snapshot', None)['data']['sessions'] if item['id'] == plain_session)
             assert kept['label'] == 'old chat' and kept['worktree_id'] == ui_worktrees['ui-old']['id'], kept
-            ok('adopted worktree: its git worktree entry, branch head, status and session are unchanged after the page')
+            ok('plain worktree: its git worktree entry, branch head, status and session are unchanged after the page')
 
         # --- Task notifications: at once after the merge window, a digest after a quiet time,
         # never to a device whose page shows the project.

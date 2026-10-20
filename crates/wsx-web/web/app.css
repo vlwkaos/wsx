@@ -103,12 +103,17 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 }
 .row-actions { flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-3); }
 .new { color: var(--color-accent); font-weight: var(--font-weight-medium); }
-/* State is always a word; the mark and the tone repeat it. */
+/* State is always a word; the mark and the tone repeat it. Every working state (a task or a
+   session at work, the manager typing, the pulse) has one color, set here only: the theme's
+   accent, also inside a `data-scheme` part (docs/web-themes.md "Tokens"). */
+:root, [data-scheme] { --color-working: var(--color-accent); }
 .mark { flex: 0 0 auto; width: calc(var(--space-1) * 1.5); height: calc(var(--space-1) * 1.5); border-radius: 50%; background: var(--color-faint); }
 .mark[data-tone="accent"] { background: var(--color-accent); }
+.mark[data-tone="working"] { background: var(--color-working); }
 .mark[data-tone="attention"] { background: var(--color-attention); }
 .mark[data-tone="danger"] { background: var(--color-danger); }
 [data-tone="accent"]:not(.mark) { color: var(--color-accent); }
+[data-tone="working"]:not(.mark) { color: var(--color-working); }
 [data-tone="attention"]:not(.mark) { color: var(--color-attention); }
 [data-tone="danger"]:not(.mark) { color: var(--color-danger); }
 .group-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-4) 0; }
@@ -166,7 +171,8 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 }
 .bar-title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: var(--space-2); }
 .bar-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--font-weight-medium); }
-.bar-state { flex: 0 0 auto; font-size: var(--font-size-sm); color: var(--color-muted); white-space: nowrap; }
+.bar-state { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--font-size-sm); color: var(--color-muted); white-space: nowrap; }
+.bar-model { color: var(--color-muted); }
 /* Without the rail the label keeps the row's free width and the state word goes under it. */
 .app:not([data-wide]) .bar-title { flex-direction: column; align-items: stretch; gap: 0; }
 .bar-tools { flex: 0 0 auto; display: flex; }
@@ -306,7 +312,7 @@ div.steps .steps-summary { cursor: default; }
 .working { display: flex; align-items: center; gap: var(--space-2); font-size: var(--font-size-sm); color: var(--color-muted); }
 .working-activity { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The only looping motion, and only while an agent works or writes. */
-.pulse { flex: 0 0 auto; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-accent); }
+.pulse { flex: 0 0 auto; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-working); }
 @media (prefers-reduced-motion: no-preference) {
   .pulse, .mark[data-running] { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
   .typing-dot { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
@@ -488,23 +494,28 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .bubble .markdown > .diagram { width: 100%; min-width: 0; }
 /* The manager writes: three dots. They pulse only where motion is welcome. */
 .typing { display: inline-flex; align-items: center; gap: var(--space-1); min-height: calc(var(--font-size-md) * var(--line-height-prose)); }
-.typing-dot { width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-muted); }
+.typing-dot { width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-working); }
 .status-line { align-self: center; max-width: var(--size-prose); font-size: var(--font-size-sm); color: var(--color-muted); text-align: center; overflow-wrap: anywhere; }
 .page-link { color: var(--color-accent); }
-/* Everything open, pinned over the composer: one line, a tap opens the list. */
+/* What needs the owner and what runs, pinned over the composer: one line, a tap opens the
+   decision list. */
 .reservoir { flex: 0 0 auto; max-height: calc(100% * var(--strip-share)); display: flex; flex-direction: column; border-top: var(--border-width) solid var(--color-hairline); }
 .reservoir-head {
   flex: 0 0 auto; width: 100%; min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-2);
   padding: 0 var(--column-inset, var(--space-4)); border: 0; background: none; cursor: pointer; text-align: left; font-size: var(--font-size-sm);
 }
-.reservoir-words { flex: 1; min-width: 0; font-weight: var(--font-weight-medium); }
+.reservoir-words { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-2); font-weight: var(--font-weight-medium); white-space: nowrap; }
+.reservoir-sep { color: var(--color-faint); }
+.reservoir-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.reservoir-more { flex: 0 0 auto; color: var(--color-muted); }
+.reservoir-checks { flex: 0 0 auto; font-weight: var(--font-weight-medium); white-space: nowrap; }
 .reservoir[data-open] .reservoir-head .icon { transform: rotate(90deg); }
 .reservoir-head:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
 .reservoir-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: var(--space-2); }
 .reservoir-list { list-style: none; margin: 0; padding: 0; }
 .reservoir .row-link { padding-inline: var(--column-inset, var(--space-4)); }
 .reservoir .need + .need { border-top: var(--border-width) solid var(--color-hairline); }
-.facts-line { padding: var(--space-2) var(--column-inset, var(--space-4)) 0; font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
+.reservoir-label { padding: var(--space-3) var(--column-inset, var(--space-4)) var(--space-1); }
 /* With the keyboard up the reservoir steps aside while the `#` or `/` list is open. */
 body[data-keyboard] .chat:has(.slash) .reservoir { display: none; }
 .more { position: relative; }
@@ -555,13 +566,14 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .bubble-box .task-chip { background: var(--color-raised); }
 .bubble[data-side="out"] .bubble-box .task-chip { background: var(--color-surface); }
 
-/* Hook: .task-page — one task: actions, report sections, shared files, timeline. */
+/* Hook: .task-page — one task: where it stands with its one action, a brief's open questions
+   and additions, the report folded, the talk, its history. */
 .task-page .scroll { padding-bottom: var(--space-4); }
-.task-actions { border-bottom: var(--border-width) solid var(--color-hairline); }
-.task-row { padding: var(--space-3) var(--column-inset, var(--space-4)) 0; overflow-wrap: anywhere; }
-.task-row .actions { padding-inline: 0; justify-content: flex-end; }
+.task-next { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere; }
+.task-next .actions { padding: 0; justify-content: flex-end; }
+.task-approval { flex-basis: 100%; }
 .project-page { padding-top: var(--space-3); }
-.task-row code { font-family: var(--font-terminal); font-size: var(--font-size-sm); }
+.project-page .facts-line { padding: 0 var(--space-4) var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
 .task-body { padding: 0 var(--space-4); max-width: calc(var(--size-prose) + 2 * var(--space-4)); }
 /* A closed fold says what it holds: "4 checks passed", "2 open". */
 .fold-note { font-weight: normal; color: var(--color-muted); }
@@ -577,12 +589,17 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .check-item[data-state="passed"] .check-what, .check-item[data-state="failed"] .check-what { color: var(--color-muted); }
 .check-all { justify-content: flex-end; padding: var(--space-3) var(--column-inset, var(--space-4)); }
 .task-overlaps { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); overflow-wrap: anywhere; }
-.timeline-head { display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; min-height: var(--size-control); padding-block: 0; }
-.timeline-head::-webkit-details-marker { display: none; }
-.timeline[open] .timeline-head .icon, .task-fold[open] > .timeline-head .icon { transform: rotate(90deg); }
+.fold-head { display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; min-height: var(--size-control); padding-block: 0; }
+.fold-head::-webkit-details-marker { display: none; }
+.task-fold[open] > .fold-head .icon { transform: rotate(90deg); }
+.timeline[open] > .fold-head .icon { transform: rotate(90deg); }
+.timeline-list { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); }
+.timeline-list li { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: var(--space-3); }
+.timeline-what { font-weight: var(--font-weight-medium); }
+.timeline-more { grid-column: 2; color: var(--color-muted); overflow-wrap: anywhere; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 /* The brief: lists of short items, concepts folded to their term, the talk-through as turns. */
 .task-brief-list { margin: 0; padding-inline-start: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); overflow-wrap: anywhere; }
-.task-brief-list code { font-family: var(--font-terminal); font-size: var(--font-size-sm); }
+.task-source { overflow-wrap: anywhere; font-weight: var(--font-weight-medium); }
 .task-concepts { display: flex; flex-direction: column; }
 .task-concept-term { display: flex; align-items: center; gap: var(--space-1); min-height: var(--size-control); cursor: pointer; list-style: none; font-weight: var(--font-weight-medium); }
 .task-concept-term::-webkit-details-marker { display: none; }
@@ -591,26 +608,13 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .task-talk { padding: var(--space-4) var(--space-4) 0; display: flex; flex-direction: column; gap: var(--space-3); }
 /* A section's name in plain case: the content under it speaks for the rest. */
 .task-heading { padding: var(--space-4) var(--space-4) var(--space-1); font-size: var(--font-size-sm); font-weight: var(--font-weight-strong); }
-.timeline-list { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); }
-.timeline-list li { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: var(--space-3); }
-.timeline-what { font-weight: var(--font-weight-medium); }
-.timeline-more { grid-column: 2; color: var(--color-muted); overflow-wrap: anywhere; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .task-steer { align-self: center; }
 .app:not([data-wide]) .task-steer { margin-left: auto; }
 .app:not([data-wide]) .task-message .task-steer + .composer-send { margin-left: var(--space-2); }
 
+.visually-hidden { position: absolute; width: var(--border-width); height: var(--border-width); overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* Hook: .story — where a task stands, in words (docs/web-client.md "Task sheet"): one sentence
    of what changed, and what the owner should know next. */
-.visually-hidden { position: absolute; width: var(--border-width); height: var(--border-width); overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-/* Hook: .adopted — a project's worktrees without a task, read only; it folds to one line. */
-.adopted-line {
-  display: flex; align-items: center; gap: var(--space-1); min-height: var(--size-control); padding: 0 var(--column-inset, var(--space-4));
-  cursor: pointer; list-style: none; color: var(--color-muted); font-size: var(--font-size-sm);
-}
-.adopted-line::-webkit-details-marker { display: none; }
-.adopted[open] > .adopted-line .icon { transform: rotate(90deg); }
-.adopted-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.adopted { border-bottom: var(--border-width) solid var(--color-hairline); }
 .story { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere; }
 .story .link-action { align-self: flex-start; }
 

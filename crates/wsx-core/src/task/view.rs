@@ -73,6 +73,7 @@ pub fn check_outcomes(result: &Value) -> Vec<(String, &'static str)> {
 
 /// The longest `task new --title`. ref: docs/tasks.md "Store"
 pub const MAX_TITLE_CHARS: usize = 60;
+const MAX_MODEL_BYTES: usize = 256;
 
 /// A `--title` as given, trimmed; refused when empty, too long or with control characters.
 pub fn checked_title(title: &str) -> Result<String> {
@@ -106,15 +107,48 @@ pub fn readable_title(dir: &TaskDir, record: &TaskRecord) -> Option<String> {
         .or_else(|| title(dir, record))
 }
 
-/// The task's title: its `--title`, else the first line of its prompt without a leading
-/// `Owner <word>:` (how the manager's prompts open), at most 120 characters.
+/// A worker model named by `task new --model`: one word of at most 256 bytes, as
+/// `tasks.agent.model` allows. ref: docs/tasks.md "Config"
+pub fn checked_model(model: &str) -> Result<String> {
+    if model.is_empty() {
+        anyhow::bail!("the model is empty");
+    }
+    if model.len() > MAX_MODEL_BYTES {
+        anyhow::bail!("the model is longer than {MAX_MODEL_BYTES} bytes");
+    }
+    if model.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        anyhow::bail!("the model must be one word");
+    }
+    // ^ It becomes the value of claude's `--model`; a leading dash would read as an option.
+    if model.starts_with('-') {
+        anyhow::bail!("the model must not start with '-'");
+    }
+    Ok(model.to_string())
+}
+
+/// The task's title: its `--title`, else the first line of its prompt (at most 120 characters),
+/// shown without a leading `Owner <words>:`, which is how the manager's prompts open. Only the
+/// shown title changes; the record and the prompt keep what was written. ref: docs/tasks.md "Store"
 pub fn title(dir: &TaskDir, record: &TaskRecord) -> Option<String> {
     if let Some(title) = &record.title {
-        return Some(title.clone());
+        return Some(match owner_lead(title) {
+            Some((_, rest)) if !rest.is_empty() => rest.to_string(),
+            _ => title.clone(),
+        });
     }
     dir.prompt().ok().flatten().map(|prompt| {
-        let line = prompt.lines().next().unwrap_or_default().trim();
-        strip_owner(line).chars().take(TITLE_CHARS).collect()
+        let mut lines = prompt
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty());
+        let first = lines.next().unwrap_or_default();
+        let line = match owner_lead(first) {
+            Some((_, rest)) if !rest.is_empty() => rest,
+            // ^ A bare `Owner report (what it is about):` names its subject in the brackets.
+            Some((lead, _)) => bracketed(lead).or_else(|| lines.next()).unwrap_or(first),
+            None => first,
+        };
+        line.chars().take(TITLE_CHARS).collect()
     })
 }
 
@@ -133,21 +167,42 @@ fn first_sentence(text: &str) -> String {
         .to_string()
 }
 
-/// `Owner report: tool permission` → `tool permission`; anything else stays.
-fn strip_owner(line: &str) -> &str {
-    let Some(rest) = line.strip_prefix("Owner ") else {
-        return line;
-    };
-    match rest.split_once(':') {
-        Some((word, after))
-            if !word.is_empty()
-                && word.chars().all(char::is_alphanumeric)
-                && !after.trim().is_empty() =>
-        {
-            after.trim_start()
+/// The longest lead-in before the colon, as in `Owner report (UX failures in how a task asks):`.
+const OWNER_LEAD_CHARS: usize = 80;
+
+/// A line opening `Owner <words>:` as its words and the text after the colon (maybe empty);
+/// `None` for anything else, such as `Owner: Alice's tool`. A colon inside brackets, or one
+/// without a space after it (`http://`), is part of the words.
+fn owner_lead(line: &str) -> Option<(&str, &str)> {
+    let rest = line.strip_prefix("Owner ")?;
+    let mut depth = 0i32;
+    let colon = rest.char_indices().find_map(|(at, char)| {
+        match char {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ':' if depth <= 0
+                && rest[at + 1..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace) =>
+            {
+                return Some(at)
+            }
+            _ => {}
         }
-        _ => line,
+        None
+    })?;
+    let lead = rest[..colon].trim();
+    if !lead.starts_with(char::is_alphanumeric) || lead.chars().count() > OWNER_LEAD_CHARS {
+        return None;
     }
+    Some((lead, rest[colon + 1..].trim()))
+}
+
+/// `report (UX failures)` → `UX failures`.
+fn bracketed(lead: &str) -> Option<&str> {
+    let inner = lead[lead.find('(')? + 1..].strip_suffix(')')?.trim();
+    (!inner.is_empty()).then_some(inner)
 }
 
 pub fn task_summary(dir: &TaskDir, record: &TaskRecord) -> Value {

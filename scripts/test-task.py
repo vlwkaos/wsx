@@ -198,6 +198,10 @@ def run(wsx, wsxd, work, owned):
     for tools, word in (('["Bash(make:*)"]', 'the sandbox replaces Bash rules'), ('[Write]', 'file tools are always on')):
         (project / 'wsx.config.yml').write_text('tasks:\n  agent:\n    tools: %s\n' % tools)
         assert word in cli('task', 'new', 'WORK a.txt', ok=False).stderr
+    # ^ The manager's extra tools have the same refusals.
+    for tools in ('["Bash(git:*)"]', '[Edit]', '[MultiEdit]'):
+        (project / 'wsx.config.yml').write_text('tasks:\n  manager:\n    tools: %s\n' % tools)
+        assert 'tasks.manager.tools has' in cli('task', 'new', 'WORK a.txt', ok=False).stderr
     (project / 'wsx.config.yml').write_text('tasks:\n  agent:\n    briefTools: [Read]\n')
     assert 'briefTools was removed' in cli('task', 'new', 'WORK a.txt', ok=False).stderr
     (project / 'wsx.config.yml').write_text('tasks:\n  sandbox:\n    allowWrite: ["~/"]\n')
@@ -226,6 +230,8 @@ def run(wsx, wsxd, work, owned):
     launch = wait(lambda: next((t for t in traces() if t.get('launch')), None), 'fake launch')
     assert launch['wsx_env'] == [] and launch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch'] and launch['schema']
     assert launch['model'] == 'fake-model' and not launch['resume'] and launch['mode'] == 'auto'
+    assert "put in the result's memo a short, lean memo of durable" in launch['instructions'], launch['instructions']
+    assert 'memo' in launch['schema_required'], launch['schema_required']
     # One permission model (docs/tasks.md "Permissions"): the sandbox bounds Bash, never a Bash rule.
     sandbox, common = launch['settings']['sandbox'], Path(git('rev-parse', '--path-format=absolute', '--git-common-dir'))
     assert (sandbox['enabled'], sandbox['failIfUnavailable'], sandbox['autoAllowBashIfSandboxed'],
@@ -422,6 +428,20 @@ def run(wsx, wsxd, work, owned):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
     # ^ LAND_CONFIG names no model: workers default to opus.
     assert show(x1)['record']['model'] == 'opus'
+    # `new --model` picks the worker's model; a bad one creates no task (docs/tasks.md).
+    for bad in ('two words', '-x', ''):
+        refused = cli('task', 'new', 'WORK no.txt', '--model=' + bad, ok=False)
+        assert 'model' in refused.stderr, refused.stderr
+    assert max(row['id'] for row in js('task', 'list', '--all')['tasks']) == x2
+    memo_task = js('task', 'new', 'WORK memo.txt MEMO fixtures stay small', '--model', 'sonnet')['id']
+    assert wait_state(memo_task, 'ready', 'failed')['state'] == 'ready'
+    assert show(memo_task)['record']['model'] == 'sonnet'
+    assert [t for t in traces() if t.get('launch')][-1]['model'] == 'sonnet'
+    # The memo stays in result.json and reaches the ledger's recent tasks once the task is closed.
+    assert show(memo_task)['result']['result']['memo'] == 'fixtures stay small'
+    js('task', 'close', memo_task, '--discard')
+    recent = {row['id']: row for row in js('task', 'ledger')['recent']}
+    assert recent[memo_task]['memo'] == 'fixtures stay small', recent
     assert show(x1)['record']['paths'] == ['x.txt'] and show(x1)['record']['paths_total'] == 1
     rows = {row['id']: row for row in js('task', 'list')['tasks']}
     assert rows[x1]['overlaps'] == [{'id': x2, 'count': 1, 'complete': True}], rows[x1]
@@ -653,8 +673,13 @@ def run(wsx, wsxd, work, owned):
 
     # 20. The manager: started by the first say, answers from the ledger, acts through wsx task.
     (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text()
-                                            + '  manager: { model: fake-manager, rotateTokens: 100000 }\n')
+                                            + '  manager: { model: fake-manager, rotateTokens: 100000, tools: [mcp__docs__search] }\n')
     git('commit', '-q', '-am', 'manager config')
+    # ^ The owner's skills folder: the manager gets it as the `owner` plugin.
+    owner_skills = home / '.claude/skills'
+    (owner_skills / 'scribe').mkdir(parents=True)
+    (owner_skills / 'scribe/SKILL.md').write_text('---\nname: scribe\ndescription: fixture\n'
+                                                  'allowed-tools: Write, Edit\n---\nWrite a file.\n')
 
     def chat(after=None):
         return js('task', 'chat', *(['--after', after] if after is not None else []))['entries']
@@ -668,9 +693,20 @@ def run(wsx, wsxd, work, owned):
     assert asked['ok'] and asked['id'] == 1, asked
     assert ('#%d working' % running) in reply_to(asked['id'])['text']
     launch = next(t for t in traces() if t.get('launch') and t.get('manager'))
-    # ^ Its file tools may write one file, the project page (docs/tasks.md "Project page").
     page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md')
-    assert launch['allowed'] == ['Read', 'Glob', 'Grep', 'Edit(/%s)' % page, 'Write(/%s)' % page], launch['allowed']
+    # ^ It reads as a worker does, uses the owner's skills and subagents (docs/tasks.md "Manager"),
+    # plus `tasks.manager.tools`.
+    assert launch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Skill', 'Agent',
+                                 'mcp__docs__search'], launch['allowed']
+    plugin = Path(launch['plugin_dir'])
+    assert plugin.parent.name == 'manager' and plugin.resolve().is_relative_to(state.resolve()), plugin
+    assert json.loads((plugin / '.claude-plugin/plugin.json').read_text())['name'] == 'owner'
+    assert os.readlink(plugin / 'skills') == str(owner_skills), os.readlink(plugin / 'skills')
+    # ^ File tools are denied by name in the settings, which bind subagents and a skill's
+    # `allowed-tools` too; the manager's writes are its Bash alone (docs/tasks.md "Permissions").
+    deny = launch['settings']['permissions']['deny']
+    assert {'Edit', 'Write', 'NotebookEdit'} <= set(deny) and launch['disallowed'] == [], deny
+    assert not any(rule.startswith(('Edit(', 'Write(')) for rule in launch['allowed']), launch['allowed']
     assert launch['model'] == 'fake-manager' and Path(page).read_text().startswith('# demo\n\n## Goal')
     # ^ Its Bash is plain sandboxed Bash that writes only its notes folder and reaches one socket,
     # the manager host's broker, which runs its `wsx task` commands.
@@ -680,17 +716,33 @@ def run(wsx, wsxd, work, owned):
     assert len(broker) == 1 and Path(broker[0]).is_socket() and len(broker[0]) < 104, broker
     # ^ The sandbox matches the real path: the rule names the socket through the real folder.
     assert broker[0] == os.path.realpath(broker[0]) and '/t-real/' in broker[0], broker
-    assert len(sandbox['filesystem']['allowWrite']) == 1 and sandbox['filesystem']['allowWrite'][0].endswith('/manager/notes')
+    # ^ Its Bash writes the notes folder and one file, the project page (docs/tasks.md "Project page").
+    assert len(sandbox['filesystem']['allowWrite']) == 2 and sandbox['filesystem']['allowWrite'][0].endswith('/manager/notes')
+    assert sandbox['filesystem']['allowWrite'][1] == page, sandbox['filesystem']
     assert Path(sandbox['filesystem']['allowWrite'][0]).is_dir() and sandbox['filesystem']['denyWrite'] == [str(project)]
     assert 'Edit(/%s/**)' % project in launch['settings']['permissions']['deny'], launch['settings']
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
+    assert launch['git_optional_locks'] == '0', launch
     # Its rules for briefs: start work with one, skip it only on the owner's word, never start a build alone.
-    for rule in ('the brief is coming', "`--no-brief` only when the owner's message asks", 'Never start a build on your own',
+    for rule in ('`--model sonnet` may do', 'critical bug fix or heavy, complex work',
+                 'fold those memos into', '/manager/notes/context.md',
+                 'the brief is coming', "`--no-brief` only when the owner's message asks", 'Never start a build on your own',
                  '`wsx task start <n>`, which asks', 'name the briefs that wait',
                  'also in a pipe or with a heredoc', 'give each check as passed or failed from them',
                  "trust them over the worker's own words", 'grant it with `wsx task allow <n> --host <host>`',
-                 'Never tell the owner to edit settings'):
+                 'Never tell the owner to edit settings', 'read-only git in Bash',
+                 'lands by itself when the ledger', 'Never ask the owner to verify a',
+                 'never pass or fail items yourself', 'A release refuses while items are open',
+                 'the Skill tool as `owner:<name>`', 'look at the skills and subagents you have',
+                 'fits lookup, context, memory or research', 'check rather than guess',
+                 'use Read, Grep, WebSearch and the Explore subagent', 'the likely next step',
+                 'say what you checked in one short line',
+                 'docs tools the project settings allow', 'Write and NotebookEdit are denied to them',
+                 'Keep answers short', 'update that section in place with Bash'):
         assert rule in launch['instructions'], rule
+    # ^ No skill is named: the owner's skills are whatever their folder holds.
+    assert re.findall(r'owner:[^<\s]', launch['instructions']) == [], launch['instructions']
+    assert not any(name in launch['instructions'] for name in ('seek', 'recall', '/memo', 'scribe'))
     assert launch['cwd'] == str(project)
     assert js('task', 'manager')['state'] == 'running'
     # A new task and an add to the running one, each by a wsx task command the manager runs.
@@ -724,6 +776,9 @@ def run(wsx, wsxd, work, owned):
     assert wait_state(running, 'ready', 'failed')['state'] == 'ready'
     assert [e['mode'] for e in log(running) if e['kind'] == 'message'] == ['prompt', 'add']
     # Rotation: past rotateTokens the next turn starts a fresh conversation.
+    # ^ Without a skills folder the next launch has no plugin, keeps the Skill tool and
+    # the generic guidance.
+    shutil.rmtree(owner_skills)
     big = js('task', 'say', 'BIG')
     reply_to(big['id'])
     assert wait(lambda: any(e['kind'] == 'rotated' for e in chat()), 'rotated')
@@ -731,6 +786,9 @@ def run(wsx, wsxd, work, owned):
     reply_to(after_rotation['id'])
     manager_launches = [t for t in traces() if t.get('launch') and t.get('manager')]
     assert not manager_launches[-1]['resume'] and manager_launches[-1]['session'] != launch['session']
+    bare = manager_launches[-1]
+    assert bare['plugin_dir'] is None and 'Skill' in bare['allowed'], bare
+    assert 'owner:' not in bare['instructions'] and 'check rather than guess' in bare['instructions']
     assert [e['id'] for e in chat(after=big['id']) if e['kind'] == 'message' and e['from'] == 'owner'] == [after_rotation['id']]
     for n in (running, manager_task, heredoc_task):
         js('task', 'close', n, '--discard')
@@ -780,6 +838,8 @@ def run(wsx, wsxd, work, owned):
     cli('session', 'delete', 'task-manager', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
+    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text().replace('model: fake-manager, ', ''))
+    git('commit', '-q', '-am', 'default manager model')
     state_file = manager_log.parent / 'state.json'
     older = json.loads(state_file.read_text())
     assert older['agent_session'] and older.pop('instructions'), older
@@ -792,6 +852,9 @@ def run(wsx, wsxd, work, owned):
     assert rotated[-1].get('reason') == "the manager's instructions changed", rotated
     opened = [t['message'] for t in traces() if t.get('manager') and 'message' in t and 'STATUS after the change' in t['message']]
     assert opened and opened[0].startswith('Handover (this is a new conversation') and 'You: noted events' in opened[0], opened
+    assert "fold the ledger's memos into your context first" in opened[0], opened
+    # ^ The config named no manager model since the restart: the manager defaults to opus.
+    assert fresh['model'] == 'opus', fresh
     resumed = js('task', 'say', 'STATUS again')
     reply_to(resumed['id'])
     assert not any(t.get('launch') and t.get('manager') and t['session'] != fresh['session']

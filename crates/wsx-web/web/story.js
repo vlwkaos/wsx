@@ -1,6 +1,6 @@
-// Show-me context: where the project stands (the brief, from the ledger) and where one task
-// stands (its story, from the record, the result and the log), in plain words written by wsx,
-// never by a model (docs/web-client.md "Project brief and task story").
+// Show-me context: where the project stands (from the ledger) and what happens next to one
+// task (from the record and the result), in plain words written by wsx, never by a model
+// (docs/web-client.md "Project brief and task story").
 import { api } from "./api.js";
 import { firstSentence, html, useEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
@@ -24,8 +24,8 @@ function deployWords(status, kind, default_branch) {
 // ^ The facts read git in the main checkout, so task changes refresh them at most this often.
 const FACTS_EVERY_MS = 2000;
 
-// The deploy, the release and the main checkout in words, at the bottom of the open
-// reservoir (docs/web-client.md "Project screen"). Read when it opens and as tasks change.
+// The deploy, the release and the main checkout in words, at the top of the project page
+// (docs/web-client.md "Project page"). Read when it opens and as tasks change.
 export function ProjectFacts({ project, overview }) {
   const [ledger, setLedger] = useState(null);
   const timer = useRef(null);
@@ -63,7 +63,7 @@ export function ProjectFacts({ project, overview }) {
 }
 
 // What the owner should know next, in one sentence, or nothing while the agents just work.
-function nextWords(detail) {
+export function nextWords(detail) {
   const main = detail.default_branch ?? "the default branch";
   const asked = detail.approvals?.[0];
   if (asked) return `The manager asks: ${asked.label}.`;

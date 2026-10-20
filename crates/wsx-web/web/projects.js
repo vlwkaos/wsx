@@ -4,7 +4,6 @@ import { html, useNow } from "./lib.js";
 import { can, listedSessions, shows, stateOf, useStore } from "./store.js";
 import { NewSession, SessionRow } from "./inbox.js";
 import { Back } from "./ui.js";
-import { Adopted } from "./adopted.js";
 
 const counted = (count) => (count === 1 ? "1 session" : `${count} sessions`);
 // How many task items wait for the owner in a project, after its session count.
@@ -76,7 +75,6 @@ export function Project({ id, back = "#/projects" }) {
         <div class="bar-tools">${filesLink(project)}</div>
       </header>
       <div class="scroll">
-        ${can("task_view") && html`<${Adopted} project=${project} />`}
         ${worktrees.map((worktree) => {
           const own = sessions.filter((session) => session.worktree === worktree.id);
           return html`

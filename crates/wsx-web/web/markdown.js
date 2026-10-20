@@ -9,9 +9,16 @@ import { h } from "./preact.js";
 import { html, useMemo, useState } from "./lib.js";
 import { Diagram } from "./diagram.js";
 
-const parser = globalThis.markdownit({ html: false, linkify: true });
-// Only text with a scheme becomes a link: `main.rs` and `notes.io` are file names here.
-parser.linkify.set({ fuzzyLink: false, fuzzyEmail: false });
+const makeParser = () => {
+  const made = globalThis.markdownit({ html: false, linkify: true });
+  // Only text with a scheme becomes a link: `main.rs` and `notes.io` are file names here.
+  made.linkify.set({ fuzzyLink: false, fuzzyEmail: false });
+  return made;
+};
+const parser = makeParser();
+// ^ Task text (reports, briefs, the manager chat, the project page) is prose a model wrote:
+// a paragraph indented by four spaces stays a paragraph. Only a fence (```) is code there.
+const proseParser = makeParser().disable("code");
 
 const LINK = /^(https?:|mailto:)/i;
 // Fence names people write, as the highlight.js grammar that reads them.
@@ -152,11 +159,12 @@ function blocks(tokens, files, words) {
 
 // One parse per text: a timeline refresh that brings the same message reuses the nodes.
 // `words`, when given, turns a text run into nodes (task chips); keep it the same function.
-export function Markdown({ text, files, words }) {
+// `prose` reads indented lines as text, not code (docs/web-client.md "Markdown").
+export function Markdown({ text, files, words, prose = false }) {
   const granted = files?.filter((file) => file.image).map((file) => file.hash).join() ?? "";
   return useMemo(() => {
     const env = {};
-    const tokens = parser.parse(text, env);
+    const tokens = (prose ? proseParser : parser).parse(text, env);
     // markdown-it keeps a link's address on the opening token only.
     for (const token of tokens) {
       let href = null;
@@ -166,5 +174,5 @@ export function Markdown({ text, files, words }) {
       }
     }
     return html`<div class="markdown">${blocks(tokens, files, words)}</div>`;
-  }, [text, granted, words]);
+  }, [text, granted, words, prose]);
 }

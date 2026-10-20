@@ -67,6 +67,8 @@ struct Manager {
     main: PathBuf,
     model: String,
     rotate_tokens: u64,
+    /// `tasks.manager.tools`, added to the read-only ones.
+    tools: Vec<String>,
     state: ManagerState,
     events: Sender<Event>,
     agent: Option<ClaudeAgent>,
@@ -89,13 +91,80 @@ struct Manager {
     reexec: bool,
 }
 
-/// ref: docs/tasks.md "Manager", "Brief"
-fn instructions(project: &str, notes: &Path, page: &Path) -> String {
+/// Tools the manager has beyond `Read Glob Grep`, so it loads context as a worker does and
+/// beyond: the owner's skills and research subagents. ref: docs/tasks.md "Manager"
+const MANAGER_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "Skill", "Agent"];
+
+/// Denied by name: its writes go through sandboxed Bash alone, also in a subagent or a skill
+/// whose `allowed-tools` names them. ref: docs/tasks.md "Permissions"
+const MANAGER_DENIED_TOOLS: [&str; 3] = ["Edit", "Write", "NotebookEdit"];
+
+/// The plugin that lends the manager the owner's skills, `manager/<this>/`.
+const SKILLS_PLUGIN_DIR: &str = "skills-plugin";
+const SKILLS_PLUGIN_NAME: &str = "owner";
+
+/// The manager's lean project context in its notes folder. ref: docs/tasks.md "Memo"
+const CONTEXT_FILE: &str = "context.md";
+
+/// The manager runs with project and local settings only, which load no user skill: a
+/// plugin in its folder links the owner's skills folder, `$CLAUDE_CONFIG_DIR/skills` or
+/// `~/.claude/skills`. None when the owner has none. ref: docs/tasks.md "Manager"
+fn skills_plugin(manager: &Path) -> Result<Option<PathBuf>> {
+    use std::os::unix::fs::{symlink, DirBuilderExt};
+    let Some(skills) = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
+        .map(|root| root.join("skills"))
+        .filter(|skills| skills.is_dir())
+    else {
+        return Ok(None);
+    };
+    let plugin = manager.join(SKILLS_PLUGIN_DIR);
+    let meta = plugin.join(".claude-plugin");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&meta)
+        .with_context(|| format!("cannot create {}", meta.display()))?;
+    std::fs::write(
+        meta.join("plugin.json"),
+        serde_json::json!({
+            "name": SKILLS_PLUGIN_NAME,
+            "description": "The owner's skills, lent to the wsx manager",
+        })
+        .to_string(),
+    )
+    .with_context(|| format!("cannot write {}", meta.display()))?;
+    let link = plugin.join("skills");
+    match std::fs::read_link(&link) {
+        Ok(target) if target == skills => return Ok(Some(plugin)),
+        Ok(_) => std::fs::remove_file(&link)
+            .with_context(|| format!("cannot replace {}", link.display()))?,
+        Err(_) if link.symlink_metadata().is_ok() => {
+            anyhow::bail!("{} is not a link to the owner's skills", link.display())
+        }
+        Err(_) => {}
+    }
+    symlink(&skills, &link).with_context(|| format!("cannot link {}", link.display()))?;
+    Ok(Some(plugin))
+}
+
+/// ref: docs/tasks.md "Manager", "Brief", "Memo"
+fn instructions(project: &str, notes: &Path, page: &Path, skills: bool) -> String {
+    // ^ No skill is named: the owner's skills are whatever their folder holds.
+    let skills = match skills {
+        true => format!(
+            "The owner's skills are yours with the Skill tool as `{SKILLS_PLUGIN_NAME}:<name>`. "
+        ),
+        false => String::new(),
+    };
     format!(
         "You are the manager of the wsx project {project}. You never edit the project's \
          files and never run builds or tests; workers do that in their own tasks. You may \
-         keep notes in {notes}, the only folder you can write. Start every turn with \
-         `wsx task ledger -p {project}`: it is the source of truth, not your memory. \
+         keep notes in {notes}, the only folder you can write besides the project page. \
+         Start every turn with `wsx task ledger -p {project}`: it is the source of truth, \
+         not your memory. \
          Messages headed 'Owner' come from the owner; messages headed 'Events' are written \
          by wsx. For each owner message choose one: answer it, `wsx task add`, \
          `wsx task steer`, `wsx task new` or `wsx task land`, always with \
@@ -121,19 +190,42 @@ fn instructions(project: &str, notes: &Path, page: &Path) -> String {
          items yourself. A release refuses while items are open: tell the owner how many \
          are open and ask them to check those first. When a worker leaves for a person what \
          a command, a test or a capture could prove, tell that worker to prove it. \
-         Your Bash runs in a sandbox that writes only your notes folder; `wsx task` \
-         commands reach the tasks from there, also in a pipe or with a heredoc, and no other \
-         `wsx` command runs. Workers run in a sandbox too. When the ledger shows a blocked \
-         task with asks, fix it yourself: when the task plainly needs that host or folder, \
+         Your Bash runs in a sandbox that writes only your notes folder and the project \
+         page; `wsx task` commands reach the tasks from there, also in a pipe or with a \
+         heredoc, and no other `wsx` command runs. Load context as a worker would, without editing or building: \
+         Read, Glob and Grep the project and the tasks' working copies, WebFetch and \
+         WebSearch, and read-only git in Bash (`git log`, `git show`, `git diff`, \
+         `git status`, also `git -C <working copy>`); never a git command that writes. \
+         {skills}At the start of a turn, look at the skills and subagents you have. Before \
+         you answer about a prior decision, a term you do not know, the code or a research \
+         question, use any skill or subagent whose description fits lookup, context, memory \
+         or research; check rather than guess. When none fits, use Read, Grep, WebSearch and \
+         the Explore subagent; use the docs tools the project settings allow. Think about \
+         the owner's goal and the likely next step before you answer, and say what you \
+         checked in one short line. Subagents and skills keep your boundary: Edit, \
+         Write and NotebookEdit are denied to them as to you, and their Bash writes only \
+         where yours does. Keep answers short. \
+         Workers run in a sandbox too. When the ledger shows a blocked task with asks, fix it yourself: when the task plainly needs that host or folder, \
          grant it with `wsx task allow <n> --host <host>` or `--path <path>`, which resumes \
          it; otherwise steer or add to the worker. Never tell the owner to edit settings \
          files. A grant for every task (`--project-wide`) or a tool rule asks the owner's \
          approval; tell the owner what you asked for. \
          The project page {page} is the owner's one-page picture of the project: the goal, \
          the tasks and how they relate as a mermaid graph, the decisions and the open \
-         questions. When one of them changes, update that section in place with the Edit \
-         tool; never rewrite the whole file, and never create another page. Workers do not \
-         write it. When a reply points to it, call it the project page.",
+         questions. When one of them changes, update that section in place with Bash, such \
+         as a short python3 script that reads the page, replaces that section and writes \
+         the same file back (only that file is writable: a temporary file beside it fails); \
+         never rewrite the whole file, and never create another page. Workers do not \
+         write it. When a reply points to it, call it the project page. \
+         Pick the worker's model with `wsx task new --model <name>`: `--model sonnet` may \
+         do when the owner's message is already a thorough brief; leave the default \
+         (opus) for a critical bug fix or heavy, complex work. \
+         {context} is your lean project context; read it when a conversation starts. \
+         Workers leave a `memo` of durable project knowledge on the ledger's recent tasks. \
+         When a message opens with 'Handover' (a new conversation after a rotation), \
+         first fold those memos into {context} with Bash: keep it lean, merge duplicates, \
+         drop what is stale, at most 60 lines.",
+        context = notes.join(CONTEXT_FILE).display(),
         notes = notes.display(),
         page = page.display()
     )
@@ -153,6 +245,7 @@ pub fn run(project_id: &str) -> Result<()> {
         main,
         model: settings.manager_model,
         rotate_tokens: settings.manager_rotate_tokens,
+        tools: settings.manager_tools,
         state,
         events: events.clone(),
         agent: None,
@@ -570,27 +663,33 @@ impl Manager {
         let page = page.canonicalize().unwrap_or(page);
         let boundary = Boundary {
             cwd: self.main.clone(),
-            writes: vec![notes.display().to_string()],
+            // ^ The page is one file: Bash may rewrite it in place, never beside it.
+            writes: vec![notes.display().to_string(), page.display().to_string()],
             deny_writes: vec![self.main.display().to_string()],
             domains: Vec::new(),
             unix_sockets: vec![broker_socket.display().to_string()],
             deny_edits: kept_from_edits(&self.main, None),
+            deny_tools: MANAGER_DENIED_TOOLS.map(String::from).to_vec(),
         };
+        let skills = skills_plugin(&self.dir.path)?;
         let mut launch = Launch::new(
             &boundary,
             &self.model,
-            // ^ `//` starts an absolute path in a rule; one file, never a folder.
-            vec![
-                format!("Edit(/{})", page.display()),
-                format!("Write(/{})", page.display()),
-            ],
-            instructions(&self.project, &notes, &page),
+            MANAGER_TOOLS
+                .map(String::from)
+                .into_iter()
+                .chain(self.tools.iter().cloned())
+                .collect(),
+            instructions(&self.project, &notes, &page, skills.is_some()),
         );
+        launch.plugin_dirs = skills.into_iter().collect();
         // ^ The agent's `wsx task` commands go to this host (broker.rs), which runs them as
         // the manager actor outside the sandbox; the actor mark stays for the approval rules.
         launch.env = vec![
             (broker::BROKER_ENV.into(), broker_socket.into_os_string()),
             (ACTOR_ENV.into(), "manager".into()),
+            // ^ Its git reads must not try to refresh the index of a checkout it cannot write.
+            ("GIT_OPTIONAL_LOCKS".into(), "0".into()),
         ];
         launch.path_prefix = exe.parent().map(Path::to_path_buf);
         Ok(launch)
@@ -675,13 +774,11 @@ impl Manager {
             })
             .take(HANDOVER_ENTRIES)
             .collect();
-        if lines.is_empty() {
-            return String::new();
-        }
         lines.reverse();
+        // ^ Always sent after a rotation: it is the manager's cue to fold the memos.
         format!(
-            "Handover (this is a new conversation; the last exchanges before it, read the \
-             ledger for the state):\n{}\n\n",
+            "Handover (this is a new conversation; fold the ledger's memos into your context \
+             first; the last exchanges before it, read the ledger for the state):\n{}\n\n",
             lines.join("\n")
         )
     }

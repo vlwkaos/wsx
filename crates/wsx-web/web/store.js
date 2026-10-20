@@ -64,7 +64,7 @@ export const touch = () => matchMedia("(pointer: coarse)").matches || innerWidth
 const STATES = {
   blocked: { word: "needs input", group: "needs", tone: "attention" },
   error: { word: "error", group: "needs", tone: "danger" },
-  working: { word: "working", group: "running", tone: "accent" },
+  working: { word: "working", group: "running", tone: "working" },
   done: { word: "done", group: "finished", tone: "muted" },
   idle: { word: "idle", group: "rest", tone: "muted" },
   unknown: { word: "not connected", group: "rest", tone: "muted" },
