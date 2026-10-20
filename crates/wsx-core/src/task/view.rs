@@ -73,6 +73,7 @@ pub fn check_outcomes(result: &Value) -> Vec<(String, &'static str)> {
 
 /// The longest `task new --title`. ref: docs/tasks.md "Store"
 pub const MAX_TITLE_CHARS: usize = 60;
+const MAX_MODEL_BYTES: usize = 256;
 
 /// A `--title` as given, trimmed; refused when empty, too long or with control characters.
 pub fn checked_title(title: &str) -> Result<String> {
@@ -87,6 +88,25 @@ pub fn checked_title(title: &str) -> Result<String> {
         anyhow::bail!("the title has control characters");
     }
     Ok(title.to_string())
+}
+
+/// A worker model named by `task new --model`: one word of at most 256 bytes, as
+/// `tasks.agent.model` allows. ref: docs/tasks.md "Config"
+pub fn checked_model(model: &str) -> Result<String> {
+    if model.is_empty() {
+        anyhow::bail!("the model is empty");
+    }
+    if model.len() > MAX_MODEL_BYTES {
+        anyhow::bail!("the model is longer than {MAX_MODEL_BYTES} bytes");
+    }
+    if model.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        anyhow::bail!("the model must be one word");
+    }
+    // ^ It becomes the value of claude's `--model`; a leading dash would read as an option.
+    if model.starts_with('-') {
+        anyhow::bail!("the model must not start with '-'");
+    }
+    Ok(model.to_string())
 }
 
 /// The task's title: its `--title`, else the first line of its prompt (at most 120 characters),

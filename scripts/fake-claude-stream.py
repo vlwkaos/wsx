@@ -14,6 +14,7 @@ Each user message is a small script of words:
   NEEDS_HOST <host>  curl <host>: a sandbox violation and blocked unless the launch's allowedDomains has it
   NEEDS_PATH <path>  touch <path>: "Operation not permitted" and blocked unless an allowWrite folder holds it
   RETRY_HOST <host>  a violation, then the same command with allowed_domains that succeeds (no ask)
+  MEMO <words> return the rest of the line as the result's memo
 Launched with the brief schema it writes a brief instead and builds nothing:
   REWRITE <words>  the rewritten prompt is the rest of the line
   REVISE <words>   (a reply) the rewritten prompt becomes the rest of the line
@@ -242,6 +243,7 @@ def main():
     trace({'launch': True, 'pid': os.getpid(), 'session': session, 'resume': '--resume' in options,
            'allowed': allowed, 'disallowed': disallowed, 'briefing': briefing, 'instructions': instructions,
            'schema': '--json-schema' in options, 'model': options.get('--model'),
+           'schema_required': json.loads(options['--json-schema']).get('required') if '--json-schema' in options else None,
            'mode': options.get('--permission-mode'), 'settings': json.loads(options.get('--settings', '{}')),
            'wsx_env': sorted(name for name in os.environ if name.startswith('WSX_')),
            'manager': project is not None, 'actor': os.environ.get('WSX_TASK_ACTOR'),
@@ -341,7 +343,8 @@ def main():
               'structured_output': {'status': status, 'summary': summary,
                                     'decisions': [{'choice': 'fake choice', 'reason': 'fixture'}],
                                     'human_verify': [{'check': 'open the file', 'pass_if': 'it has text'}] if 'HV' in words else [],
-                                    'left_open': ['nothing real'], 'notes': ''}})
+                                    'left_open': ['nothing real'], 'notes': '',
+                                    'memo': rest_of_line(text, 'MEMO') if 'MEMO' in words else ''}})
 
 
 if __name__ == '__main__':

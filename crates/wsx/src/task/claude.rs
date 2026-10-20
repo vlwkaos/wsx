@@ -301,6 +301,9 @@ fn worker_instructions(record: &TaskRecord) -> String {
          search and run read-only commands, change no file, and return the brief in the \
          requested structure. When a message says the build starts, build it and commit \
          your changes with git before you finish. Build and test what you change. \
+         Before you finish a build, put in the result's memo a short, lean memo of durable \
+         project knowledge a later task needs: a convention, a gotcha, a decision and its \
+         reason, a few lines at most. Leave the memo empty when there is none. \
          Your commands run in a sandbox: they write only in this working copy, and a \
          host that is not allowed fails with a sandbox_violations note; when the task \
          needs that host, run the command again with the host listed. Keep file edits in \

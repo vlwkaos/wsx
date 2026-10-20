@@ -223,6 +223,8 @@ def run(wsx, wsxd, work, owned):
     launch = wait(lambda: next((t for t in traces() if t.get('launch')), None), 'fake launch')
     assert launch['wsx_env'] == [] and launch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch'] and launch['schema']
     assert launch['model'] == 'fake-model' and not launch['resume'] and launch['mode'] == 'auto'
+    assert "put in the result's memo a short, lean memo of durable" in launch['instructions'], launch['instructions']
+    assert 'memo' in launch['schema_required'], launch['schema_required']
     # One permission model (docs/tasks.md "Permissions"): the sandbox bounds Bash, never a Bash rule.
     sandbox, common = launch['settings']['sandbox'], Path(git('rev-parse', '--path-format=absolute', '--git-common-dir'))
     assert (sandbox['enabled'], sandbox['failIfUnavailable'], sandbox['autoAllowBashIfSandboxed'],
@@ -419,6 +421,20 @@ def run(wsx, wsxd, work, owned):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
     # ^ LAND_CONFIG names no model: workers default to opus.
     assert show(x1)['record']['model'] == 'opus'
+    # `new --model` picks the worker's model; a bad one creates no task (docs/tasks.md).
+    for bad in ('two words', '-x', ''):
+        refused = cli('task', 'new', 'WORK no.txt', '--model=' + bad, ok=False)
+        assert 'model' in refused.stderr, refused.stderr
+    assert max(row['id'] for row in js('task', 'list', '--all')['tasks']) == x2
+    memo_task = js('task', 'new', 'WORK memo.txt MEMO fixtures stay small', '--model', 'sonnet')['id']
+    assert wait_state(memo_task, 'ready', 'failed')['state'] == 'ready'
+    assert show(memo_task)['record']['model'] == 'sonnet'
+    assert [t for t in traces() if t.get('launch')][-1]['model'] == 'sonnet'
+    # The memo stays in result.json and reaches the ledger's recent tasks once the task is closed.
+    assert show(memo_task)['result']['result']['memo'] == 'fixtures stay small'
+    js('task', 'close', memo_task, '--discard')
+    recent = {row['id']: row for row in js('task', 'ledger')['recent']}
+    assert recent[memo_task]['memo'] == 'fixtures stay small', recent
     assert show(x1)['record']['paths'] == ['x.txt'] and show(x1)['record']['paths_total'] == 1
     rows = {row['id']: row for row in js('task', 'list')['tasks']}
     assert rows[x1]['overlaps'] == [{'id': x2, 'count': 1, 'complete': True}], rows[x1]
@@ -656,7 +672,9 @@ def run(wsx, wsxd, work, owned):
     assert 'Edit(/%s/**)' % project in launch['settings']['permissions']['deny'], launch['settings']
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     # Its rules for briefs: start work with one, skip it only on the owner's word, never start a build alone.
-    for rule in ('the brief is coming', "`--no-brief` only when the owner's message asks", 'Never start a build on your own',
+    for rule in ('`--model sonnet` may do', 'critical bug fix or heavy, complex work',
+                 'fold those memos into', '/manager/notes/context.md',
+                 'the brief is coming', "`--no-brief` only when the owner's message asks", 'Never start a build on your own',
                  '`wsx task start <n>`, which asks', 'name the briefs that wait',
                  'also in a pipe or with a heredoc', 'give each check as passed or failed from them',
                  "trust them over the worker's own words", 'grant it with `wsx task allow <n> --host <host>`',
@@ -751,6 +769,8 @@ def run(wsx, wsxd, work, owned):
     cli('session', 'delete', 'task-manager', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
+    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text().replace('model: fake-manager, ', ''))
+    git('commit', '-q', '-am', 'default manager model')
     state_file = manager_log.parent / 'state.json'
     older = json.loads(state_file.read_text())
     assert older['agent_session'] and older.pop('instructions'), older
@@ -763,6 +783,9 @@ def run(wsx, wsxd, work, owned):
     assert rotated[-1].get('reason') == "the manager's instructions changed", rotated
     opened = [t['message'] for t in traces() if t.get('manager') and 'message' in t and 'STATUS after the change' in t['message']]
     assert opened and opened[0].startswith('Handover (this is a new conversation') and 'You: noted events' in opened[0], opened
+    assert "fold the ledger's memos into your context first" in opened[0], opened
+    # ^ The config named no manager model since the restart: the manager defaults to opus.
+    assert fresh['model'] == 'opus', fresh
     resumed = js('task', 'say', 'STATUS again')
     reply_to(resumed['id'])
     assert not any(t.get('launch') and t.get('manager') and t['session'] != fresh['session']
