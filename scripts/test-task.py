@@ -646,6 +646,11 @@ def run(wsx, wsxd, work, owned):
     (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text()
                                             + '  manager: { model: fake-manager, rotateTokens: 100000, tools: [mcp__docs__search] }\n')
     git('commit', '-q', '-am', 'manager config')
+    # ^ The owner's skills folder: the manager gets it as the `owner` plugin.
+    owner_skills = home / '.claude/skills'
+    (owner_skills / 'scribe').mkdir(parents=True)
+    (owner_skills / 'scribe/SKILL.md').write_text('---\nname: scribe\ndescription: fixture\n'
+                                                  'allowed-tools: Write, Edit\n---\nWrite a file.\n')
 
     def chat(after=None):
         return js('task', 'chat', *(['--after', after] if after is not None else []))['entries']
@@ -659,11 +664,20 @@ def run(wsx, wsxd, work, owned):
     assert asked['ok'] and asked['id'] == 1, asked
     assert ('#%d working' % running) in reply_to(asked['id'])['text']
     launch = next(t for t in traces() if t.get('launch') and t.get('manager'))
-    # ^ Its file tools may write one file, the project page (docs/tasks.md "Project page").
     page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md')
-    # ^ It reads as a worker does (docs/tasks.md "Manager"), plus `tasks.manager.tools`.
-    assert launch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Edit(/%s)' % page, 'Write(/%s)' % page,
+    # ^ It reads as a worker does, uses the owner's skills and subagents (docs/tasks.md "Manager"),
+    # plus `tasks.manager.tools`.
+    assert launch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Skill', 'Agent',
                                  'mcp__docs__search'], launch['allowed']
+    plugin = Path(launch['plugin_dir'])
+    assert plugin.parent.name == 'manager' and plugin.resolve().is_relative_to(state.resolve()), plugin
+    assert json.loads((plugin / '.claude-plugin/plugin.json').read_text())['name'] == 'owner'
+    assert os.readlink(plugin / 'skills') == str(owner_skills), os.readlink(plugin / 'skills')
+    # ^ File tools are denied by name in the settings, which bind subagents and a skill's
+    # `allowed-tools` too; the manager's writes are its Bash alone (docs/tasks.md "Permissions").
+    deny = launch['settings']['permissions']['deny']
+    assert {'Edit', 'Write', 'NotebookEdit'} <= set(deny) and launch['disallowed'] == [], deny
+    assert not any(rule.startswith(('Edit(', 'Write(')) for rule in launch['allowed']), launch['allowed']
     assert launch['model'] == 'fake-manager' and Path(page).read_text().startswith('# demo\n\n## Goal')
     # ^ Its Bash is plain sandboxed Bash that writes only its notes folder and reaches one socket,
     # the manager host's broker, which runs its `wsx task` commands.
@@ -673,7 +687,9 @@ def run(wsx, wsxd, work, owned):
     assert len(broker) == 1 and Path(broker[0]).is_socket() and len(broker[0]) < 104, broker
     # ^ The sandbox matches the real path: the rule names the socket through the real folder.
     assert broker[0] == os.path.realpath(broker[0]) and '/t-real/' in broker[0], broker
-    assert len(sandbox['filesystem']['allowWrite']) == 1 and sandbox['filesystem']['allowWrite'][0].endswith('/manager/notes')
+    # ^ Its Bash writes the notes folder and one file, the project page (docs/tasks.md "Project page").
+    assert len(sandbox['filesystem']['allowWrite']) == 2 and sandbox['filesystem']['allowWrite'][0].endswith('/manager/notes')
+    assert sandbox['filesystem']['allowWrite'][1] == page, sandbox['filesystem']
     assert Path(sandbox['filesystem']['allowWrite'][0]).is_dir() and sandbox['filesystem']['denyWrite'] == [str(project)]
     assert 'Edit(/%s/**)' % project in launch['settings']['permissions']['deny'], launch['settings']
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
@@ -686,7 +702,11 @@ def run(wsx, wsxd, work, owned):
                  'also in a pipe or with a heredoc', 'give each check as passed or failed from them',
                  "trust them over the worker's own words", 'grant it with `wsx task allow <n> --host <host>`',
                  'Never tell the owner to edit settings', 'read-only git in Bash',
-                 "read the task's verify state", 'in one step with `wsx task land <n> --skip-verify`'):
+                 "read the task's verify state", 'in one step with `wsx task land <n> --skip-verify`',
+                 '`owner:seek <term>`', '`owner:recall`', '`owner:memo` to look up memos',
+                 'use a research subagent (the Agent tool) or WebSearch', 'use the Explore subagent',
+                 'docs tools the project settings allow', 'Write and NotebookEdit are denied to them',
+                 'Keep answers short', 'update that section in place with Bash'):
         assert rule in launch['instructions'], rule
     assert launch['cwd'] == str(project)
     assert js('task', 'manager')['state'] == 'running'

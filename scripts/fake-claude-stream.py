@@ -30,7 +30,7 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   RUN <command>  run that shell command (the wsx task commands it names) and quote its output
   SCRIPT         (a line) run the rest of the message as one shell script, heredocs too
   TABLE          answer with a wide markdown table that names #4 twice and #2
-  PAGE <section> <words>  replace that section of the project page (its Edit rule names it)
+  PAGE <section> <words>  replace that section of the project page (its sandbox entry names it)
   STATUS         answer from `wsx task ledger`
   SLOW           take about 3 s
   BIG            report a 200k-token context, so the host rotates the conversation
@@ -191,9 +191,9 @@ def brief_turn(text, session, allowed, disallowed, current):
     return current
 
 
-def edit_page(allowed, section, words):
-    # ^ The manager's file tools may write the page alone: `Edit(//<path>)`.
-    page = next(rule[len('Edit(/'):-1] for rule in allowed if rule.startswith('Edit(/'))
+def edit_page(settings, section, words):
+    # ^ The manager's Bash may write one file, the page: the sandbox's one file entry.
+    page = next(path for path in settings['sandbox']['filesystem']['allowWrite'] if path.endswith('/page.md'))
     with open(page) as source:
         text = source.read()
     head = '## %s\n\n' % section
@@ -203,7 +203,7 @@ def edit_page(allowed, section, words):
         out.write(text[:start] + words + text[end:])
 
 
-def manager_turn(text, project, allowed):
+def manager_turn(text, project, settings):
     replies = []
     if 'SLOW' in text.split():
         time.sleep(3)
@@ -217,7 +217,7 @@ def manager_turn(text, project, allowed):
     for line in text.splitlines():
         if line.startswith('PAGE '):
             _, section, words = line.split(' ', 2)
-            edit_page(allowed, section, words)
+            edit_page(settings, section, words)
             replies.append('I updated the %s of the project page.' % section)
     if 'TABLE' in text.split():
         cell = 'a long cell that keeps going ' * 4
@@ -248,6 +248,7 @@ def main():
            'wsx_env': sorted(name for name in os.environ if name.startswith('WSX_')),
            'git_optional_locks': os.environ.get('GIT_OPTIONAL_LOCKS'),
            'manager': project is not None, 'actor': os.environ.get('WSX_TASK_ACTOR'),
+           'plugin_dir': options.get('--plugin-dir'),
            'cwd': os.getcwd()})
     signal.signal(signal.SIGINT, lambda *_: (trace({'interrupted': True}), sys.exit(130)))
     emit({'type': 'system', 'subtype': 'init', 'session_id': session})
@@ -260,7 +261,8 @@ def main():
         trace({'message': text, 'session': session, 'manager': project is not None})
         if project is not None:
             # ^ A handover quotes earlier messages; only the messages after it are this turn's.
-            answer = manager_turn(text.split('\n\n', 1)[1] if text.startswith('Handover') else text, project, allowed)
+            answer = manager_turn(text.split('\n\n', 1)[1] if text.startswith('Handover') else text, project,
+                                    json.loads(options.get('--settings', '{}')))
             # ^ A line of its own: a handover quotes earlier messages as `Owner: BIG`.
             context = 200000 if 'BIG' in text.splitlines() else 5000
             emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': answer,
