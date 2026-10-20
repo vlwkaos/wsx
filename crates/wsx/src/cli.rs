@@ -1987,6 +1987,7 @@ mod daemon_command_tests {
             replacement_target: None,
             replacement_target_version: String::new(),
             replacement_blockers: Vec::new(),
+            last_handoff_error: None,
         }
     }
 
@@ -4175,6 +4176,18 @@ fn runtime_lifecycle_lines(lifecycle: &runtime::DaemonLifecycle) -> Vec<String> 
                 .map(|blocker| format!("{blocker:?}"))
                 .collect::<Vec<_>>()
                 .join(", ")
+        ));
+    }
+    // ^ docs/daemon-live-upgrade.md "A failed handoff": the daemon's stderr goes nowhere.
+    if let Some(failure) = &lifecycle.last_handoff_error {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() as u64);
+        lines.push(format!(
+            "Last handoff failed {}s ago: {} failed: {}",
+            now.saturating_sub(failure.unix_ms) / 1000,
+            failure.step,
+            failure.error
         ));
     }
     lines

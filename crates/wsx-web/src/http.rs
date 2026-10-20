@@ -441,6 +441,7 @@ async fn session(State(app): State<Shared>, Paired(device): Paired) -> Json<Valu
             "id": app.assets.build,
             "started_unix": app.started_unix,
         },
+        "upgrade_failed": app.upgrade_failed.lock().unwrap_or_else(|lock| lock.into_inner()).clone(),
     }))
 }
 

@@ -881,6 +881,14 @@ pub(crate) fn runtime_availability_notice(
                 ),
             ))
         }
+        // ^ docs/daemon-live-upgrade.md "A failed automatic upgrade": this wsx works with the
+        // running daemon; `wsx daemon restart` tries again.
+        runtime::Availability::UpgradeFailed { reason } => Some((
+            NoticeLevel::Warning,
+            format!(
+                "wsxd upgrade failed: {reason}; sessions keep running\n`wsx daemon restart` tries again."
+            ),
+        )),
     }
 }
 

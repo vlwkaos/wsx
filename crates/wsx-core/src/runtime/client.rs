@@ -69,6 +69,11 @@ pub enum Availability {
         live_runtimes: usize,
         blockers: Vec<super::domain::ReplacementBlocker>,
     },
+    /// The automatic upgrade rolled back and the running daemon speaks this protocol: this
+    /// client works with it. ref: docs/daemon-live-upgrade.md "A failed automatic upgrade"
+    UpgradeFailed {
+        reason: String,
+    },
 }
 
 /// Result of `restart_daemon`. No outcome ends a session.
@@ -841,6 +846,16 @@ fn ensure_available_with_binary(
                     blockers: vec![super::domain::ReplacementBlocker::LegacyDaemon],
                 });
             }
+            // ^ An upgrade from this daemon into this build already rolled back: work with the
+            // running daemon, and try again only for another daemon or another build.
+            if live_handoff && compatible {
+                if let Some(reason) =
+                    failed_upgrade(client.socket(), status.epoch, &target_binary_id)
+                {
+                    set_active_protocol(client.socket(), PROTOCOL_VERSION);
+                    return Ok(Availability::UpgradeFailed { reason });
+                }
+            }
             let replacement_request = if live_handoff {
                 let Some((handoff_binary_id, handoff_version)) = pending_handoff_target(
                     &status,
@@ -891,7 +906,27 @@ fn ensure_available_with_binary(
                 } => {
                     set_active_protocol(client.socket(), PROTOCOL_VERSION);
                     if live_handoff {
-                        wait_until_handoff_ready(client, super::protocol::DAEMON_REVISION)?;
+                        match wait_until_handoff_ready(client, super::protocol::DAEMON_REVISION)? {
+                            HandoffWait::Ready => {}
+                            // ^ The same protocol: the running daemon serves this client, so a
+                            // failed upgrade is a notice, not an error.
+                            HandoffWait::RolledBack(after) if compatible => {
+                                let reason = rollback_reason(&after);
+                                note_failed_upgrade(
+                                    client.socket(),
+                                    after.epoch,
+                                    &target_binary_id,
+                                    &reason,
+                                );
+                                return Ok(Availability::UpgradeFailed { reason });
+                            }
+                            HandoffWait::RolledBack(after) => {
+                                return Err(io::Error::other(format!(
+                                    "wsxd live handoff failed and was rolled back ({}); the running daemon kept its sessions",
+                                    rollback_reason(&after)
+                                )));
+                            }
+                        }
                     } else {
                         wait_until_stopped(client)?;
                         consume_planned_marker(
@@ -1106,9 +1141,10 @@ fn wait_until_restarted(client: &Client, old_epoch: u64) -> io::Result<()> {
                     return Ok(());
                 }
                 if status.replacement_target.is_none() {
-                    return Err(io::Error::other(
-                        "wsxd could not hand off and kept running; no session was stopped",
-                    ));
+                    return Err(io::Error::other(format!(
+                        "wsxd could not hand off and kept running ({}); no session was stopped",
+                        rollback_reason(&status)
+                    )));
                 }
             }
         }
@@ -1684,6 +1720,75 @@ fn lifecycle_marker_reason(socket: &Path) -> Option<String> {
     Some(reason.trim().to_string())
 }
 
+// ^ docs/daemon-live-upgrade.md "A failed automatic upgrade": an upgrade that rolled back
+// is tried again only for another daemon epoch or another target build. The record is
+// `<epoch>|<target binary id>|<reason>`, one line beside the socket.
+fn failed_upgrade_path(socket: &Path) -> PathBuf {
+    socket.with_extension("upgrade-failed")
+}
+
+/// The reason of the failed upgrade from this daemon epoch into this target, if one failed.
+fn failed_upgrade(socket: &Path, epoch: u64, target_binary_id: &str) -> Option<String> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(failed_upgrade_path(socket))
+        .ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+        || metadata.len() > 4096
+    {
+        return None;
+    }
+    let mut line = String::new();
+    file.take(4097).read_to_string(&mut line).ok()?;
+    let mut parts = line.trim_end().splitn(3, '|');
+    let (Some(recorded_epoch), Some(recorded_target), Some(reason)) =
+        (parts.next(), parts.next(), parts.next())
+    else {
+        return None;
+    };
+    (recorded_epoch.parse::<u64>().ok()? == epoch && recorded_target == target_binary_id)
+        .then(|| reason.to_string())
+}
+
+/// Record a failed upgrade. A failure to write only means the next command tries again.
+fn note_failed_upgrade(socket: &Path, epoch: u64, target_binary_id: &str, reason: &str) {
+    let reason = reason.replace(['\n', '\r'], " ");
+    let reason: String = reason.chars().take(1000).collect();
+    let path = failed_upgrade_path(socket);
+    let _ = fs::remove_file(&path);
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+    {
+        let _ = writeln!(file, "{epoch}|{target_binary_id}|{reason}");
+    }
+}
+
+/// Why the running daemon rolled back its last handoff, as wsx says it: its own record when
+/// it keeps one (revision 32 and later), else a plain sentence.
+fn rollback_reason(status: &super::domain::DaemonLifecycle) -> String {
+    match &status.last_handoff_error {
+        Some(failure) => format!("{} failed: {}", failure.step, failure.error),
+        None => "the running wsxd rolled back the handoff and did not say why".into(),
+    }
+}
+
+/// The failed upgrade into this build while the running daemon is still the one it failed
+/// from: its reason, for a notice (docs/daemon-live-upgrade.md "A failed automatic upgrade").
+/// It only reads: it never starts or upgrades wsxd.
+pub fn upgrade_failure(client: &Client) -> Option<String> {
+    let status = lifecycle_status(client).ok()?;
+    let target = binary_identity(&daemon_binary()).ok()?;
+    failed_upgrade(client.socket(), status.epoch, &target)
+}
+
 fn background_recovery_allowed(socket: &Path) -> bool {
     match lifecycle_marker_reason(socket).as_deref() {
         None => !socket.with_extension("lifecycle").exists(),
@@ -1963,7 +2068,13 @@ fn wait_until_stopped(client: &Client) -> io::Result<()> {
     }
 }
 
-fn wait_until_handoff_ready(client: &Client, target_revision: u32) -> io::Result<()> {
+enum HandoffWait {
+    Ready,
+    /// The source daemon kept running; its lifecycle after the rollback.
+    RolledBack(Box<super::domain::DaemonLifecycle>),
+}
+
+fn wait_until_handoff_ready(client: &Client, target_revision: u32) -> io::Result<HandoffWait> {
     let deadline = Instant::now() + HANDOFF_WAIT;
     loop {
         match probe_existing_daemon(client) {
@@ -1972,15 +2083,13 @@ fn wait_until_handoff_ready(client: &Client, target_revision: u32) -> io::Result
                     if status.daemon_revision >= target_revision
                         && status.phase == super::domain::DaemonPhase::Ready
                     {
-                        return Ok(());
+                        return Ok(HandoffWait::Ready);
                     }
                     // The source daemon cleared the target and answers again: it rolled back.
                     if status.phase == super::domain::DaemonPhase::Ready
                         && status.replacement_target.is_none()
                     {
-                        return Err(io::Error::other(
-                            "wsxd live handoff failed and was rolled back; the running daemon kept its sessions",
-                        ));
+                        return Ok(HandoffWait::RolledBack(Box::new(status)));
                     }
                 }
             }
@@ -2262,6 +2371,7 @@ mod tests {
             replacement_target: Some("99.0.0:1:2:3:9".into()),
             replacement_target_version: "99.0.0".into(),
             replacement_blockers: vec![super::super::domain::ReplacementBlocker::ForegroundJob],
+            last_handoff_error: None,
         };
 
         assert_eq!(
@@ -2296,6 +2406,7 @@ mod tests {
             replacement_target: Some("0.28.0:1:2:3:2".into()),
             replacement_target_version: "0.28.0".into(),
             replacement_blockers: vec![super::super::domain::ReplacementBlocker::WorkingAgent],
+            last_handoff_error: None,
         };
         let candidate = |status: &super::super::domain::DaemonLifecycle| {
             pending_handoff_target(
@@ -2361,6 +2472,7 @@ mod tests {
             replacement_target: None,
             replacement_target_version: String::new(),
             replacement_blockers: vec![],
+            last_handoff_error: None,
         };
         let response = Response::Error(super::super::protocol::ApiError::new(
             "invalid_handoff_target",
@@ -2446,6 +2558,7 @@ mod tests {
                     replacement_target: None,
                     replacement_target_version: String::new(),
                     replacement_blockers: vec![],
+                    last_handoff_error: None,
                 }),
             );
             drop(listener);
@@ -2508,6 +2621,7 @@ mod tests {
                         replacement_target: None,
                         replacement_target_version: "0.21.0".into(),
                         replacement_blockers: vec![],
+                        last_handoff_error: None,
                     }),
                 );
             }
@@ -2584,6 +2698,7 @@ mod tests {
                     replacement_target: None,
                     replacement_target_version: String::new(),
                     replacement_blockers: vec![],
+                    last_handoff_error: None,
                 }),
             );
             drop(listener);
@@ -2674,6 +2789,7 @@ mod tests {
                                 replacement_blockers: vec![
                                     super::super::domain::ReplacementBlocker::WorkingAgent,
                                 ],
+                                last_handoff_error: None,
                             }),
                         );
                     }
@@ -2841,6 +2957,7 @@ mod tests {
                                     replacement_target: None,
                                     replacement_target_version: String::new(),
                                     replacement_blockers: vec![],
+                                    last_handoff_error: None,
                                 }),
                             );
                         }
@@ -2946,6 +3063,7 @@ mod tests {
                             replacement_blockers: vec![
                                 super::super::domain::ReplacementBlocker::WorkingAgent,
                             ],
+                            last_handoff_error: None,
                         }),
                     );
                 } else {
@@ -3036,6 +3154,7 @@ mod tests {
                                 replacement_blockers: vec![
                                     super::super::domain::ReplacementBlocker::WorkingAgent,
                                 ],
+                                last_handoff_error: None,
                             }),
                         );
                     }
@@ -3271,6 +3390,7 @@ mod tests {
                     replacement_blockers: vec![
                         super::super::domain::ReplacementBlocker::WorkingAgent,
                     ],
+                    last_handoff_error: None,
                 }),
             );
             drop(listener);

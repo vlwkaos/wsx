@@ -516,6 +516,19 @@ pub struct DaemonLifecycle {
     pub replacement_target_version: String,
     #[serde(default)]
     pub replacement_blockers: Vec<ReplacementBlocker>,
+    /// The last live handoff that rolled back in this daemon, if any. ref:
+    /// docs/daemon-live-upgrade.md "A failed handoff"
+    #[serde(default)]
+    pub last_handoff_error: Option<HandoffError>,
+}
+
+/// Why a live handoff rolled back: the step that failed and its error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffError {
+    pub unix_ms: u64,
+    /// `validate`, `pause`, `export`, `spawn`, `send`, `publish`, `ready`, `ownership` or `commit`.
+    pub step: String,
+    pub error: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

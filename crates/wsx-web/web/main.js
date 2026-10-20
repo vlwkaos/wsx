@@ -6,7 +6,7 @@ import { api, openEvents, pageId } from "./api.js";
 import { html, render, useEffect, useRef, useState } from "./lib.js";
 import { can, events, noteBuild, parseRoute, shows, stackUnder, state, trackHistory, update, useRoute, useStore } from "./store.js";
 import { Home } from "./home.js";
-import { applyScheme, Notices } from "./ui.js";
+import { applyScheme, Notices, toast } from "./ui.js";
 import { Pair } from "./pair.js";
 import { Inbox } from "./inbox.js";
 import { Project, Projects, ProjectSessions } from "./projects.js";
@@ -157,9 +157,19 @@ function tellPresence(force) {
   api("api/presence", { method: "POST", json: { page: pageId, project } }).catch(() => { shown = undefined; });
 }
 
+// A failed upgrade of the running wsxd: said once per reason, and it stays until dismissed.
+// Sessions keep running on the old daemon (docs/web-client.md "Notices").
+let upgradeSaid = null;
+function noteUpgrade(reason) {
+  if (!reason || reason === upgradeSaid) return;
+  upgradeSaid = reason;
+  toast(`wsxd upgrade failed: ${reason}; sessions keep running`, { failure: true });
+}
+
 function start(session) {
   update({ site: session.site, device: session.device, build: session.build });
   noteBuild(session.build?.id);
+  noteUpgrade(session.upgrade_failed);
   openEvents({
     workspace: (data) => {
       update({ projects: data.projects, sessions: data.sessions, loaded: true, daemon: true });
@@ -167,7 +177,10 @@ function start(session) {
     },
     history: (data) => events.dispatchEvent(new CustomEvent("history", { detail: data })),
     exchange: (data) => events.dispatchEvent(new CustomEvent("exchange", { detail: data })),
-    daemon: (data) => update(data.available ? { daemon: true } : { daemon: false, sessions: [], projects: [], loaded: true }),
+    daemon: (data) => {
+      update(data.available ? { daemon: true } : { daemon: false, sessions: [], projects: [], loaded: true });
+      noteUpgrade(data.upgrade_failed);
+    },
     resync: () => {
       events.dispatchEvent(new CustomEvent("history", { detail: {} }));
       if (can("task_view")) loadTasks();

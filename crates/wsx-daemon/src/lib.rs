@@ -276,6 +276,8 @@ struct State {
     replacement_executable: Option<PathBuf>,
     handoff_in_progress: bool,
     handoff_started: Option<Instant>,
+    /// The last rolled-back handoff, for the lifecycle status.
+    last_handoff_error: Option<HandoffError>,
     stop_reason: Option<StopReason>,
     persistence_dirty: bool,
     recovery_in_progress: bool,
@@ -945,6 +947,7 @@ fn new_state(persisted: Persisted) -> State {
         replacement_executable: None,
         handoff_in_progress: false,
         handoff_started: None,
+        last_handoff_error: None,
         stop_reason: None,
         persistence_dirty: false,
         recovery_in_progress: false,
@@ -972,7 +975,7 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
                 fs::File::from(singleton_lock),
                 manifest.persisted,
                 false,
-                Some((manifest.panes, pane_fds, stream)),
+                Some((manifest.panes, manifest.exited_panes, pane_fds, stream)),
             )
         }
         None => {
@@ -1001,14 +1004,14 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
 
     let cold_start = import.is_none();
     let mut import_stream = None;
-    if let Some((panes, pane_fds, mut stream)) = import {
+    if let Some((panes, exited_panes, pane_fds, mut stream)) = import {
         if panes.len() != pane_fds.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "handoff pane and descriptor counts differ",
             ));
         }
-        restore_handoff_runtimes(&daemon, panes, pane_fds)?;
+        restore_handoff_runtimes(&daemon, panes, exited_panes, pane_fds)?;
         handoff::report_restored(&mut stream)?;
         handoff::wait_publish(&mut stream)?;
         prepare_socket(&socket)?;
@@ -1197,7 +1200,7 @@ fn perform_live_handoff(
     target: HandoffTarget,
 ) -> io::Result<()> {
     if let Err(error) = validate_handoff_executable(&target.executable, &target.binary_id) {
-        rollback_handoff(daemon, socket, listener, &[])?;
+        rollback_handoff(daemon, socket, listener, &[], "validate", &error)?;
         return Err(error);
     }
     let runtimes = {
@@ -1219,44 +1222,69 @@ fn perform_live_handoff(
         .map(|operation_lock| lock(operation_lock))
         .collect::<Vec<_>>();
 
+    // ^ A pane whose program exited has no reader to pause and no process to hand over: it
+    // goes as its screen alone (docs/daemon-live-upgrade.md "Exited panes"). A pane that
+    // exits during the pause is one of them.
     let mut paused = Vec::new();
-    for (_, runtime) in &runtimes {
+    let mut live = Vec::new();
+    let mut exited = Vec::new();
+    for (pane_id, runtime) in &runtimes {
+        if runtime.exited() {
+            exited.push((*pane_id, Arc::clone(runtime)));
+            continue;
+        }
         if let Err(error) = runtime.pause_handoff_reader() {
-            rollback_handoff(daemon, socket, listener, &paused)?;
-            return Err(io::Error::other(error.to_string()));
+            if runtime.exited() {
+                exited.push((*pane_id, Arc::clone(runtime)));
+                continue;
+            }
+            let error = io::Error::other(format!("pane {}: {error}", pane_id.0));
+            rollback_handoff(daemon, socket, listener, &paused, "pause", &error)?;
+            return Err(error);
         }
         paused.push(Arc::clone(runtime));
+        live.push((*pane_id, Arc::clone(runtime)));
     }
 
     let mut duplicate_fds = Vec::<std::os::fd::OwnedFd>::new();
     let mut source_ownership = Vec::<(Arc<TerminalRuntime>, libc::pid_t)>::new();
+    let mut step = "export";
     let result = (|| {
         let (persisted, generations) = {
             let state = lock(&daemon.state);
             save_state(&daemon.state_path, &state.persisted)?;
             (state.persisted.clone(), state.runtime_generations.clone())
         };
-        let mut pane_handoffs = Vec::with_capacity(runtimes.len());
-        for (pane_id, runtime) in &runtimes {
-            let state = runtime
+        let export = |pane_id: &PaneId, runtime: &TerminalRuntime| {
+            runtime
                 .handoff_state()
-                .map_err(|error| io::Error::other(error.to_string()))?;
+                .map(|state| handoff::PaneHandoff {
+                    state,
+                    runtime_generation: generations.get(pane_id).cloned(),
+                })
+                .map_err(|error| io::Error::other(format!("pane {}: {error}", pane_id.0)))
+        };
+        let mut pane_handoffs = Vec::with_capacity(live.len());
+        for (pane_id, runtime) in &live {
+            pane_handoffs.push(export(pane_id, runtime)?);
             let fd = runtime
                 .duplicate_handoff_fd()
-                .map_err(|error| io::Error::other(error.to_string()))?;
+                .map_err(|error| io::Error::other(format!("pane {}: {error}", pane_id.0)))?;
             duplicate_fds.push(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) });
-            pane_handoffs.push(handoff::PaneHandoff {
-                state,
-                runtime_generation: generations.get(pane_id).cloned(),
-            });
         }
+        let exited_handoffs = exited
+            .iter()
+            .map(|(pane_id, runtime)| export(pane_id, runtime))
+            .collect::<io::Result<Vec<_>>>()?;
         let manifest = handoff::manifest(
             persisted,
             pane_handoffs,
+            exited_handoffs,
             target.version.clone(),
             target.protocol,
             target.daemon_revision,
         );
+        step = "spawn";
         let handoff_path = handoff::socket_path(socket, daemon.epoch)?;
         let handoff_listener = handoff::bind(&handoff_path)?;
         let token = format!(
@@ -1269,8 +1297,10 @@ fn perform_live_handoff(
             .iter()
             .map(AsRawFd::as_raw_fd)
             .collect::<Vec<_>>();
+        step = "send";
         let mut stream = match handoff::accept_and_send(
             handoff_listener,
+            &mut child,
             &handoff_path,
             &token,
             &manifest,
@@ -1286,12 +1316,15 @@ fn perform_live_handoff(
 
         drop(listener.take());
         let _ = fs::remove_file(socket);
+        step = "publish";
         handoff::request_publish(&mut stream)?;
+        step = "ready";
         if let Err(error) = handoff::wait_ready(&mut stream) {
             handoff::cleanup_child(&mut child);
             return Err(error);
         }
-        for (_, runtime) in &runtimes {
+        step = "ownership";
+        for (_, runtime) in &live {
             match runtime.prepare_source_handoff() {
                 Ok(process_group) => source_ownership.push((Arc::clone(runtime), process_group)),
                 Err(error) => {
@@ -1300,6 +1333,7 @@ fn perform_live_handoff(
                 }
             }
         }
+        step = "commit";
         if let Err(error) = handoff::commit(&mut stream) {
             handoff::cleanup_child(&mut child);
             return Err(error);
@@ -1321,7 +1355,9 @@ fn perform_live_handoff(
             for (runtime, process_group) in source_ownership {
                 runtime.rollback_source_handoff(process_group);
             }
-            if let Err(rollback_error) = rollback_handoff(daemon, socket, listener, &paused) {
+            if let Err(rollback_error) =
+                rollback_handoff(daemon, socket, listener, &paused, step, &error)
+            {
                 return Err(io::Error::other(format!(
                     "{error}; rollback failed: {rollback_error}"
                 )));
@@ -1331,12 +1367,22 @@ fn perform_live_handoff(
     }
 }
 
+/// Back to serving after a failed handoff. The step and the error stay in the lifecycle
+/// status as `last_handoff_error`, because the daemon's stderr goes nowhere
+/// (docs/daemon-live-upgrade.md "A failed handoff").
 fn rollback_handoff(
     daemon: &Daemon,
     socket: &Path,
     listener: &mut Option<UnixListener>,
     paused: &[Arc<TerminalRuntime>],
+    step: &str,
+    error: &io::Error,
 ) -> io::Result<()> {
+    lock(&daemon.state).last_handoff_error = Some(HandoffError {
+        unix_ms: unix_time_millis(),
+        step: step.to_string(),
+        error: error.to_string(),
+    });
     if listener.is_none() {
         prepare_socket(socket)?;
         let restored = UnixListener::bind(socket)?;
@@ -1367,6 +1413,7 @@ fn rollback_handoff(
 fn restore_handoff_runtimes(
     daemon: &Arc<Daemon>,
     panes: Vec<handoff::PaneHandoff>,
+    exited_panes: Vec<handoff::PaneHandoff>,
     pane_fds: Vec<OwnedFd>,
 ) -> io::Result<()> {
     let persisted_ids = lock(&daemon.state)
@@ -1376,12 +1423,37 @@ fn restore_handoff_runtimes(
         .map(|pane| pane.id)
         .collect::<HashSet<_>>();
     let mut seen = HashSet::new();
-    for pane in &panes {
+    for pane in panes.iter().chain(&exited_panes) {
         if !persisted_ids.contains(&pane.state.pane_id) || !seen.insert(pane.state.pane_id) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "handoff pane is absent from persisted state or duplicated",
             ));
+        }
+    }
+    // ^ An exited pane comes back as its last screen, without a process
+    // (docs/daemon-live-upgrade.md "Exited panes").
+    let exited = exited_panes
+        .into_iter()
+        .map(|pane| {
+            let pane_id = pane.state.pane_id;
+            TerminalRuntime::exited_from_handoff(
+                pane.state,
+                runtime_notify(daemon, pane_id, pane.runtime_generation.clone()),
+            )
+            .map(|runtime| (pane_id, pane.runtime_generation, Arc::new(runtime)))
+            .map_err(|error| {
+                io::Error::other(format!("restore exited pane {}: {error}", pane_id.0))
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    {
+        let mut state = lock(&daemon.state);
+        for (pane_id, generation, runtime) in exited {
+            if let Some(generation) = generation {
+                state.runtime_generations.insert(pane_id, generation);
+            }
+            state.runtimes.insert(pane_id, runtime);
         }
     }
     if panes.is_empty() {
@@ -3154,6 +3226,7 @@ fn lifecycle_status(daemon: &Daemon, state: &mut State) -> DaemonLifecycle {
         replacement_target: target,
         replacement_target_version: target_version,
         replacement_blockers: blockers,
+        last_handoff_error: state.last_handoff_error.clone(),
     }
 }
 
@@ -7528,6 +7601,7 @@ mod tests {
                 replacement_executable: None,
                 handoff_in_progress: false,
                 handoff_started: None,
+                last_handoff_error: None,
                 stop_reason: None,
                 persistence_dirty: false,
                 recovery_in_progress: false,
@@ -7888,7 +7962,15 @@ mod tests {
             );
         }
         let mut listener = Some(listener);
-        rollback_handoff(&daemon, &socket, &mut listener, &[]).unwrap();
+        rollback_handoff(
+            &daemon,
+            &socket,
+            &mut listener,
+            &[],
+            "validate",
+            &io::Error::other("test"),
+        )
+        .unwrap();
         let state = lock(&daemon.state);
         assert!(!state.handoff_in_progress);
         assert!(state.leases[&PaneId(4)].expires_at >= before + Duration::from_secs(2));
