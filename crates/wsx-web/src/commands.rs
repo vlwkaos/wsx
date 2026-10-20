@@ -59,6 +59,22 @@ impl Listing {
     }
 }
 
+/// A one-line `!` shell line (`! git status`) for an agent that runs one from the start of
+/// its input: Claude's shell mode (https://code.claude.com/docs/en/interactive-mode).
+/// ^ Pi's `!` and `!!` start no turn, so wsxd would see no end of the round; Codex
+/// documents none.
+pub fn is_shell_line(provider: &str, text: &str) -> bool {
+    provider == "claude"
+        && text.len() <= MAX_SHELL_LINE_BYTES
+        && !text.contains(['\n', '\t'])
+        && text
+            .strip_prefix('!')
+            .is_some_and(|rest| !rest.trim().is_empty())
+}
+
+/// wsxd's bound of a command round (docs/agent-orchestration.md "Commands").
+const MAX_SHELL_LINE_BYTES: usize = 256;
+
 /// `/name` or `/name arguments` on one line, without the slash.
 fn command_name(text: &str) -> Option<&str> {
     let rest = text.strip_prefix('/')?;

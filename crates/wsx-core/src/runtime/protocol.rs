@@ -42,7 +42,8 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Revision 29 writes a prompt to the PTY without holding daemon state or the mutation lock,
 // within a 10-second write limit, and adds the keyed exchange requests
 // (docs/agent-orchestration.md "Idempotent delivery").
-pub const DAEMON_REVISION: u32 = 29;
+// Revision 30 also takes a `!` shell line as a command round (capability `exchange_shell`).
+pub const DAEMON_REVISION: u32 = 30;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -736,6 +737,7 @@ mod tests {
         assert!(!capabilities.raw_terminal_stream);
         assert!(!capabilities.daemon_restart);
         assert!(!capabilities.exchange_command);
+        assert!(!capabilities.exchange_shell);
     }
 
     #[test]

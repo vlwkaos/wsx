@@ -125,6 +125,13 @@ def turn(text):
  with trace.open('a') as out: out.write(json.dumps({'received':text})+'\n')
  if provider == 'claude' and text == '/compact':
   claude_compact(); return
+ # Claude Code 2.1.304's shell mode, as a real transcript holds `! echo pasted-bang-ok` (2026-10-21):
+ # the line without its `!`, then the output, then a reply of the model.
+ if provider == 'claude' and text.startswith('!'):
+  record('user', '<bash-input>'+text[1:]+'</bash-input>')
+  record('user', '<bash-stdout>SHELL-OUTPUT</bash-stdout><bash-stderr></bash-stderr>')
+  report('working'); time.sleep(0.2)
+  record('assistant', 'the shell line ran'); report('done'); return
  # The person's prompt as Claude Code 2.1.300 marks it; other turns keep the older record without the field.
  # Claude Code 2.1.300 can save a pasted prompt inside a pasted_content wrapper (real transcript, 2026-10-20).
  saved = '\n\n<pasted_content id="4666">\n'+text+'\n</pasted_content id="4666">\n' if provider == 'claude' and 'follow up' in text else text
@@ -1401,7 +1408,7 @@ capabilities = ["terminal_view"]
         assert steady(sites['viewer'], 'GET', '/api/chat/%d/commands' % commands_session)[0] in (401, 403, 404)
         assert steady(root, 'GET', '/api/chat/999999/commands')[0] == 404
         # wsxd types a command as written only when it is one short /name line.
-        for prompt in ('/compact\nsecond line', 'compact', '/ compact', '/' + 'x' * 300):
+        for prompt in ('/compact\nsecond line', 'compact', '/ compact', '/' + 'x' * 300, '!', '!   ', '!ls\npwd', '!' + 'x' * 300):
             refused = call('agent_exchange_create', {'pane_id': commands_pane, 'prompt': prompt, 'timeout_ms': 60000, 'command': True})
             assert refused['type'] == 'error' and refused['data']['code'] == 'invalid_prompt', (prompt, refused)
         assert traces('commands') == []
@@ -1419,10 +1426,28 @@ capabilities = ["terminal_view"]
             # Sent at once or queued behind the previous turn: either way it arrives with the exchange line.
             assert received.startswith('[wsx exchange ') and received.endswith(']\n' + text), received
             settle('commands')
+        # A `!` line is Claude's shell mode: typed as written, and shown as written, without its output.
+        before = len(traces('commands'))
+        status, sent = root.request('POST', '/api/chat/%d/send' % commands_session, {'text': '! git status'})
+        assert status == 200, sent
+        assert wait(lambda: len(traces('commands')) > before and traces('commands')[-1], 'shell line delivery') == '! git status'
+        settle('commands')
+        shown = wait(lambda: (lambda items: items if items and items[-1].get('text') == 'the shell line ran' else None)(
+            steady(root, 'GET', '/api/chat/%d/timeline' % commands_session)[1]['items']), 'shell line timeline')
+        assert [item['text'] for item in shown[-2:]] == ['! git status', 'the shell line ran'], shown[-3:]
+        assert 'SHELL-OUTPUT' not in json.dumps(shown) and 'bash-input' not in json.dumps(shown), shown[-3:]
+        # `!` alone or a shell line with a second line is a message.
+        for text in ('!', '!ls\npwd'):
+            before = len(traces('commands'))
+            status, sent = root.request('POST', '/api/chat/%d/send' % commands_session, {'text': text})
+            assert status == 200, sent
+            received = wait(lambda: len(traces('commands')) > before and traces('commands')[-1], 'enveloped delivery')
+            assert received.startswith('[wsx exchange ') and received.endswith(']\n' + text), received
+            settle('commands')
         session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == commands_session)
         assert call('session_close', {'session_id': commands_session, 'expected_revision': session['revision']})['type'] == 'ack'
         shutil.rmtree(third_root / '.claude')
-        ok('commands: built-ins, project, user and plugin skills with one-line descriptions, a malformed file skipped, no file body; /compact typed as written, other text keeps the exchange line')
+        ok('commands: built-ins, project, user and plugin skills with one-line descriptions, a malformed file skipped, no file body; /compact and a `!` shell line typed as written, other text keeps the exchange line')
 
         # --- Compaction: the summary is one item where the conversation was compacted, without Claude's fixed words.
         for provider, expected in (('claude', ['summary', 'user', 'assistant']),
