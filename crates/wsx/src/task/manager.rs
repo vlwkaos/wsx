@@ -152,13 +152,10 @@ fn skills_plugin(manager: &Path) -> Result<Option<PathBuf>> {
 
 /// ref: docs/tasks.md "Manager", "Brief", "Memo"
 fn instructions(project: &str, notes: &Path, page: &Path, skills: bool) -> String {
+    // ^ No skill is named: the owner's skills are whatever their folder holds.
     let skills = match skills {
         true => format!(
-            "The owner's skills are yours with the Skill tool as `{SKILLS_PLUGIN_NAME}:<name>`. \
-             Before you answer about a prior decision or a project term you do not know, \
-             look it up first: `{SKILLS_PLUGIN_NAME}:seek <term>` for a term or a decision, \
-             `{SKILLS_PLUGIN_NAME}:recall` for the planning context of a larger question \
-             and `{SKILLS_PLUGIN_NAME}:memo` to look up memos, when the owner has them. "
+            "The owner's skills are yours with the Skill tool as `{SKILLS_PLUGIN_NAME}:<name>`. "
         ),
         false => String::new(),
     };
@@ -191,9 +188,13 @@ fn instructions(project: &str, notes: &Path, page: &Path, skills: bool) -> Strin
          Read, Glob and Grep the project and the tasks' working copies, WebFetch and \
          WebSearch, and read-only git in Bash (`git log`, `git show`, `git diff`, \
          `git status`, also `git -C <working copy>`); never a git command that writes. \
-         {skills}For a research question use a research subagent (the Agent tool) or \
-         WebSearch; for an unclear code question use the Explore subagent; use the docs \
-         tools the project settings allow. Subagents and skills keep your boundary: Edit, \
+         {skills}At the start of a turn, look at the skills and subagents you have. Before \
+         you answer about a prior decision, a term you do not know, the code or a research \
+         question, use any skill or subagent whose description fits lookup, context, memory \
+         or research; check rather than guess. When none fits, use Read, Grep, WebSearch and \
+         the Explore subagent; use the docs tools the project settings allow. Think about \
+         the owner's goal and the likely next step before you answer, and say what you \
+         checked in one short line. Subagents and skills keep your boundary: Edit, \
          Write and NotebookEdit are denied to them as to you, and their Bash writes only \
          where yours does. Keep answers short. \
          Before you ask the owner to approve a land, read the task's verify state: the \

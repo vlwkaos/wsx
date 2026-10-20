@@ -703,11 +703,16 @@ def run(wsx, wsxd, work, owned):
                  "trust them over the worker's own words", 'grant it with `wsx task allow <n> --host <host>`',
                  'Never tell the owner to edit settings', 'read-only git in Bash',
                  "read the task's verify state", 'in one step with `wsx task land <n> --skip-verify`',
-                 '`owner:seek <term>`', '`owner:recall`', '`owner:memo` to look up memos',
-                 'use a research subagent (the Agent tool) or WebSearch', 'use the Explore subagent',
+                 'the Skill tool as `owner:<name>`', 'look at the skills and subagents you have',
+                 'fits lookup, context, memory or research', 'check rather than guess',
+                 'use Read, Grep, WebSearch and the Explore subagent', 'the likely next step',
+                 'say what you checked in one short line',
                  'docs tools the project settings allow', 'Write and NotebookEdit are denied to them',
                  'Keep answers short', 'update that section in place with Bash'):
         assert rule in launch['instructions'], rule
+    # ^ No skill is named: the owner's skills are whatever their folder holds.
+    assert re.findall(r'owner:[^<\s]', launch['instructions']) == [], launch['instructions']
+    assert not any(name in launch['instructions'] for name in ('seek', 'recall', '/memo', 'scribe'))
     assert launch['cwd'] == str(project)
     assert js('task', 'manager')['state'] == 'running'
     # A new task and an add to the running one, each by a wsx task command the manager runs.
@@ -741,6 +746,9 @@ def run(wsx, wsxd, work, owned):
     assert wait_state(running, 'ready', 'failed')['state'] == 'ready'
     assert [e['mode'] for e in log(running) if e['kind'] == 'message'] == ['prompt', 'add']
     # Rotation: past rotateTokens the next turn starts a fresh conversation.
+    # ^ Without a skills folder the next launch has no plugin, keeps the Skill tool and
+    # the generic guidance.
+    shutil.rmtree(owner_skills)
     big = js('task', 'say', 'BIG')
     reply_to(big['id'])
     assert wait(lambda: any(e['kind'] == 'rotated' for e in chat()), 'rotated')
@@ -748,6 +756,9 @@ def run(wsx, wsxd, work, owned):
     reply_to(after_rotation['id'])
     manager_launches = [t for t in traces() if t.get('launch') and t.get('manager')]
     assert not manager_launches[-1]['resume'] and manager_launches[-1]['session'] != launch['session']
+    bare = manager_launches[-1]
+    assert bare['plugin_dir'] is None and 'Skill' in bare['allowed'], bare
+    assert 'owner:' not in bare['instructions'] and 'check rather than guess' in bare['instructions']
     assert [e['id'] for e in chat(after=big['id']) if e['kind'] == 'message' and e['from'] == 'owner'] == [after_rotation['id']]
     for n in (running, manager_task, heredoc_task):
         js('task', 'close', n, '--discard')
