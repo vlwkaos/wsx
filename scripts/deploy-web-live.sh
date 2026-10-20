@@ -24,6 +24,8 @@ echo "installed ${WSX_DEPLOY_COMMIT:-this commit} at $live/wsx"
 # and removed this temporary copy (at most 120 s), from a process outside that tree.
 copy=$(pwd)
 log="$live/restart.log"
+# ^ cd out first: pm2 (node) exits with ENOENT when its working directory, this copy, is gone.
+cd "$live"
 nohup sh -c 'i=0; while [ -d "$1" ] && [ $i -lt 120 ]; do sleep 1; i=$((i+1)); done
   date; echo "copy gone after ${i}s"; pm2 restart wsx-web; echo "pm2 exit $?"' \
   restart "$copy" >"$log" 2>&1 </dev/null &
