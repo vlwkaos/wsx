@@ -673,7 +673,12 @@ async function others() {
   await evaluate("document.querySelector('.row-actions a').click()");
   await until("[...document.querySelectorAll('.files .row-label')].some((node) => node.textContent === 'README.md')", "the files screen did not list the project");
   await evaluate("[...document.querySelectorAll('.files .row-link')].find((node) => node.textContent.trim() === 'README.md').click()");
-  await until("!!document.querySelector('textarea.code')", "the file did not open");
+  // A markdown file opens rendered; Source shows the editor (docs/web-client.md "Files").
+  await until("document.querySelector('.file-markdown h1')?.textContent === 'design' && !!document.querySelector('.file-source[hidden] textarea.code')", "the markdown file did not open rendered");
+  await sound("rendered file");
+  await shot("files-markdown");
+  await evaluate("[...document.querySelectorAll('.files .bar button')].find((node) => node.textContent === 'Source').click()");
+  await until("!document.querySelector('.file-markdown') && document.querySelector('textarea.code')?.offsetHeight > 0", "Source did not show the editor");
   await steadyOnFocus("textarea.code", "the file editor");
   await sound("files");
   await shot("files", ".files .button-primary");

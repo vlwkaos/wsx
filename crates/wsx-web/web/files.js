@@ -1,10 +1,11 @@
 // Files: browse one granted project; edit text when the site allows it.
 import { api } from "./api.js";
 import { html, useEffect, useState } from "./lib.js";
+import { Markdown } from "./markdown.js";
 import { can, useStore } from "./store.js";
 import { Back, toast } from "./ui.js";
 
-function Editor({ project, path, text }) {
+function Editor({ project, path, text, onSaved }) {
   const [original, setOriginal] = useState(text);
   const [value, setValue] = useState(text);
   const [error, setError] = useState("");
@@ -15,6 +16,7 @@ function Editor({ project, path, text }) {
     try {
       await api("api/file", { method: "PUT", json: { project, path, original, content: value } });
       setOriginal(value);
+      onSaved?.(value);
       setError("");
       toast(`Saved ${path}.`);
     } catch (failure) {
@@ -31,15 +33,28 @@ function Editor({ project, path, text }) {
     </div>`;
 }
 
+const isMarkdown = (path) => /\.(md|markdown)$/i.test(path);
+
+// A markdown file opens rendered; Source shows the text and the editor, which stays
+// mounted so a draft survives the switch (docs/web-client.md "Files").
+function FileView({ project, path, text, source }) {
+  const [saved, setSaved] = useState(text);
+  return html`
+    ${!source && html`<div class="file-markdown"><${Markdown} text=${saved} /></div>`}
+    <div class="file-source" hidden=${!source}><${Editor} project=${project} path=${path} text=${text} onSaved=${setSaved} /></div>`;
+}
+
 export function Files({ project }) {
   const store = useStore();
   const [path, setPath] = useState("");
   const [view, setView] = useState(null);
+  const [rendered, setRendered] = useState(true);
   const name = store.projects.find((candidate) => candidate.id === project)?.name ?? "Project";
 
   const open = async (target, file) => {
     setPath(target);
     setView(null);
+    setRendered(true);
     try {
       const data = file
         ? await api("api/file", { query: { project, path: target } })
@@ -53,10 +68,11 @@ export function Files({ project }) {
 
   const parts = path ? path.split("/") : [];
   let body = html`<p class="empty">Loading…</p>`;
+  const markdown = Boolean(view?.file && !view.binary && isMarkdown(path));
   if (view?.error) body = html`<p class="error" role="alert">${view.error}</p>`;
   else if (view?.file) {
     body = view.binary ? html`<p class="empty">This file is not text and cannot be shown here.</p>`
-      : html`<${Editor} key=${path} project=${project} path=${path} text=${view.text} />`;
+      : html`<${FileView} key=${path} project=${project} path=${path} text=${view.text} source=${!(markdown && rendered)} />`;
   } else if (view) {
     body = html`
       ${view.entries.length ? html`
@@ -86,6 +102,7 @@ export function Files({ project }) {
                 : html`<button class="link-action path" type="button" onClick=${() => open(parts.slice(0, index + 1).join("/"), false)}>${part}</button>`}`;
           })}
         </nav>
+        ${markdown && html`<button class="link-action" type="button" onClick=${() => setRendered(!rendered)}>${rendered ? "Source" : "Rendered"}</button>`}
       </header>
       <div class="scroll file-body">${body}</div>
     </div>`;

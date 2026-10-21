@@ -394,6 +394,8 @@ Limits: while a terminal is open it holds the pane's lease. A chat message takes
 
 The files panel covers each granted project's main checkout only, not its other worktrees. A project's root is pinned when it is first opened (at start for listed paths). `.git` is never listed, read or written. File access uses `O_NOFOLLOW` descriptors from the pinned project root; a write replaces an existing text file only when it did not change since it was read.
 
+A `.md` or `.markdown` file opens rendered, as the chat renders an answer ("Markdown"), with **Source** to show the text and, with `files_write`, the editor. The editor stays loaded while the rendered view shows, so an unsaved edit is kept; the rendered view shows the text as last read or saved.
+
 ## Dependencies
 
 `axum` and `tokio` serve HTTP, the event stream and the terminal WebSocket (axum's `ws` feature, `tokio-tungstenite`). `p256`, `hkdf`, `aes-gcm` and `sha2` implement VAPID (RFC 8292) and message encryption (RFC 8291). `ureq` with rustls posts to the push service. No OpenSSL or libcurl is linked.

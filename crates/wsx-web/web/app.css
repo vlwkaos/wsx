@@ -630,6 +630,9 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
   scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent;
 }
 .file-body .actions { border-top: var(--border-width) solid var(--color-hairline); }
+.file-markdown { padding: var(--space-4); container-type: inline-size; }
+.file-source { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.file-source[hidden] { display: none; }
 
 /* Hook: .options, .facts, .pair-form, .sheet, .notice — settings, pairing, dialog, notices. */
 .options { display: flex; flex-direction: column; }
