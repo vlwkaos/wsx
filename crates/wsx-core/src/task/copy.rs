@@ -194,6 +194,9 @@ fn fill(main: &Path, path: &Path, base: &str, branch: Option<&str>) -> Result<()
             }
         }
     }
+    // ^ Fill the empty index first: `reset --hard` on it rewrites every file with a new
+    // mtime, and cargo then rebuilds every workspace crate instead of reusing the clone.
+    git(path, &["reset", "--quiet", base])?;
     git(path, &["reset", "--hard", "--quiet", base])?;
     git(path, &["clean", "-fdq"])?;
     if let Some(branch) = branch {

@@ -134,6 +134,8 @@ def run(wsx, wsxd, work, owned):
     (project / 'target').mkdir()
     (project / 'target/warm').write_text('cached')
     (project / 'scratch.txt').write_text('untracked')
+    # ^ An unchanged tracked file keeps its clone's mtime, so cargo reuses the warm build.
+    os.utime(project / 'README', (1_600_000_000, 1_600_000_000))
 
     def cli(*argv, ok=True, stdin=None):
         result = subprocess.run([str(wsx), *map(str, argv)], cwd=project, env=env, input=stdin,
@@ -218,6 +220,7 @@ def run(wsx, wsxd, work, owned):
     assert copy == base / 'project-t1' and created['branch'] == 'wsx/t1'
     assert (copy / 'target/warm').read_text() == 'cached'
     assert not (copy / 'scratch.txt').exists()
+    assert (copy / 'README').stat().st_mtime == 1_600_000_000, (copy / 'README').stat().st_mtime
     assert (copy / '.git').is_file() and git('rev-parse', '--abbrev-ref', 'HEAD', cwd=copy) == 'wsx/t1'
     assert git('rev-parse', '--git-dir', cwd=copy) != git('rev-parse', '--git-dir')
     task_dir = Path(created['task_dir'])
