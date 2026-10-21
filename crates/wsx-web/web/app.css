@@ -629,7 +629,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .story { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere; }
 .story .link-action { align-self: flex-start; }
 .story-act { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); }
-.story-act > .story-next { flex: 1 1 12rem; min-width: 0; }
+.story-act > .story-next { flex: 1 1 calc(var(--size-rail) * 0.6); min-width: 0; }
 
 /* Hook: .code, .crumbs — a project's files. */
 .crumbs { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-1); overflow-x: auto; scrollbar-width: none; white-space: nowrap; }
