@@ -187,6 +187,37 @@ impl Answer {
 /// the person's own action, and the displaced controller says that control moved.
 pub fn answer(client: &Client, pane: PaneId, answer: &Answer) -> Outcome<Value> {
     let keys = answer.keys()?;
+    with_lease(client, pane, |client_id| {
+        if screen(client, pane).map(|rows| stamp_of(&rows))? != answer.stamp {
+            return Err(Fault::new(
+                409,
+                "question_changed",
+                "the question changed; read it again",
+            ));
+        }
+        let request = match keys {
+            Keys::Key(key) => Request::TerminalKey {
+                pane_id: pane,
+                client_id,
+                key,
+            },
+            Keys::Bytes(bytes) => Request::TerminalInput {
+                pane_id: pane,
+                client_id,
+                bytes,
+            },
+        };
+        call(client, &request).map(|_| json!({ "sent": true }))
+    })
+}
+
+/// Take the pane's lease for one person's action, run `act` with it, then let it go. It
+/// takes the pane from a terminal or a wsx window that holds it.
+pub fn with_lease<T>(
+    client: &Client,
+    pane: PaneId,
+    act: impl FnOnce(u64) -> Outcome<T>,
+) -> Outcome<T> {
     let client_id = runtime::new_client_id();
     match client.call(&Request::TerminalAcquire {
         pane_id: pane,
@@ -216,31 +247,10 @@ pub fn answer(client: &Client, pane: PaneId, answer: &Answer) -> Outcome<Value> 
             ))
         }
     }
-    let sent = (|| {
-        if screen(client, pane).map(|rows| stamp_of(&rows))? != answer.stamp {
-            return Err(Fault::new(
-                409,
-                "question_changed",
-                "the question changed; read it again",
-            ));
-        }
-        let request = match keys {
-            Keys::Key(key) => Request::TerminalKey {
-                pane_id: pane,
-                client_id,
-                key,
-            },
-            Keys::Bytes(bytes) => Request::TerminalInput {
-                pane_id: pane,
-                client_id,
-                bytes,
-            },
-        };
-        call(client, &request).map(|_| json!({ "sent": true }))
-    })();
+    let done = act(client_id);
     let _ = client.call(&Request::TerminalRelease {
         pane_id: pane,
         client_id,
     });
-    sent
+    done
 }

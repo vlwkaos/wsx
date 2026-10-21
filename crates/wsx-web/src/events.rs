@@ -43,6 +43,8 @@ fn observe(app: Arc<App>) {
     let mut first = true;
     let mut available = true;
     let mut states: HashMap<u64, AgentState> = HashMap::new();
+    // ^ Whether each session's agent was attached at the last look, for the conversation lines.
+    let mut attached: HashMap<u64, bool> = HashMap::new();
     let mut watching = false;
     let mut stamps: HashMap<u64, Option<(std::path::PathBuf, u64, i64)>> = HashMap::new();
     let mut exchange_revisions: HashMap<u64, u64> = HashMap::new();
@@ -140,6 +142,9 @@ fn observe(app: Arc<App>) {
             let mut history_changed = states
                 .insert(session, state)
                 .is_some_and(|previous| previous != state);
+            history_changed |= app
+                .chat
+                .follow_conversation(app, target, &mut attached, first);
             // A transition is the only trigger: the first sight of a session, or a
             // server restart, never notifies.
             if history_changed && !first {
@@ -187,6 +192,9 @@ fn observe(app: Arc<App>) {
             .iter()
             .map(|target| {
                 let mut view = session_view(target);
+                // ^ The chat outlives the agent while its conversation is remembered.
+                view["conversation"] =
+                    json!(!app.queue.conversations(target.session_id.0).is_empty());
                 view["activity"] = json!(activities.get(&target.session_id.0));
                 view
             })
@@ -211,6 +219,7 @@ fn observe(app: Arc<App>) {
                 .values()
                 .any(|state| matches!(state, AgentState::Working | AgentState::Blocked));
         stamps.retain(|session, _| states.contains_key(session));
+        attached.retain(|session, _| states.contains_key(session));
         questions.retain(|session, _| states.contains_key(session));
         first = false;
     }

@@ -29,23 +29,26 @@ ROOT = Path(__file__).resolve().parents[1]
 # A fixture agent: reports as Claude, records what the PTY delivered, and writes
 # its own native transcript. The web server may only learn replies from that file.
 ACTOR = r'''
-import json, os, pathlib, re, select, signal, socket, sys, time, tty
+import json, os, pathlib, re, select, signal, socket, sys, termios, time, tty
 signal.signal(signal.SIGHUP, signal.SIG_IGN)
 history, trace, project = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
 # Claude unless the test asks for Pi, whose records chain by id and parentId.
 provider = os.environ.get('WSX_FIXTURE_PROVIDER', 'claude')
 pane = int(os.environ['WSX_PANE_ID']); generation = os.environ['WSX_RUNTIME_GENERATION']
 trace.with_suffix('.pid').write_text(str(os.getpid()))
+# The conversation the agent reports; a test sets it to start another one.
+conversation = os.environ.get('WSX_FIXTURE_CONVERSATION', 'fixture')
+cooked = termios.tcgetattr(0)
 tty.setraw(0)
 draft, pending, leaf, sequence, dialog, taken = '', b'', None, 0, None, None
-def report(state):
+def report(state, attached=True):
  # ^ As Claude's hook does, the first Working report of a turn says which prompt it took.
  global taken
  with socket.socket(socket.AF_UNIX) as client:
   client.connect(os.environ['WSX_SOCKET']); stream = client.makefile('rb')
   client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
-  params = {'pane_id':pane,'runtime_generation':generation,'provider':provider,'state':state,
-    'session_ref':{'kind':'id','value':'fixture','transcript_path':str(history)},
+  params = {'pane_id':pane,'runtime_generation':generation,'provider':provider,'state':state,'attached':attached,
+    'session_ref':{'kind':'id','value':conversation,'transcript_path':str(history)},
     'capabilities':{'prompt':True,'lifecycle':True,'prompt_receipts':provider == 'claude'}}
   if state == 'working' and taken:
    params['received'], taken = taken, None
@@ -65,7 +68,7 @@ def record(kind, content, **extra):
  if provider == 'pi':
   line = {'type':'message','id':entry,'parentId':leaf,'timestamp':stamp,'message':{'role':kind,'content':content}}
  else:
-  line = {'type':kind,'uuid':entry,'parentUuid':leaf,'sessionId':'fixture','timestamp':stamp,'message':{'role':kind,'content':content}}
+  line = {'type':kind,'uuid':entry,'parentUuid':leaf,'sessionId':conversation,'timestamp':stamp,'message':{'role':kind,'content':content}}
  # Both providers name the model on each reply (real transcripts, 2026-10-20).
  if kind == 'assistant': line['message']['model'] = 'gpt-6.1-sol' if provider == 'pi' else 'claude-opus-5-5'
  line.update(extra)
@@ -198,6 +201,10 @@ def turn(text):
   record('user', '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Background command "Run the tests" completed (exit code 0)</summary>\n</task-notification>',
     promptSource='system', origin={'kind':'task-notification'}, turnOrigin='task_notification')
   record('assistant', 'The tests passed.')
+ elif 'leave now' in body:
+  # As Claude ends: its SessionEnd hook says it is detached, the terminal is restored, it exits.
+  record('assistant', 'leaving'); report('unknown', attached=False)
+  termios.tcsetattr(0, termios.TCSADRAIN, cooked); os._exit(0)
  elif 'quit now' in body:
   report('working'); os._exit(3)
  elif 'ask me' in body:
@@ -795,15 +802,17 @@ def web_journey(args):
         checks.append(label)
 
     try:
-        for name in ('home', 'state', 'project', 'project2', 'project3', 'design', 'design-login', 'bare'):
+        for name in ('home', 'state', 'project', 'project2', 'project3', 'design', 'design-login', 'bare', 'bin'):
             (work / name).mkdir(mode=0o700)
+        # ^ The pane shells find this run's fake `claude` here, for the resume of an exited agent.
+        bin_dir = work / 'bin'
         config = (work / 'home/Library/Application Support/wsx' if sys.platform == 'darwin' else work / 'config/wsx')
         config.mkdir(parents=True)
         (config / 'config-v2.toml').write_text('resume_agents_on_restore = false\n')
         path = work / 'state/wsx/wsx.sock'
         env = {'HOME': str(work / 'home'), 'XDG_CONFIG_HOME': str(work / 'config'), 'XDG_STATE_HOME': str(work / 'state'),
                'XDG_CACHE_HOME': str(work / 'cache'), 'WSX_SOCKET': str(path), 'WSX_DAEMON_BIN': str(wsxd),
-               'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8',
+               'PATH': str(work / 'bin') + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8',
                # ^ A fixture git command must never reach the repository this script runs in.
                'GIT_CEILING_DIRECTORIES': str(work)}
         for name in ('project', 'project2', 'project3', 'design', 'bare'):
@@ -1710,6 +1719,71 @@ capabilities = ["terminal_view"]
         assert delivered().count('drop me always') == 2 and 'typed by a person' in [m['text'] for m in messages(owner, sessions['owner'])['messages']]
         assert steady(owner, 'DELETE', chat + '/queue/%d' % always)[0] == 200
         settle('owner')
+        # The chat outlives the agent (docs/web-client.md "Conversations"): Claude exits and its
+        # pane is a shell again; a message types `claude --resume` there and goes to the same
+        # conversation. A new conversation in the pane keeps the earlier one readable above it.
+        (bin_dir / 'claude').write_text('#!/bin/sh\nexec %s %s "%s/resume-${WSX_FIXTURE_CONVERSATION:-fixture}.jsonl" %s %s %s %s\n'
+                                        % (sys.executable, actor, work, work / 'resume.trace', project, chart, outside))
+        (bin_dir / 'claude').chmod(0o755)
+        created = call('session_create', {'worktree_id': worktrees['project'], 'label': 'resume chat',
+                                          'command': ['/bin/sh', '-c', 'claude; PS1="$ " exec /bin/sh'], 'rows': 12, 'cols': 100})
+        assert created['type'] == 'created', created
+        sessions['resume'] = created['data']['id']
+        resume_chat = '/api/chat/%d' % sessions['resume']
+        resume_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == sessions['resume'])
+
+        def resume_agent():
+            return next(p for p in call('snapshot')['data']['panes'] if p['id'] == resume_pane)['agent']
+
+        def resume_timeline():
+            return steady(owner, 'GET', resume_chat + '/timeline')[1]
+
+        def said(words):
+            return wait(lambda: any(item['kind'] == 'assistant' and item['text'] == words for item in resume_timeline()['items']), words, timeout=30)
+        wait(lambda: (resume_agent() or {}).get('attached'), 'resume agent report')
+        settle('resume')
+        assert steady(owner, 'POST', resume_chat + '/send', {'text': 'before the exit'})[0] == 200
+        said('echo: before the exit')
+        settle('resume')
+        assert steady(owner, 'POST', resume_chat + '/send', {'text': 'leave now'})[0] == 200
+        wait(lambda: not resume_agent()['attached'], 'the agent detached')
+        exited = wait(lambda: (lambda data: data if any(item['kind'] == 'notice' and item['text'] == 'Claude exited.' for item in data['items']) else None)(resume_timeline()),
+                      'the exit line', timeout=20)
+        assert exited['session']['conversation'] and 'echo: before the exit' in [item['text'] for item in exited['items']], exited['session']
+        status, sent = steady(owner, 'POST', resume_chat + '/send', {'text': 'after the exit'})
+        assert status == 200 and sent['exchange'] is None, sent
+        said('echo: after the exit')
+        lines = [item['text'] for item in resume_timeline()['items'] if item['kind'] == 'notice']
+        assert lines[-2:] == ['Claude exited.', 'Resumed Claude in the same conversation.'], lines
+        assert 'Same conversation, continued' not in lines, lines
+        settle('resume')
+        # A new conversation in the pane, started by hand: a line, and the earlier one stays above it.
+        assert steady(owner, 'POST', resume_chat + '/send', {'text': 'leave now'})[0] == 200
+        wait(lambda: not resume_agent()['attached'], 'the agent detached again')
+        assert call('terminal_acquire', {'pane_id': resume_pane, 'client_id': 7, 'takeover': True})['type'] == 'ack'
+        assert call('terminal_input', {'pane_id': resume_pane, 'client_id': 7, 'bytes': list(b'WSX_FIXTURE_CONVERSATION=second claude\r')})['type'] == 'ack'
+        assert call('terminal_release', {'pane_id': resume_pane, 'client_id': 7})['type'] == 'ack'
+        wait(lambda: (resume_agent() or {}).get('attached'), 'the second conversation')
+        settle('resume')
+        assert steady(owner, 'POST', resume_chat + '/send', {'text': 'in the second'})[0] == 200
+        said('echo: in the second')
+        shown = [(item['kind'], item['text']) for item in resume_timeline()['items']]
+        divider = shown.index(('notice', 'New conversation'))
+        assert ('assistant', 'echo: after the exit') in shown[:divider] and ('assistant', 'echo: in the second') in shown[divider:], shown
+        assert all(item['id'].startswith('earlier-') for item in resume_timeline()['items'][:divider] if item['kind'] != 'notice')
+        # The same conversation started again by hand reads as continued.
+        settle('resume')
+        assert steady(owner, 'POST', resume_chat + '/send', {'text': 'leave now'})[0] == 200
+        wait(lambda: not resume_agent()['attached'], 'the agent detached a third time')
+        assert call('terminal_acquire', {'pane_id': resume_pane, 'client_id': 7, 'takeover': True})['type'] == 'ack'
+        assert call('terminal_input', {'pane_id': resume_pane, 'client_id': 7, 'bytes': list(b'WSX_FIXTURE_CONVERSATION=second claude\r')})['type'] == 'ack'
+        assert call('terminal_release', {'pane_id': resume_pane, 'client_id': 7})['type'] == 'ack'
+        wait(lambda: [item['text'] for item in resume_timeline()['items'] if item['kind'] == 'notice'][-1] == 'Same conversation, continued',
+             'the continued line', timeout=20)
+        settle('resume')
+        # ^ An agent started by hand runs in its shell's job, not the pane's process group: end it.
+        assert steady(owner, 'POST', resume_chat + '/send', {'text': 'leave now'})[0] == 200
+        wait(lambda: not resume_agent()['attached'], 'the hand-started agent left')
         # The newest person wins: a wsx window holds the pane, a message from the page still
         # goes through, the window is told that control moved, and nobody holds the pane after.
         with wsx_window(owner_pane) as seen:

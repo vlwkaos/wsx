@@ -256,6 +256,8 @@ pub struct Chat {
     /// One delivery at a time: the page's send and the event observer must not both send
     /// the same waiting message.
     delivering: Mutex<()>,
+    /// Sessions whose agent this server started again for a message, and since when.
+    resuming: Mutex<HashMap<u64, u64>>,
 }
 
 impl Chat {
@@ -263,6 +265,7 @@ impl Chat {
         Self {
             produced: Mutex::new(HashMap::new()),
             delivering: Mutex::new(()),
+            resuming: Mutex::new(HashMap::new()),
         }
     }
 
@@ -281,10 +284,23 @@ impl Chat {
         let root = std::fs::canonicalize(target.worktree)
             .ok()
             .and_then(|path| Root::pin(&path).ok());
-        let timeline = target.pane.agent.as_ref().map(|agent| {
+        // ^ The pane's agent, or the conversation it last had when the agent is gone, so the chat
+        // outlives the agent (docs/web-client.md "Conversations").
+        let conversations = app.queue.conversations(session);
+        let remembered = conversations.last();
+        let (provider, session_ref) = match target.pane.agent.as_ref() {
+            Some(agent) if agent.session_ref.is_some() || remembered.is_none() => {
+                (Some(agent.provider.clone()), agent.session_ref.clone())
+            }
+            _ => (
+                remembered.map(|known| known.provider.clone()),
+                remembered.map(|known| known.session_ref.clone()),
+            ),
+        };
+        let timeline = provider.as_deref().map(|provider| {
             Reader::default().read_timeline(
-                &agent.provider,
-                agent.session_ref.as_ref(),
+                provider,
+                session_ref.as_ref(),
                 TIMELINE_ITEMS,
                 TIMELINE_BYTES,
             )
@@ -295,33 +311,63 @@ impl Chat {
                 .flat_map(|timeline| &timeline.items)
                 .position(|item| item.id == id && item.at_unix_ms == Some(at))
         });
-        let items: Vec<Value> = timeline
+        let item_view = |item: &wsx_core::integration::memory::Item| {
+            let (text, attachments) = match (&item.text, item.kind) {
+                (Some(text), ItemKind::User) => {
+                    let (text, attachments) = sent_message(text, media);
+                    (Some(text), attachments)
+                }
+                (Some(text), ItemKind::Summary) => (Some(text.clone()), Vec::new()),
+                (Some(text), _) => {
+                    let files = root
+                        .as_ref()
+                        .filter(|_| site.allows(Capability::MediaDownload))
+                        .map(|root| self.produced_files(text, root, media))
+                        .unwrap_or_default();
+                    (Some(text.clone()), files)
+                }
+                (None, _) => (None, Vec::new()),
+            };
+            json!({
+                "id": item.id, "kind": item.kind, "at_unix_ms": item.at_unix_ms,
+                "text": text, "attachments": attachments, "tool": item.tool,
+            })
+        };
+        let mut items: Vec<Value> = timeline
             .iter()
             .flat_map(|timeline| &timeline.items)
             .skip(start.unwrap_or(0))
-            .map(|item| {
-                let (text, attachments) = match (&item.text, item.kind) {
-                    (Some(text), ItemKind::User) => {
-                        let (text, attachments) = sent_message(text, media);
-                        (Some(text), attachments)
-                    }
-                    (Some(text), ItemKind::Summary) => (Some(text.clone()), Vec::new()),
-                    (Some(text), _) => {
-                        let files = root
-                            .as_ref()
-                            .filter(|_| site.allows(Capability::MediaDownload))
-                            .map(|root| self.produced_files(text, root, media))
-                            .unwrap_or_default();
-                        (Some(text.clone()), files)
-                    }
-                    (None, _) => (None, Vec::new()),
-                };
-                json!({
-                    "id": item.id, "kind": item.kind, "at_unix_ms": item.at_unix_ms,
-                    "text": text, "attachments": attachments, "tool": item.tool,
-                })
-            })
+            .map(item_view)
             .collect();
+        // ^ A full answer starts with the end of the conversation before this one, so the
+        // earlier one stays readable above its "New conversation" line.
+        let earlier = conversations.iter().rev().find(|known| {
+            session_ref
+                .as_ref()
+                .is_some_and(|current| current.value != known.session_ref.value)
+        });
+        if let (None, Some(earlier)) = (start, earlier) {
+            let read = Reader::default().read_timeline(
+                &earlier.provider,
+                Some(&earlier.session_ref),
+                EARLIER_ITEMS,
+                TIMELINE_BYTES,
+            );
+            let mut before: Vec<Value> = read
+                .items
+                .iter()
+                .map(item_view)
+                .map(|mut item| {
+                    item["id"] = json!(format!(
+                        "earlier-{}",
+                        item["id"].as_str().unwrap_or_default()
+                    ));
+                    item
+                })
+                .collect();
+            before.append(&mut items);
+            items = before;
+        }
         let items = with_notices(items, app.queue.notices(session), start.is_some());
         // Only wsxd decides that the agent works; the transcript says at what.
         let working = target
@@ -358,8 +404,10 @@ impl Chat {
             .filter_map(|item| Some((item["text"].as_str()?.trim(), item["at_unix_ms"].as_u64())))
             .collect();
         app.queue.settle(session, &shown);
+        let mut session_value = session_view(&target);
+        session_value["conversation"] = json!(!conversations.is_empty());
         Ok(json!({
-            "session": session_view(&target),
+            "session": session_value,
             "status": timeline.as_ref().map_or("no_agent", |timeline| timeline.status),
             "truncated": timeline.as_ref().is_some_and(|timeline| timeline.truncated),
             "model": timeline.as_ref().and_then(|timeline| timeline.model.as_deref()),
@@ -459,7 +507,10 @@ impl Chat {
         prompt_of(site, media, text, attachments)?;
         let snapshot = snapshot(client)?;
         let target = target(&snapshot, &site.access, session)?;
-        attached_agent(&target)?;
+        match attached_agent(&target) {
+            Err(fault) if fault.1 == "no_agent" => self.resume(app, &snapshot, &target)?,
+            attached => drop(attached?),
+        }
         let queued = app.queue.push(session, text, attachments).ok_or_else(|| {
             Fault::new(
                 409,
@@ -611,6 +662,133 @@ impl Chat {
         changed
     }
 
+    /// The pane's agent is gone: type the provider's resume command for the conversation the
+    /// pane last had into its idle shell, so a message goes to the same conversation once the
+    /// agent reports again. At most once a minute per session. ref: docs/web-client.md
+    /// "Conversations"
+    fn resume(&self, app: &App, snapshot: &Snapshot, target: &Target) -> Outcome<()> {
+        let session = target.session_id.0;
+        let refuse = |message: &str| Fault::new(409, "no_agent", message.to_string());
+        let (provider, session_ref) = target
+            .pane
+            .agent
+            .as_ref()
+            .and_then(|agent| Some((agent.provider.clone(), agent.session_ref.clone()?)))
+            .or_else(|| {
+                app.queue
+                    .conversations(session)
+                    .last()
+                    .map(|known| (known.provider.clone(), known.session_ref.clone()))
+            })
+            .ok_or_else(|| refuse("no agent is attached to this session"))?;
+        let plan =
+            wsx_core::integration::resume::plan(&provider, &session_ref).ok_or_else(|| {
+                refuse("no agent is attached, and its conversation cannot be resumed")
+            })?;
+        if target.pane.exited {
+            return Err(refuse("the session's program ended; start it again in wsx"));
+        }
+        if snapshot
+            .pane_activity
+            .iter()
+            .any(|activity| activity.pane_id == target.pane.id && activity.foreground_job)
+        {
+            return Err(refuse(
+                "the terminal runs another program; open the terminal",
+            ));
+        }
+        let now = crate::devices::now_unix_ms();
+        {
+            let mut resuming = self
+                .resuming
+                .lock()
+                .unwrap_or_else(|lock| lock.into_inner());
+            if resuming
+                .get(&session)
+                .is_some_and(|since| now.saturating_sub(*since) < RESUME_WAIT_MS)
+            {
+                return Ok(());
+            }
+            resuming.insert(session, now);
+        }
+        // ^ Ctrl+U first: a line half typed at the prompt must not run with it.
+        let line = format!("\u{15}{}\r", shell_words(&plan.argv));
+        let typed = crate::question::with_lease(&app.client, target.pane.id, |client_id| {
+            call(
+                &app.client,
+                &Request::TerminalInput {
+                    pane_id: target.pane.id,
+                    client_id,
+                    bytes: line.into_bytes(),
+                },
+            )
+            .map(drop)
+        });
+        if let Err(fault) = typed {
+            self.resuming
+                .lock()
+                .unwrap_or_else(|lock| lock.into_inner())
+                .remove(&session);
+            return Err(fault);
+        }
+        app.queue.notice(
+            session,
+            format!(
+                "Resumed {} in the same conversation.",
+                provider_name(&provider)
+            ),
+        );
+        Ok(())
+    }
+
+    /// Remember the conversation of the session's agent and say in the chat when it ends or
+    /// changes: "Claude exited.", "Same conversation, continued", "New conversation". A server
+    /// that just started (`first`) only remembers. Returns whether the chat changed.
+    /// ref: docs/web-client.md "Conversations"
+    pub fn follow_conversation(
+        &self,
+        app: &App,
+        target: &Target,
+        attached: &mut HashMap<u64, bool>,
+        first: bool,
+    ) -> bool {
+        let session = target.session_id.0;
+        let agent = target.pane.agent.as_ref();
+        let now = agent.is_some_and(|agent| agent.attached);
+        let before = attached.insert(session, now);
+        let word = agent.map_or("The agent".to_string(), |agent| {
+            provider_name(&agent.provider)
+        });
+        let Some((agent, session_ref)) = agent
+            .filter(|agent| agent.attached)
+            .and_then(|agent| Some((agent, agent.session_ref.as_ref()?)))
+        else {
+            if before == Some(true) && !first && !app.queue.conversations(session).is_empty() {
+                app.queue.notice(session, format!("{word} exited."));
+                return true;
+            }
+            return false;
+        };
+        let resumed = self
+            .resuming
+            .lock()
+            .unwrap_or_else(|lock| lock.into_inner())
+            .remove(&session)
+            .is_some();
+        let line = match app
+            .queue
+            .see_conversation(session, &agent.provider, session_ref)
+        {
+            _ if first => None,
+            crate::queue::Seen::New => Some("New conversation".to_string()),
+            crate::queue::Seen::Same if before == Some(false) && !resumed => {
+                Some("Same conversation, continued".to_string())
+            }
+            _ => None,
+        };
+        line.map(|line| app.queue.notice(session, line)).is_some()
+    }
+
     /// Deliver the oldest waiting message of a session when the agent can take it.
     /// Returns whether the queue changed.
     pub fn deliver_queued(&self, app: &App, target: &Target) -> bool {
@@ -627,6 +805,23 @@ impl Chat {
             agent.attached && !matches!(agent.state, AgentState::Working | AgentState::Blocked)
         });
         if !ready {
+            // ^ An agent started again for this message that never reported fails it, with why.
+            let mut resuming = self
+                .resuming
+                .lock()
+                .unwrap_or_else(|lock| lock.into_inner());
+            let stale = resuming.get(&session).is_some_and(|since| {
+                crate::devices::now_unix_ms().saturating_sub(*since) >= RESUME_WAIT_MS
+            });
+            if stale {
+                resuming.remove(&session);
+                app.queue.fail(
+                    session,
+                    queued.id,
+                    "resume_failed: the agent did not start again within 60 s",
+                );
+                return true;
+            }
             return settled;
         }
         match self.send(
@@ -954,6 +1149,30 @@ pub fn with_attachments(
     }
     Ok(prompt)
 }
+
+/// How long an agent started again for a message may take to report.
+const RESUME_WAIT_MS: u64 = 60_000;
+
+/// An argv as one shell line: each word as written when it is plain, else in single quotes.
+fn shell_words(argv: &[String]) -> String {
+    argv.iter()
+        .map(|word| {
+            let plain = !word.is_empty()
+                && word
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_./=:@".contains(&byte));
+            if plain {
+                word.clone()
+            } else {
+                format!("'{}'", word.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The most items of the conversation before the current one a full timeline begins with.
+const EARLIER_ITEMS: usize = 60;
 
 /// The server's notices among the conversation's items, each before the first item saved
 /// after it. A partial answer (`from`) gets only the notices from its first item on.

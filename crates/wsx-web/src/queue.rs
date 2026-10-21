@@ -19,6 +19,8 @@ const MAX_DELIVERED: usize = 3;
 const SAVE_SKEW_MS: u64 = 2_000;
 /// Notices kept per session; older ones go.
 const MAX_NOTICES: usize = 20;
+/// Conversations remembered per session; older ones go.
+const MAX_CONVERSATIONS: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Queued {
@@ -81,12 +83,31 @@ pub struct Notice {
     pub text: String,
 }
 
+/// One agent conversation a session's pane held, so the chat outlives the agent and keeps the
+/// earlier conversation readable (docs/web-client.md "Conversations").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Conversation {
+    pub provider: String,
+    pub session_ref: wsx_core::runtime::AgentSessionRef,
+    pub since_unix_ms: u64,
+}
+
+/// How a conversation the agent reports relates to the remembered ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seen {
+    First,
+    Same,
+    New,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct Stored {
     next_id: u64,
     sessions: BTreeMap<u64, Vec<Queued>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     notices: BTreeMap<u64, Vec<Notice>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    conversations: BTreeMap<u64, Vec<Conversation>>,
 }
 
 pub struct Queue {
@@ -116,6 +137,9 @@ impl Queue {
         let result = change(&mut stored);
         stored.sessions.retain(|_, queue| !queue.is_empty());
         stored.notices.retain(|_, notices| !notices.is_empty());
+        stored
+            .conversations
+            .retain(|_, conversations| !conversations.is_empty());
         let saved = serde_json::to_vec(&*stored)
             .map_err(anyhow::Error::from)
             .and_then(|bytes| write_private(&self.path, &bytes));
@@ -318,6 +342,43 @@ impl Queue {
         });
     }
 
+    /// Remember the conversation an attached agent reports. Saves only on a change.
+    pub fn see_conversation(
+        &self,
+        session: u64,
+        provider: &str,
+        session_ref: &wsx_core::runtime::AgentSessionRef,
+    ) -> Seen {
+        let same = |known: &Conversation| {
+            known.provider == provider && known.session_ref.value == session_ref.value
+        };
+        let seen = match self.conversations(session).last() {
+            Some(last) if same(last) => return Seen::Same,
+            Some(_) => Seen::New,
+            None => Seen::First,
+        };
+        self.change(|stored| {
+            let conversations = stored.conversations.entry(session).or_default();
+            conversations.push(Conversation {
+                provider: provider.to_owned(),
+                session_ref: session_ref.clone(),
+                since_unix_ms: now_unix_ms(),
+            });
+            let extra = conversations.len().saturating_sub(MAX_CONVERSATIONS);
+            conversations.drain(..extra);
+        });
+        seen
+    }
+
+    pub fn conversations(&self, session: u64) -> Vec<Conversation> {
+        let stored = self.stored.lock().unwrap_or_else(|lock| lock.into_inner());
+        stored
+            .conversations
+            .get(&session)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub fn notices(&self, session: u64) -> Vec<Notice> {
         let stored = self.stored.lock().unwrap_or_else(|lock| lock.into_inner());
         stored.notices.get(&session).cloned().unwrap_or_default()
@@ -340,12 +401,16 @@ impl Queue {
                 .sessions
                 .keys()
                 .chain(stored.notices.keys())
+                .chain(stored.conversations.keys())
                 .any(|session| !alive.contains(session))
         };
         if stale {
             self.change(|stored| {
                 stored.sessions.retain(|session, _| alive.contains(session));
                 stored.notices.retain(|session, _| alive.contains(session));
+                stored
+                    .conversations
+                    .retain(|session, _| alive.contains(session));
             });
         }
     }
