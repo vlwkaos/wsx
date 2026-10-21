@@ -7,6 +7,7 @@ pub mod host;
 mod hosting;
 mod ledger;
 pub mod manager;
+mod preview;
 
 use crate::cli::{
     existing_daemon_snapshot, load_config, load_full_workspace, resolve_project, PromptSource,
@@ -165,6 +166,9 @@ pub enum TaskCmd {
         /// Commit, tag or branch to deploy; default: the default branch tip
         #[arg(long, value_name = "REF")]
         commit: Option<String>,
+        /// Only when the default branch tip is not deployed yet, after a running deploy ends
+        #[arg(long, conflicts_with = "commit")]
+        if_new: bool,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -206,6 +210,12 @@ pub enum TaskCmd {
     Say {
         #[command(flatten)]
         text: PromptSource,
+        /// From a project's manager to the manager of the project named with -p
+        #[arg(long)]
+        from_manager: bool,
+        /// With --from-manager: this answers a message that manager sent
+        #[arg(long, requires = "from_manager")]
+        reply: bool,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -239,6 +249,21 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// From a task's worker: run the project's checks as after its result (all, or by number)
+    CheckRun { numbers: Vec<u32> },
+    /// Serve the task for a person to try on its own tailnet port (tasks.preview)
+    Preview {
+        task: String,
+        /// Stop the running preview
+        #[arg(long)]
+        stop: bool,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(hide = true)]
+    PreviewHost { project_id: String, task: String },
     #[command(hide = true)]
     Host { project_id: String, task: String },
     #[command(hide = true)]
@@ -262,14 +287,18 @@ impl TaskCmd {
             | Self::Close { json, .. }
             | Self::Deploy { json, .. }
             | Self::Release { json, .. }
-            | Self::Deployed { json, .. } => *json,
+            | Self::Deployed { json, .. }
+            | Self::Preview { json, .. } => *json,
             Self::Manager { json, .. }
             | Self::Say { json, .. }
             | Self::Chat { json, .. }
             | Self::Approve { json, .. }
             | Self::Deny { json, .. } => *json,
             Self::Ledger { .. } => true,
-            Self::Host { .. } | Self::ManagerHost { .. } => false,
+            Self::CheckRun { .. }
+            | Self::Host { .. }
+            | Self::ManagerHost { .. }
+            | Self::PreviewHost { .. } => false,
         }
     }
 
@@ -331,22 +360,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             task,
             project,
             json,
-        } => {
-            let dir = open(project.as_deref(), &task)?;
-            // ^ The build is the owner's decision: the manager asks (docs/tasks.md "Brief").
-            if acting_as_manager() {
-                let record = dir.read_record()?;
-                return ask_owner(
-                    &dir.project_id,
-                    ApprovalAction::Start,
-                    Some(&record),
-                    None,
-                    None,
-                    json,
-                );
-            }
-            send(&dir, HostRequest::Start, json)
-        }
+        } => send(&open(project.as_deref(), &task)?, HostRequest::Start, json),
         TaskCmd::List { project, all, json } => list(project.as_deref(), all, json),
         TaskCmd::Show {
             task,
@@ -486,12 +500,14 @@ pub fn run(command: TaskCmd) -> Result<()> {
         } => deny(project.as_deref(), &id, note, json),
         TaskCmd::Deploy {
             commit,
+            if_new,
             project,
             json,
         } => deploy(
             DeployKind::Deploy,
             project.as_deref(),
             commit.as_deref(),
+            if_new,
             json,
         ),
         TaskCmd::Release {
@@ -502,6 +518,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             DeployKind::Release,
             project.as_deref(),
             commit.as_deref(),
+            false,
             json,
         ),
         TaskCmd::Deployed { project, json } => deployed(project.as_deref(), json),
@@ -518,14 +535,61 @@ pub fn run(command: TaskCmd) -> Result<()> {
         }
         TaskCmd::Say {
             text,
+            from_manager,
+            reply,
             project,
             json,
-        } => say(project.as_deref(), text.read(MAX_MESSAGE_BYTES)?, json),
+        } => {
+            let from = from_manager.then_some(reply);
+            say(
+                project.as_deref(),
+                text.read(MAX_MESSAGE_BYTES)?,
+                from,
+                json,
+            )
+        }
         TaskCmd::Chat {
             after,
             project,
             json,
         } => chat(project.as_deref(), after, json),
+        // ^ Under a task host's broker the CLI forwards it before parsing (broker.rs).
+        TaskCmd::CheckRun { .. } => {
+            bail!("`wsx task check-run` runs only inside a task's worker, through its host")
+        }
+        TaskCmd::Preview {
+            task,
+            stop,
+            project,
+            json,
+        } => {
+            let dir = open(project.as_deref(), &task)?;
+            let (value, message) = if stop {
+                let stopped = preview::stop(&dir)?;
+                let message = match stopped {
+                    true => "stopped the preview",
+                    false => "no preview was running",
+                };
+                (
+                    json!({ "stopped": stopped, "message": message }),
+                    message.to_string(),
+                )
+            } else {
+                let running = preview::start(&dir)?;
+                let message = format!("try it at {} until it stops in an hour", running.url);
+                let mut value = serde_json::to_value(&running)?;
+                value["message"] = json!(message);
+                (value, message)
+            };
+            if json {
+                return print_json(&value);
+            }
+            println!("{message}");
+            Ok(())
+        }
+        TaskCmd::PreviewHost { project_id, task } => {
+            preview::host(&project_id, store::parse_task_number(&task)?)
+        }
         TaskCmd::ManagerHost { project_id } => manager::run(&project_id),
         TaskCmd::Host { project_id, task } => {
             host::run(&project_id, store::parse_task_number(&task)?)
@@ -690,6 +754,8 @@ fn create(
         pr_revision: None,
         title,
         fixes,
+        created_by: actor(),
+        waiting: None,
         created_unix_ms: now,
         updated_unix_ms: now,
     };
@@ -1029,6 +1095,8 @@ fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
             );
         }
     }
+    // ^ A preview runs in the working copy: it stops before the copy goes.
+    preview::stop(dir).with_context(|| format!("task t{} is unchanged", record.id))?;
     // ^ The host is the writer while it runs: ask it to close and wait for it to exit.
     let socket = dir.socket_path();
     if call_host(&socket, &HostRequest::Close { discard }, HOST_TIMEOUT).is_ok() {
@@ -1045,10 +1113,15 @@ fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
             );
         }
         record = dir.read_record()?;
-    } else if record.state != TaskState::Closed {
+    } else if record.state != TaskState::Closed
+        && (record.state != TaskState::Landed || working_copy_exists)
+    {
         let _ = std::fs::remove_file(&socket);
         dir.append(LogEvent::Closed { discarded: discard })?;
-        record.state = TaskState::Closed;
+        // ^ A landed task keeps `landed`: its work is on the default branch.
+        if record.state != TaskState::Landed || discard {
+            record.state = TaskState::Closed;
+        }
         record.updated_unix_ms = now_unix_ms();
         dir.write_record(&record)?;
     }
@@ -1136,7 +1209,15 @@ fn delete_revision_refs(main: &Path, id: u32) {
 
 /// Run the project's deploy or release command in a temporary copy of one commit.
 /// ^ Never from a task's working copy: what runs is always a default-branch commit.
-fn deploy(kind: DeployKind, project: Option<&str>, commit: Option<&str>, json: bool) -> Result<()> {
+/// `if_new`: skip a commit that is already deployed, so the deploys that follow quick lands
+/// run once for the newest one (docs/tasks.md "Deploy and release").
+fn deploy(
+    kind: DeployKind,
+    project: Option<&str>,
+    commit: Option<&str>,
+    if_new: bool,
+    json: bool,
+) -> Result<()> {
     let name = kind_name(kind);
     let (project_name, main) = project_entry(project)?;
     let settings =
@@ -1171,12 +1252,32 @@ fn deploy(kind: DeployKind, project: Option<&str>, commit: Option<&str>, json: b
         };
         return ask_owner(&project_id, action, None, commit, None, json);
     }
+    // ^ One deploy or release at a time per project; a later one waits here.
+    let _running = store::lock_deploys(&project_id)?;
     let revision = match commit {
         Some(commit) => commit.to_string(),
         None => default_ref(&main, &settings, true).map_err(|error| {
             error.context(format!("nothing was run or recorded for this {name}"))
         })?,
     };
+    if if_new {
+        let tip = copy::resolve_commit(&main, &revision)?;
+        let deployed = store::read_deploys(&project_id)?
+            .into_iter()
+            .rev()
+            .find(|record| record.kind == kind && record.exit == Some(0))
+            .is_some_and(|record| record.commit == tip);
+        if deployed {
+            let message = format!("{name} of {tip:.12}: already deployed");
+            if json {
+                return print_json(
+                    &json!({ "kind": kind, "commit": tip, "skipped": true, "message": message }),
+                );
+            }
+            println!("{message}");
+            return Ok(());
+        }
+    }
     let path = copy::working_copy_path_named(&main, &format!("{name}-{}", std::process::id()))?;
     let commit = copy::create_detached(&main, &revision, &path)
         .map_err(|error| error.context(format!("nothing was run or recorded for this {name}")))?;
@@ -1286,12 +1387,35 @@ fn ensure_manager(project: Option<&str>) -> Result<(bool, ManagerDir)> {
     owner::ensure_manager(&name, &main, &exe, launch_manager(&main))
 }
 
-fn say(project: Option<&str>, text: String, json: bool) -> Result<()> {
+/// `from`: `Some(reply)` when another project's manager sends it (`--from-manager`).
+fn say(project: Option<&str>, text: String, from: Option<bool>, json: bool) -> Result<()> {
     let (name, main) = project_entry(project)?;
+    let from = match from {
+        None => None,
+        Some(reply) => {
+            // ^ Only a manager host sets the sender's project (broker.rs).
+            let own = std::env::var(broker::FROM_ENV)
+                .ok()
+                .filter(|own| acting_as_manager() && !own.is_empty())
+                .context("--from-manager is for a project's manager")?;
+            if own == name {
+                bail!("--from-manager messages another project's manager");
+            }
+            Some(wsx_core::task::manager::Author::Manager {
+                project: own,
+                reply,
+            })
+        }
+    };
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-    let response = owner::say(&name, &main, &exe, launch_manager(&main), text)?;
+    let sent = from.is_some().then(|| text.clone());
+    let response = owner::say(&name, &main, &exe, launch_manager(&main), text, from)?;
     if json {
-        print_json(&serde_json::to_value(&response)?)?;
+        let mut value = serde_json::to_value(&response)?;
+        if let Some(text) = sent {
+            value["text"] = json!(text);
+        }
+        print_json(&value)?;
     } else {
         println!(
             "message {}: {}",

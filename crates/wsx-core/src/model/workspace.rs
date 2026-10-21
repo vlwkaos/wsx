@@ -73,16 +73,24 @@ pub struct TaskConfig {
     pub checks: Vec<String>,
     /// Seconds one check may run before its process group is killed.
     pub check_timeout_secs: u64,
+    /// Free disk a task needs before an agent turn or its checks; below it the task waits
+    /// (docs/tasks.md "Checks, revisions and report").
+    pub min_free_gb: u64,
     pub land_policy: LandPolicy,
     /// Remote the `pr` policy pushes to.
     pub land_remote: String,
-    /// Whether the manager's land, deploy and release need the owner's approval.
+    /// Whether the manager's land, deploy and release need the owner's approval (only a
+    /// release does by default: docs/tasks.md "Approvals").
     pub land_approve: bool,
     /// Whether the host lands a task as soon as its checks pass (docs/tasks.md "Landing").
     pub land_auto: bool,
     pub deploy_approve: bool,
     /// Whether the deployed site is public: open "To check" items then stop a deploy.
     pub deploy_public: bool,
+    /// Whether a land of the default branch deploys it (docs/tasks.md "Deploy and release").
+    pub deploy_auto: bool,
+    /// `tasks.preview`: how a task is tried on request (docs/tasks.md "Preview").
+    pub preview: Option<TaskPreview>,
     pub release_approve: bool,
     /// Shell commands that deploy or release one default-branch commit.
     pub deploy_command: Option<String>,
@@ -107,6 +115,15 @@ pub struct TaskSandbox {
     pub allow_write: Vec<String>,
 }
 
+/// A command that serves one task on `$PORT`, the path that answers once it is up, and
+/// the ports it may use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskPreview {
+    pub command: String,
+    pub ready: String,
+    pub ports: (u16, u16),
+}
+
 /// How `wsx task land` brings a task onto the default branch (docs/tasks.md "Landing").
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -126,12 +143,15 @@ impl Default for TaskConfig {
             sandbox: TaskSandbox::default(),
             checks: Vec::new(),
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
+            min_free_gb: 5,
             land_policy: LandPolicy::LocalMerge,
             land_remote: "origin".into(),
-            land_approve: true,
+            land_approve: false,
             land_auto: true,
-            deploy_approve: true,
+            deploy_approve: false,
             deploy_public: false,
+            deploy_auto: false,
+            preview: None,
             release_approve: true,
             deploy_command: None,
             release_command: None,

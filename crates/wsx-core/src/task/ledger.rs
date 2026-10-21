@@ -69,6 +69,8 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
                     .collect::<Vec<_>>(),
                 "pr_url": record.pr_url,
                 "phase": record.phase,
+                // ^ What the task waits for that is not a person, such as free disk.
+                "waiting": record.waiting,
                 // ^ What a blocked task asks for; the manager may grant it (docs/tasks.md "Permissions").
                 "asks": (record.state == super::TaskState::Blocked)
                     .then(|| result.as_ref().map(|r| r["asks"].clone()))

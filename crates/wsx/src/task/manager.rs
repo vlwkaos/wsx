@@ -59,7 +59,18 @@ pub(super) enum Event {
     Request(ManagerRequest, Sender<ManagerResponse>),
     Agent(u64, Option<AgentLine>),
     Tick,
+    /// The agent's `say --from-manager` reached another project's manager.
+    Sent {
+        to: String,
+        text: String,
+        reply: bool,
+    },
 }
+
+/// Answers this manager owes other projects' managers: one per message from one of them
+/// that a turn delivered. A `say --from-manager --reply` spends one, so a reply is never
+/// answered and a message is answered once. ref: docs/tasks.md "Managers talk"
+type Owed = std::sync::Arc<std::sync::Mutex<BTreeMap<String, u32>>>;
 
 struct Manager {
     dir: ManagerDir,
@@ -89,6 +100,7 @@ struct Manager {
     /// The file this host runs from, and whether it must exec its replacement.
     binary: Option<hosting::Binary>,
     reexec: bool,
+    owed: Owed,
 }
 
 /// Tools the manager has beyond `Read Glob Grep`, so it loads context as a worker does and
@@ -105,6 +117,10 @@ const SKILLS_PLUGIN_NAME: &str = "owner";
 
 /// The manager's lean project context in its notes folder. ref: docs/tasks.md "Memo"
 const CONTEXT_FILE: &str = "context.md";
+/// The owner's decisions, one line each, appended by the manager as they are made.
+const DECISIONS_FILE: &str = "decisions.md";
+/// The most of both files a fresh conversation's first message carries.
+const MAX_NOTES_BYTES: usize = 8 * 1024;
 
 /// The manager runs with project and local settings only, which load no user skill: a
 /// plugin in its folder links the owner's skills folder, `$CLAUDE_CONFIG_DIR/skills` or
@@ -172,18 +188,23 @@ fn instructions(project: &str, notes: &Path, page: &Path, skills: bool) -> Strin
          owner and do not retry it. Keep turns short. Name tasks as #<n>. \
          Work the owner asks for starts with `wsx task new --title <title>`: the title is \
          a few plain words of at most 60 characters that name the work, never starting \
-         with 'Owner'. Its worker first writes a brief and the task waits as briefed. Tell the owner the brief is coming. Add \
-         `--no-brief` only when the owner's message asks to skip the brief, such as \
-         'just do it' or 'no brief'. Never start a build on your own: when the owner says \
-         'start #<n>', run `wsx task start <n>`, which asks the owner's approval. A reply \
-         about a brief goes to its task with `wsx task add`. In status answers, name the \
-         briefs that wait for the owner. \
+         with 'Owner'. Its worker first writes a brief; a brief without open questions \
+         starts its build by itself. Tell the owner what you started. Add `--no-brief` only \
+         when the owner's message asks to skip the brief, such as 'just do it' or 'no brief'. \
+         A brief with open questions waits: put them to the owner in plain words; the \
+         owner's answer goes to its task with `wsx task add`, and the next brief starts by \
+         itself when it has none. On 'start #<n>' run `wsx task start <n>`. \
          The ledger's `checks` (and 'checks n of m passed' in an event) are what wsx \
          ran on the task's latest revision. When you report a task, give each check as \
          passed or failed from them, and trust them over the worker's own words about \
          what it could not run or verify; quote the worker only for what no check covers. \
-         A task whose checks pass lands by itself when the ledger's `auto_land` is true; run \
-         `wsx task land` only for a ready task that waits. Never ask the owner to verify a \
+         A task the owner created lands by itself when its checks pass and the ledger's \
+         `auto_land` is true. A ready task you created waits for your review: read its diff \
+         (`git -C <working copy> diff <base>..HEAD`; `wsx task show <n> --json` names both) \
+         against its brief and the owner's words, then `wsx task land <n>` when it does what \
+         was asked, or `wsx task add <n> \"<what is missing>\"`. A land needs no approval, and \
+         after it the project deploys by itself when the ledger's `deploys` say so; call a \
+         change live only when `deploys` shows its commit. Never ask the owner to verify a \
          task. What only a person can check (look, feel, a real device, real data) goes to \
          the project's To check list (`wsx task check -p {project} --json`, the ledger's \
          `to_check`), which the owner works through at their own time; never pass or fail \
@@ -204,7 +225,18 @@ fn instructions(project: &str, notes: &Path, page: &Path, skills: bool) -> Strin
          the owner's goal and the likely next step before you answer, and say what you \
          checked in one short line. Subagents and skills keep your boundary: Edit, \
          Write and NotebookEdit are denied to them as to you, and their Bash writes only \
-         where yours does. Keep answers short. \
+         where yours does. Keep answers short. When the owner asks for status, read the \
+         ledger and answer in a few plain lines: what landed and is live, what runs, what \
+         waits for the owner and why; never give the owner commands to run. \
+         When the owner decides something (a rule, a preference, a choice), append one line \
+         `- <YYYY-MM-DD> <decision>` to {decisions} at once. Every new conversation of yours \
+         starts with that file and {context}. \
+         Other registered projects have managers too. For another project you may read \
+         `wsx task ledger -p <project>` and message its manager with `wsx task say -p \
+         <project> --from-manager \"<text>\"`; you never create or change its tasks. A \
+         message headed 'Manager <project>' asks you something: answer it once with \
+         `wsx task say -p <project> --from-manager --reply \"<answer>\"`. A message headed \
+         'Manager <project> replies' answers yours: use it and do not answer it. \
          Workers run in a sandbox too. When the ledger shows a blocked task with asks, fix it yourself: when the task plainly needs that host or folder, \
          grant it with `wsx task allow <n> --host <host>` or `--path <path>`, which resumes \
          it; otherwise steer or add to the worker. Never tell the owner to edit settings \
@@ -226,6 +258,7 @@ fn instructions(project: &str, notes: &Path, page: &Path, skills: bool) -> Strin
          first fold those memos into {context} with Bash: keep it lean, merge duplicates, \
          drop what is stale, at most 60 lines.",
         context = notes.join(CONTEXT_FILE).display(),
+        decisions = notes.join(DECISIONS_FILE).display(),
         notes = notes.display(),
         page = page.display()
     )
@@ -260,6 +293,7 @@ pub fn run(project_id: &str) -> Result<()> {
         last_event: None,
         binary: hosting::Binary::capture(),
         reexec: false,
+        owed: Owed::default(),
     };
     manager.restore()?;
     let requests = events.clone();
@@ -274,7 +308,16 @@ pub fn run(project_id: &str) -> Result<()> {
     });
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
     let folder = manager.main.clone();
-    std::thread::spawn(move || broker::serve(brokered, exe, folder));
+    let (own, owed, sent) = (
+        manager.project.clone(),
+        manager.owed.clone(),
+        events.clone(),
+    );
+    std::thread::spawn(move || {
+        broker::serve_manager(brokered, exe, folder, own, owed, move |to, text, reply| {
+            let _ = sent.send(Event::Sent { to, text, reply });
+        })
+    });
     std::thread::spawn(move || {
         while events.send(Event::Tick).is_ok() {
             std::thread::sleep(Duration::from_secs(1));
@@ -311,6 +354,7 @@ impl Manager {
                 }
                 Event::Agent(..) => {}
                 Event::Tick => self.watch_tasks(),
+                Event::Sent { to, text, reply } => self.log(ManagerEvent::Sent { to, text, reply }),
             }
             if self.turn.is_none() {
                 self.flush_events();
@@ -333,24 +377,26 @@ impl Manager {
                 busy,
                 message: format!("{} message(s) waiting", self.queue.len()),
             },
-            ManagerRequest::Say { text } => match self.accept(Author::Owner, text) {
-                Ok(id) => ManagerResponse {
-                    ok: true,
-                    id: Some(id),
-                    busy,
-                    message: if busy {
-                        "queued until the manager's turn ends".into()
-                    } else {
-                        "sent to the manager".into()
+            ManagerRequest::Say { text, from } => {
+                match self.accept(from.unwrap_or(Author::Owner), text) {
+                    Ok(id) => ManagerResponse {
+                        ok: true,
+                        id: Some(id),
+                        busy,
+                        message: if busy {
+                            "queued until the manager's turn ends".into()
+                        } else {
+                            "sent to the manager".into()
+                        },
                     },
-                },
-                Err(error) => ManagerResponse {
-                    ok: false,
-                    id: None,
-                    busy,
-                    message: format!("{error:#}"),
-                },
-            },
+                    Err(error) => ManagerResponse {
+                        ok: false,
+                        id: None,
+                        busy,
+                        message: format!("{error:#}"),
+                    },
+                }
+            }
         }
     }
 
@@ -494,6 +540,9 @@ impl Manager {
                     0 => worker,
                     total => format!("checks {passed} of {total} passed; {worker}"),
                 };
+                if let Some(waiting) = &record.waiting {
+                    summary = format!("{waiting}, resumes by itself; {summary}");
+                }
                 // ^ A landing adds its Human Verify items to the project's To check list.
                 if record.state == TaskState::Landed {
                     let open = checks::open_items(&self.dir.project_id).map_or(0, |items| {
@@ -548,22 +597,25 @@ impl Manager {
         let id = self.next_id();
         self.dir.append(ManagerEvent::Message {
             id,
-            from,
+            from: from.clone(),
             text: text.clone(),
         })?;
         self.enqueue(id, from, text);
         Ok(id)
     }
 
+    /// Owner messages go first, then other managers', then events.
     fn enqueue(&mut self, id: u64, from: Author, text: String) {
-        let at = match from {
-            Author::Owner => self
-                .queue
-                .iter()
-                .position(|(_, author, _)| *author == Author::Events)
-                .unwrap_or(self.queue.len()),
-            Author::Events => self.queue.len(),
+        let rank = |author: &Author| match author {
+            Author::Owner => 0,
+            Author::Manager { .. } => 1,
+            Author::Events => 2,
         };
+        let at = self
+            .queue
+            .iter()
+            .position(|(_, author, _)| rank(author) > rank(&from))
+            .unwrap_or(self.queue.len());
         self.queue.insert(at, (id, from, text));
     }
 
@@ -585,7 +637,7 @@ impl Manager {
             self.reexec = true;
             return;
         }
-        let first = *first;
+        let first = first.clone();
         let mut ids = Vec::new();
         let mut text = String::new();
         while self
@@ -594,9 +646,25 @@ impl Manager {
             .is_some_and(|(_, author, _)| *author == first)
         {
             let (id, author, body) = self.queue.pop_front().expect("checked above");
-            let heading = match author {
-                Author::Owner => "Owner",
-                Author::Events => "Events",
+            let heading = match &author {
+                Author::Owner => "Owner".to_string(),
+                Author::Events => "Events".to_string(),
+                Author::Manager {
+                    project,
+                    reply: false,
+                } => {
+                    *self
+                        .owed
+                        .lock()
+                        .expect("owed lock")
+                        .entry(project.clone())
+                        .or_default() += 1;
+                    format!("Manager {project}")
+                }
+                Author::Manager {
+                    project,
+                    reply: true,
+                } => format!("Manager {project} replies"),
             };
             text.push_str(&format!("{heading} (message {id}):\n{body}\n\n"));
             ids.push(id);
@@ -629,9 +697,12 @@ impl Manager {
                 Some(session) => (session.clone(), true),
                 None => (new_session_id()?, false),
             };
-            if !resume && self.state.handover {
-                text = self.handover() + &text;
-                self.state.handover = false;
+            if !resume {
+                if self.state.handover {
+                    text = self.handover() + &text;
+                    self.state.handover = false;
+                }
+                text = self.notes_preamble() + &text;
             }
             self.state.instructions = Some(digest);
             self.save();
@@ -755,6 +826,53 @@ impl Manager {
         self.state.handover = true;
         self.save();
         self.log(ManagerEvent::Rotated { tokens, reason });
+    }
+
+    /// The owner's decisions, newest first, then the project context, at most 8 KiB
+    /// together: every fresh conversation starts knowing them. ref: docs/tasks.md "Memo"
+    fn notes_preamble(&self) -> String {
+        let Ok(notes) = self.dir.notes() else {
+            return String::new();
+        };
+        let read = |name: &str| std::fs::read_to_string(notes.join(name)).unwrap_or_default();
+        let decisions: Vec<String> = read(DECISIONS_FILE)
+            .lines()
+            .rev()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect();
+        let context = read(CONTEXT_FILE);
+        let mut out = String::new();
+        let mut budget = MAX_NOTES_BYTES;
+        let mut take = |line: &str, out: &mut String| {
+            if line.len() + 1 > budget {
+                return false;
+            }
+            budget -= line.len() + 1;
+            out.push_str(line);
+            out.push('\n');
+            true
+        };
+        if !decisions.is_empty() {
+            out.push_str("The owner's decisions (decisions.md, newest first):\n");
+            for line in &decisions {
+                if !take(line, &mut out) {
+                    break;
+                }
+            }
+            out.push('\n');
+        }
+        if !context.trim().is_empty() {
+            out.push_str("Your project context (context.md):\n");
+            for line in context.lines() {
+                if !take(line, &mut out) {
+                    break;
+                }
+            }
+            out.push('\n');
+        }
+        out
     }
 
     /// The last exchanges of the log, so a fresh conversation knows what was just said.

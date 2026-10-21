@@ -808,6 +808,17 @@ fn prompt_of(site: &Site, media: &Media, text: &str, attachments: &[String]) -> 
     if !site.allows(Capability::ChatSend) {
         return Err(Fault::forbidden("sending messages"));
     }
+    with_attachments(site, media, text, attachments)
+}
+
+/// The text with its attachments' paths under the attachment header, as an agent reads
+/// them (the session chat and the manager chat).
+pub fn with_attachments(
+    site: &Site,
+    media: &Media,
+    text: &str,
+    attachments: &[String],
+) -> Outcome<String> {
     if !attachments.is_empty() && !site.allows(Capability::MediaUpload) {
         return Err(Fault::forbidden("attachments"));
     }
@@ -894,8 +905,9 @@ fn private_name(relative: &Path) -> bool {
         || ["pem", "key", "p12", "pfx", "env", "jks"].contains(&extension)
 }
 
-/// Undo what `send` and the broker added to a user message, for display only.
-fn sent_message(text: &str, media: &Media) -> (String, Vec<Attachment>) {
+/// Undo what `send` and the broker added to a user message, for display only. The manager
+/// chat reads its owner messages through it too.
+pub fn sent_message(text: &str, media: &Media) -> (String, Vec<Attachment>) {
     let text = unwrap_paste(text);
     let body = match text.split_once('\n') {
         Some((first, rest)) if first.starts_with("[wsx exchange ") && first.ends_with(']') => rest,

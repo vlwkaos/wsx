@@ -139,9 +139,11 @@ impl Launch {
 
     /// A brief turn reads only and returns a brief; a build turn edits and returns a result.
     /// `project_grants` are the project's `grants.json`; the record holds the task's own.
-    pub fn worker(record: &TaskRecord, project_grants: &[Access]) -> Result<Self> {
+    /// `broker`: the task host's socket for `wsx task check-run` (broker.rs).
+    pub fn worker(record: &TaskRecord, project_grants: &[Access], broker: &Path) -> Result<Self> {
         let grants: Vec<&Access> = record.grants.iter().chain(project_grants).collect();
-        let boundary = worker_boundary(record, &grants)?;
+        let mut boundary = worker_boundary(record, &grants)?;
+        boundary.unix_sockets = vec![broker.display().to_string()];
         // ^ Records from before the sandbox hold Bash rules and bare Edit and Write: drop them.
         let tools = record
             .tools
@@ -161,6 +163,13 @@ impl Launch {
             }
             Phase::Build => worker_result_schema(),
         });
+        launch.env = vec![(
+            super::broker::BROKER_ENV.into(),
+            broker.as_os_str().to_owned(),
+        )];
+        launch.path_prefix = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
         Ok(launch)
     }
 }
@@ -313,15 +322,38 @@ fn worker_instructions(record: &TaskRecord) -> String {
          `evidence` with that command or the capture's path. Put in `human_verify` only \
          what needs a person: how it looks or feels, a real device, real data. \
          Before you finish a build, put in the result's memo a short, lean memo of durable \
-         project knowledge a later task needs: a convention, a gotcha, a decision and its \
-         reason, a few lines at most. Leave the memo empty when there is none. \
+         project knowledge a later task needs, a few lines at most: when you learned a \
+         project convention, a gotcha or a decision and its reason, the memo must say it. \
+         Leave the memo empty only when you learned none. \
+         {checks}\
          Your commands run in a sandbox: they write only in this working copy, and a \
          host that is not allowed fails with a sandbox_violations note; when the task \
          needs that host, run the command again with the host listed. Keep file edits in \
          this working copy. \
          When you cannot continue, return status blocked and say what you need; when the \
          sandbox or a permission stops a host or a path you need, name that host or path.",
-        record.branch
+        record.branch,
+        checks = check_run_note(record),
+    )
+}
+
+/// The project's checks by number, and how the worker runs them before it reports done.
+fn check_run_note(record: &TaskRecord) -> String {
+    if record.checks.is_empty() {
+        return String::new();
+    }
+    let listed: Vec<String> = record
+        .checks
+        .iter()
+        .enumerate()
+        .map(|(index, check)| format!("{}. `{check}`", index + 1))
+        .collect();
+    format!(
+        "After your result wsx runs the project's checks: {}. Before you report done, run \
+         `wsx task check-run` (all) or `wsx task check-run 2 3` (by number): the task host runs \
+         them outside your sandbox exactly as it will after your result, so a test that needs \
+         a terminal or a browser works there. Fix what fails first. ",
+        listed.join(" ")
     )
 }
 

@@ -184,6 +184,10 @@ def brief_turn(text, session, allowed, disallowed, current):
         'concepts': [{'term': 'Working copy', 'explanation': 'A separate checkout. Nothing else changes.'}],
         'open_questions': []}
     brief.update({'rewritten_prompt': current or 'NOOP', 'answer': ('answered: ' + owner) if reply else ''})
+    # ^ QUESTION keeps a brief without questions waiting for the owner; a brief without any
+    # starts its build by itself.
+    if 'QUESTION' in words and not brief.get('open_questions'):
+        brief['open_questions'] = ['Which file should change?']
     emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'brief',
           'session_id': session, 'permission_denials': denials,
           'usage': {'input_tokens': 900, 'output_tokens': 300}, 'total_cost_usd': 0.02,
@@ -314,6 +318,11 @@ def main():
         if 'DENIED' in words:
             worked_around = words[words.index('DENIED') + 1]
             denials.append({'tool_name': 'Bash', 'tool_use_id': 'y', 'tool_input': {'command': worked_around}})
+        if 'CHECKRUN' in words:
+            # ^ Through the task host's broker (WSX_TASK_BROKER); any other command is refused.
+            ran = subprocess.run(['wsx', 'task', 'check-run'], capture_output=True, text=True)
+            other = subprocess.run(['wsx', 'task', 'list'], capture_output=True, text=True)
+            trace({'check_run': [ran.returncode, ran.stdout + ran.stderr], 'check_run_other': [other.returncode, other.stderr]})
         try_edit(words, allowed, disallowed, denials)
         stopped = sandbox_stops(words, json.loads(options.get('--settings', '{}')))
         blocked = (bool(denials) and 'NEEDS' in words) or stopped

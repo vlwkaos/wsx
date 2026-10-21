@@ -7,6 +7,8 @@ close with and without unlanded commits, failure cleanup, and that no process, s
 worktree or branch is left. Build adjacent wsx and wsxd first. ref: docs/tasks.md
 """
 import argparse
+import hashlib
+import urllib.request
 import json
 import os
 from pathlib import Path
@@ -20,8 +22,10 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 # ^ Parts 1-22 build at once (`brief: false`); part 23 turns the brief on. Parts other than 16
 # land by hand (`land.auto: false`) so a ready task stays ready.
+# ^ `minFreeGb: 0`: the fixture must not wait on the free disk of the machine it runs on.
 CONFIG = '''tasks:
   brief: false
+  minFreeGb: 0
   land: { auto: false }
   agent:
     model: fake-model
@@ -53,6 +57,7 @@ else:
 
 LAND_CONFIG = '''tasks:
   brief: false
+  minFreeGb: 0
   land: { auto: false }
   agent:
     tools: [WebFetch]
@@ -231,7 +236,10 @@ def run(wsx, wsxd, work, owned):
     assert host_socket.parent == tmp / ('wsx-%d' % os.getuid()), host_socket
     assert oct(host_socket.parent.stat().st_mode & 0o777) == '0o700'
     launch = wait(lambda: next((t for t in traces() if t.get('launch')), None), 'fake launch')
-    assert launch['wsx_env'] == [] and launch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch'] and launch['schema']
+    # ^ One wsx variable: the host's broker for `wsx task check-run`, its one reachable socket.
+    assert launch['wsx_env'] == ['WSX_TASK_BROKER'] and launch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch'] and launch['schema']
+    worker_sockets = launch['settings']['sandbox']['network']['allowUnixSockets']
+    assert len(worker_sockets) == 1 and Path(worker_sockets[0]).name.startswith('w-') and Path(worker_sockets[0]).is_socket()
     assert launch['model'] == 'fake-model' and not launch['resume'] and launch['mode'] == 'auto'
     assert "put in the result's memo a short, lean memo of durable" in launch['instructions'], launch['instructions']
     assert 'memo' in launch['schema_required'], launch['schema_required']
@@ -408,13 +416,14 @@ def run(wsx, wsxd, work, owned):
 
     # 13. A check that runs past tasks.checkTimeoutSeconds is killed and fails the task.
     (project / 'wsx.config.yml').write_text(
-        'tasks:\n  brief: false\n  agent:\n    tools: [Read]\n  checks: ["sleep 37"]\n  checkTimeoutSeconds: 1\n')
+        'tasks:\n  brief: false\n  minFreeGb: 0\n  agent:\n    tools: [Read]\n  checks: ["sleep 37"]\n  checkTimeoutSeconds: 1\n')
     timed = js('task', 'new', 'NOOP')
     failed = wait_state(timed['id'], 'failed', 'ready')
     check = failed['result']['checks'][0]
     assert failed['state'] == 'failed' and check['timed_out'] and check['exit'] is None, failed['result']
     assert '`sleep 37`: timed out' in Path(failed['report']).read_text()
-    assert not leftovers('sleep 37')
+    # ^ The worker's instructions name the check too: only the check's own process counts.
+    assert not [line for line in leftovers('sleep 37') if line.split(None, 1)[1].startswith(('sleep', '/bin/sh -c sleep'))]
     js('task', 'close', timed['id'])
 
     # M2: the landing steps use a committed config without the a.txt check.
@@ -457,6 +466,13 @@ def run(wsx, wsxd, work, owned):
     def main_has(path):
         return subprocess.run(['git', 'cat-file', '-e', 'main:' + path], cwd=project, env=env).returncode == 0
 
+    def wait_closed(n):
+        # ^ A landed task closes itself and stays `landed`: its copy, build and branch go; the
+        # task folder and the log, which ends `closed`, stay.
+        copy = Path(show(n)['record']['working_copy'])
+        wait(lambda: show(n)['state'] == 'landed' and not copy.exists() and log(n)[-1]['kind'] == 'closed'
+             and not git('branch', '--list', 'wsx/t%d' % n), 't%s closed after landing' % n, 60)
+
     # 15. Landing, local-merge. A dirty default-branch checkout refuses and names the file.
     (project / 'README').write_text('dirty\n')
     refused = land(y1, ok=False)
@@ -485,11 +501,8 @@ def run(wsx, wsxd, work, owned):
     assert any(t.get('resolved_onto') for t in traces())
     assert land(x2)['state'] == 'landed'
     assert git('show', 'main:x.txt') == 'resolved'
-    # A not-ready task does not land; a landed one closes without --discard.
-    assert 'only a ready task lands' in land(x2, ok=False)['message']
     for n in (x1, y1, x2):
-        assert js('task', 'close', n)['state'] == 'closed'
-        assert not git('branch', '--list', 'wsx/t%d' % n)
+        wait_closed(n)
 
     # 16. Auto land (the default; docs/tasks.md "Landing"): a ready task lands by itself with no
     # owner action, its Human Verify items join the To check list, and a conflict lands after
@@ -550,8 +563,10 @@ def run(wsx, wsxd, work, owned):
     assert 'the text is cut off' in prompt and show(task_of_c2)['report'] in prompt and 'Pass if: it has text' in prompt, prompt
     wait_state(fix, 'ready', 'landed', 'failed')
     assert [i['id'] for i in js('task', 'check')['open']] == ['c3']
-    for n in (hv, a1, a2, unchecked, fix):
-        js('task', 'close', n)
+    for n in (hv, a1, a2, unchecked):
+        wait_closed(n)
+    # ^ No checks prove the fix, so it waits ready; it has no commits and closes plainly.
+    js('task', 'close', fix)
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
     git('commit', '-q', '-am', 'land by hand')
 
@@ -587,7 +602,7 @@ def run(wsx, wsxd, work, owned):
     later = js('task', 'new', 'WORK w.txt')['id']
     assert wait_state(later, 'ready', 'failed')['state'] == 'ready'
     assert land(later)['state'] == 'landed'
-    js('task', 'close', later)
+    wait_closed(later)
     status = js('task', 'deployed')
     assert status['deploy']['commit'] == tip and status['deploy']['behind'] == 1, status
     failed_release = cli('task', 'release', '--json', ok=False)
@@ -638,9 +653,9 @@ def run(wsx, wsxd, work, owned):
     merged = git('rev-parse', 'HEAD', cwd=merger)
     gh_state.write_text(json.dumps({url: {'state': 'MERGED', 'mergeCommit': {'oid': merged}}}))
     assert land(p1)['state'] == 'landed'
-    assert log(p1)[-1] == dict(log(p1)[-1], kind='landed', commit=merged)
+    assert [e['commit'] for e in log(p1) if e['kind'] == 'landed'] == [merged]
     assert git('rev-parse', 'main') != merged
-    assert js('task', 'close', p1)['state'] == 'closed'
+    wait_closed(p1)
     # Deploys follow the fetched remote default branch under pr.
     assert js('task', 'deploy')['commit'] == merged
     assert js('task', 'deployed')['deploy']['behind'] == 0
@@ -661,6 +676,7 @@ def run(wsx, wsxd, work, owned):
     blocked_task = js('task', 'new', 'NEEDS WebSearch WORK m.txt')['id']
     wait_state(ready_task, 'ready', 'failed')
     wait_state(blocked_task, 'blocked')
+    assert 'only a ready task lands' in land(blocked_task, ok=False)['message']
     raw = cli('task', 'ledger').stdout
     ledger = json.loads(raw)
     assert len(raw.encode()) <= 16 * 1024 and ledger['open_omitted'] == 0
@@ -729,12 +745,14 @@ def run(wsx, wsxd, work, owned):
     # Its rules for briefs: start work with one, skip it only on the owner's word, never start a build alone.
     for rule in ('`--model sonnet` may do', 'critical bug fix or heavy, complex work',
                  'fold those memos into', '/manager/notes/context.md',
-                 'the brief is coming', "`--no-brief` only when the owner's message asks", 'Never start a build on your own',
-                 '`wsx task start <n>`, which asks', 'name the briefs that wait',
+                 'starts its build by itself', "`--no-brief` only", 'put them to the owner in plain words',
+                 "On 'start #<n>' run `wsx task start <n>`", 'waits for your review', 'when it does what',
+                 'never give the owner commands to run', '/manager/notes/decisions.md', 'starts with that file and',
+                 '--from-manager --reply', 'use it and do not answer it',
                  'also in a pipe or with a heredoc', 'give each check as passed or failed from them',
                  "trust them over the worker's own words", 'grant it with `wsx task allow <n> --host <host>`',
                  'Never tell the owner to edit settings', 'read-only git in Bash',
-                 'lands by itself when the ledger', 'Never ask the owner to verify a',
+                 '`auto_land` is true', 'Never ask the owner to verify a',
                  'never pass or fail items yourself', 'A release refuses while items are open',
                  'the Skill tool as `owner:<name>`', 'look at the skills and subagents you have',
                  'fits lookup, context, memory or research', 'check rather than guess',
@@ -768,7 +786,7 @@ def run(wsx, wsxd, work, owned):
     # Under the broker no other command runs, neither in the CLI nor at the host.
     refused = js('task', 'say', 'RUN wsx --version\nRUN wsx task host %s 1' % launch['cwd'])
     text = reply_to(refused['id'])['text']
-    assert 'ran: wsx --version -> 2 wsx: the manager may run only `wsx task` commands' in text, text
+    assert 'ran: wsx --version -> 2 wsx: only `wsx task` commands run here' in text, text
     assert 'ran: wsx task host' in text and "-> 2 wsx: `wsx task host` is not for the manager" in text, text
     with socket.socket(socket.AF_UNIX) as raw:
         raw.connect(broker[0])
@@ -871,6 +889,15 @@ def run(wsx, wsxd, work, owned):
     (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text().replace(
         '  land: { auto: false, policy: pr }\n', '  land: { auto: false }\n'))
     git('commit', '-q', '-am', 'back to local-merge')
+    # ^ By default the manager lands alone: only what goes public or is lost asks.
+    free = js('task', 'new', 'WORK free.txt')['id']
+    assert wait_state(free, 'ready', 'failed')['state'] == 'ready'
+    landed_alone = js('task', 'say', 'RUN wsx task land %d -p demo --json' % free)
+    assert 'owner was asked' not in reply_to(landed_alone['id'])['text'] and main_has('free.txt')
+    wait_closed(free)
+    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text().replace(
+        '  land: { auto: false }\n', '  land: { auto: false, approve: true }\n'))
+    git('commit', '-q', '-am', 'land asks')
     ap = js('task', 'new', 'WORK ap.txt')['id']
     assert wait_state(ap, 'ready', 'failed')['state'] == 'ready'
     asked = js('task', 'say', 'RUN wsx task land %d -p demo --json' % ap)
@@ -902,7 +929,7 @@ def run(wsx, wsxd, work, owned):
     assert 'moved from r1 to r2' in moved.stderr and show(keep)['state'] == 'ready'
     assert 'no pending approval a3' in cli('task', 'approve', 'a3', ok=False).stderr
     assert js('task', 'ledger')['approvals'] == []
-    js('task', 'close', ap)
+    wait_closed(ap)
     js('task', 'close', keep, '--discard')
 
     # 23. Brief first (docs/tasks.md "Brief"): a read-only turn returns a brief and the task
@@ -916,7 +943,7 @@ def run(wsx, wsxd, work, owned):
         return wait(lambda: (current := show(n))['state'] in ('briefed', 'failed')
                     and (current['brief'] or {}).get('version') == version and current, 't%s brief v%d' % (n, version))
 
-    b = js('task', 'new', 'Fix the fixture EDIT README REWRITE WORK b1.txt')['id']
+    b = js('task', 'new', 'Fix the fixture EDIT README QUESTION REWRITE WORK b1.txt')['id']
     briefed = brief_version(b, 1)
     assert briefed['state'] == 'briefed' and briefed['record']['phase'] == 'brief', briefed
     brief_launch = [t for t in traces() if t.get('launch')][-1]
@@ -943,11 +970,11 @@ def run(wsx, wsxd, work, owned):
     row = next(r for r in js('task', 'ledger')['open'] if r['id'] == b)
     assert row['state'] == 'briefed' and row['brief'] == {'version': 1, 'rewritten_prompt': 'WORK b1.txt'}, row
     # A reply is a talk-through: the worker answers in the log and revises the brief, still read-only.
-    js('task', 'add', b, 'Why b1? REVISE WORK b2.txt')
+    js('task', 'add', b, 'Why b1? QUESTION REVISE WORK b2.txt')
     revised = brief_version(b, 2)
     assert revised['state'] == 'briefed' and revised['brief']['brief']['rewritten_prompt'] == 'WORK b2.txt'
     answer = [e for e in log(b) if e['kind'] == 'brief'][-1]
-    assert answer['answer'] == 'answered: Why b1? REVISE WORK b2.txt', answer
+    assert answer['answer'] == 'answered: Why b1? QUESTION REVISE WORK b2.txt', answer
     assert [t for t in traces() if t.get('launch')][-1]['pid'] == brief_launch['pid'], 'the talk-through restarted the agent'
     # Start: the same conversation with the build's tools and result schema, against the revised prompt.
     assert js('task', 'start', b)['message'] == 'started the build of brief v2'
@@ -960,19 +987,31 @@ def run(wsx, wsxd, work, owned):
     # ^ Claude reuses a conversation's first system prompt on resume: both launches pass the same text.
     assert build_launch['instructions'] == brief_launch['instructions']
     assert (copy_b / 'b2.txt').exists() and not (copy_b / 'b1.txt').exists()
-    assert [(e['version'], e['prompt']) for e in log(b) if e['kind'] == 'started'] == [(2, 'WORK b2.txt')]
+    assert [(e['version'], e['prompt'], e.get('auto')) for e in log(b) if e['kind'] == 'started'] == [(2, 'WORK b2.txt', None)]
     assert [e['text'] for e in log(b) if e['kind'] == 'message' and e['mode'] == 'prompt'] == \
-        ['Fix the fixture EDIT README REWRITE WORK b1.txt']
+        ['Fix the fixture EDIT README QUESTION REWRITE WORK b1.txt']
     report = Path(ready['report']).read_text()
     # ^ The report starts at the summary: the brief and the prompts are in the log and brief.md.
     assert [line for line in report.splitlines() if line.startswith('## ')][0] == '## Summary', report
     assert '## Asked' not in report and 'brief v2' in report, report
     assert 'only a briefed task starts' in cli('task', 'start', b, ok=False).stdout
     js('task', 'close', b, '--discard')
+    # A brief without open questions builds by itself; an answer that leaves none starts it too.
+    auto = js('task', 'new', 'REWRITE WORK auto.txt')['id']
+    assert wait_state(auto, 'ready', 'failed')['state'] == 'ready' and show(auto)['record']['phase'] == 'build'
+    assert [(e['version'], e['auto']) for e in log(auto) if e['kind'] == 'started'] == [(1, True)]
+    asked_back = js('task', 'new', 'QUESTION REWRITE WORK q1.txt')['id']
+    assert brief_version(asked_back, 1)['state'] == 'briefed'
+    js('task', 'add', asked_back, 'Use q2. REVISE WORK q2.txt')
+    assert wait_state(asked_back, 'ready', 'failed')['state'] == 'ready'
+    assert (Path(show(asked_back)['record']['working_copy']) / 'q2.txt').exists()
+    assert [(e['version'], e['auto']) for e in log(asked_back) if e['kind'] == 'started'] == [(2, True)]
+    for n in (auto, asked_back):
+        js('task', 'close', n, '--discard')
     # A brief turn without a brief fails; the next reply asks again.
     f = js('task', 'new', 'NOBRIEF')['id']
     assert wait_state(f, 'failed', 'briefed')['state'] == 'failed'
-    js('task', 'add', f, 'REVISE NOOP')
+    js('task', 'add', f, 'QUESTION REVISE NOOP')
     assert brief_version(f, 1)['state'] == 'briefed'
     js('task', 'close', f, '--discard')
     # --no-brief builds at once, and the log says who skipped the brief.
@@ -980,19 +1019,14 @@ def run(wsx, wsxd, work, owned):
     assert wait_state(nb, 'ready', 'failed')['state'] == 'ready' and show(nb)['brief'] is None
     assert [(e['by'], e['actor']) for e in log(nb) if e['kind'] == 'brief_skipped'] == [('flag', 'owner')]
     js('task', 'close', nb, '--discard')
-    # The manager hears of the brief, cannot start the build alone, and the owner's approval starts it.
-    m = js('task', 'new', 'REWRITE WORK m1.txt')['id']
+    # The manager hears of a brief with questions and may start it without asking.
+    m = js('task', 'new', 'QUESTION REWRITE WORK m1.txt')['id']
     brief_version(m, 1)
     wait(lambda: events_with('#%d briefed r0' % m, 'brief v1: WORK m1.txt'), 'briefed event')
     asked = js('task', 'say', 'RUN wsx task start %d -p demo --json' % m)
     text = reply_to(asked['id'])['text']
-    request = re.search(r'the owner was asked \((a\d+)\)', text)
-    assert request, text
-    assert show(m)['state'] == 'briefed'
-    pending = js('task', 'ledger')['approvals']
-    assert [(p['id'], p['action'], p['task']) for p in pending] == [(request[1], 'start', m)], pending
-    approved = js('task', 'approve', request[1])
-    assert approved['ok'] and 'started the build of brief v1' in approved['outcome'], approved
+    assert 'started the build of brief v1' in text and 'owner was asked' not in text, text
+    assert js('task', 'ledger')['approvals'] == []
     assert wait_state(m, 'ready', 'failed')['state'] == 'ready'
     # The manager may skip the brief when the owner asks; the log names it.
     js('task', 'say', 'RUN wsx task new "WORK mn.txt" --no-brief -p demo --json')
@@ -1127,6 +1161,141 @@ def run(wsx, wsxd, work, owned):
     assert after == before and len(relaunch) == 1 and relaunch[0]['resume'], (before, after, relaunch)
     assert not (Path(show(r)['log']).parent / 'handoff.txt').exists()
     js('task', 'close', r, '--discard')
+
+    # 27. The worker runs the checks itself through its host's broker, outside its sandbox and
+    # as after its result; any other command is refused (docs/tasks.md "Checks, revisions and report").
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace(
+        '    - "test ! -e broken.txt"\n', '    - "test ! -e broken.txt"\n    - "echo second check"\n'))
+    git('commit', '-q', '-am', 'two checks')
+    cr = js('task', 'new', 'CHECKRUN WORK cr.txt')['id']
+    assert wait_state(cr, 'ready', 'failed')['state'] == 'ready'
+    ran = next(t for t in traces() if 'check_run' in t)
+    code, said = ran['check_run']
+    assert code == 0 and 'check 1 `test ! -e broken.txt`: exit 0' in said and 'check 2 `echo second check`: exit 0' in said, ran
+    assert ran['check_run_other'][0] == 2 and 'check-run' in ran['check_run_other'][1], ran
+    assert [len(e['results']) for e in log(cr) if e['kind'] == 'check_run'] == [2]
+    worker_launch = launches_in(cr)[0]
+    assert '1. `test ! -e broken.txt` 2. `echo second check`' in worker_launch['instructions']
+    sockets = worker_launch['settings']['sandbox']['network']['allowUnixSockets']
+    assert len(sockets) == 1 and Path(sockets[0]).is_socket() and len(sockets[0]) < 104, sockets
+    assert 'WSX_TASK_BROKER' in worker_launch['wsx_env'], worker_launch['wsx_env']
+    js('task', 'close', cr, '--discard')
+    # Below tasks.minFreeGb a task waits, says why, and goes on by itself without a retry.
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('minFreeGb: 0', 'minFreeGb: 100000'))
+    git('commit', '-q', '-am', 'no disk')
+    dw = js('task', 'new', 'WORK dw.txt')['id']
+    waiting = wait(lambda: (current := show(dw))['state'] == 'blocked' and current['record'].get('waiting') and current,
+                   'disk wait')
+    assert waiting['record']['waiting'].startswith('Disk full: ') and any(e['kind'] == 'disk_wait' for e in log(dw))
+    row = next(r for r in js('task', 'ledger')['open'] if r['id'] == dw)
+    assert row['waiting'].startswith('Disk full: '), row
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
+    git('commit', '-q', '-am', 'disk back')
+    wait(lambda: show(dw)['state'] == 'ready', 'resumed after disk', 60)
+    assert 'waiting' not in show(dw)['record'] and not any(e['kind'] == 'check_retry' for e in log(dw))
+    js('task', 'close', dw, '--discard')
+
+    # 28. A land deploys by itself with tasks.deploy.auto; deploys run one at a time and a
+    # deploy that waited runs for the newest commit, so quick lands skip the ones between.
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG + """  deploy:
+    command: 'sleep 8; echo "$WSX_DEPLOY_COMMIT" >> ../auto-deploy.log'
+    auto: true
+""")
+    git('commit', '-q', '-am', 'deploy after land')
+    quick = [js('task', 'new', 'WORK d%d.txt' % i)['id'] for i in range(3)]
+    for n in quick:
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
+    tips = []
+    for n in quick:
+        land(n)
+        tips.append(wait(lambda: show(n)['state'] == 'landed' and git('rev-parse', 'main'), 'quick land'))
+    deploy_log = base / 'auto-deploy.log'
+    wait(lambda: deploy_log.exists() and deploy_log.read_text().split()[-1:] == [tips[-1]], 'deploy of the newest land', 60)
+    # ^ The deploy that waited behind the newest one skips it at once.
+    time.sleep(3)
+    deployed_commits = deploy_log.read_text().split()
+    assert deployed_commits[0] == tips[0] and deployed_commits[-1] == tips[-1] and tips[1] not in deployed_commits, (tips, deployed_commits)
+    assert js('task', 'deployed')['deploy']['commit'] == tips[-1]
+    for n in quick:
+        wait_closed(n)
+    follow_up = state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'follow-up.log'
+    assert 'already deployed' in follow_up.read_text(), follow_up.read_text()[-2000:]
+
+    # 29. A preview on request (docs/tasks.md "Preview"): a fake tailscale records its argv.
+    tailscale_log = work / 'tailscale.log'
+    (bin_dir / 'tailscale').write_text('#!/bin/sh\necho "$@" >> ' + str(tailscale_log) + '\n'
+                                       'if [ "$1" = status ]; then echo \'{"Self":{"DNSName":"host.example.ts.net."}}\'; fi\n')
+    (bin_dir / 'tailscale').chmod(0o755)
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG + """  preview:
+    command: 'exec python3 -m http.server "$PORT" --bind 127.0.0.1'
+    ports: 9150-9199
+""")
+    git('commit', '-q', '-am', 'preview')
+    pv = js('task', 'new', 'WORK pv.txt')['id']
+    assert wait_state(pv, 'ready', 'failed')['state'] == 'ready'
+
+    def answers(port):
+        try:
+            with urllib.request.urlopen('http://127.0.0.1:%d/pv.txt' % port, timeout=3) as response:
+                return response.status == 200
+        except OSError:
+            return False
+
+    running_preview = js('task', 'preview', pv)
+    port = running_preview['port']
+    assert running_preview['url'] == 'https://host.example.ts.net:%d/' % port and 9150 <= port <= 9199, running_preview
+    assert answers(port) and ('serve --bg --https=%d http://127.0.0.1:%d' % (port, port)) in tailscale_log.read_text()
+    assert js('task', 'preview', pv)['port'] == port and any(e['kind'] == 'preview' for e in log(pv))
+    assert js('task', 'preview', pv, '--stop')['stopped'] is True
+    assert not answers(port) and ('serve --bg --https=%d off' % port) in tailscale_log.read_text()
+    assert 'reset' not in tailscale_log.read_text()
+    # Closing the task stops a running preview.
+    again = js('task', 'preview', pv)['port']
+    js('task', 'close', pv, '--discard')
+    assert not answers(again) and tailscale_log.read_text().count('--https=%d off' % again) >= 1
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
+    git('commit', '-q', '-am', 'no preview')
+    plain = js('task', 'new', 'WORK plain.txt')['id']
+    assert wait_state(plain, 'ready', 'failed')['state'] == 'ready'
+    assert 'configures no tasks.preview' in cli('task', 'preview', plain, ok=False).stderr
+    js('task', 'close', plain, '--discard')
+
+    # 30. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
+    # ledger and messages its manager, which answers once; nothing else crosses projects.
+    other = base / 'other'
+    other.mkdir(mode=0o700)
+    git('init', '-q', '-b', 'main', cwd=other)
+    (other / 'README').write_text('other\n')
+    git('add', '.', cwd=other)
+    git('commit', '-q', '-m', 'start', cwd=other)
+    with open(config_dir / 'config-v2.toml', 'a') as registry:
+        registry.write('[[projects]]\nname = "other"\npath = ' + json.dumps(str(other)) + '\n')
+    other_id = 'other-' + hashlib.sha256(str(other).encode()).hexdigest()[:8]
+    other_log = state / 'wsx/tasks' / other_id / 'manager' / 'log.jsonl'
+    asked = js('task', 'say', "SCRIPT\nwsx task ledger -p other --json >/dev/null && wsx task say -p other --from-manager --json - <<'EOF'\n"
+               "RUN wsx task say -p demo --from-manager --reply 'first answer'\n"
+               "RUN wsx task say -p demo --from-manager --reply 'second answer'\nEOF")
+    assert reply_to(asked['id'])['text'].startswith('script -> 0'), reply_to(asked['id'])
+
+    def other_entries():
+        return [json.loads(line) for line in other_log.read_text().splitlines()] if other_log.exists() else []
+
+    received = wait(lambda: next((e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'manager:demo'), None),
+                    'message at the other manager', 60)
+    assert 'first answer' in received['text']
+    answered = wait(lambda: next((e for e in other_entries() if e['kind'] == 'reply' and received['id'] in e['to']), None),
+                    'the other manager answers', 60)
+    assert "--reply 'first answer' -> 0" in answered['text'] and 'waits for an answer' in answered['text'], answered
+    replies = wait(lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'manager-reply:other'],
+                   'reply at demo', 60)
+    assert len(replies) == 1 and replies[0]['text'] == 'first answer', replies
+    assert any(e['kind'] == 'sent' and e['to'] == 'other' and 'first answer' in e['text'] for e in manager_entries())
+    wait(lambda: any(t.get('manager') and str(t.get('message', '')).startswith('Manager other replies (message')
+                     for t in traces()), 'the reply reaches the demo agent')
+    crossing = js('task', 'say', 'RUN wsx task new "WORK x.txt" -p other --json\nRUN wsx task say -p demo --from-manager hi')
+    text = reply_to(crossing['id'])['text']
+    assert 'a manager acts only in its own project' in text and "messages another project's manager" in text, text
+    assert "is for a project's manager" in cli('task', 'say', '-p', 'other', '--from-manager', 'hello', ok=False).stderr
 
 
 if __name__ == '__main__':

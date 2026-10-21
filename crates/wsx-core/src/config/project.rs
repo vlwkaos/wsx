@@ -11,7 +11,43 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const PROJECT_CONFIG_FILE: &str = "wsx.config.yml";
+pub const MAX_MIN_FREE_GB: u64 = 100_000;
+
+/// `tasks.preview` checked: a command, a path that answers 200 and a port range above 1023.
+fn preview_config(file: TaskPreviewFile) -> Result<crate::model::workspace::TaskPreview, String> {
+    let command = file.command.trim().to_string();
+    if command.is_empty() || command.len() > MAX_DEFAULT_COMMAND_BYTES {
+        return Err(format!(
+            "tasks.preview.command must be 1..={MAX_DEFAULT_COMMAND_BYTES} bytes"
+        ));
+    }
+    let ready = file.ready.unwrap_or_else(|| "/".into());
+    if !ready.starts_with('/')
+        || ready.len() > 1024
+        || ready.chars().any(|c| c.is_control() || c == ' ')
+    {
+        return Err("tasks.preview.ready must be a path such as /health".into());
+    }
+    let ports = file.ports.unwrap_or_else(|| "9100-9199".into());
+    let range = ports
+        .split_once('-')
+        .and_then(|(first, last)| {
+            Some((
+                first.trim().parse::<u16>().ok()?,
+                last.trim().parse::<u16>().ok()?,
+            ))
+        })
+        .filter(|(first, last)| *first > 1023 && first <= last)
+        .ok_or_else(|| {
+            format!("tasks.preview.ports must be <first>-<last> above 1023, not {ports}")
+        })?;
+    Ok(crate::model::workspace::TaskPreview {
+        command,
+        ready,
+        ports: range,
+    })
+}
+const PROJECT_CONFIG_FILE: &str = "wsx.config.yml";
 const LEGACY_CONFIG_FILE: &str = ".gtrconfig";
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 const MAX_BRANCH_PREFIX_BYTES: usize = 256;
@@ -56,6 +92,8 @@ struct TasksFile {
         skip_serializing_if = "Option::is_none"
     )]
     check_timeout_seconds: Option<u64>,
+    #[serde(rename = "minFreeGb", skip_serializing_if = "Option::is_none")]
+    min_free_gb: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     land: Option<TaskLandFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -68,6 +106,19 @@ struct TasksFile {
     brief: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sandbox: Option<TaskSandboxFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview: Option<TaskPreviewFile>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct TaskPreviewFile {
+    command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ready: Option<String>,
+    /// `<first>-<last>`, such as `9100-9199`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ports: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -101,6 +152,9 @@ struct TaskCommandFile {
     /// Deploy only: the deployed site is public, so open "To check" items stop it.
     #[serde(skip_serializing_if = "Option::is_none")]
     public: Option<bool>,
+    /// Deploy only: run after each land of the default branch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -315,6 +369,15 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         config.brief = brief;
     }
     config.checks = validate_list(file.checks, "tasks.checks", MAX_DEFAULT_COMMAND_BYTES)?;
+    if let Some(preview) = file.preview {
+        config.preview = Some(preview_config(preview)?);
+    }
+    if let Some(gb) = file.min_free_gb {
+        if gb > MAX_MIN_FREE_GB {
+            return Err(format!("tasks.minFreeGb must be 0..={MAX_MIN_FREE_GB}"));
+        }
+        config.min_free_gb = gb;
+    }
     if let Some(seconds) = file.check_timeout_seconds {
         if !(1..=MAX_CHECK_TIMEOUT_SECS).contains(&seconds) {
             return Err(format!(
@@ -328,6 +391,18 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
     }
     if let Some(public) = file.deploy.as_ref().and_then(|deploy| deploy.public) {
         config.deploy_public = public;
+    }
+    if let Some(auto) = file.deploy.as_ref().and_then(|deploy| deploy.auto) {
+        config.deploy_auto = auto;
+    }
+    if file
+        .release
+        .as_ref()
+        .is_some_and(|release| release.auto.is_some())
+    {
+        return Err(
+            "tasks.release.auto is not a setting: a release is the owner's decision".into(),
+        );
     }
     if let Some(approve) = file.release.as_ref().and_then(|release| release.approve) {
         config.release_approve = approve;

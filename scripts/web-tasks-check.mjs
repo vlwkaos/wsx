@@ -536,7 +536,7 @@ if (folds.join("|") !== "Changes|Evidence · 1 check passed|To check · 1 after 
 const sheetWords = await evaluate("document.querySelector('dialog.task-sheet').innerText");
 if (/Asked|Human Verify|Decisions|Review|Pass r\d|Verified/.test(sheetWords)) await fail(`the sheet still shows the verdict or old sections: ${sheetWords}`);
 if (await count(".task-sheet .label, .task-sheet .story-explain, .verify, .verify-note")) await fail("the sheet still has labels, Explain or the Verify panel");
-if ((await text(".task-next button")).join() !== "Land") await fail(`a ready task offers ${await text(".task-next button")}`);
+if ((await text(".task-next button")).join() !== "Land,Try") await fail(`a ready task offers ${await text(".task-next button")}`);
 if (await evaluate("/\\br\\d+\\b/.test(document.querySelector('.task-sheet .bar').textContent + document.querySelector('.task-next').textContent)")) await fail("the sheet names a revision");
 await shot("task-sheet", ".composer-send");
 // Evidence opens to the checks and what the worker showed; More shows the decisions.
@@ -552,7 +552,7 @@ told = await story();
 if (told.next !== "On main; the last deploy does not have it yet.") await fail(`the top of a done task reads ${JSON.stringify(told)}`);
 await until("[...document.querySelectorAll('.task-fold > .fold-head')].some((node) => node.textContent === 'To check · 1 open')", "#2's item is not open under To check", 60);
 await evaluate("[...document.querySelectorAll('.task-fold > .fold-head')].find((node) => node.textContent.startsWith('To check')).click()");
-if ((await text(".task-fold[open] .check-item .need-action")).join() !== "Fail,Pass") await fail(`#2's item offers ${await text(".task-fold[open] .check-item .need-action")}`);
+if ((await text(".task-fold[open] .check-item .need-action")).join() !== "Try,Fail,Pass") await fail(`#2's item offers ${await text(".task-fold[open] .check-item .need-action")}`);
 await evaluate("document.querySelector('.timeline > .fold-head').click()");
 const history = await text(".timeline-what");
 if ((await text(".timeline > .fold-head")).join() !== "History" || !history.includes("Landed") || history.some((line) => /Verified|without verification/.test(line))) await fail(`the history reads ${history}`);
@@ -613,10 +613,29 @@ await until("!document.querySelector('.notice')", "the outcome did not clear its
 await key("Escape", 27);
 await until("!document.querySelector('dialog.task-sheet')", "Escape did not close #4 again");
 
+// --- The manager chat attaches files as a session's chat does, and shows another project's
+// manager as its own bubbles (docs/web-client.md "Project screen").
+await go(chat);
+await until("!!document.querySelector('.composer .icon-button[aria-label=\"Attach files\"]')", "the manager chat has no attach button");
+const peers = await evaluate("[...document.querySelectorAll('.log .bubble')].map((node) => [node.querySelector('.bubble-author')?.textContent ?? '', node.querySelector('.bubble-tag')?.textContent ?? ''])");
+if (!peers.some(([author]) => author === "Manager plans") || !peers.some(([, tag]) => tag === "Reply to Manager plans")) await fail(`the managers' messages read ${JSON.stringify(peers)}`);
+await pause(6000);
+await evaluate(`(() => { const input = document.querySelector('.composer input[type=file]'); const files = new DataTransfer();
+  files.items.add(new File(['notes for the manager'], 'notes.txt', { type: 'text/plain' })); input.files = files.files;
+  input.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+await until("document.querySelectorAll('.composer .chips li').length === 1 && !document.querySelector('.composer .chips [data-uploading]')", "the file did not upload in the manager chat", 100);
+await shot("manager-attach", ".composer-send");
+await typeInto(".composer-field", "Here are the notes");
+await click(".composer-send");
+const sentWithFile = "[...document.querySelectorAll('.log .bubble[data-side=out]')].some((node) => /Here are the notes/.test(node.textContent) && (node.querySelector('.attachments a')?.textContent ?? '').startsWith('notes.txt'))";
+await until(`${sentWithFile} || !!document.querySelector('.composer .error')`, "the sent message shows no attachment", 100);
+if (!(await evaluate(sentWithFile))) await fail(`the message with a file was not sent: ${await evaluate("document.querySelector('.composer .error')?.textContent ?? ''")}; bubbles ${JSON.stringify(await bubbles())}`);
+if (await count(".composer .chips li")) await fail("the sent file stayed in the composer");
+
 // --- To check: the reservoir's row opens the list; Fail needs a note and starts a task that
 // fixes it; Pass; All passed empties the list.
-// ^ The actions above spent this device's burst (10, then one per 3 s); this part sends three.
-await pause(9000);
+// ^ The actions above spent this device's burst (10, then one per 3 s); this part sends four.
+await pause(12000);
 await go(chat);
 await until("!!document.querySelector('.reservoir-head')", "the chat did not come back for To check");
 await openReservoir();
@@ -628,6 +647,10 @@ if (JSON.stringify(listed) !== JSON.stringify([["#7", "open the file", "Passes i
 if (await sheetState() !== "3 open") await fail(`the list's top row reads ${await sheetState()}`);
 await shot("to-check", ".composer-send");
 const firstItem = "document.querySelector('.check-item')";
+// ^ Try starts the preview of the item's task and becomes a link to it (docs/tasks.md "Preview").
+await evaluate(`[...${firstItem}.querySelectorAll('.need-action')].find((node) => node.textContent === 'Try').click()`);
+await until(`!!${firstItem}.querySelector('a.need-action[href^="https://host.example.ts.net:"]')`, "Try did not become a preview link", 300);
+await shot("to-check-try", ".composer-send");
 await evaluate(`[...${firstItem}.querySelectorAll('.need-action')].find((node) => node.textContent === 'Fail').click()`);
 await until(`!!${firstItem}.querySelector('.need-form input')`, "Fail did not ask for a note");
 await evaluate(`${firstItem}.querySelector('.need-form').requestSubmit()`);
@@ -682,7 +705,7 @@ await go(briefSheet);
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the brief sheet did not open");
 await lean("the brief sheet");
 told = await story();
-if (told.next !== "The brief is ready. Read it, reply to talk it through, or Start the build.") await fail(`the top of a brief reads ${JSON.stringify(told)}`);
+if (told.next !== "The brief has questions for you. Answer them and the build starts by itself, or Start it as it is.") await fail(`the top of a brief reads ${JSON.stringify(told)}`);
 const parts = await sheetParts();
 if (parts.open.join() !== "Open questions,Additions" || parts.details?.join() !== "Raw material,Methods and tools,Independent check,Concepts,Rewritten prompt" || !parts.folded) await fail(`the brief reads ${JSON.stringify(parts)}`);
 if (await evaluate("[...document.querySelectorAll('.task-sheet .task-concept')].some((node) => node.open)")) await fail("an addition or a concept is not folded");
@@ -697,7 +720,7 @@ if (await evaluate("document.querySelector('.task-message .composer-field').plac
 await shot("brief-sheet", ".composer-send");
 await evaluate("document.querySelector('.task-sheet details.task-fold').open = true");
 await shot("brief-details", ".composer-send");
-await typeInto(".task-message .composer-field", "Why a file? REVISE WORK keys2.txt");
+await typeInto(".task-message .composer-field", "Why a file? QUESTION REVISE WORK keys2.txt");
 await click(".task-message .composer-send");
 await until("document.querySelectorAll('.task-talk .bubble').length === 2", "the sheet's reply got no answer", 60);
 const talk = await evaluate("[...document.querySelectorAll('.task-talk .bubble')].map((node) => ({ side: node.dataset.side, author: node.querySelector('.bubble-author')?.textContent ?? '', tag: node.querySelector('.bubble-tag')?.textContent ?? '', text: node.querySelector('.bubble-box').textContent }))");
@@ -793,6 +816,6 @@ problems.splice(quietFrom);
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
-console.log(`tasks page: home with the Sessions and Projects tabs in the first screen, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, one working color on home, the session rows, the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Allow, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, Allow for project, Shared files only in a conflict), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the # picker, the deep link (one read of the tasks), the brief (reservoir row, Open questions and Additions first, Details closed, indented prose as prose and a fence as code, talk as bubbles with Brief v2, Start, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions and Projects tabs in the first screen, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, one working color on home, the session rows, the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Allow, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, Allow for project, Shared files only in a conflict), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), the brief (reservoir row, Open questions and Additions first, Details closed, indented prose as prose and a fence as code, talk as bubbles with Brief v2, Start, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);
