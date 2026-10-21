@@ -73,8 +73,12 @@ fn internal(error: anyhow::Error) -> Fault {
 
 /// The three states the owner sees (docs/web-client.md "Tasks"); the store keeps the rest.
 /// A ready task waits for a land by hand: auto land is off, there are no checks, or it stopped.
-fn stage(state: TaskState) -> &'static str {
-    match state {
+/// One the manager created waits for the manager's review, not the owner.
+fn stage(record: &TaskRecord) -> &'static str {
+    if manager_reviews(record) {
+        return "working";
+    }
+    match record.state {
         TaskState::Starting
         | TaskState::Working
         | TaskState::Checking
@@ -90,6 +94,10 @@ fn stage(state: TaskState) -> &'static str {
     }
 }
 
+fn manager_reviews(record: &TaskRecord) -> bool {
+    record.state == TaskState::Ready && record.created_by == task::Actor::Manager
+}
+
 /// Why a ready task waits for the owner: its landing stopped, it has no checks, or the
 /// project lands by hand.
 fn land_reason(dir: &TaskDir, record: &TaskRecord) -> String {
@@ -101,6 +109,9 @@ fn land_reason(dir: &TaskDir, record: &TaskRecord) -> String {
     });
     if let Some(Some(reason)) = stopped {
         return format!("could not land: {}", view::clip(&reason, SUMMARY_CHARS));
+    }
+    if manager_reviews(record) {
+        return "the manager reviews it".into();
     }
     if record.checks.is_empty() {
         return "no checks; land by hand".into();
@@ -129,7 +140,7 @@ pub fn overview(scope: &Scope) -> Value {
             order,
             u64::MAX - record.updated_unix_ms,
             json!({
-                "id": record.id, "title": title, "state": record.state, "stage": stage(record.state),
+                "id": record.id, "title": title, "state": record.state, "stage": stage(record),
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
             }),
         ));
@@ -153,6 +164,10 @@ pub fn overview(scope: &Scope) -> Value {
             TaskState::Briefed => (2, item("brief")),
             TaskState::Failed => (1, item("failed")),
             TaskState::Stopped => (1, item("stopped")),
+            TaskState::Ready if manager_reviews(record) => {
+                working += 1;
+                continue;
+            }
             TaskState::Ready => {
                 let mut row = item("land");
                 row["reason"] = json!(land_reason(dir, record));
@@ -171,6 +186,7 @@ pub fn overview(scope: &Scope) -> Value {
         if record.state == TaskState::Blocked {
             row["denials"] = result["denials"].clone();
             row["asks"] = result["asks"].clone();
+            row["waiting"] = json!(record.waiting);
         }
         // ^ A brief's card reads as its build prompt.
         if let Some(file) = (record.state == TaskState::Briefed)
@@ -237,6 +253,8 @@ pub fn overview(scope: &Scope) -> Value {
         "resolutions": resolutions(&scope.store, &tasks, &lines, now),
         "last_reply": last_reply,
         "last_unix_ms": last_unix_ms,
+        // ^ Tasks can be tried on a preview link (docs/tasks.md "Preview").
+        "preview": load_task_config(&scope.path).is_ok_and(|settings| settings.preview.is_some()),
     })
 }
 
@@ -429,6 +447,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     summary["pr_url"] = json!(record.pr_url);
     summary["result"] = result["result"].clone();
     summary["denials"] = result["denials"].clone();
+    summary["waiting"] = json!(record.waiting);
     summary["asks"] = result["asks"].clone();
     summary["checks"] = result["checks"].clone();
     summary["report"] = json!(report);
@@ -441,7 +460,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     } else {
         json!([])
     };
-    summary["stage"] = json!(stage(record.state));
+    summary["stage"] = json!(stage(&record));
     if record.state == TaskState::Ready {
         summary["land_reason"] = json!(land_reason(&dir, &record));
     }
@@ -539,7 +558,7 @@ fn timeline(log: &[task::LogEntry]) -> Value {
 }
 
 /// The manager conversation after message `after`, and whether it runs or thinks.
-pub fn chat(scope: &Scope, after: Option<u64>) -> Outcome<Value> {
+pub fn chat(scope: &Scope, after: Option<u64>, media: &crate::media::Media) -> Outcome<Value> {
     let Some(dir) = ManagerDir::existing(&scope.store).map_err(internal)? else {
         return Ok(json!({ "entries": [], "skipped": 0, "running": false, "busy": false }));
     };
@@ -572,6 +591,19 @@ pub fn chat(scope: &Scope, after: Option<u64>) -> Outcome<Value> {
         .into_iter()
         .map(|entry| {
             let mut value = serde_json::to_value(entry).unwrap_or_default();
+            // ^ An owner message's files show as attachments, not as their paths.
+            if let ManagerEvent::Message {
+                from: task::manager::Author::Owner,
+                text,
+                ..
+            } = &entry.event
+            {
+                let (text, attachments) = chat::sent_message(text, media);
+                if !attachments.is_empty() {
+                    value["text"] = json!(text);
+                    value["attachments"] = json!(attachments);
+                }
+            }
             if let ManagerEvent::Message {
                 from: task::manager::Author::Events,
                 text,
@@ -829,6 +861,19 @@ pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> O
         }
         _ => return Err(Fault::not_found()),
     }
+    run_wsx(scope, argv)
+}
+
+/// Start a preview of the task, or answer the running one: `{url, port, until_unix_ms}`.
+pub fn preview(scope: &Scope, task: u32) -> Outcome<Value> {
+    run_wsx(
+        scope,
+        vec!["task".into(), "preview".into(), task.to_string()],
+    )
+}
+
+/// Run `wsx <argv> -p <project> --json` as the owner and return its JSON answer.
+fn run_wsx(scope: &Scope, mut argv: Vec<String>) -> Outcome<Value> {
     argv.extend(["-p".into(), scope.name.clone(), "--json".into()]);
     let wsx = std::env::current_exe().map_err(|error| internal(error.into()))?;
     let output = std::process::Command::new(wsx)
@@ -843,7 +888,7 @@ pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> O
         return Err(Fault::new(409, "refused", view::clip(said, SUMMARY_CHARS)));
     }
     serde_json::from_slice(&output.stdout)
-        .map_err(|_| internal(anyhow::anyhow!("wsx task check did not print JSON")))
+        .map_err(|_| internal(anyhow::anyhow!("wsx {} did not print JSON", argv[1])))
 }
 
 /// Give the manager an owner message, starting it when it does not run.
@@ -875,7 +920,7 @@ pub fn say(app: &App, scope: &Scope, text: &str) -> Outcome<Value> {
             _ => anyhow::bail!("unexpected create response"),
         }
     };
-    let response = owner::say(&scope.name, &scope.path, &wsx, launch, text)
+    let response = owner::say(&scope.name, &scope.path, &wsx, launch, text, None)
         .map_err(|error| Fault::new(502, "manager_unavailable", format!("{error:#}")))?;
     if !response.ok {
         return Err(Fault::new(409, "refused", response.message));
@@ -885,10 +930,23 @@ pub fn say(app: &App, scope: &Scope, text: &str) -> Outcome<Value> {
 
 /// Start an approved action. Its outcome is the decision line, which reaches the page as
 /// a `tasks` event; a deploy can run for minutes, so the answer does not wait for it.
+/// A second tap while it runs, or after it was decided, is not an error.
 pub fn approve(app: &Arc<App>, scope: Scope, id: &str) -> Outcome<Value> {
     let lines = store::read_approvals(&scope.store).map_err(internal)?;
-    owner::find_request(&lines, id)
-        .map_err(|error| Fault::new(409, "not_pending", format!("{error:#}")))?;
+    if let Err(error) = owner::find_request(&lines, id) {
+        let decided = lines.iter().rev().find_map(|line| match line {
+            ApprovalLine::Decision {
+                id: decided,
+                outcome,
+                ..
+            } if decided == id => Some(outcome),
+            _ => None,
+        });
+        return match decided {
+            Some(outcome) => Ok(json!({ "ok": true, "decided": true, "message": outcome })),
+            None => Err(Fault::new(409, "not_pending", format!("{error:#}"))),
+        };
+    }
     let key = format!("{}/{id}", scope.store);
     if !app
         .approving
@@ -896,11 +954,7 @@ pub fn approve(app: &Arc<App>, scope: Scope, id: &str) -> Outcome<Value> {
         .unwrap_or_else(|lock| lock.into_inner())
         .insert(key.clone())
     {
-        return Err(Fault::new(
-            409,
-            "running",
-            format!("{id} is already being run"),
-        ));
+        return Ok(json!({ "ok": true, "running": true, "message": "already running" }));
     }
     let wsx = std::env::current_exe().map_err(|error| internal(error.into()))?;
     let app = app.clone();

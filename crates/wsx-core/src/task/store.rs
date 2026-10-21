@@ -179,6 +179,16 @@ pub(super) fn open_nofollow(path: &Path, options: &mut OpenOptions) -> Result<Fi
         .with_context(|| format!("cannot open {}", path.display()))
 }
 
+/// `open_nofollow`, then an exclusive lock that holds until the file closes.
+pub(super) fn open_locked(path: &Path, options: &mut OpenOptions) -> Result<File> {
+    let file = open_nofollow(path, options)?;
+    // SAFETY: flock on an open descriptor; released when `file` closes.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("cannot lock {}", path.display()));
+    }
+    Ok(file)
+}
 pub(super) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let file = open_nofollow(path, OpenOptions::new().read(true))?;
     let mut bytes = Vec::new();
@@ -234,15 +244,10 @@ impl TaskDir {
     pub fn allocate(project_id: &str) -> Result<Self> {
         let dir = ensure_project_dir(project_id)?;
         let counter_path = dir.join(COUNTER_FILE);
-        let mut counter = open_nofollow(
+        let mut counter = open_locked(
             &counter_path,
             OpenOptions::new().read(true).write(true).create(true),
         )?;
-        // SAFETY: flock on an open descriptor; released when `counter` closes.
-        if unsafe { libc::flock(counter.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(std::io::Error::last_os_error())
-                .with_context(|| format!("cannot lock {}", counter_path.display()));
-        }
         let mut text = String::new();
         (&counter).take(32).read_to_string(&mut text)?;
         let mut next = match text.trim() {
@@ -386,6 +391,11 @@ impl TaskDir {
         socket_for('t', &self.file(SOCKET_FILE))
     }
 
+    /// The socket on which the task host runs the worker's `wsx task check-run`.
+    pub fn broker_path(&self) -> PathBuf {
+        socket_for('w', &self.file("broker.sock"))
+    }
+
     /// Remove the folder of a task that never started.
     pub fn remove(self) -> Result<()> {
         fs::remove_dir_all(&self.path)
@@ -396,6 +406,27 @@ impl TaskDir {
 const DEPLOYS_FILE: &str = "deploys.jsonl";
 /// Deploy records are read from the end of the file only.
 const MAX_DEPLOYS_READ_BYTES: u64 = 1024 * 1024;
+
+const DEPLOY_LOCK_FILE: &str = "deploy.lock";
+const FOLLOW_UP_LOG_FILE: &str = "follow-up.log";
+const MAX_FOLLOW_UP_LOG_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The output of what a land starts by itself (a deploy, the close of the task), appended;
+/// emptied first once it passes 4 MiB. ref: docs/tasks.md "Deploy and release"
+pub fn follow_up_log(project_id: &str) -> Result<File> {
+    let path = ensure_project_dir(project_id)?.join(FOLLOW_UP_LOG_FILE);
+    let file = open_nofollow(&path, OpenOptions::new().append(true).create(true))?;
+    if file.metadata()?.len() > MAX_FOLLOW_UP_LOG_BYTES {
+        file.set_len(0)?;
+    }
+    Ok(file)
+}
+
+/// Held while a deploy or release of the project runs, so they run one at a time.
+pub fn lock_deploys(project_id: &str) -> Result<File> {
+    let path = ensure_project_dir(project_id)?.join(DEPLOY_LOCK_FILE);
+    open_locked(&path, OpenOptions::new().write(true).create(true))
+}
 
 /// Append one deploy or release record to `tasks/<project-id>/deploys.jsonl`.
 pub fn append_deploy(project_id: &str, record: &super::DeployRecord) -> Result<()> {
@@ -660,15 +691,10 @@ pub fn change_grants(
     change: impl FnOnce(&mut Vec<super::Access>) -> bool,
 ) -> Result<bool> {
     let path = ensure_project_dir(project_id)?.join(GRANTS_FILE);
-    let mut file = open_nofollow(
+    let mut file = open_locked(
         &path,
         OpenOptions::new().read(true).write(true).create(true),
     )?;
-    // SAFETY: flock on an open descriptor; released when `file` closes.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("cannot lock {}", path.display()));
-    }
     let mut bytes = Vec::new();
     (&file).take(MAX_GRANTS_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_GRANTS_BYTES {
@@ -705,15 +731,10 @@ pub fn append_approval(
 ) -> Result<super::manager::ApprovalLine> {
     use super::manager::ApprovalLine;
     let path = ensure_project_dir(project_id)?.join(APPROVALS_FILE);
-    let mut file = open_nofollow(
+    let mut file = open_locked(
         &path,
         OpenOptions::new().read(true).append(true).create(true),
     )?;
-    // SAFETY: flock on an open descriptor; released when `file` closes.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("cannot lock {}", path.display()));
-    }
     let size = file.metadata()?.len();
     if size > MAX_APPROVALS_BYTES {
         bail!("{} is full ({MAX_APPROVALS_BYTES} bytes)", path.display());

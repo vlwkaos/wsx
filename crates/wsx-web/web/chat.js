@@ -116,7 +116,7 @@ const DELIVERY_WORDS = {
   target_replaced: "The agent's program was replaced.",
 };
 
-const Attachments = ({ files }) => files?.length ? html`
+export const Attachments = ({ files }) => files?.length ? html`
   <ul class="attachments">
     ${files.map((file) => html`
       <li key=${file.hash}>
@@ -125,6 +125,48 @@ const Attachments = ({ files }) => files?.length ? html`
           : html`<a href=${resolve(file.url)} download=${file.name}>${file.name} (${bytes(file.size)})</a>`}
       </li>`)}
   </ul>` : null;
+
+// Upload picked files into `files` ({ attachments, uploads }). Every file shows at once as
+// uploading, and Send waits until all are in. `changed` re-renders; `fail` says why one did
+// not upload. The session chat and the manager chat share it.
+export async function uploadFiles(picked, files, changed, fail) {
+  files.uploads.push(...picked);
+  changed();
+  for (const original of picked) {
+    const item = await shrink(original);
+    if (item.size > state.site.max_file_bytes) {
+      fail(`${item.name} is larger than ${bytes(state.site.max_file_bytes)}.`);
+    } else {
+      try {
+        files.attachments.push(await api("api/media", { method: "PUT", query: { name: item.name }, body: item }));
+      } catch (failure) {
+        fail(`${item.name}: ${failure.message}`);
+      }
+    }
+    files.uploads = files.uploads.filter((other) => other !== original);
+    changed();
+  }
+}
+
+// The files a message will carry, each with Remove, and the ones still uploading.
+export const FileChips = ({ files, onRemove }) => files.attachments.length || files.uploads.length ? html`
+  <ul class="chips" aria-label="Files to send">
+    ${files.attachments.map((item) => html`
+      <li key=${item.hash}><span>${item.name} (${bytes(item.size)})</span>
+        <button class="link-action" type="button" aria-label=${`Remove ${item.name}`} onClick=${() => onRemove(item)}>Remove</button>
+      </li>`)}
+    ${files.uploads.map((item) => html`<li data-uploading><span>${item.name}</span><span class="note" role="status">Uploading…</span></li>`)}
+  </ul>` : null;
+
+// The attach button and its hidden file picker, when the site allows uploads.
+export function AttachButton({ onFiles }) {
+  const picker = useRef();
+  if (!can("media_upload")) return null;
+  return html`
+    <button class="icon-button" type="button" aria-label="Attach files" onClick=${() => picker.current.click()}><${Icon} name="attach" /></button>
+    <input type="file" multiple hidden tabIndex="-1" ref=${picker}
+      onChange=${(event) => { const picked = [...event.target.files]; event.target.value = ""; onFiles(picked); }} />`;
+}
 
 const stepWord = (item) => item.kind === "thinking" ? "Thinking" : item.tool.name;
 const Step = ({ item }) => html`
@@ -288,7 +330,6 @@ function Composer({ session, working, onSent }) {
   const [busy, setBusy] = useState(false);
   const field = useRef();
   const mirror = useRef();
-  const picker = useRef();
   const ready = Boolean(session.agent?.attached && session.agent.prompt) && !session.exited;
   const [listing, setListing] = useState(null);
   const [active, setActive] = useState(0);
@@ -350,27 +391,9 @@ function Composer({ session, working, onSent }) {
     }
     setBusy(false);
   };
-  const upload = async (files) => {
-    picker.current.value = "";
+  const upload = (files) => {
     setError("");
-    // Every file shows at once as uploading, and Send waits until all are in.
-    draft.uploads.push(...files);
-    renew((count) => count + 1);
-    for (const original of files) {
-      const item = await shrink(original);
-      if (item.size > state.site.max_file_bytes) {
-        setError(`${item.name} is larger than ${bytes(state.site.max_file_bytes)}.`);
-      } else {
-        try {
-          draft.attachments.push(await api("api/media", { method: "PUT", query: { name: item.name }, body: item }));
-          keepDraft(session.id);
-        } catch (failure) {
-          setError(`${item.name}: ${failure.message}`);
-        }
-      }
-      draft.uploads = draft.uploads.filter((other) => other !== original);
-      renew((count) => count + 1);
-    }
+    uploadFiles(files, draft, () => { keepDraft(session.id); renew((count) => count + 1); }, setError);
   };
   const keydown = (event) => {
     if (event.isComposing || event.keyCode === 229) return;
@@ -410,21 +433,12 @@ function Composer({ session, working, onSent }) {
   };
   return html`
     <div class="composer">
-      ${draft.attachments.length || draft.uploads.length ? html`
-        <ul class="chips" aria-label="Files to send">
-          ${draft.attachments.map((item) => html`
-            <li key=${item.hash}><span>${item.name} (${bytes(item.size)})</span>
-              <button class="link-action" type="button" aria-label=${`Remove ${item.name}`}
-                onClick=${() => { draft.attachments = draft.attachments.filter((other) => other !== item); keepDraft(session.id); renew((count) => count + 1); }}>Remove</button>
-            </li>`)}
-          ${draft.uploads.map((item) => html`<li data-uploading><span>${item.name}</span><span class="note" role="status">Uploading…</span></li>`)}
-        </ul>` : null}
+      <${FileChips} files=${draft}
+        onRemove=${(item) => { draft.attachments = draft.attachments.filter((other) => other !== item); keepDraft(session.id); renew((count) => count + 1); }} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
       ${listOpen && html`<${CommandList} listing=${listing} matches=${matches} active=${active} onPick=${pick} onHover=${setActive} />`}
       <div class="composer-row" onPointerDown=${focusField}>
-        ${can("media_upload") && html`
-          <button class="icon-button" type="button" aria-label="Attach files" onClick=${() => picker.current.click()}><${Icon} name="attach" /></button>
-          <input type="file" multiple hidden tabIndex="-1" ref=${picker} onChange=${(event) => upload([...event.target.files])} />`}
+        <${AttachButton} onFiles=${upload} />
         <div class="composer-input" data-token=${token ? "" : null}>
         ${token && html`<div class="composer-mirror" ref=${mirror} aria-hidden="true"><span class="composer-token">${token}</span>${draft.text.slice(token.length)}${"\u200b"}</div>`}
         <textarea class="composer-field" ref=${field} rows="1" aria-label="Message"

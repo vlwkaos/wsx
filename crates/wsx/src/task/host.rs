@@ -4,6 +4,7 @@
 //! One main loop owns the task files. The socket thread and the agent reader
 //! send to it over one channel; it answers each request after acting on it.
 
+use super::broker;
 use super::claude::{new_session_id, AgentLine, ClaudeAgent, Launch, TurnResult};
 use super::hosting;
 use anyhow::{bail, Context, Result};
@@ -41,7 +42,21 @@ enum Event {
     /// `None` when the agent process of that generation ended.
     Agent(u64, Option<AgentLine>),
     ChecksDone(Vec<CheckResult>),
+    /// The worker's `wsx task check-run` through the broker, and its results to log.
+    CheckRun(Vec<String>, Sender<broker::Response>),
+    CheckRunDone(Vec<CheckResult>),
 }
+
+/// What waits for free disk, resumed once `tasks.minFreeGb` is free again.
+enum DiskWait {
+    Turn(String),
+    Checks,
+}
+
+/// How often a task that waits for disk looks again.
+const DISK_POLL: Duration = Duration::from_secs(30);
+/// What a check prints when the disk is full: the check then waits instead of failing.
+const NO_SPACE: &str = "No space left on device";
 
 struct Host {
     dir: TaskDir,
@@ -71,6 +86,7 @@ struct Host {
     reexec: bool,
     /// A `land` waits for the checks of its rebased revision.
     landing: bool,
+    disk_wait: Option<DiskWait>,
     /// The Human Verify items of the revision whose landing conflicted: the turn that
     /// resolves it rarely repeats them, and they still need a person.
     carried_verify: Vec<wsx_core::task::HumanVerify>,
@@ -85,6 +101,8 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
     }
     let socket = dir.socket_path();
     let listener = hosting::bind(&socket)?;
+    let broker_socket = dir.broker_path();
+    let brokered = hosting::bind(&broker_socket)?;
     record.pane_id = hosting::own_pane();
     // ^ A restarted host still knows what the block asks for.
     let last_asks = view::read_result(&dir)
@@ -110,9 +128,22 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         binary: hosting::Binary::capture(),
         reexec: false,
         landing: false,
+        disk_wait: None,
         carried_verify: Vec::new(),
         started: Instant::now(),
     };
+    let to_host = events.clone();
+    std::thread::spawn(move || {
+        broker::serve(brokered, move |request| {
+            let (reply, answer) = channel();
+            if to_host.send(Event::CheckRun(request.argv, reply)).is_err() {
+                return broker::refused("the task host is closing".into());
+            }
+            answer
+                .recv()
+                .unwrap_or_else(|_| broker::refused("the task host is closing".into()))
+        })
+    });
     // ^ A pr landing pushes and calls gh, each bounded by 120 s.
     std::thread::spawn(move || {
         hosting::serve(
@@ -128,6 +159,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         agent.stop();
     }
     let _ = std::fs::remove_file(&socket);
+    let _ = std::fs::remove_file(&broker_socket);
     if let (true, Some(binary)) = (host.reexec, &host.binary) {
         let error = binary.exec();
         host.say(&format!("cannot start the new wsx: {error}"));
@@ -155,7 +187,25 @@ impl Host {
         } else {
             self.resume_state()?;
         }
-        while let Ok(event) = receiver.recv() {
+        let mut disk_checked = Instant::now();
+        loop {
+            // ^ On a deadline, not after a quiet spell: status calls arrive all the time.
+            let event = match self.disk_wait {
+                None => receiver.recv().ok(),
+                Some(_) => {
+                    let due = DISK_POLL.saturating_sub(disk_checked.elapsed());
+                    match receiver.recv_timeout(due) {
+                        Ok(event) => Some(event),
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            disk_checked = Instant::now();
+                            self.resume_after_disk();
+                            continue;
+                        }
+                        Err(_) => None,
+                    }
+                }
+            };
+            let Some(event) = event else { break };
             match event {
                 Event::Request(request, reply) => {
                     let close = matches!(request, HostRequest::Close { .. });
@@ -172,6 +222,8 @@ impl Host {
                 }
                 Event::Agent(..) => {}
                 Event::ChecksDone(results) => self.on_checks(results),
+                Event::CheckRun(argv, reply) => self.check_run(&argv, reply),
+                Event::CheckRunDone(results) => self.log(LogEvent::CheckRun { results }),
             }
             if self.reexec {
                 std::thread::sleep(Duration::from_millis(200));
@@ -230,7 +282,7 @@ impl Host {
                 by,
             } => self.revoke(access, project, by),
             HostRequest::Stop => self.stop(),
-            HostRequest::Start => self.start(),
+            HostRequest::Start => self.start(false),
             HostRequest::Land {} => self.land(false),
             HostRequest::Close { discard } => {
                 if let Some(agent) = self.agent.take() {
@@ -238,7 +290,10 @@ impl Host {
                 }
                 self.turn_active = false;
                 self.log(LogEvent::Closed { discarded: discard });
-                self.set_state(TaskState::Closed);
+                // ^ A landed task keeps `landed`: its work is on the default branch.
+                if self.record.state != TaskState::Landed || discard {
+                    self.set_state(TaskState::Closed);
+                }
                 Ok("closed".into())
             }
         };
@@ -430,7 +485,8 @@ impl Host {
 
     /// Build the latest brief's rewritten prompt. The agent restarts with the build's
     /// tools and result schema and resumes the conversation, so it keeps what it read.
-    fn start(&mut self) -> Result<String> {
+    /// `auto`: the brief has no open questions, so the host starts it (docs/tasks.md "Brief").
+    fn start(&mut self, auto: bool) -> Result<String> {
         if self.record.phase != Phase::Brief || self.record.state != TaskState::Briefed {
             bail!(
                 "task t{} is {}; only a briefed task starts",
@@ -446,6 +502,7 @@ impl Host {
         self.log(LogEvent::Started {
             version: file.version,
             prompt: prompt.clone(),
+            auto,
         });
         self.say(&format!("build of brief v{} started", file.version));
         self.start_turn(&build_request(file.version, &prompt));
@@ -474,6 +531,9 @@ impl Host {
             self.say("the wsx binary was replaced: the host restarts with it");
             return Ok(());
         }
+        if self.wait_for_disk(DiskWait::Turn(text.to_string())) {
+            return Ok(());
+        }
         if self.restart_needed {
             if let Some(agent) = self.agent.take() {
                 agent.stop();
@@ -490,7 +550,11 @@ impl Host {
             self.stop_requested = false;
             let project_grants = store::read_grants(&self.record.project_id)?;
             self.agent = Some(ClaudeAgent::spawn(
-                &Launch::worker(&self.record, &project_grants)?,
+                &Launch::worker(
+                    &self.record,
+                    &project_grants,
+                    &hosting::real_socket_path(&self.dir.broker_path()),
+                )?,
                 &session,
                 resume,
                 self.events.clone(),
@@ -595,6 +659,11 @@ impl Host {
                 asks: self.last_asks.clone(),
             });
             self.set_state(TaskState::Blocked);
+            // ^ A worker stopped by a full disk continues once there is space again.
+            self.wait_for_disk(DiskWait::Turn(
+                "The disk was full; there is space again. Continue the task where it stopped."
+                    .into(),
+            ));
             return;
         }
         self.start_checks();
@@ -615,7 +684,7 @@ impl Host {
             None => Err(turn.text),
         };
         match saved {
-            Ok((version, answer)) => {
+            Ok((version, answer, questions)) => {
                 self.say(&format!("brief v{version} ready"));
                 self.log(LogEvent::Brief {
                     version,
@@ -624,6 +693,13 @@ impl Host {
                     denials: turn.denials,
                 });
                 self.set_state(TaskState::Briefed);
+                // ^ Nothing to ask: build at once. A message that waits is a talk-through
+                // the worker answers first.
+                if questions == 0 && self.pending.is_empty() {
+                    if let Err(error) = self.start(true) {
+                        self.say(&format!("cannot start the build: {error:#}"));
+                    }
+                }
             }
             Err(reason) => {
                 self.say(&format!("no brief: {}", first_line(&reason)));
@@ -639,10 +715,16 @@ impl Host {
         self.deliver_pending();
     }
 
-    /// Write `brief.json` and `brief.md` as the next version; returns it and the answer.
-    fn save_brief(&self, brief: Brief) -> Result<(u32, String)> {
+    /// Write `brief.json` and `brief.md` as the next version; returns it, the answer and
+    /// the number of open questions.
+    fn save_brief(&self, brief: Brief) -> Result<(u32, String, usize)> {
         let version = brief::read(&self.dir).map_or(1, |file| file.version + 1);
         let answer = brief.answer.trim().to_string();
+        let questions = brief
+            .open_questions
+            .iter()
+            .filter(|question| !question.trim().is_empty())
+            .count();
         let file = BriefFile { version, brief };
         let bytes = serde_json::to_vec_pretty(&file)?;
         if bytes.len() > brief::MAX_BRIEF_BYTES {
@@ -654,10 +736,143 @@ impl Host {
             BRIEF_TEXT_FILE,
             brief::render(self.record.id, &title, &file).as_bytes(),
         )?;
-        Ok((version, answer))
+        Ok((version, answer, questions))
+    }
+
+    /// Hold `what` while less than `tasks.minFreeGb` is free: the task shows the reason and
+    /// resumes by itself, without spending a check retry. True when it waits.
+    /// ref: docs/tasks.md "Checks, revisions and report"
+    fn wait_for_disk(&mut self, what: DiskWait) -> bool {
+        let Some((free_mb, min_gb)) = self.low_disk() else {
+            return false;
+        };
+        self.disk_wait = Some(match (self.disk_wait.take(), what) {
+            (Some(DiskWait::Turn(waiting)), DiskWait::Turn(text)) => {
+                DiskWait::Turn(format!("{waiting}\n\n{text}"))
+            }
+            (Some(DiskWait::Turn(waiting)), DiskWait::Checks) => DiskWait::Turn(waiting),
+            (_, what) => what,
+        });
+        self.log(LogEvent::DiskWait { free_mb, min_gb });
+        let reason = disk_full(free_mb, min_gb);
+        self.say(&reason);
+        self.set_waiting(TaskState::Blocked, Some(reason));
+        true
+    }
+
+    fn resume_after_disk(&mut self) {
+        if self.low_disk().is_some() {
+            return;
+        }
+        let Some(what) = self.disk_wait.take() else {
+            return;
+        };
+        self.set_waiting(self.record.state, None);
+        match what {
+            DiskWait::Turn(text) => self.start_turn(&text),
+            DiskWait::Checks => self.start_checks(),
+        }
+    }
+
+    /// Free MiB and the GB a task needs, when less than that is free.
+    fn low_disk(&self) -> Option<(u64, u64)> {
+        let min_gb =
+            load_task_config(&self.record.project_path).map_or(5, |settings| settings.min_free_gb);
+        hosting::free_mb(&self.record.working_copy)
+            .filter(|free_mb| *free_mb < min_gb * 1024)
+            .map(|free_mb| (free_mb, min_gb))
+    }
+
+    fn set_waiting(&mut self, state: TaskState, waiting: Option<String>) {
+        self.record.waiting = waiting;
+        self.set_state(state);
+    }
+
+    /// `wsx task check-run [<n>...]` from the worker: the declared checks (all, or by number)
+    /// run as after a result, in a thread, and answer the worker; no revision is recorded.
+    fn check_run(&mut self, argv: &[String], reply: Sender<broker::Response>) {
+        let refuse = |message: String| {
+            let _ = reply.send(broker::refused(message));
+        };
+        let numbers = match argv {
+            [task, sub, numbers @ ..] if task == "task" && sub == "check-run" => numbers,
+            _ => return refuse("a worker may run only `wsx task check-run [<n>...]`".into()),
+        };
+        if self.record.phase != Phase::Build {
+            return refuse("checks run once the build has started".into());
+        }
+        let checks = &self.record.checks;
+        let picked: Result<Vec<(usize, String)>, String> = match numbers {
+            [] => Ok(checks.iter().cloned().enumerate().collect()),
+            numbers => numbers
+                .iter()
+                .map(|number| {
+                    number
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|n| (1..=checks.len()).contains(n))
+                        .map(|n| (n - 1, checks[n - 1].clone()))
+                        .ok_or_else(|| {
+                            format!("{number} is not a check number 1..={}", checks.len())
+                        })
+                })
+                .collect(),
+        };
+        let picked = match picked {
+            Ok(picked) if picked.is_empty() => {
+                return refuse("the project declares no checks".into())
+            }
+            Ok(picked) => picked,
+            Err(message) => return refuse(message),
+        };
+        if let Some((free_mb, min_gb)) = self.low_disk() {
+            return refuse(disk_full(free_mb, min_gb));
+        }
+        let timeout = Duration::from_secs(self.record.check_timeout_secs);
+        let working_copy = self.record.working_copy.clone();
+        let events = self.events.clone();
+        std::thread::spawn(move || {
+            let results: Vec<CheckResult> = picked
+                .iter()
+                .map(|(_, command)| run_check(&working_copy, command, timeout))
+                .collect();
+            let mut stdout = String::new();
+            for ((index, _), check) in picked.iter().zip(&results) {
+                let ended = match (check.timed_out, check.exit) {
+                    (true, _) => "timed out".to_string(),
+                    (false, Some(code)) => format!("exit {code}"),
+                    (false, None) => "no exit code".to_string(),
+                };
+                stdout.push_str(&format!(
+                    "check {} `{}`: {ended}\n",
+                    index + 1,
+                    check.command
+                ));
+                if check.exit != Some(0) {
+                    stdout.push_str(&check.output);
+                    if !check.output.ends_with('\n') {
+                        stdout.push('\n');
+                    }
+                }
+            }
+            let code = if results.iter().all(|check| check.exit == Some(0)) {
+                0
+            } else {
+                1
+            };
+            let _ = reply.send(broker::Response {
+                stdout,
+                stderr: String::new(),
+                code,
+            });
+            let _ = events.send(Event::CheckRunDone(results));
+        });
     }
 
     fn start_checks(&mut self) {
+        if self.wait_for_disk(DiskWait::Checks) {
+            return;
+        }
         self.set_state(TaskState::Checking);
         let checks = self.record.checks.clone();
         let timeout = Duration::from_secs(self.record.check_timeout_secs);
@@ -673,6 +888,19 @@ impl Host {
     }
 
     fn on_checks(&mut self, results: Vec<CheckResult>) {
+        // ^ A full disk is not the worker's failure: the checks run again once there is space.
+        if results.iter().any(|check| check.output.contains(NO_SPACE)) {
+            self.log(LogEvent::Checks { results });
+            self.wait_for_disk(DiskWait::Checks);
+            if self.disk_wait.is_none() {
+                self.disk_wait = Some(DiskWait::Checks);
+                self.set_waiting(
+                    TaskState::Blocked,
+                    Some("Disk full: a check ran out of space".into()),
+                );
+            }
+            return;
+        }
         for check in &results {
             self.say(&format!(
                 "check {}: {}",
@@ -735,6 +963,7 @@ impl Host {
                     false
                         if state == TaskState::Ready
                             && !results.is_empty()
+                            && self.record.created_by == Actor::Owner
                             && self.pending.is_empty()
                             && self.auto_land() =>
                     {
@@ -1022,6 +1251,32 @@ impl Host {
         });
         self.write_report(TaskState::Landed);
         self.set_state(TaskState::Landed);
+        self.after_landing();
+    }
+
+    /// Deploy the default branch when the project deploys by itself, then close this task:
+    /// its work is on the default branch, and its copy and build only take space. Each runs
+    /// as its own `wsx task` command that outlives this host.
+    /// ref: docs/tasks.md "Deploy and release", "Close"
+    fn after_landing(&self) {
+        let project = self.record.project.as_str();
+        let id = self.record.id.to_string();
+        let deploys = load_task_config(&self.record.project_path)
+            .is_ok_and(|settings| settings.deploy_auto && settings.deploy_command.is_some());
+        let mut follow_ups = vec![vec!["task", "close", id.as_str(), "-p", project, "--json"]];
+        if deploys {
+            follow_ups.insert(
+                0,
+                vec!["task", "deploy", "-p", project, "--if-new", "--json"],
+            );
+        }
+        for args in follow_ups {
+            let started = store::follow_up_log(&self.record.project_id)
+                .and_then(|log| hosting::spawn_wsx(&args, log));
+            if let Err(error) = started {
+                self.say(&format!("cannot start wsx {}: {error:#}", args.join(" ")));
+            }
+        }
     }
 
     /// The worker result of the current revision, from `result.json`.
@@ -1150,6 +1405,14 @@ impl Host {
             self.say(&problem);
         }
     }
+}
+
+/// "Disk full: 3.2 GB free of the 5 GB a task needs".
+fn disk_full(free_mb: u64, min_gb: u64) -> String {
+    format!(
+        "Disk full: {:.1} GB free of the {min_gb} GB a task needs",
+        free_mb as f64 / 1024.0
+    )
 }
 
 const PR_TITLE_CHARS: usize = 72;

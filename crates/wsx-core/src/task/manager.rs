@@ -7,13 +7,62 @@ use super::{Access, TaskState, TurnUsage};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Who wrote a message the manager receives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// Who wrote a message the manager receives: `owner`, `events`, `manager:<project>` or, for
+/// an answer to a message this manager sent, `manager-reply:<project>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
 pub enum Author {
     Owner,
     /// Written by wsx from task state changes and approval decisions.
     Events,
+    /// The manager of another registered project (docs/tasks.md "Managers talk").
+    Manager {
+        project: String,
+        reply: bool,
+    },
+}
+
+impl From<Author> for String {
+    fn from(author: Author) -> Self {
+        match author {
+            Author::Owner => "owner".into(),
+            Author::Events => "events".into(),
+            Author::Manager {
+                project,
+                reply: false,
+            } => format!("manager:{project}"),
+            Author::Manager {
+                project,
+                reply: true,
+            } => format!("manager-reply:{project}"),
+        }
+    }
+}
+
+impl TryFrom<String> for Author {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        let manager = |project: &str, reply| match project.is_empty() {
+            true => Err(format!("{text} names no project")),
+            false => Ok(Author::Manager {
+                project: project.to_string(),
+                reply,
+            }),
+        };
+        match text.as_str() {
+            "owner" => Ok(Self::Owner),
+            "events" => Ok(Self::Events),
+            _ => match (
+                text.strip_prefix("manager:"),
+                text.strip_prefix("manager-reply:"),
+            ) {
+                (Some(project), _) => manager(project, false),
+                (_, Some(project)) => manager(project, true),
+                _ => Err(format!("unknown author {text}")),
+            },
+        }
+    }
 }
 
 /// One line of `manager/log.jsonl`.
@@ -35,6 +84,13 @@ pub enum ManagerEvent {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TurnUsage>,
+    },
+    /// This manager's message to another project's manager (`say --from-manager`).
+    Sent {
+        to: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        reply: bool,
     },
     /// A command or other step of the agent, in short form.
     Agent {
@@ -114,7 +170,8 @@ pub enum ApprovalAction {
     Release,
     /// `close --discard`
     Discard,
-    /// `start`: build a briefed task.
+    /// `start`: build a briefed task. Only requests from before `start` stopped asking
+    /// (docs/tasks.md "Approvals"); they still decode and run.
     Start,
     /// `allow`: a project-wide grant or a tool rule the manager asked for.
     Grant,
@@ -177,7 +234,12 @@ pub fn pending_approvals(lines: &[ApprovalLine]) -> Vec<&ApprovalLine> {
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ManagerRequest {
     Status,
-    Say { text: String },
+    Say {
+        text: String,
+        /// Another project's manager; none is the owner.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<Author>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

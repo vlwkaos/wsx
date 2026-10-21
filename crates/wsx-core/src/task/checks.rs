@@ -2,13 +2,12 @@
 //! checks at their own time and before a public release.
 //! ref: docs/tasks.md "To check"
 
-use super::store::{ensure_project_dir, open_nofollow, project_dir, read_bounded};
+use super::store::{ensure_project_dir, open_locked, project_dir, read_bounded};
 use super::{now_unix_ms, HumanVerify};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use std::os::unix::io::AsRawFd;
 
 pub const CHECKS_FILE: &str = "checks.jsonl";
 const MAX_CHECKS_BYTES: u64 = 4 * 1024 * 1024;
@@ -79,15 +78,10 @@ pub fn change(
     change: impl FnOnce(&[CheckItem]) -> Result<Vec<CheckItem>>,
 ) -> Result<Vec<CheckItem>> {
     let path = ensure_project_dir(project_id)?.join(CHECKS_FILE);
-    let mut file = open_nofollow(
+    let mut file = open_locked(
         &path,
         OpenOptions::new().read(true).append(true).create(true),
     )?;
-    // SAFETY: flock on an open descriptor; released when `file` closes.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("cannot lock {}", path.display()));
-    }
     let mut bytes = Vec::new();
     (&file).take(MAX_CHECKS_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_CHECKS_BYTES {

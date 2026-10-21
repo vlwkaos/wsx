@@ -6,7 +6,7 @@ import { api } from "./api.js";
 import { html, Icon, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, events, leaveFor, shows, state, touch, update, useStore } from "./store.js";
 import { Back, toast } from "./ui.js";
-import { grow, isolate, release, Suggestions } from "./chat.js";
+import { AttachButton, FileChips, grow, isolate, release, Suggestions, uploadFiles } from "./chat.js";
 import { Bubble, conversation, StatusLine, Typing } from "./bubbles.js";
 import { TaskPage } from "./task.js";
 import { ProjectPage } from "./page.js";
@@ -79,6 +79,7 @@ const KIND_TONE = { blocked: "attention", failed: "danger", stopped: "attention"
 const NEED_WORDS = { blocked: "needs an answer", failed: "failed", stopped: "was stopped", land: "is ready to land" };
 export const needWords = (item) => item.kind === "approval" ? item.label
   : item.kind === "brief" ? `Brief ready #${item.task}`
+  : item.kind === "blocked" && item.waiting ? `#${item.task} waits for disk space`
   : item.kind === "blocked" && item.asks?.length ? `#${item.task} needs to ${askWords(item.asks)}`
   : `#${item.task} ${NEED_WORDS[item.kind]}`;
 // What a blocked task asks for, never a command: "reach crates.io and write ~/.cargo"
@@ -195,8 +196,15 @@ function NeedRow({ project, item, index, onActing, onFailed }) {
     actions = button("Allow", grant, { "aria-label": `Allow #${item.task} to ${askWords(asks)}` });
   } else if (acting && ["blocked", "failed", "stopped"].includes(item.kind)) {
     actions = button("Answer", open, { "aria-expanded": draft.field === "answer", "aria-label": `Answer #${item.task}` });
+  } else if (acting && item.kind === "approval" && draft.running) {
+    // ^ The approved action runs until its decision settles the row; it may take minutes.
+    actions = html`<span class="row-context" role="status">Running…</span>`;
   } else if (acting && item.kind === "approval") {
-    actions = html`${button("Deny", () => run("deny"), { "aria-label": `Deny: ${item.label}` })}${button("Approve", () => run("approve"), { "aria-label": item.label })}`;
+    const approve = async () => {
+      await run("approve");
+      if (!draft.error) { draft.running = true; refresh(); }
+    };
+    actions = html`${button("Deny", () => run("deny"), { "aria-label": `Deny: ${item.label}` })}${button("Approve", approve, { "aria-label": item.label })}`;
   } else if (acting && item.kind === "brief") {
     actions = button("Start", () => run("start"), { "aria-label": `Start the build of #${item.task}` });
   } else if (acting && item.kind === "land") {
@@ -366,6 +374,10 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
   const [closed, setClosed] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // ^ Files to send with the next message; they are lost on leaving the project.
+  const files = useRef({ attachments: [], uploads: [] }).current;
+  const [, renew] = useState(0);
+  const filesChanged = () => renew((count) => count + 1);
   const tasks = store.tasks[project]?.tasks ?? [];
   const typed = closed === text ? null : taskQuery(text, caret);
   const options = typed ? matchingTasks(tasks, typed.query) : null;
@@ -392,12 +404,14 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
   };
   const send = async () => {
     const body = field.current.value.trim();
-    if (busy || !body) return;
+    if (busy || files.uploads.length || (!body && !files.attachments.length)) return;
     setBusy(true);
     setError("");
     try {
-      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text: body } });
+      const attachments = files.attachments.map((item) => item.hash);
+      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text: body, attachments } });
       field.current.value = "";
+      files.attachments = [];
       changed();
       onSent({ id: answer.id, text: body });
     } catch (failure) {
@@ -437,12 +451,14 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
   };
   return html`
     <div class="composer">
+      <${FileChips} files=${files} onRemove=${(item) => { files.attachments = files.attachments.filter((other) => other !== item); filesChanged(); }} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
       ${listOpen && html`<${Suggestions} label="Tasks" active=${active} onHover=${setActive} onPick=${pick}
         options=${options.map((task) => ({ key: task.id, name: `#${task.id}`, description: task.title,
           source: taskStage(task)[0], tone: taskStage(task)[1], task }))}
         notes=${[!options.length && (tasks.length ? "No task matches that." : "This project has no task yet.")]} />`}
       <div class="composer-row" onPointerDown=${focusField}>
+        <${AttachButton} onFiles=${(picked) => { setError(""); uploadFiles(picked, files, filesChanged, setError); }} />
         <div class="composer-input">
           <textarea class="composer-field" ref=${field} rows="1" aria-label="Message to the manager"
             placeholder="Message the manager · # for a task" role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
@@ -451,7 +467,7 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
             onClick=${() => setCaret(field.current.selectionStart)} onFocus=${isolate} onBlur=${release}></textarea>
         </div>
         <button class="button button-primary composer-send" type="button" aria-label=${thinking ? "Queue" : "Send"}
-          disabled=${busy} onClick=${send}>
+          disabled=${busy || files.uploads.length > 0} onClick=${send}>
           <span class="send-mark" aria-hidden="true"><${Icon} name="send" /></span><span class="send-text">${thinking ? "Queue" : "Send"}</span>
         </button>
       </div>

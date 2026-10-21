@@ -10,7 +10,7 @@ import { grow, isolate, release } from "./chat.js";
 import { announce, askWords, grantBody, loadTasks, taskStage, TaskChip, withChips } from "./tasks.js";
 import { Bubble } from "./bubbles.js";
 import { TaskStory } from "./story.js";
-import { CheckRow } from "./checks.js";
+import { CheckRow, TryButton } from "./checks.js";
 
 const short = (commit) => (commit ?? "").slice(0, 8);
 const MESSAGE_WORDS = { prompt: "Asked", steer: "Steered", add: "Added" };
@@ -297,6 +297,7 @@ export function TaskPage({ project, task, onClose, grip }) {
       ${button("Allow for project", () => grant(true), { "aria-label": `Allow every task of this project to ${askWords(asks)}` })}`,
     actions.includes("land") && button(act.busy === "land" ? "Landing…" : detail.state === "in_review" ? "Check pull request" : "Land",
       () => act.run("land", `api/tasks/${project}/t/${task}/land`, {})),
+    store.tasks[project]?.preview && detail.phase !== "brief" && detail.state !== "closed" && html`<${TryButton} project=${project} task=${task} />`,
   ].filter(Boolean) : [];
   const briefing = detail.phase === "brief";
   const report = sections(detail.report);
@@ -314,7 +315,7 @@ export function TaskPage({ project, task, onClose, grip }) {
         ${briefing && brief && html`
           <${BriefDecide} brief=${brief.brief} words=${words} />
           <${Details}><${BriefRest} brief=${brief.brief} words=${words} /></${Details}>`}
-        ${briefing && !brief && detail.state !== "failed" && html`<p class="empty">The worker is writing the brief. Nothing is built before you start it.</p>`}
+        ${briefing && !brief && detail.state !== "failed" && html`<p class="empty">The worker is writing the brief. The build starts by itself unless it has questions for you.</p>`}
 
         ${FOLDS.filter((title) => report[title] != null).map((title) => {
           const note = foldNote(title, report[title], detail);

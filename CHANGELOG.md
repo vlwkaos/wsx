@@ -4,6 +4,18 @@
 
 ### Added
 
+- Manager mode, seventh part: one short path from a request to a running change ([docs/tasks.md](docs/tasks.md)).
+  - Approvals only where something goes public or is lost: `tasks.land.approve` and `tasks.deploy.approve` default to `false`, `start` never asks, and a release, `close --discard` and a grant for every task still ask. A web Approve shows "Running…" until its decision settles the row, and a second Approve answers what happened instead of an error.
+  - A brief without open questions starts its build by itself (`started{auto: true}`); one with questions waits until the owner answers.
+  - A ready task the manager created waits for the manager's review of its diff, then the manager lands it or sends back what is missing. The web shows it as working, not as a need of the owner.
+  - After a land the host closes the task (its copy, build and branch go) and, with the new `tasks.deploy.auto`, deploys the default branch. `task deploy --if-new` and a per-project deploy lock make quick lands deploy once, for the newest commit. wsx's own config deploys after each land.
+  - `wsx task check-run [<n>...]`: the worker runs the declared checks through its task host's broker, outside its sandbox and as after its result, before it reports done.
+  - `tasks.minFreeGb` (default 5): below it a task waits with "Disk full: n GB free" and goes on by itself, also after a check or a worker hit "No space left on device"; no check retry is spent.
+  - The manager keeps the owner's decisions in `notes/decisions.md`, and every fresh conversation starts with that file and `notes/context.md` (8 KiB). Workers must leave a memo when they learned a convention, a gotcha or a decision.
+  - Managers talk: a manager may read another registered project's ledger and message its manager with `task say --from-manager`, answered once with `--reply`; nothing else crosses projects ("Managers talk").
+  - `wsx task preview <n> [--stop]` and `tasks.preview`: a task served on its own tailnet port (`tailscale serve --https=<port>`) for an hour, with *Try* in the web; for projects that configure it (wsx does not).
+  - The manager chat in the web has attachments, and shows other managers' messages as "Manager <project>".
+
 - The web chat no longer loses a queued message that the agent drops: a delivered queued message stays above the composer until the agent's conversation shows it, with Copy, Send again and Remove, and every waiting or sent message has Copy. Before, the server removed a queued message as soon as wsxd typed it, so a paste the agent dropped was lost ([docs/web-client.md](docs/web-client.md) "Queue and Stop").
 - A one-line `!` message to a Claude session in the web chat runs in Claude's shell mode (`! git status`): it is typed without the exchange line and shows in the chat as written. Before, Claude got it as text under the exchange line. Needs wsxd revision 30 (`exchange_shell`); Pi and Codex sessions keep the exchange line ([docs/web-client.md](docs/web-client.md) "Commands").
 - One permission model for every task agent (manager mode, sixth part). Workers, brief turns and the manager run in Claude's auto mode inside Claude's Bash sandbox, set through `--settings`, so a repository's own settings cannot widen it. Any Bash command, compound ones and builds too, runs without a prompt inside the agent's write boundary: a worker writes its working copy and the git paths its commits need, a brief turn writes nothing, and the manager writes only its notes folder while its `wsx task` commands run outside the sandbox. Hosts in the new `tasks.sandbox.allowedDomains` are reachable; for other hosts the auto-mode classifier decides. File tools are kept out of the main checkout, the wsx state and config folders and the other task copies by deny rules, and the classifier reviews them elsewhere. Before, every command that was not on a short allow list was denied, and an allowed compound command never matched its own rule again ([docs/tasks.md](docs/tasks.md) "Permissions").
@@ -18,6 +30,9 @@
 
 ### Breaking Changes
 
+- The manager lands and deploys without the owner's approval by default, and its `start` no longer asks. Set `tasks.land.approve: true` or `tasks.deploy.approve: true` to keep asking.
+- A landed task closes itself: its working copy, build and branch are removed after the land.
+- Rust callers: `wsx_core::task::manager::Author` is no longer `Copy` and has the variant `Manager { project, reply }` (it serializes as a string, `manager:<project>`); `ManagerRequest::Say` has `from`; `owner::say` takes `from`; `TaskRecord` has `created_by` and `waiting`; `LogEvent::Started` has `auto`; `TaskConfig` has `min_free_gb`, `deploy_auto` and `preview`. Older JSON without the new fields decodes as before.
 - `tasks.agent.tools` refuses `Bash(...)` rules and bare `Edit`, `Write`, `NotebookEdit` and `MultiEdit`, and `tasks.agent.briefTools` was removed: a project config that has them no longer parses, and the error says why. `wsx task allow` refuses the same rules.
 - Rust callers that construct `AgentExchange` must provide `key` and `continue_key`, and `Request` has the new variants `AgentExchangeCreateKeyed` and `AgentExchangeContinueKeyed`. Older JSON without the new fields decodes as before.
 - Rust callers that construct `Request::AgentExchangeCreate`, `AgentExchangeCreateStashingDraft`, `AgentExchangeContinue` or `AgentExchangeContinueStashingDraft` must provide `command` (`false` keeps the exchange line) and `takeover` (`false` keeps `terminal_busy`); `AgentExchangeCancel` must provide `takeover` too. `Capabilities` has the new `exchange_command` and `exchange_shell` flags. Older JSON without the new fields decodes as before.

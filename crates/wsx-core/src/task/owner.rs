@@ -57,18 +57,20 @@ pub fn ensure_manager(
     )
 }
 
-/// Give the manager an owner message, starting it first when needed.
+/// Give the manager a message, starting it first when needed. `from` is another project's
+/// manager; none is the owner.
 pub fn say(
     name: &str,
     main: &Path,
     wsx: &Path,
     launch: impl FnOnce(Vec<String>) -> Result<()>,
     text: String,
+    from: Option<super::manager::Author>,
 ) -> Result<ManagerResponse> {
     let (_, dir) = ensure_manager(name, main, wsx, launch)?;
     call_socket(
         &dir.socket_path(),
-        &ManagerRequest::Say { text },
+        &ManagerRequest::Say { text, from },
         HOST_TIMEOUT,
     )
 }

@@ -871,7 +871,14 @@ async fn tasks_chat(
     Query(query): Query<AfterQuery>,
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
-    blocking(|| crate::tasks::chat(&crate::tasks::scope(&app, project)?, query.after).map(Json))
+    blocking(|| {
+        crate::tasks::chat(
+            &crate::tasks::scope(&app, project)?,
+            query.after,
+            &app.media,
+        )
+        .map(Json)
+    })
 }
 
 async fn tasks_since(
@@ -922,20 +929,25 @@ async fn task_detail(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TextInput {
+struct SayInput {
     text: String,
+    /// Media hashes from `PUT /api/media`.
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 async fn tasks_say(
     State(app): State<Shared>,
     Paired(device): Paired,
     UrlPath(project): UrlPath<u64>,
-    Json(input): Json<TextInput>,
+    Json(input): Json<SayInput>,
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, true)?;
     act_budget(&app, &device)?;
     blocking(|| {
-        crate::tasks::say(&app, &crate::tasks::scope(&app, project)?, &input.text).map(Json)
+        let text =
+            crate::chat::with_attachments(&app.site, &app.media, &input.text, &input.attachments)?;
+        crate::tasks::say(&app, &crate::tasks::scope(&app, project)?, &text).map(Json)
     })
 }
 
@@ -958,6 +970,15 @@ async fn task_act(
 ) -> Outcome<Json<Value>> {
     use wsx_core::task::HostRequest;
     tasks_allowed(&app, true)?;
+    if action == "preview" {
+        act_budget(&app, &device)?;
+        let scope = blocking(|| crate::tasks::scope(&app, project))?;
+        // ^ A preview waits for its command to answer, up to minutes.
+        return tokio::task::spawn_blocking(move || crate::tasks::preview(&scope, task))
+            .await
+            .map_err(|_| Fault::new(500, "task_action", "the preview stopped unexpectedly"))?
+            .map(Json);
+    }
     let missing = |field: &str| Fault::new(400, "invalid_body", format!("{action} needs {field}"));
     let request = match action.as_str() {
         "add" => HostRequest::Add {

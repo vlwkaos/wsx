@@ -121,9 +121,10 @@ impl Access {
 }
 
 /// Who acted: the owner, or the manager's agent (`WSX_TASK_ACTOR=manager`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Actor {
+    #[default]
     Owner,
     Manager,
 }
@@ -176,6 +177,14 @@ pub struct TaskRecord {
     /// The `checks.jsonl` item whose fail started this task (docs/tasks.md "To check").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixes: Option<String>,
+    /// Who ran `task new`. A ready task the manager created waits for its review instead of
+    /// landing by itself (docs/tasks.md "Landing").
+    #[serde(default)]
+    pub created_by: Actor,
+    /// Why the task waits for something other than a person, such as free disk; the host
+    /// resumes it by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
     pub created_unix_ms: u64,
     pub updated_unix_ms: u64,
 }
@@ -313,10 +322,27 @@ pub enum LogEvent {
         by: String,
         actor: String,
     },
-    /// The owner started the build of brief `version`; `prompt` is its rewritten prompt.
+    /// The task waits for free disk before a turn or its checks (`tasks.minFreeGb`).
+    DiskWait {
+        free_mb: u64,
+        min_gb: u64,
+    },
+    /// A preview of the task answers at `url` (docs/tasks.md "Preview").
+    Preview {
+        url: String,
+        port: u16,
+    },
+    /// The worker ran checks with `wsx task check-run`; no revision is recorded.
+    CheckRun {
+        results: Vec<CheckResult>,
+    },
+    /// The build of brief `version` started; `prompt` is its rewritten prompt. `auto`: the
+    /// brief had no open questions, so it started by itself.
     Started {
         version: u32,
         prompt: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        auto: bool,
     },
 }
 

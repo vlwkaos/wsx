@@ -2447,9 +2447,12 @@ capabilities = ["terminal_view"]
 
 # ^ Ready tasks land by hand here, so the fixture keeps tasks that wait at ready; test-task.py
 # covers the default auto land.
+# ^ `minFreeGb: 0`: tasks must not wait on this machine's free disk. `approve: true` keeps
+# the manager's land an approval request for the journey.
 TASK_CONFIG = '''tasks:
   brief: false
-  land: { auto: false }
+  minFreeGb: 0
+  land: { auto: false, approve: true }
   agent:
     model: fake-model
     tools: [WebFetch]
@@ -2457,6 +2460,9 @@ TASK_CONFIG = '''tasks:
     - "test ! -e broken.txt"
   manager: { model: fake-manager }
   deploy: { command: "true" }
+  preview:
+    command: 'exec python3 -m http.server "$PORT" --bind 127.0.0.1'
+    ports: 9150-9199
 '''
 
 # An agent session for Home's session words: report one state as Claude, then stay or end.
@@ -2521,6 +2527,10 @@ def task_journey(args):
         fake = bin_dir / 'claude'
         fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(ROOT / 'scripts/fake-claude-stream.py') + ' "$@"\n')
         fake.chmod(0o755)
+        # ^ The preview's tailscale: it records its argv and names this machine.
+        (bin_dir / 'tailscale').write_text('#!/bin/sh\necho "$@" >> ' + str(work / 'tailscale.log') + '\n'
+                                           'if [ "$1" = status ]; then echo \'{"Self":{"DNSName":"host.example.ts.net."}}\'; fi\n')
+        (bin_dir / 'tailscale').chmod(0o755)
         path = state / 'wsx/wsx.sock'
         env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
                'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_SOCKET': str(path),
@@ -2572,9 +2582,9 @@ def task_journey(args):
         real_brief['methods'] = [*real_brief['methods'], 'Run the check:\n\n```sh\ncargo nextest run\n```']
         brief_file = work / 'brief.json'
         brief_file.write_text(json.dumps(real_brief))
-        assert js('task', 'new', 'Let me jump between projects from the keyboard, without the mouse REWRITE WORK keys.txt\nBRIEF_FILE %s' % brief_file,
+        assert js('task', 'new', 'Let me jump between projects from the keyboard, without the mouse REWRITE WORK keys.txt\nBRIEF_FILE %s QUESTION' % brief_file,
                   '-p', 'plans')['id'] == 1
-        assert js('task', 'new', 'REWRITE WORK two.txt', '-p', 'plans')['id'] == 2
+        assert js('task', 'new', 'QUESTION REWRITE WORK two.txt', '-p', 'plans')['id'] == 2
         for n in (1, 2):
             wait(lambda: js('task', 'show', n, '-p', 'plans')['state'] == 'briefed', 'plans #%d briefed' % n)
         if args.browser:
@@ -2604,6 +2614,12 @@ def task_journey(args):
                 assert js('task', 'land', n, '-p', 'ui')['state'] == 'landed'
             wait(lambda: sum('#%d landed r1' % n in e.get('text', '') for n in (7, 8) for e in js('task', 'chat', '-p', 'ui')['entries']) == 2,
                  'the manager heard of #7 and #8', timeout=30)
+            # The manager of plans asked ui's manager, which answered: both show as bubbles in ui.
+            js('task', 'say', 'RUN wsx task say -p ui --from-manager "How is ui?" --json', '-p', 'plans')
+            wait(lambda: any(e.get('from') == 'manager:plans' for e in js('task', 'chat', '-p', 'ui')['entries']),
+                 'ui heard plans', timeout=30)
+            js('task', 'say', 'RUN wsx task say -p plans --from-manager --reply "ui is fine" --json', '-p', 'ui')
+            wait(lambda: any(e['kind'] == 'sent' for e in js('task', 'chat', '-p', 'ui')['entries']), 'ui answered plans', timeout=30)
             # A deploy of the default branch tip: the brief says it is up to date until a task lands.
             assert js('task', 'deploy', '-p', 'ui')['exit'] == 0
             # Sessions without tasks, oldest first: an agent that exited (`gone`), one done
@@ -2679,7 +2695,7 @@ def task_journey(args):
         private_key = next(line.split('"')[1] for line in vapid.splitlines() if line.startswith('private_key'))
         ports = {name: free_port() for name in ('owner', 'viewer', 'plain')}
         grants = {
-            'owner': ('"all"', '"task_view", "task_act", "push"'),
+            'owner': ('"all"', '"task_view", "task_act", "push", "media_upload", "media_download"'),
             'viewer': (json.dumps([str(project)]), '"task_view", "push"'),
             'plain': (json.dumps([str(other)]), '"chat_send", "push"'),
         }
@@ -2816,8 +2832,9 @@ digest_max_seconds = 6
         assert request['label'] == 'Approve land #3', request
         status, body = steady(owner, 'POST', '/api/tasks/%d/approvals/a1/approve' % demo, {})
         assert status == 202 and body['started'], body
+        # ^ A second tap while it runs, or once decided, answers what happened: not an error.
         again = steady(owner, 'POST', '/api/tasks/%d/approvals/a1/approve' % demo, {})
-        assert again[0] == 409, again
+        assert again[0] == 202 and (again[1].get('running') or again[1].get('decided')), again
         decided = events.expect('tasks', lambda data: data['project'] == demo and data['decisions'], timeout=30)
         assert decided['decisions'][0]['approval'] == 'a1' and decided['decisions'][0]['outcome'].startswith('done'), decided
         assert task_state(3) == 'landed'
@@ -2951,13 +2968,13 @@ digest_max_seconds = 6
         assert detail['phase'] == 'brief' and detail['actions'] == ['start', 'add'] and detail['talk'] == [], detail
         assert detail['brief']['version'] == 1 and detail['brief']['brief']['rewritten_prompt'] == 'WORK two.txt', detail['brief']
         assert steady(viewer, 'POST', '/api/tasks/%d/t/2/start' % planned, {})[0] == 403
-        assert steady(owner, 'POST', '/api/tasks/%d/t/2/add' % planned, {'text': 'Why two? REVISE WORK three.txt'})[0] == 200
+        assert steady(owner, 'POST', '/api/tasks/%d/t/2/add' % planned, {'text': 'Why two? QUESTION REVISE WORK three.txt'})[0] == 200
 
         def plan_detail(test, label):
             return wait(lambda: (current := steady(owner, 'GET', '/api/tasks/%d/t/2' % planned)[1]) and test(current) and current, label)
         detail = plan_detail(lambda d: d['state'] == 'briefed' and d['brief']['version'] == 2, 'brief v2')
         assert [(row['from'], row['text']) for row in detail['talk']] == [
-            ('owner', 'Why two? REVISE WORK three.txt'), ('worker', 'answered: Why two? REVISE WORK three.txt')], detail['talk']
+            ('owner', 'Why two? QUESTION REVISE WORK three.txt'), ('worker', 'answered: Why two? QUESTION REVISE WORK three.txt')], detail['talk']
         assert not (work / 'plans-t2' / 'two.txt').exists() and not (work / 'plans-t2' / 'three.txt').exists()
         status, started_build = steady(owner, 'POST', '/api/tasks/%d/t/2/start' % planned, {})
         assert status == 200 and started_build['message'] == 'started the build of brief v2', started_build
@@ -3012,6 +3029,9 @@ digest_max_seconds = 6
                                   str(ids['ui']), str(args.captures), ','.join(home_order),
                                   str(audit) if audit.exists() else '', str(ids['plans']), str(restart)], timeout=360)
             assert result.returncode == 0, result.stdout + result.stderr
+            # ^ Try started #7's preview: its mapping goes with it.
+            assert js('task', 'preview', 7, '--stop', '-p', 'ui')['stopped'] is True
+            assert 'serve --bg --https=' in (work / 'tailscale.log').read_text() and ' off' in (work / 'tailscale.log').read_text()
             # ^ The server restarted: the event stream starts again for the checks after.
             assert (work / 'restart-owner.done').exists()
             events = Events(owner)
@@ -3108,7 +3128,7 @@ digest_max_seconds = 6
         assert asked[0]['body'] == 'Approve land #%d' % steady_ids[0] and asked[0]['tag'].endswith('-now'), asked
         baseline += 1
         # A brief waits for the owner's start: it is sent at once, like a block.
-        planned_late = js('task', 'new', 'REWRITE NOOP', '-p', 'plans')['id']
+        planned_late = js('task', 'new', 'QUESTION REWRITE NOOP', '-p', 'plans')['id']
         briefed_push = new_pushes(1, 'brief push')
         assert briefed_push[0]['body'] == '#%d brief ready' % planned_late and briefed_push[0]['tag'].endswith('-now'), briefed_push
         assert briefed_push[0]['url'] == '#/p/%d/t/%d' % (ids['plans'], planned_late), briefed_push

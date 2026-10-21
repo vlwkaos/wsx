@@ -5,6 +5,30 @@ import { html, Icon, useEffect, useRef, useState } from "./lib.js";
 import { can, useStore } from "./store.js";
 import { loadTasks, TaskChip } from "./tasks.js";
 
+// Try: start the task's preview, or find the running one, then a link to open it. A link
+// the person opens keeps popup blockers out of the way. Only for projects with
+// `tasks.preview` (docs/tasks.md "Preview").
+export function TryButton({ project, task }) {
+  const store = useStore();
+  const [state, setState] = useState({ busy: false, url: null, error: "" });
+  if (!store.tasks[project]?.preview || !can("task_act")) return null;
+  const start = async () => {
+    setState({ busy: true, url: null, error: "" });
+    try {
+      const answer = await api(`api/tasks/${project}/t/${task}/preview`, { method: "POST", json: {} });
+      setState({ busy: false, url: answer.url, error: "" });
+    } catch (failure) {
+      setState({ busy: false, url: null, error: failure.message });
+    }
+  };
+  return html`
+    ${state.url
+      ? html`<a class="button need-action" href=${state.url} target="_blank" rel="noopener" aria-label=${`Open the preview of #${task}`}>Open</a>`
+      : html`<button class="button need-action" type="button" disabled=${state.busy} onClick=${start}
+          aria-label=${`Try #${task} on a preview`}>${state.busy ? "Starting…" : "Try"}</button>`}
+    ${state.error && html`<span class="error" role="alert">${state.error}</span>`}`;
+}
+
 // One item: its task, the check and when it passes, with Pass and Fail. A fail needs a note,
 // which goes to the task that fixes it. `revision` is the task's current one: an item of an
 // older revision names its own.
@@ -46,6 +70,7 @@ export function CheckRow({ project, item, revision, onChanged }) {
         </div>
         ${acting && !failing && html`
           <span class="row-actions">
+            <${TryButton} project=${project} task=${item.task} />
             <button class="button need-action" type="button" disabled=${busy} aria-label=${`Fail: ${item.check}`}
               onClick=${() => setFailing(true)}>Fail</button>
             <button class="button need-action" type="button" disabled=${busy} aria-label=${`Pass: ${item.check}`}

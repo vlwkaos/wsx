@@ -3,6 +3,7 @@
 // (docs/web-client.md "Project screen").
 import { clock, firstSentence, html, useLayoutEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
+import { Attachments } from "./chat.js";
 import { TaskChip } from "./tasks.js";
 
 // Bubbles of one author closer together than this read as one group.
@@ -33,6 +34,12 @@ export function conversation(entries, resolutions) {
       rows.push({ kind: "bubble", at, key, author: "owner", entry });
     } else if (entry.kind === "reply") {
       rows.push({ kind: "bubble", at, key, author: "manager", entry });
+    } else if (entry.kind === "message" && /^manager(-reply)?:/.test(entry.from ?? "")) {
+      // ^ Another project's manager wrote (docs/tasks.md "Managers talk").
+      const [from, peer] = entry.from.split(/:(.*)/s);
+      rows.push({ kind: "bubble", at, key, author: `peer:${peer}`, entry, tag: from === "manager-reply" ? "Reply" : null });
+    } else if (entry.kind === "sent") {
+      rows.push({ kind: "bubble", at, key, author: "manager", entry, tag: `${entry.reply ? "Reply to" : "To"} Manager ${entry.to}` });
     } else if (entry.kind === "message") {
       // ^ The status lines first, so they join the settled lines just before them.
       const reports = entry.reports ?? [];
@@ -107,7 +114,8 @@ function Fold({ id, children }) {
       </button>`}`;
 }
 
-const authorName = (author) => author === "owner" ? "You" : author === "manager" ? "Manager" : `#${author.slice(7)} worker`;
+const authorName = (author) => author === "owner" ? "You" : author === "manager" ? "Manager"
+  : author.startsWith("peer:") ? `Manager ${author.slice(5)}` : `#${author.slice(7)} worker`;
 
 // One message. `words` turns its text runs into task chips.
 export function Bubble({ project, row, words }) {
@@ -121,7 +129,7 @@ export function Bubble({ project, row, words }) {
       ${report.state === "landed" ? html`<${Sentence} id=${id} text=${report.summary} words=${words} />`
         : html`<${Fold} id=${id}><${Markdown} text=${report.summary} words=${words} prose /></${Fold}>`}`;
   } else if (out) {
-    body = html`<${Fold} id=${id}><p class="prose">${words(row.entry.text)}</p></${Fold}>`;
+    body = html`<${Fold} id=${id}><p class="prose">${words(row.entry.text)}</p></${Fold}><${Attachments} files=${row.entry.attachments} />`;
   } else {
     body = html`<${Fold} id=${id}><${Markdown} text=${row.entry.text} words=${words} prose /></${Fold}>`;
   }

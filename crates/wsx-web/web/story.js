@@ -69,15 +69,16 @@ export function nextWords(detail) {
   if (asked) return `The manager asks: ${asked.label}.`;
   if (detail.phase === "brief") {
     switch (detail.state) {
-      case "briefed": return "The brief is ready. Read it, reply to talk it through, or Start the build.";
+      case "briefed": return "The brief has questions for you. Answer them and the build starts by itself, or Start it as it is.";
       case "failed": return "The worker returned no brief. Reply to ask again.";
       case "stopped": return "The worker stopped. Reply to resume the brief.";
       case "closed": return "Closed before the build.";
-      default: return "The worker writes the brief. Nothing is built before you Start.";
+      default: return "The worker writes the brief. The build starts by itself unless the brief has questions for you.";
     }
   }
   switch (detail.state) {
-    case "blocked": return detail.asks?.length
+    case "blocked": if (detail.waiting) return `${detail.waiting}. It goes on by itself once there is space.`;
+      return detail.asks?.length
       ? `The worker waits for you to let it ${askWords(detail.asks)}, or to answer.`
       : "The worker waits for your answer.";
     case "stopped": return "The worker stopped. Add a message to resume it.";
@@ -91,6 +92,7 @@ export function nextWords(detail) {
     case "ready": {
       const reason = detail.land_reason ?? "";
       if (reason.startsWith("could not land: ")) return `It could not land: ${reason.slice(16)} Land it again when that is fixed.`;
+      if (reason === "the manager reviews it") return `The manager reviews the work, then lands it on ${main} or sends it back.`;
       if (reason.startsWith("no checks")) return `No checks prove it, so it waits for you. Land it to put it on ${main}.`;
       return `Land it to put it on ${main}.`;
     }

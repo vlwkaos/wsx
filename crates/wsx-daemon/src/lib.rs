@@ -3517,7 +3517,13 @@ fn synchronize_projects(
         let name = bounded_label(spec.name)?;
         let mut worktrees = Vec::new();
         for worktree in spec.worktrees {
-            let path = fs::canonicalize(&worktree.path).map_err(io_api)?;
+            let path = match fs::canonicalize(&worktree.path) {
+                Ok(path) => path,
+                // ^ Removed after the client listed it, as a task that closes itself removes its
+                // copy: it is gone, like a worktree left out of the list.
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(io_api(error)),
+            };
             if !seen_worktrees.insert(path.clone()) {
                 return Err(api("duplicate_worktree", "duplicate worktree path"));
             }
