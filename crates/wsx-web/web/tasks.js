@@ -239,7 +239,7 @@ function NeedRow({ project, item, index, onActing, onFailed }) {
 }
 
 // What a working task does when it is more than work: a conflict or a pull request.
-const WORKING_WORDS = { conflict: "resolving a conflict", in_review: "pull request open" };
+const WORKING_WORDS = { conflict: "resolving a conflict", in_review: "pull request open", by_hand: "by hand" };
 
 // A working task in the reservoir: its chip and title; the chip pulses. A pull request has Check.
 function RunningRow({ project, task }) {

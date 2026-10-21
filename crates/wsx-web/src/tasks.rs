@@ -83,7 +83,9 @@ fn stage(record: &TaskRecord) -> &'static str {
         | TaskState::Working
         | TaskState::Checking
         | TaskState::Conflict
-        | TaskState::InReview => "working",
+        | TaskState::InReview
+        // ^ The owner works on it: not a need of the owner, and not done.
+        | TaskState::ByHand => "working",
         TaskState::Briefed
         | TaskState::Blocked
         | TaskState::Failed
@@ -177,7 +179,8 @@ pub fn overview(scope: &Scope) -> Value {
             | TaskState::Working
             | TaskState::Checking
             | TaskState::Conflict
-            | TaskState::InReview => {
+            | TaskState::InReview
+            | TaskState::ByHand => {
                 working += 1;
                 continue;
             }
@@ -491,7 +494,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
         })
         .collect::<Vec<_>>());
     summary["actions"] = if can_act {
-        json!(actions(record.state))
+        json!(actions(&record))
     } else {
         json!([])
     };
@@ -499,8 +502,9 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
 }
 
 /// The actions a task's state allows. The host still decides; this only picks buttons.
-fn actions(state: TaskState) -> Vec<&'static str> {
-    match state {
+/// `hand` takes a build over in its working copy (docs/tasks.md "By hand").
+fn actions(record: &TaskRecord) -> Vec<&'static str> {
+    let mut actions = match record.state {
         TaskState::Starting | TaskState::Working | TaskState::Checking => vec!["steer", "add"],
         TaskState::Blocked => vec!["add", "allow"],
         // ^ An add to a brief is a talk-through turn; the worker answers and may revise it.
@@ -508,8 +512,18 @@ fn actions(state: TaskState) -> Vec<&'static str> {
         TaskState::Ready => vec!["land", "add"],
         TaskState::Failed | TaskState::Conflict | TaskState::Stopped => vec!["add"],
         TaskState::InReview => vec!["land", "add"],
+        TaskState::ByHand => vec!["handback"],
         TaskState::Landed | TaskState::Closed => vec![],
+    };
+    let handable = !matches!(
+        record.state,
+        TaskState::Starting | TaskState::Checking | TaskState::ByHand
+    ) && record.state.is_open()
+        && record.phase == task::Phase::Build;
+    if handable {
+        actions.push("hand");
     }
+    actions
 }
 
 /// The owner's messages to the worker after the prompt, in order, with the worker's answers
@@ -788,7 +802,10 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
                 .map_err(|reason| Fault::new(400, "invalid_grant", reason))?;
         }
         HostRequest::Land { .. } | HostRequest::Start => {}
-        HostRequest::Status
+        // ^ They open and close the hand session: `hand`, not this, runs them.
+        HostRequest::Hand
+        | HostRequest::Handback
+        | HostRequest::Status
         | HostRequest::Stop
         | HostRequest::Close { .. }
         | HostRequest::Revoke { .. } => {
@@ -870,6 +887,13 @@ pub fn preview(scope: &Scope, task: u32) -> Outcome<Value> {
         scope,
         vec!["task".into(), "preview".into(), task.to_string()],
     )
+}
+
+/// Take the task over by hand, or hand it back, through `wsx task hand|handback` so the
+/// hand session opens and closes the way the CLI does (docs/tasks.md "By hand").
+pub fn hand(scope: &Scope, task: u32, back: bool) -> Outcome<Value> {
+    let command = if back { "handback" } else { "hand" };
+    run_wsx(scope, vec!["task".into(), command.into(), task.to_string()])
 }
 
 /// Run `wsx <argv> -p <project> --json` as the owner and return its JSON answer.

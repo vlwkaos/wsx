@@ -267,7 +267,17 @@ impl Host {
     }
 
     fn handle(&mut self, request: HostRequest) -> HostResponse {
+        // ^ While the owner works by hand nothing else writes the copy or its conversation.
+        let held = self.record.state == TaskState::ByHand
+            && matches!(
+                request,
+                HostRequest::Steer { .. }
+                    | HostRequest::Add { .. }
+                    | HostRequest::Start
+                    | HostRequest::Land {}
+            );
         let message = match request {
+            _ if held => Err(self.by_hand_refusal()),
             HostRequest::Status => Ok("".to_string()),
             HostRequest::Steer { text } => self.steer(text),
             HostRequest::Add { text } => self.add(text),
@@ -284,6 +294,8 @@ impl Host {
             HostRequest::Stop => self.stop(),
             HostRequest::Start => self.start(false),
             HostRequest::Land {} => self.land(false),
+            HostRequest::Hand => self.hand(),
+            HostRequest::Handback => self.handback(),
             HostRequest::Close { discard } => {
                 if let Some(agent) = self.agent.take() {
                     agent.stop();
@@ -483,6 +495,123 @@ impl Host {
         })
     }
 
+    fn by_hand_refusal(&self) -> anyhow::Error {
+        anyhow::anyhow!(
+            "the owner works on task t{} by hand; run `wsx task handback {}` first",
+            self.record.id,
+            self.record.id
+        )
+    }
+
+    /// The owner takes the task over in its own working copy: the running turn stops, queued
+    /// messages are dropped, and no turn, check or landing starts until `handback`.
+    /// ref: docs/tasks.md "By hand"
+    fn hand(&mut self) -> Result<String> {
+        let state = self.record.state;
+        if self.record.phase != Phase::Build
+            || !state.is_open()
+            || matches!(
+                state,
+                TaskState::Starting | TaskState::Briefed | TaskState::Checking | TaskState::ByHand
+            )
+        {
+            bail!(
+                "task t{} is {}{}; a build that is not starting or checking is worked by hand",
+                self.record.id,
+                state.as_str(),
+                if self.record.phase == Phase::Brief {
+                    " in its brief"
+                } else {
+                    ""
+                }
+            );
+        }
+        if let Some(agent) = self.agent.take() {
+            self.stop_requested = true;
+            agent.stop();
+        }
+        self.turn_active = false;
+        let dropped = self.pending.len() as u32;
+        self.pending.clear();
+        self.disk_wait = None;
+        self.log(LogEvent::Hand {
+            by: Actor::Owner,
+            dropped,
+        });
+        self.set_waiting(TaskState::ByHand, None);
+        Ok(match dropped {
+            0 => "the owner works on it by hand".into(),
+            n => format!("the owner works on it by hand; dropped {n} queued message(s)"),
+        })
+    }
+
+    /// The owner's commits become the next revision: its checks run and the task becomes
+    /// ready or failed as after a worker result, so auto land and the close after it apply.
+    fn handback(&mut self) -> Result<String> {
+        if self.record.state != TaskState::ByHand {
+            bail!(
+                "task t{} is {}; only a task worked by hand is handed back",
+                self.record.id,
+                self.record.state.as_str()
+            );
+        }
+        let changes = copy::tracked_changes(&self.record.working_copy)?;
+        if !changes.is_empty() {
+            bail!(
+                "the working copy has uncommitted changes: {}; commit them, then run `wsx task handback {}` again",
+                changes.join(", "),
+                self.record.id
+            );
+        }
+        let commits = self.commits_since_revision()?;
+        self.log(LogEvent::Handback {
+            by: Actor::Owner,
+            commits,
+        });
+        // ^ The worker's Human Verify items and memo still describe the work.
+        let previous = self.current_result();
+        let result = WorkerResult {
+            status: "done".into(),
+            summary: format!(
+                "The owner worked on the task by hand: {commits} commit(s) after r{}.",
+                self.record.revision
+            ),
+            human_verify: previous.human_verify,
+            memo: previous.memo,
+            ..WorkerResult::default()
+        };
+        self.last_denials.clear();
+        self.last_asks.clear();
+        self.write_result(&result, &[]);
+        self.last_result = Some(result);
+        // ^ A failed check of the owner's work goes back to the owner, not to the worker.
+        self.check_retries = MAX_CHECK_RETRIES;
+        self.record.state = TaskState::Working;
+        self.start_checks();
+        Ok(format!(
+            "handed back with {commits} commit(s); the checks run on the next revision"
+        ))
+    }
+
+    /// Commits on the branch after the last revision (after the base before the first).
+    fn commits_since_revision(&self) -> Result<u32> {
+        let since = match self.record.revision {
+            0 => self.record.base.clone(),
+            revision => format!("refs/wsx/task/{}/r{revision}", self.record.id),
+        };
+        let output = git_cmd(&self.record.working_copy)
+            .args(["rev-list", "--count", &format!("{since}..HEAD")])
+            .output()
+            .context("cannot run git rev-list")?;
+        if !output.status.success() {
+            bail!("git rev-list {since}..HEAD failed");
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0))
+    }
+
     /// Build the latest brief's rewritten prompt. The agent restarts with the build's
     /// tools and result schema and resumes the conversation, so it keeps what it read.
     /// `auto`: the brief has no open questions, so the host starts it (docs/tasks.md "Brief").
@@ -510,6 +639,11 @@ impl Host {
     }
 
     fn start_turn(&mut self, text: &str) {
+        // ^ Every path that starts a turn ends here: none runs while the owner works by hand.
+        if self.record.state == TaskState::ByHand {
+            self.say("by hand: no agent turn starts until handback");
+            return;
+        }
         if let Err(error) = self.try_start_turn(text) {
             self.say(&format!("cannot start the agent: {error:#}"));
             self.log(LogEvent::Stopped {
@@ -801,6 +935,9 @@ impl Host {
         if self.record.phase != Phase::Build {
             return refuse("checks run once the build has started".into());
         }
+        if self.record.state == TaskState::ByHand {
+            return refuse(format!("{:#}", self.by_hand_refusal()));
+        }
         let checks = &self.record.checks;
         let picked: Result<Vec<(usize, String)>, String> = match numbers {
             [] => Ok(checks.iter().cloned().enumerate().collect()),
@@ -870,6 +1007,9 @@ impl Host {
     }
 
     fn start_checks(&mut self) {
+        if self.record.state == TaskState::ByHand {
+            return;
+        }
         if self.wait_for_disk(DiskWait::Checks) {
             return;
         }
@@ -1399,7 +1539,7 @@ impl Host {
             TaskState::Blocked | TaskState::Briefed => runtime::AgentState::Blocked,
             TaskState::Ready | TaskState::InReview | TaskState::Landed => runtime::AgentState::Done,
             TaskState::Failed => runtime::AgentState::Error,
-            TaskState::Stopped | TaskState::Closed => runtime::AgentState::Idle,
+            TaskState::Stopped | TaskState::ByHand | TaskState::Closed => runtime::AgentState::Idle,
         };
         if let Some(problem) = hosting::report_pane(pane_id, "task", state, attached) {
             self.say(&problem);

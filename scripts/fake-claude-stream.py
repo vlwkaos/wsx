@@ -24,7 +24,10 @@ Launched with the brief schema it writes a brief instead and builds nothing:
   WAIT <file>      (a build) keep working until <file> exists, at most 10 minutes
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
 conflict with the line "resolved".
-Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE.
+Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE, and each
+message to the session's transcript $HOME/.claude/fake-sessions/<session>.jsonl.
+Started without -p it is an interactive pane (`wsx task hand`): it traces its arguments,
+writes one line to the transcript it resumes, a new one with --fork-session, and waits.
 
 Started with the manager's instructions it is a scripted manager instead: per turn
   RUN <command>  run that shell command (the wsx task commands it names) and quote its output
@@ -237,8 +240,28 @@ def manager_turn(text, project, settings):
     return '\n'.join(replies) or 'ok'
 
 
+def transcript(session, text):
+    folder = os.path.join(os.environ.get('HOME', '.'), '.claude', 'fake-sessions')
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, '%s.jsonl' % session), 'a') as out:
+        out.write(json.dumps({'message': text}) + '\n')
+
+
+def interactive(options):
+    resumed = options.get('--resume')
+    session = 'fork-%d' % os.getpid() if '--fork-session' in options else resumed
+    trace({'interactive': True, 'argv': sys.argv[1:], 'resume': resumed, 'session': session, 'cwd': os.getcwd()})
+    if session:
+        transcript(session, 'the owner opened the conversation')
+    signal.signal(signal.SIGHUP, lambda *_: sys.exit(0))
+    while True:
+        time.sleep(60)
+
+
 def main():
     options, allowed, disallowed = parse_args(sys.argv[1:])
+    if '-p' not in options:
+        return interactive(options)
     instructions = options.get('--append-system-prompt', '')
     project = instructions.split('wsx project ')[1].split('.')[0] if 'You are the manager' in instructions else None
     session = options.get('--resume') or options.get('--session-id')
@@ -263,6 +286,7 @@ def main():
             return
         text = json.loads(line)['message']['content']
         trace({'message': text, 'session': session, 'manager': project is not None})
+        transcript(session, text)
         if project is not None:
             # ^ A handover quotes earlier messages; only the messages after it are this turn's.
             answer = manager_turn(text.split('\n\n', 1)[1] if text.startswith('Handover') else text, project,

@@ -208,7 +208,10 @@ fn instructions(project: &str, notes: &Path, page: &Path, skills: bool) -> Strin
          task. What only a person can check (look, feel, a real device, real data) goes to \
          the project's To check list (`wsx task check -p {project} --json`, the ledger's \
          `to_check`), which the owner works through at their own time; never pass or fail \
-         items yourself. A release refuses while items are open: tell the owner how many \
+         items yourself. A task the ledger shows `by_hand` is the owner's: the owner works \
+         in its copy and gives it back with `wsx task handback`, so never add, steer, land \
+         or close it. Only the owner runs `wsx task hand <n>`; when work needs the owner's \
+         own hands, you may tell the owner that command. A release refuses while items are open: tell the owner how many \
          are open and ask them to check those first. When a worker leaves for a person what \
          a command, a test or a capture could prove, tell that worker to prove it. \
          Your Bash runs in a sandbox that writes only your notes folder and the project \

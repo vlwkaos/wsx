@@ -534,7 +534,11 @@ pub fn create_configured_worktree(
     })
 }
 
-pub fn delete_worktree(repo_path: &Path, wt_path: &Path, branch: &str) -> Result<()> {
+/// Close the worktree's sessions and remove it. Uncommitted work refuses before anything
+/// closes; a Rust worktree is `cargo clean`ed first; a branch with unmerged commits stays.
+/// Returns whether the branch was deleted.
+pub fn delete_worktree(repo_path: &Path, wt_path: &Path, branch: &str) -> Result<bool> {
+    git_worktree::require_clean(wt_path)?;
     let client = Client::local();
     let snapshot = runtime_snapshot()?;
     if let Some(worktree) = snapshot
@@ -552,6 +556,19 @@ pub fn delete_worktree(repo_path: &Path, wt_path: &Path, branch: &str) -> Result
                 expected_revision: session.revision,
             })?)?;
         }
+    }
+    if wt_path.join("Cargo.toml").is_file() {
+        // ^ Best effort: the folder goes either way, this only frees the build first.
+        let mut clean = std::process::Command::new("cargo");
+        clean
+            .arg("clean")
+            .current_dir(wt_path)
+            .stdin(std::process::Stdio::null());
+        let _ = crate::git::output_with_timeout_limit(
+            &mut clean,
+            std::time::Duration::from_secs(600),
+            4096,
+        );
     }
     git_worktree::remove_worktree(repo_path, wt_path, branch)
 }

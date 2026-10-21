@@ -222,30 +222,84 @@ pub fn create_worktree(repo_path: &Path, branch: &str, base_branch: &str) -> Res
     }
 }
 
-/// `git worktree remove --force {path}` then `git branch -d {branch}`
-pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
-    let status = git_cmd(repo_path)
-        .args([
-            "worktree",
-            "remove",
-            "--force",
-            &worktree_path.to_string_lossy(),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("git worktree remove failed")?;
-
-    if !status.success() {
-        bail!("git worktree remove exited {}", status);
+/// Uncommitted work in a worktree: tracked paths with changes, then untracked paths.
+/// Ignored files (build output) are not work.
+pub fn uncommitted_paths(worktree_path: &Path) -> Result<(Vec<String>, Vec<String>)> {
+    let output = git_cmd(worktree_path)
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=normal"])
+        .output()
+        .context("git status failed")?;
+    if !output.status.success() {
+        return Err(git_failure("git status", &output));
     }
+    let (mut tracked, mut untracked) = (Vec::new(), Vec::new());
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut entries = text.split('\0').filter(|entry| entry.len() > 3);
+    while let Some(entry) = entries.next() {
+        let (code, path) = entry.split_at(3);
+        if code.starts_with("??") {
+            untracked.push(path.to_string());
+        } else {
+            tracked.push(path.to_string());
+            // ^ A rename or copy is followed by its source path.
+            if code.starts_with('R') || code.starts_with('C') {
+                entries.next();
+            }
+        }
+    }
+    Ok((tracked, untracked))
+}
 
-    // Best-effort branch deletion
-    let _ = git_cmd(repo_path)
+/// Refuse a worktree with uncommitted work, naming the paths (at most 10 per kind).
+pub fn require_clean(worktree_path: &Path) -> Result<()> {
+    let (tracked, untracked) = uncommitted_paths(worktree_path)?;
+    let named = |paths: &[String]| {
+        let shown = paths
+            .iter()
+            .take(10)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        match paths.len() {
+            n if n > 10 => format!("{shown} and {} more", n - 10),
+            _ => shown,
+        }
+    };
+    let mut parts = Vec::new();
+    if !tracked.is_empty() {
+        parts.push(format!("uncommitted changes: {}", named(&tracked)));
+    }
+    if !untracked.is_empty() {
+        parts.push(format!("untracked files: {}", named(&untracked)));
+    }
+    if !parts.is_empty() {
+        bail!(
+            "{} has {}; commit or remove them first. Nothing was removed",
+            worktree_path.display(),
+            parts.join("; ")
+        );
+    }
+    Ok(())
+}
+
+/// `git worktree remove {path}` (never `--force`: git refuses uncommitted work too), then
+/// `git branch -d {branch}`, which keeps a branch with unmerged commits. Returns whether
+/// the branch was deleted.
+pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, branch: &str) -> Result<bool> {
+    let output = git_cmd(repo_path)
+        .args(["worktree", "remove", &worktree_path.to_string_lossy()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .context("git worktree remove failed")?;
+    if !output.status.success() {
+        return Err(git_failure("git worktree remove", &output));
+    }
+    let deleted = git_cmd(repo_path)
         .args(["branch", "-d", branch])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
-
-    Ok(())
+        .status()
+        .is_ok_and(|status| status.success());
+    Ok(deleted)
 }
