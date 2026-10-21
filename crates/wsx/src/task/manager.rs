@@ -166,6 +166,24 @@ fn skills_plugin(manager: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(plugin))
 }
 
+/// The end of a `briefed` event line: `brief v2: 2 open questions: <q1> | <q2>`.
+fn briefed_words(version: u32, questions: &[String]) -> String {
+    let questions: Vec<String> = questions
+        .iter()
+        .map(|question| question.trim())
+        .filter(|question| !question.is_empty())
+        .map(|question| clip(question, EVENT_SUMMARY_CHARS))
+        .collect();
+    match questions.len() {
+        0 => format!("brief v{version}: no open questions"),
+        1 => format!("brief v{version}: 1 open question: {}", questions[0]),
+        count => format!(
+            "brief v{version}: {count} open questions: {}",
+            questions.join(" | ")
+        ),
+    }
+}
+
 /// ref: docs/tasks.md "Manager", "Brief", "Memo"
 fn instructions(project: &str, notes: &Path, page: &Path, skills: bool) -> String {
     // ^ No skill is named: the owner's skills are whatever their folder holds.
@@ -194,6 +212,11 @@ fn instructions(project: &str, notes: &Path, page: &Path, skills: bool) -> Strin
          A brief with open questions waits: put them to the owner in plain words; the \
          owner's answer goes to its task with `wsx task add`, and the next brief starts by \
          itself when it has none. On 'start #<n>' run `wsx task start <n>`. \
+         The owner reads a brief on its task sheet, which `#<n>` opens. When you start a \
+         task with a brief or a brief is ready, reply in a few friendly lines: what the task \
+         does in one sentence, each open question in plain words, and the task as `#<n>`. \
+         Never repeat the brief's additions, sources, methods, checks or rewritten prompt; \
+         read the whole brief with `wsx task show <n> --json` only when you need it. \
          The ledger's `checks` (and 'checks n of m passed' in an event) are what wsx \
          ran on the task's latest revision. When you report a task, give each check as \
          passed or failed from them, and trust them over the worker's own words about \
@@ -526,8 +549,10 @@ impl Manager {
             }
             let title = view::title(&dir, &record).unwrap_or_default();
             let summary = if record.state == TaskState::Briefed {
+                // ^ Only the open questions: the brief itself is read on the task sheet, and
+                // the manager reads it with `wsx task show` when it needs it.
                 brief::read(&dir)
-                    .map(|file| format!("brief v{}: {}", file.version, file.brief.rewritten_prompt))
+                    .map(|file| briefed_words(file.version, &file.brief.open_questions))
                     .unwrap_or_default()
             } else {
                 // ^ The checks the host ran come before the worker's own words.

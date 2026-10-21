@@ -53,6 +53,8 @@ const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 const MAX_BRANCH_PREFIX_BYTES: usize = 256;
 const MAX_DEFAULT_COMMAND_BYTES: usize = 16 * 1024;
 const MAX_TASK_WORD_BYTES: usize = 256;
+/// `tasks.manager.name`: one short line the owner reads as the manager's name.
+const MAX_MANAGER_NAME_BYTES: usize = 64;
 const MAX_TASK_LIST_ITEMS: usize = 64;
 const MAX_CHECK_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 const MIN_ROTATE_TOKENS: u64 = 1_000;
@@ -133,6 +135,8 @@ struct TaskSandboxFile {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct TaskManagerFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     adapter: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -437,6 +441,12 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         .transpose()?
         .flatten();
     if let Some(manager) = file.manager {
+        // ^ Trimmed first: an empty name is no name, and the default "Manager" shows.
+        config.manager_name = validate_optional_text(
+            manager.name.map(|name| name.trim().to_string()),
+            "tasks.manager.name",
+            MAX_MANAGER_NAME_BYTES,
+        )?;
         if let Some(adapter) = manager.adapter {
             if !TASK_ADAPTERS.contains(&adapter.as_str()) {
                 return Err(format!(

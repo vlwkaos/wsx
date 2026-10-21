@@ -338,7 +338,7 @@ function Reservoir({ project, items, tasks, checking }) {
             </ul>` : null}
           ${working.length ? html`
             <h2 class="label reservoir-label">Running</h2>
-            <ul class="reservoir-list" aria-label="Running">
+            <ul class="reservoir-list reservoir-running" aria-label="Running">
               ${working.map((task) => html`<${RunningRow} key=${`run-${task.id}`} project=${project} task=${task} />`)}
             </ul>` : null}
           ${checking ? html`<ul class="reservoir-list" aria-label="To check"><${CheckingRow} project=${project} count=${checking} /></ul>` : null}
@@ -655,6 +655,8 @@ export function Manager({ project: id, task, page, checks }) {
     rows.push({ kind: "bubble", key: "sending", author: "owner", at: Date.now(), first: !grouped, last: true, pending: true, entry: { text: sent.text } });
   }
   const typing = Boolean(chat?.busy);
+  // ^ The manager's name as the owner reads it, and other managers' set names.
+  const names = { manager: chat?.manager?.name || "Manager", peers: chat?.peers ?? {} };
   const stopped = chat && !chat.running && entries.at(-1)?.kind === "stopped";
   // ^ The manager's state only when it matters: typing or stopped (docs/web-client.md "Project screen").
   const managerWord = typing ? "typing" : stopped ? "stopped" : "";
@@ -674,10 +676,10 @@ export function Manager({ project: id, task, page, checks }) {
           <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation with the manager" tabindex="0">
             ${cut.current ? html`<p class="note">Older messages are not shown.</p>` : null}
             ${chat && !rows.length ? html`<p class="empty">No messages yet. Ask the manager for a task or a status; it answers from the ledger.</p>` : null}
-            ${rows.map((row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} />`
+            ${rows.map((row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} />`
               : row.kind === "line" ? html`<${StatusLine} key=${row.key} parts=${row.parts} words=${words} />`
               : html`<${Note} key=${row.key} entry=${row.entry} />`)}
-            ${typing && html`<${Typing} />`}
+            ${typing && html`<${Typing} name=${names.manager} />`}
           </div>
           ${away && html`<button class="jump" type="button" onClick=${toEnd}><${Icon} name="down" />Jump to latest</button>`}
         </div>

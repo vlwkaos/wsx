@@ -21,7 +21,7 @@ export function SessionRow({ session, now, current, place }) {
   return html`
     <li class="row">
       <a class="row-link" href=${sessionLink(session)} aria-current=${current ? "page" : null}>
-        <span class="mark" data-tone=${status.tone} aria-hidden="true"></span>
+        <span class="mark" data-tone=${status.tone} data-running=${status.key === "working" ? "" : null} aria-hidden="true"></span>
         <span class="row-main">
           <span class="row-work">${identity}</span>
           ${context && html`<span class="row-context">${context}</span>`}

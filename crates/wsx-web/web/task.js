@@ -129,11 +129,13 @@ const Fold = ({ head, children }) => html`
 const list = (items, item) => items?.length
   ? html`<ul class="task-brief-list">${items.map((entry, index) => html`<li key=${index}>${item(entry)}</li>`)}</ul>` : null;
 
-// What the owner decides a brief on (docs/tasks.md "Brief"): its open questions and its
-// additions, each one line that opens to its reason. An empty part is left out.
+// What the owner decides a brief on (docs/tasks.md "Brief"): its diagram of what the task
+// changes, untitled, then its open questions and its additions, each one line that opens to
+// its reason. An empty part is left out (a brief from before the diagram has none).
 function BriefDecide({ brief, words }) {
   const prose = (text) => html`<${Markdown} text=${text} words=${words} prose />`;
   return html`
+    ${brief.diagram?.trim() ? html`<section class="task-section task-diagram" aria-label="Diagram"><div class="task-body">${prose(brief.diagram)}</div></section>` : null}
     ${brief.open_questions?.length ? html`<${Section} title="Open questions">${list(brief.open_questions, prose)}</${Section}>` : null}
     ${brief.additions?.length ? html`
       <${Section} title="Additions">
@@ -156,12 +158,12 @@ function BriefRest({ brief, words }) {
 }
 
 // The owner's messages to the worker and the worker's answers to the brief, as bubbles; an
-// answer to the brief keeps its version ("Brief v2").
+// answer to a revised brief keeps its version ("v2"); the first brief needs none.
 function Talk({ project, id, talk, words }) {
   const rows = talk.map((entry, index) => ({
     kind: "bubble", key: `talk-${index}`, at: entry.unix_ms ?? 0,
     author: entry.from === "owner" ? "owner" : `worker-${id}`,
-    tag: entry.version ? `Brief v${entry.version}` : null,
+    tag: entry.version > 1 ? `v${entry.version}` : null,
     entry: { text: entry.text },
   }));
   rows.forEach((row, index) => {
@@ -260,17 +262,13 @@ export function TaskPage({ project, task, onClose, grip }) {
   const act = useAction(detail ?? { project, id: task });
   const words = withChips(project);
 
-  // ^ The worker's own session, to watch it: the session lists leave task sessions out.
-  const worker = store.sessions.find((session) => session.project.id === project && session.label === `task-${task}`);
   const top = html`
     <header class="bar" onPointerDown=${grip?.down} onPointerMove=${grip?.move} onPointerUp=${grip?.up} onPointerCancel=${grip?.up}>
       <button class="icon-button" type="button" aria-label="Back to the chat" onClick=${onClose}><${Icon} name="back" /></button>
       <div class="bar-title">
         <span class="bar-label">#${task}${detail?.title ? ` ${detail.title}` : ""}</span>
-        ${detail && html`<span class="bar-state" data-tone=${taskStage(detail)[1]}>${taskStage(detail)[0]}${detail.phase === "brief" && detail.brief
-          ? ` · brief v${detail.brief.version}` : ""}</span>`}
+        ${detail && html`<span class="bar-state" data-tone=${taskStage(detail)[1]}>${taskStage(detail)[0]}</span>`}
       </div>
-      ${worker && html`<div class="bar-tools"><a class="link-action bar-link" href=${`#/s/${worker.id}/terminal`}>Session</a></div>`}
     </header>`;
   if (!detail) return html`<div class="page">${top}<p class=${failure ? "error empty" : "empty"}>${failure || "Loading…"}</p></div>`;
 
@@ -311,12 +309,11 @@ export function TaskPage({ project, task, onClose, grip }) {
     <div class="page task-page">
       ${top}
       <div class="scroll">
-        <${TaskStory} detail=${detail} words=${words} />
-        ${(buttons.length || detail.state === "in_review") ? html`
-          <section class="task-next" aria-label="Actions">
+        <${TaskStory} detail=${detail} words=${words}>${(buttons.length || detail.state === "in_review") ? html`
+          <div class="task-next" role="group" aria-label="Actions">
             ${detail.state === "in_review" && detail.pr_url && html`<p>In review: <a href=${detail.pr_url} target="_blank" rel="noopener noreferrer">${detail.pr_url}</a></p>`}
             ${buttons.length ? html`<div class="actions">${buttons}</div>` : null}
-          </section>` : null}
+          </div>` : null}</${TaskStory}>
         ${briefing && brief && html`
           <${BriefDecide} brief=${brief.brief} words=${words} />
           <${Details}><${BriefRest} brief=${brief.brief} words=${words} /></${Details}>`}

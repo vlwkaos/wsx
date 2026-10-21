@@ -516,6 +516,9 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .reservoir-list { list-style: none; margin: 0; padding: 0; }
 .reservoir .row-link { padding-inline: var(--column-inset, var(--space-4)); }
 .reservoir .need + .need { border-top: var(--border-width) solid var(--color-hairline); }
+/* Open, a running row reads like the closed line: its small size, rows close together. */
+.reservoir-running .row-link { min-height: 0; padding-block: var(--space-1); font-size: var(--font-size-sm); align-items: baseline; }
+.reservoir-running .row-open { align-self: baseline; }
 .reservoir-label { padding: var(--space-3) var(--column-inset, var(--space-4)) var(--space-1); }
 /* With the keyboard up the reservoir steps aside while the `#` or `/` list is open. */
 body[data-keyboard] .chat:has(.slash) .reservoir { display: none; }
@@ -559,19 +562,26 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
   text-align: center; font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); font-variant-numeric: tabular-nums;
 }
 .count[data-tone="attention"] { background: var(--color-attention); color: var(--color-bg); }
+/* The number carries the chip's baseline, so "#6" sits on the line of the text around it; the
+   dot alone is centered. An inline flex box takes the baseline of its first item, the dot,
+   unless its items align by baseline (https://www.w3.org/TR/css-flexbox-1/#flex-baselines). */
 .task-chip, .markdown .task-chip {
-  display: inline-flex; align-items: center; gap: var(--space-1); padding: 0 var(--space-1);
+  display: inline-flex; align-items: baseline; gap: var(--space-1); padding: 0 var(--space-1);
   border-radius: calc(var(--radius-key) / 2); background: var(--color-surface); text-decoration: none; vertical-align: baseline;
   font-variant-numeric: tabular-nums; font-weight: var(--font-weight-medium);
 }
+.task-chip > .mark { align-self: center; }
 .bubble-box .task-chip { background: var(--color-raised); }
 .bubble[data-side="out"] .bubble-box .task-chip { background: var(--color-surface); }
 
 /* Hook: .task-page — one task: where it stands with its one action, a brief's open questions
    and additions, the report folded, the talk, its history. */
 .task-page .scroll { padding-bottom: var(--space-4); }
-.task-next { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere; }
+/* The actions sit beside the next sentence in the story, normal-size, and wrap under it on a
+   narrow screen; no band of their own. */
+.task-next { flex: 0 1 auto; min-width: 0; margin-left: auto; display: flex; flex-direction: column; gap: var(--space-2); overflow-wrap: anywhere; }
 .task-next .actions { padding: 0; justify-content: flex-end; }
+.task-diagram { padding-top: var(--space-4); }
 .task-approval { flex-basis: 100%; }
 .project-page { padding-top: var(--space-3); }
 .project-page .facts-line { padding: 0 var(--space-4) var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
@@ -618,6 +628,8 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
    of what changed, and what the owner should know next. */
 .story { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere; }
 .story .link-action { align-self: flex-start; }
+.story-act { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); }
+.story-act > .story-next { flex: 1 1 12rem; min-width: 0; }
 
 /* Hook: .code, .crumbs — a project's files. */
 .crumbs { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-1); overflow-x: auto; scrollbar-width: none; white-space: nowrap; }

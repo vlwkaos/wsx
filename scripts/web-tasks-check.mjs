@@ -190,6 +190,23 @@ async function clearRow(label, action, attempts = 300) {
 async function closeReservoir() {
   if (await evaluate("!!document.querySelector('.reservoir[data-open]')")) await click(".reservoir-head");
 }
+// How far, in px, the bottom of each chip's "#n" text is from the text it sits beside: the
+// text node on its line, or the `near` element's text in the same container.
+const chipDrift = (chips, near) => evaluate(`(() => {
+  const first = (node) => { const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT); let text;
+    while ((text = walker.nextNode()) && !text.textContent.trim()); return text; };
+  const rects = (text) => { const range = document.createRange(); range.selectNodeContents(text); return [...range.getClientRects()]; };
+  const beside = (chip) => { for (const step of ['previousSibling', 'nextSibling']) { let node = chip[step];
+    while (node && !node.textContent.trim()) node = node[step]; if (node) return node.nodeType === 3 ? node : first(node); } return null; };
+  return [...document.querySelectorAll(${JSON.stringify(chips)})].map((chip) => {
+    const own = first(chip) && rects(first(chip))[0];
+    const other = ${near ? `first(chip.closest(${JSON.stringify(near[0])}).querySelector(${JSON.stringify(near[1])}))` : "beside(chip)"};
+    const line = own && other && rects(other).find((rect) => rect.bottom > own.top && rect.top < own.bottom);
+    return line ? Math.round(Math.abs(own.bottom - line.bottom) * 10) / 10 : null; }).filter((drift) => drift !== null); })()`);
+async function chipsOnLine(where, chips, near) {
+  const drifts = await chipDrift(chips, near);
+  if (!drifts.length || drifts.some((drift) => drift > 1)) await fail(`${where}: chip text is off the line of its text by ${JSON.stringify(drifts)} px`);
+}
 const sheetState = () => evaluate("document.querySelector('.task-sheet .bar-state')?.textContent ?? ''");
 const atEnd = "(() => { const log = document.querySelector('.log'); return log.scrollHeight - log.scrollTop - log.clientHeight < 2; })()";
 const bubbles = () => evaluate(`[...document.querySelectorAll('.log .bubble')].map((node) => ({ side: node.dataset.side, first: node.hasAttribute('data-first'),
@@ -295,7 +312,8 @@ if (await evaluate("document.querySelector('.manager .bar-state')?.textContent ?
 // long report as one bubble by "#5 worker" with its header, folded until "Show all".
 let shown = await bubbles();
 const ownerAsk = shown.find((bubble) => bubble.side === "out" && bubble.text.startsWith("RUN wsx task land 3"));
-const managerReply = shown.find((bubble) => bubble.side === "in" && bubble.author === "Manager");
+// ^ ui's manager is named "Atlas" (tasks.manager.name); plans' reads "Manager".
+const managerReply = shown.find((bubble) => bubble.side === "in" && bubble.author === "Atlas");
 if (!ownerAsk || ownerAsk.author || !managerReply) await fail(`the bubbles are ${JSON.stringify(shown)}`);
 const report = `[...document.querySelectorAll('.log .bubble')].find((node) => node.querySelector('.bubble-author')?.textContent === '#5 worker')`;
 await until(`!!${report}`, "the long report has no worker bubble");
@@ -336,6 +354,8 @@ const line = await evaluate(`(() => { const head = document.querySelector('.rese
     cut: title.scrollWidth > title.clientWidth, right: head.getBoundingClientRect().right <= innerWidth + 0.5 }; })()`);
 if (line.height > line.control + 1 || !line.pulse || !line.right) await fail(`the closed line is not one line with a pulsing chip: ${JSON.stringify(line)}`);
 if (await count(".reservoir-list")) await fail("the reservoir is open before a tap");
+await chipsOnLine("the closed reservoir line", ".reservoir-head .task-chip", [".reservoir-head", ".reservoir-title"]);
+const closedSize = await evaluate("getComputedStyle(document.querySelector('.reservoir-title')).fontSize");
 await oneWorkingColor("the closed reservoir and the chat's chips", 1);
 await openReservoir();
 await pause(300);
@@ -351,6 +371,14 @@ if (listedRows[0][2] !== "needs to reach crates.io" || listedRows[2][1] !== "App
 if (!/^keep a worker busy WAIT /.test(listedRows[6][1])) await fail(`the running task's title is ${listedRows[6][1]}`);
 if ((await text(".reservoir-label")).join() !== "Running" || !(await evaluate(`!!document.querySelector('.reservoir-list[aria-label=Running]').contains(${rowOf("#6")})`))) await fail("#6 is not under Running");
 if (!(await evaluate(`${rowOf("#6")}.querySelector('.task-chip .mark[data-running]')`))) await fail("the running task's chip does not pulse");
+// ^ Open, the running row reads like the closed line: the same small size, rows close together.
+const runningRow = await evaluate(`(() => { const row = ${rowOf("#6")}, link = row.querySelector('.row-link'), style = getComputedStyle(link);
+  return { label: getComputedStyle(row.querySelector('.row-label')).fontSize, chip: getComputedStyle(row.querySelector('.task-chip')).fontSize,
+    gap: parseFloat(style.paddingTop) + parseFloat(style.paddingBottom), minHeight: style.minHeight }; })()`);
+if (runningRow.label !== closedSize || runningRow.chip !== closedSize || runningRow.gap > 8 || !["0px", "auto"].includes(runningRow.minHeight)) {
+  await fail(`the open running row does not match the closed line (${closedSize}): ${JSON.stringify(runningRow)}`);
+}
+await chipsOnLine("a running row", ".reservoir-running .task-chip", [".row-link", ".row-label"]);
 const chipName = await evaluate(`${rowOf("#1")}.querySelector('.task-chip').getAttribute('aria-label')`);
 if (chipName !== "#1, needs you") await fail(`a chip's accessible name is ${chipName}`);
 const runningName = await evaluate(`${rowOf("#6")}.querySelector('.task-chip').getAttribute('aria-label')`);
@@ -422,7 +450,7 @@ await click(".composer-send");
 await until("document.querySelector('.composer-field').value === ''", "the second message was not sent");
 await until("!!document.querySelector('.log .typing') && document.querySelector('.manager .bar-state')?.textContent === 'typing'", "no typing bubble while the manager's turn runs", 30);
 const typing = await evaluate("({ author: document.querySelector('.log .typing').closest('.bubble').querySelector('.bubble-author').textContent, said: document.querySelector('.log .typing .visually-hidden').textContent })");
-if (typing.author !== "Manager" || typing.said !== "Manager is typing") await fail(`the typing bubble reads ${JSON.stringify(typing)}`);
+if (typing.author !== "Atlas" || typing.said !== "Atlas is typing") await fail(`the typing bubble reads ${JSON.stringify(typing)}`);
 if (await evaluate("document.querySelector('.log .bubble:last-child .typing') === null")) await fail("the typing bubble is not the last message");
 await oneWorkingColor("a typing manager", 4);
 await shot("typing", ".composer-send");
@@ -433,6 +461,7 @@ const tableReply = "[...document.querySelectorAll('.log .bubble[data-side=in]')]
 const inside = await evaluate(`(() => { const bubble = ${tableReply}.querySelector('.bubble-box').getBoundingClientRect(), table = ${tableReply}.querySelector('.table-wrap');
   const box = table.getBoundingClientRect(); return { right: box.right <= bubble.right + 0.5, scrolls: table.scrollWidth > table.clientWidth }; })()`);
 if (!inside.right || !inside.scrolls) await fail(`the table does not stay inside its bubble: ${JSON.stringify(inside)}`);
+await chipsOnLine("the chat's bubbles", ".log .bubble .task-chip");
 const replyChips = await evaluate(`[...${tableReply}.querySelectorAll('.task-chip')].map((chip) => chip.textContent.trim())`);
 if (replyChips.filter((chip) => chip === "#4").length !== 2 || replyChips.some((chip) => !/^#\d+$/.test(chip))) await fail(`the reply's chips read ${JSON.stringify(replyChips)}`);
 await until("!document.querySelector('.log .typing')", "the typing bubble stayed after the reply", 30);
@@ -685,9 +714,11 @@ if (taskReads.length !== 1 || !taskReads[0].endsWith("/api/tasks")) await fail(`
 await evaluate("history.back()");
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Back after a deep link did not close the sheet");
 
-// --- A brief (docs/tasks.md "Brief"): its reservoir row with Start; the sheet with Open
-// questions and Additions first and the rest closed under Details; indented prose stays prose,
-// a fence stays code; a reply answered as "Brief v2"; then the list cleared one row after
+// --- A brief (docs/tasks.md "Brief"): in plans' chat its manager reads "Manager" and ui's
+// "Atlas". The brief's reservoir row with Start, whose chip opens the brief; the sheet with its diagram drawn, then Open questions and Additions
+// and the rest closed under Details; no "brief v" in the top row; Start a normal button beside
+// the story's sentence; indented prose stays prose, a fence stays code; a reply answered as
+// "v2"; then the list cleared one row after
 // another: Start #1, Land #2, Land #1, and then no reservoir with the focus on the composer.
 const plans = Number(plansArg);
 const briefSheet = `#/p/${plans}/t/1`;
@@ -695,23 +726,36 @@ const briefSheet = `#/p/${plans}/t/1`;
 await pause(12000);
 await go(`#/p/${plans}`);
 await until("!!document.querySelector('.reservoir-head')", "plans has no reservoir");
+await until("document.querySelectorAll('.log .bubble').length >= 2", "plans' chat shows no managers' bubbles", 30);
+const plansAuthors = await evaluate("[...document.querySelectorAll('.log .bubble')].map((node) => [node.querySelector('.bubble-author')?.textContent ?? '', node.querySelector('.bubble-tag')?.textContent ?? ''])");
+if (!plansAuthors.some(([author, tag]) => author === "Manager" && tag === "To Atlas") || !plansAuthors.some(([author]) => author === "Atlas")) await fail(`plans' managers read ${JSON.stringify(plansAuthors)}`);
 await openReservoir();
 await until(`!!${rowOf("#1")}`, "the brief has no reservoir row");
 const briefRow = (await rows()).find((row) => row[0] === "#1");
 if (briefRow[2] !== "brief ready" || briefRow[3] !== "Start") await fail(`the brief's row reads ${JSON.stringify(briefRow)}`);
 await shot("brief-row", ".composer-send");
-await closeReservoir();
-await go(briefSheet);
+// ^ The chip opens the task's sheet, the brief first (the chat's chips are the same link).
+await evaluate(`${rowOf("#1")}.querySelector('.task-chip').click()`);
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the brief sheet did not open");
 await lean("the brief sheet");
 told = await story();
-if (told.next !== "The brief has questions for you. Answer them and the build starts by itself, or Start it as it is.") await fail(`the top of a brief reads ${JSON.stringify(told)}`);
+if (told.next !== "Answer the questions below and the build starts by itself, or Start it as it is.") await fail(`the top of a brief reads ${JSON.stringify(told)}`);
+if (/brief v/i.test(await evaluate("document.querySelector('.task-sheet .bar').textContent"))) await fail("the top row still names the brief version");
+// ^ The diagram is drawn as an image, untitled, before the first titled part.
+await until("!!document.querySelector('.task-sheet .task-diagram .diagram img')", "the brief's diagram did not draw", 30);
+if (!await evaluate("(() => { const diagram = document.querySelector('.task-sheet .task-diagram'); const first = document.querySelector('.task-sheet .scroll > .task-section > .task-heading'); return !!(diagram.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING) && !diagram.querySelector('.task-heading'); })()")) await fail("the diagram is not first or carries a heading");
+// ^ Start sits in the story beside its sentence, sized to its label, not across the line.
+const start = await evaluate(`(() => { const button = [...document.querySelectorAll('.task-sheet .task-next button')].find((node) => node.textContent === 'Start the build');
+  const story = document.querySelector('.task-sheet .story'); const box = button.getBoundingClientRect();
+  return { inStory: story.contains(button), width: box.width, line: story.getBoundingClientRect().width,
+    plain: button.className === 'button', bands: document.querySelectorAll('.task-sheet .scroll > .task-next').length }; })()`);
+if (!start.inStory || start.bands || !start.plain || start.width > start.line * 0.6) await fail(`Start renders as ${JSON.stringify(start)}`);
 const parts = await sheetParts();
 if (parts.open.join() !== "Open questions,Additions" || parts.details?.join() !== "Raw material,Methods and tools,Independent check,Concepts,Rewritten prompt" || !parts.folded) await fail(`the brief reads ${JSON.stringify(parts)}`);
 if (await evaluate("[...document.querySelectorAll('.task-sheet .task-concept')].some((node) => node.open)")) await fail("an addition or a concept is not folded");
 // ^ A model's indented paragraph is prose; the fenced command is the only code; a source is text.
 const rendered = await evaluate(`(() => { const pres = [...document.querySelectorAll('.task-sheet pre')];
-  return { pres: pres.length, fenced: pres.filter((pre) => pre.closest('.code-block') && /cargo nextest run/.test(pre.textContent)).length,
+  return { pres: pres.filter((pre) => !pre.closest('.diagram')).length, fenced: pres.filter((pre) => pre.closest('.code-block') && /cargo nextest run/.test(pre.textContent)).length,
     prose: [...document.querySelectorAll('.task-sheet p')].some((node) => node.textContent.trim() === 'An indented paragraph that is prose, not code.'),
     sources: document.querySelectorAll('.task-sheet .task-source').length, sourceCode: document.querySelectorAll('.task-sheet .task-source code, .task-sheet code.path').length }; })()`);
 if (rendered.pres !== 1 || rendered.fenced !== 1 || !rendered.prose || !rendered.sources || rendered.sourceCode) await fail(`the brief's text renders as ${JSON.stringify(rendered)}`);
@@ -724,7 +768,7 @@ await typeInto(".task-message .composer-field", "Why a file? QUESTION REVISE WOR
 await click(".task-message .composer-send");
 await until("document.querySelectorAll('.task-talk .bubble').length === 2", "the sheet's reply got no answer", 60);
 const talk = await evaluate("[...document.querySelectorAll('.task-talk .bubble')].map((node) => ({ side: node.dataset.side, author: node.querySelector('.bubble-author')?.textContent ?? '', tag: node.querySelector('.bubble-tag')?.textContent ?? '', text: node.querySelector('.bubble-box').textContent }))");
-if (talk[0].side !== "out" || talk[1].author !== "#1 worker" || talk[1].tag !== "Brief v2" || !talk[1].text.includes("answered: Why a file?")) await fail(`the talk reads ${JSON.stringify(talk)}`);
+if (talk[0].side !== "out" || talk[1].author !== "#1 worker" || talk[1].tag !== "v2" || talk[0].tag || !talk[1].text.includes("answered: Why a file?")) await fail(`the talk reads ${JSON.stringify(talk)}`);
 if (await count(".task-sheet .label")) await fail("the brief sheet still has a Talk-through label");
 await until("[...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === 'Start the build')", "Start did not come back after the answer", 60);
 await resize([390, 420, 2]);
@@ -748,8 +792,21 @@ await shot("reservoir-cleared", ".composer-send");
 await go(briefSheet);
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the built task's sheet did not open");
 if ((await text(".task-fold > .fold-head")).at(-1) !== "Brief v2") await fail(`the built task's folds are ${await text(".task-fold > .fold-head")}`);
+await evaluate("[...document.querySelectorAll('.task-sheet details.task-fold')].at(-1).open = true");
+await until("!!document.querySelector('.task-sheet details.task-fold[open] .task-diagram .diagram img')", "the folded brief did not draw its diagram", 30);
 await key("Escape", 27);
 await until("!document.querySelector('dialog.task-sheet')", "Escape did not close the built task");
+
+// --- The task sheet has no link to the worker's terminal, though #6's worker has a session;
+// the project's ⋯ keeps Sessions.
+await go(page(6));
+await until("!!document.querySelector('dialog.task-sheet[open] .story')", "#6's sheet did not open");
+if (await count('.task-sheet a[href*="/terminal"]')) await fail("the task sheet links to the worker's terminal");
+await key("Escape", 27);
+await until("!document.querySelector('dialog.task-sheet')", "Escape did not close #6's sheet");
+await click(".more-button");
+if (!(await text(".more-menu a")).includes("Sessions")) await fail(`the ⋯ menu lost Sessions: ${await text(".more-menu a")}`);
+await click(".more-button");
 
 // --- Narrow and wide: the tabs in the first screen, Projects to the worktrees.
 for (const next of [[320, 568, 2], [1280, 800, 1]]) {
@@ -816,6 +873,6 @@ problems.splice(quietFrom);
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
-console.log(`tasks page: home with the Sessions and Projects tabs in the first screen, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, one working color on home, the session rows, the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Allow, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, Allow for project, Shared files only in a conflict), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), the brief (reservoir row, Open questions and Additions first, Details closed, indented prose as prose and a fence as code, talk as bubbles with Brief v2, Start, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions and Projects tabs in the first screen, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, one working color on home, the session rows, the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Allow, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, Allow for project, Shared files only in a conflict), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), the brief (reservoir row, Open questions and Additions first, Details closed, indented prose as prose and a fence as code, talk as bubbles with v2, the diagram first, Start as a normal button, Start, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

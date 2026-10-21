@@ -96,6 +96,8 @@ pub struct TaskConfig {
     pub deploy_command: Option<String>,
     pub release_command: Option<String>,
     /// The project manager (`tasks.manager`).
+    /// `tasks.manager.name`: the name the owner reads instead of "Manager", when set.
+    pub manager_name: Option<String>,
     pub manager_model: String,
     /// Context size after which the manager's next turn starts a fresh conversation.
     pub manager_rotate_tokens: u64,
@@ -133,6 +135,14 @@ pub enum LandPolicy {
     Pr,
 }
 
+impl TaskConfig {
+    /// The manager's name as the owner reads it: `tasks.manager.name`, else "Manager"
+    /// (docs/tasks.md "Config").
+    pub fn manager_shown_name(&self) -> &str {
+        self.manager_name.as_deref().unwrap_or("Manager")
+    }
+}
+
 impl Default for TaskConfig {
     fn default() -> Self {
         Self {
@@ -155,6 +165,7 @@ impl Default for TaskConfig {
             release_approve: true,
             deploy_command: None,
             release_command: None,
+            manager_name: None,
             manager_model: "opus".into(),
             manager_rotate_tokens: 150_000,
             manager_tools: Vec::new(),

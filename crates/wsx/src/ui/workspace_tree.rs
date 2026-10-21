@@ -120,14 +120,21 @@ fn folded_item<'a>(
     ListItem::new(Line::from(spans)).style(style)
 }
 
+/// `manager_name`: the project's `tasks.manager.name`; the manager's row shows it in place of
+/// its provider `manager` (docs/tasks.md "Config").
 fn session_line(
     sess: &SessionInfo,
     width: usize,
     port_visibility: PortVisibility,
     animation_frame: usize,
+    manager_name: Option<&str>,
 ) -> Line<'static> {
     let (icon, icon_color) = session_icon(sess, animation_frame);
-    let agent_label = session_state::agent_label(sess.agent.as_deref());
+    let agent = match (sess.agent.as_deref(), manager_name) {
+        (Some("manager"), Some(name)) => Some(name),
+        (agent, _) => agent,
+    };
+    let agent_label = session_state::agent_label(agent);
     let agent_width = agent_label
         .as_deref()
         .map_or(0, |label| Line::from(label).width());
@@ -470,11 +477,17 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
             } => {
                 let sess = &workspace.projects[*project_idx].worktrees[*worktree_idx].sessions
                     [*session_idx];
+                let project = &workspace.projects[*project_idx];
+                let manager_name = project
+                    .config
+                    .as_ref()
+                    .and_then(|config| config.tasks.manager_name.as_deref());
                 ListItem::new(session_line(
                     sess,
                     usize::from(layout.list.width),
                     port_visibility,
                     animation_frame,
+                    manager_name,
                 ))
             }
             FlatEntry::Pane {
@@ -914,7 +927,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 frame.render_widget(
-                    Paragraph::new(session_line(&sess, 30, PortVisibility::All, 0)),
+                    Paragraph::new(session_line(&sess, 30, PortVisibility::All, 0, None)),
                     frame.area(),
                 );
             })
@@ -938,7 +951,7 @@ mod tests {
             sess.display_name = "very long 中文 session name".repeat(8);
             let label = format!(" ({provider})");
             for width in (4 + Line::from(label.as_str()).width())..40 {
-                let line = session_line(&sess, width, PortVisibility::All, 0);
+                let line = session_line(&sess, width, PortVisibility::All, 0, None);
                 assert!(line.to_string().contains(&label), "{width}: {line}");
                 assert!(line.width() <= width, "{width}: {line}");
             }
@@ -960,19 +973,21 @@ mod tests {
             foreground_job: false,
             outcome_acknowledged: false,
         }];
-        assert!(!session_line(&sess, 40, PortVisibility::NonAgentic, 0)
-            .to_string()
-            .contains(":5173"));
-        assert!(session_line(&sess, 40, PortVisibility::All, 0)
+        assert!(
+            !session_line(&sess, 40, PortVisibility::NonAgentic, 0, None)
+                .to_string()
+                .contains(":5173")
+        );
+        assert!(session_line(&sess, 40, PortVisibility::All, 0, None)
             .to_string()
             .contains(":5173"));
 
         sess.agent = None;
         sess.panes[0].agent = None;
-        assert!(session_line(&sess, 40, PortVisibility::NonAgentic, 0)
+        assert!(session_line(&sess, 40, PortVisibility::NonAgentic, 0, None)
             .to_string()
             .contains(":5173"));
-        assert!(!session_line(&sess, 40, PortVisibility::Hidden, 0)
+        assert!(!session_line(&sess, 40, PortVisibility::Hidden, 0, None)
             .to_string()
             .contains(":5173"));
     }

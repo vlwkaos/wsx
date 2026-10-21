@@ -2651,8 +2651,11 @@ def task_journey(args):
                     top = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=folder, env=env,
                                          capture_output=True, text=True, timeout=20).stdout.strip()
                     assert os.path.realpath(top) == os.path.realpath(folder), ('fixture git escaped', folder, top)
+                    # ^ ui's manager has a name (docs/tasks.md "Config"); the others read "Manager".
                     (folder / 'wsx.config.yml').write_text(
-                        TASK_CONFIG.replace('  brief: false\n', '') if folder == plans else TASK_CONFIG)
+                        TASK_CONFIG.replace('  brief: false\n', '') if folder == plans
+                        else TASK_CONFIG.replace('{ model: fake-manager }', '{ name: Atlas, model: fake-manager }') if folder == other
+                        else TASK_CONFIG)
                     (folder / 'README').write_text('fixture\n')
                 subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', *argv],
                                cwd=folder, env=env, check=True, capture_output=True, timeout=20)
@@ -3111,6 +3114,11 @@ digest_max_seconds = 6
             heard = [(r['task'], r['state'], r['head']) for r in reports]
             assert heard[0] == (5, 'ready', 'ready') and [r for r in heard if r[1] == 'landed'] == [(7, 'landed', 'done'), (8, 'landed', 'done')], reports
             assert reports[0]['summary'].startswith('did: WORK c.txt') and 'line 30 of the report' in reports[0]['summary'], reports
+            # The manager's name: ui's set name, plans' default; a peer only by its set name.
+            ui_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]
+            plans_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['plans'])[1]
+            assert ui_chat['manager'] == {'name': 'Atlas'} and ui_chat['peers'] == {}, (ui_chat['manager'], ui_chat['peers'])
+            assert plans_chat['manager'] == {'name': 'Manager'} and plans_chat['peers'] == {'ui': 'Atlas'}, (plans_chat['manager'], plans_chat['peers'])
             args.captures.mkdir(parents=True, exist_ok=True)
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
@@ -3248,10 +3256,18 @@ digest_max_seconds = 6
         assert asked[0]['body'] == 'Approve land #%d' % steady_ids[0] and asked[0]['tag'].endswith('-now'), asked
         baseline += 1
         # A brief waits for the owner's start: it is sent at once, like a block.
+        # ^ plans' manager runs first: a manager's first start takes existing tasks without events.
+        js('task', 'manager', '-p', 'plans')
         planned_late = js('task', 'new', 'QUESTION REWRITE NOOP', '-p', 'plans')['id']
         briefed_push = new_pushes(1, 'brief push')
         assert briefed_push[0]['body'] == '#%d brief ready' % planned_late and briefed_push[0]['tag'].endswith('-now'), briefed_push
         assert briefed_push[0]['url'] == '#/p/%d/t/%d' % (ids['plans'], planned_late), briefed_push
+        # ^ The chat names a brief's open questions only; the sheet holds the brief.
+        def late_brief():
+            entries = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['plans'])[1]['entries']
+            return next((r for e in entries for r in e.get('reports', []) if r['task'] == planned_late), None)
+        said = wait(late_brief, 'the chat reports the late brief', timeout=30)
+        assert said['head'] == 'brief v1' and said['summary'] == 'Open questions:\n\n- Which file should change?', said
         ok('task push: blocked merged in one, ready as one digest, the digest cap, the shown project skipped for that device, presence ends with the stream, an approval named by its action, a brief at once, tasks topic needs task_view')
         success = True
     finally:
