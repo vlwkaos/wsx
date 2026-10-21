@@ -125,6 +125,11 @@ def turn(text):
  with trace.open('a') as out: out.write(json.dumps({'received':text})+'\n')
  if provider == 'claude' and text == '/compact':
   claude_compact(); return
+ # A paste the agent drops, as Claude did at the end of a turn (2026-10-21): it works and
+ # ends, but its conversation never shows the message. Only the first time.
+ if 'drop me once' in text and not trace.with_suffix('.dropped').exists():
+  trace.with_suffix('.dropped').touch()
+  report('working'); time.sleep(0.2); report('done'); return
  # Claude Code 2.1.304's shell mode, as a real transcript holds `! echo pasted-bang-ok` (2026-10-21):
  # the line without its `!`, then the output, then a reply of the model.
  if provider == 'claude' and text.startswith('!'):
@@ -1482,7 +1487,9 @@ capabilities = ["terminal_view"]
                 assert steady(root, 'POST', '/api/chat/%d/send' % sessions[name], {'text': 'task notice'})[0] == 200
                 wait(lambda: len(traces(name)) > before, name + ' task notice')
                 settle(name)
-                items = steady(root, 'GET', '/api/chat/%d/timeline' % sessions[name])[1]['items']
+                # ^ settle can return before the turn reports working: wait for its answer.
+                items = wait(lambda: (lambda items: items if items[-1].get('text') == 'The tests passed.' else None)(
+                    steady(root, 'GET', '/api/chat/%d/timeline' % sessions[name])[1]['items']), name + ' task notice answer')
                 assert [(item['kind'], item.get('text')) for item in items[-2:]] == [('user', 'task notice'), ('assistant', 'The tests passed.')], items
                 assert not any('task-notification' in (item.get('text') or '') for item in items), items
                 # /compact as Claude 2.1.300 runs it: working, then done, with no prompt. The kept
@@ -1659,6 +1666,27 @@ capabilities = ["terminal_view"]
         wait(lambda: delivered()[-2:] == ['queued one', 'queued two'], 'queued messages delivered in order', timeout=20)
         wait(lambda: messages(owner, sessions['owner'])['messages'][-1]['text'] == 'echo: queued two', 'queued turn')
         assert timeline()['queue'] == [] and not queue_file.exists() or json.loads(queue_file.read_text())['sessions'] == {}
+        settle('owner')
+        # A queued message the agent drops stays, with its text, until the conversation shows it;
+        # Send again delivers it once more, and then it leaves the queue.
+        assert send('use tool')[0] == 200
+        wait(lambda: timeline()['working'], 'working turn')
+        assert 'queued' in send('drop me once')[1]
+        open_gate('result')
+        open_gate('answer')
+        dropped = wait(lambda: (lambda queue: queue if queue and queue[0]['delivered_unix_ms'] and not timeline()['working'] else None)(timeline()['queue']),
+                       'delivered message kept', timeout=20)
+        assert delivered()[-1] == 'drop me once' and dropped[0]['text'] == 'drop me once' and dropped[0]['failed'] is None, dropped
+        assert 'drop me once' in queue_file.read_text()
+        assert all(item.get('text') != 'drop me once' for item in timeline()['items'])
+        # A new message does not wait behind it.
+        assert 'queued' not in send('after the drop')[1]
+        wait(lambda: messages(owner, sessions['owner'])['messages'][-1]['text'] == 'echo: after the drop', 'turn after the drop')
+        settle('owner')
+        assert [item['text'] for item in timeline()['queue']] == ['drop me once']
+        assert steady(owner, 'POST', chat + '/queue/%d/retry' % dropped[0]['id'], {})[0] == 200
+        wait(lambda: timeline()['queue'] == [] and [item['text'] for item in timeline()['items'] if item['kind'] == 'user'][-1] == 'drop me once',
+             'sent again and shown', timeout=20)
         settle('owner')
         # The newest person wins: a wsx window holds the pane, a message from the page still
         # goes through, the window is told that control moved, and nobody holds the pane after.

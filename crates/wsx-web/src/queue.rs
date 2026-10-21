@@ -13,6 +13,8 @@ use std::{
 };
 
 pub const MAX_QUEUED: usize = 5;
+/// Delivered messages kept per session until the conversation shows them; older ones go.
+const MAX_DELIVERED: usize = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Queued {
@@ -25,6 +27,11 @@ pub struct Queued {
     /// until Retry or Remove; later messages are delivered past it.
     #[serde(default)]
     pub failed: Option<String>,
+    /// When wsxd typed it into the agent. It stays until the agent's saved conversation
+    /// shows it: an agent can drop a paste (seen 2026-10-21 at the end of a Claude turn),
+    /// and the page must still offer the text to copy or send again.
+    #[serde(default)]
+    pub delivered_unix_ms: Option<u64>,
     /// Since when wsxd says "not yet" (the agent is not at a wait boundary). Not saved: a
     /// restarted server starts the wait again.
     #[serde(skip)]
@@ -81,7 +88,12 @@ impl Queue {
     pub fn push(&self, session: u64, text: &str, attachments: &[String]) -> Option<Queued> {
         self.change(|stored| {
             let queue = stored.sessions.entry(session).or_default();
-            if queue.len() >= MAX_QUEUED {
+            if queue
+                .iter()
+                .filter(|queued| queued.delivered_unix_ms.is_none())
+                .count()
+                >= MAX_QUEUED
+            {
                 return None;
             }
             stored.next_id += 1;
@@ -91,6 +103,7 @@ impl Queue {
                 attachments: attachments.to_vec(),
                 at_unix_ms: now_unix_ms(),
                 failed: None,
+                delivered_unix_ms: None,
                 waiting_since_unix_ms: None,
             };
             stored
@@ -108,12 +121,48 @@ impl Queue {
         })
     }
 
-    /// Let a failed message be delivered again.
+    /// Let a failed or delivered message be delivered again, in its old place.
     pub fn retry(&self, session: u64, id: u64) -> bool {
         self.edit(session, id, |queue, index| {
             queue[index].failed = None;
+            queue[index].delivered_unix_ms = None;
             queue[index].waiting_since_unix_ms = None;
         })
+    }
+
+    /// wsxd typed the message into the agent: keep it until the conversation shows it.
+    pub fn delivered(&self, session: u64, id: u64) -> bool {
+        self.edit(session, id, |queue, index| {
+            queue[index].delivered_unix_ms = Some(now_unix_ms());
+            queue[index].waiting_since_unix_ms = None;
+            let delivered = queue
+                .iter()
+                .filter(|queued| queued.delivered_unix_ms.is_some())
+                .count();
+            let mut extra = delivered.saturating_sub(MAX_DELIVERED);
+            queue.retain(|queued| {
+                let drop = extra > 0 && queued.delivered_unix_ms.is_some();
+                extra -= usize::from(drop);
+                !drop
+            });
+        })
+    }
+
+    /// Forget the delivered messages that the conversation now shows (`shown`: the
+    /// person's messages there, as typed). Returns whether the queue changed.
+    pub fn settle(&self, session: u64, shown: &[&str]) -> bool {
+        let seen = |queued: &Queued| {
+            queued.delivered_unix_ms.is_some() && shown.contains(&queued.text.trim())
+        };
+        if !self.list(session).iter().any(seen) {
+            return false;
+        }
+        self.change(|stored| {
+            if let Some(queue) = stored.sessions.get_mut(&session) {
+                queue.retain(|queued| !seen(queued));
+            }
+        });
+        true
     }
 
     /// wsxd said "not yet" for this message. Returns since when it says so.
@@ -155,12 +204,13 @@ impl Queue {
         })
     }
 
-    /// The next message to deliver: the oldest one that did not fail. A failed message
-    /// does not hold back the ones after it (docs/web-client.md "Queue and Stop").
+    /// The next message to deliver: the oldest one that did not fail and was not
+    /// delivered. A failed message does not hold back the ones after it
+    /// (docs/web-client.md "Queue and Stop").
     pub fn next(&self, session: u64) -> Option<Queued> {
         self.list(session)
             .into_iter()
-            .find(|queued| queued.failed.is_none())
+            .find(|queued| queued.failed.is_none() && queued.delivered_unix_ms.is_none())
     }
 
     /// Forget the queues of sessions that no longer exist in the grant.
