@@ -264,6 +264,12 @@ pub enum AgentCmd {
         escape_interrupts: bool,
         #[arg(long, hide = true)]
         exchange_receipts: bool,
+        /// The hook reports which prompt each turn takes (see --received)
+        #[arg(long, hide = true)]
+        prompt_receipts: bool,
+        /// The prompt this turn took: `<exchange>:<round>` of a wsx round, or `other`
+        #[arg(long, hide = true, value_parser = parse_prompt_received)]
+        received: Option<runtime::PromptReceived>,
     },
     #[command(hide = true)]
     PresenceRenew {
@@ -899,6 +905,8 @@ pub fn run(cmd: Command) -> Result<()> {
                 presence_id,
                 escape_interrupts,
                 exchange_receipts,
+                prompt_receipts,
+                received,
             } => cmd_agent_report(
                 &pane,
                 AgentReportOptions {
@@ -917,7 +925,9 @@ pub fn run(cmd: Command) -> Result<()> {
                         lifecycle,
                         escape_interrupts,
                         exchange_receipts,
+                        prompt_receipts,
                     },
+                    received,
                 },
             ),
             AgentCmd::PresenceRenew { pane, presence_id } => {
@@ -2686,6 +2696,7 @@ fn cmd_agent_detach() -> Result<()> {
         session_ref: None,
         wake_token: None,
         capabilities: runtime::AgentCapabilities::default(),
+        received: None,
     })? {
         runtime::Response::Ack { revision } => {
             println!("detached agent at revision {revision}");
@@ -2694,6 +2705,22 @@ fn cmd_agent_detach() -> Result<()> {
         runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
         _ => bail!("wsxd returned an unexpected agent response"),
     }
+}
+
+/// `--received`: `<exchange>:<round>` of a wsx round, or `other`.
+fn parse_prompt_received(value: &str) -> Result<runtime::PromptReceived, String> {
+    if value == "other" {
+        return Ok(runtime::PromptReceived::Other);
+    }
+    value
+        .split_once(':')
+        .and_then(|(exchange, round)| {
+            Some(runtime::PromptReceived::Round {
+                exchange: runtime::AgentExchangeId(exchange.parse().ok()?),
+                round: round.parse().ok()?,
+            })
+        })
+        .ok_or_else(|| format!("{value} is not <exchange>:<round> or other"))
 }
 
 struct AgentReportOptions {
@@ -2707,6 +2734,7 @@ struct AgentReportOptions {
     transcript_path: Option<String>,
     wake_token: Option<String>,
     capabilities: runtime::AgentCapabilities,
+    received: Option<runtime::PromptReceived>,
 }
 
 fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
@@ -2721,6 +2749,7 @@ fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
         transcript_path,
         wake_token,
         capabilities,
+        received,
     } = report;
     // ^ Adapter callbacks already have the exact pane ID. A snapshot lookup can
     // start or reconcile wsxd before SessionStart reaches its current generation.
@@ -2771,6 +2800,7 @@ fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
             session_ref,
             wake_token,
             capabilities,
+            received,
         },
     )? {
         runtime::Response::Ack { revision } => {

@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # A fixture agent: reports as Claude, records what the PTY delivered, and writes
 # its own native transcript. The web server may only learn replies from that file.
 ACTOR = r'''
-import json, os, pathlib, select, signal, socket, sys, time, tty
+import json, os, pathlib, re, select, signal, socket, sys, time, tty
 signal.signal(signal.SIGHUP, signal.SIG_IGN)
 history, trace, project = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
 # Claude unless the test asks for Pi, whose records chain by id and parentId.
@@ -37,14 +37,18 @@ provider = os.environ.get('WSX_FIXTURE_PROVIDER', 'claude')
 pane = int(os.environ['WSX_PANE_ID']); generation = os.environ['WSX_RUNTIME_GENERATION']
 trace.with_suffix('.pid').write_text(str(os.getpid()))
 tty.setraw(0)
-draft, pending, leaf, sequence, dialog = '', b'', None, 0, None
+draft, pending, leaf, sequence, dialog, taken = '', b'', None, 0, None, None
 def report(state):
+ # ^ As Claude's hook does, the first Working report of a turn says which prompt it took.
+ global taken
  with socket.socket(socket.AF_UNIX) as client:
   client.connect(os.environ['WSX_SOCKET']); stream = client.makefile('rb')
   client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
   params = {'pane_id':pane,'runtime_generation':generation,'provider':provider,'state':state,
     'session_ref':{'kind':'id','value':'fixture','transcript_path':str(history)},
-    'capabilities':{'prompt':True,'lifecycle':True}}
+    'capabilities':{'prompt':True,'lifecycle':True,'prompt_receipts':provider == 'claude'}}
+  if state == 'working' and taken:
+   params['received'], taken = taken, None
   client.sendall(json.dumps({'method':'agent_report','params':params}).encode()+b'\n')
   assert json.loads(stream.readline())['type'] == 'ack'
 def paint():
@@ -122,14 +126,21 @@ def gate(name):
    draft += data.decode(errors='replace'); paint()
  trace.with_suffix('.'+name).unlink()
 def turn(text):
+ global taken
  with trace.open('a') as out: out.write(json.dumps({'received':text})+'\n')
+ envelope = re.match(r'\[wsx exchange (\d+), round (\d+), ', text)
+ if provider == 'claude':
+  taken = {'kind':'round','exchange':int(envelope[1]),'round':int(envelope[2])} if envelope else {'kind':'other'}
  if provider == 'claude' and text == '/compact':
-  claude_compact(); return
+  # ^ Claude's /compact starts no UserPromptSubmit, so no receipt (real Claude, 2026-10-21).
+  taken = None; claude_compact(); return
  # A paste the agent drops, as Claude did at the end of a turn (2026-10-21): it works and
  # ends, but its conversation never shows the message. Only the first time.
  if 'drop me once' in text and not trace.with_suffix('.dropped').exists():
-  trace.with_suffix('.dropped').touch()
-  report('working'); time.sleep(0.2); report('done'); return
+  # ^ A dropped paste starts no turn: the hook never runs, so nothing is reported.
+  trace.with_suffix('.dropped').touch(); taken = None; return
+ if 'drop me always' in text:
+  taken = None; return
  # Claude Code 2.1.304's shell mode, as a real transcript holds `! echo pasted-bang-ok` (2026-10-21):
  # the line without its `!`, then the output, then a reply of the model.
  if provider == 'claude' and text.startswith('!'):
@@ -1338,10 +1349,12 @@ capabilities = ["terminal_view"]
         assert status == 200 and history['items'] == [] and history['exchange'] is None
         assert history['working'] is None and history['queue'] == [] and history['status'] == 'history_unreadable'
         assert owner.request('GET', chat + '/history')[0] == 404  # replaced by the timeline
-        status, exchange = owner.request('POST', chat + '/send', {'text': 'hello from the phone\r\nsecond line'})
-        assert status == 200, exchange
+        status, sent = owner.request('POST', chat + '/send', {'text': 'hello from the phone\r\nsecond line'})
+        assert status == 200 and sent['queued']['delivered_unix_ms'], sent
+        exchange = sent['exchange']
         # Truthful evidence: a PTY write is reported as a PTY write, never as acceptance.
-        assert exchange['evidence'] == 'pty_delivery' and 'not confirmed' in exchange['delivery'], exchange
+        # ^ The answer is read after the delivery: the agent may already have taken the round.
+        assert exchange['evidence'] in ('pty_delivery', 'pane_lifecycle') and 'not confirmed' in exchange['delivery'], exchange
         assert exchange['access'] == 'writer'
         received = wait(lambda: traces('owner'), 'PTY delivery')[0]
         assert received == '[wsx exchange %d, round 1, writer]\nhello from the phone\nsecond line' % exchange['id'], received
@@ -1364,7 +1377,8 @@ capabilities = ["terminal_view"]
         # The reply exists only in the native transcript, never on the fixture's screen.
         assert 'echo:' not in cli('session', 'peek', sessions['owner'], '--trim').stdout
         settle('owner')
-        status, exchange2 = owner.request('POST', chat + '/send', {'text': 'follow up'}, shape='stripped')
+        status, sent = owner.request('POST', chat + '/send', {'text': 'follow up'}, shape='stripped')
+        exchange2 = sent['exchange']
         assert status == 200 and exchange2['id'] == exchange['id'] and exchange2['round'] == 2
         wait(lambda: len(traces('owner')) == 2, 'continued delivery')
         continued = wait(lambda: (lambda data: data if len(data['messages']) == 4 else None)(messages(owner, sessions['owner'])), 'continued history')
@@ -1418,8 +1432,8 @@ capabilities = ["terminal_view"]
             assert refused['type'] == 'error' and refused['data']['code'] == 'invalid_prompt', (prompt, refused)
         assert traces('commands') == []
         # A listed command is typed as written: no exchange line before it.
-        status, exchange = root.request('POST', '/api/chat/%d/send' % commands_session, {'text': '/compact'})
-        assert status == 200 and exchange['access'] == 'read_only', exchange
+        status, sent = root.request('POST', '/api/chat/%d/send' % commands_session, {'text': '/compact'})
+        assert status == 200 and sent['exchange']['access'] == 'read_only', sent
         assert wait(lambda: traces('commands'), 'command delivery') == ['/compact']
         settle('commands')
         # Text that only looks like a command keeps the exchange line, and so does a command with a second line.
@@ -1671,22 +1685,30 @@ capabilities = ["terminal_view"]
         # Send again delivers it once more, and then it leaves the queue.
         assert send('use tool')[0] == 200
         wait(lambda: timeline()['working'], 'working turn')
-        assert 'queued' in send('drop me once')[1]
+        assert send('drop me once')[1]['exchange'] is None
         open_gate('result')
         open_gate('answer')
-        dropped = wait(lambda: (lambda queue: queue if queue and queue[0]['delivered_unix_ms'] and not timeline()['working'] else None)(timeline()['queue']),
-                       'delivered message kept', timeout=20)
-        assert delivered()[-1] == 'drop me once' and dropped[0]['text'] == 'drop me once' and dropped[0]['failed'] is None, dropped
-        assert 'drop me once' in queue_file.read_text()
-        assert all(item.get('text') != 'drop me once' for item in timeline()['items'])
-        # A new message does not wait behind it.
-        assert 'queued' not in send('after the drop')[1]
-        wait(lambda: messages(owner, sessions['owner'])['messages'][-1]['text'] == 'echo: after the drop', 'turn after the drop')
-        settle('owner')
-        assert [item['text'] for item in timeline()['queue']] == ['drop me once']
-        assert steady(owner, 'POST', chat + '/queue/%d/retry' % dropped[0]['id'], {})[0] == 200
+        # ^ No receipt names its round: after 5 s wsxd ends it as not taken, and the server sends
+        # it once more by itself (docs/agent-orchestration.md "Taken, not typed").
         wait(lambda: timeline()['queue'] == [] and [item['text'] for item in timeline()['items'] if item['kind'] == 'user'][-1] == 'drop me once',
-             'sent again and shown', timeout=20)
+             'sent again and shown', timeout=30)
+        assert delivered().count('drop me once') == 2
+        # ^ The conversation says it happened, just before the message the second time.
+        kinds = [(item['kind'], item['text']) for item in timeline()['items']][-3:]
+        assert kinds[0] == ('notice', 'Sent again: Claude did not take it the first time.') and kinds[1] == ('user', 'drop me once'), kinds
+        settle('owner')
+        # A message the agent never takes, while a person types in the terminal: the typed turn is
+        # not the message's turn, so its round fails at once; it goes once more, then stays failed.
+        always = send('drop me always')[1]['queued']['id']
+        wait(lambda: delivered()[-1] == 'drop me always', 'the dropped message delivered')
+        assert call('terminal_acquire', {'pane_id': owner_pane, 'client_id': 6, 'takeover': False})['type'] == 'ack'
+        assert call('terminal_input', {'pane_id': owner_pane, 'client_id': 6, 'bytes': list(b'typed by a person\r')})['type'] == 'ack'
+        assert call('terminal_release', {'pane_id': owner_pane, 'client_id': 6})['type'] == 'ack'
+        failed = wait(lambda: next((item for item in timeline()['queue'] if item['id'] == always and item['failed']), None),
+                      'not taken twice', timeout=30)
+        assert failed['resent'] and failed['failed'] == 'not_taken: Claude did not take this message', failed
+        assert delivered().count('drop me always') == 2 and 'typed by a person' in [m['text'] for m in messages(owner, sessions['owner'])['messages']]
+        assert steady(owner, 'DELETE', chat + '/queue/%d' % always)[0] == 200
         settle('owner')
         # The newest person wins: a wsx window holds the pane, a message from the page still
         # goes through, the window is told that control moved, and nobody holds the pane after.
@@ -1794,7 +1816,7 @@ capabilities = ["terminal_view"]
         settle('owner')
         # A new message to an idle agent goes at once past the failed one.
         status, direct = via_root('past the stuck one')
-        assert status == 200 and 'queued' not in direct, direct
+        assert status == 200 and direct['exchange'], direct
         wait(lambda: delivered()[-1] == 'past the stuck one', 'a new message past the failed one')
         assert [item['id'] for item in root_queue()] == [expired]
         assert steady(root, 'DELETE', chat + '/queue/%d' % expired)[0] == 200
@@ -1905,6 +1927,7 @@ capabilities = ["terminal_view"]
         assert steady(owner, 'GET', '/api/activity')[0] == 404  # the inbox replaced the activity panel
         # A site without agent_write does not continue the owner's writer exchange.
         status, other = steady(root, 'POST', chat + '/send', {'text': 'from the read-only site'})
+        other = other['exchange']
         assert status == 200 and other['access'] == 'read_only' and other['id'] != exchange['id'], other
         wait(lambda: traces('owner')[-1] == '[wsx exchange %d, round 1, read-only]\nfrom the read-only site' % other['id'], 'read-only delivery')
         wait(lambda: messages(owner, sessions['owner'])['messages'][-1]['text'] == 'echo: from the read-only site', 'read-only turn')
@@ -2062,6 +2085,7 @@ capabilities = ["terminal_view"]
             assert family.request(method, target % sessions['owner'], {'text': 'x'} if method == 'POST' else None)[0] == 404
         before = len(traces('owner'))
         status, sent = family.request('POST', '/api/chat/%d/send' % sessions['family'], {'text': 'build me a page'})
+        sent = sent['exchange']
         assert status == 200 and sent['access'] == 'read_only', sent
         assert wait(lambda: traces('family'), 'family delivery')[0].startswith('[wsx exchange %d, round 1, read-only]\n' % sent['id'])
         assert len(traces('owner')) == before

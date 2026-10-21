@@ -15,6 +15,10 @@ use std::{
 pub const MAX_QUEUED: usize = 5;
 /// Delivered messages kept per session until the conversation shows them; older ones go.
 const MAX_DELIVERED: usize = 3;
+/// How much earlier than the delivery an agent may stamp the saved message.
+const SAVE_SKEW_MS: u64 = 2_000;
+/// Notices kept per session; older ones go.
+const MAX_NOTICES: usize = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Queued {
@@ -32,16 +36,57 @@ pub struct Queued {
     /// and the page must still offer the text to copy or send again.
     #[serde(default)]
     pub delivered_unix_ms: Option<u64>,
+    /// The exchange round that carried it, until the agent took it: a round the agent did
+    /// not take sends it again once (docs/agent-orchestration.md "Taken, not typed").
+    #[serde(default)]
+    pub round: Option<SentRound>,
+    /// It was sent a second time because the agent did not take it the first time.
+    #[serde(default)]
+    pub resent: bool,
     /// Since when wsxd says "not yet" (the agent is not at a wait boundary). Not saved: a
     /// restarted server starts the wait again.
     #[serde(skip)]
     pub waiting_since_unix_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SentRound {
+    pub exchange: u64,
+    pub round: u32,
+}
+
+/// How the round that carried a message ended.
+pub enum Round {
+    /// The agent took it; `remove`: its words may never show, so it leaves the queue now.
+    Taken {
+        remove: bool,
+    },
+    NotTaken {
+        reason: String,
+    },
+}
+
+pub enum Settled {
+    Removed,
+    Watched,
+    SentAgain,
+    Failed,
+}
+
+/// What the server did on its own for a session's chat, shown in the conversation where it
+/// happened (docs/web-client.md "Queue and Stop"), such as a message sent again.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Notice {
+    pub at_unix_ms: u64,
+    pub text: String,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct Stored {
     next_id: u64,
     sessions: BTreeMap<u64, Vec<Queued>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    notices: BTreeMap<u64, Vec<Notice>>,
 }
 
 pub struct Queue {
@@ -70,6 +115,7 @@ impl Queue {
         let mut stored = self.stored.lock().unwrap_or_else(|lock| lock.into_inner());
         let result = change(&mut stored);
         stored.sessions.retain(|_, queue| !queue.is_empty());
+        stored.notices.retain(|_, notices| !notices.is_empty());
         let saved = serde_json::to_vec(&*stored)
             .map_err(anyhow::Error::from)
             .and_then(|bytes| write_private(&self.path, &bytes));
@@ -104,6 +150,8 @@ impl Queue {
                 at_unix_ms: now_unix_ms(),
                 failed: None,
                 delivered_unix_ms: None,
+                round: None,
+                resent: false,
                 waiting_since_unix_ms: None,
             };
             stored
@@ -126,14 +174,59 @@ impl Queue {
         self.edit(session, id, |queue, index| {
             queue[index].failed = None;
             queue[index].delivered_unix_ms = None;
+            queue[index].round = None;
             queue[index].waiting_since_unix_ms = None;
         })
     }
 
-    /// wsxd typed the message into the agent: keep it until the conversation shows it.
-    pub fn delivered(&self, session: u64, id: u64) -> bool {
+    /// Settle the round that carried a message, once: `None` when another caller already
+    /// did. Under one lock, so the page's send and the observer never both act on it.
+    pub fn settle_round(
+        &self,
+        session: u64,
+        id: u64,
+        round: SentRound,
+        outcome: Round,
+    ) -> Option<Settled> {
+        self.change(|stored| {
+            let queue = stored.sessions.get_mut(&session)?;
+            let index = queue
+                .iter()
+                .position(|queued| queued.id == id && queued.round == Some(round))?;
+            let queued = &mut queue[index];
+            Some(match outcome {
+                Round::Taken { remove: true } => {
+                    queue.remove(index);
+                    Settled::Removed
+                }
+                Round::Taken { remove: false } => {
+                    queued.round = None;
+                    Settled::Watched
+                }
+                // ^ Sent again once, by itself, in its old place; then it stays failed.
+                Round::NotTaken { reason } if queued.resent => {
+                    queued.failed = Some(reason);
+                    queued.delivered_unix_ms = None;
+                    queued.round = None;
+                    Settled::Failed
+                }
+                Round::NotTaken { .. } => {
+                    queued.delivered_unix_ms = None;
+                    queued.round = None;
+                    queued.waiting_since_unix_ms = None;
+                    queued.resent = true;
+                    Settled::SentAgain
+                }
+            })
+        })
+    }
+
+    /// wsxd typed the message into the agent in `round`: keep it until the conversation
+    /// shows it, and watch the round until the agent takes it.
+    pub fn delivered(&self, session: u64, id: u64, round: Option<SentRound>) -> bool {
         self.edit(session, id, |queue, index| {
             queue[index].delivered_unix_ms = Some(now_unix_ms());
+            queue[index].round = round;
             queue[index].waiting_since_unix_ms = None;
             let delivered = queue
                 .iter()
@@ -149,10 +242,17 @@ impl Queue {
     }
 
     /// Forget the delivered messages that the conversation now shows (`shown`: the
-    /// person's messages there, as typed). Returns whether the queue changed.
-    pub fn settle(&self, session: u64, shown: &[&str]) -> bool {
+    /// person's messages there as the agent got them, and when they were saved). Only a
+    /// message saved after the delivery counts, so an older one with the same words does not.
+    /// Returns whether the queue changed.
+    pub fn settle(&self, session: u64, shown: &[(&str, Option<u64>)]) -> bool {
         let seen = |queued: &Queued| {
-            queued.delivered_unix_ms.is_some() && shown.contains(&queued.text.trim())
+            queued.delivered_unix_ms.is_some_and(|delivered| {
+                let text = crate::chat::agent_text(&queued.text);
+                shown.iter().any(|(words, at)| {
+                    *words == text && at.is_none_or(|at| at + SAVE_SKEW_MS >= delivered)
+                })
+            })
         };
         if !self.list(session).iter().any(seen) {
             return false;
@@ -187,7 +287,9 @@ impl Queue {
 
     pub fn fail(&self, session: u64, id: u64, reason: &str) {
         self.edit(session, id, |queue, index| {
-            queue[index].failed = Some(reason.to_owned())
+            queue[index].failed = Some(reason.to_owned());
+            queue[index].delivered_unix_ms = None;
+            queue[index].round = None;
         });
     }
 
@@ -202,6 +304,23 @@ impl Queue {
             edit(queue, index);
             true
         })
+    }
+
+    pub fn notice(&self, session: u64, text: String) {
+        self.change(|stored| {
+            let notices = stored.notices.entry(session).or_default();
+            notices.push(Notice {
+                at_unix_ms: now_unix_ms(),
+                text,
+            });
+            let extra = notices.len().saturating_sub(MAX_NOTICES);
+            notices.drain(..extra);
+        });
+    }
+
+    pub fn notices(&self, session: u64) -> Vec<Notice> {
+        let stored = self.stored.lock().unwrap_or_else(|lock| lock.into_inner());
+        stored.notices.get(&session).cloned().unwrap_or_default()
     }
 
     /// The next message to deliver: the oldest one that did not fail and was not
@@ -220,10 +339,14 @@ impl Queue {
             stored
                 .sessions
                 .keys()
+                .chain(stored.notices.keys())
                 .any(|session| !alive.contains(session))
         };
         if stale {
-            self.change(|stored| stored.sessions.retain(|session, _| alive.contains(session)));
+            self.change(|stored| {
+                stored.sessions.retain(|session, _| alive.contains(session));
+                stored.notices.retain(|session, _| alive.contains(session));
+            });
         }
     }
 }

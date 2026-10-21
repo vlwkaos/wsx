@@ -242,6 +242,7 @@ mod tests {
                 "--lifecycle",
                 "--escape-interrupts",
                 "--prompt",
+                "--prompt-receipts",
                 "--wake-token",
                 "prompt-123",
                 "--session-id",

@@ -43,7 +43,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // within a 10-second write limit, and adds the keyed exchange requests
 // (docs/agent-orchestration.md "Idempotent delivery").
 // Revision 30 also takes a `!` shell line as a command round (capability `exchange_shell`).
-pub const DAEMON_REVISION: u32 = 30;
+// Revision 31 takes prompt receipts: a round not taken ends `not_taken` (docs/agent-orchestration.md
+// "Taken, not typed").
+pub const DAEMON_REVISION: u32 = 31;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -351,6 +353,9 @@ pub enum Request {
         #[serde(default)]
         wake_token: Option<String>,
         capabilities: AgentCapabilities,
+        /// On a Working report that starts a turn: which prompt the turn took.
+        #[serde(default)]
+        received: Option<PromptReceived>,
     },
     AgentPresenceRenew {
         pane_id: PaneId,
@@ -780,6 +785,7 @@ mod tests {
             failure: None,
             key: None,
             continue_key: None,
+            command: false,
             revision: 9,
         };
         let response = Response::AgentExchange {

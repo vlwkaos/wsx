@@ -196,6 +196,17 @@ These source changes require a new WSX installation and updated integrations bef
 - Without `takeover`, a cancel is refused with `terminal_busy` while a writable terminal lease exists on the pane ("Terminal control").
 - A cancelled exchange cannot be continued. The next request starts a new exchange.
 
+## Taken, not typed
+
+A round is delivered when wsxd typed it into the agent's terminal; that is not yet proof the agent took it. Claude drops a paste that lands the moment its turn ends, and the next turn a person types would then pass as the round's. An agent whose hook reports prompt receipts (capability `prompt_receipts`; the Claude integration, version 23) says which prompt each turn took:
+
+- On `UserPromptSubmit` the hook reads the prompt's exchange line `[wsx exchange <id>, round <n>, ` (also inside Claude's `<pasted_content>` wrapper) and reports Working with `received: {kind: round, exchange, round}`, or `{kind: other}` for any other prompt (`wsx agent report --received <id>:<n>|other --prompt-receipts`).
+- wsxd: the round the receipt names becomes `accepted`. A round still `submitted` or `delivered` when another prompt starts ends `delivery_failed` with failure `not_taken: the agent took another prompt first`; a command round, which has no exchange line (`command` on the exchange), takes the prompt as its own. A `delivered` round that is not taken within 5 s while the agent is not working (and has not been for 5 s) ends `not_taken: the agent did not take it within 5 s`; the command rounds are left out.
+- Until a round is taken, the agent's lifecycle reports do not move it: Working, Blocked and Done belong to another prompt's turn. A detached agent still interrupts it. A command round follows the lifecycle as before: Claude's `/compact` starts no `UserPromptSubmit` (checked with Claude Code on 2026-10-21, where a chat round's prompt reached the hook as `[wsx exchange 7, round 1, writer]\n…`).
+- An agent without the capability keeps the lifecycle evidence of the sections above.
+
+The web client sends a message whose round was not taken again once ([web-client.md](web-client.md) "Queue and Stop").
+
 ## Delivery failure
 
 A round that is not delivered ends in `delivery_failed` with `failure` set to `code: message`, for example `editor_stash_unconfirmed: prompt was not sent because fresh empty input was not observed` or `terminal_write_failed: …`. The next round clears it. Before daemon revision 28 the reason was not kept.
