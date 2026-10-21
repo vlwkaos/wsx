@@ -2,6 +2,10 @@
 
 Plan, 2026-10-21. Parallel tasks fill the disk because every task builds its own Rust `target/`. The fix is a bounded pool of reusable working copies and smaller debug builds, plus a manager that admits, merges and cleans up work instead of starting a new copy for every request.
 
+## Goal (owner, 2026-10-21)
+
+Manager and workers exist to lower the owner's context and decision load and to coordinate the work so it is finished correctly sooner. Spreading work over many tasks is not a goal. The manager splits work only when that finishes it sooner, merges overlapping requests, and asks the owner only for the owner's decisions. Measures: time from request to landed, how often the owner was needed, and rework from conflicts or duplicate work. Storage exists so that disk never blocks or slows that work.
+
 ## What happened
 
 | Fact | Value |
