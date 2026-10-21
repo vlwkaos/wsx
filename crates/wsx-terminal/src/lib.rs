@@ -292,6 +292,8 @@ pub struct RawSample {
     /// `None`: the tap no longer holds the bytes after the requested position.
     pub output: Option<Vec<u8>>,
     pub clipboard_writes: Vec<Vec<u8>>,
+    /// A synchronized update is open and within its bound (docs/terminal-synchronized-output.md).
+    pub synchronized_output: bool,
 }
 
 pub struct PresentationSample {
@@ -1280,6 +1282,7 @@ impl TerminalRuntime {
             cols: emulator.terminal.cols()?,
             output: emulator.raw.read(after, MAX_RAW_OUTPUT_BYTES),
             clipboard_writes: emulator.terminal.take_clipboard_writes(),
+            synchronized_output: emulator.synchronized_output(Instant::now()),
         })
     }
 

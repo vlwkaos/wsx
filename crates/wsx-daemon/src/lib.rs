@@ -2041,6 +2041,9 @@ fn stream_raw_terminal_output(
             position = None;
         }
         let mut drained = false;
+        // ^ Bytes of an open synchronized update wait for its end, so a client emulator without
+        // mode 2026 (xterm.js 5.5) never draws half an update (docs/terminal-synchronized-output.md).
+        let mut holding = false;
         let sampled = match position {
             None => runtime.raw_replay().map(|replay| {
                 position = Some(replay.sequence);
@@ -2072,10 +2075,15 @@ fn stream_raw_terminal_output(
                 }
                 match sample.output {
                     None => position = None,
-                    Some(bytes) => {
-                        drained = bytes.is_empty();
+                    Some(mut bytes) => {
+                        if sample.synchronized_output {
+                            let open = synchronized_update_start(&bytes).unwrap_or(0);
+                            holding = open < bytes.len();
+                            bytes.truncate(open);
+                        }
+                        drained = bytes.is_empty() && !holding;
                         position = Some(after + bytes.len() as u64);
-                        if !drained {
+                        if !bytes.is_empty() {
                             messages.push(TerminalRawServerMessage::Output(bytes));
                         }
                     }
@@ -2106,18 +2114,36 @@ fn stream_raw_terminal_output(
         // Recheck every wake predicate while holding the notifier mutex.
         if !active.load(Ordering::Acquire)
             || resync.load(Ordering::Acquire)
-            || !drained
+            || (!drained && !holding)
             || runtime.exited() != exited
             || runtime.revision() != revision
         {
             continue;
         }
+        // ^ A held update is sent when it ends, which new output wakes, or when its bound
+        // expires, which nothing wakes: look again soon.
+        let wait = if holding {
+            SYNCHRONIZED_HOLD_POLL
+        } else {
+            Duration::from_millis(250)
+        };
         let _ = daemon
             .changed
-            .wait_timeout(state, Duration::from_millis(250))
+            .wait_timeout(state, wait)
             .unwrap_or_else(|poisoned| poisoned.into_inner());
     }
     Ok(())
+}
+
+const SYNCHRONIZED_HOLD_POLL: Duration = Duration::from_millis(50);
+
+/// Where the open synchronized update (`CSI ? 2026 h`) starts in these bytes, if it does:
+/// the bytes before it are complete and may go now.
+fn synchronized_update_start(bytes: &[u8]) -> Option<usize> {
+    const START: &[u8] = b"\x1b[?2026h";
+    bytes
+        .windows(START.len())
+        .rposition(|window| window == START)
 }
 
 /// The runtime of a stream that still holds its pane lease.
