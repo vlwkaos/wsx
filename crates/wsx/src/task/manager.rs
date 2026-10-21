@@ -14,14 +14,14 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::runtime;
-use wsx_core::task::manager::{instructions_digest, ApprovalLine};
+use wsx_core::task::manager::{instructions_digest, pending_approvals, ApprovalLine};
 use wsx_core::task::manager::{
     Author, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState, Seen,
 };
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
-use wsx_core::task::{brief, checks, TaskState, MAX_MESSAGE_BYTES};
+use wsx_core::task::{brief, checks, ledger, Actor, TaskState, MAX_MESSAGE_BYTES};
 
 use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -40,6 +40,9 @@ fn one_line(text: &str) -> String {
 const HANDOVER_ENTRIES: usize = 4;
 const HANDOVER_CHARS: usize = 600;
 const EVENT_SUMMARY_CHARS: usize = 160;
+/// The ledger summary at the end of a turn's message: at most this many task lines.
+const SUMMARY_ROWS: usize = 12;
+const SUMMARY_TITLE_CHARS: usize = 60;
 
 /// Task states the manager hears about.
 fn is_event_state(state: TaskState) -> bool {
@@ -77,6 +80,10 @@ struct Manager {
     project: String,
     main: PathBuf,
     model: String,
+    /// `tasks.manager.eventModel`: the model of a turn with only events and no review due.
+    event_model: Option<String>,
+    /// The model the running agent process uses now.
+    agent_model: String,
     rotate_tokens: u64,
     /// `tasks.manager.tools`, added to the read-only ones.
     tools: Vec<String>,
@@ -197,8 +204,10 @@ fn instructions(project: &str, notes: &Path, page: &Path, skills: bool) -> Strin
         "You are the manager of the wsx project {project}. You never edit the project's \
          files and never run builds or tests; workers do that in their own tasks. You may \
          keep notes in {notes}, the only folder you can write besides the project page. \
-         Start every turn with `wsx task ledger -p {project}`: it is the source of truth, \
-         not your memory. \
+         Each message ends with a ledger summary from wsx: the open tasks by state and what \
+         changed since your last turn. The ledger is the source of truth, not your memory: run \
+         `wsx task ledger -p {project}` when you need more, such as a task's checks, brief, \
+         asks or memo, or the deploys. \
          Messages headed 'Owner' come from the owner; messages headed 'Events' are written \
          by wsx. For each owner message choose one: answer it, `wsx task add`, \
          `wsx task steer`, `wsx task new` or `wsx task land`, always with \
@@ -303,6 +312,8 @@ pub fn run(project_id: &str) -> Result<()> {
         project,
         main,
         model: settings.manager_model,
+        event_model: settings.manager_event_model,
+        agent_model: String::new(),
         rotate_tokens: settings.manager_rotate_tokens,
         tools: settings.manager_tools,
         state,
@@ -697,7 +708,7 @@ impl Manager {
             text.push_str(&format!("{heading} (message {id}):\n{body}\n\n"));
             ids.push(id);
         }
-        if let Err(error) = self.send_turn(text.trim_end()) {
+        if let Err(error) = self.send_turn(text.trim_end(), first == Author::Events) {
             self.say(&format!("cannot start the manager agent: {error:#}"));
             self.log(ManagerEvent::Stopped {
                 reason: format!("cannot start the manager agent: {error:#}"),
@@ -709,8 +720,140 @@ impl Manager {
         self.report(runtime::AgentState::Working);
     }
 
-    fn send_turn(&mut self, text: &str) -> Result<()> {
+    /// The model of a turn: `eventModel` for one with only events while no ready task the
+    /// manager created waits for its review, else the manager's. ref: docs/tasks.md "Manager"
+    fn turn_model(&self, events_only: bool) -> String {
+        let review_due = || {
+            project_tasks(&self.dir.project_id)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(_, record)| record.ok())
+                .any(|record| {
+                    record.state == TaskState::Ready && record.created_by == Actor::Manager
+                })
+        };
+        match &self.event_model {
+            Some(model) if events_only && !review_due() => model.clone(),
+            _ => self.model.clone(),
+        }
+    }
+
+    /// A few lines of the ledger for the end of a turn's message: the open tasks by state,
+    /// the tasks changed since the last turn (every open one in a fresh conversation), the
+    /// To check and approval counts and the deploy. The manager reads the full ledger only
+    /// when it needs more. ref: docs/tasks.md "Manager"
+    fn ledger_summary(&mut self) -> String {
+        let tasks: Vec<(store::TaskDir, wsx_core::task::TaskRecord)> =
+            project_tasks(&self.dir.project_id)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(dir, record)| record.ok().map(|record| (dir, record)))
+                .collect();
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for (_, record) in tasks.iter().filter(|(_, record)| record.state.is_open()) {
+            *counts.entry(record.state.as_str()).or_default() += 1;
+        }
+        let open = match counts.is_empty() {
+            true => "none".to_string(),
+            false => counts
+                .iter()
+                .map(|(state, count)| format!("{count} {state}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        };
+        let to_check = checks::open_items(&self.dir.project_id).map_or(0, |items| items.len());
+        let approvals = pending_approvals(&self.approval_lines()).len();
+        let baseline = self.state.turn_seen.take();
+        let rows: Vec<String> = tasks
+            .iter()
+            .filter(|(_, record)| match &baseline {
+                Some(seen) => {
+                    seen.get(&record.id)
+                        != Some(&Seen {
+                            state: record.state,
+                            revision: record.revision,
+                        })
+                }
+                None => record.state.is_open(),
+            })
+            .map(|(dir, record)| {
+                format!(
+                    "#{} {} r{}: {}",
+                    record.id,
+                    record.state.as_str(),
+                    record.revision,
+                    clip(
+                        &view::title(dir, record).unwrap_or_default(),
+                        SUMMARY_TITLE_CHARS
+                    )
+                )
+            })
+            .collect();
+        self.state.turn_seen = Some(
+            tasks
+                .iter()
+                .map(|(_, record)| {
+                    (
+                        record.id,
+                        Seen {
+                            state: record.state,
+                            revision: record.revision,
+                        },
+                    )
+                })
+                .collect(),
+        );
+        let mut out = format!(
+            "Ledger summary from wsx (`wsx task ledger -p {}` has the details):\n\
+             - open: {open}; to check: {to_check}; approvals waiting: {approvals}\n",
+            self.project
+        );
+        let heading = match baseline {
+            Some(_) => "changed since your last turn",
+            None => "open tasks",
+        };
+        if !rows.is_empty() {
+            out.push_str(&format!("- {heading}:\n"));
+            for row in rows.iter().take(SUMMARY_ROWS) {
+                out.push_str(&format!("  {row}\n"));
+            }
+            if rows.len() > SUMMARY_ROWS {
+                out.push_str(&format!("  and {} more\n", rows.len() - SUMMARY_ROWS));
+            }
+        }
+        if let Some(deploy) = self.deploy_line() {
+            out.push_str(&format!("- {deploy}\n"));
+        }
+        out
+    }
+
+    /// The last deploy and how far it is behind, when the project configures one.
+    fn deploy_line(&self) -> Option<String> {
+        let settings = load_task_config(&self.main).ok()?;
+        let status = ledger::deploy_status(&self.project, &self.main, &settings, false).ok()?;
+        let deploy = &status["deploy"];
+        if deploy["configured"] != true {
+            return None;
+        }
+        let failed = match deploy["failed_since"].as_u64().unwrap_or(0) {
+            0 => String::new(),
+            failed => format!(", {failed} failed since"),
+        };
+        Some(match deploy["commit"].as_str() {
+            Some(commit) => format!(
+                "deploy: {} live, {} commit(s) behind{failed}",
+                &commit[..commit.len().min(7)],
+                deploy["behind"]
+                    .as_u64()
+                    .map_or("?".into(), |n| n.to_string())
+            ),
+            None => format!("deploy: none yet{failed}"),
+        })
+    }
+
+    fn send_turn(&mut self, text: &str, events_only: bool) -> Result<()> {
         let mut text = text.to_string();
+        let model = self.turn_model(events_only);
         if self.agent.is_none() {
             let launch = self.launch()?;
             let digest = instructions_digest(&launch.instructions);
@@ -726,6 +869,8 @@ impl Manager {
                 None => (new_session_id()?, false),
             };
             if !resume {
+                self.state.turn_seen = None;
+                self.state.session_cost_micro_usd = 0;
                 if self.state.handover {
                     text = self.handover() + &text;
                     self.state.handover = false;
@@ -736,18 +881,32 @@ impl Manager {
             self.save();
             self.generation += 1;
             let generation = self.generation;
+            let launch = Launch {
+                model: model.clone(),
+                ..launch
+            };
+            self.agent_model = model.clone();
             self.agent = Some(ClaudeAgent::spawn(
                 &launch,
                 &session,
                 resume,
+                self.state.session_cost_micro_usd,
                 self.events.clone(),
                 move |line| Event::Agent(generation, line),
             )?);
         }
-        self.agent
+        // ^ At the end, so a message still opens with its heading or the handover.
+        text = format!("{text}\n\n{}", self.ledger_summary());
+        self.save();
+        let agent = self
+            .agent
             .as_mut()
-            .context("the manager agent is not running")?
-            .send(&text)
+            .context("the manager agent is not running")?;
+        if self.agent_model != model {
+            agent.set_model(&model)?;
+            self.agent_model = model;
+        }
+        agent.send(text.trim_end())
     }
 
     /// The manager's Bash writes only its notes folder; its `wsx task` commands leave the
@@ -824,9 +983,10 @@ impl Manager {
     fn on_result(&mut self, result: TurnResult) {
         let to = self.turn.take().unwrap_or_default();
         let id = self.next_id();
-        let context = result.usage.input_tokens
-            + result.usage.cache_read_tokens
-            + result.usage.cache_creation_tokens;
+        // ^ The last model call's context: the summed usage counts it once per call.
+        let context = result.usage.context_tokens;
+        self.state.session_cost_micro_usd = result.usage.session_cost_micro_usd;
+        self.save();
         self.say(&format!(
             "reply {id}: {}",
             result.text.lines().next().unwrap_or_default()
@@ -851,6 +1011,7 @@ impl Manager {
         }
         self.state.agent_session = None;
         self.state.instructions = None;
+        self.state.turn_seen = None;
         self.state.handover = true;
         self.save();
         self.log(ManagerEvent::Rotated { tokens, reason });

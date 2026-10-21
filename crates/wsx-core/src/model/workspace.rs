@@ -99,6 +99,9 @@ pub struct TaskConfig {
     /// `tasks.manager.name`: the name the owner reads instead of "Manager", when set.
     pub manager_name: Option<String>,
     pub manager_model: String,
+    /// The model of a turn with only wsx's events and no review due; `None` (`off`) keeps
+    /// `manager_model`. ref: docs/tasks.md "Manager"
+    pub manager_event_model: Option<String>,
     /// Context size after which the manager's next turn starts a fresh conversation.
     pub manager_rotate_tokens: u64,
     /// Tools the manager gets beyond its read-only ones (`tasks.manager.tools`), never
@@ -167,6 +170,9 @@ impl Default for TaskConfig {
             release_command: None,
             manager_name: None,
             manager_model: "opus".into(),
+            // ^ Off: a switch writes the conversation into the other model's cache, which cost
+            // more than the turn saved (scripts/bench-manager.py, docs/tasks.md "Manager").
+            manager_event_model: None,
             manager_rotate_tokens: 150_000,
             manager_tools: Vec::new(),
         }

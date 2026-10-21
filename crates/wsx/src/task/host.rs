@@ -691,6 +691,7 @@ impl Host {
                 )?,
                 &session,
                 resume,
+                if resume { self.session_cost() } else { 0 },
                 self.events.clone(),
                 move |line| Event::Agent(generation, line),
             )?);
@@ -1154,6 +1155,18 @@ impl Host {
             let text: Vec<String> = self.pending.drain(..).collect();
             self.start_turn(&text.join("\n\n"));
         }
+    }
+
+    /// The worker conversation's last `session_cost_micro_usd`: a task has one conversation.
+    fn session_cost(&self) -> u64 {
+        let log = self.dir.read_log().unwrap_or_default();
+        log.iter()
+            .rev()
+            .find_map(|entry| match &entry.event {
+                LogEvent::Result { usage, .. } | LogEvent::Brief { usage, .. } => usage.as_ref(),
+                _ => None,
+            })
+            .map_or(0, |usage| usage.session_cost_micro_usd)
     }
 
     /// Rewrite `report.md` for the current revision as it will read in `state`.

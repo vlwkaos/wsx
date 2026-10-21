@@ -36,7 +36,12 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   PAGE <section> <words>  replace that section of the project page (its sandbox entry names it)
   STATUS         answer from `wsx task ledger`
   SLOW           take about 3 s
-  BIG            report a 200k-token context, so the host rotates the conversation
+  BIG            a last model call of 200k tokens, so the host rotates the conversation
+  SUMMED         four model calls of 50k each: the result's usage sums 200k, the context is 50k
+Each manager turn's message ends with the host's ledger summary, cut off before the words
+are read. Its cost grows by 0.001 USD a turn (`total_cost_usd` is the session's, restored on
+`--resume`), and a
+`set_model` control request changes the model of the next turns.
 """
 import json
 import os
@@ -281,22 +286,48 @@ def main():
     signal.signal(signal.SIGINT, lambda *_: (trace({'interrupted': True}), sys.exit(130)))
     emit({'type': 'system', 'subtype': 'init', 'session_id': session})
     stdin = sys.stdin.buffer
+    # ^ A resumed session restores its earlier spend into total_cost_usd, as Claude Code does.
+    spent_file = TRACE + '.spent'
+    spending = json.load(open(spent_file)) if os.path.exists(spent_file) else {}
+    model, spent = options.get('--model'), spending.get(session, 0.0) if '--resume' in options else 0.0
     while True:
         line = stdin.readline()
         if not line:
             return
-        text = json.loads(line)['message']['content']
-        trace({'message': text, 'session': session, 'manager': project is not None})
+        request = json.loads(line)
+        if request.get('type') == 'control_request':
+            model = request['request']['model']
+            trace({'set_model': model, 'session': session})
+            emit({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': request['request_id']}})
+            continue
+        text = request['message']['content']
+        trace({'message': text, 'session': session, 'manager': project is not None, 'model': model})
         transcript(session, text)
         if project is not None:
+            # ^ The host's ledger summary ends the message; its titles are not this turn's words.
+            text = text.split('\n\nLedger summary from wsx', 1)[0]
             # ^ A handover quotes earlier messages; only the messages after it are this turn's.
             answer = manager_turn(text.split('\n\n', 1)[1] if text.startswith('Handover') else text, project,
                                     json.loads(options.get('--settings', '{}')))
             # ^ A line of its own: a handover quotes earlier messages as `Owner: BIG`.
-            context = 200000 if 'BIG' in text.splitlines() else 5000
+            calls = [200000] if 'BIG' in text.splitlines() else [50000] * 4 if 'SUMMED' in text.splitlines() else [5000]
+            for tokens in calls:
+                emit({'type': 'assistant', 'parent_tool_use_id': None, 'message': {
+                    'model': model, 'content': [],
+                    'usage': {'input_tokens': 10, 'cache_read_input_tokens': tokens - 10, 'output_tokens': 5}}})
+            # ^ A subagent's call is another context: it never counts as the conversation's.
+            emit({'type': 'assistant', 'parent_tool_use_id': 'sub', 'message': {
+                'model': model, 'content': [], 'usage': {'input_tokens': 900000}}})
+            spent += 0.001
+            spending = json.load(open(spent_file)) if os.path.exists(spent_file) else {}
+            spending[session] = spent
+            with open(spent_file, 'w') as out:
+                json.dump(spending, out)
             emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': answer,
                   'session_id': session, 'permission_denials': [],
-                  'usage': {'input_tokens': context, 'output_tokens': 10}, 'total_cost_usd': 0.001})
+                  'usage': {'input_tokens': 10 * len(calls), 'cache_read_input_tokens': sum(calls) - 10 * len(calls),
+                            'output_tokens': 5 * len(calls)},
+                  'total_cost_usd': round(spent, 6)})
             continue
         if briefing:
             rewritten = brief_turn(text, session, allowed, disallowed, rewritten)

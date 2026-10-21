@@ -372,16 +372,27 @@ impl LogEvent {
     }
 }
 
-/// What one turn cost, as the adapter reported it.
+/// What one turn cost, as the adapter reported it. ref: docs/tasks.md "Claude adapter"
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TurnUsage {
     pub duration_ms: u64,
+    /// Token counts summed over every model call of the turn.
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    /// This turn's cost: the difference of `session_cost_micro_usd` from the previous turn.
     pub cost_micro_usd: u64,
+    /// Claude's `total_cost_usd`: the process's running total, plus the session's earlier
+    /// spend when the process resumed it (Claude Code 2.1.277 and later).
+    /// ref: https://code.claude.com/docs/en/agent-sdk/cost-tracking
+    pub session_cost_micro_usd: u64,
+    /// The context of the turn's last model call (input, cache read and cache write tokens).
+    pub context_tokens: u64,
+    /// The model of the turn's last model call.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub model: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

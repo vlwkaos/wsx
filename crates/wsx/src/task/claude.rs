@@ -69,6 +69,8 @@ pub struct TurnResult {
 pub struct ClaudeAgent {
     child: Child,
     stdin: ChildStdin,
+    /// Control requests sent, for their ids.
+    requests: u64,
 }
 
 /// What one agent process runs with. Every role gets its launch from `Launch::new`.
@@ -360,10 +362,13 @@ fn check_run_note(record: &TaskRecord) -> String {
 impl ClaudeAgent {
     /// Start the agent. `resume` names a conversation that already exists;
     /// otherwise `session` becomes the new conversation's ID.
+    /// `cost_base` is the session's last `session_cost_micro_usd`, which a resumed process
+    /// counts on from.
     pub fn spawn<E: Send + 'static>(
         launch: &Launch,
         session: &str,
         resume: bool,
+        cost_base: u64,
         events: Sender<E>,
         wrap: impl Fn(Option<AgentLine>) -> E + Send + 'static,
     ) -> Result<Self> {
@@ -436,6 +441,10 @@ impl ClaudeAgent {
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             let mut listed = HashMap::new();
+            let mut turns = Turns {
+                cost_base,
+                ..Turns::default()
+            };
             loop {
                 let mut line = Vec::new();
                 match (&mut reader)
@@ -452,7 +461,7 @@ impl ClaudeAgent {
                         let Ok(value) = serde_json::from_slice::<Value>(&line) else {
                             continue;
                         };
-                        let lines = parse_line(&value)
+                        let lines = parse_line(&value, &mut turns)
                             .into_iter()
                             .chain(access_lines(&value, &mut listed));
                         for parsed in lines {
@@ -465,15 +474,35 @@ impl ClaudeAgent {
             }
             let _ = events.send(wrap(None));
         });
-        Ok(Self { child, stdin })
+        Ok(Self {
+            child,
+            stdin,
+            requests: 0,
+        })
     }
 
     /// Send one user message. During a turn Claude takes it as a steer.
     pub fn send(&mut self, text: &str) -> Result<()> {
-        let mut line = serde_json::to_vec(&serde_json::json!({
+        self.write(&json!({
             "type": "user",
             "message": { "role": "user", "content": text },
-        }))?;
+        }))
+    }
+
+    /// The next turns run on `model`; the conversation stays. The SDK's `setModel` sends
+    /// this control request; a refusal comes back as a progress line.
+    /// ref: https://code.claude.com/docs/en/agent-sdk/typescript ("setModel")
+    pub fn set_model(&mut self, model: &str) -> Result<()> {
+        self.requests += 1;
+        self.write(&json!({
+            "type": "control_request",
+            "request_id": format!("wsx-{}", self.requests),
+            "request": { "subtype": "set_model", "model": model },
+        }))
+    }
+
+    fn write(&mut self, value: &Value) -> Result<()> {
+        let mut line = serde_json::to_vec(value)?;
         line.push(b'\n');
         self.stdin
             .write_all(&line)
@@ -520,18 +549,72 @@ fn skip_line(reader: &mut impl BufRead) -> std::io::Result<bool> {
     }
 }
 
-fn parse_line(value: &Value) -> Option<AgentLine> {
+/// What the reader keeps across the lines of one process.
+/// ref: https://code.claude.com/docs/en/headless (stream-json `assistant` and `result`)
+#[derive(Default)]
+struct Turns {
+    /// The session's `total_cost_usd` at its previous result, in micro USD.
+    cost_base: u64,
+    /// The context and model of the turn's last model call so far.
+    context: Option<u64>,
+    model: String,
+}
+
+impl Turns {
+    /// A main-conversation `assistant` line carries the usage of its own model call; a
+    /// subagent's (`parent_tool_use_id` set) is another context.
+    fn note_call(&mut self, value: &Value) {
+        if value
+            .get("parent_tool_use_id")
+            .is_some_and(|parent| !parent.is_null())
+        {
+            return;
+        }
+        if let Some(usage) = value.pointer("/message/usage") {
+            self.context = Some(context_of(usage));
+        }
+        if let Some(model) = value.pointer("/message/model").and_then(Value::as_str) {
+            self.model = model.to_string();
+        }
+    }
+}
+
+/// Input, cache read and cache write tokens of one `usage` object.
+fn context_of(usage: &Value) -> u64 {
+    [
+        "input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ]
+    .iter()
+    .filter_map(|name| usage.get(name).and_then(Value::as_u64))
+    .sum()
+}
+
+fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
     match value.get("type")?.as_str()? {
         "system" if value.get("subtype")?.as_str()? == "init" => Some(AgentLine::Init(
             value.get("session_id")?.as_str()?.to_string(),
         )),
-        "assistant" => value
-            .pointer("/message/content")?
-            .as_array()?
-            .iter()
-            .rev()
-            .find_map(progress_text)
-            .map(AgentLine::Progress),
+        "assistant" => {
+            turns.note_call(value);
+            value
+                .pointer("/message/content")?
+                .as_array()?
+                .iter()
+                .rev()
+                .find_map(progress_text)
+                .map(AgentLine::Progress)
+        }
+        "control_response" if value.pointer("/response/subtype")?.as_str()? == "error" => {
+            Some(AgentLine::Progress(format!(
+                "claude refused a control request: {}",
+                value
+                    .pointer("/response/error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("no reason")
+            )))
+        }
         "result" => Some(AgentLine::Result(TurnResult {
             is_error: value
                 .get("is_error")
@@ -553,7 +636,7 @@ fn parse_line(value: &Value) -> Option<AgentLine> {
                 .filter_map(|denial| denial.pointer("/tool_input/file_path")?.as_str())
                 .map(str::to_string)
                 .collect(),
-            usage: turn_usage(value),
+            usage: turn_usage(value, turns),
         })),
         _ => None,
     }
@@ -670,19 +753,38 @@ fn refused_paths(text: &str) -> impl Iterator<Item = String> + '_ {
     })
 }
 
-fn turn_usage(value: &Value) -> TurnUsage {
+/// The result's `usage` sums every model call of the turn and `total_cost_usd` counts the
+/// whole process: the turn's cost is the difference, its context the last call's.
+fn turn_usage(value: &Value, turns: &mut Turns) -> TurnUsage {
     let count = |pointer: &str| value.pointer(pointer).and_then(Value::as_u64).unwrap_or(0);
+    let total = value
+        .get("total_cost_usd")
+        .and_then(Value::as_f64)
+        .filter(|cost| cost.is_finite() && *cost >= 0.0)
+        .map(|cost| (cost * 1_000_000.0).round() as u64);
+    // ^ A total below the base: the process did not restore the session's spend (a crash,
+    // an older CLI), so it counts from zero.
+    let cost = total.map_or(0, |total| match total.checked_sub(turns.cost_base) {
+        Some(cost) => cost,
+        None => total,
+    });
+    if let Some(total) = total {
+        turns.cost_base = total;
+    }
     TurnUsage {
         duration_ms: count("/duration_ms"),
         input_tokens: count("/usage/input_tokens"),
         output_tokens: count("/usage/output_tokens"),
         cache_read_tokens: count("/usage/cache_read_input_tokens"),
         cache_creation_tokens: count("/usage/cache_creation_input_tokens"),
-        cost_micro_usd: value
-            .get("total_cost_usd")
-            .and_then(Value::as_f64)
-            .filter(|cost| cost.is_finite() && *cost >= 0.0)
-            .map_or(0, |cost| (cost * 1_000_000.0).round() as u64),
+        cost_micro_usd: cost,
+        session_cost_micro_usd: total.unwrap_or(turns.cost_base),
+        // ^ No `assistant` usage seen (an older CLI): the sum is all there is.
+        context_tokens: turns
+            .context
+            .take()
+            .unwrap_or_else(|| value.get("usage").map_or(0, context_of)),
+        model: std::mem::take(&mut turns.model),
     }
 }
 

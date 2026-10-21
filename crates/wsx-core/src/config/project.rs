@@ -141,6 +141,8 @@ struct TaskManagerFile {
     adapter: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(rename = "eventModel", skip_serializing_if = "Option::is_none")]
+    event_model: Option<String>,
     #[serde(rename = "rotateTokens", skip_serializing_if = "Option::is_none")]
     rotate_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -462,6 +464,16 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
                 return Err("tasks.manager.model must be one word".into());
             }
             config.manager_model = model;
+        }
+        if let Some(model) = validate_optional_text(
+            manager.event_model,
+            "tasks.manager.eventModel",
+            MAX_TASK_WORD_BYTES,
+        )? {
+            if model.contains(char::is_whitespace) {
+                return Err("tasks.manager.eventModel must be one word".into());
+            }
+            config.manager_event_model = (model != "off").then_some(model);
         }
         if let Some(tokens) = manager.rotate_tokens {
             if !(MIN_ROTATE_TOKENS..=MAX_ROTATE_TOKENS).contains(&tokens) {
