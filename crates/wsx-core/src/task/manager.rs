@@ -150,6 +150,11 @@ pub struct ManagerState {
     pub instructions: Option<String>,
     /// A rotation happened: the next fresh conversation opens with the last exchanges.
     pub handover: bool,
+    /// The tasks as the last turn's ledger summary showed them; none in a fresh conversation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_seen: Option<BTreeMap<u32, Seen>>,
+    /// The conversation's last `session_cost_micro_usd`, which a resumed process counts on from.
+    pub session_cost_micro_usd: u64,
 }
 
 /// A stable digest of an agent's instructions, to tell whether a conversation began with them.
