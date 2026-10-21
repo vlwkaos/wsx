@@ -918,8 +918,11 @@ def run(wsx, wsxd, work, owned):
     assert len(merged) == 1, merged
     # ^ An event names the host's checks before the worker's own words.
     assert '#%d ready r1: NOOP; checks 1 of 1 passed; worker says: did: NOOP' % first in merged[0]['text'], merged
-    delivered = [e['ids'] for e in manager_entries() if e['kind'] == 'delivered']
-    assert delivered.index([waiting['id']]) < delivered.index([merged[0]['id']]), delivered
+    # ^ A turn takes every waiting message of one author: an earlier events message may share it.
+    delivered = wait(lambda: (lambda ids: ids if any(merged[0]['id'] in batch for batch in ids) else None)(
+        [e['ids'] for e in manager_entries() if e['kind'] == 'delivered']), 'merged events delivered')
+    batch = lambda message_id: next(n for n, ids in enumerate(delivered) if message_id in ids)
+    assert delivered[batch(waiting['id'])] == [waiting['id']] and batch(waiting['id']) < batch(merged[0]['id']), delivered
     assert 'noted events' in reply_to(merged[0]['id'])['text']
     # ^ Nothing waits for the manager's review: the events turn runs on eventModel in the same
     # process, and the next owner turn switches back (docs/tasks.md "Manager").
