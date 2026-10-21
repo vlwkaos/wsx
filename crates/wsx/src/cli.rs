@@ -270,6 +270,9 @@ pub enum AgentCmd {
         /// The prompt this turn took: `<exchange>:<round>` of a wsx round, or `other`
         #[arg(long, hide = true, value_parser = parse_prompt_received)]
         received: Option<runtime::PromptReceived>,
+        /// The agent compacts its conversation (on a Working report)
+        #[arg(long, hide = true)]
+        compacting: bool,
     },
     #[command(hide = true)]
     PresenceRenew {
@@ -907,6 +910,7 @@ pub fn run(cmd: Command) -> Result<()> {
                 exchange_receipts,
                 prompt_receipts,
                 received,
+                compacting,
             } => cmd_agent_report(
                 &pane,
                 AgentReportOptions {
@@ -928,6 +932,7 @@ pub fn run(cmd: Command) -> Result<()> {
                         prompt_receipts,
                     },
                     received,
+                    compacting,
                 },
             ),
             AgentCmd::PresenceRenew { pane, presence_id } => {
@@ -2697,6 +2702,7 @@ fn cmd_agent_detach() -> Result<()> {
         wake_token: None,
         capabilities: runtime::AgentCapabilities::default(),
         received: None,
+        compacting: false,
     })? {
         runtime::Response::Ack { revision } => {
             println!("detached agent at revision {revision}");
@@ -2735,6 +2741,7 @@ struct AgentReportOptions {
     wake_token: Option<String>,
     capabilities: runtime::AgentCapabilities,
     received: Option<runtime::PromptReceived>,
+    compacting: bool,
 }
 
 fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
@@ -2750,6 +2757,7 @@ fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
         wake_token,
         capabilities,
         received,
+        compacting,
     } = report;
     // ^ Adapter callbacks already have the exact pane ID. A snapshot lookup can
     // start or reconcile wsxd before SessionStart reaches its current generation.
@@ -2801,6 +2809,7 @@ fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
             wake_token,
             capabilities,
             received,
+            compacting,
         },
     )? {
         runtime::Response::Ack { revision } => {

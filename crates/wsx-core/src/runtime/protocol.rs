@@ -356,6 +356,9 @@ pub enum Request {
         /// On a Working report that starts a turn: which prompt the turn took.
         #[serde(default)]
         received: Option<PromptReceived>,
+        /// On a Working report: the agent compacts its conversation.
+        #[serde(default)]
+        compacting: bool,
     },
     AgentPresenceRenew {
         pane_id: PaneId,

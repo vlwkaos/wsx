@@ -70,6 +70,8 @@ fn agent(id: u64, state: AgentState) -> AgentInfo {
         session_ref: None,
         capabilities: AgentCapabilities::default(),
         source: "test".into(),
+
+        compacting: false,
     }
 }
 

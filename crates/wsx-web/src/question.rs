@@ -57,6 +57,13 @@ fn screen(client: &Client, pane: PaneId) -> Outcome<Vec<String>> {
     Ok(rows.split_off(first))
 }
 
+/// The last `count` rows of the screen, for a hold the chat cannot name
+/// (docs/web-client.md "Timeline"). `None` when the screen cannot be read.
+pub fn tail(client: &Client, pane: PaneId, count: usize) -> Option<Vec<String>> {
+    let mut rows = screen(client, pane).ok()?;
+    Some(rows.split_off(rows.len().saturating_sub(count)))
+}
+
 fn stamp_of(rows: &[String]) -> String {
     hex(&Sha256::digest(rows.join("\n"))[..16])
 }
