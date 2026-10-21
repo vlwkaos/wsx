@@ -1028,6 +1028,30 @@ raw_send(first, "input", list(exact))
 output, replays = raw_output_until(first, b"-bytes")
 assert output.endswith(exact) and not replays, (output, replays)
 assert output[:-len(exact)] in (b"", b"\r\n[size 40x10]\r\n"), output
+# ^ docs/terminal-synchronized-output.md: the bytes of an open synchronized update wait for
+# its end, then arrive in one message; the bytes before it go at once.
+raw_send(first, "input", list(b"before-sync\x1b[?2026hhalf-drawn"))
+output, replays = raw_output_until(first, b"before-sync")
+assert b"half-drawn" not in output and not replays, output
+first.settimeout(0.4)
+try:
+    early = recv_line(first)
+except (socket.timeout, TimeoutError):
+    early = None
+assert early is None, ("an open update was sent", early)
+first.settimeout(10)
+raw_send(first, "input", list(b"-rest\x1b[?2026lafter-sync"))
+whole = recv_line(first)
+assert whole["type"] == "output", whole
+whole = bytes(whole["data"])
+assert whole.startswith(b"\x1b[?2026hhalf-drawn") and b"\x1b[?2026l" in whole, whole
+if b"after-sync" not in whole:
+    raw_output_until(first, b"after-sync")
+# An update that never ends is sent once its bound (1 s) expires.
+started = time.monotonic()
+raw_send(first, "input", list(b"\x1b[?2026hnever-ends"))
+raw_output_until(first, b"never-ends")
+assert 0.8 <= time.monotonic() - started < 3, time.monotonic() - started
 # A resize reaches the PTY. The stream reports it and restarts from a replay,
 # because a client emulator reflows a resized screen differently.
 raw_send(first, "resize", {"rows": 7, "cols": 33})

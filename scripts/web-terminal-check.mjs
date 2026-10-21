@@ -400,6 +400,17 @@ await until(`${state("live")} && document.querySelector('.terminal-size').datase
 await until(`document.querySelectorAll('.xterm-rows > div').length === ${rows}`, "fit screen did not resize the pane");
 await sameAsDaemon("after returning to fit screen");
 
+// Scrolled back from the newest output, one tap returns to it (docs/web-client.md "Terminal").
+await run("i=0; while [ $i -lt 120 ]; do echo scroll-line-$i; i=$((i+1)); done; echo scroll-end", "scroll-end");
+const jumpHidden = "document.querySelector('.terminal .jump').hidden";
+if (!(await evaluate(jumpHidden))) await fail("Jump to latest shows at the end of the output");
+await evaluate("document.querySelector('.terminal .xterm').dispatchEvent(new WheelEvent('wheel', { deltaY: -2000, deltaMode: 0, bubbles: true, cancelable: true }))");
+await until(`!${jumpHidden}`, "Jump to latest did not show after a scroll back");
+await capture("phone-jump");
+await evaluate("document.querySelector('.terminal .jump').click()");
+await until(`${jumpHidden} && (() => { const viewport = document.querySelector('.xterm-viewport'); return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 2; })()`,
+  "Jump to latest did not return to the end");
+
 // A lost connection: the page reconnects by itself and the replay restores the screen where it was.
 await run("printf '\\033[2J\\033[5;3Hreplay-marker\\n'", "replay-marker");
 await sameAsDaemon("before the connection is lost");

@@ -26,6 +26,7 @@ const SVG = "http://www.w3.org/2000/svg";
 const ICONS = {
   fit: "M3 8V3h5M17 8V3h-5M3 12v5h5M17 12v5h-5",
   host: "M3 4h14v12H3zM7 8h6v4H7z",
+  down: "M10 4v12M5 11l5 5 5-5",
 };
 // A line icon. Its button carries the accessible name.
 function icon(name) {
@@ -124,7 +125,10 @@ export function terminalView(mount, current, tools) {
   const noticeAction = h("button", { type: "button", class: "button-primary", hidden: true });
   const notice = h("div", { class: "terminal-notice", role: "status", hidden: true }, noticeText, noticeAction);
   const host = h("div", { class: "terminal-host" });
-  const stage = h("div", { class: "terminal-stage" }, notice, host);
+  // ^ While the screen is scrolled back, one tap returns to the newest output (docs/web-client.md "Terminal").
+  const jump = h("button", { type: "button", class: "jump", hidden: true, onclick: () => { term?.scrollToBottom(); jump.hidden = true; } },
+    icon("down"), "Jump to latest");
+  const stage = h("div", { class: "terminal-stage" }, notice, host, jump);
   const keys = touch && canType ? keyRows() : null;
   // The frame around the screen is dark in either scheme (docs/web-themes.md).
   const root = h("div", { class: "terminal", "data-state": state, "data-scheme": "dark" }, stage, keys);
@@ -449,6 +453,15 @@ export function terminalView(mount, current, tools) {
     }
     term.textarea.setAttribute("aria-label", "Terminal input");
     if (touch && canType) touchInput();
+    // The newest output is at the end of the buffer; the view is away from it after a scroll back.
+    const away = () => {
+      const buffer = term.buffer.active;
+      jump.hidden = buffer.viewportY >= buffer.baseY;
+    };
+    term.onScroll(away);
+    term.onWriteParsed(away);
+    listen(host, "wheel", () => requestAnimationFrame(away), { passive: true });
+    listen(host, "touchend", () => requestAnimationFrame(away), { passive: true });
     term.onData(sendText);
     term.onBinary((data) => send(Uint8Array.from(data, (character) => character.charCodeAt(0))));
     // One resize after the size settles: each one makes wsxd send a new replay.
