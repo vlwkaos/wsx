@@ -321,7 +321,9 @@ function Composer({ session, working, onSent }) {
   const [busy, setBusy] = useState(false);
   const field = useRef();
   const mirror = useRef();
-  const ready = Boolean(session.agent?.attached && session.agent.prompt) && !session.exited;
+  // ^ An agent that exited is started again by the next message (docs/web-client.md "Conversations").
+  const resumes = !session.agent?.attached && Boolean(session.conversation);
+  const ready = (Boolean(session.agent?.attached && session.agent.prompt) || resumes) && !session.exited;
   const [listing, setListing] = useState(null);
   const [active, setActive] = useState(0);
   // Escape closes the list until the text changes.
@@ -434,7 +436,7 @@ function Composer({ session, working, onSent }) {
         ${token && html`<div class="composer-mirror" ref=${mirror} aria-hidden="true"><span class="composer-token">${token}</span>${draft.text.slice(token.length)}${"\u200b"}</div>`}
         <textarea class="composer-field" ref=${field} rows="1" aria-label="Message"
           onScroll=${() => { if (mirror.current) mirror.current.scrollTop = field.current.scrollTop; }}
-          placeholder=${ready ? "Message" : "Cannot receive messages"}
+          placeholder=${!ready ? "Cannot receive messages" : resumes ? "Message · resumes the conversation" : "Message"}
           disabled=${!ready} role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
           aria-controls=${listOpen ? "slash-list" : null} aria-activedescendant=${listOpen && matches.length ? `slash-${active}` : null}
           onInput=${() => { changed(field.current.value); grow(field.current); }} onKeyDown=${keydown}

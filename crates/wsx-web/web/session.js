@@ -20,8 +20,9 @@ export function Session({ id, tab }) {
   // Kept while the terminal is shown: only the chat reads the saved conversation.
   const [model, setModel] = useState(null);
   const session = store.sessions.find((candidate) => candidate.id === id);
-  // A shell has no chat; it becomes one when an agent starts in it.
-  const tabs = [session && isAgent(session) && shows("chat") && "chat", shows("terminal") && can("terminal_view") && "terminal"].filter(Boolean);
+  // A shell has no chat; it becomes one when an agent starts in it, and keeps it after the
+  // agent exits while the server remembers the conversation.
+  const tabs = [session && (isAgent(session) || session.conversation) && shows("chat") && "chat", shows("terminal") && can("terminal_view") && "terminal"].filter(Boolean);
   const active = tabs.includes(tab) ? tab : tabs[0];
   useEffect(() => { if (session && active === "chat") markSeen(session); });
   if (!session) {
