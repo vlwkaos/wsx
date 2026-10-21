@@ -255,6 +255,10 @@ pub struct AgentInfo {
     pub session_ref: Option<AgentSessionRef>,
     pub capabilities: AgentCapabilities,
     pub source: String,
+    /// The agent compacts its conversation now (Claude's /compact, from its PreCompact report
+    /// to the next report).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compacting: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

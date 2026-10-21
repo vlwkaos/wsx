@@ -2685,6 +2685,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             wake_token,
             capabilities,
             received,
+            compacting,
         } => agent_report_with_attachment(
             daemon,
             RuntimeAgentAuthority::new(pane_id, runtime_generation),
@@ -2698,6 +2699,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
                 wake_token,
                 capabilities,
                 received,
+                compacting,
             },
         ),
         Request::AgentPresenceRenew {
@@ -4497,6 +4499,7 @@ struct AgentReportInput {
     wake_token: Option<String>,
     capabilities: AgentCapabilities,
     received: Option<PromptReceived>,
+    compacting: bool,
 }
 
 #[cfg(test)]
@@ -4522,6 +4525,7 @@ fn agent_report(
             wake_token: None,
             capabilities,
             received: None,
+            compacting: false,
         },
     )
 }
@@ -4541,6 +4545,7 @@ fn agent_report_with_attachment(
         wake_token,
         mut capabilities,
         received,
+        compacting,
     } = report;
     let RuntimeAgentAuthority {
         pane_id,
@@ -4679,6 +4684,7 @@ fn agent_report_with_attachment(
         session_ref,
         capabilities,
         source: "adapter".into(),
+        compacting: attached && compacting,
     });
     persisted.panes[pane_index].revision = revision;
     if attached && agent_state == AgentState::Working {
@@ -8800,6 +8806,7 @@ mod tests {
                 wake_token: None,
                 capabilities: AgentCapabilities::default(),
                 received: None,
+                compacting: false,
             },
         )
         .unwrap_err();
@@ -8818,6 +8825,7 @@ mod tests {
                 wake_token: None,
                 capabilities: AgentCapabilities::default(),
                 received: None,
+                compacting: false,
             },
         )
         .unwrap();
@@ -8896,6 +8904,7 @@ mod tests {
                 wake_token: None,
                 capabilities: AgentCapabilities::default(),
                 received: None,
+                compacting: false,
             },
         )
         .unwrap();
@@ -8967,6 +8976,7 @@ mod tests {
                     wake_token: None,
                     capabilities: AgentCapabilities::default(),
                     received: None,
+                    compacting: false,
                 },
             )
             .unwrap();
@@ -9014,6 +9024,7 @@ mod tests {
                 wake_token: None,
                 capabilities: AgentCapabilities::default(),
                 received: None,
+                compacting: false,
             },
         )
         .unwrap();
@@ -9071,6 +9082,7 @@ mod tests {
                 wake_token: None,
                 capabilities: AgentCapabilities::default(),
                 received: None,
+                compacting: false,
             },
         )
         .unwrap();
@@ -9354,6 +9366,7 @@ mod tests {
                 ),
                 capabilities: claude_capabilities(),
                 source: "test".into(),
+                compacting: false,
             });
             record_terminal_exit(&daemon, &mut state, PaneId(4));
             let pane = &state.persisted.panes[0];
@@ -9478,6 +9491,7 @@ mod tests {
                 wake_token: wake_token.map(str::to_string),
                 capabilities: claude_capabilities(),
                 received: None,
+                compacting: false,
             },
         )
     }
@@ -9581,6 +9595,7 @@ mod tests {
                 wake_token: None,
                 capabilities: claude_capabilities(),
                 received: None,
+                compacting: false,
             },
         )
         .unwrap();
@@ -11407,6 +11422,7 @@ mod tests {
                     ..Default::default()
                 },
                 received: None,
+                compacting: false,
             },
         );
         assert!(matches!(report, Response::Ack { .. }));

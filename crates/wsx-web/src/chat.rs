@@ -376,7 +376,8 @@ impl Chat {
             .as_ref()
             .filter(|agent| agent.attached && agent.state == AgentState::Working)
             .map(|agent| {
-                let activity = activity_of(timeline.iter().flat_map(|timeline| &timeline.items));
+                let activity =
+                    activity_of(agent, timeline.iter().flat_map(|timeline| &timeline.items));
                 json!({
                     "since_unix_ms": agent.state_since_unix_ms,
                     "activity": activity,
@@ -397,6 +398,23 @@ impl Chat {
                 let last = timeline.as_ref().and_then(|timeline| timeline.items.last());
                 crate::question::view(client, target.pane.id, last)
             });
+        // ^ A hold the chat cannot name shows the end of the screen: a blocked agent without a
+        // readable question, or a message that waits for more than HELD_MS.
+        let blocked = target
+            .pane
+            .agent
+            .as_ref()
+            .is_some_and(|agent| agent.attached && agent.state == AgentState::Blocked);
+        let now = crate::devices::now_unix_ms();
+        let held = app.queue.list(session).iter().any(|queued| {
+            queued.failed.is_none()
+                && queued.delivered_unix_ms.is_none()
+                && now.saturating_sub(queued.at_unix_ms) > HELD_MS
+        });
+        let screen = (((blocked && question.is_none()) || held)
+            && site.allows(Capability::TerminalView))
+        .then(|| crate::question::tail(client, target.pane.id, HELD_ROWS))
+        .flatten();
         // A delivered queued message leaves the queue once the conversation shows it.
         let shown: Vec<(&str, Option<u64>)> = items
             .iter()
@@ -417,6 +435,7 @@ impl Chat {
             "queue": app.queue.list(session).iter().map(|queued| queued_view(queued, media)).collect::<Vec<_>>(),
             "working": working,
             "question": question,
+            "screen": screen,
         }))
     }
 
@@ -1028,9 +1047,15 @@ impl Chat {
     }
 }
 
-/// What a working agent does now, from the end of its saved conversation: the
-/// title of the running tool, else "Thinking", else "Working".
-fn activity_of<'a>(items: impl Iterator<Item = &'a Item>) -> String {
+/// What a working agent does now: compacting, else from the end of its saved
+/// conversation the title of the running tool, else "Thinking", else "Working".
+fn activity_of<'a>(
+    agent: &wsx_core::runtime::AgentInfo,
+    items: impl Iterator<Item = &'a Item>,
+) -> String {
+    if agent.compacting {
+        return "Compacting the conversation".into();
+    }
     match items.last() {
         Some(Item {
             tool: Some(tool), ..
@@ -1045,16 +1070,21 @@ fn activity_of<'a>(items: impl Iterator<Item = &'a Item>) -> String {
 
 /// The activity line of a working session, for the session list.
 pub fn activity(target: &Target) -> String {
-    let timeline = target.pane.agent.as_ref().map(|agent| {
-        Reader::default().read_timeline(
-            &agent.provider,
-            agent.session_ref.as_ref(),
-            TIMELINE_ITEMS,
-            TIMELINE_BYTES,
-        )
-    });
-    activity_of(timeline.iter().flat_map(|timeline| &timeline.items))
+    let Some(agent) = target.pane.agent.as_ref() else {
+        return "Working".to_owned();
+    };
+    let timeline = Reader::default().read_timeline(
+        &agent.provider,
+        agent.session_ref.as_ref(),
+        TIMELINE_ITEMS,
+        TIMELINE_BYTES,
+    );
+    activity_of(agent, timeline.items.iter())
 }
+
+/// How long a queued message waits before the timeline shows the end of the screen.
+const HELD_MS: u64 = 10_000;
+const HELD_ROWS: usize = 8;
 
 /// How long a queued message waits for an agent that is not at a wait boundary yet.
 const NOT_YET_MS: u64 = 30_000;

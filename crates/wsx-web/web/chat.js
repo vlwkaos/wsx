@@ -600,6 +600,14 @@ export function Chat({ session, onModel }) {
   // answer from the chat, a row that leads to the terminal. The draft stays for later.
   const blocked = status.key === "blocked";
   const lastUserBlock = list.findLast?.((block) => block.kind === "user");
+  const terminalLink = shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`;
+  // A hold the chat cannot name: the server sends the end of the screen (docs/web-client.md "Timeline").
+  const held = data?.screen?.length ? html`
+    <section class="question" aria-label="The terminal shows">
+      <p class="note">The terminal shows:</p>
+      <pre class="question-screen" tabindex="0">${data.screen.join("\n")}</pre>
+      ${terminalLink}
+    </section>` : null;
 
   return html`
     <div class="chat">
@@ -650,12 +658,12 @@ export function Chat({ session, onModel }) {
             </li>`)}
         </ul>` : null}
       ${blocked && data?.question ? html`<${Question} session=${session} question=${data.question} onAnswered=${load} />`
-      : blocked ? html`
+      : blocked ? held ?? html`
         <div class="attention" role="status">
           <span>Waiting for your answer.</span>
-          ${shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`}
+          ${terminalLink}
         </div>`
-      : can("chat_send") && html`<${Composer} session=${session} working=${Boolean(working) || waiting.some((queued) => !queued.failed)}
-        onSent=${() => { atEnd.current = true; load(); }} />`}
+      : html`${held}${can("chat_send") && html`<${Composer} session=${session} working=${Boolean(working) || waiting.some((queued) => !queued.failed)}
+        onSent=${() => { atEnd.current = true; load(); }} />`}`}
     </div>`;
 }

@@ -85,9 +85,9 @@ try:
         binary.chmod(0o755)
     # The Claude hook names the prompt a turn took: a wsx round by its exchange line, also
     # inside Claude's paste wrapper, else another prompt (docs/agent-orchestration.md "Taken, not typed").
-    def prompt_report(prompt, event='UserPromptSubmit'):
+    def prompt_report(prompt, event='UserPromptSubmit', **fields):
         before = len(calls())
-        hook_input = json.dumps({'session_id': 'fixture', 'hook_event_name': event, 'prompt': prompt})
+        hook_input = json.dumps({'session_id': 'fixture', 'hook_event_name': event, 'prompt': prompt, **fields})
         done = subprocess.run(['/bin/sh', str(shell), 'working'], input=hook_input, text=True,
                               env=dict(env, WSX_AGENT_REPORT_BIN=str(binary)), capture_output=True, timeout=5)
         assert done.returncode == 0 and len(calls()) == before + 1, done.stderr
@@ -98,9 +98,16 @@ try:
         line = prompt_report(prompt)
         assert expected in line and '--prompt-receipts' in line, (prompt, line)
     assert '--received' not in prompt_report('[wsx exchange 7, round 2, writer]\nhello', event='PostToolUse')
+    # A /compact a person types is reported; an automatic one is not, so an idle agent never looks busy.
+    assert '--compacting' in prompt_report('', event='PreCompact', trigger='manual')
+    before = len(calls())
+    subprocess.run(['/bin/sh', str(shell), 'working'], text=True, capture_output=True, timeout=5, check=True,
+                   input=json.dumps({'session_id': 'fixture', 'hook_event_name': 'PreCompact', 'trigger': 'auto'}),
+                   env=dict(env, WSX_AGENT_REPORT_BIN=str(binary)))
+    assert len(calls()) == before, 'an automatic compaction was reported'
     success = True
     print('shell/Hermes reporter: pre-handoff and dangling-entry recovery, no rejection replay, unsafe-path refusal, bounded absence; '
-          'Claude prompt receipts by round, in a paste wrapper and for another prompt PASS')
+          'Claude prompt receipts by round, in a paste wrapper and for another prompt; manual compaction only PASS')
 finally:
     if success:
         shutil.rmtree(work)
