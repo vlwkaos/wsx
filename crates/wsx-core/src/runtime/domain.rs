@@ -227,6 +227,9 @@ pub struct AgentCapabilities {
     pub lifecycle: bool,
     pub escape_interrupts: bool,
     pub exchange_receipts: bool,
+    /// The agent's hook reports which prompt each turn took (`PromptReceived`), so a round
+    /// it never took ends as not taken (docs/agent-orchestration.md "Taken, not typed").
+    pub prompt_receipts: bool,
 }
 
 fn default_attached() -> bool {
@@ -362,7 +365,24 @@ pub struct AgentExchange {
     /// Caller-chosen key of the continuation that started the current round.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continue_key: Option<String>,
+    /// The current round is a command typed as written, without the exchange line, so a
+    /// prompt receipt cannot name it (docs/agent-orchestration.md "Taken, not typed").
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub command: bool,
     pub revision: u64,
+}
+
+/// The prompt an agent's own hook saw a turn take: one wsx round, named by its exchange
+/// line, or another prompt, such as one a person typed in the terminal.
+/// ref: docs/agent-orchestration.md "Taken, not typed"
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PromptReceived {
+    Round {
+        exchange: AgentExchangeId,
+        round: u32,
+    },
+    Other,
 }
 
 /// The start of the line that wsxd puts before the prompt of one round.

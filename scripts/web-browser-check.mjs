@@ -967,7 +967,7 @@ if (stream.bytes > 65_536) await fail(`each change still fetches the whole timel
 await openSession("done");
 await until("!!document.querySelector('.composer-field:not([disabled])')", "the done session's composer is not ready");
 // A waiting message that was not delivered: by the composer, its reason in words on a line
-// of its own in the danger colour, with Retry and Remove.
+// of its own in the danger colour, with Send again and Remove.
 await until("!!document.querySelector('.queued[data-failed] .queued-reason')", "the failed waiting message does not show");
 const stuck = await evaluate(`(() => { const row = document.querySelector('.queued[data-failed]'); const reason = row.querySelector('.queued-reason');
   const box = (node) => node.getBoundingClientRect();
@@ -976,7 +976,7 @@ const stuck = await evaluate(`(() => { const row = document.querySelector('.queu
     whole: reason.scrollWidth <= reason.clientWidth, above: box(row).bottom <= box(document.querySelector('.composer')).top + 1 }; })()`);
 // A delivered message of the conversation never reads as not delivered.
 if (await evaluate("[...document.querySelectorAll('.log .message-user:not([data-pending]) .note')].some((note) => note.textContent.includes('Not delivered'))")) await fail("a delivered message says it was not delivered");
-if (stuck.reason !== "Not delivered to the agent: prompt was not sent because fresh empty input was not observed" || stuck.actions !== "Copy,Retry,Remove"
+if (stuck.reason !== "Not delivered to the agent: prompt was not sent because fresh empty input was not observed" || stuck.actions !== "Copy,Send again,Remove"
   || !stuck.own || !stuck.whole || !stuck.above) await fail(`the failed waiting message is easy to miss: ${JSON.stringify(stuck)}`);
 await shot("chat-queue-failed");
 await evaluate("document.documentElement.dataset.scheme = 'light'");
@@ -984,15 +984,18 @@ await shot("chat-queue-failed-light");
 await evaluate("delete document.documentElement.dataset.scheme");
 await typeInto("Please check the notes");
 await evaluate("document.querySelector('.composer .button-primary').click()");
-const notDelivered = "document.querySelector('.message[data-pending] .error')?.textContent ?? ''";
-await until(`${notDelivered}.startsWith('Not delivered to the agent: prompt was not sent because fresh empty input was not observed')`, "a failed delivery did not say so on the sent message");
+// ^ Every message goes through the session's queue: one the agent cannot take waits there,
+// with wsxd's reason (docs/web-client.md "Queue and Stop").
+const failedRow = "[...document.querySelectorAll('.queued[data-failed]')].find((row) => row.querySelector('.queued-text').textContent === 'Please check the notes')";
+const notDelivered = `${failedRow}?.querySelector('.queued-reason')?.textContent ?? ''`;
+await until(`(${notDelivered}).startsWith('Not delivered to the agent: prompt was not sent because fresh empty input was not observed')`, "a failed delivery did not say so");
 await sound("message not delivered");
 await shot("chat-not-delivered");
 const round = () => evaluate(`fetch(new URL('api/chat/${ids.done}/timeline', document.baseURI)).then((r) => r.json()).then((data) => data.exchange.round)`);
 const before = await round();
-await evaluate("[...document.querySelectorAll('.message[data-pending] button')].find((button) => button.textContent === 'Retry').click()");
-await until(`fetch(new URL('api/chat/${ids.done}/timeline', document.baseURI)).then((r) => r.json()).then((data) => data.exchange.round === ${before + 1})`, "Retry did not send the message again");
-await until(`${notDelivered}.startsWith('Not delivered')`, "the retried message did not keep its reason");
+await evaluate(`[...${failedRow}.querySelectorAll('button')].find((button) => button.textContent === 'Send again').click()`);
+await until(`fetch(new URL('api/chat/${ids.done}/timeline', document.baseURI)).then((r) => r.json()).then((data) => data.exchange.round === ${before + 1})`, "Send again did not send the message again");
+await until(`(${notDelivered}).startsWith('Not delivered')`, "the message sent again did not keep its reason");
 
 // Files: each shows at once while it uploads and Send waits; a photo larger than 2000 px
 // is made smaller before it leaves the phone; the draft is still there after a reload.
@@ -1026,7 +1029,7 @@ const sent = await evaluate(`(async () => {
 if (sent.edge !== 2000 || sent.size >= original || !/^IMG_0001\.(jpg|png)$/.test(sent.name)) await fail(`the photo was not made smaller: ${JSON.stringify({ original, ...sent })}`);
 await send("Page.reload");
 await until("!!document.querySelector('.composer-field:not([disabled])')", "the done session did not reopen after a reload");
-await until(`${notDelivered}.startsWith('Not delivered')`, "the message that was not delivered is gone after a reload");
+await until(`(${notDelivered}).startsWith('Not delivered')`, "the message that was not delivered is gone after a reload");
 const kept = await evaluate("({ text: document.querySelector('.composer-field').value, files: [...document.querySelectorAll('.chips li span:first-child')].map((node) => node.textContent) })");
 if (kept.text !== "kept after a reload" || kept.files.length !== 1 || !kept.files[0].startsWith(sent.name)) await fail(`the draft was lost in a reload: ${JSON.stringify(kept)}`);
 // Leave no draft behind: removing the file and the text forgets it on this device too.

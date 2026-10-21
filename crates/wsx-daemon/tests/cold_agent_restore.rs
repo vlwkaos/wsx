@@ -754,6 +754,7 @@ fn report_claude_ready(daemon: &DaemonGuard, invocation: &ClaudeInvocation) {
                     lifecycle: true,
                     ..Default::default()
                 },
+                received: None,
             })
             .expect("report recovered Claude readiness"),
         Response::Ack { .. }

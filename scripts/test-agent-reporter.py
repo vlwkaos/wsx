@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Real shell/Hermes removed-reporter recovery and refusal, with private cleanup."""
+"""Real shell/Hermes removed-reporter recovery and refusal, the Claude hook's prompt receipts,
+with private cleanup."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -13,7 +15,7 @@ success = False
 try:
     log = work / 'calls'
     binary = work / 'current-wsx'
-    binary.write_text('#!/bin/sh\nprintf "agent\\n" >> "$WSX_TEST_REPORT_LOG"\nexit "${WSX_TEST_REPORT_EXIT:-0}"\n')
+    binary.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$WSX_TEST_REPORT_LOG"\nexit "${WSX_TEST_REPORT_EXIT:-0}"\n')
     binary.chmod(0o755)
     stable = work / 'wsx.reporter'
     stable.symlink_to(binary)
@@ -81,8 +83,24 @@ try:
         invoke(actor, {'PATH': selected_path})
         assert len(calls()) == before + 3, actor + ' executed a writable installed reporter'
         binary.chmod(0o755)
+    # The Claude hook names the prompt a turn took: a wsx round by its exchange line, also
+    # inside Claude's paste wrapper, else another prompt (docs/agent-orchestration.md "Taken, not typed").
+    def prompt_report(prompt, event='UserPromptSubmit'):
+        before = len(calls())
+        hook_input = json.dumps({'session_id': 'fixture', 'hook_event_name': event, 'prompt': prompt})
+        done = subprocess.run(['/bin/sh', str(shell), 'working'], input=hook_input, text=True,
+                              env=dict(env, WSX_AGENT_REPORT_BIN=str(binary)), capture_output=True, timeout=5)
+        assert done.returncode == 0 and len(calls()) == before + 1, done.stderr
+        return calls()[-1]
+    for prompt, expected in (('[wsx exchange 7, round 2, writer]\nhello', '--received 7:2'),
+                             ('<pasted_content id="4666">\n[wsx exchange 9, round 1, read-only]\nhi\n</pasted_content id="4666">', '--received 9:1'),
+                             ('typed by a person', '--received other')):
+        line = prompt_report(prompt)
+        assert expected in line and '--prompt-receipts' in line, (prompt, line)
+    assert '--received' not in prompt_report('[wsx exchange 7, round 2, writer]\nhello', event='PostToolUse')
     success = True
-    print('shell/Hermes reporter: pre-handoff and dangling-entry recovery, no rejection replay, unsafe-path refusal, bounded absence PASS')
+    print('shell/Hermes reporter: pre-handoff and dangling-entry recovery, no rejection replay, unsafe-path refusal, bounded absence; '
+          'Claude prompt receipts by round, in a paste wrapper and for another prompt PASS')
 finally:
     if success:
         shutil.rmtree(work)

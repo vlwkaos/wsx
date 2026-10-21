@@ -17,16 +17,14 @@ function stored() {
 const draftFor = (id) => {
   if (!drafts.has(id)) {
     const saved = stored()[id];
-    drafts.set(id, { text: saved?.text ?? "", attachments: saved?.attachments ?? [], uploads: [], pending: saved?.pending ?? null });
+    drafts.set(id, { text: saved?.text ?? "", attachments: saved?.attachments ?? [], uploads: [] });
   }
   return drafts.get(id);
 };
 function keepDraft(id) {
   const all = stored();
-  const { text, attachments, pending } = drafts.get(id);
-  // Only a message that was not delivered: a delivered one may never match the saved text.
-  const failed = pending?.failure != null ? pending : null;
-  if (text || attachments.length || failed) all[id] = { text, attachments, pending: failed };
+  const { text, attachments } = drafts.get(id);
+  if (text || attachments.length) all[id] = { text, attachments };
   else delete all[id];
   try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(all)); } catch { /* a private window keeps the draft in memory only */ }
 }
@@ -61,18 +59,11 @@ async function shrink(file) {
   }
 }
 
-// Send one message. A delivered one waits as pending until the saved conversation shows
-// it; a failed delivery keeps wsxd's reason there, with Retry.
-async function post(id, text, attachments) {
-  const answer = await api(`api/chat/${id}/send`, {
-    method: "POST", json: { text, attachments: attachments.map((item) => item.hash) },
-  });
-  if (!answer.queued) {
-    draftFor(id).pending = { text, attachments, exchange: answer.id, round: answer.round,
-      failure: answer.state === "delivery_failed" ? answer.failure ?? "" : null };
-  }
-  return answer;
-}
+// Send one message. The server keeps it in the session's queue until the saved
+// conversation shows it (docs/web-client.md "Queue and Stop").
+const post = (id, text, attachments) => api(`api/chat/${id}/send`, {
+  method: "POST", json: { text, attachments: attachments.map((item) => item.hash) },
+});
 
 // Copy a message's text, so a message the agent never took is not lost (docs/web-client.md "Queue and Stop").
 function CopyText({ text, label }) {
@@ -105,8 +96,8 @@ const EMPTY_WORDS = {
   no_readable_messages: "No messages yet.",
 };
 // What the latest exchange says under the last message of the conversation. A failed
-// delivery is not here: that message never reached the conversation, so the pending message
-// or the waiting one says it.
+// delivery is not here: that message never reached the conversation, so the waiting message
+// says it.
 const DELIVERY_WORDS = {
   cancelled: "Stopped.",
   cancel_requested: "Stopping…",
@@ -593,12 +584,11 @@ export function Chat({ session, onModel }) {
   };
 
   const items = data?.items ?? [];
-  const lastUser = items.filter((item) => item.kind === "user").at(-1);
-  // The saved conversation now holds the sent message: stop showing it as pending.
-  if (draft.pending && lastUser?.text === draft.pending.text) {
-    draft.pending = null;
-    keepDraft(id);
-  }
+  // ^ Typed into the agent and not in its conversation yet: they end the conversation as
+  // sent messages. The rest of the queue waits above the composer.
+  const queue = data?.queue ?? [];
+  const sent = queue.filter((queued) => queued.delivered_unix_ms);
+  const waiting = queue.filter((queued) => !queued.delivered_unix_ms);
   const working = data?.working ?? null;
   const now = useNow(Boolean(working));
   const list = blocks(items);
@@ -608,46 +598,31 @@ export function Chat({ session, onModel }) {
   // answer from the chat, a row that leads to the terminal. The draft stays for later.
   const blocked = status.key === "blocked";
   const lastUserBlock = list.findLast?.((block) => block.kind === "user");
-  const pending = draft.pending;
-  const latest = data?.exchange;
-  const notDelivered = pending && (latest?.id === pending.exchange && latest.round === pending.round
-    ? (latest.state === "delivery_failed" ? latest.failure ?? "" : null) : pending.failure);
-  const retry = async () => {
-    try {
-      await post(id, pending.text, pending.attachments);
-      keepDraft(id);
-      setFailure("");
-    } catch (error) {
-      setFailure(error.message);
-    }
-    load();
-  };
 
   return html`
     <div class="chat">
       <div class="log-wrap">
       <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation" tabindex="0">
         ${data?.truncated && html`<p class="note">Older messages are not shown.</p>`}
-        ${data && !list.length && !draft.pending ? html`<p class="empty">${EMPTY_WORDS[data.status] ?? "No messages yet."}</p>` : null}
+        ${data && !list.length && !sent.length ? html`<p class="empty">${EMPTY_WORDS[data.status] ?? "No messages yet."}</p>` : null}
         ${list.map((block, index) => block.steps
           ? html`<${Steps} key=${block.id} items=${block.steps} live=${Boolean(working) && index === list.length - 1} />`
           : block.kind === "summary" ? html`<${Summary} key=${block.id} id=${`summary-${block.id}`} text=${block.text} />`
+          : block.kind === "notice" ? html`<p key=${block.id} class="note chat-notice" role="status">${block.text}</p>`
           : html`
             <article key=${block.id} class=${block.kind === "user" ? "message message-user" : "message"} data-kind=${block.kind}>
               ${block.text && (block.kind === "user" ? html`<p class="prose">${block.text}</p>`
                 : html`<${Markdown} text=${block.text} files=${block.attachments} />`)}
               <${Attachments} files=${block.attachments} />
-              ${block === lastUserBlock && delivery && !draft.pending ? html`<p class="note" role="status">${delivery}</p>` : null}
+              ${block === lastUserBlock && delivery && !sent.length ? html`<p class="note" role="status">${delivery}</p>` : null}
             </article>`)}
-        ${draft.pending && html`
-          <article class="message message-user" data-pending>
-            ${draft.pending.text && html`<p class="prose">${draft.pending.text}</p>`}
-            <${Attachments} files=${draft.pending.attachments} />
-            ${draft.pending.text && html`<${CopyText} text=${draft.pending.text} label="Copy the sent message" />`}
-            ${notDelivered != null && html`
-              <p class="error" role="alert">Not delivered to the agent${notDelivered ? `: ${inWords(notDelivered)}` : ""}.</p>
-              <button class="link-action" type="button" onClick=${retry}>Retry</button>`}
-          </article>`}
+        ${sent.map((queued) => html`
+          <article key=${`sent-${queued.id}`} class="message message-user" data-pending>
+            ${queued.text && html`<p class="prose">${queued.text}</p>`}
+            <${Attachments} files=${queued.attachments} />
+            ${queued.text && html`<${CopyText} text=${queued.text} label="Copy the sent message" />`}
+            ${can("chat_send") && html`<button class="link-action" type="button" onClick=${() => act(`queue/${queued.id}/retry`)}>Send again</button>`}
+          </article>`)}
         ${working && html`
           <div class="working" role="status">
             <span class="pulse" aria-hidden="true"></span>
@@ -659,18 +634,17 @@ export function Chat({ session, onModel }) {
       ${away && html`<button class="jump" type="button" onClick=${toEnd}><${Icon} name="down" />Jump to latest</button>`}
       </div>
       ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
-      ${data?.queue?.length ? html`
+      ${waiting.length ? html`
         <ul class="queue" aria-label="Messages waiting for the agent">
-          ${data.queue.map((queued) => html`
-            <li key=${queued.id} class="queued" data-failed=${queued.failed ? "" : null} data-delivered=${queued.delivered_unix_ms ? "" : null}>
+          ${waiting.map((queued) => html`
+            <li key=${queued.id} class="queued" data-failed=${queued.failed ? "" : null}>
               <span class="queued-text">${queued.text || `${queued.attachments.length} files`}</span>
               ${queued.text && html`<${CopyText} text=${queued.text} label=${`Copy waiting message: ${queued.text.slice(0, 40)}`} />`}
-              ${(queued.failed || queued.delivered_unix_ms) && html`<button class="link-action" type="button"
-                onClick=${() => act(`queue/${queued.id}/retry`)}>${queued.failed ? "Retry" : "Send again"}</button>`}
+              ${queued.failed && html`<button class="link-action" type="button"
+                onClick=${() => act(`queue/${queued.id}/retry`)}>Send again</button>`}
               <button class="link-action" type="button" aria-label=${`Remove waiting message: ${queued.text.slice(0, 40)}`}
                 onClick=${() => act(`queue/${queued.id}`, "DELETE")}>Remove</button>
               ${queued.failed && html`<p class="queued-reason" role="alert">Not delivered to the agent: ${inWords(queued.failed)}</p>`}
-              ${queued.delivered_unix_ms && !queued.failed && html`<p class="queued-note" role="status">Typed into the agent, not in its conversation yet. If it does not show up, copy it or send it again.</p>`}
             </li>`)}
         </ul>` : null}
       ${blocked && data?.question ? html`<${Question} session=${session} question=${data.question} onAnswered=${load} />`
@@ -679,7 +653,7 @@ export function Chat({ session, onModel }) {
           <span>Waiting for your answer.</span>
           ${shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`}
         </div>`
-      : can("chat_send") && html`<${Composer} session=${session} working=${Boolean(working) || Boolean(data?.queue?.some((queued) => !queued.delivered_unix_ms))}
+      : can("chat_send") && html`<${Composer} session=${session} working=${Boolean(working) || waiting.some((queued) => !queued.failed)}
         onSent=${() => { atEnd.current = true; load(); }} />`}
     </div>`;
 }

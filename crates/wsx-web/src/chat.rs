@@ -2,6 +2,7 @@
 //! ^ docs/agent-orchestration.md: PTY delivery is not acceptance, and pane lifecycle
 //! is not request-bound completion. This module never reads terminal output; the one
 //! reader of a pane's screen is `question.rs`, for a blocked agent's dialog.
+use crate::queue::{Round, Settled};
 use crate::{
     media::Media,
     sandbox::Root,
@@ -252,12 +253,16 @@ pub struct Chat {
     /// (path, mtime, size) of a project file already copied into the media store.
     /// `None` records a file the store refused, so it is not copied again on every read.
     produced: Mutex<HashMap<(PathBuf, i64, u64), Option<String>>>,
+    /// One delivery at a time: the page's send and the event observer must not both send
+    /// the same waiting message.
+    delivering: Mutex<()>,
 }
 
 impl Chat {
     pub fn new() -> Self {
         Self {
             produced: Mutex::new(HashMap::new()),
+            delivering: Mutex::new(()),
         }
     }
 
@@ -317,6 +322,7 @@ impl Chat {
                 })
             })
             .collect();
+        let items = with_notices(items, app.queue.notices(session), start.is_some());
         // Only wsxd decides that the agent works; the transcript says at what.
         let working = target
             .pane
@@ -346,10 +352,10 @@ impl Chat {
                 crate::question::view(client, target.pane.id, last)
             });
         // A delivered queued message leaves the queue once the conversation shows it.
-        let shown: Vec<&str> = items
+        let shown: Vec<(&str, Option<u64>)> = items
             .iter()
             .filter(|item| item["kind"] == "user")
-            .filter_map(|item| item["text"].as_str().map(str::trim))
+            .filter_map(|item| Some((item["text"].as_str()?.trim(), item["at_unix_ms"].as_u64())))
             .collect();
         app.queue.settle(session, &shown);
         Ok(json!({
@@ -438,8 +444,10 @@ impl Chat {
         found
     }
 
-    /// Take one message from the page. It is delivered now, or it waits in the
-    /// session's queue while the agent works or older messages wait.
+    /// Take one message from the page into the session's queue, and deliver the oldest
+    /// waiting one now when the agent can take it. Every message goes through the queue, so
+    /// the server keeps it until the conversation shows it and sends it again once when the
+    /// agent did not take it (docs/web-client.md "Queue and Stop").
     pub fn submit(
         &self,
         app: &App,
@@ -451,27 +459,33 @@ impl Chat {
         prompt_of(site, media, text, attachments)?;
         let snapshot = snapshot(client)?;
         let target = target(&snapshot, &site.access, session)?;
-        let agent = attached_agent(&target)?;
-        let enqueue = || {
-            let queued = app.queue.push(session, text, attachments).ok_or_else(|| {
-                Fault::new(
-                    409,
-                    "queue_full",
-                    "five messages already wait for this agent; remove one first",
-                )
-            })?;
-            crate::events::history_changed(app, session);
-            Ok(json!({ "queued": queued_view(&queued, media) }))
-        };
-        // A failed message does not hold back a new one; a waiting one goes first.
-        if agent.state == AgentState::Working || app.queue.next(session).is_some() {
-            return enqueue();
-        }
-        match self.send(client, site, media, session, text, attachments) {
-            // The agent or its exchange became busy between the check and the delivery.
-            Err(fault) if busy(&fault) => enqueue(),
-            result => result,
-        }
+        attached_agent(&target)?;
+        let queued = app.queue.push(session, text, attachments).ok_or_else(|| {
+            Fault::new(
+                409,
+                "queue_full",
+                "five messages already wait for this agent; remove one first",
+            )
+        })?;
+        self.deliver_queued(app, &target);
+        crate::events::history_changed(app, session);
+        let now = app
+            .queue
+            .list(session)
+            .into_iter()
+            .find(|current| current.id == queued.id)
+            .unwrap_or(queued);
+        // ^ Delivered now: the exchange it went out in, with its evidence level.
+        let exchange = now.round.and_then(|sent| {
+            exchanges(client, Some(target.pane.id))
+                .ok()?
+                .into_iter()
+                .find(|exchange| exchange.id.0 == sent.exchange)
+        });
+        Ok(json!({
+            "queued": queued_view(&now, media),
+            "exchange": exchange.as_ref().map(exchange_view),
+        }))
     }
 
     /// Answer the dialog of a blocked agent with one key or one line of text.
@@ -509,7 +523,7 @@ impl Chat {
             return Err(Fault::forbidden("sending messages"));
         }
         let snapshot = snapshot(&app.client)?;
-        target(&snapshot, &app.site.access, session)?;
+        let target = target(&snapshot, &app.site.access, session)?;
         let changed = if retry {
             app.queue.retry(session, id)
         } else {
@@ -522,24 +536,98 @@ impl Chat {
                 "this message is no longer waiting",
             ));
         }
+        // ^ Sent again at once when the agent can take it, as a new message is.
+        if retry {
+            self.deliver_queued(app, &target);
+        }
         crate::events::history_changed(app, session);
         Ok(
             json!({ "queue": app.queue.list(session).iter().map(|queued| queued_view(queued, &app.media)).collect::<Vec<_>>() }),
         )
     }
 
+    /// Settle the rounds that carried delivered messages. A taken one leaves the queue when the
+    /// agent reports prompt receipts (its words may never show, as after a compaction), else it
+    /// stops being watched and waits for the conversation to show it. One the agent did not
+    /// take sends its message again once, then keeps it failed.
+    /// Runs before every delivery, while the round is still the exchange's current one.
+    /// Returns whether the queue changed. ref: docs/agent-orchestration.md "Taken, not typed"
+    fn settle_rounds(&self, app: &App, target: &Target) -> bool {
+        let session = target.session_id.0;
+        let sent: Vec<_> = app
+            .queue
+            .list(session)
+            .into_iter()
+            .filter_map(|queued| Some((queued.id, queued.round?)))
+            .collect();
+        if sent.is_empty() {
+            return false;
+        }
+        let Ok(exchanges) = exchanges(&app.client, Some(target.pane.id)) else {
+            return false;
+        };
+        let agent = target.pane.agent.as_ref();
+        let provider = agent.map_or("The agent".to_string(), |agent| {
+            provider_name(&agent.provider)
+        });
+        let receipts = agent.is_some_and(|agent| agent.capabilities.prompt_receipts);
+        let mut changed = false;
+        for (id, sent) in sent {
+            let Some(exchange) = exchanges
+                .iter()
+                .find(|exchange| exchange.id.0 == sent.exchange)
+            else {
+                continue;
+            };
+            let state = if exchange.round == sent.round {
+                exchange.state
+            } else {
+                // ^ A later round of the exchange started, so this one was over.
+                AgentExchangeState::Completed
+            };
+            let outcome = match state {
+                AgentExchangeState::Submitted | AgentExchangeState::Delivered => continue,
+                AgentExchangeState::DeliveryFailed
+                    if exchange
+                        .failure
+                        .as_deref()
+                        .is_some_and(|failure| failure.starts_with("not_taken:")) =>
+                {
+                    Round::NotTaken {
+                        reason: format!("not_taken: {provider} did not take this message"),
+                    }
+                }
+                _ => Round::Taken { remove: receipts },
+            };
+            let settled = app.queue.settle_round(session, id, sent, outcome);
+            if let Some(Settled::SentAgain) = settled {
+                app.queue.notice(
+                    session,
+                    format!("Sent again: {provider} did not take it the first time."),
+                );
+            }
+            changed |= settled.is_some();
+        }
+        changed
+    }
+
     /// Deliver the oldest waiting message of a session when the agent can take it.
     /// Returns whether the queue changed.
     pub fn deliver_queued(&self, app: &App, target: &Target) -> bool {
+        let _one = self
+            .delivering
+            .lock()
+            .unwrap_or_else(|lock| lock.into_inner());
         let session = target.session_id.0;
+        let settled = self.settle_rounds(app, target);
         let Some(queued) = app.queue.next(session) else {
-            return false;
+            return settled;
         };
         let ready = target.pane.agent.as_ref().is_some_and(|agent| {
             agent.attached && !matches!(agent.state, AgentState::Working | AgentState::Blocked)
         });
         if !ready {
-            return false;
+            return settled;
         }
         match self.send(
             &app.client,
@@ -558,13 +646,21 @@ impl Chat {
                 app.queue.fail(session, queued.id, reason);
                 true
             }
-            Ok(_) => app.queue.delivered(session, queued.id),
+            Ok(exchange) => {
+                let round = exchange["id"].as_u64().zip(exchange["round"].as_u64()).map(
+                    |(exchange, round)| crate::queue::SentRound {
+                        exchange,
+                        round: round as u32,
+                    },
+                );
+                app.queue.delivered(session, queued.id, round)
+            }
             // Not at a wait boundary yet, such as Claude's editor that is drawn idle a moment
             // after the turn ends: try again soon, and fail with the reason after a while.
             Err(fault) if busy(&fault) => {
                 let since = app.queue.not_yet(session, queued.id);
                 if crate::devices::now_unix_ms().saturating_sub(since) < NOT_YET_MS {
-                    return false;
+                    return settled;
                 }
                 app.queue.fail(session, queued.id, &fault.2);
                 true
@@ -778,6 +874,8 @@ fn busy(fault: &Fault) -> bool {
             "editor_unavailable",
             "daemon_unavailable",
             "daemon_replacing",
+            // ^ The exchange changed between the read and the continue, as a receipt does.
+            "revision_conflict",
         ]
         .iter()
         .any(|code| fault.2.starts_with(&format!("{code}:")))
@@ -829,14 +927,7 @@ pub fn with_attachments(
             "at most 8 attachments",
         ));
     }
-    // The daemon rejects terminal control characters; drop them here so a pasted
-    // carriage return does not fail the whole message.
-    let mut prompt: String = text
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
-        .collect::<String>()
-        .trim()
-        .to_owned();
+    let mut prompt = agent_text(text);
     if !attachments.is_empty() {
         prompt.push_str(&format!("\n\n{ATTACHMENT_HEADER}"));
         for hash in attachments {
@@ -864,6 +955,53 @@ pub fn with_attachments(
     Ok(prompt)
 }
 
+/// The server's notices among the conversation's items, each before the first item saved
+/// after it. A partial answer (`from`) gets only the notices from its first item on.
+fn with_notices(
+    mut items: Vec<Value>,
+    notices: Vec<crate::queue::Notice>,
+    partial: bool,
+) -> Vec<Value> {
+    let first = items.first().and_then(|item| item["at_unix_ms"].as_u64());
+    for notice in notices {
+        let at = notice.at_unix_ms;
+        if partial && first.is_none_or(|first| at < first) {
+            continue;
+        }
+        let index = items
+            .iter()
+            .position(|item| {
+                item["at_unix_ms"]
+                    .as_u64()
+                    .is_some_and(|item_at| item_at > at)
+            })
+            .unwrap_or(items.len());
+        items.insert(
+            index,
+            json!({ "id": format!("notice-{at}"), "kind": "notice", "at_unix_ms": at, "text": notice.text, "attachments": [] }),
+        );
+    }
+    items
+}
+
+/// A message as the agent gets it. The daemon rejects terminal control characters; they
+/// are dropped so a pasted carriage return does not fail the whole message.
+pub fn agent_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+/// A provider as a person reads it: `claude` is Claude.
+fn provider_name(provider: &str) -> String {
+    let mut letters = provider.chars();
+    letters.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(letters).collect()
+    })
+}
+
 fn queued_view(queued: &crate::queue::Queued, media: &Media) -> Value {
     let attachments: Vec<Attachment> = queued
         .attachments
@@ -874,7 +1012,7 @@ fn queued_view(queued: &crate::queue::Queued, media: &Media) -> Value {
     json!({
         "id": queued.id, "text": queued.text, "attachments": attachments,
         "at_unix_ms": queued.at_unix_ms, "failed": queued.failed,
-        "delivered_unix_ms": queued.delivered_unix_ms,
+        "delivered_unix_ms": queued.delivered_unix_ms, "resent": queued.resent,
     })
 }
 

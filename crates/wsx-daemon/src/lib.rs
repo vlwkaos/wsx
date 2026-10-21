@@ -2658,6 +2658,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             session_ref,
             wake_token,
             capabilities,
+            received,
         } => agent_report_with_attachment(
             daemon,
             RuntimeAgentAuthority::new(pane_id, runtime_generation),
@@ -2670,6 +2671,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
                 session_ref,
                 wake_token,
                 capabilities,
+                received,
             },
         ),
         Request::AgentPresenceRenew {
@@ -4305,6 +4307,12 @@ fn observe_agent_exchange(
     revision: u64,
     now: u64,
 ) {
+    let receipts = persisted
+        .panes
+        .iter()
+        .find(|pane| pane.id == pane_id)
+        .and_then(|pane| pane.agent.as_ref())
+        .is_some_and(|agent| agent.attached && agent.capabilities.prompt_receipts);
     let Some(exchange) = persisted
         .agent_exchanges
         .iter_mut()
@@ -4313,6 +4321,19 @@ fn observe_agent_exchange(
     else {
         return;
     };
+    // ^ With prompt receipts a round follows the agent's turns only once the agent took it:
+    // until then they belong to another prompt (docs/agent-orchestration.md "Taken, not typed").
+    // A command round may start no prompt at all (Claude's /compact): it follows the lifecycle.
+    if attached
+        && receipts
+        && !exchange.command
+        && matches!(
+            exchange.state,
+            AgentExchangeState::Submitted | AgentExchangeState::Delivered
+        )
+    {
+        return;
+    }
     let next = if !attached {
         Some(AgentExchangeState::Interrupted)
     } else if exchange.state == AgentExchangeState::CancelRequested
@@ -4348,6 +4369,95 @@ fn observe_agent_exchange(
     }
 }
 
+/// How long a delivered round may stay untaken while its agent is not working.
+const TAKE_WAIT_MS: u64 = 5_000;
+
+/// The agent's own hook says which prompt a turn took. The round it names is accepted; a
+/// round still waiting when another prompt starts was not taken, so that turn never
+/// becomes its result. ref: docs/agent-orchestration.md "Taken, not typed"
+fn receive_prompt(
+    persisted: &mut Persisted,
+    pane_id: PaneId,
+    received: Option<PromptReceived>,
+    revision: u64,
+    now: u64,
+) {
+    let Some(received) = received else {
+        return;
+    };
+    let Some(exchange) = persisted.agent_exchanges.iter_mut().rev().find(|exchange| {
+        exchange.pane_id == pane_id
+            && matches!(
+                exchange.state,
+                AgentExchangeState::Submitted | AgentExchangeState::Delivered
+            )
+    }) else {
+        return;
+    };
+    let named = received
+        == PromptReceived::Round {
+            exchange: exchange.id,
+            round: exchange.round,
+        };
+    // ^ A command round has no exchange line: the prompt the agent took is taken as it.
+    if named || exchange.command {
+        exchange.state = AgentExchangeState::Accepted;
+        exchange.evidence = AgentExchangeEvidence::PaneLifecycle;
+    } else {
+        exchange.state = AgentExchangeState::DeliveryFailed;
+        exchange.failure = Some("not_taken: the agent took another prompt first".into());
+    }
+    exchange.updated_unix_ms = now;
+    exchange.revision = revision;
+}
+
+/// A delivered round that an agent with prompt receipts has not taken within
+/// `TAKE_WAIT_MS` while it is not working, such as a paste dropped as a turn ended, is not
+/// taken. Returns whether a round changed.
+fn fail_untaken_rounds(daemon: &Daemon, state: &mut State) -> Result<bool, ApiError> {
+    let now = unix_time_millis();
+    let untaken = |exchange: &AgentExchange, panes: &[PersistedPane]| {
+        exchange.state == AgentExchangeState::Delivered
+            && !exchange.command
+            && now.saturating_sub(exchange.updated_unix_ms) >= TAKE_WAIT_MS
+            && panes
+                .iter()
+                .find(|pane| pane.id == exchange.pane_id)
+                .and_then(|pane| pane.agent.as_ref())
+                .is_some_and(|agent| {
+                    agent.attached
+                        && agent.capabilities.prompt_receipts
+                        && agent.state != AgentState::Working
+                        && agent
+                            .state_since_unix_ms
+                            .is_none_or(|since| now.saturating_sub(since) >= TAKE_WAIT_MS)
+                })
+    };
+    let persisted = &state.persisted;
+    if !persisted
+        .agent_exchanges
+        .iter()
+        .any(|exchange| untaken(exchange, &persisted.panes))
+    {
+        return Ok(false);
+    }
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    let panes = persisted.panes.clone();
+    for exchange in &mut persisted.agent_exchanges {
+        if untaken(exchange, &panes) {
+            exchange.state = AgentExchangeState::DeliveryFailed;
+            exchange.failure = Some("not_taken: the agent did not take it within 5 s".into());
+            exchange.updated_unix_ms = now;
+            exchange.revision = revision;
+        }
+    }
+    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
+    state.persisted = persisted;
+    publish(daemon, state, revision, "agent_exchange.not_taken", 0);
+    Ok(true)
+}
+
 // ^ [[Agent Lifecycle Authority]] wsx-core normalizes provider events and bounded
 // companion evidence; this boundary owns reconciliation, generation checks,
 // persistence, wake authority, and resume identity.
@@ -4360,6 +4470,7 @@ struct AgentReportInput {
     session_ref: Option<AgentSessionRef>,
     wake_token: Option<String>,
     capabilities: AgentCapabilities,
+    received: Option<PromptReceived>,
 }
 
 #[cfg(test)]
@@ -4384,6 +4495,7 @@ fn agent_report(
             session_ref,
             wake_token: None,
             capabilities,
+            received: None,
         },
     )
 }
@@ -4402,6 +4514,7 @@ fn agent_report_with_attachment(
         session_ref,
         wake_token,
         mut capabilities,
+        received,
     } = report;
     let RuntimeAgentAuthority {
         pane_id,
@@ -4546,6 +4659,13 @@ fn agent_report_with_attachment(
         persisted.projects[project_index].last_agent_active_unix_ms = Some(unix_time_millis());
         persisted.projects[project_index].revision = revision;
     }
+    receive_prompt(
+        &mut persisted,
+        pane_id,
+        received,
+        revision,
+        unix_time_millis(),
+    );
     observe_agent_exchange(
         &mut persisted,
         pane_id,
@@ -5414,6 +5534,7 @@ fn create_agent_exchange_with(
         failure: None,
         key,
         continue_key: None,
+        command: input.command,
         revision,
     });
     save_state(&daemon.state_path, &persisted).map_err(io_api)?;
@@ -5567,6 +5688,7 @@ fn continue_agent_exchange_with(
     exchange.delivery_sha256 = None;
     exchange.native_input_id = None;
     exchange.continue_key = key;
+    exchange.command = input.command;
     exchange.updated_unix_ms = now;
     exchange.deadline_unix_ms = now.saturating_add(timeout_ms);
     exchange.delivery_revision = revision;
@@ -6529,6 +6651,12 @@ fn spawn_foreground_scanner(daemon: &Arc<Daemon>) -> thread::JoinHandle<()> {
             && apply_foreground_scan(&mut state, foreground_jobs)
         {
             bump(&daemon, &mut state, "pane_activity.changed", 0);
+        }
+        // ^ This loop's short interval also times rounds that were never taken.
+        if !state.handoff_in_progress {
+            if let Err(error) = fail_untaken_rounds(&daemon, &mut state) {
+                eprintln!("wsxd: cannot end an untaken round: {}", error.message);
+            }
         }
         drop(state);
         thread::sleep(FOREGROUND_SCAN_INTERVAL);
@@ -8645,6 +8773,7 @@ mod tests {
                 session_ref: None,
                 wake_token: None,
                 capabilities: AgentCapabilities::default(),
+                received: None,
             },
         )
         .unwrap_err();
@@ -8662,6 +8791,7 @@ mod tests {
                 session_ref: None,
                 wake_token: None,
                 capabilities: AgentCapabilities::default(),
+                received: None,
             },
         )
         .unwrap();
@@ -8739,6 +8869,7 @@ mod tests {
                 session_ref: None,
                 wake_token: None,
                 capabilities: AgentCapabilities::default(),
+                received: None,
             },
         )
         .unwrap();
@@ -8809,6 +8940,7 @@ mod tests {
                     session_ref: None,
                     wake_token: None,
                     capabilities: AgentCapabilities::default(),
+                    received: None,
                 },
             )
             .unwrap();
@@ -8855,6 +8987,7 @@ mod tests {
                 session_ref: None,
                 wake_token: None,
                 capabilities: AgentCapabilities::default(),
+                received: None,
             },
         )
         .unwrap();
@@ -8911,6 +9044,7 @@ mod tests {
                 session_ref: None,
                 wake_token: None,
                 capabilities: AgentCapabilities::default(),
+                received: None,
             },
         )
         .unwrap();
@@ -9317,6 +9451,7 @@ mod tests {
                 session_ref: None,
                 wake_token: wake_token.map(str::to_string),
                 capabilities: claude_capabilities(),
+                received: None,
             },
         )
     }
@@ -9419,6 +9554,7 @@ mod tests {
                 session_ref: None,
                 wake_token: None,
                 capabilities: claude_capabilities(),
+                received: None,
             },
         )
         .unwrap();
@@ -11244,6 +11380,7 @@ mod tests {
                     lifecycle: true,
                     ..Default::default()
                 },
+                received: None,
             },
         );
         assert!(matches!(report, Response::Ack { .. }));
@@ -11388,6 +11525,7 @@ mod tests {
             failure: None,
             key: None,
             continue_key: None,
+            command: false,
             revision: 9,
         };
         assert!(has_writer_claim_conflict(
@@ -11453,6 +11591,7 @@ mod tests {
             failure: None,
             key: None,
             continue_key: None,
+            command: false,
             revision: 9,
         };
 

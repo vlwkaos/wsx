@@ -35,6 +35,7 @@ conversation=""
 prompt_id=""
 transcript=""
 compaction=""
+received=""
 if command -v python3 >/dev/null 2>&1; then
   if ! metadata="$(printf '%s' "$input" | WSX_PROVIDER="@PROVIDER@" python3 -c 'import json,os,sys
 try:
@@ -48,7 +49,14 @@ try:
  # and the compaction events of an automatic one (Claude Code 2.1.300 sends "trigger").
  compaction=os.environ.get("WSX_PROVIDER") == "claude" and (d.get("source") == "compact"
   or (d.get("hook_event_name") in ("PreCompact","PostCompact") and d.get("trigger") != "manual"))
- values=[conversation,prompt if isinstance(prompt,str) else "",transcript if isinstance(transcript,str) else "","1" if compaction else ""]
+ # The prompt a Claude turn takes: a wsx round by its exchange line, as typed or inside the
+ # paste wrapper Claude saves it in, else another prompt (docs/agent-orchestration.md "Taken, not typed").
+ received=""
+ if os.environ.get("WSX_PROVIDER") == "claude" and d.get("hook_event_name") == "UserPromptSubmit" and isinstance(d.get("prompt"),str):
+  import re
+  m=re.match(r"\s*(?:<pasted_content [^>]*>\s*)?\[wsx exchange (\d+), round (\d+), ",d["prompt"])
+  received=m.group(1)+":"+m.group(2) if m else "other"
+ values=[conversation,prompt if isinstance(prompt,str) else "",transcript if isinstance(transcript,str) else "","1" if compaction else "",received]
  if any("|" in value or any(ord(c)<32 for c in value) for value in values): raise SystemExit(1)
  print("|".join(values))
 except (TypeError, ValueError): pass' 2>/dev/null)"; then
@@ -60,7 +68,9 @@ except (TypeError, ValueError): pass' 2>/dev/null)"; then
   prompt_id="${remainder%%|*}"
   remainder="${remainder#*|}"
   transcript="${remainder%%|*}"
-  compaction="${remainder#*|}"
+  remainder="${remainder#*|}"
+  compaction="${remainder%%|*}"
+  received="${remainder#*|}"
 fi
 # ^ docs/agent-reporting.md "Claude compaction": Claude starts its session again after every
 # compaction, also an automatic one inside a turn. That start must not end the turn; only the
@@ -76,7 +86,8 @@ fi
 set -- agent report "$WSX_PANE_ID" --provider "@PROVIDER@" --state "$state"
 [ "@LIFECYCLE@" = "yes" ] && set -- "$@" --lifecycle
 [ "$action" = "detached" ] && set -- "$@" --detached
-[ "@PROVIDER@" = "claude" ] && set -- "$@" --escape-interrupts --prompt
+[ "@PROVIDER@" = "claude" ] && set -- "$@" --escape-interrupts --prompt --prompt-receipts
+[ -n "$received" ] && [ "$state" = "working" ] && set -- "$@" --received "$received"
 [ "@PROVIDER@" = "claude" ] && [ "$state" = "working" ] && [ -n "$prompt_id" ] && set -- "$@" --wake-token "$prompt_id"
 [ -n "$conversation" ] && set -- "$@" --session-id "$conversation"
 [ -n "$conversation" ] && [ -n "$transcript" ] && set -- "$@" --transcript-path "$transcript"

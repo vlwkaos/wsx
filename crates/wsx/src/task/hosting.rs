@@ -114,6 +114,7 @@ pub fn report_pane(
         session_ref: None,
         wake_token: None,
         capabilities: runtime::AgentCapabilities::default(),
+        received: None,
     };
     match runtime::Client::new(runtime::default_socket_path()).call(&request) {
         Ok(runtime::Response::Error(error)) => {
