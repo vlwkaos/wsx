@@ -39,7 +39,7 @@ export function conversation(entries, resolutions) {
       const [from, peer] = entry.from.split(/:(.*)/s);
       rows.push({ kind: "bubble", at, key, author: `peer:${peer}`, entry, tag: from === "manager-reply" ? "Reply" : null });
     } else if (entry.kind === "sent") {
-      rows.push({ kind: "bubble", at, key, author: "manager", entry, tag: `${entry.reply ? "Reply to" : "To"} Manager ${entry.to}` });
+      rows.push({ kind: "bubble", at, key, author: "manager", entry, to: entry.to });
     } else if (entry.kind === "message") {
       // ^ The status lines first, so they join the settled lines just before them.
       const reports = entry.reports ?? [];
@@ -114,13 +114,17 @@ function Fold({ id, children }) {
       </button>`}`;
 }
 
-const authorName = (author) => author === "owner" ? "You" : author === "manager" ? "Manager"
-  : author.startsWith("peer:") ? `Manager ${author.slice(5)}` : `#${author.slice(7)} worker`;
+// `names`: the manager's name ("Manager" until `tasks.manager.name` is set) and other
+// projects' set names; a peer without one reads "Manager <project>" (docs/tasks.md "Config").
+const peerName = (names, project) => names?.peers?.[project] ?? `Manager ${project}`;
+const authorName = (author, names) => author === "owner" ? "You" : author === "manager" ? names?.manager ?? "Manager"
+  : author.startsWith("peer:") ? peerName(names, author.slice(5)) : `#${author.slice(7)} worker`;
 
 // One message. `words` turns its text runs into task chips.
-export function Bubble({ project, row, words }) {
+export function Bubble({ project, row, words, names }) {
   const out = row.author === "owner";
   const id = `bubble-${row.key}`;
+  const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${peerName(names, row.to)}` : row.tag;
   let body;
   if (row.report) {
     const { report } = row;
@@ -135,18 +139,18 @@ export function Bubble({ project, row, words }) {
   }
   return html`
     <article class="bubble" data-side=${out ? "out" : "in"} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null}
-      data-pending=${row.pending ? "" : null} aria-label=${`${authorName(row.author)}, ${clock(row.at)}`}>
-      ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${authorName(row.author)}</p>`}
-      <div class="bubble-box">${row.tag && html`<p class="bubble-tag">${row.tag}</p>`}${body}</div>
+      data-pending=${row.pending ? "" : null} aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}`}>
+      ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${authorName(row.author, names)}</p>`}
+      <div class="bubble-box">${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>
       ${row.last && html`<p class="bubble-time" aria-hidden="true">${row.pending ? "Sending…" : clock(row.at)}</p>`}
     </article>`;
 }
 
 // The manager writes: three dots, still where the user asked for less motion.
-export const Typing = () => html`
+export const Typing = ({ name = "Manager" }) => html`
   <article class="bubble" data-side="in" data-first="" data-last="" role="status">
-    <p class="bubble-author" aria-hidden="true">Manager</p>
-    <div class="bubble-box typing"><span class="visually-hidden">Manager is typing</span>
+    <p class="bubble-author" aria-hidden="true">${name}</p>
+    <div class="bubble-box typing"><span class="visually-hidden">${name} is typing</span>
       <span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span>
     </div>
   </article>`;

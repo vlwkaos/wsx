@@ -69,7 +69,7 @@ export function nextWords(detail) {
   if (asked) return `The manager asks: ${asked.label}.`;
   if (detail.phase === "brief") {
     switch (detail.state) {
-      case "briefed": return "The brief has questions for you. Answer them and the build starts by itself, or Start it as it is.";
+      case "briefed": return "Answer the questions below and the build starts by itself, or Start it as it is.";
       case "failed": return "The worker returned no brief. Reply to ask again.";
       case "stopped": return "The worker stopped. Reply to resume the brief.";
       case "closed": return "Closed before the build.";
@@ -109,15 +109,16 @@ export function nextWords(detail) {
 }
 
 // The top of the task sheet: one sentence of what changed (More shows the whole summary and
-// what the worker decided), and what the owner should know next (docs/web-client.md "Task sheet").
-export function TaskStory({ detail, words }) {
+// what the worker decided), and what the owner should know next with the task's actions beside
+// it (docs/web-client.md "Task sheet").
+export function TaskStory({ detail, words, children }) {
   const [more, setMore] = useState(false);
   const summary = (detail.result?.summary ?? "").trim();
   const sentence = firstSentence(summary);
   const decisions = detail.result?.decisions ?? [];
   const longer = summary !== sentence || decisions.length > 0;
   const next = nextWords(detail);
-  if (!sentence && !next) return null;
+  if (!sentence && !next && !children) return null;
   return html`
     <section class="story" aria-label="Where this task stands">
       ${sentence && (more ? html`
@@ -127,6 +128,6 @@ export function TaskStory({ detail, words }) {
         </div>` : html`<p class="story-summary">${words(sentence)}</p>`)}
       ${sentence && longer && html`<button class="link-action" type="button" aria-expanded=${more} aria-controls="story-more"
         onClick=${() => setMore(!more)}>${more ? "Less" : "More"}</button>`}
-      ${next && html`<p class="story-next">${next}</p>`}
+      ${(next || children) && html`<div class="story-act">${next && html`<p class="story-next">${next}</p>`}${children}</div>`}
     </section>`;
 }

@@ -217,6 +217,10 @@ async function inbox() {
   // The work first, project › worktree, each with its own look; the session under it.
   if (running.work !== "design › main" || running.session !== "release notes · claude") await fail(`the running row reads ${JSON.stringify(running)}`);
   if (new Set(running.looks).size !== 3) await fail(`project, separator and worktree share a look: ${running.looks}`);
+  // A working session's mark pulses with the working color; no other mark does.
+  const marks = await evaluate(`[...document.querySelectorAll('.scroll .row .mark')].map((mark) => ({ running: mark.hasAttribute('data-running'),
+    working: mark.closest('section')?.getAttribute('aria-label') === 'Running', animated: getComputedStyle(mark).animationName !== 'none' }))`);
+  if (marks.some((mark) => mark.running !== mark.working || mark.animated !== mark.working)) await fail(`only working inbox marks pulse: ${JSON.stringify(marks)}`);
   if (sections.Sessions.find((row) => row.state === "idle")?.work !== "fix/login") await fail(`a row under its project heading repeats the project: ${JSON.stringify(sections.Sessions)}`);
   if (!sections.Finished.some((row) => /^done new$/.test(row.state))) await fail(`Finished marks nothing as new: ${JSON.stringify(sections.Finished)}`);
   // The inbox is agent work: the shell is only under its worktree in Projects.
@@ -790,6 +794,10 @@ await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-m
 await openSession("working");
 await until("!!document.querySelector('.pulse')", "the working row did not show");
 if ((await evaluate("getComputedStyle(document.querySelector('.pulse')).animationName")) !== "none") await fail("reduced motion is not respected");
+// ^ The inbox's working mark stays still too.
+await go("#/");
+await until("!!document.querySelector('section[aria-label=Running] .mark[data-running]')", "the inbox did not mark the working session");
+if ((await evaluate("getComputedStyle(document.querySelector('section[aria-label=Running] .mark[data-running]')).animationName")) !== "none") await fail("the inbox mark pulses under reduced motion");
 await send("Emulation.setEmulatedMedia", { features: [] });
 
 // Slash commands: `/` opens the agent's list, typing filters it, the arrows move, Escape

@@ -1610,6 +1610,9 @@ fn brief_request(prompt: &str) -> String {
          6. rewritten_prompt: the owner's request rewritten to ask for exactly that. It becomes \
          the build prompt, so it must be complete on its own.\n\
          7. open_questions: only the questions whose answer changes the work.\n\
+         8. diagram: a small diagram of the flow or structure the task changes, as one \
+         ```mermaid fenced block, or a ```text block when Mermaid does not fit; about 15 \
+         lines at most.\n\
          Leave answer empty. Write for the owner: short sentences and plain words."
     )
 }

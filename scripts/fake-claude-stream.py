@@ -181,6 +181,7 @@ def brief_turn(text, session, allowed, disallowed, current):
         return current
     owner = text.split('\n\n')[1] if reply else ''
     brief = json.load(open(source)) if source else {
+        'diagram': '```mermaid\ngraph LR\n  prompt[Owner prompt] --> brief[Brief] --> build[Build]\n```',
         'additions': [{'what': 'a regression test', 'why': 'it keeps the fix'}],
         'raw_material': [{'source': 'README', 'why': 'the fixture'}],
         'methods': ['git log -p'], 'independent_check': ['the check command exits 0'],

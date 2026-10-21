@@ -209,6 +209,11 @@ def run(wsx, wsxd, work, owned):
     for tools in ('["Bash(git:*)"]', '[Edit]', '[MultiEdit]'):
         (project / 'wsx.config.yml').write_text('tasks:\n  manager:\n    tools: %s\n' % tools)
         assert 'tasks.manager.tools has' in cli('task', 'new', 'WORK a.txt', ok=False).stderr
+    # ^ The manager's name is one short line (docs/tasks.md "Config").
+    for name, word in (('"At\\nlas"', 'control characters'), ('"%s"' % ('x' * 65), 'at most 64 bytes')):
+        (project / 'wsx.config.yml').write_text('tasks:\n  manager:\n    name: %s\n' % name)
+        refused = cli('task', 'new', 'WORK a.txt', ok=False).stderr
+        assert 'tasks.manager.name' in refused and word in refused, refused
     (project / 'wsx.config.yml').write_text('tasks:\n  agent:\n    briefTools: [Read]\n')
     assert 'briefTools was removed' in cli('task', 'new', 'WORK a.txt', ok=False).stderr
     (project / 'wsx.config.yml').write_text('tasks:\n  sandbox:\n    allowWrite: ["~/"]\n')
@@ -692,7 +697,7 @@ def run(wsx, wsxd, work, owned):
 
     # 20. The manager: started by the first say, answers from the ledger, acts through wsx task.
     (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text()
-                                            + '  manager: { model: fake-manager, rotateTokens: 100000, tools: [mcp__docs__search] }\n')
+                                            + '  manager: { name: "  Atlas ", model: fake-manager, rotateTokens: 100000, tools: [mcp__docs__search] }\n')
     git('commit', '-q', '-am', 'manager config')
     # ^ The owner's skills folder: the manager gets it as the `owner` plugin.
     owner_skills = home / '.claude/skills'
@@ -759,12 +764,16 @@ def run(wsx, wsxd, work, owned):
                  'use Read, Grep, WebSearch and the Explore subagent', 'the likely next step',
                  'say what you checked in one short line',
                  'docs tools the project settings allow', 'Write and NotebookEdit are denied to them',
-                 'Keep answers short', 'update that section in place with Bash'):
+                 'Keep answers short', 'update that section in place with Bash',
+                 'reply in a few friendly lines', "Never repeat the brief's additions",
+                 'only when you need it'):
         assert rule in launch['instructions'], rule
     # ^ No skill is named: the owner's skills are whatever their folder holds.
     assert re.findall(r'owner:[^<\s]', launch['instructions']) == [], launch['instructions']
     assert not any(name in launch['instructions'] for name in ('seek', 'recall', '/memo', 'scribe'))
     assert launch['cwd'] == str(project)
+    # ^ The name the owner reads, trimmed; the session keeps its label `task-manager`.
+    assert js('task', 'manager')['name'] == 'Atlas'
     assert js('task', 'manager')['state'] == 'running'
     # A new task and an add to the running one, each by a wsx task command the manager runs.
     started = js('task', 'say', 'RUN wsx task new "WORK s1.txt" -p demo --json')
@@ -963,7 +972,9 @@ def run(wsx, wsxd, work, owned):
     assert not any(e['kind'] in ('result', 'checks', 'revision') for e in log(b))
     assert briefed['brief']['brief']['rewritten_prompt'] == 'WORK b1.txt'
     brief_md = Path(briefed['brief_text']).read_text()
-    for section in ('What a top professional would add', 'Raw material', 'Methods and tools', 'Independent check',
+    assert briefed['brief']['brief']['diagram'].startswith('```mermaid\ngraph LR'), briefed['brief']
+    assert brief_md.split('\n## ')[1].startswith('Diagram\n\n```mermaid\ngraph LR'), brief_md
+    for section in ('Diagram', 'What a top professional would add', 'Raw material', 'Methods and tools', 'Independent check',
                     'Concepts to know', 'Rewritten prompt', 'Open questions'):
         assert '## ' + section in brief_md, section
     assert brief_md.split('## Rewritten prompt')[1].split('## Open questions')[0].strip() == 'WORK b1.txt', brief_md
@@ -1022,7 +1033,9 @@ def run(wsx, wsxd, work, owned):
     # The manager hears of a brief with questions and may start it without asking.
     m = js('task', 'new', 'QUESTION REWRITE WORK m1.txt')['id']
     brief_version(m, 1)
-    wait(lambda: events_with('#%d briefed r0' % m, 'brief v1: WORK m1.txt'), 'briefed event')
+    # ^ The event names the brief's open questions, not its prompt: the sheet holds the brief.
+    briefed_event = wait(lambda: events_with('#%d briefed r0' % m, 'brief v1: 1 open question: Which file should change?'), 'briefed event')
+    assert 'brief v1: WORK m1.txt' not in briefed_event[0]['text'], briefed_event
     asked = js('task', 'say', 'RUN wsx task start %d -p demo --json' % m)
     text = reply_to(asked['id'])['text']
     assert 'started the build of brief v1' in text and 'owner was asked' not in text, text

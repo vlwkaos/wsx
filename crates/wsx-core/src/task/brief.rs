@@ -12,6 +12,9 @@ pub const MAX_BRIEF_BYTES: usize = 256 * 1024;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Brief {
+    /// A small diagram of the flow or structure the task changes: one fenced `mermaid` or
+    /// `text` block. Empty in briefs from before it; never a reason to refuse a brief.
+    pub diagram: String,
     /// What a top professional would add that the owner did not ask for.
     pub additions: Vec<Addition>,
     /// The primary sources they would start from, by path or link.
@@ -99,9 +102,10 @@ pub fn schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["additions", "raw_material", "methods", "independent_check", "concepts",
+        "required": ["diagram", "additions", "raw_material", "methods", "independent_check", "concepts",
                      "rewritten_prompt", "open_questions", "answer"],
         "properties": {
+            "diagram": text,
             "additions": pairs("what", "why"),
             "raw_material": pairs("source", "why"),
             "methods": texts,
@@ -127,6 +131,7 @@ pub fn render(id: u32, title: &str, file: &BriefFile) -> String {
             let _ = writeln!(out, "{line}");
         }
     };
+    section("Diagram", text_lines(&brief.diagram));
     section(
         "What a top professional would add",
         brief
@@ -153,12 +158,19 @@ pub fn render(id: u32, title: &str, file: &BriefFile) -> String {
             .map(|item| format!("- **{}**: {}", item.term.trim(), item.explanation.trim()))
             .collect(),
     );
-    section(
-        "Rewritten prompt",
-        vec![brief.rewritten_prompt.trim().to_string()],
-    );
+    section("Rewritten prompt", text_lines(&brief.rewritten_prompt));
     section("Open questions", bullets(&brief.open_questions));
     out
+}
+
+/// A free text as one block, or nothing when it is empty.
+fn text_lines(text: &str) -> Vec<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![text.to_string()]
+    }
 }
 
 fn bullets(items: &[String]) -> Vec<String> {

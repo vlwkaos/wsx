@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
     os::unix::fs::MetadataExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -572,9 +572,19 @@ fn timeline(log: &[task::LogEntry]) -> Value {
 }
 
 /// The manager conversation after message `after`, and whether it runs or thinks.
-pub fn chat(scope: &Scope, after: Option<u64>, media: &crate::media::Media) -> Outcome<Value> {
+/// `scopes`: the granted projects, whose managers' names a peer bubble may show.
+pub fn chat(
+    scope: &Scope,
+    scopes: &[Scope],
+    after: Option<u64>,
+    media: &crate::media::Media,
+) -> Outcome<Value> {
+    // ^ The name the owner reads (docs/tasks.md "Config"); the role stays `manager` inside.
+    let manager = json!({ "name": manager_name(&scope.path).unwrap_or("Manager".into()) });
     let Some(dir) = ManagerDir::existing(&scope.store).map_err(internal)? else {
-        return Ok(json!({ "entries": [], "skipped": 0, "running": false, "busy": false }));
+        return Ok(
+            json!({ "entries": [], "skipped": 0, "running": false, "busy": false, "manager": manager, "peers": {} }),
+        );
     };
     let log = dir.read_log().map_err(internal)?;
     let start = after
@@ -639,7 +649,31 @@ pub fn chat(scope: &Scope, after: Option<u64>, media: &crate::media::Media) -> O
     )
     .ok();
     let busy = status.as_ref().is_some_and(|status| status.busy);
+    // ^ Another project's manager by its set name; without one the web says "Manager <project>".
+    let mut peers = serde_json::Map::new();
+    for entry in &log {
+        let peer = match &entry.event {
+            ManagerEvent::Message {
+                from: task::manager::Author::Manager { project, .. },
+                ..
+            } => project,
+            ManagerEvent::Sent { to, .. } => to,
+            _ => continue,
+        };
+        if peers.contains_key(peer) {
+            continue;
+        }
+        if let Some(name) = scopes
+            .iter()
+            .find(|other| &other.name == peer)
+            .and_then(|other| manager_name(&other.path))
+        {
+            peers.insert(peer.clone(), json!(name));
+        }
+    }
     Ok(json!({
+        "manager": manager,
+        "peers": peers,
         "entries": entries,
         "skipped": skipped,
         "running": status.is_some(),
@@ -648,9 +682,14 @@ pub fn chat(scope: &Scope, after: Option<u64>, media: &crate::media::Media) -> O
     }))
 }
 
+/// A project's `tasks.manager.name`, when it is set and its config reads.
+fn manager_name(path: &Path) -> Option<String> {
+    load_task_config(path).ok()?.manager_name
+}
+
 /// A worker's report for each events line that carries a worker result (`#3 ready r2: …`):
-/// the full summary of the result logged before the events message, or the brief's
-/// rewritten prompt. ref: docs/web-client.md "Project screen"
+/// the full summary of the result logged before the events message, or the brief's open
+/// questions. ref: docs/web-client.md "Project screen"
 fn worker_reports(
     scope: &Scope,
     text: &str,
@@ -690,11 +729,21 @@ fn worker_reports(
             });
             brief::read(&dir)
                 .filter(|file| Some(file.version) == version)
+                // ^ The chat names the brief's open questions; the sheet holds the rest.
                 .map(|file| {
-                    (
-                        format!("brief v{}", file.version),
-                        file.brief.rewritten_prompt,
-                    )
+                    let questions: Vec<String> = file
+                        .brief
+                        .open_questions
+                        .iter()
+                        .map(|question| question.trim())
+                        .filter(|question| !question.is_empty())
+                        .map(|question| format!("- {question}"))
+                        .collect();
+                    let summary = match questions.is_empty() {
+                        true => "No open questions.".to_string(),
+                        false => format!("Open questions:\n\n{}", questions.join("\n")),
+                    };
+                    (format!("brief v{}", file.version), summary)
                 })
         } else {
             before

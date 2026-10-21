@@ -873,12 +873,12 @@ async fn tasks_chat(
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
     blocking(|| {
-        crate::tasks::chat(
-            &crate::tasks::scope(&app, project)?,
-            query.after,
-            &app.media,
-        )
-        .map(Json)
+        let scopes = crate::tasks::scopes(&crate::chat::snapshot(&app.client)?, &app.site.access);
+        let scope = scopes
+            .iter()
+            .find(|scope| scope.project == project)
+            .ok_or_else(Fault::not_found)?;
+        crate::tasks::chat(scope, &scopes, query.after, &app.media).map(Json)
     })
 }
 

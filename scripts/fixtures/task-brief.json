@@ -1,4 +1,5 @@
 {
+ "diagram": "```mermaid\ngraph TD\n  reservoir[Reservoir: one decision list] --> row[Row with one action]\n  row -->|done| next[Focus on the next row]\n  reservoir --> running[Running]\n  page[Project page] --> facts[ProjectFacts]\n```",
  "additions": [
   {
    "what": "The reservoir is the one decision list. Decisions come first in the server's order. After a successful action, the row leaves and focus moves to the next row's action. Then a short Running section. \"Nothing needs you\" shows when nothing waits.",
