@@ -338,6 +338,9 @@ div.steps .steps-summary { cursor: default; }
 .queued[data-failed] { flex-wrap: wrap; padding: var(--space-2) 0; row-gap: 0; }
 .queued[data-failed] .queued-text { color: var(--color-text); }
 .queued-reason { flex: 1 0 100%; margin: 0; color: var(--color-danger); overflow-wrap: anywhere; }
+/* A delivered message the conversation does not show yet: its note on a line of its own. */
+.queued[data-delivered] { flex-wrap: wrap; padding: var(--space-2) 0; row-gap: 0; }
+.queued-note { flex: 1 0 100%; margin: 0; color: var(--color-muted); overflow-wrap: anywhere; }
 /* Opaque, with a hairline on top, so the end of the conversation is visible. */
 .composer, .attention { flex: 0 0 auto; padding: var(--space-3) var(--column-inset); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
 .composer-row { display: flex; align-items: flex-end; gap: var(--space-1); }

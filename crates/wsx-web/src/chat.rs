@@ -345,6 +345,13 @@ impl Chat {
                 let last = timeline.as_ref().and_then(|timeline| timeline.items.last());
                 crate::question::view(client, target.pane.id, last)
             });
+        // A delivered queued message leaves the queue once the conversation shows it.
+        let shown: Vec<&str> = items
+            .iter()
+            .filter(|item| item["kind"] == "user")
+            .filter_map(|item| item["text"].as_str().map(str::trim))
+            .collect();
+        app.queue.settle(session, &shown);
         Ok(json!({
             "session": session_view(&target),
             "status": timeline.as_ref().map_or("no_agent", |timeline| timeline.status),
@@ -551,7 +558,7 @@ impl Chat {
                 app.queue.fail(session, queued.id, reason);
                 true
             }
-            Ok(_) => app.queue.remove(session, queued.id),
+            Ok(_) => app.queue.delivered(session, queued.id),
             // Not at a wait boundary yet, such as Claude's editor that is drawn idle a moment
             // after the turn ends: try again soon, and fail with the reason after a while.
             Err(fault) if busy(&fault) => {
@@ -856,6 +863,7 @@ fn queued_view(queued: &crate::queue::Queued, media: &Media) -> Value {
     json!({
         "id": queued.id, "text": queued.text, "attachments": attachments,
         "at_unix_ms": queued.at_unix_ms, "failed": queued.failed,
+        "delivered_unix_ms": queued.delivered_unix_ms,
     })
 }
 

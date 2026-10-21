@@ -74,6 +74,21 @@ async function post(id, text, attachments) {
   return answer;
 }
 
+// Copy a message's text, so a message the agent never took is not lost (docs/web-client.md "Queue and Stop").
+function CopyText({ text, label }) {
+  const [said, setSaid] = useState("");
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setSaid("Copied");
+    } catch {
+      setSaid("Copy failed");
+    }
+    setTimeout(() => setSaid(""), 2000);
+  };
+  return html`<button class="link-action" type="button" aria-label=${label} aria-live="polite" onClick=${copy}>${said || "Copy"}</button>`;
+}
+
 // wsxd's reason without its code: "editor_unavailable: Claude input editor is not visibly
 // idle" reads "Claude input editor is not visibly idle".
 const inWords = (reason) => reason.replace(/^[a-z_]+: /, "");
@@ -614,6 +629,7 @@ export function Chat({ session, onModel }) {
           <article class="message message-user" data-pending>
             ${draft.pending.text && html`<p class="prose">${draft.pending.text}</p>`}
             <${Attachments} files=${draft.pending.attachments} />
+            ${draft.pending.text && html`<${CopyText} text=${draft.pending.text} label="Copy the sent message" />`}
             ${notDelivered != null && html`
               <p class="error" role="alert">Not delivered to the agent${notDelivered ? `: ${inWords(notDelivered)}` : ""}.</p>
               <button class="link-action" type="button" onClick=${retry}>Retry</button>`}
@@ -632,12 +648,15 @@ export function Chat({ session, onModel }) {
       ${data?.queue?.length ? html`
         <ul class="queue" aria-label="Messages waiting for the agent">
           ${data.queue.map((queued) => html`
-            <li key=${queued.id} class="queued" data-failed=${queued.failed ? "" : null}>
+            <li key=${queued.id} class="queued" data-failed=${queued.failed ? "" : null} data-delivered=${queued.delivered_unix_ms ? "" : null}>
               <span class="queued-text">${queued.text || `${queued.attachments.length} files`}</span>
-              ${queued.failed && html`<button class="link-action" type="button" onClick=${() => act(`queue/${queued.id}/retry`)}>Retry</button>`}
+              ${queued.text && html`<${CopyText} text=${queued.text} label=${`Copy waiting message: ${queued.text.slice(0, 40)}`} />`}
+              ${(queued.failed || queued.delivered_unix_ms) && html`<button class="link-action" type="button"
+                onClick=${() => act(`queue/${queued.id}/retry`)}>${queued.failed ? "Retry" : "Send again"}</button>`}
               <button class="link-action" type="button" aria-label=${`Remove waiting message: ${queued.text.slice(0, 40)}`}
                 onClick=${() => act(`queue/${queued.id}`, "DELETE")}>Remove</button>
               ${queued.failed && html`<p class="queued-reason" role="alert">Not delivered to the agent: ${inWords(queued.failed)}</p>`}
+              ${queued.delivered_unix_ms && !queued.failed && html`<p class="queued-note" role="status">Typed into the agent, not in its conversation yet. If it does not show up, copy it or send it again.</p>`}
             </li>`)}
         </ul>` : null}
       ${blocked && data?.question ? html`<${Question} session=${session} question=${data.question} onAnswered=${load} />`
@@ -646,7 +665,7 @@ export function Chat({ session, onModel }) {
           <span>Waiting for your answer.</span>
           ${shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`}
         </div>`
-      : can("chat_send") && html`<${Composer} session=${session} working=${Boolean(working) || Boolean(data?.queue?.length)}
+      : can("chat_send") && html`<${Composer} session=${session} working=${Boolean(working) || Boolean(data?.queue?.some((queued) => !queued.delivered_unix_ms))}
         onSent=${() => { atEnd.current = true; load(); }} />`}
     </div>`;
 }

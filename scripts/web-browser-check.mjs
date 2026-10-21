@@ -976,7 +976,7 @@ const stuck = await evaluate(`(() => { const row = document.querySelector('.queu
     whole: reason.scrollWidth <= reason.clientWidth, above: box(row).bottom <= box(document.querySelector('.composer')).top + 1 }; })()`);
 // A delivered message of the conversation never reads as not delivered.
 if (await evaluate("[...document.querySelectorAll('.log .message-user:not([data-pending]) .note')].some((note) => note.textContent.includes('Not delivered'))")) await fail("a delivered message says it was not delivered");
-if (stuck.reason !== "Not delivered to the agent: prompt was not sent because fresh empty input was not observed" || stuck.actions !== "Retry,Remove"
+if (stuck.reason !== "Not delivered to the agent: prompt was not sent because fresh empty input was not observed" || stuck.actions !== "Copy,Retry,Remove"
   || !stuck.own || !stuck.whole || !stuck.above) await fail(`the failed waiting message is easy to miss: ${JSON.stringify(stuck)}`);
 await shot("chat-queue-failed");
 await evaluate("document.documentElement.dataset.scheme = 'light'");
