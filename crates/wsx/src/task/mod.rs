@@ -152,6 +152,22 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Work on the task by hand in its working copy, with the worker's conversation (owner only)
+    Hand {
+        task: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Give a task worked by hand back: its commits are checked as the next revision (owner only)
+    Handback {
+        task: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// List what the owner has to check of the landed tasks, or pass or fail items (owner only)
     Check {
         #[command(subcommand)]
@@ -283,6 +299,8 @@ impl TaskCmd {
             | Self::Stop { json, .. }
             | Self::Start { json, .. }
             | Self::Land { json, .. }
+            | Self::Hand { json, .. }
+            | Self::Handback { json, .. }
             | Self::Check { json, .. }
             | Self::Close { json, .. }
             | Self::Deploy { json, .. }
@@ -312,6 +330,8 @@ impl TaskCmd {
                     ..
                 }
                 | Self::Close { .. }
+                | Self::Hand { .. }
+                | Self::Handback { .. }
                 | Self::Manager { .. }
                 | Self::Say { .. }
                 | Self::Approve { .. }
@@ -491,6 +511,16 @@ pub fn run(command: TaskCmd) -> Result<()> {
             }
             close(&dir, discard, json)
         }
+        TaskCmd::Hand {
+            task,
+            project,
+            json,
+        } => hand(&open(project.as_deref(), &task)?, json),
+        TaskCmd::Handback {
+            task,
+            project,
+            json,
+        } => handback(&open(project.as_deref(), &task)?, json),
         TaskCmd::Approve { id, project, json } => approve(project.as_deref(), &id, json),
         TaskCmd::Deny {
             id,
@@ -984,6 +1014,12 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
         summary["brief_text"] = json!(brief_text);
         summary["log"] = json!(dir.file(store::LOG_FILE));
         summary["host_running"] = json!(host);
+        if record.state == TaskState::ByHand {
+            summary["hand"] = json!({
+                "session": hand_label(record.id),
+                "context": hand_context(dir, &record),
+            });
+        }
         summary["socket"] = json!(dir.socket_path());
         summary["to_check"] = json!(checks::read(&dir.project_id)?
             .into_iter()
@@ -1031,31 +1067,7 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
 }
 
 fn send(dir: &TaskDir, request: HostRequest, json: bool) -> Result<()> {
-    // ^ A pr landing pushes and calls gh on the host before it answers.
-    let timeout = if matches!(request, HostRequest::Land { .. }) {
-        LAND_TIMEOUT
-    } else {
-        HOST_TIMEOUT
-    };
-    let response = match wsx_core::task::call_host_waiting(&dir.socket_path(), &request, timeout) {
-        Ok(response) => response,
-        Err(error) => {
-            let (state, working_copy) = dir.read_record().map_or_else(
-                |_| ("unknown".to_string(), String::new()),
-                |record| {
-                    (
-                        record.state.as_str().to_string(),
-                        record.working_copy.display().to_string(),
-                    )
-                },
-            );
-            bail!(
-                "{error:#}; task t{} is {state} and unchanged. Restart its host with `wsx session restart task-{} -w {working_copy}`",
-                dir.id,
-                dir.id
-            );
-        }
-    };
+    let response = ask_host(dir, &request)?;
     if json {
         print_json(&serde_json::to_value(&response)?)?;
     } else {
@@ -1074,6 +1086,199 @@ fn send(dir: &TaskDir, request: HostRequest, json: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// One request to the task's host; a host that does not answer is an error that says how
+/// to restart it.
+fn ask_host(dir: &TaskDir, request: &HostRequest) -> Result<HostResponse> {
+    // ^ A pr landing pushes and calls gh on the host before it answers.
+    let timeout = if matches!(request, HostRequest::Land { .. }) {
+        LAND_TIMEOUT
+    } else {
+        HOST_TIMEOUT
+    };
+    match wsx_core::task::call_host_waiting(&dir.socket_path(), request, timeout) {
+        Ok(response) => Ok(response),
+        Err(error) => {
+            let (state, working_copy) = dir.read_record().map_or_else(
+                |_| ("unknown".to_string(), String::new()),
+                |record| {
+                    (
+                        record.state.as_str().to_string(),
+                        record.working_copy.display().to_string(),
+                    )
+                },
+            );
+            bail!(
+                "{error:#}; task t{} is {state} and unchanged. Restart its host with `wsx session restart task-{} -w {working_copy}`",
+                dir.id,
+                dir.id
+            );
+        }
+    }
+}
+
+/// The session the owner works in while a task is `by_hand`.
+fn hand_label(id: u32) -> String {
+    format!("task-{id}-hand")
+}
+
+/// `wsx task hand`: the host stops the worker and holds every turn, check and landing; a
+/// session `task-<n>-hand` in the task's own working copy resumes a fork of the worker's
+/// conversation (docs/tasks.md "By hand").
+fn hand(dir: &TaskDir, json: bool) -> Result<()> {
+    owner_only("hand")?;
+    let record = dir.read_record()?;
+    if !record.working_copy.exists() {
+        bail!(
+            "task t{} has no working copy at {}",
+            record.id,
+            record.working_copy.display()
+        );
+    }
+    let response = ask_host(dir, &HostRequest::Hand)?;
+    if !response.ok {
+        bail!(
+            "task t{} refused: {}; it is still {}",
+            dir.id,
+            response.message,
+            response.state.as_str()
+        );
+    }
+    let record = dir.read_record()?;
+    let label = hand_label(record.id);
+    let opened = match sessions_labeled(&record.working_copy, &label)?.first() {
+        Some(_) => false,
+        None => {
+            // ^ A fork leaves the worker's own conversation as it was for its next turn. A
+            // resumed conversation keeps the system prompt it began with until compacted, so
+            // the snapshot is off: the owner gets Claude's own prompt, not the worker rules.
+            let argv = match &record.agent_session {
+                Some(session) => vec![
+                    "claude".into(),
+                    "--resume".into(),
+                    session.clone(),
+                    "--fork-session".into(),
+                    "--system-prompt-snapshot".into(),
+                    "off".into(),
+                ],
+                None => Vec::new(),
+            };
+            ops::create_session_launch(&load_config()?, &record.working_copy, label.clone(), argv, None)
+                .with_context(|| {
+                    format!(
+                        "task t{} is by_hand, but session {label} did not open; work in {} or run `wsx task handback {}`",
+                        record.id,
+                        record.working_copy.display(),
+                        record.id
+                    )
+                })?;
+            true
+        }
+    };
+    let context = hand_context(dir, &record);
+    if json {
+        return print_json(&json!({
+            "ok": true,
+            "state": record.state,
+            "message": response.message,
+            "session": label,
+            "session_opened": opened,
+            "context": context,
+        }));
+    }
+    println!(
+        "t{} by hand in session {label}: {}",
+        record.id, response.message
+    );
+    for (name, value) in context.as_object().into_iter().flatten() {
+        if let Some(text) = value.as_str() {
+            println!("{name:<13} {text}");
+        }
+    }
+    println!(
+        "when the work is committed: wsx task handback {}",
+        record.id
+    );
+    Ok(())
+}
+
+/// `wsx task handback`: the host refuses uncommitted tracked changes, and the hand session
+/// stays; otherwise the session closes and the commits are checked as the next revision.
+fn handback(dir: &TaskDir, json: bool) -> Result<()> {
+    owner_only("handback")?;
+    let response = ask_host(dir, &HostRequest::Handback)?;
+    if !response.ok {
+        bail!(
+            "task t{} refused: {}; it is still {}",
+            dir.id,
+            response.message,
+            response.state.as_str()
+        );
+    }
+    let record = dir.read_record()?;
+    let mut closed = Vec::new();
+    for session in sessions_labeled(&record.working_copy, &hand_label(record.id))? {
+        ops::kill_session(session).with_context(|| {
+            format!(
+                "task t{} was handed back, but its hand session remains",
+                record.id
+            )
+        })?;
+        closed.push(session.0);
+    }
+    if json {
+        return print_json(&json!({
+            "ok": true,
+            "state": response.state,
+            "message": response.message,
+            "sessions_closed": closed,
+        }));
+    }
+    println!(
+        "t{} {}: {}",
+        record.id,
+        response.state.as_str(),
+        response.message
+    );
+    Ok(())
+}
+
+/// What the owner works from: the task's files in the store, the branch and its state.
+fn hand_context(dir: &TaskDir, record: &TaskRecord) -> serde_json::Value {
+    let existing = |name: &str| {
+        let path = dir.file(name);
+        path.exists().then(|| path.display().to_string())
+    };
+    let git = |args: &[&str]| {
+        wsx_core::git::git_cmd(&record.working_copy)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .trim_end()
+                    .to_string()
+            })
+    };
+    let status = git(&["status", "--short"]).map(|status| {
+        let lines: Vec<&str> = status.lines().collect();
+        match lines.len() {
+            0 => "clean".to_string(),
+            n if n <= 20 => lines.join("; "),
+            n => format!("{}; and {} more", lines[..20].join("; "), n - 20),
+        }
+    });
+    json!({
+        "working_copy": record.working_copy.display().to_string(),
+        "branch": record.branch,
+        "head": git(&["rev-parse", "HEAD"]),
+        "status": status,
+        "brief": existing(store::BRIEF_TEXT_FILE),
+        "report": existing(REPORT_FILE),
+        "result": existing(RESULT_FILE),
+    })
 }
 
 fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
@@ -1165,6 +1370,23 @@ fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
         removed.len()
     );
     Ok(())
+}
+
+/// The sessions named `label` in the working copy.
+fn sessions_labeled(working_copy: &Path, label: &str) -> Result<Vec<runtime::SessionId>> {
+    let snapshot = existing_daemon_snapshot()?;
+    let worktrees: Vec<_> = snapshot
+        .worktrees
+        .iter()
+        .filter(|worktree| worktree.path == working_copy)
+        .map(|worktree| worktree.id)
+        .collect();
+    Ok(snapshot
+        .sessions
+        .iter()
+        .filter(|session| worktrees.contains(&session.worktree_id) && session.label == label)
+        .map(|session| session.id)
+        .collect())
 }
 
 fn sessions_in(working_copy: &Path) -> Result<Vec<runtime::SessionId>> {

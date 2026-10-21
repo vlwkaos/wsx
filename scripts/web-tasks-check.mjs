@@ -536,7 +536,7 @@ if (folds.join("|") !== "Changes|Evidence · 1 check passed|To check · 1 after 
 const sheetWords = await evaluate("document.querySelector('dialog.task-sheet').innerText");
 if (/Asked|Human Verify|Decisions|Review|Pass r\d|Verified/.test(sheetWords)) await fail(`the sheet still shows the verdict or old sections: ${sheetWords}`);
 if (await count(".task-sheet .label, .task-sheet .story-explain, .verify, .verify-note")) await fail("the sheet still has labels, Explain or the Verify panel");
-if ((await text(".task-next button")).join() !== "Land,Try") await fail(`a ready task offers ${await text(".task-next button")}`);
+if ((await text(".task-next button")).join() !== "Land,Work by hand,Try") await fail(`a ready task offers ${await text(".task-next button")}`);
 if (await evaluate("/\\br\\d+\\b/.test(document.querySelector('.task-sheet .bar').textContent + document.querySelector('.task-next').textContent)")) await fail("the sheet names a revision");
 await shot("task-sheet", ".composer-send");
 // Evidence opens to the checks and what the worker showed; More shows the decisions.

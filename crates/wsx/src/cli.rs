@@ -595,7 +595,7 @@ pub enum WorktreeCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Delete a worktree and its sessions
+    /// Delete a clean worktree and its sessions (refuses uncommitted work; keeps an unmerged branch)
     Delete {
         branch: String,
         #[arg(short, long)]
@@ -2469,8 +2469,14 @@ fn cmd_worktree_delete(branch: &str, project_name: Option<&str>) -> Result<()> {
                 project.name
             )
         })?;
-    ops::delete_worktree(&project.path, &wt.path, &wt.branch)?;
+    let branch_deleted = ops::delete_worktree(&project.path, &wt.path, &wt.branch)?;
     println!("deleted worktree: {}", wt.path.display());
+    if !branch_deleted {
+        println!(
+            "kept branch {}: it has commits that are not merged",
+            wt.branch
+        );
+    }
     Ok(())
 }
 

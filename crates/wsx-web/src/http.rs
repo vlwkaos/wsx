@@ -980,6 +980,15 @@ async fn task_act(
             .map_err(|_| Fault::new(500, "task_action", "the preview stopped unexpectedly"))?
             .map(Json);
     }
+    if action == "hand" || action == "handback" {
+        act_budget(&app, &device)?;
+        let scope = blocking(|| crate::tasks::scope(&app, project))?;
+        let back = action == "handback";
+        return tokio::task::spawn_blocking(move || crate::tasks::hand(&scope, task, back))
+            .await
+            .map_err(|_| Fault::new(500, "task_action", "the action stopped unexpectedly"))?
+            .map(Json);
+    }
     let missing = |field: &str| Fault::new(400, "invalid_body", format!("{action} needs {field}"));
     let request = match action.as_str() {
         "add" => HostRequest::Add {

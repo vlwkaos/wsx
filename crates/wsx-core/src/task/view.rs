@@ -21,7 +21,7 @@ pub fn attention(state: TaskState) -> u8 {
         TaskState::Briefed => 3,
         TaskState::Ready => 4,
         TaskState::InReview => 5,
-        TaskState::Checking | TaskState::Working | TaskState::Starting => 6,
+        TaskState::Checking | TaskState::Working | TaskState::Starting | TaskState::ByHand => 6,
         TaskState::Stopped => 7,
         TaskState::Landed | TaskState::Closed => 8,
     }

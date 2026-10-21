@@ -98,6 +98,7 @@ export function nextWords(detail) {
     }
     case "conflict": return `The worker resolves a conflict with ${main}; it lands when its checks pass.`;
     case "in_review": return "The pull request waits for review. Check it to see whether it merged.";
+    case "by_hand": return "You work on it by hand in its session. Commit, then hand it back: its checks run and it lands as usual.";
     case "landed": case "closed": {
       if (detail.state === "closed" && !detail.landed_commit) return "Closed without landing.";
       if (!detail.deploy?.configured || detail.deploy.deployed) return `On ${main}.`;

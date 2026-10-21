@@ -1260,7 +1260,110 @@ def run(wsx, wsxd, work, owned):
     assert 'configures no tasks.preview' in cli('task', 'preview', plain, ok=False).stderr
     js('task', 'close', plain, '--discard')
 
-    # 30. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
+    # 30. By hand (docs/tasks.md "By hand"): the owner takes a running build over in its own
+    # working copy with a fork of the worker's conversation; nothing else writes there until
+    # handback, whose commits are checked, land by themselves and close the task.
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', ''))
+    git('commit', '-q', '-am', 'auto land for hand')
+    gate = work / 'hand-gate'
+    handed = js('task', 'new', 'WAIT %s WORK late.txt' % gate)['id']
+    hand_copy = Path(show(handed)['record']['working_copy'])
+    worker_session = wait(lambda: show(handed)['record']['agent_session'], 'worker session')
+    wait(lambda: any(t.get('message', '').startswith('WAIT') for t in traces()), 'the worker turn runs')
+    assert 'only a task worked by hand' in cli('task', 'handback', handed, '--json', ok=False).stderr
+    queued = js('task', 'add', handed, 'WORK queued.txt')
+    assert 'queued' in queued['message'], queued
+    for command in ('hand', 'handback'):
+        refused = subprocess.run([str(wsx), 'task', command, str(handed)], cwd=project, env=manager_env,
+                                 capture_output=True, text=True)
+        assert refused.returncode != 0 and 'for the owner' in refused.stderr, refused.stderr
+    worker_transcript = home / '.claude/fake-sessions' / ('%s.jsonl' % worker_session)
+    before = hashlib.sha256(worker_transcript.read_bytes()).hexdigest()
+    taken = js('task', 'hand', handed)
+    assert taken['ok'] and taken['state'] == 'by_hand' and taken['session'] == 'task-%d-hand' % handed, taken
+    assert 'dropped 1 queued' in taken['message'], taken
+    context = taken['context']
+    assert context['branch'] == 'wsx/t%d' % handed and Path(context['working_copy']) == hand_copy, context
+    assert context['head'] == git('rev-parse', 'HEAD', cwd=hand_copy) and context['status'] == 'clean', context
+    assert [e['dropped'] for e in log(handed) if e['kind'] == 'hand'] == [1]
+    pane = wait(lambda: next((t for t in traces() if t.get('interactive') and t['resume'] == worker_session), None),
+                'the hand pane resumes the worker conversation')
+    assert pane['argv'] == ['--resume', worker_session, '--fork-session', '--system-prompt-snapshot', 'off'], pane
+    assert Path(pane['cwd']).resolve() == hand_copy.resolve(), pane
+
+    def hand_sessions():
+        return [x for x in daemon_call('snapshot')['data']['sessions'] if x['label'] == 'task-%d-hand' % handed]
+
+    assert len(hand_sessions()) == 1
+    # ^ A second hand is refused and opens no second pane.
+    assert 'is by_hand' in cli('task', 'hand', handed, '--json', ok=False).stderr and len(hand_sessions()) == 1
+    assert show(handed)['hand']['session'] == 'task-%d-hand' % handed
+    # One worktree: the task's own copy on its own branch.
+    listed = git('worktree', 'list', '--porcelain').splitlines()
+    assert listed.count('branch refs/heads/wsx/t%d' % handed) == 1, listed
+    # Nothing starts while by hand: messages, start and land are refused, the old turn's gate
+    # opens on no one, and no check runs.
+    gate.write_text('open')
+    for argv, word in ((('add', handed, 'WORK no.txt'), 'handback'), (('steer', handed, 'x'), 'handback'),
+                       (('land', handed), 'handback'), (('start', handed), 'handback')):
+        refused = cli('task', *argv, '--json', ok=False)
+        assert word in refused.stdout + refused.stderr, refused
+    time.sleep(1.5)
+    assert show(handed)['state'] == 'by_hand'
+    assert not [e for e in log(handed) if e['kind'] in ('checks', 'revision', 'result')], log(handed)
+    assert not any(t.get('message') in ('WORK no.txt', 'WORK queued.txt') for t in traces())
+    assert not (hand_copy / 'late.txt').exists()
+    # Uncommitted tracked work refuses the handback, and the pane stays.
+    (hand_copy / 'README').write_text('by hand\n')
+    refused = cli('task', 'handback', handed, '--json', ok=False)
+    assert 'uncommitted changes: README' in refused.stderr, refused.stderr
+    assert show(handed)['state'] == 'by_hand' and len(hand_sessions()) == 1
+    (hand_copy / 'hand.txt').write_text('made by hand\n')
+    git('add', 'README', 'hand.txt', cwd=hand_copy)
+    git('commit', '-q', '-m', 'by hand', cwd=hand_copy)
+    back = js('task', 'handback', handed)
+    assert back['ok'] and len(back['sessions_closed']) == 1 and '1 commit' in back['message'], back
+    assert not hand_sessions()
+    assert [e['commits'] for e in log(handed) if e['kind'] == 'handback'] == [1]
+    wait_closed(handed)
+    assert main_has('hand.txt') and git('show', 'main:README') == 'by hand'
+    assert [e['kind'] for e in log(handed) if e['kind'] in ('checks', 'revision')] == ['checks', 'revision']
+    # ^ The fork wrote its own transcript; the worker's is as it was.
+    assert hashlib.sha256(worker_transcript.read_bytes()).hexdigest() == before
+    assert any(path.name.startswith('fork-') for path in (home / '.claude/fake-sessions').iterdir())
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
+    git('commit', '-q', '-am', 'land by hand again')
+
+    # 31. `wsx worktree delete` refuses uncommitted work before it closes anything, ignores
+    # build output, and keeps a branch with unmerged commits.
+    cli('worktree', 'create', 'feat/keep')
+    keep = Path(next(line.split(' ', 1)[1] for line in git('worktree', 'list', '--porcelain').splitlines()
+                     if line.startswith('worktree ') and line.endswith('-feat-keep')))
+    (keep / 'target').mkdir()
+    (keep / 'target/build').write_text('ignored output')
+
+    def keep_sessions():
+        snapshot = daemon_call('snapshot')['data']
+        ids = [w['id'] for w in snapshot['worktrees'] if Path(w['path']) == keep]
+        return [x for x in snapshot['sessions'] if x['worktree_id'] in ids]
+
+    wait(lambda: keep_sessions(), 'the worktree session')
+    (keep / 'README').write_text('changed\n')
+    refused = cli('worktree', 'delete', 'feat/keep', ok=False)
+    assert 'uncommitted changes: README' in refused.stderr and 'Nothing was removed' in refused.stderr, refused.stderr
+    assert keep.exists() and keep_sessions()
+    git('checkout', '--', 'README', cwd=keep)
+    (keep / 'notes.txt').write_text('draft\n')
+    assert 'untracked files: notes.txt' in cli('worktree', 'delete', 'feat/keep', ok=False).stderr
+    assert keep.exists() and keep_sessions()
+    git('add', 'notes.txt', cwd=keep)
+    git('commit', '-q', '-m', 'unmerged', cwd=keep)
+    deleted = cli('worktree', 'delete', 'feat/keep')
+    assert 'kept branch feat/keep' in deleted.stdout, deleted.stdout
+    assert not keep.exists() and not keep_sessions() and git('branch', '--list', 'feat/keep')
+    git('branch', '-D', 'feat/keep')
+
+    # 32. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     # ledger and messages its manager, which answers once; nothing else crosses projects.
     other = base / 'other'
     other.mkdir(mode=0o700)

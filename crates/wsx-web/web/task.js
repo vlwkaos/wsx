@@ -44,6 +44,8 @@ function described(entry) {
     case "landed": return ["Landed", short(entry.commit), "accent"];
     case "in_review": return [`Pull request r${entry.revision}`, entry.url];
     case "pr_closed": return ["Pull request closed", entry.url, "attention"];
+    case "hand": return ["Worked by hand", entry.dropped ? `${entry.dropped} queued ${entry.dropped === 1 ? "message" : "messages"} dropped` : ""];
+    case "handback": return ["Handed back", `${entry.commits} ${entry.commits === 1 ? "commit" : "commits"}`];
     case "brief": return [`Brief v${entry.version}`, entry.denials?.length ? `denied: ${entry.denials.join(", ")}` : entry.answer ?? ""];
     case "brief_skipped": return ["Built without a brief", `${entry.by === "flag" ? "--no-brief" : "tasks.brief: false"} by the ${entry.actor}`];
     case "started": return [`Build started from brief v${entry.version}`, entry.prompt, "accent"];
@@ -297,6 +299,9 @@ export function TaskPage({ project, task, onClose, grip }) {
       ${button("Allow for project", () => grant(true), { "aria-label": `Allow every task of this project to ${askWords(asks)}` })}`,
     actions.includes("land") && button(act.busy === "land" ? "Landing…" : detail.state === "in_review" ? "Check pull request" : "Land",
       () => act.run("land", `api/tasks/${project}/t/${task}/land`, {})),
+    // ^ By hand: the owner's own session in the task's copy, with the worker's conversation.
+    actions.includes("hand") && button(act.busy === "hand" ? "Opening…" : "Work by hand", () => act.run("hand", `api/tasks/${project}/t/${task}/hand`, {})),
+    actions.includes("handback") && button(act.busy === "handback" ? "Handing back…" : "Hand back", () => act.run("handback", `api/tasks/${project}/t/${task}/handback`, {})),
     store.tasks[project]?.preview && detail.phase !== "brief" && detail.state !== "closed" && html`<${TryButton} project=${project} task=${task} />`,
   ].filter(Boolean) : [];
   const briefing = detail.phase === "brief";

@@ -2864,7 +2864,7 @@ digest_max_seconds = 6
         everything = steady(owner, 'GET', '/api/tasks')[1]
         assert sorted(item['project'] for item in everything) == sorted(ids.values()), everything
         detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
-        assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'add'], detail['actions']
+        assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'add', 'hand'], detail['actions']
         assert detail['land_reason'] == 'ready to land' and detail['to_check'] == [] and detail['fixes'] is None, detail
         assert detail['result']['human_verify'] == [{'check': 'open the file', 'pass_if': 'it has text'}]
         headings = [line for line in detail['report'].splitlines() if line.startswith('## ')]
@@ -2917,7 +2917,20 @@ digest_max_seconds = 6
         assert status == 200, body
         wait(lambda: 'steer words' in (work / 'fake-claude.trace').read_text(), 'steer reached the turn')
         wait_state(4, 'ready')
-        ok('actions: no verdict route, land refused then landed with its item to check, allow resumes, add reaches the worker, steer reaches the turn')
+        # By hand (docs/tasks.md "By hand"): the owner's own pane in the task's copy; the
+        # worker gets nothing until Hand back, which checks the work as a new revision.
+        status, body = act(4, 'hand', {})
+        assert status == 200 and body['state'] == 'by_hand' and body['session'] == 'task-4-hand', body
+        handed = steady(owner, 'GET', '/api/tasks/%d/t/4' % demo)[1]
+        assert handed['stage'] == 'working' and handed['actions'] == ['handback'], handed['actions']
+        assert all(item.get('task') != 4 for item in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['needs'])
+        status, body = act(4, 'add', {'text': 'NOOP'})
+        assert status == 409 and 'handback' in body['error']['message'], body
+        status, body = act(4, 'handback', {})
+        assert status == 200 and len(body['sessions_closed']) == 1, body
+        wait_state(4, 'ready')
+        assert steady(owner, 'GET', '/api/tasks/%d/t/4' % demo)[1]['revision'] == 2
+        ok('actions: no verdict route, land refused then landed with its item to check, allow resumes, add reaches the worker, steer reaches the turn, hand and hand back')
 
         # --- The manager: say starts it, the reply arrives in the chat, events follow.
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS'})

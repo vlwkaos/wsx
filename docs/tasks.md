@@ -13,6 +13,8 @@ wsx task allow <n> --host <host> | --path <path> | "<rule>" [--project-wide] --j
 wsx task revoke <n> --host <host> | --path <path> | "<rule>" [--project-wide] --json  # from the next turn
 wsx task stop <n> --json                         # interrupt; the next add resumes the conversation
 wsx task land <n> --json                         # onto the default branch by tasks.land.policy (a ready task lands by itself by default)
+wsx task hand <n> --json                         # owner only: work on the task by hand; see By hand
+wsx task handback <n> --json                     # owner only: its commits are checked as the next revision
 wsx task preview <n> [--stop] --json             # a link to try the task (tasks.preview); see Preview
 wsx task check-run [<n>...]                      # from a worker: run the checks as after its result
 wsx task check -p <project> [--json]             # the open "To check" items
@@ -30,7 +32,7 @@ wsx task close <n> [--discard] --json
 | File | Content | Limit |
 |---|---|---|
 | `task.json` | id, project, base, branch `wsx/t<n>`, working copy, pane, adapter, model, tools, checks, agent session, state, revision, `created_by` (`owner` or `manager`), `waiting` (why it waits for something other than a person) | 64 KiB |
-| `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress), `blocked{denials, asks}`, `granted{access, project, by}`, `revoked`, `result`, `checks`, `check_retry`, `check_run`, `disk_wait{free_mb, min_gb}`, `revision`, `preview{url, port}`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
+| `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress), `blocked{denials, asks}`, `granted{access, project, by}`, `revoked`, `result`, `checks`, `check_retry`, `check_run`, `disk_wait{free_mb, min_gb}`, `revision`, `preview{url, port}`, `hand{by, dropped}`, `handback{by, commits}`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
 | `result.json` | latest worker result and check results, `denials`, and `asks` of a block | 256 KiB |
 | `report.md` | report of the latest revision | |
 | `brief.json`, `brief.md` | the latest brief (`{version, brief}`) and its text | 256 KiB |
@@ -38,7 +40,7 @@ wsx task close <n> [--discard] --json
 - A host's control socket is not in the store: `sun_path` holds 104 bytes on macOS. The task host serves `<TMPDIR>/wsx-<uid>/t-<hash>.sock` and its worker's broker `w-<hash>.sock`, the manager `m-<hash>.sock` and its broker `b-<hash>.sock`, where `<hash>` is 16 hex of sha256 of the store path the socket stands for (`<n>/host.sock`, `<n>/broker.sock`, `manager/manager.sock`, `manager/broker.sock`), and `/tmp` replaces a `TMPDIR` longer than 64 bytes. The folder is 0700 and must belong to the user, the socket is 0600, a host removes its socket when it exits and replaces a stale one when it starts. A host and its callers must share `TMPDIR`; `show --json` and `manager --json` name the socket.
 - `<project-id>` is `<name-slug>-<first 8 hex of sha256(project path)>`. Numbers come from a locked `next` counter and are never reused, also after a failed start.
 - One writer: the CLI writes before the host starts and after it exits; the host writes everything in between.
-- States: `starting, working, briefed, blocked, checking, ready, failed, stopped, conflict, in_review, landed, closed`. `landed` and `closed` are not open. `task.json` also has `phase`: `brief` until `start`, then `build` (records from before the brief read as `build`).
+- States: `starting, working, briefed, blocked, checking, ready, failed, stopped, conflict, in_review, by_hand, landed, closed`. `landed` and `closed` are not open. `task.json` also has `phase`: `brief` until `start`, then `build` (records from before the brief read as `build`).
 - A prompt, steer or add is at most 64 KiB.
 - A task's title is `--title` (at most 60 characters, no control characters, kept in `task.json` as `title`), else the first line of its prompt, at most 120 characters. Either one is shown without a leading `Owner <words>:` (up to 80 characters before the colon; a colon inside brackets or without a space after it, as in `http://`, does not end it): `Owner report: tool permission` reads `tool permission`. A lead-in with nothing after it reads as the words in its brackets (`Owner report (UX failures):` reads `UX failures`), else as the prompt's next non-empty line. `Owner: x` has no words and stays. Only the shown title changes: `task.json` and the prompt keep what was written. Every title shown (ledger, events, the web, a pull request) comes from this rule, also for tasks from before `--title`. The web shows a task without `--title` by the first sentence of its latest worker summary while it has one (`view::readable_title`).
 - Each revision records `base` (the merge base with the default branch, so it follows a rebase) and the paths changed in `base..r<k>`: at most 500 paths and 32 KiB in `paths`, the full count in `paths_total`.
@@ -54,8 +56,8 @@ wsx task close <n> [--discard] --json
 
 1. starts the adapter and sends the prompt;
 2. prints one progress line per agent step to its terminal (watch it in wsx like any session);
-3. serves its control socket (see Store): one JSON request per connection (`status`, `steer`, `add`, `allow`, `stop`, `close`), one JSON answer `{ok, state, message}`;
-4. reports its pane through `AgentReport` with provider `task`: working/checking as Working, blocked as Blocked, ready as Done, failed as Error, stopped as Idle;
+3. serves its control socket (see Store): one JSON request per connection (`status`, `steer`, `add`, `allow`, `stop`, `land`, `hand`, `handback`, `close`), one JSON answer `{ok, state, message}`;
+4. reports its pane through `AgentReport` with provider `task`: working/checking as Working, blocked as Blocked, ready as Done, failed as Error, stopped and by_hand as Idle;
 5. keeps running through `wsx daemon restart` (live handoff), because it is a pane process.
 
 A host restarted by a cold daemon start marks a running turn `stopped`; the next add resumes.
@@ -121,11 +123,23 @@ There is no verdict per task: a task the checks prove lands, and what needs a pe
 - Both refuse with `WSX_TASK_ACTOR=manager`: checking is the owner's.
 - Old logs with `verified` or `verify_skipped` still read; nothing shows them.
 
+## By hand
+
+The owner can take a build over and work on it directly, with the worker's context.
+
+1. `wsx task hand <n>` (the web's *Work by hand*) refuses with `WSX_TASK_ACTOR=manager`, in the brief phase, and while the task is `starting`, `checking`, `by_hand`, `landed` or `closed`. The host stops a running turn, drops queued messages, logs `hand{by: owner, dropped}` and sets `by_hand`.
+2. No second worktree or branch: the owner works in the task's own working copy on `wsx/t<n>`, with its warm build. `hand` opens a wsxd session `task-<n>-hand` there (one only; a second `hand` names the open one) running `claude --resume <agent_session> --fork-session --system-prompt-snapshot off`, or the login shell when the task has no conversation yet.
+   - `--fork-session` copies the conversation under a new id, so the worker's own transcript stays as it was; the next `add` resumes it, and it sees the owner's commits in git.
+   - Claude records a conversation's system prompt on its first request and reuses it after `--resume` until the conversation is compacted (https://code.claude.com/docs/en/cli-reference, "System prompt flags in resumed conversations"). `--system-prompt-snapshot off` rebuilds it, so the owner gets Claude's own prompt with their user settings and CLAUDE.md, not the headless worker rules. The worker's `--settings` (its sandbox), `--permission-mode` and tool rules are launch flags and do not carry over.
+   - Nothing is written into the working copy. `hand --json` gives `session` and `context`: the working copy, branch, HEAD, a short `git status` and the paths of `brief.md`, `report.md` and `result.json` (its `memo`); `show --json` gives the same under `hand` while the task is `by_hand`.
+3. While `by_hand` nothing else writes the copy or its conversation: `add`, `steer`, `start` and `land` are refused with a message that names `handback`; a grant is recorded for the next turn and resumes nothing; every path that starts a turn (a check retry, queued messages, a disk-wait resume, a brief that builds by itself) starts none; no checks run, a worker's `check-run` is refused, and nothing lands by itself. The manager reads `by_hand` from the ledger and leaves the task alone. `close` keeps its rules.
+4. `wsx task handback <n>` (the web's *Hand back*) refuses while tracked changes are uncommitted, and the session stays. Otherwise the host logs `handback{by: owner, commits}` (the commits after the last revision), writes a `done` result that keeps the worker's Human Verify items and memo, and runs `tasks.checks` on the next revision: the task becomes `ready` or `failed` as after a worker result, and auto land and the close after a land apply. A failed check is not sent back to the worker; the owner adds a message or hands again. The CLI then closes `task-<n>-hand`; the forked transcript stays in Claude's store.
+
 ## Landing (`local-merge`, the default policy)
 
 `wsx task land <n>` asks the host to:
 
-1. refuse unless the task is `ready`;
+1. refuse unless the task is `ready` (a `by_hand` task names `handback`);
 2. refuse when the worker left uncommitted tracked changes;
 3. when the branch does not contain the default branch tip, rebase it there in the working copy:
    - a conflict aborts the rebase, logs `conflict{onto, paths}`, and starts a worker turn that rebases and resolves. The state stays `conflict` until the result; the normal checks then make it `ready`, and it lands again (by itself under auto land);
@@ -218,7 +232,7 @@ wsx task approve a3 -p <project> --json            # run the action as the owner
 wsx task deny a3 [--note <text>] -p <project> --json
 ```
 
-Both refuse when `WSX_TASK_ACTOR=manager`. In the web a second Approve while the action runs, or after it was decided, answers what happened instead of an error. `approve` refuses a land or discard for a task that moved past the requested revision (recorded as not run; ask again). Otherwise it runs the action as its own `wsx task ... --json` command without the actor mark and records `decision{id, approved, note, outcome}`. Decisions reach the manager as events (`approval a3 (land #5) approved; done: ...`). Writers lock the file; requests are numbered under that lock.
+Both refuse when `WSX_TASK_ACTOR=manager`, and so do `hand` and `handback`: the manager may tell the owner to run them. In the web a second Approve while the action runs, or after it was decided, answers what happened instead of an error. `approve` refuses a land or discard for a task that moved past the requested revision (recorded as not run; ask again). Otherwise it runs the action as its own `wsx task ... --json` command without the actor mark and records `decision{id, approved, note, outcome}`. Decisions reach the manager as events (`approval a3 (land #5) approved; done: ...`). Writers lock the file; requests are numbered under that lock.
 
 This is a guard against the manager's mistakes, not a security boundary: the manager's tools allow every `wsx task` command, and anything running as the owner can leave out `WSX_TASK_ACTOR`. An OS sandbox per agent comes later.
 
@@ -236,7 +250,7 @@ Deploys and releases of a project run one at a time under `tasks/<project-id>/de
 
 ## Close
 
-`close` refuses while `wsx/t<n>` has commits that are not on the default branch, unless `--discard` or the task is `landed`; a landed task closes itself (see Landing) and keeps the state `landed` unless `--discard`. It stops the task's preview, asks the host to close, waits for it to exit, removes the sessions of the working copy, runs `cargo clean` when the copy has `Cargo.toml`, and removes the worktree, folder and branch. `--discard` also deletes `refs/wsx/task/<n>/*`. The task folder stays as history (`list --all`).
+`close` refuses while `wsx/t<n>` has commits that are not on the default branch, unless `--discard` or the task is `landed`; a `by_hand` task closes by the same rules, its hand session with the other sessions. A landed task closes itself (see Landing) and keeps the state `landed` unless `--discard`. It stops the task's preview, asks the host to close, waits for it to exit, removes the sessions of the working copy, runs `cargo clean` when the copy has `Cargo.toml`, and removes the worktree, folder and branch. `--discard` also deletes `refs/wsx/task/<n>/*`. The task folder stays as history (`list --all`).
 
 ## Config
 

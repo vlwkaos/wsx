@@ -39,6 +39,9 @@ pub enum TaskState {
     Conflict,
     /// A pull request carries the task (`pr` landing policy).
     InReview,
+    /// The owner works in the working copy by hand; no agent turn, check or landing runs
+    /// until `handback`. ref: docs/tasks.md "By hand"
+    ByHand,
     /// The revision is on the default branch.
     Landed,
     Closed,
@@ -62,6 +65,7 @@ impl TaskState {
             Self::Stopped => "stopped",
             Self::Conflict => "conflict",
             Self::InReview => "in_review",
+            Self::ByHand => "by_hand",
             Self::Landed => "landed",
             Self::Closed => "closed",
         }
@@ -344,6 +348,21 @@ pub enum LogEvent {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         auto: bool,
     },
+    /// The owner took the task over by hand; `dropped` queued messages were not sent.
+    Hand {
+        by: Actor,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        dropped: u32,
+    },
+    /// The owner gave the task back; `commits` were made since the last revision.
+    Handback {
+        by: Actor,
+        commits: u32,
+    },
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl LogEvent {
@@ -429,6 +448,10 @@ pub enum HostRequest {
     Close {
         discard: bool,
     },
+    /// The owner takes the task over: the running turn stops and no agent turn starts.
+    Hand,
+    /// The owner's commits become the next revision and its checks run.
+    Handback,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
