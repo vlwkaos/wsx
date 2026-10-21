@@ -7,16 +7,21 @@ close with and without unlanded commits, failure cleanup, and that no process, s
 worktree or branch is left. Build adjacent wsx and wsxd first. ref: docs/tasks.md
 """
 import argparse
+import fcntl
 import hashlib
 import urllib.request
 import json
 import os
 from pathlib import Path
+import pty
 import re
+import select
 import shutil
 import socket
+import struct
 import subprocess
 import sys
+import termios
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +69,36 @@ LAND_CONFIG = '''tasks:
   checks:
     - "test ! -e broken.txt"
 '''
+
+
+def tui_text(wsx, env, cwd, until, seconds=15):
+    """The real TUI in a private PTY (120x40): its output as text without escapes, read until
+    `until` (a regex) matches or the time is up, then the TUI quits."""
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 120, 0, 0))
+    proc = subprocess.Popen([str(wsx)], cwd=cwd, env=env, stdin=slave, stdout=slave, stderr=slave,
+                            start_new_session=True)
+    output, text, deadline = bytearray(), '', time.monotonic() + seconds
+    try:
+        while time.monotonic() < deadline and proc.poll() is None:
+            if select.select([master], [], [], 0.1)[0]:
+                output += os.read(master, 65536)
+                # ^ Cells of one style are written in one run; escapes split the runs.
+                text = re.sub(r'\x1b(\[[0-9;?<>=]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[()][0-9A-Za-z]|.)', '\n',
+                              output.decode('utf-8', 'replace'))
+                if re.search(until, text):
+                    break
+    finally:
+        if proc.poll() is None:
+            os.write(master, b'\x01q')
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3)
+        os.close(master)
+        os.close(slave)
+    return text
 
 
 def main():
@@ -774,6 +809,14 @@ def run(wsx, wsxd, work, owned):
     assert launch['cwd'] == str(project)
     # ^ The name the owner reads, trimmed; the session keeps its label `task-manager`.
     assert js('task', 'manager')['name'] == 'Atlas'
+    # ^ The TUI's manager row reads the name; without one it keeps the provider (docs/tasks.md "Config").
+    named = tui_text(wsx, env, project, r'task-manager\s*\n*\s*\(Atlas\)')
+    assert re.search(r'task-manager\s*\n*\s*\(Atlas\)', named) and '(manager)' not in named, named[-3000:]
+    config_text = (project / 'wsx.config.yml').read_text()
+    (project / 'wsx.config.yml').write_text(config_text.replace('name: "  Atlas ", ', ''))
+    plain = tui_text(wsx, env, project, r'task-manager\s*\n*\s*\(manager\)')
+    (project / 'wsx.config.yml').write_text(config_text)
+    assert re.search(r'task-manager\s*\n*\s*\(manager\)', plain) and '(Atlas)' not in plain, plain[-3000:]
     assert js('task', 'manager')['state'] == 'running'
     # A new task and an add to the running one, each by a wsx task command the manager runs.
     started = js('task', 'say', 'RUN wsx task new "WORK s1.txt" -p demo --json')
