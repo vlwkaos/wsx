@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
-use wsx_core::git::{git_cmd, output_with_timeout_limit};
+use wsx_core::git::{git_cmd, output_with_timeout_tail};
 use wsx_core::runtime;
 use wsx_core::task::{
     checks,
@@ -1394,7 +1394,8 @@ fn run_check(working_copy: &Path, command: &str, timeout: Duration) -> CheckResu
             process.env_remove(name);
         }
     }
-    match output_with_timeout_limit(&mut process, timeout, CHECK_OUTPUT_BYTES) {
+    // ^ The tail: a long check output (a test run) ends with its failures and summary.
+    match output_with_timeout_tail(&mut process, timeout, CHECK_OUTPUT_BYTES) {
         Ok(output) => {
             let mut text = String::from_utf8_lossy(&output.stdout)
                 .trim_end()
