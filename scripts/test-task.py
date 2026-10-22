@@ -763,7 +763,7 @@ def run(wsx, wsxd, work, owned):
                  'use Read, Grep, WebSearch and the Explore subagent', 'the likely next step',
                  'say what you checked in one short line', 'On `hand`, the owner works in its copy',
                  'docs tools the project settings allow', 'Write and NotebookEdit are denied to them',
-                 'Keep turns and answers short', 'update that section in place with Bash'):
+                 'Keep turns short', 'Present every reply to the owner by this rule', 'The reader sees one screen', 'update that section in place with Bash'):
         assert rule in launch['instructions'], rule
     assert 'brief' not in launch['instructions'].lower(), launch['instructions']
     # ^ No skill is named: the owner's skills are whatever their folder holds.

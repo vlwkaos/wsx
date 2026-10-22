@@ -106,13 +106,17 @@ export function useFollowEnd() {
     atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
     setAway(!atEnd.current);
   };
+  // The log's height is one screen of this device: a `Fold` inside it stops there.
+  const screen = (element) => element.style.setProperty("--screen-height", `${element.clientHeight}px`);
   const log = useCallback((element) => {
     watcher.current?.disconnect();
     watcher.current = null;
     node.current = element;
     if (!element) return;
     height.current = element.clientHeight;
+    screen(element);
     watcher.current = new ResizeObserver(() => {
+      screen(element);
       if (!atEnd.current) return scrolled();
       height.current = element.clientHeight;
       pin();
@@ -122,4 +126,28 @@ export function useFollowEnd() {
   const toEnd = () => { atEnd.current = true; pin(); setAway(false); };
   useLayoutEffect(pin);
   return { log, atEnd, away, scrolled, toEnd };
+}
+
+// A message taller than one screen shows that screen and "Show all" (docs/web-client.md
+// "One screen"). `kind`, a class of the body, may set a shorter fold in its CSS.
+export function Fold({ id, kind, more = "Show all", children }) {
+  const body = useRef();
+  const [open, setOpen] = useState(false);
+  const [long, setLong] = useState(false);
+  useLayoutEffect(() => {
+    const node = body.current;
+    const measure = () => { if (!node.hasAttribute("data-open")) setLong(node.scrollHeight > node.clientHeight + 1); };
+    measure();
+    // ^ The screen height changes the fold, and a diagram drawn later changes the content.
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    for (const child of node.children) observer.observe(child);
+    return () => observer.disconnect();
+  });
+  return html`
+    <div class=${kind ? `fold ${kind}` : "fold"} id=${id} ref=${body} data-clamped=${!open && long ? "" : undefined} data-open=${open ? "" : undefined}>${children}</div>
+    ${(long || open) && html`
+      <button class="link-action fold-more" type="button" aria-expanded=${open} aria-controls=${id} onClick=${() => setOpen(!open)}>
+        ${open ? "Show less" : more}
+      </button>`}`;
 }

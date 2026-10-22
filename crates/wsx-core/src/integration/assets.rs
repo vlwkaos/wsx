@@ -13,6 +13,16 @@ pub(crate) const PYTHON_REPORTER: &str = include_str!("../../integrations/common
 const HERMES: &str = include_str!("../../integrations/hermes/__init__.py");
 pub(crate) const HERMES_MANIFEST: &str = include_str!("../../integrations/hermes/plugin.yaml");
 
+/// The Claude output style: the presentation rule, with Claude Code's own coding instructions kept.
+/// ^ https://code.claude.com/docs/en/output-styles
+pub(crate) const OUTPUT_STYLE_NAME: &str = "wsx";
+pub(crate) fn output_style() -> String {
+    format!(
+        "---\nname: {OUTPUT_STYLE_NAME}\ndescription: One screen: the answer first, structure as a diagram or a table, each fact once\nkeep-coding-instructions: true\n---\n\n{}",
+        super::PRESENTATION
+    )
+}
+
 pub(crate) fn reporter(target: IntegrationTarget) -> (&'static str, &'static str) {
     match target {
         IntegrationTarget::Pi

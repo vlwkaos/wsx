@@ -81,6 +81,17 @@ p, h1, h2 { margin: 0; }
   text-align: left; text-decoration: none; background: none; border: 0; cursor: pointer;
 }
 div.row-link { cursor: default; }
+/* Hook: .row-slide — a row that slides left to show Remove. The browser's own snapping
+   moves it, so the list still scrolls up and down, and Tab reaches Remove. */
+.row-slide { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; touch-action: pan-x pan-y; }
+.row-slide::-webkit-scrollbar { display: none; }
+.row-slide > .row-link { flex: 0 0 100%; scroll-snap-align: start; }
+.row-remove {
+  flex: 0 0 auto; scroll-snap-align: end; min-height: var(--size-row); padding: 0 calc(var(--space-4) * 1.5);
+  border: 0; background: none; color: var(--color-danger); font-weight: var(--font-weight-medium); cursor: pointer;
+}
+.row-slide[data-open] .row-remove { background: var(--color-danger); color: var(--color-bg); }
+.row-remove:disabled { opacity: var(--opacity-disabled); }
 a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row-link[aria-current="page"] { background: var(--color-raised); }
 /* A row whose text opens it while its actions stay buttons: the text is the link. */
 .row-open { align-self: stretch; justify-content: center; text-decoration: none; cursor: pointer; }
@@ -290,11 +301,7 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
    keeps it apart from the agent's messages. Closed, it shows about eight lines. */
 .summary { max-width: var(--size-prose); min-width: 0; padding-inline-start: var(--space-3); border-inline-start: var(--border-width) solid var(--color-hairline); }
 .summary-label { margin: 0 0 var(--space-1); font-size: var(--font-size-sm); color: var(--color-muted); }
-.summary-body:not([data-open]) { max-height: calc(8 * var(--font-size-md) * var(--line-height-prose)); overflow: hidden; }
-.summary-body[data-clamped] {
-  -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent);
-  mask-image: linear-gradient(to bottom, black 70%, transparent);
-}
+.fold.summary-body:not([data-open]) { max-height: calc(8 * var(--font-size-md) * var(--line-height-prose)); }
 .steps { font-size: var(--font-size-sm); color: var(--color-muted); max-width: var(--size-prose); }
 /* The hit area is 44 px high; the row still draws at its text height. */
 .steps-summary {
@@ -483,13 +490,14 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .bubble[data-pending] .bubble-box { color: var(--color-muted); }
 .bubble-head { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1); font-size: var(--font-size-sm); }
 .bubble-state { color: var(--color-muted); }
-/* About twelve lines, then "Show all". */
-.bubble-body:not([data-open]) { max-height: calc(12 * var(--font-size-md) * var(--line-height-prose)); overflow: hidden; }
-.bubble-body[data-clamped] {
-  -webkit-mask-image: linear-gradient(to bottom, black 75%, transparent);
-  mask-image: linear-gradient(to bottom, black 75%, transparent);
+/* Hook: .fold — one screen of the chat, then "Show all" (docs/web-client.md "One screen").
+   `--screen-height` is the log's own height; the room keeps the author line and the button in view. */
+.fold:not([data-open]) { max-height: max(calc(6 * var(--font-size-md) * var(--line-height-prose)), calc(var(--screen-height, 100svh) - 3 * var(--size-control))); overflow: hidden; }
+.fold[data-clamped] {
+  -webkit-mask-image: linear-gradient(to bottom, black 85%, transparent);
+  mask-image: linear-gradient(to bottom, black 85%, transparent);
 }
-.bubble-more { min-height: var(--size-control); }
+.fold-more { min-height: var(--size-control); }
 /* Wide content scrolls inside its bubble, never the page. */
 .bubble .markdown > :is(.code-block, .table-wrap, .diagram-failed) { align-self: stretch; width: auto; min-width: 0; max-width: 100%; }
 .bubble .markdown > .diagram { width: 100%; min-width: 0; }

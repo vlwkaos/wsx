@@ -55,6 +55,12 @@ not require daemon handoff to finish; missing or unsafe candidates still fail ex
 
 Claude integration 22 and Codex integration 15 save bounded, opt-in metadata for successful and failed reports in a private journal without changing report authority. See [hook inspection](claude-inspection.md), including the private-marker activation path for existing sessions and the limits of launch-version inference. Install the selected provider with `wsx agent install claude` or `wsx agent install codex`; installation does not rewrite a running agent environment or prove its loaded hook configuration changed. These diagnostics do not establish that a reported hook failure is fixed.
 
+## Output style
+
+Every wsx agent presents a reply by one rule, `crates/wsx-core/integrations/common/presentation.md` (`integration::PRESENTATION`): the answer first, an unverified assumption on the first line, structure as a mermaid diagram or a table, each fact once, about one phone screen. The manager's and the workers' instructions include it (docs/tasks.md "Workflow").
+
+`wsx agent install claude` also writes it as the Claude Code output style `wsx` (`output-styles/wsx.md` in the Claude config root, with `keep-coding-instructions: true`, https://code.claude.com/docs/en/output-styles). It sets `outputStyle` to `wsx` in `settings.json` only when that file names no style: a style the person chose stays, and a project's `.claude/settings.local.json` still wins. A session reads the style when it starts. `/output-style` switches it off for a session.
+
 ## Claude compaction
 
 Claude Code fires `SessionStart` with `source: "compact"` after every compaction: the person's `/compact`, an automatic one at the context limit, which can come inside a turn, and one after a long idle time. Reporting it as `idle` ended an open turn early: wsxd showed the agent idle while Claude still worked, the exchange ended, and the chat delivered the next message into a busy editor. Claude integration 22 (`wsx-agent-status.sh`) does this instead:

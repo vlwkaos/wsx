@@ -25,6 +25,11 @@ pub use model::{
 };
 pub use status::{metadata, scan};
 
+/// How every wsx agent presents a reply: the manager's and the workers' instructions,
+/// and the Claude output style that `wsx agent install claude` writes (docs/agent-reporting.md
+/// "Output style").
+pub const PRESENTATION: &str = include_str!("../../integrations/common/presentation.md");
+
 #[cfg(test)]
 mod tests {
     use super::*;

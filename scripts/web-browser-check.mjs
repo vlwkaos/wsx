@@ -62,7 +62,7 @@ async function zoom(name) {
 // (the wide layout's rail is a list of its own, and a tall question sheet is bounded: both may scroll).
 async function sound(label) {
   const seen = await evaluate(`(() => {
-    const free = (node) => node.closest('.crumbs, .terminal-keys, .code, .xterm, .code-block pre, .table-wrap, .diagram, .question-screen');
+    const free = (node) => node.closest('.crumbs, .terminal-keys, .row-slide, .code, .xterm, .code-block pre, .table-wrap, .diagram, .question-screen');
     const wide = [...document.querySelectorAll('#app *')].filter((node) => !free(node) && node.getBoundingClientRect().right > innerWidth + 0.5);
     const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .question, .slash')
       && /auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1);
@@ -219,9 +219,9 @@ async function inbox() {
   if (new Set(running.looks).size !== 3) await fail(`project, separator and worktree share a look: ${running.looks}`);
   if (sections.Sessions.find((row) => row.state === "idle")?.work !== "fix/login") await fail(`a row under its project heading repeats the project: ${JSON.stringify(sections.Sessions)}`);
   if (!sections.Finished.some((row) => /^done new$/.test(row.state))) await fail(`Finished marks nothing as new: ${JSON.stringify(sections.Finished)}`);
-  // The inbox is agent work: the shell is only under its worktree in Projects.
-  if (states("Sessions") !== "idle") await fail(`Sessions shows ${JSON.stringify(sections.Sessions)}`);
-  if (await count(`.scroll a[href^="#/s/${ids.shell}/"]`)) await fail("the inbox lists the shell session");
+  // A shell is listed with its project, with no state group of its own.
+  if (states("Sessions") !== "idle,open" || sections.Sessions[1].session !== "shell · shell") await fail(`Sessions shows ${JSON.stringify(sections.Sessions)}`);
+  if (!(await count(`.scroll a[href="#/s/${ids.shell}/terminal"]`))) await fail("the inbox does not list the shell session on its terminal");
   if (!sections["Needs you"].some((row) => row.clipped)) await fail("the long session label is not truncated with an ellipsis");
   // Opening a finished session and coming back moves no row, though it is no longer new.
   if (size === SIZES[0]) {
@@ -239,6 +239,22 @@ async function inbox() {
   }
   if (!phone() && Math.round(await evaluate("document.querySelector('.rail').getBoundingClientRect().width")) !== 300) await fail("the rail is not 300 px wide");
   if ((await text(".group-name")).join() !== "design" || !(await count(".group-head .new-session"))) await fail("the Sessions group lacks its project or its New session action");
+  // A touch slide to the left shows Remove at the row's right edge; it snaps back closed.
+  // The removal itself is in test-web-client.py ("session remove").
+  if (phone()) {
+    const removeBox = () => evaluate(`(() => { const row = document.querySelector('.scroll .row-slide'); const r = row.querySelector('.row-remove').getBoundingClientRect();
+      return { scrolled: Math.round(row.scrollLeft), left: Math.round(r.left), right: Math.round(r.right), height: Math.round(r.height), name: row.querySelector(".row-remove").getAttribute("aria-label"), filled: row.hasAttribute("data-open") }; })()`);
+    const closed = await removeBox();
+    if (closed.scrolled !== 0 || closed.left < size[0] || closed.filled) await fail(`Remove shows before a slide: ${JSON.stringify(closed)}`);
+    const start = await evaluate("(() => { const r = document.querySelector('.scroll .row-slide').getBoundingClientRect(); return [r.right - 40, r.top + r.height / 2]; })()");
+    await send("Input.synthesizeScrollGesture", { x: start[0], y: start[1], xDistance: -160, yDistance: 0, gestureSourceType: "touch", speed: 800 });
+    await until("document.querySelector('.scroll .row-slide').scrollLeft > 0", "a slide did not move the row");
+    await pause(400);
+    const open = await removeBox();
+    if (open.right !== size[0] || open.height < 44 || !open.filled || !/^Remove session /.test(open.name)) await fail(`a slide did not show Remove at the edge: ${JSON.stringify(open)}`);
+    await shot("inbox-remove");
+    await evaluate("document.querySelector('.scroll .row-slide').scrollTo({ left: 0 })");
+  }
   // The elapsed time of a working session counts on the page.
   const before = await text("section[aria-label=Running] .time");
   await pause(1200);

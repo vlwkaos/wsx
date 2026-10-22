@@ -15,11 +15,11 @@ import { Session } from "./session.js";
 import { Files } from "./files.js";
 import { Settings } from "./settings.js";
 
-// ^ With task_view home lists the projects, one row each. Sessions (the inbox) and
-// Projects (each project's worktrees and sessions) stay one tap away beside it, so work that
-// no task owns is never hidden (docs/web-client.md "Screens").
+// ^ With task_view home lists the projects, one row each, and Sessions (the inbox, shells
+// too) stays one tap away beside it, so work that no task owns is never hidden. A project's
+// worktrees are in its chat's ⋯ menu (docs/web-client.md "Screens").
 const tabs = () => can("task_view")
-  ? [["home", "#/", "Home"], ["inbox", "#/sessions", "Sessions"], ["projects", "#/projects", "Projects"], ["settings", "#/settings", "Settings"]]
+  ? [["home", "#/", "Home"], ["inbox", "#/sessions", "Sessions"], ["settings", "#/settings", "Settings"]]
   : [["home", "#/", "Inbox"], ["projects", "#/projects", "Projects"], ["settings", "#/settings", "Settings"]];
 
 function useWide() {
@@ -120,9 +120,8 @@ function App() {
   // files keep the list they were opened from, and a project's chat has home.
   let list;
   if (!can("task_view")) list = ["projects", "project", "files", "sessions", "task"].includes(route.screen) ? "projects" : "inbox";
-  else if (["home", "project", "task"].includes(route.screen)) list = "home";
+  else if (["home", "project", "task", "projects", "sessions"].includes(route.screen)) list = "home";
   else if (route.screen === "inbox") list = "inbox";
-  else if (["projects", "sessions"].includes(route.screen)) list = "projects";
   else list = lastList.current;
   lastList.current = list;
   const railList = { home: html`<${Home} rail />`, projects: html`<${Projects} rail />`, inbox: html`<${Inbox} rail />` }[list];

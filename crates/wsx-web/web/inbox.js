@@ -2,7 +2,8 @@
 // The home screen without task_view; with it, the Sessions tab (#/sessions) beside home.
 import { api } from "./api.js";
 import { elapsed, html, Icon, useNow, useState } from "./lib.js";
-import { can, isAgent, isNew, listedSessions, sessionLink, shows, stateOf, useStore } from "./store.js";
+import { can, isNew, listedSessions, sessionLink, shows, stateOf, useStore } from "./store.js";
+import { toast } from "./ui.js";
 
 // One session. Left: a state mark. Middle: the work first, project › worktree, then the
 // session and its provider, and for a working session what it does. Right: the state
@@ -18,8 +19,23 @@ export function SessionRow({ session, now, current, place }) {
   else if (place === "project") identity = html`<span class="row-worktree">${branch}</span>`;
   else identity = html`<span class="row-project">${session.project.name}</span><span class="row-sep" aria-hidden="true">›</span><span class="row-worktree">${branch}</span>`;
   const context = [place !== "worktree" && session.label, session.agent?.provider ?? "shell"].filter(Boolean).join(" · ");
+  const [removing, setRemoving] = useState(false);
+  // ^ Slide the row left to show Remove (docs/web-client.md "Removing a session"). The slide
+  // is the confirmation: one stray tap removes nothing. The row goes when wsxd says so.
+  const remove = async () => {
+    setRemoving(true);
+    try {
+      await api(`api/sessions/${session.id}`, { method: "DELETE" });
+    } catch (failure) {
+      toast(failure.message, { failure: true });
+      setRemoving(false);
+    }
+  };
+  const removable = can("session_start");
+  // Remove is filled only while the row is slid open, so closed rows show no red buttons.
+  const slid = (event) => event.currentTarget.toggleAttribute("data-open", event.currentTarget.scrollLeft > 0);
   return html`
-    <li class="row">
+    <li class=${removable ? "row row-slide" : "row"} onScroll=${removable ? slid : null}>
       <a class="row-link" href=${sessionLink(session)} aria-current=${current ? "page" : null}>
         <span class="mark" data-tone=${status.tone} data-running=${status.key === "working" ? "" : null} aria-hidden="true"></span>
         <span class="row-main">
@@ -32,6 +48,8 @@ export function SessionRow({ session, now, current, place }) {
           ${status.key === "working" && session.state_since_unix_ms != null && html`<span class="time">${elapsed(now - session.state_since_unix_ms)}</span>`}
         </span>
       </a>
+      ${removable && html`<button class="row-remove" type="button" disabled=${removing} onClick=${remove}
+        aria-label=${`Remove session ${session.label}`}>Remove</button>`}
     </li>`;
 }
 
@@ -65,10 +83,9 @@ const SECTIONS = [["needs", "Needs you"], ["running", "Running"], ["finished", "
 
 export function Inbox({ rail }) {
   const store = useStore();
-  // The inbox is agent work; shells are listed under their worktree in Projects, and task
-  // workers and the manager in their task and their project's chat.
-  const listed = listedSessions(store.sessions);
-  const sessions = listed.filter(isAgent);
+  // Every session but task workers and the manager, which their task and their project's
+  // chat show. A shell has no state group: it is listed with its project.
+  const sessions = listedSessions(store.sessions);
   const now = useNow(sessions.some((session) => stateOf(session).key === "working"));
   const currentId = Number(location.hash.split("/")[2]) || null;
   const row = (session, place) => html`<${SessionRow} key=${session.id} session=${session} now=${now} current=${rail && session.id === currentId} place=${place} />`;
@@ -77,15 +94,13 @@ export function Inbox({ rail }) {
   // never changes that time, so opening one and coming back moves no row.
   const finished = grouped("finished").sort((left, right) =>
     right.state_since_unix_ms - left.state_since_unix_ms || left.id - right.id);
-  const rest = grouped("rest");
+  const rest = sessions.filter((session) => [null, "rest"].includes(stateOf(session).group));
   const projects = store.projects.filter((project) => rest.some((session) => session.project.id === project.id));
   let body;
   if (!store.daemon) {
     body = html`<p class="empty">wsx is not running on the host. Sessions return when it starts.</p>`;
   } else if (!store.loaded) {
     body = html`<p class="empty">Loading…</p>`;
-  } else if (!sessions.length && listed.length) {
-    body = html`<p class="empty">No agent session. Shells are in <a class="link-action" href="#/projects">Projects</a>.</p>`;
   } else if (!sessions.length) {
     body = html`
       <p class="empty">No session is open.
