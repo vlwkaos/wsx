@@ -2,7 +2,7 @@
 // now, the messages that wait for it, and the composer (docs/web-client.md "Chat").
 import { api, resolve } from "./api.js";
 import { bytes, elapsed, Fold, html, Icon, useCallback, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
-import { can, events, shows, stateOf, state, touch } from "./store.js";
+import { can, events, readMap, shows, stateOf, state, touch, writeMap } from "./store.js";
 import { Markdown } from "./markdown.js";
 
 // Unsent text, attachments, files that still upload and the message that is not in the
@@ -11,9 +11,7 @@ import { Markdown } from "./markdown.js";
 // on this device, so a reload or a phone that drops the page loses nothing without a word.
 const drafts = new Map();
 const DRAFTS_KEY = "wsx-drafts";
-function stored() {
-  try { return JSON.parse(localStorage.getItem(DRAFTS_KEY)) ?? {}; } catch { return {}; }
-}
+const stored = () => readMap(DRAFTS_KEY);
 const draftFor = (id) => {
   if (!drafts.has(id)) {
     const saved = stored()[id];
@@ -26,7 +24,7 @@ function keepDraft(id) {
   const { text, attachments } = drafts.get(id);
   if (text || attachments.length) all[id] = { text, attachments };
   else delete all[id];
-  try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(all)); } catch { /* a private window keeps the draft in memory only */ }
+  writeMap(DRAFTS_KEY, all);
 }
 
 // ^ Owner's rule: a photo's long edge is at most 2000 px, as JPEG, and a PNG (a screenshot)

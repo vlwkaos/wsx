@@ -113,6 +113,8 @@ struct Stored {
 pub struct Queue {
     path: PathBuf,
     stored: Mutex<Stored>,
+    /// What the file holds now: a change that leaves it the same writes nothing.
+    written: Mutex<Vec<u8>>,
 }
 
 impl Queue {
@@ -127,22 +129,29 @@ impl Queue {
         Ok(Self {
             path,
             stored: Mutex::new(stored),
+            written: Mutex::new(Vec::new()),
         })
     }
 
     /// Change the queue and save it. A failed save is reported: the change stays in
     /// memory, so the running server still delivers it.
     fn change<T>(&self, change: impl FnOnce(&mut Stored) -> T) -> T {
-        let mut stored = self.stored.lock().unwrap_or_else(|lock| lock.into_inner());
+        let mut stored = crate::locked(&self.stored);
         let result = change(&mut stored);
         stored.sessions.retain(|_, queue| !queue.is_empty());
         stored.notices.retain(|_, notices| !notices.is_empty());
         stored
             .conversations
             .retain(|_, conversations| !conversations.is_empty());
+        // ^ Some changes touch only fields that are not saved, such as when wsxd first said
+        // "not yet"; those run every poll while a message waits.
+        let mut written = crate::locked(&self.written);
         let saved = serde_json::to_vec(&*stored)
             .map_err(anyhow::Error::from)
-            .and_then(|bytes| write_private(&self.path, &bytes));
+            .and_then(|bytes| match bytes == *written {
+                true => Ok(()),
+                false => write_private(&self.path, &bytes).map(|()| *written = bytes),
+            });
         if let Err(error) = saved {
             eprintln!("wsx web: cannot save the message queue: {error:#}");
         }
@@ -150,7 +159,7 @@ impl Queue {
     }
 
     pub fn list(&self, session: u64) -> Vec<Queued> {
-        let stored = self.stored.lock().unwrap_or_else(|lock| lock.into_inner());
+        let stored = crate::locked(&self.stored);
         stored.sessions.get(&session).cloned().unwrap_or_default()
     }
 
@@ -301,7 +310,7 @@ impl Queue {
     /// Whether a message waits for an agent that is not at a wait boundary yet: the
     /// observer then looks again soon, because the editor may turn idle with no change.
     pub fn waiting(&self) -> bool {
-        let stored = self.stored.lock().unwrap_or_else(|lock| lock.into_inner());
+        let stored = crate::locked(&self.stored);
         stored
             .sessions
             .values()
@@ -371,7 +380,7 @@ impl Queue {
     }
 
     pub fn conversations(&self, session: u64) -> Vec<Conversation> {
-        let stored = self.stored.lock().unwrap_or_else(|lock| lock.into_inner());
+        let stored = crate::locked(&self.stored);
         stored
             .conversations
             .get(&session)
@@ -380,7 +389,7 @@ impl Queue {
     }
 
     pub fn notices(&self, session: u64) -> Vec<Notice> {
-        let stored = self.stored.lock().unwrap_or_else(|lock| lock.into_inner());
+        let stored = crate::locked(&self.stored);
         stored.notices.get(&session).cloned().unwrap_or_default()
     }
 
@@ -396,7 +405,7 @@ impl Queue {
     /// Forget the queues of sessions that no longer exist in the grant.
     pub fn retain(&self, alive: &[u64]) {
         let stale = {
-            let stored = self.stored.lock().unwrap_or_else(|lock| lock.into_inner());
+            let stored = crate::locked(&self.stored);
             stored
                 .sessions
                 .keys()

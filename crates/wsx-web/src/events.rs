@@ -103,9 +103,7 @@ fn observe(app: Arc<App>) {
                     available = false;
                     workspace.clear();
                     // A page that opens now must not start from the last session list.
-                    *app.workspace
-                        .lock()
-                        .unwrap_or_else(|lock| lock.into_inner()) = None;
+                    *crate::locked(&app.workspace) = None;
                     publish(app, message("daemon", json!({ "available": false })));
                 }
                 revision = 0;
@@ -121,10 +119,7 @@ fn observe(app: Arc<App>) {
         if first || last_upgrade_check.elapsed() >= UPGRADE_CHECK {
             last_upgrade_check = Instant::now();
             let failed = runtime::upgrade_failure(&app.client);
-            let mut known = app
-                .upgrade_failed
-                .lock()
-                .unwrap_or_else(|lock| lock.into_inner());
+            let mut known = crate::locked(&app.upgrade_failed);
             if *known != failed {
                 *known = failed;
                 failure_changed = true;
@@ -132,11 +127,7 @@ fn observe(app: Arc<App>) {
         }
         if !available || failure_changed {
             available = true;
-            let failed = app
-                .upgrade_failed
-                .lock()
-                .unwrap_or_else(|lock| lock.into_inner())
-                .clone();
+            let failed = crate::locked(&app.upgrade_failed).clone();
             publish(
                 app,
                 message(
@@ -272,9 +263,7 @@ pub fn publish_json(app: &App, event: &'static str, data: Value) {
 
 fn publish(app: &App, message: Message) {
     if message.event == "workspace" {
-        *app.workspace
-            .lock()
-            .unwrap_or_else(|lock| lock.into_inner()) = Some(message.clone());
+        *crate::locked(&app.workspace) = Some(message.clone());
     }
     // No receiver is not an error: no page is open.
     let _ = app.events.send(message);

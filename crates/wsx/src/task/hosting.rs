@@ -168,7 +168,7 @@ pub fn spawn_wsx(args: &[&str], log: std::fs::File) -> Result<()> {
     let mut command = std::process::Command::new(path);
     command
         .args(args)
-        .env_remove("WSX_TASK_ACTOR")
+        .env_remove(wsx_core::task::owner::ACTOR_ENV)
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);

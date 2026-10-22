@@ -382,6 +382,13 @@ while True:
  data = os.read(0, 65536)
  if not data: break
  with trace.open('ab') as out: out.write(data)
+ if data == b'CLIPS':  # OSC 52 (set the clipboard to "copied") and a tick, 20 times
+  import threading, time
+  def ticks():
+   for n in range(20):
+    os.write(1, b'\x1b]52;c;Y29waWVk\x07[tick%d]' % n)
+    time.sleep(0.25)
+  threading.Thread(target=ticks, daemon=True).start()
  os.write(1, b'<' + data.hex().encode() + b'>')
 '''
 
@@ -1419,6 +1426,11 @@ capabilities = ["terminal_view"]
         third_root = (work / 'project3').resolve()
         (third_root / '.claude/commands').mkdir(parents=True)
         (third_root / '.claude/commands/ship.md').write_text('---\ndescription: Ship the release\n---\nBODY-SECRET\n')
+        # ^ A repository's .claude may link to any file of the user: links there are not read.
+        (work / 'private-note.md').write_text('---\ndescription: LEAKED-LINE\n---\n')
+        (third_root / '.claude/commands/leak.md').symlink_to(work / 'private-note.md')
+        (third_root / '.claude/skills/linked').mkdir(parents=True)
+        (third_root / '.claude/skills/linked/SKILL.md').symlink_to(work / 'private-note.md')
         created = call('session_create', {'worktree_id': worktrees['project3'], 'label': 'commands',
             'command': [sys.executable, str(actor), str(work / 'commands.jsonl'), str(work / 'commands.trace'),
                         str(third_root), str(chart), str(outside)], 'rows': 12, 'cols': 100})
@@ -1435,6 +1447,7 @@ capabilities = ["terminal_view"]
         assert described['deploy-notes'] == 'Write the deploy notes for a release' and described['review-diff'] == 'Review the staged diff'
         assert described['zebra'] == 'Zebra stripes a table' and listing['skipped'] == 1 and not listing['truncated'], listing
         assert 'BODY-SECRET' not in json.dumps(listing), 'a file body left the server'
+        assert 'LEAKED-LINE' not in json.dumps(listing), 'a linked file left the server'
         assert steady(sites['viewer'], 'GET', '/api/chat/%d/commands' % commands_session)[0] in (401, 403, 404)
         assert steady(root, 'GET', '/api/chat/999999/commands')[0] == 404
         # wsxd types a command as written only when it is one short /name line.
@@ -2135,6 +2148,21 @@ capabilities = ["terminal_view"]
             pass
         time.sleep(0.3)
         assert len(typed()) == size_before, 'a watch-only device typed into the terminal'
+        # The program sets the clipboard of a device that may type, never a watching one's.
+        page = Terminal(owner, term, client='9')
+        page.control('replay')
+        page.send(b'CLIPS')
+        page.until(lambda: b'[tick' in page.output and any(c['type'] == 'clipboard' and c['text'] == 'copied' for c in page.controls), 'clipboard to a typing device')
+        last = max(int(n) for n in re.findall(rb'\[tick(\d+)\]', page.output))
+        page.drop()
+        lease_free(term)
+        watch = Terminal(viewer, term)
+        watch.control('replay')
+        # ^ A tick after the page left is live output, with its clipboard write before it.
+        watch.until(lambda: b'[tick%d]' % (last + 3) in watch.output, 'live ticks reach the watcher')
+        assert not any(c['type'] == 'clipboard' for c in watch.controls), watch.controls
+        watch.drop()
+        lease_free(term)
         # This site is granted every project, so it also reaches the other project's session.
         elsewhere = Terminal(viewer, sessions['family'])
         assert elsewhere.status == 101, (elsewhere.status, elsewhere.error)
@@ -2148,7 +2176,7 @@ capabilities = ["terminal_view"]
         assert status == 200 and font[:4] == b'wOF2' and len(font) < 1500000
         assert owner.request('GET', '/assets/SymbolsNerdFontMono-3.4.0.ttf', raw=True)[2][:4] == b'\x00\x01\x00\x00'
         assert b'woff2' not in owner.request('GET', '/sw.js')[1] and b'terminal-fonts.css' in owner.request('GET', '/sw.js')[1]
-        ok('watch-only terminal: host size, no resize, no input; projects = "all" reaches every project; terminal fonts served')
+        ok('watch-only terminal: host size, no resize, no input, no clipboard; projects = "all" reaches every project; terminal fonts served')
         session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == term)
         assert call('session_close', {'session_id': term, 'expected_revision': session['revision']})['type'] == 'ack'
 
@@ -2515,14 +2543,15 @@ capabilities = ["terminal_view"]
         assert all(s['id'] != removed for s in call('snapshot')['data']['sessions'])
         assert root.request('DELETE', '/api/sessions/%d' % removed)[0] == 404
         assert root.request('DELETE', '/api/sessions/%d' % sessions['family'])[0] == 404, 'an ungranted project'
-        status, body = root.request('POST', '/api/sessions', {'project': projects['project'], 'label': 'task-7'})
-        assert status == 200, body
-        worker = body['session_id']
-        status, body = root.request('DELETE', '/api/sessions/%d' % worker)
-        assert status == 409 and body['error']['code'] == 'task_session', (status, body)
-        kept = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == worker)
-        assert call('session_close', {'session_id': worker, 'expected_revision': kept['revision']})['type'] == 'ack'
-        ok('session remove: closed in wsxd, then gone; a task-<n> session refused; an ungranted one does not exist')
+        for label in ('task-7', 'task-7-hand'):
+            status, body = steady(root, 'POST', '/api/sessions', {'project': projects['project'], 'label': label})
+            assert status == 200, body
+            worker = body['session_id']
+            status, body = root.request('DELETE', '/api/sessions/%d' % worker)
+            assert status == 409 and body['error']['code'] == 'task_session', (label, status, body)
+            kept = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == worker)
+            assert call('session_close', {'session_id': worker, 'expected_revision': kept['revision']})['type'] == 'ack'
+        ok('session remove: closed in wsxd, then gone; task-<n> and task-<n>-hand refused; an ungranted one does not exist')
 
         # --- The web server never starts wsxd; it reports the gap and recovers.
         assert call('shutdown')['type'] == 'ack'

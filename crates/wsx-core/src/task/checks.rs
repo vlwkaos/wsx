@@ -2,7 +2,9 @@
 //! checks at their own time and before a public release.
 //! ref: docs/tasks.md "To check"
 
-use super::store::{ensure_project_dir, open_locked, project_dir, read_bounded, TaskDir};
+use super::store::{
+    create_private_dir, ensure_project_dir, open_locked, project_dir, read_bounded, TaskDir,
+};
 use super::{now_unix_ms, HumanVerify};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -234,7 +236,7 @@ pub fn keep_capture(
     let bytes = read_bounded(&source, MAX_CAPTURE_BYTES)?;
     let (ext, _) =
         capture_type(&bytes).with_context(|| format!("{path} is not a PNG, JPEG or WebP image"))?;
-    std::fs::create_dir_all(dir.file(CAPTURES))?;
+    create_private_dir(&dir.file(CAPTURES))?;
     let name = format!("{CAPTURES}/r{revision}-{index}.{ext}");
     dir.write_file(&name, &bytes)?;
     Ok(name)

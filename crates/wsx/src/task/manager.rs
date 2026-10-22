@@ -122,6 +122,8 @@ const CONTEXT_FILE: &str = "context.md";
 const DECISIONS_FILE: &str = "decisions.md";
 /// The most of both files a fresh conversation's first message carries.
 const MAX_NOTES_BYTES: usize = 8 * 1024;
+// ^ The agent writes the notes: a link or a huge file must not reach the host's read.
+const MAX_NOTES_READ: u64 = 256 * 1024;
 
 /// ref: docs/tasks.md "Manager", "Memo"
 fn instructions(
@@ -948,7 +950,7 @@ impl Manager {
         let Ok(notes) = self.dir.notes() else {
             return String::new();
         };
-        let read = |name: &str| std::fs::read_to_string(notes.join(name)).unwrap_or_default();
+        let read = |name: &str| read_note(&notes.join(name));
         let decisions: Vec<String> = read(DECISIONS_FILE)
             .lines()
             .rev()
@@ -1038,4 +1040,36 @@ impl Manager {
             }
         }
     }
+}
+
+/// The end of a notes file, at most `MAX_NOTES_READ` bytes: the newest lines are last.
+/// A link, a missing file or text that is not UTF-8 reads as empty.
+fn read_note(path: &Path) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::unix::fs::OpenOptionsExt;
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+    else {
+        return String::new();
+    };
+    let size = file.metadata().map_or(0, |meta| meta.len());
+    let mut bytes = Vec::new();
+    if file
+        .seek(SeekFrom::Start(size.saturating_sub(MAX_NOTES_READ)))
+        .is_err()
+        || file.take(MAX_NOTES_READ).read_to_end(&mut bytes).is_err()
+    {
+        return String::new();
+    }
+    // ^ A cut at the start may split a character and leaves a partial line: drop that line.
+    let start = match size > MAX_NOTES_READ {
+        true => bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(bytes.len(), |at| at + 1),
+        false => 0,
+    };
+    String::from_utf8(bytes.split_off(start)).unwrap_or_default()
 }

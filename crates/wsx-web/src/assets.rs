@@ -1,6 +1,7 @@
 //! Browser files embedded in the binary. No build step: `web/` is served as written.
-//! ^ Only four documents are filled in at serve time, from the validated site file:
-//! index.html (base path, name), the manifest, the service worker and theme.css.
+//! ^ Only three documents are filled in at serve time, from the validated site file:
+//! index.html (base path, name), the manifest and the service worker. The theme's
+//! stylesheet is built in theme.rs.
 use crate::{devices::hex, site::Site};
 use serde_json::json;
 use sha2::{Digest, Sha256};

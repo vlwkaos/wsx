@@ -978,12 +978,7 @@ pub fn approve(app: &Arc<App>, scope: Scope, id: &str) -> Outcome<Value> {
         };
     }
     let key = format!("{}/{id}", scope.store);
-    if !app
-        .approving
-        .lock()
-        .unwrap_or_else(|lock| lock.into_inner())
-        .insert(key.clone())
-    {
+    if !crate::locked(&app.approving).insert(key.clone()) {
         return Ok(json!({ "ok": true, "running": true, "message": "already running" }));
     }
     let wsx = std::env::current_exe().map_err(|error| internal(error.into()))?;
@@ -993,10 +988,7 @@ pub fn approve(app: &Arc<App>, scope: Scope, id: &str) -> Outcome<Value> {
         if let Err(error) = owner::approve(&scope.name, &scope.path, &id, &wsx) {
             eprintln!("wsx web: approval {id} did not run: {error:#}");
         }
-        app.approving
-            .lock()
-            .unwrap_or_else(|lock| lock.into_inner())
-            .remove(&key);
+        crate::locked(&app.approving).remove(&key);
     });
     Ok(json!({ "ok": true, "started": true }))
 }
