@@ -524,7 +524,12 @@ impl Host {
                 self.record.id
             );
         }
-        let commits = self.commits_since_revision()?;
+        // ^ Commits after the last revision (after the base before the first).
+        let since = match self.record.revision {
+            0 => self.record.base.clone(),
+            revision => format!("refs/wsx/task/{}/r{revision}", self.record.id),
+        };
+        let commits = copy::unlanded_commits(&self.record.working_copy, "HEAD", &since)?;
         self.log(LogEvent::Handback {
             by: Actor::Owner,
             commits,
@@ -552,25 +557,6 @@ impl Host {
         Ok(format!(
             "handed back with {commits} commit(s); the checks run on the next revision"
         ))
-    }
-
-    /// Commits on the branch after the last revision (after the base before the first).
-    fn commits_since_revision(&self) -> Result<u32> {
-        let since = match self.record.revision {
-            0 => self.record.base.clone(),
-            revision => format!("refs/wsx/task/{}/r{revision}", self.record.id),
-        };
-        let output = git_cmd(&self.record.working_copy)
-            .args(["rev-list", "--count", &format!("{since}..HEAD")])
-            .output()
-            .context("cannot run git rev-list")?;
-        if !output.status.success() {
-            bail!("git rev-list {since}..HEAD failed");
-        }
-        Ok(String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse()
-            .unwrap_or(0))
     }
 
     fn start_turn(&mut self, text: &str) {

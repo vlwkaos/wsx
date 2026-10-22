@@ -264,9 +264,7 @@ impl Preview {
             let _ = child.wait();
         }
         if let Some((path, main)) = self.temporary.take() {
-            if path.join("Cargo.toml").exists() {
-                super::cargo_clean(&path);
-            }
+            wsx_core::ops::cargo_clean(&path);
             let _ = copy::remove(&main, &path, None);
         }
         for name in [STATE_FILE, STOP_FILE] {

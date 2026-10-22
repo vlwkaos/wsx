@@ -205,7 +205,7 @@ async function chipsOnLine(where, chips, near) {
 const sheetState = () => evaluate("document.querySelector('.task-sheet .bar-state')?.textContent ?? ''");
 const atEnd = "(() => { const log = document.querySelector('.log'); return log.scrollHeight - log.scrollTop - log.clientHeight < 2; })()";
 const bubbles = () => evaluate(`[...document.querySelectorAll('.log .bubble')].map((node) => ({ side: node.dataset.side, first: node.hasAttribute('data-first'),
-  last: node.hasAttribute('data-last'), author: node.querySelector('.bubble-author')?.textContent ?? '', text: node.querySelector('.bubble-box').textContent.trim().replace(/\\s+/g, ' ') }))`);
+  last: node.hasAttribute('data-last'), author: node.querySelector('.bubble-author')?.textContent ?? '', tag: node.querySelector('.bubble-tag')?.textContent ?? '', text: node.querySelector('.bubble-box').textContent.trim().replace(/\\s+/g, ' ') }))`);
 
 await resize([390, 844, 2]);
 await pair();
@@ -653,8 +653,8 @@ await until("!document.querySelector('dialog.task-sheet')", "Escape did not clos
 // manager as its own bubbles (docs/web-client.md "Project screen").
 await go(chat);
 await until("!!document.querySelector('.composer .icon-button[aria-label=\"Attach files\"]')", "the manager chat has no attach button");
-const peers = await evaluate("[...document.querySelectorAll('.log .bubble')].map((node) => [node.querySelector('.bubble-author')?.textContent ?? '', node.querySelector('.bubble-tag')?.textContent ?? ''])");
-if (!peers.some(([author]) => author === "Manager plans") || !peers.some(([, tag]) => tag === "Reply to Manager plans")) await fail(`the managers' messages read ${JSON.stringify(peers)}`);
+const peers = await bubbles();
+if (!peers.some(({ author }) => author === "Manager plans") || !peers.some(({ tag }) => tag === "Reply to Manager plans")) await fail(`the managers' messages read ${JSON.stringify(peers)}`);
 await pause(6000);
 await evaluate(`(() => { const input = document.querySelector('.composer input[type=file]'); const files = new DataTransfer();
   files.items.add(new File(['notes for the manager'], 'notes.txt', { type: 'text/plain' })); input.files = files.files;
@@ -739,8 +739,8 @@ await pause(12000);
 await go(`#/p/${plans}`);
 await until("!!document.querySelector('.reservoir-head')", "plans has no reservoir");
 await until("document.querySelectorAll('.log .bubble').length >= 2", "plans' chat shows no managers' bubbles", 30);
-const plansAuthors = await evaluate("[...document.querySelectorAll('.log .bubble')].map((node) => [node.querySelector('.bubble-author')?.textContent ?? '', node.querySelector('.bubble-tag')?.textContent ?? ''])");
-if (!plansAuthors.some(([author, tag]) => author === "Manager" && tag === "To Atlas") || !plansAuthors.some(([author]) => author === "Atlas")) await fail(`plans' managers read ${JSON.stringify(plansAuthors)}`);
+const plansAuthors = await bubbles();
+if (!plansAuthors.some(({ author, tag }) => author === "Manager" && tag === "To Atlas") || !plansAuthors.some(({ author }) => author === "Atlas")) await fail(`plans' managers read ${JSON.stringify(plansAuthors)}`);
 await openReservoir();
 await until(`!!${rowOf("#1")}`, "the waiting task has no reservoir row");
 const waitRow = (await rows()).find((row) => row[0] === "#1");

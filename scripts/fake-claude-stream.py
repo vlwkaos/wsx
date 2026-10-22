@@ -36,8 +36,7 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   SUMMED         four model calls of 50k each: the result's usage sums 200k, the context is 50k
 Each manager turn's message ends with the host's ledger summary, cut off before the words
 are read. Its cost grows by 0.001 USD a turn (`total_cost_usd` is the session's, restored on
-`--resume`), and a
-`set_model` control request changes the model of the next turns.
+`--resume`), and a `set_model` control request changes the model of the next turns.
 """
 import json
 import os
@@ -247,8 +246,8 @@ def main():
     stdin = sys.stdin.buffer
     # ^ A resumed session restores its earlier spend into total_cost_usd, as Claude Code does.
     spent_file = TRACE + '.spent'
-    spending = json.load(open(spent_file)) if os.path.exists(spent_file) else {}
-    model, spent = options.get('--model'), spending.get(session, 0.0) if '--resume' in options else 0.0
+    spending = lambda: json.load(open(spent_file)) if os.path.exists(spent_file) else {}
+    model, spent = options.get('--model'), spending().get(session, 0.0) if '--resume' in options else 0.0
     while True:
         line = stdin.readline()
         if not line:
@@ -278,10 +277,9 @@ def main():
             emit({'type': 'assistant', 'parent_tool_use_id': 'sub', 'message': {
                 'model': model, 'content': [], 'usage': {'input_tokens': 900000}}})
             spent += 0.001
-            spending = json.load(open(spent_file)) if os.path.exists(spent_file) else {}
-            spending[session] = spent
+            saved = spending() | {session: spent}
             with open(spent_file, 'w') as out:
-                json.dump(spending, out)
+                json.dump(saved, out)
             emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': answer,
                   'session_id': session, 'permission_denials': [],
                   'usage': {'input_tokens': 10 * len(calls), 'cache_read_input_tokens': sum(calls) - 10 * len(calls),

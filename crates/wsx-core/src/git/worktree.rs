@@ -253,17 +253,9 @@ pub fn uncommitted_paths(worktree_path: &Path) -> Result<(Vec<String>, Vec<Strin
 /// Refuse a worktree with uncommitted work, naming the paths (at most 10 per kind).
 pub fn require_clean(worktree_path: &Path) -> Result<()> {
     let (tracked, untracked) = uncommitted_paths(worktree_path)?;
-    let named = |paths: &[String]| {
-        let shown = paths
-            .iter()
-            .take(10)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-        match paths.len() {
-            n if n > 10 => format!("{shown} and {} more", n - 10),
-            _ => shown,
-        }
+    let named = |paths: &[String]| match paths.len() {
+        n if n > 10 => format!("{} and {} more", paths[..10].join(", "), n - 10),
+        _ => paths.join(", "),
     };
     let mut parts = Vec::new();
     if !tracked.is_empty() {

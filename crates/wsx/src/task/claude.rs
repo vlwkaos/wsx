@@ -818,13 +818,10 @@ fn turn_usage(value: &Value, turns: &mut Turns) -> TurnUsage {
         .map(|cost| (cost * 1_000_000.0).round() as u64);
     // ^ A total below the base: the process did not restore the session's spend (a crash,
     // an older CLI), so it counts from zero.
-    let cost = total.map_or(0, |total| match total.checked_sub(turns.cost_base) {
-        Some(cost) => cost,
-        None => total,
+    let cost = total.map_or(0, |total| {
+        total.checked_sub(turns.cost_base).unwrap_or(total)
     });
-    if let Some(total) = total {
-        turns.cost_base = total;
-    }
+    turns.cost_base = total.unwrap_or(turns.cost_base);
     TurnUsage {
         duration_ms: count("/duration_ms"),
         input_tokens: count("/usage/input_tokens"),
@@ -832,7 +829,7 @@ fn turn_usage(value: &Value, turns: &mut Turns) -> TurnUsage {
         cache_read_tokens: count("/usage/cache_read_input_tokens"),
         cache_creation_tokens: count("/usage/cache_creation_input_tokens"),
         cost_micro_usd: cost,
-        session_cost_micro_usd: total.unwrap_or(turns.cost_base),
+        session_cost_micro_usd: turns.cost_base,
         // ^ No `assistant` usage seen (an older CLI): the sum is all there is.
         context_tokens: turns
             .context

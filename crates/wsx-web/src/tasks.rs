@@ -75,7 +75,7 @@ fn internal(error: anyhow::Error) -> Fault {
 /// A ready task waits for a land by hand: auto land is off, there are no checks, or it stopped.
 /// One the manager created waits for the manager's review, not the owner.
 fn stage(record: &TaskRecord) -> &'static str {
-    if manager_reviews(record) {
+    if record.manager_reviews() {
         return "working";
     }
     match record.state {
@@ -102,10 +102,6 @@ fn resolving_conflict(dir: &TaskDir) -> bool {
         .unwrap_or(false)
 }
 
-fn manager_reviews(record: &TaskRecord) -> bool {
-    record.state == TaskState::Ready && record.created_by == task::Actor::Manager
-}
-
 /// Why a ready task waits for the owner: its landing stopped, it has no checks, or the
 /// project lands by hand.
 fn land_reason(dir: &TaskDir, record: &TaskRecord) -> String {
@@ -118,7 +114,7 @@ fn land_reason(dir: &TaskDir, record: &TaskRecord) -> String {
     if let Some(Some(reason)) = stopped {
         return format!("could not land: {}", view::clip(&reason, SUMMARY_CHARS));
     }
-    if manager_reviews(record) {
+    if record.manager_reviews() {
         return "the manager reviews it".into();
     }
     if record.checks.is_empty() {
@@ -168,27 +164,19 @@ pub fn overview(scope: &Scope) -> Value {
                 "summary": result["result"]["summary"].as_str().map(|text| view::clip(text, SUMMARY_CHARS)),
             })
         };
+        if stage(record) == "working" {
+            working += 1;
+            continue;
+        }
         let (rank, mut row) = match record.state {
-            TaskState::Waiting if record.waits_on(WaitOn::Hand) => {
-                working += 1;
-                continue;
-            }
             TaskState::Waiting => (0, item("waiting")),
             TaskState::Failed => (1, item("failed")),
-            TaskState::Ready if manager_reviews(record) => {
-                working += 1;
-                continue;
-            }
             TaskState::Ready => {
                 let mut row = item("land");
                 row["reason"] = json!(land_reason(dir, record));
                 (3, row)
             }
-            TaskState::Working | TaskState::Checking => {
-                working += 1;
-                continue;
-            }
-            TaskState::Landed | TaskState::Closed => continue,
+            _ => continue,
         };
         if let Some(waiting) = &record.waiting {
             row["waiting"] = json!(waiting);
@@ -562,7 +550,7 @@ pub fn chat(
     media: &crate::media::Media,
 ) -> Outcome<Value> {
     // ^ The name the owner reads (docs/tasks.md "Config"); the role stays `manager` inside.
-    let manager = json!({ "name": manager_name(&scope.path).unwrap_or("Manager".into()) });
+    let manager = json!({ "name": manager_name(&scope.path) });
     let Some(dir) = ManagerDir::existing(&scope.store).map_err(internal)? else {
         return Ok(
             json!({ "entries": [], "skipped": 0, "running": false, "busy": false, "manager": manager, "peers": {} }),
@@ -631,7 +619,7 @@ pub fn chat(
     )
     .ok();
     let busy = status.as_ref().is_some_and(|status| status.busy);
-    // ^ Another project's manager by its set name; without one the web says "Manager <project>".
+    // ^ Another project's manager by its set name, else "Manager <project>".
     let mut peers = serde_json::Map::new();
     for entry in &log {
         let peer = match &entry.event {
@@ -642,14 +630,12 @@ pub fn chat(
             ManagerEvent::Sent { to, .. } => to,
             _ => continue,
         };
-        if peers.contains_key(peer) {
-            continue;
-        }
-        if let Some(name) = scopes
-            .iter()
-            .find(|other| &other.name == peer)
-            .and_then(|other| manager_name(&other.path))
-        {
+        if !peers.contains_key(peer) {
+            let name = scopes
+                .iter()
+                .find(|other| &other.name == peer)
+                .and_then(|other| load_task_config(&other.path).ok()?.manager_name)
+                .unwrap_or_else(|| format!("Manager {peer}"));
             peers.insert(peer.clone(), json!(name));
         }
     }
@@ -664,9 +650,12 @@ pub fn chat(
     }))
 }
 
-/// A project's `tasks.manager.name`, when it is set and its config reads.
-fn manager_name(path: &Path) -> Option<String> {
-    load_task_config(path).ok()?.manager_name
+/// A project's manager name as the owner reads it (`TaskConfig::manager_shown_name`).
+fn manager_name(path: &Path) -> String {
+    load_task_config(path)
+        .unwrap_or_default()
+        .manager_shown_name()
+        .to_string()
 }
 
 /// A worker's report for each events line that carries a worker result (`#3 ready r2: …`):
@@ -906,18 +895,10 @@ pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> O
     run_wsx(scope, argv)
 }
 
-/// Start a preview of the task, or answer the running one: `{url, port, until_unix_ms}`.
-pub fn preview(scope: &Scope, task: u32) -> Outcome<Value> {
-    run_wsx(
-        scope,
-        vec!["task".into(), "preview".into(), task.to_string()],
-    )
-}
-
-/// Take the task over by hand, or hand it back, through `wsx task hand|handback` so the
-/// hand session opens and closes the way the CLI does (docs/tasks.md "By hand").
-pub fn hand(scope: &Scope, task: u32, back: bool) -> Outcome<Value> {
-    let command = if back { "handback" } else { "hand" };
+/// `wsx task <command> <task>`: `preview` starts a preview or answers the running one
+/// (`{url, port, until_unix_ms}`); `hand` and `handback` open and close the hand session the
+/// way the CLI does (docs/tasks.md "By hand").
+pub fn run_task(scope: &Scope, command: &str, task: u32) -> Outcome<Value> {
     run_wsx(scope, vec!["task".into(), command.into(), task.to_string()])
 }
 

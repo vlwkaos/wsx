@@ -688,6 +688,10 @@ def run(wsx, wsxd, work, owned):
         return wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and message_id in e['to']), None),
                     'reply to %s' % message_id)
 
+    def turn_with(text):
+        """The first manager turn whose message holds `text`."""
+        return next((t for t in traces() if t.get('manager') and text in str(t.get('message', ''))), None)
+
     running = js('task', 'new', 'SLOW SLOW SLOW WORK r.txt')['id']
     asked = js('task', 'say', 'STATUS')
     assert asked['ok'] and asked['id'] == 1, asked
@@ -801,28 +805,26 @@ def run(wsx, wsxd, work, owned):
     assert direct['code'] == 2 and 'only `wsx task` commands' in direct['stderr'], direct
     assert wait_state(running, 'ready', 'failed')['state'] == 'ready'
     assert [e['mode'] for e in log(running) if e['kind'] == 'message'] == ['prompt', 'add']
-    mlog = Path(created['task_dir']).parent / 'manager' / 'log.jsonl'
+    manager_log = Path(created['task_dir']).parent / 'manager' / 'log.jsonl'
 
-    def mlog_entries():
-        return [json.loads(line) for line in mlog.read_text().splitlines()]
+    def manager_entries():
+        return [json.loads(line) for line in manager_log.read_text().splitlines()]
 
     # Usage (docs/tasks.md "Manager"): rotation looks at the last main model call's context, not
     # the result's sum over the turn's calls, nor a subagent's; a reply's cost is its own, not the
     # process's running `total_cost_usd`.
     summed = js('task', 'say', 'SUMMED')
-    reply_to(summed['id'])
-    replies = [e for e in mlog_entries() if e['kind'] == 'reply']
-    usage = next(e for e in replies if summed['id'] in e['to'])['usage']
+    usage = reply_to(summed['id'])['usage']
+    replies = [e for e in manager_entries() if e['kind'] == 'reply']
     assert usage['input_tokens'] + usage['cache_read_tokens'] == 200000 and usage['context_tokens'] == 50000, usage
     assert usage['model'] == 'fake-manager', usage
-    assert not any(e['kind'] == 'rotated' for e in mlog_entries()), 'four 50k calls do not rotate'
+    assert not any(e['kind'] == 'rotated' for e in manager_entries()), 'four 50k calls do not rotate'
     assert len(replies) > 3 and {e['usage']['cost_micro_usd'] for e in replies} == {1000}, replies
     # Event-only turns run on tasks.manager.eventModel unless a ready task the manager created
     # waits for its review: the manager's own model reviews it.
-    review = wait(lambda: next((e for e in mlog_entries() if e['kind'] == 'message' and e['from'] == 'events'
+    review = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
                                 and '#%d ready' % manager_task in e['text']), None), 'review event')
-    reviewed = wait(lambda: next((t for t in traces() if t.get('manager') and
-                                  'Events (message %d)' % review['id'] in str(t.get('message', ''))), None), 'review turn')
+    reviewed = wait(lambda: turn_with('Events (message %d)' % review['id']), 'review turn')
     assert reviewed['model'] == 'fake-manager', reviewed
     # Rotation: past rotateTokens the next turn starts a fresh conversation.
     # ^ Without a skills folder the next launch has no plugin, keeps the Skill tool and
@@ -844,11 +846,6 @@ def run(wsx, wsxd, work, owned):
 
     # 21. Events: task state changes reach the manager, merged while it is busy; an owner
     # message waiting at the same time goes first; a host restart loses no event.
-    manager_log = Path(created['task_dir']).parent / 'manager' / 'log.jsonl'
-
-    def manager_entries():
-        return [json.loads(line) for line in manager_log.read_text().splitlines()]
-
     def events_with(*needles):
         return [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
                 and all(needle in e['text'] for needle in needles)]
@@ -869,20 +866,20 @@ def run(wsx, wsxd, work, owned):
         [e['ids'] for e in manager_entries() if e['kind'] == 'delivered']), 'merged events delivered')
     batch = lambda message_id: next(n for n, ids in enumerate(delivered) if message_id in ids)
     assert delivered[batch(waiting['id'])] == [waiting['id']] and batch(waiting['id']) < batch(merged[0]['id']), delivered
-    assert 'noted events' in reply_to(merged[0]['id'])['text']
+    event_reply = reply_to(merged[0]['id'])
+    assert 'noted events' in event_reply['text']
     # ^ Nothing waits for the manager's review: the events turn runs on eventModel in the same
     # process, and the next owner turn switches back (docs/tasks.md "Manager").
-    event_turn = next(t for t in traces() if t.get('manager') and 'Events (message %d)' % merged[0]['id'] in str(t.get('message', '')))
+    event_turn = turn_with('Events (message %d)' % merged[0]['id'])
     assert event_turn['model'] == 'fake-events', event_turn
     # ^ The owner turn before it already showed both tasks as changed; the events turn has no change.
-    status_turn = next(t['message'] for t in traces() if t.get('manager') and 'Owner (message %d)' % waiting['id'] in str(t.get('message', '')))
+    status_turn = turn_with('Owner (message %d)' % waiting['id'])['message']
     assert '- changed since your last turn:\n' in status_turn and '#%d ready r1' % first in status_turn, status_turn
     assert '- open: 2 ready;' in event_turn['message'] and 'changed since' not in event_turn['message'], event_turn
-    event_reply = next(e for e in manager_entries() if e['kind'] == 'reply' and merged[0]['id'] in e['to'])
     assert event_reply['usage']['model'] == 'fake-events' and event_reply['usage']['cost_micro_usd'] == 1000, event_reply
     after_events = js('task', 'say', 'STATUS after events')
     reply_to(after_events['id'])
-    owner_turn = next(t for t in traces() if t.get('manager') and 'STATUS after events' in str(t.get('message', '')))
+    owner_turn = turn_with('STATUS after events')
     assert owner_turn['model'] == 'fake-manager' and owner_turn['session'] == event_turn['session'], owner_turn
     switches = [t['set_model'] for t in traces() if 'set_model' in t and t['session'] == event_turn['session']]
     assert switches[-2:] == ['fake-events', 'fake-manager'], switches
@@ -896,9 +893,10 @@ def run(wsx, wsxd, work, owned):
     wait_state(unseen, 'ready', 'failed')
     assert js('task', 'manager')['state'] == 'started'
     late = wait(lambda: events_with('#%d ready r1' % unseen), 'event after restart')
-    assert 'noted events' in reply_to(late[0]['id'])['text']
+    late_reply = reply_to(late[0]['id'])
+    assert 'noted events' in late_reply['text']
     # ^ The resumed process restored the session's spend: the reply still costs only its own turn.
-    resumed_usage = next(e for e in manager_entries() if e['kind'] == 'reply' and late[0]['id'] in e['to'])['usage']
+    resumed_usage = late_reply['usage']
     assert resumed_usage['cost_micro_usd'] == 1000 and resumed_usage['session_cost_micro_usd'] > 5000, resumed_usage
     # The same instructions resume the conversation; other ones start a new conversation that
     # opens with the last exchanges (Claude keeps a conversation's first system prompt). A
@@ -921,17 +919,16 @@ def run(wsx, wsxd, work, owned):
     assert not fresh['resume'] and fresh['session'] != launches[-1]['session'], fresh
     rotated = [e for e in manager_entries() if e['kind'] == 'rotated']
     assert rotated[-1].get('reason') == "the manager's instructions changed", rotated
-    opened = [t['message'] for t in traces() if t.get('manager') and 'message' in t and 'STATUS after the change' in t['message']]
-    assert opened and opened[0].startswith('Handover (this is a new conversation') and 'You: noted events' in opened[0], opened
-    assert "fold the ledger's memos into your context first" in opened[0], opened
+    opened = turn_with('STATUS after the change')['message']
+    assert opened.startswith('Handover (this is a new conversation') and 'You: noted events' in opened, opened
+    assert "fold the ledger's memos into your context first" in opened, opened
     # ^ The config named no manager model since the restart: the manager defaults to opus.
     assert fresh['model'] == 'opus', fresh
     resumed = js('task', 'say', 'STATUS again')
     reply_to(resumed['id'])
     assert not any(t.get('launch') and t.get('manager') and t['session'] != fresh['session']
                    for t in traces()[traces().index(fresh) + 1:]), 'same launch keeps its conversation'
-    opened = [t['message'] for t in traces() if t.get('manager') and 'message' in t and 'STATUS again' in t['message']]
-    assert opened and not opened[0].startswith('Handover'), opened
+    assert not turn_with('STATUS again')['message'].startswith('Handover')
     for n in (first, second, unseen):
         js('task', 'close', n, '--discard')
 
@@ -1330,8 +1327,7 @@ def run(wsx, wsxd, work, owned):
                    'reply at demo', 60)
     assert len(replies) == 1 and replies[0]['text'] == 'first answer', replies
     assert any(e['kind'] == 'sent' and e['to'] == 'other' and 'first answer' in e['text'] for e in manager_entries())
-    wait(lambda: any(t.get('manager') and str(t.get('message', '')).startswith('Manager other replies (message')
-                     for t in traces()), 'the reply reaches the demo agent')
+    wait(lambda: turn_with('Manager other replies (message'), 'the reply reaches the demo agent')
     crossing = js('task', 'say', 'RUN wsx task new "WORK x.txt" -p other --json\nRUN wsx task say -p demo --from-manager hi')
     text = reply_to(crossing['id'])['text']
     assert 'a manager acts only in its own project' in text and "messages another project's manager" in text, text
