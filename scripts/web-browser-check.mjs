@@ -266,7 +266,8 @@ async function chats() {
   // Working: the running tool is in the working row only, with the elapsed time and Stop;
   // the step list holds the finished steps; a message waits.
   await openSession("working");
-  await until("!!document.querySelector('.working') && !!document.querySelector('.queued')", "the working row or the queue did not show");
+  // ^ The top row's model comes from the chat's data one render after the working row.
+  await until("!!document.querySelector('.working') && !!document.querySelector('.queued') && !!document.querySelector('.bar-model')", "the working row, the queue or the model did not show");
   const working = await evaluate(`({ state: document.querySelector('.bar-state').firstChild.textContent, model: document.querySelector('.bar-model')?.textContent ?? '', activity: document.querySelector('.working-activity').textContent,
     live: [...document.querySelectorAll('.steps[data-live] .step')].map((step) => step.textContent.trim().replace(/\\s+/g, ' ')),
     send: document.querySelector('.composer .button-primary').textContent, stop: [...document.querySelectorAll('.working button')].map((b) => b.textContent).join(),
