@@ -448,6 +448,15 @@ def run(wsx, wsxd, work, owned):
     # ^ The worker's instructions name the check too: only the check's own process counts.
     assert not [line for line in leftovers('sleep 37') if line.split(None, 1)[1].startswith(('sleep', '/bin/sh -c sleep'))]
     js('task', 'close', timed['id'])
+    # A check that prints far past the kept output runs to its end: its exit decides, and the
+    # output it keeps is the end, where a test run puts its summary.
+    (project / 'wsx.config.yml').write_text(
+        'tasks:\n  minFreeGb: 0\n  agent:\n    tools: [Read]\n'
+        '  checks: ["seq 1 40000; seq 1 40000 >&2; echo tail end"]\n')
+    loud = js('task', 'new', 'NOOP')['id']
+    check = wait_state(loud, 'ready', 'failed')['result']['checks'][0]
+    assert check['exit'] == 0 and 'tail end' in check['output'] and len(check['output']) < 20000, check
+    js('task', 'close', loud, '--discard')
 
     # M2: the landing steps use a committed config without the a.txt check.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
