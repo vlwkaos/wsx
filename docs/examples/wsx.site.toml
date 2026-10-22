@@ -7,12 +7,12 @@
 id = "wsx"
 name = "wsx"
 port = 4690
-public_origin = "https://wsx.taile808cc.ts.net"
+public_origin = "https://wsx.<tailnet>.ts.net"
 panels = ["chat", "files", "terminal"]
 theme = "default"
 
 [access]
-projects = "all"                  # every project wsx manages; or a list: ["/Users/vlwkaos/ws/wsx"]
+projects = "all"                  # every project wsx manages; or a list: ["/Users/me/code/app"]
 capabilities = [
   "chat_send", "chat_answer", "agent_write", "session_start",
   "files_read", "files_write",

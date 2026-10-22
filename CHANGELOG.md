@@ -886,7 +886,7 @@
 
 ### Features
 
-- Add project now uses recursive fuzzy search over git repos instead of directory-by-directory navigation — type a partial name (e.g. `wsx`) to find `~/ws-ps/wsx/` directly; scan runs in background with incremental results ([`9c67e15`](https://github.com/vlwkaos/wsx/commit/9c67e15))
+- Add project now uses recursive fuzzy search over git repos instead of directory-by-directory navigation — type a partial name (e.g. `wsx`) to find `~/code/wsx/` directly; scan runs in background with incremental results ([`9c67e15`](https://github.com/vlwkaos/wsx/commit/9c67e15))
 
 ---
 
@@ -1119,7 +1119,7 @@
 ### Bug Fixes
 
 - Cursor no longer drifts across sessions — position is now persisted as a stable path identity (project/worktree/session path) rather than a raw flat-tree index ([`339713b`](https://github.com/vlwkaos/wsx/commit/339713b))
-- Expand state for projects with trailing slashes in config paths (`dgv3/`, `eyetrackpad/`) now persists correctly — paths are normalized on load ([`339713b`](https://github.com/vlwkaos/wsx/commit/339713b))
+- Expand state for projects with trailing slashes in config paths (`notes/`, `app/`) now persists correctly — paths are normalized on load ([`339713b`](https://github.com/vlwkaos/wsx/commit/339713b))
 - Cache save errors are now visible in the terminal — `flush_cache` runs after `tui::restore` instead of while the alternate screen is active ([`339713b`](https://github.com/vlwkaos/wsx/commit/339713b))
 
 ---

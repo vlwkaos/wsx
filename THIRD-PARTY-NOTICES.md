@@ -45,13 +45,6 @@ They are pinned by `scripts/vendor-*.sh`. Their license texts are in
 - JetBrains Mono: JetBrains Mono 2.304, https://github.com/JetBrains/JetBrainsMono, SIL Open Font License 1.1
 - Symbols Nerd Font Mono: Symbols Nerd Font Mono 3.4.0, https://github.com/ryanoasis/nerd-fonts, MIT
 
-## Reference source
-
-`vendor/herdr` retains the squashed official Herdr v0.8.2 subtree only as
-historical implementation reference and provenance. It is excluded from the
-Cargo workspace and release archives. Herdr is not executed, linked, installed,
-or required by wsx.
-
 ## License texts of the web client browser files
 
 ### Preact
