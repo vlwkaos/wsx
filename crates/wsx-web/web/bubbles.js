@@ -114,17 +114,15 @@ function Fold({ id, children }) {
       </button>`}`;
 }
 
-// `names`: the manager's name ("Manager" until `tasks.manager.name` is set) and other
-// projects' set names; a peer without one reads "Manager <project>" (docs/tasks.md "Config").
-const peerName = (names, project) => names?.peers?.[project] ?? `Manager ${project}`;
-const authorName = (author, names) => author === "owner" ? "You" : author === "manager" ? names?.manager ?? "Manager"
-  : author.startsWith("peer:") ? peerName(names, author.slice(5)) : `#${author.slice(7)} worker`;
+// `names`: the manager's and its peers' names as the server resolves them (docs/tasks.md "Config").
+const authorName = (author, names) => author === "owner" ? "You" : author === "manager" ? names.manager
+  : author.startsWith("peer:") ? names.peers[author.slice(5)] : `#${author.slice(7)} worker`;
 
 // One message. `words` turns its text runs into task chips.
 export function Bubble({ project, row, words, names }) {
   const out = row.author === "owner";
   const id = `bubble-${row.key}`;
-  const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${peerName(names, row.to)}` : row.tag;
+  const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${names.peers[row.to]}` : row.tag;
   let body;
   if (row.report) {
     const { report } = row;
@@ -147,7 +145,7 @@ export function Bubble({ project, row, words, names }) {
 }
 
 // The manager writes: three dots, still where the user asked for less motion.
-export const Typing = ({ name = "Manager" }) => html`
+export const Typing = ({ name }) => html`
   <article class="bubble" data-side="in" data-first="" data-last="" role="status">
     <p class="bubble-author" aria-hidden="true">${name}</p>
     <div class="bubble-box typing"><span class="visually-hidden">${name} is typing</span>

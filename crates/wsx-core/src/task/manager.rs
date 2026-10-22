@@ -3,7 +3,7 @@
 //!
 //! The manager host is the only writer of these files; `wsx task chat` reads the log.
 
-use super::{Access, TaskState, TurnUsage};
+use super::{Access, TaskRecord, TaskState, TurnUsage};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -131,6 +131,15 @@ impl ManagerEntry {
 pub struct Seen {
     pub state: TaskState,
     pub revision: u32,
+}
+
+impl Seen {
+    pub fn of(record: &TaskRecord) -> Self {
+        Self {
+            state: record.state,
+            revision: record.revision,
+        }
+    }
 }
 
 /// `manager/state.json`: what the manager host must remember across a restart.

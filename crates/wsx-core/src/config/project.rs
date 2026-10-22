@@ -358,12 +358,7 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
             }
             config.adapter = adapter;
         }
-        if let Some(model) =
-            validate_optional_text(agent.model, "tasks.agent.model", MAX_TASK_WORD_BYTES)?
-        {
-            if model.contains(char::is_whitespace) {
-                return Err("tasks.agent.model must be one word".into());
-            }
+        if let Some(model) = validate_word(agent.model, "tasks.agent.model")? {
             config.model = model;
         }
         if let Some(tools) = agent.tools {
@@ -478,22 +473,10 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
                 ));
             }
         }
-        if let Some(model) =
-            validate_optional_text(manager.model, "tasks.manager.model", MAX_TASK_WORD_BYTES)?
-        {
-            if model.contains(char::is_whitespace) {
-                return Err("tasks.manager.model must be one word".into());
-            }
+        if let Some(model) = validate_word(manager.model, "tasks.manager.model")? {
             config.manager_model = model;
         }
-        if let Some(model) = validate_optional_text(
-            manager.event_model,
-            "tasks.manager.eventModel",
-            MAX_TASK_WORD_BYTES,
-        )? {
-            if model.contains(char::is_whitespace) {
-                return Err("tasks.manager.eventModel must be one word".into());
-            }
+        if let Some(model) = validate_word(manager.event_model, "tasks.manager.eventModel")? {
             config.manager_event_model = (model != "off").then_some(model);
         }
         if let Some(tokens) = manager.rotate_tokens {
@@ -688,6 +671,18 @@ fn validate_optional_text(
         return Err(format!("{field} must not start or end with whitespace"));
     }
     Ok((!value.is_empty()).then_some(value))
+}
+
+/// `validate_optional_text` for one word, such as a model name.
+fn validate_word(value: Option<String>, field: &str) -> Result<Option<String>, String> {
+    let value = validate_optional_text(value, field, MAX_TASK_WORD_BYTES)?;
+    if value
+        .as_ref()
+        .is_some_and(|value| value.contains(char::is_whitespace))
+    {
+        return Err(format!("{field} must be one word"));
+    }
+    Ok(value)
 }
 
 fn validate_subtree_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {

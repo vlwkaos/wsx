@@ -23,7 +23,7 @@ use wsx_core::task::manager::{
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
-use wsx_core::task::{checks, ledger, Actor, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES};
+use wsx_core::task::{checks, ledger, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES};
 
 use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -429,15 +429,7 @@ impl Manager {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|(_, record)| record.ok())
-            .map(|record| {
-                (
-                    record.id,
-                    Seen {
-                        state: record.state,
-                        revision: record.revision,
-                    },
-                )
-            })
+            .map(|record| (record.id, Seen::of(&record)))
             .collect()
     }
 
@@ -498,10 +490,7 @@ impl Manager {
         };
         for (dir, record) in tasks {
             let Ok(record) = record else { continue };
-            let now = Seen {
-                state: record.state,
-                revision: record.revision,
-            };
+            let now = Seen::of(&record);
             if self.observed.get(&record.id) == Some(&now) {
                 continue;
             }
@@ -676,10 +665,7 @@ impl Manager {
             project_tasks(&self.dir.project_id)
                 .unwrap_or_default()
                 .into_iter()
-                .filter_map(|(_, record)| record.ok())
-                .any(|record| {
-                    record.state == TaskState::Ready && record.created_by == Actor::Manager
-                })
+                .any(|(_, record)| record.is_ok_and(|record| record.manager_reviews()))
         };
         match &self.event_model {
             Some(model) if events_only && !review_due() => model.clone(),
@@ -713,16 +699,14 @@ impl Manager {
         let to_check = checks::open_items(&self.dir.project_id).map_or(0, |items| items.len());
         let approvals = pending_approvals(&self.approval_lines()).len();
         let baseline = self.state.turn_seen.take();
+        let seen: BTreeMap<u32, Seen> = tasks
+            .iter()
+            .map(|(_, record)| (record.id, Seen::of(record)))
+            .collect();
         let rows: Vec<String> = tasks
             .iter()
             .filter(|(_, record)| match &baseline {
-                Some(seen) => {
-                    seen.get(&record.id)
-                        != Some(&Seen {
-                            state: record.state,
-                            revision: record.revision,
-                        })
-                }
+                Some(old) => old.get(&record.id) != seen.get(&record.id),
                 None => record.state.is_open(),
             })
             .map(|(dir, record)| {
@@ -738,20 +722,7 @@ impl Manager {
                 )
             })
             .collect();
-        self.state.turn_seen = Some(
-            tasks
-                .iter()
-                .map(|(_, record)| {
-                    (
-                        record.id,
-                        Seen {
-                            state: record.state,
-                            revision: record.revision,
-                        },
-                    )
-                })
-                .collect(),
-        );
+        self.state.turn_seen = Some(seen);
         let mut out = format!(
             "Ledger summary from wsx (`wsx task ledger -p {}` has the details):\n\
              - open: {open}; to check: {to_check}; approvals waiting: {approvals}\n",

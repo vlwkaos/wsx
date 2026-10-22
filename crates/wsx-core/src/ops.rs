@@ -557,20 +557,26 @@ pub fn delete_worktree(repo_path: &Path, wt_path: &Path, branch: &str) -> Result
             })?)?;
         }
     }
-    if wt_path.join("Cargo.toml").is_file() {
-        // ^ Best effort: the folder goes either way, this only frees the build first.
-        let mut clean = std::process::Command::new("cargo");
-        clean
-            .arg("clean")
-            .current_dir(wt_path)
-            .stdin(std::process::Stdio::null());
-        let _ = crate::git::output_with_timeout_limit(
-            &mut clean,
-            std::time::Duration::from_secs(600),
-            4096,
-        );
-    }
+    cargo_clean(wt_path);
     git_worktree::remove_worktree(repo_path, wt_path, branch)
+}
+
+/// `cargo clean` a Rust checkout before its folder goes. Best effort: the folder goes either
+/// way, this only frees the build first.
+pub fn cargo_clean(path: &Path) {
+    if !path.join("Cargo.toml").is_file() {
+        return;
+    }
+    let mut clean = std::process::Command::new("cargo");
+    clean
+        .arg("clean")
+        .current_dir(path)
+        .stdin(std::process::Stdio::null());
+    let _ = crate::git::output_with_timeout_limit(
+        &mut clean,
+        std::time::Duration::from_secs(600),
+        4096,
+    );
 }
 fn snapshot_with_worktree<F>(
     snapshot: Snapshot,

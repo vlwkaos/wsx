@@ -642,8 +642,7 @@ export function Manager({ project: id, task, page, checks }) {
     rows.push({ kind: "bubble", key: "sending", author: "owner", at: Date.now(), first: !grouped, last: true, pending: true, entry: { text: sent.text } });
   }
   const typing = Boolean(chat?.busy);
-  // ^ The manager's name as the owner reads it, and other managers' set names.
-  const names = { manager: chat?.manager?.name || "Manager", peers: chat?.peers ?? {} };
+  const names = { manager: chat?.manager.name, peers: chat?.peers };
   const stopped = chat && !chat.running && entries.at(-1)?.kind === "stopped";
   // ^ The manager's state only when it matters: typing or stopped (docs/web-client.md "Project screen").
   const managerWord = typing ? "typing" : stopped ? "stopped" : "";

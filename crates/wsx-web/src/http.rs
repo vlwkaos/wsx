@@ -971,20 +971,11 @@ async fn task_act(
 ) -> Outcome<Json<Value>> {
     use wsx_core::task::HostRequest;
     tasks_allowed(&app, true)?;
-    if action == "preview" {
+    if matches!(action.as_str(), "preview" | "hand" | "handback") {
         act_budget(&app, &device)?;
         let scope = blocking(|| crate::tasks::scope(&app, project))?;
         // ^ A preview waits for its command to answer, up to minutes.
-        return tokio::task::spawn_blocking(move || crate::tasks::preview(&scope, task))
-            .await
-            .map_err(|_| Fault::new(500, "task_action", "the preview stopped unexpectedly"))?
-            .map(Json);
-    }
-    if action == "hand" || action == "handback" {
-        act_budget(&app, &device)?;
-        let scope = blocking(|| crate::tasks::scope(&app, project))?;
-        let back = action == "handback";
-        return tokio::task::spawn_blocking(move || crate::tasks::hand(&scope, task, back))
+        return tokio::task::spawn_blocking(move || crate::tasks::run_task(&scope, &action, task))
             .await
             .map_err(|_| Fault::new(500, "task_action", "the action stopped unexpectedly"))?
             .map(Json);

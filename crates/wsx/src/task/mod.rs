@@ -35,7 +35,6 @@ use wsx_core::{ops, runtime};
 
 const HOST_START_WAIT: Duration = Duration::from_secs(10);
 const CLOSE_WAIT: Duration = Duration::from_secs(15);
-const CARGO_CLEAN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Subcommand)]
 pub enum TaskCmd {
@@ -1039,6 +1038,20 @@ fn ask_host(dir: &TaskDir, request: &HostRequest) -> Result<HostResponse> {
     }
 }
 
+/// `ask_host`, where a refusal is an error.
+fn ask_host_ok(dir: &TaskDir, request: &HostRequest) -> Result<HostResponse> {
+    let response = ask_host(dir, request)?;
+    if !response.ok {
+        bail!(
+            "task t{} refused: {}; it is still {}",
+            dir.id,
+            response.message,
+            response.state.as_str()
+        );
+    }
+    Ok(response)
+}
+
 /// The session the owner works in while a task waits on `hand`.
 fn hand_label(id: u32) -> String {
     format!("task-{id}-hand")
@@ -1057,18 +1070,10 @@ fn hand(dir: &TaskDir, json: bool) -> Result<()> {
             record.working_copy.display()
         );
     }
-    let response = ask_host(dir, &HostRequest::Hand)?;
-    if !response.ok {
-        bail!(
-            "task t{} refused: {}; it is still {}",
-            dir.id,
-            response.message,
-            response.state.as_str()
-        );
-    }
+    let response = ask_host_ok(dir, &HostRequest::Hand)?;
     let record = dir.read_record()?;
     let label = hand_label(record.id);
-    let opened = match sessions_labeled(&record.working_copy, &label)?.first() {
+    let opened = match sessions_in(&record.working_copy, Some(&label))?.first() {
         Some(_) => false,
         None => {
             // ^ A fork leaves the worker's own conversation as it was for its next turn. A
@@ -1128,18 +1133,10 @@ fn hand(dir: &TaskDir, json: bool) -> Result<()> {
 /// stays; otherwise the session closes and the commits are checked as the next revision.
 fn handback(dir: &TaskDir, json: bool) -> Result<()> {
     owner_only("handback")?;
-    let response = ask_host(dir, &HostRequest::Handback)?;
-    if !response.ok {
-        bail!(
-            "task t{} refused: {}; it is still {}",
-            dir.id,
-            response.message,
-            response.state.as_str()
-        );
-    }
+    let response = ask_host_ok(dir, &HostRequest::Handback)?;
     let record = dir.read_record()?;
     let mut closed = Vec::new();
-    for session in sessions_labeled(&record.working_copy, &hand_label(record.id))? {
+    for session in sessions_in(&record.working_copy, Some(&hand_label(record.id)))? {
         ops::kill_session(session).with_context(|| {
             format!(
                 "task t{} was handed back, but its hand session remains",
@@ -1251,7 +1248,7 @@ fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
         dir.write_record(&record)?;
     }
     let mut removed = Vec::new();
-    for session in sessions_in(&record.working_copy)? {
+    for session in sessions_in(&record.working_copy, None)? {
         ops::kill_session(session).with_context(|| {
             format!(
                 "task t{} is closed but session {session} remains",
@@ -1261,9 +1258,7 @@ fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
         removed.push(session.0);
     }
     if working_copy_exists {
-        if record.working_copy.join("Cargo.toml").exists() {
-            cargo_clean(&record.working_copy);
-        }
+        ops::cargo_clean(&record.working_copy);
         copy::remove(&main, &record.working_copy, Some(&record.branch)).with_context(|| {
             format!(
                 "task t{} is closed but its working copy remains; run `wsx task close {} --discard` again",
@@ -1292,8 +1287,8 @@ fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// The sessions named `label` in the working copy.
-fn sessions_labeled(working_copy: &Path, label: &str) -> Result<Vec<runtime::SessionId>> {
+/// The sessions in the working copy; with `label`, only those named so.
+fn sessions_in(working_copy: &Path, label: Option<&str>) -> Result<Vec<runtime::SessionId>> {
     let snapshot = existing_daemon_snapshot()?;
     let worktrees: Vec<_> = snapshot
         .worktrees
@@ -1304,34 +1299,12 @@ fn sessions_labeled(working_copy: &Path, label: &str) -> Result<Vec<runtime::Ses
     Ok(snapshot
         .sessions
         .iter()
-        .filter(|session| worktrees.contains(&session.worktree_id) && session.label == label)
+        .filter(|session| {
+            worktrees.contains(&session.worktree_id)
+                && label.is_none_or(|label| session.label == label)
+        })
         .map(|session| session.id)
         .collect())
-}
-
-fn sessions_in(working_copy: &Path) -> Result<Vec<runtime::SessionId>> {
-    let snapshot = existing_daemon_snapshot()?;
-    let worktrees: Vec<_> = snapshot
-        .worktrees
-        .iter()
-        .filter(|worktree| worktree.path == working_copy)
-        .map(|worktree| worktree.id)
-        .collect();
-    Ok(snapshot
-        .sessions
-        .iter()
-        .filter(|session| worktrees.contains(&session.worktree_id))
-        .map(|session| session.id)
-        .collect())
-}
-
-fn cargo_clean(working_copy: &Path) {
-    let mut command = std::process::Command::new("cargo");
-    command
-        .arg("clean")
-        .current_dir(working_copy)
-        .stdin(std::process::Stdio::null());
-    let _ = wsx_core::git::output_with_timeout_limit(&mut command, CARGO_CLEAN_TIMEOUT, 4096);
 }
 
 fn delete_revision_refs(main: &Path, id: u32) {
@@ -1436,9 +1409,7 @@ fn deploy(
         .stdout(stdout)
         .status();
     let duration_ms = started.elapsed().as_millis() as u64;
-    if path.join("Cargo.toml").exists() {
-        cargo_clean(&path);
-    }
+    ops::cargo_clean(&path);
     let removed = copy::remove(&main, &path, None);
     let exit = match &status {
         Ok(status) => status.code(),

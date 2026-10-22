@@ -3093,7 +3093,7 @@ digest_max_seconds = 6
             heard = [(r['task'], r['state'], r['head']) for r in reports]
             assert heard[0] == (5, 'ready', 'ready') and [r for r in heard if r[1] == 'landed'] == [(7, 'landed', 'done'), (8, 'landed', 'done')], reports
             assert reports[0]['summary'].startswith('did: WORK c.txt') and 'line 30 of the report' in reports[0]['summary'], reports
-            # The manager's name: ui's set name, plans' default; a peer only by its set name.
+            # The manager's name: ui's set name, plans' default; a peer by its set name.
             ui_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]
             plans_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['plans'])[1]
             assert ui_chat['manager'] == {'name': 'Atlas'} and ui_chat['peers'] == {}, (ui_chat['manager'], ui_chat['peers'])

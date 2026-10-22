@@ -475,19 +475,16 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                 worktree_idx,
                 session_idx,
             } => {
-                let sess = &workspace.projects[*project_idx].worktrees[*worktree_idx].sessions
-                    [*session_idx];
                 let project = &workspace.projects[*project_idx];
-                let manager_name = project
-                    .config
-                    .as_ref()
-                    .and_then(|config| config.tasks.manager_name.as_deref());
                 ListItem::new(session_line(
-                    sess,
+                    &project.worktrees[*worktree_idx].sessions[*session_idx],
                     usize::from(layout.list.width),
                     port_visibility,
                     animation_frame,
-                    manager_name,
+                    project
+                        .config
+                        .as_ref()
+                        .and_then(|config| config.tasks.manager_name.as_deref()),
                 ))
             }
             FlatEntry::Pane {

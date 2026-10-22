@@ -354,6 +354,11 @@ impl TaskRecord {
             .as_ref()
             .is_some_and(|waiting| waiting.on == on)
     }
+
+    /// A ready task the manager created waits for the manager's review, not the owner's.
+    pub fn manager_reviews(&self) -> bool {
+        self.state == TaskState::Ready && self.created_by == Actor::Manager
+    }
 }
 
 fn default_check_timeout_secs() -> u64 {

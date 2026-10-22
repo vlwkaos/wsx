@@ -10,7 +10,7 @@ with a review due). The instructions come from crates/wsx/src/task/manager.rs: `
 them at BEFORE_COMMIT (no ledger summary, rotation on the summed usage, one model), `after`
 from the working copy (ledger summary, rotation on the last call's context, eventModel for
 event-only turns), `after-nof` as `after` with every turn on the manager model. It prints one
-JSON line per turn and a table; the host itself is tested by scripts/test-task.py.
+JSON line per turn; the host itself is tested by scripts/test-task.py.
 Claude's own Bash sandbox is off here (the benchmark may itself run in one), so Bash runs
 with bypassPermissions, as sandboxed Bash runs without asking in the real manager.
 """
@@ -214,9 +214,7 @@ class Agent:
                     message = value['message']
                     models.add(message.get('model'))
                     if message.get('usage'):
-                        usage = message['usage']
-                        context = sum(usage.get(k, 0) for k in ('input_tokens', 'cache_read_input_tokens',
-                                                                'cache_creation_input_tokens'))
+                        context = context_of(message['usage'])
                     for block in message.get('content', []):
                         if block.get('type') == 'tool_use':
                             kind = tool_kind(block)
@@ -229,8 +227,7 @@ class Agent:
                             'output': usage.get('output_tokens', 0), 'input': usage.get('input_tokens', 0),
                             'cache_read': usage.get('cache_read_input_tokens', 0),
                             'cache_write': usage.get('cache_creation_input_tokens', 0),
-                            'summed_context': sum(usage.get(k, 0) for k in ('input_tokens', 'cache_read_input_tokens',
-                                                                             'cache_creation_input_tokens')),
+                            'summed_context': context_of(usage),
                             'last_context': context, 'cost_usd': round(cost, 5), 'tools': tools,
                             'reply': value.get('result', '')[:400]}
         finally:
@@ -243,6 +240,10 @@ class Agent:
             self.proc.wait(10)
         except subprocess.TimeoutExpired:
             self.proc.kill()
+
+
+def context_of(usage):
+    return sum(usage.get(k, 0) for k in ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'))
 
 
 def tool_kind(block):
