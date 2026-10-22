@@ -799,7 +799,7 @@ impl Chat {
             .see_conversation(session, &agent.provider, session_ref)
         {
             _ if first => None,
-            crate::queue::Seen::New => Some("New conversation".to_string()),
+            crate::queue::Seen::New => Some(NEW_CONVERSATION.to_string()),
             crate::queue::Seen::Same if before == Some(false) && !resumed => {
                 Some("Same conversation, continued".to_string())
             }
@@ -1206,18 +1206,34 @@ const EARLIER_ITEMS: usize = 60;
 
 /// The server's notices among the conversation's items, each before the first item saved
 /// after it. A partial answer (`from`) gets only the notices from its first item on.
+const NEW_CONVERSATION: &str = "New conversation";
+
 fn with_notices(
     mut items: Vec<Value>,
     notices: Vec<crate::queue::Notice>,
     partial: bool,
 ) -> Vec<Value> {
     let first = items.first().and_then(|item| item["at_unix_ms"].as_u64());
-    for notice in notices {
+    // ^ The line is stamped when this server saw the new conversation, which can be after
+    // its first message: in a full read after the earlier conversation it opens the current one.
+    let earlier = |item: &Value| {
+        item["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("earlier-"))
+    };
+    let opens = (!partial && items.first().is_some_and(earlier))
+        .then(|| {
+            notices
+                .iter()
+                .rposition(|notice| notice.text == NEW_CONVERSATION)
+        })
+        .flatten();
+    for (number, notice) in notices.into_iter().enumerate() {
         let at = notice.at_unix_ms;
         if partial && first.is_none_or(|first| at < first) {
             continue;
         }
-        let index = items
+        let mut index = items
             .iter()
             .position(|item| {
                 item["at_unix_ms"]
@@ -1225,6 +1241,13 @@ fn with_notices(
                     .is_some_and(|item_at| item_at > at)
             })
             .unwrap_or(items.len());
+        if Some(number) == opens {
+            let current = items
+                .iter()
+                .position(|item| !earlier(item) && item["kind"] != "notice")
+                .unwrap_or(items.len());
+            index = index.min(current);
+        }
         items.insert(
             index,
             json!({ "id": format!("notice-{at}"), "kind": "notice", "at_unix_ms": at, "text": notice.text, "attachments": [] }),
