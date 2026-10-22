@@ -274,10 +274,15 @@ if (steady.font < 16 || steady.scale !== 1 || steady.left !== 0 || steady.stage 
 // A tap focuses the terminal; a key-row tap must leave the focus there.
 await tap(".terminal-stage");
 await until("document.activeElement?.classList.contains('xterm-helper-textarea')", "a tap did not focus the terminal");
+// Even a blur that the terminal takes back makes the page jump off the keyboard and back.
+await evaluate("window.__blurs = 0; document.activeElement.addEventListener('blur', () => { window.__blurs += 1; })");
+await tap(".terminal-line-keys .terminal-key:first-child"); // ^J, an empty line for the shell
+await tap(".terminal-keys .terminal-key:last-child"); // ⌫
 await type("./colors");
 await tap(".terminal-line-keys .terminal-key:last-child"); // Enter
 await until(screenHas("truecolor-end"), "the Enter key did not run the command");
 if (!(await evaluate("document.activeElement?.classList.contains('xterm-helper-textarea')"))) await fail("a key-row tap took the focus from the terminal");
+if (await evaluate("window.__blurs")) await fail(`key-row taps blurred the terminal ${await evaluate("window.__blurs")} times`);
 // 256 colours come from the theme stylesheet, truecolour from a cell style: both need the CSP-safe patch.
 const colors = await evaluate(`(() => {
   const cells = [...document.querySelectorAll('.xterm-rows span')];
