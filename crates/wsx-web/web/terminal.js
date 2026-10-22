@@ -284,6 +284,9 @@ export function terminalView(mount, current, tools) {
     let repeat = 0;
     const stop = () => { clearInterval(repeat); repeat = 0; };
     // preventDefault on pointerdown keeps focus, and the on-screen keyboard, on the terminal.
+    // ^ iOS moves the focus in the tap that follows touchend, so touchend is cancelled too:
+    // a blur unpins the page from the keyboard and the refocus pins it again (a flicker).
+    const keepFocus = (event) => event.preventDefault();
     const keyButton = ([label, sequence, name], repeats) => h("button", {
       type: "button", tabIndex: -1, class: "terminal-key", "aria-label": name,
       onpointerdown: (event) => {
@@ -292,7 +295,7 @@ export function terminalView(mount, current, tools) {
         sendText(sequence);
         if (repeats) repeat = setInterval(() => sendText(sequence), REPEAT_MS);
       },
-      onpointerup: stop, onpointerleave: stop, onpointercancel: stop,
+      onpointerup: stop, onpointerleave: stop, onpointercancel: stop, ontouchend: keepFocus,
     }, label);
     const row = h("div", { class: "terminal-keys", role: "group", "aria-label": "Terminal keys" },
       KEYS.map((key) => keyButton(key, true)));
@@ -325,7 +328,7 @@ export function terminalView(mount, current, tools) {
     }, "Paste");
     const drag = { ax: 0, ay: 0, lx: 0, ly: 0 };
     const pad = h("div", {
-      class: "terminal-pad", role: "img", "aria-label": "Drag to send arrow keys",
+      class: "terminal-pad", role: "img", "aria-label": "Drag to send arrow keys", ontouchend: keepFocus,
       onpointerdown: (event) => {
         event.preventDefault();
         event.currentTarget.setPointerCapture(event.pointerId);
