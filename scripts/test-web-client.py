@@ -3096,7 +3096,7 @@ digest_max_seconds = 6
             # The manager's name: ui's set name, plans' default; a peer by its set name.
             ui_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]
             plans_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['plans'])[1]
-            assert ui_chat['manager'] == {'name': 'Atlas'} and ui_chat['peers'] == {}, (ui_chat['manager'], ui_chat['peers'])
+            assert ui_chat['manager'] == {'name': 'Atlas'} and ui_chat['peers'] == {'plans': 'Manager plans'}, (ui_chat['manager'], ui_chat['peers'])
             assert plans_chat['manager'] == {'name': 'Manager'} and plans_chat['peers'] == {'ui': 'Atlas'}, (plans_chat['manager'], plans_chat['peers'])
             args.captures.mkdir(parents=True, exist_ok=True)
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
