@@ -1,5 +1,5 @@
 // The project's To check list: what only a person can check of the landed tasks, passed or
-// failed at the owner's own time (docs/tasks.md "To check", docs/web-client.md "To check").
+// failed at the owner's own time (docs/tasks.md "To check", docs/web-client-tasks.md "To check").
 import { api } from "./api.js";
 import { html, Icon, useEffect, useRef, useState } from "./lib.js";
 import { can, useStore } from "./store.js";

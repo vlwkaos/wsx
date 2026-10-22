@@ -15,7 +15,7 @@ export const state = {
   newBuild: null,
   // wsx version, commit, build id and server start, from api/session.
   build: null,
-  // Each granted project's task overview by project id, with task_view (docs/web-client.md "Tasks").
+  // Each granted project's task overview by project id, with task_view (docs/web-client-tasks.md).
   tasks: {},
 };
 
@@ -72,7 +72,7 @@ const STATES = {
 // A session without an agent is a shell: no inbox group, no chat.
 export const isAgent = (session) => Boolean(session.agent);
 // ^ A task worker (`task-<n>`) or the project manager (`task-manager`): its task or the
-// project chat shows it, so the session lists leave it out (docs/web-client.md "Home").
+// project chat shows it, so the session lists leave it out (docs/web-client-tasks.md "Home").
 // The hosts report as providers `task` and `manager`; the name covers a host not yet reporting.
 const isTaskSession = (session) =>
   ["task", "manager"].includes(session.agent?.provider) || /^task-(\d+|manager)$/.test(session.label);

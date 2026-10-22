@@ -57,7 +57,7 @@ try:
   import re
   m=re.match(r"\s*(?:<pasted_content [^>]*>\s*)?\[wsx exchange (\d+), round (\d+), ",d["prompt"])
   received=m.group(1)+":"+m.group(2) if m else "other"
- # A /compact a person types runs from its PreCompact to its PostCompact (docs/web-client.md "Timeline").
+ # A /compact a person types runs from its PreCompact to its PostCompact (docs/web-client-chat.md "Timeline").
  compacting=os.environ.get("WSX_PROVIDER") == "claude" and d.get("hook_event_name") == "PreCompact" and d.get("trigger") == "manual"
  values=[conversation,prompt if isinstance(prompt,str) else "",transcript if isinstance(transcript,str) else "","1" if compaction else "",received,"1" if compacting else ""]
  if any("|" in value or any(ord(c)<32 for c in value) for value in values): raise SystemExit(1)

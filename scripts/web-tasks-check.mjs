@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Real-browser check of manager mode on the page (docs/web-client.md "Tasks"), driven over the
+// Real-browser check of manager mode on the page (docs/web-client-tasks.md), driven over the
 // Chrome DevTools Protocol. Called by `test-web-client.py --part tasks --browser`.
 //   web-tasks-check.mjs <site-url> <code> <project-id> <capture-dir> <home order> <slop-audit.js|""> <plans-id> <restart-file>
 // <home order> is the project names as home must list them, comma-separated. <plans-id> is a
@@ -16,18 +16,15 @@
 // ("old chat"); the project's task copies are on `wsx/t<n>`.
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { launch } from "./web-cdp.mjs";
+import { launch, mobileAudit, pause } from "./web-cdp.mjs";
 
 const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile] = process.argv.slice(2);
 const project = Number(projectArg);
-const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = await launch({
+const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key } = await launch({
   captures, prefix: "tasks-", timeoutSeconds: 300,
 });
-const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
-const mobilePath = process.env.WSX_MOBILE_AUDIT ?? fileURLToPath(new URL("./mobile-audit.js", import.meta.url));
-const mobileSource = fs.existsSync(mobilePath) ? fs.readFileSync(mobilePath, "utf8") : null;
+const { file: mobilePath, source: mobileSource } = mobileAudit();
 if (!mobileSource) await fail(`no mobile audit at ${mobilePath}; set WSX_MOBILE_AUDIT`);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
@@ -38,18 +35,11 @@ async function resize(next) {
   await viewport(...next);
   await pause(250);
 }
-const go = (hash) => evaluate(`location.hash = ${JSON.stringify(hash)}`);
-const text = (selector) => evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].map((node) => node.textContent.trim().replace(/\\s+/g, ' '))`);
-const count = (selector) => evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length`);
 const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
 // Type into the focused-to-be field as an input event does, the caret at the end.
 const typeInto = (selector, value) => evaluate(`(() => { const field = document.querySelector(${JSON.stringify(selector)}); field.focus();
   field.value = ${JSON.stringify(value)}; field.setSelectionRange(field.value.length, field.value.length);
   field.dispatchEvent(new Event('input', { bubbles: true })); field.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true })); })()`);
-async function key(name, keyCode) {
-  await send("Input.dispatchKeyEvent", { type: "keyDown", key: name, code: name, windowsVirtualKeyCode: keyCode });
-  await send("Input.dispatchKeyEvent", { type: "keyUp", key: name, code: name, windowsVirtualKeyCode: keyCode });
-}
 // The keyboard up: the visual viewport shrinks, the layout viewport does not (iOS).
 const keyboard = (height) => evaluate(`(() => {
   const viewport = window.visualViewport;
@@ -222,7 +212,7 @@ async function tabsInView() {
   if (out.length) await fail(`at ${size[0]}x${size[1]} these tabs are not in the first screen: ${out}`);
 }
 // The plain worktree `old-work` on a project's worktree list: its heading and session, and no
-// Adopted list (docs/web-client.md "Project screen").
+// Adopted list (docs/web-client-tasks.md "Project screen").
 async function plainWorktree(where) {
   const section = "[...document.querySelectorAll('.worktree')].find((node) => node.getAttribute('aria-label') === 'old-work')";
   await until(`!!${section}`, `${where} has no old-work worktree`);
@@ -231,7 +221,7 @@ async function plainWorktree(where) {
   if (await count(".adopted")) await fail(`${where} still has the Adopted list`);
 }
 
-// --- Home: one row per project, needs first, then by activity; the bottom bar is Home, Sessions, Projects and Settings.
+// --- Home: one row per project, needs first, then by activity; the bottom bar is Home, Sessions and Settings.
 await go("#/");
 await until("document.querySelectorAll('.home-row').length >= 3", "home does not list the projects");
 // ^ The task summaries load after the projects; the order settles when they are in.
@@ -267,7 +257,7 @@ if (!listedSessions.includes("old chat · claude")) await fail(`the session list
 if ((await text(".tabbar a[aria-current=page]")).join() !== "Sessions") await fail("the Sessions tab is not marked current");
 await oneWorkingColor("the session rows", 2);
 // ^ A working session's mark pulses (the shared `pulse`, `data-running`); no other mark does,
-// and none moves under reduced motion (docs/web-client.md "Home").
+// and none moves under reduced motion (docs/web-client-tasks.md "Home").
 const inboxMarks = () => evaluate(`[...document.querySelectorAll('.rows .row .row-link > .mark')].map((mark) => { const row = mark.closest('.row');
   return { running: mark.hasAttribute('data-running'), working: row.querySelector('.row-state')?.dataset.tone === 'working',
     animated: getComputedStyle(mark).animationName !== 'none' }; })`);
@@ -650,7 +640,7 @@ await key("Escape", 27);
 await until("!document.querySelector('dialog.task-sheet')", "Escape did not close #4 again");
 
 // --- The manager chat attaches files as a session's chat does, and shows another project's
-// manager as its own bubbles (docs/web-client.md "Project screen").
+// manager as its own bubbles (docs/web-client-tasks.md "Project screen").
 await go(chat);
 await until("!!document.querySelector('.composer .icon-button[aria-label=\"Attach files\"]')", "the manager chat has no attach button");
 const peers = await bubbles();

@@ -7,10 +7,11 @@ import os
 from pathlib import Path
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import time
+
+import wsxd_client
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTOR = r'''
@@ -28,7 +29,7 @@ leaf, sequence, idle_chrome = 'answer', 0, True
 def report(state):
  with socket.socket(socket.AF_UNIX) as client:
   client.connect(os.environ['WSX_SOCKET']); stream = client.makefile('rb')
-  client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
+  client.sendall(b'{"method":"hello","params":{"protocol":@PROTOCOL@}}\n'); stream.readline()
   params = {'pane_id':pane,'runtime_generation':generation,'provider':provider,'state':state,
     'session_ref':{'kind':'id','value':'fixture','transcript_path':str(history)},
     'capabilities':{'prompt':True,'lifecycle':True,'exchange_receipts':receipt_capable}}
@@ -104,7 +105,7 @@ pane = int(os.environ['WSX_PANE_ID']); generation = os.environ['WSX_RUNTIME_GENE
 def report(state):
  with socket.socket(socket.AF_UNIX) as client:
   client.connect(os.environ['WSX_SOCKET']); stream = client.makefile('rb')
-  client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
+  client.sendall(b'{"method":"hello","params":{"protocol":@PROTOCOL@}}\n'); stream.readline()
   params = {'pane_id':pane,'runtime_generation':generation,'provider':'claude','state':state,
     'session_ref':{'kind':'id','value':'fixture','transcript_path':str(history)},
     'capabilities':{'prompt':True,'lifecycle':True}}
@@ -154,14 +155,7 @@ while True:
 '''
 
 
-def rpc(path, method, params=None):
-    with socket.socket(socket.AF_UNIX) as client:
-        client.settimeout(5); client.connect(str(path)); stream = client.makefile('rb')
-        client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
-        request = {'method':method}
-        if params is not None: request['params'] = params
-        client.sendall(json.dumps(request).encode()+b'\n')
-        return json.loads(stream.readline())
+rpc = wsxd_client.call
 
 
 def until(test, label, seconds=5):
@@ -202,7 +196,7 @@ def orchestration(wsx, wsxd, released):
             top = git(repos / name,'rev-parse','--show-toplevel').stdout.strip()
             assert os.path.realpath(top) == os.path.realpath(repos / name), ('fixture git escaped', top)
             git(repos / name,'commit','-q','--allow-empty','-m','start')
-        worker = work / 'worker.py'; worker.write_text(WORKER)
+        worker = work / 'worker.py'; worker.write_text(wsxd_client.fixture(WORKER))
         agent = '%s %s %s' % (sys.executable, worker, work / 'run')
         def cli(*args, ok=True, stdin=None, seconds=20, cwd=work, binary=wsx, env=env):
             result = subprocess.run([str(binary),*map(str,args)],env=env,cwd=cwd,input=stdin,capture_output=True,text=True,timeout=seconds)
@@ -531,7 +525,7 @@ def main():
                'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','SHELL':'/bin/sh','TERM':'xterm-256color','LANG':'en_US.UTF-8',
                'GIT_CEILING_DIRECTORIES':str(work)}
         subprocess.run(['git','init','-q','-b','main',str(work / 'project')],env=env,check=True,timeout=5)
-        actor = work / 'actor.py'; actor.write_text(ACTOR)
+        actor = work / 'actor.py'; actor.write_text(wsxd_client.fixture(ACTOR))
         def call(method, params=None): return rpc(path, method, params)
         wait = until
         def cli(*args, ok=True):

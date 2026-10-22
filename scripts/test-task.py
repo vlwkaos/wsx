@@ -24,6 +24,8 @@ import sys
 import termios
 import time
 
+import wsxd_client
+
 ROOT = Path(__file__).resolve().parents[1]
 # ^ Parts other than 16 land by hand (`land.auto: false`) so a ready task stays ready.
 # ^ `minFreeGb: 0`: the fixture must not wait on the free disk of the machine it runs on.
@@ -182,14 +184,7 @@ def run(wsx, wsxd, work, owned):
         return wait(lambda: (current := show(n))['state'] in states and current, 't%s %s' % (n, states))
 
     def daemon_call(method):
-        with socket.socket(socket.AF_UNIX) as client:
-            client.settimeout(5)
-            client.connect(str(daemon_socket))
-            stream = client.makefile('rb')
-            client.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
-            stream.readline()
-            client.sendall(json.dumps({'method': method}).encode() + b'\n')
-            return json.loads(stream.readline())
+        return wsxd_client.call(daemon_socket, method)
 
     def pane_agent(n):
         record = show(n)['record']

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Rebuilds crates/wsx-web/web/vendor/mermaid.js.gz from the pinned npm tarball.
-# The page loads it only when a message holds a diagram (docs/web-client.md "Diagrams").
+# The page loads it only when a message holds a diagram (docs/web-client-chat.md "Diagrams").
 # The file is stored and served gzip-compressed: 3.6 MB of script are 1 MB that way.
 # Four patches, each matched exactly once:
 #   1. The bundle is loaded as a module, where its top-level `var` is not a global.

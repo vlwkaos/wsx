@@ -1,5 +1,5 @@
 //! Read-side views of a project's tasks, shared by `wsx task` and the web client.
-//! ref: docs/tasks.md "Ledger", docs/web-client.md "Tasks"
+//! ref: docs/tasks.md "Ledger", docs/web-client-tasks.md
 
 use super::store::{self, TaskDir, RESULT_FILE};
 use super::{TaskRecord, TaskState};
@@ -86,7 +86,7 @@ pub fn checked_title(title: &str) -> Result<String> {
 }
 
 /// The name the web shows: the `--title`, else the first sentence of the worker's latest
-/// summary, else `title` (docs/web-client.md "Tasks"). Events, the ledger and a pull request
+/// summary, else `title` (docs/web-client-tasks.md). Events, the ledger and a pull request
 /// keep `title`, which a worker's words never change.
 pub fn readable_title(dir: &TaskDir, record: &TaskRecord) -> Option<String> {
     if record.title.is_some() {

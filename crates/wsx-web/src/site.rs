@@ -22,7 +22,7 @@ pub enum Panel {
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
     ChatSend,
-    /// Answer a blocked agent's dialog with keys (docs/web-client.md "Answering").
+    /// Answer a blocked agent's dialog with keys (docs/web-client-chat.md "Answering").
     ChatAnswer,
     AgentWrite,
     SessionStart,
@@ -33,7 +33,7 @@ pub enum Capability {
     MediaUpload,
     MediaDownload,
     Push,
-    /// Read the tasks, reports and manager chat of a project (docs/web-client.md "Tasks").
+    /// Read the tasks, reports and manager chat of a project (docs/web-client-tasks.md).
     TaskView,
     /// Talk to the manager and act on tasks: add, steer, allow, verify, land, approve, deny.
     TaskAct,
@@ -82,7 +82,7 @@ struct SiteFile {
     tasks: TaskTimes,
 }
 
-/// When task notifications go out (docs/web-client.md "Task notifications").
+/// When task notifications go out (docs/web-client-tasks.md "Task notifications").
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct TaskTimes {

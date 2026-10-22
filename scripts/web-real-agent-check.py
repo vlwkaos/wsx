@@ -28,10 +28,11 @@ import os
 from pathlib import Path
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import time
+
+import wsxd_client
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('journey', ROOT / 'scripts/test-web-client.py')
@@ -75,14 +76,7 @@ def main():
     processes, success, facts = [], False, {}
 
     def call(method, params=None):
-        with socket.socket(socket.AF_UNIX) as client:
-            client.settimeout(5)
-            client.connect(str(path))
-            stream = client.makefile('rb')
-            client.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
-            stream.readline()
-            client.sendall(json.dumps({'method': method, **({'params': params} if params is not None else {})}).encode() + b'\n')
-            return json.loads(stream.readline())
+        return wsxd_client.call(path, method, params)
 
     def wait(test, label, timeout=30):
         deadline = time.monotonic() + timeout

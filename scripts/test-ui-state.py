@@ -15,12 +15,13 @@ import pty
 import re
 import select
 import shutil
-import socket
 import struct
 import subprocess
 import sys
 import termios
 import time
+
+import wsxd_client
 
 ROOT = Path(__file__).resolve().parents[1]
 ENABLE = b'\x1b[?1006h'
@@ -177,17 +178,7 @@ def main():
         subprocess.run(['git', 'init', '-q', '-b', 'main', str(project)], env=env, check=True)
 
         def call(method, params=None):
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(5)
-                client.connect(env['WSX_SOCKET'])
-                reader = client.makefile('rb')
-                client.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
-                assert json.loads(reader.readline())['type'] == 'hello'
-                request = {'method': method}
-                if params is not None:
-                    request['params'] = params
-                client.sendall(json.dumps(request).encode()+b'\n')
-                return json.loads(reader.readline())
+            return wsxd_client.call(env['WSX_SOCKET'], method, params)
 
         def view(command=None, marker=b'WORKSPACE', **kwargs):
             item = View(command or [str(wsx), '--mobile'], env, **kwargs)

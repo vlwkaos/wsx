@@ -129,7 +129,7 @@ export function useFollowEnd() {
 }
 
 // A message taller than one screen shows that screen and "Show all" (docs/web-client.md
-// "One screen"). `kind`, a class of the body, may set a shorter fold in its CSS.
+// "Screens"). `kind`, a class of the body, may set a shorter fold in its CSS.
 export function Fold({ id, kind, more = "Show all", children }) {
   const body = useRef();
   const [open, setOpen] = useState(false);

@@ -65,4 +65,4 @@ One owner per fact: wsxd knows the agent and the rounds, the transcript says wha
 
 - [xterm.js PR #5453: synchronized output (DEC mode 2026)](https://github.com/xtermjs/xterm.js/pull/5453)
 - [xterm.js issue #5801: screen clear inside a synchronized update resets the viewport](https://github.com/xtermjs/xterm.js/issues/5801)
-- `docs/agent-orchestration.md` (Deliver without merging a draft, Interrupted turn, Native request-bound receipts), `docs/terminal-synchronized-output.md`, `docs/web-client.md` (Terminal, Queue and Stop)
+- `docs/agent-orchestration.md` (Deliver without merging a draft, Interrupted turn, Native request-bound receipts), `docs/terminal-synchronized-output.md`, `docs/web-client-terminal.md`, `docs/web-client-chat.md` (Queue and Stop)

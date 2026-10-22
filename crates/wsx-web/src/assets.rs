@@ -74,7 +74,7 @@ const FILES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-// ^ docs/web-client.md "Terminal fonts": pinned by scripts/vendor-fonts.sh, licenses
+// ^ docs/web-client-terminal.md "Terminal fonts": pinned by scripts/vendor-fonts.sh, licenses
 // beside them. The names carry the upstream version; they are not part of the offline shell.
 const WOFF2: &str = "font/woff2";
 const FONTS: &[(&str, &str, &[u8])] = &[
@@ -105,7 +105,7 @@ const FONTS: &[(&str, &str, &[u8])] = &[
     ),
 ];
 
-// ^ docs/web-client.md "Diagrams": pinned and patched by scripts/vendor-mermaid.sh, license
+// ^ docs/web-client-chat.md "Diagrams": pinned and patched by scripts/vendor-mermaid.sh, license
 // in web/vendor/mermaid.LICENSE. Stored gzip-compressed and served that way. The page
 // asks for it when a message holds a diagram; it is not part of the offline shell.
 pub const MERMAID: &str = "mermaid-11.17.2.js";

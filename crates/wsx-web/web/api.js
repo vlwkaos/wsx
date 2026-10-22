@@ -36,7 +36,7 @@ export async function api(path, { method = "GET", json, body, query } = {}) {
 }
 
 // handlers: { workspace, history, exchange, daemon, resync, revoked, tasks, task, manager, down, up }
-// ^ This page's id for its event stream and its presence (docs/web-client.md "Task notifications").
+// ^ This page's id for its event stream and its presence (docs/web-client-tasks.md "Task notifications").
 export const pageId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 export function openEvents(handlers) {

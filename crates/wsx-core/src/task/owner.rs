@@ -87,7 +87,7 @@ pub fn action_name(action: ApprovalAction) -> &'static str {
 
 /// An approval request as the action it asks for, never its id: "Approve land #3",
 /// "Approve discard #4", "Approve deploy", "Approve network crates.io for #3".
-/// ref: docs/web-client.md "Tasks"
+/// ref: docs/web-client-tasks.md
 pub fn approval_label(request: &ApprovalLine) -> String {
     let ApprovalLine::Request {
         action,

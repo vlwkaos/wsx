@@ -1,5 +1,5 @@
 // Home with task_view: one row per granted project, what needs the owner first
-// (docs/web-client.md "Home"). A row opens the project's manager chat.
+// (docs/web-client-tasks.md "Home"). A row opens the project's manager chat.
 import { ago, html, useNow } from "./lib.js";
 import { isAgent, listedSessions, stateOf, useStore } from "./store.js";
 import { needTone, needWords } from "./tasks.js";

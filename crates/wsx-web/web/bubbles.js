@@ -1,6 +1,6 @@
 // The manager chat as messages: one bubble per owner message, manager reply and worker
 // report, each with its author and time, and task changes as grouped muted lines
-// (docs/web-client.md "Project screen").
+// (docs/web-client-tasks.md "Project screen").
 import { clock, firstSentence, Fold, html, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";

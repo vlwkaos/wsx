@@ -1,6 +1,6 @@
 #!/bin/sh
 # Rebuilds crates/wsx-web/web/vendor from the pinned npm tarballs.
-# docs/web-client.md "Terminal" explains why xterm.js is patched:
+# docs/web-client-terminal.md explains why xterm.js is patched:
 # the site CSP has no 'unsafe-inline' for styles, and the xterm.js DOM renderer
 # writes <style> elements and style attributes. The patch moves both to CSSOM
 # calls, which the CSP allows. Nothing else in the file changes.

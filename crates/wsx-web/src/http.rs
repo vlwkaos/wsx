@@ -619,7 +619,7 @@ async fn events(
 }
 
 /// Closes a session the site reaches, as `wsx session delete` does (docs/web-client.md
-/// "Removing a session"). A device that may start sessions may remove them. A task's
+/// "Screens"). A device that may start sessions may remove them. A task's
 /// worker and the manager belong to their host and close with it.
 async fn session_remove(
     State(app): State<Shared>,
@@ -737,7 +737,7 @@ async fn session_start(
 }
 
 /// `from` and `at`: the id and time of an item the page has. The answer then starts at
-/// that item when it is still there (docs/web-client.md "Timeline").
+/// that item when it is still there (docs/web-client-chat.md "Timeline").
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TimelineQuery {
@@ -1359,7 +1359,7 @@ struct AttachQuery {
     client: String,
 }
 
-/// A live terminal on one session (docs/web-client.md "Terminal").
+/// A live terminal on one session (docs/web-client-terminal.md).
 /// ^ A WebSocket upgrade is not covered by CORS and may carry no Origin that the
 /// guard would refuse, so the exact Origin is required here.
 async fn terminal_socket(

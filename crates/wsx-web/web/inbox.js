@@ -20,7 +20,7 @@ export function SessionRow({ session, now, current, place }) {
   else identity = html`<span class="row-project">${session.project.name}</span><span class="row-sep" aria-hidden="true">›</span><span class="row-worktree">${branch}</span>`;
   const context = [place !== "worktree" && session.label, session.agent?.provider ?? "shell"].filter(Boolean).join(" · ");
   const [removing, setRemoving] = useState(false);
-  // ^ Slide the row left to show Remove (docs/web-client.md "Removing a session"). The slide
+  // ^ Slide the row left to show Remove (docs/web-client.md "Screens"). The slide
   // is the confirmation: one stray tap removes nothing. The row goes when wsxd says so.
   const remove = async () => {
     setRemoving(true);

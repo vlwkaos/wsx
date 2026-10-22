@@ -1,17 +1,19 @@
 #!/usr/bin/env node
-// Real-browser check of the live terminal (docs/web-client.md "Terminal").
+// Real-browser check of the live terminal (docs/web-client-terminal.md).
 // Called by `test-web-client.py --browser` with a shell session whose directory
 // holds the fixture programs colors, query, long, alt and keys.
 // Usage: node web-terminal-check.mjs <site-url> <pairing-code> <session-id> <capture-dir> <wsxd-socket> <pane-id> <keys-trace>
 import fs from "node:fs";
 import net from "node:net";
-import { launch } from "./web-cdp.mjs";
+import { launch, pause } from "./web-cdp.mjs";
 
 const [siteUrl, code, sessionId, captures, daemonSocket, paneId, keysTrace] = process.argv.slice(2);
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = await launch({
   captures, prefix: "terminal-", timeoutSeconds: 170,
 });
-const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// wsxd's protocol version, read from its source (crates/wsx-core/src/runtime/protocol.rs).
+const PROTOCOL = Number(/PROTOCOL_VERSION: u32 = (\d+);/.exec(fs.readFileSync(new URL("../crates/wsx-core/src/runtime/protocol.rs", import.meta.url), "utf8"))[1]);
+const HELLO = `${JSON.stringify({ method: "hello", params: { protocol: PROTOCOL } })}\n`;
 
 // Record the page's WebSockets so a lost connection can be forced from outside.
 await send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
@@ -76,7 +78,7 @@ function daemon(method, params) {
         resolve(JSON.parse(lines[1]).data);
       }
     });
-    client.write(`{"method":"hello","params":{"protocol":16}}\n${JSON.stringify({ method, params })}\n`);
+    client.write(`${HELLO}${JSON.stringify({ method, params })}\n`);
   });
 }
 // The browser's screen must be the screen wsxd holds, row for row.
@@ -405,7 +407,7 @@ await until(`${state("live")} && document.querySelector('.terminal-size').datase
 await until(`document.querySelectorAll('.xterm-rows > div').length === ${rows}`, "fit screen did not resize the pane");
 await sameAsDaemon("after returning to fit screen");
 
-// Scrolled back from the newest output, one tap returns to it (docs/web-client.md "Terminal").
+// Scrolled back from the newest output, one tap returns to it (docs/web-client-terminal.md).
 await run("i=0; while [ $i -lt 120 ]; do echo scroll-line-$i; i=$((i+1)); done; echo scroll-end", "scroll-end");
 const jumpHidden = "document.querySelector('.terminal .jump').hidden";
 if (!(await evaluate(jumpHidden))) await fail("Jump to latest shows at the end of the output");
@@ -436,7 +438,7 @@ window_.on("data", (chunk) => {
   buffered = parts.pop();
   lines.push(...parts.map((line) => JSON.parse(line)));
 });
-window_.write('{"method":"hello","params":{"protocol":16}}\n');
+window_.write(HELLO);
 window_.write(`${JSON.stringify({ method: "terminal_subscribe", params: { pane_id: Number(paneId), client_id: 4242, takeover: true, rows: 24, cols: 80 } })}\n`);
 await until(state("elsewhere"), "the page did not notice that a wsx window took the terminal");
 if (!(await evaluate("document.querySelector('.terminal-notice').textContent.includes('another wsx window')"))) await fail("no 'controlled elsewhere' bar");
@@ -457,7 +459,7 @@ await until(`document.querySelectorAll('.xterm-rows > div').length === ${rows}`,
 const holder = net.connect(daemonSocket);
 let holderText = "";
 holder.on("data", (chunk) => { holderText += chunk; });
-holder.write('{"method":"hello","params":{"protocol":16}}\n');
+holder.write(HELLO);
 holder.write(`${JSON.stringify({ method: "terminal_subscribe", params: { pane_id: Number(paneId), client_id: 4243, takeover: true, rows: 24, cols: 80 } })}\n`);
 await until(state("elsewhere"), "the page did not notice the second wsx window");
 await open(390, 844, 2);

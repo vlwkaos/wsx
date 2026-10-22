@@ -1,4 +1,4 @@
-//! What a blocked agent asks, and the keys that answer it (docs/web-client.md "Answering").
+//! What a blocked agent asks, and the keys that answer it (docs/web-client-chat.md "Answering").
 //! ^ wsxd knows that an agent is blocked, not what it asks. The question is the dialog
 //! the agent drew, so this is the one place of the web server that reads a pane's
 //! screen. No provider dialog is modelled here: the page shows the rows and sends keys.
@@ -58,7 +58,7 @@ fn screen(client: &Client, pane: PaneId) -> Outcome<Vec<String>> {
 }
 
 /// The last `count` rows of the screen, for a hold the chat cannot name
-/// (docs/web-client.md "Timeline"). `None` when the screen cannot be read.
+/// (docs/web-client-chat.md "Timeline"). `None` when the screen cannot be read.
 pub fn tail(client: &Client, pane: PaneId, count: usize) -> Option<Vec<String>> {
     let mut rows = screen(client, pane).ok()?;
     Some(rows.split_off(rows.len().saturating_sub(count)))

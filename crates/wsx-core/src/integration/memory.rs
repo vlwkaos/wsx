@@ -852,7 +852,7 @@ fn command_line(provider: &str, role: &str, text: &str) -> Option<String> {
     )
 }
 
-// ^ Record shapes read from real sessions on 2026-10-12 (docs/web-client.md "Timeline"):
+// ^ Record shapes read from real sessions on 2026-10-12 (docs/web-client-chat.md "Timeline"):
 // claude `tool_use`/`tool_result`/`thinking` parts, pi and omp `toolCall`/`thinking`
 // parts and `toolResult` messages, codex `function_call`, `custom_tool_call`, their
 // `_output` items and `reasoning`.

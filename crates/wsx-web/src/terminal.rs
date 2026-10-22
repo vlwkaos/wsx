@@ -1,5 +1,5 @@
 //! One browser terminal: a WebSocket bridged to one wsxd raw terminal stream.
-//! Contract: docs/web-client.md "Terminal"; daemon side: docs/terminal-raw-stream.md.
+//! Contract: docs/web-client-terminal.md; daemon side: docs/terminal-raw-stream.md.
 //! ^ Binary frames carry PTY bytes in both directions. Text frames carry small JSON
 //! control messages. The daemon stream holds the pane's one writable lease, and it
 //! is dropped, with its lease, when the socket closes.

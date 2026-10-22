@@ -17,6 +17,8 @@ import sys
 import threading
 import time
 
+import wsxd_client
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -92,17 +94,7 @@ class Fixture:
         self.config.write_text(text.replace(*replace) if replace else text)
 
     def call(self, method, params=None):
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(5)
-            client.connect(str(self.daemon_socket))
-            stream = client.makefile("rb")
-            client.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
-            assert json.loads(stream.readline())["type"] == "hello"
-            request = {"method": method}
-            if params is not None:
-                request["params"] = params
-            client.sendall(json.dumps(request).encode() + b"\n")
-            return json.loads(stream.readline())
+        return wsxd_client.call(self.daemon_socket, method, params)
 
     def epoch(self):
         try:

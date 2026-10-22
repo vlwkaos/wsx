@@ -1,5 +1,5 @@
 // Chat: the agent's own saved conversation as a typed timeline, what the agent does
-// now, the messages that wait for it, and the composer (docs/web-client.md "Chat").
+// now, the messages that wait for it, and the composer (docs/web-client-chat.md).
 import { api, resolve } from "./api.js";
 import { bytes, elapsed, Fold, html, Icon, useCallback, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, events, readMap, shows, stateOf, state, touch, writeMap } from "./store.js";
@@ -58,12 +58,12 @@ async function shrink(file) {
 }
 
 // Send one message. The server keeps it in the session's queue until the saved
-// conversation shows it (docs/web-client.md "Queue and Stop").
+// conversation shows it (docs/web-client-chat.md "Queue and Stop").
 const post = (id, text, attachments) => api(`api/chat/${id}/send`, {
   method: "POST", json: { text, attachments: attachments.map((item) => item.hash) },
 });
 
-// Copy a message's text, so a message the agent never took is not lost (docs/web-client.md "Queue and Stop").
+// Copy a message's text, so a message the agent never took is not lost (docs/web-client-chat.md "Queue and Stop").
 function CopyText({ text, label }) {
   const [said, setSaid] = useState("");
   const copy = async () => {
@@ -307,7 +307,7 @@ function Composer({ session, working, onSent }) {
   const [busy, setBusy] = useState(false);
   const field = useRef();
   const mirror = useRef();
-  // ^ An agent that exited is started again by the next message (docs/web-client.md "Conversations").
+  // ^ An agent that exited is started again by the next message (docs/web-client-chat.md "Conversations").
   const resumes = !session.agent?.attached && Boolean(session.conversation);
   const ready = (Boolean(session.agent?.attached && session.agent.prompt) || resumes) && !session.exited;
   const [listing, setListing] = useState(null);
@@ -587,7 +587,7 @@ export function Chat({ session, onModel }) {
   const blocked = status.key === "blocked";
   const lastUserBlock = list.findLast?.((block) => block.kind === "user");
   const terminalLink = shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`;
-  // A hold the chat cannot name: the server sends the end of the screen (docs/web-client.md "Timeline").
+  // A hold the chat cannot name: the server sends the end of the screen (docs/web-client-chat.md "Timeline").
   const held = data?.screen?.length ? html`
     <section class="question" aria-label="The terminal shows">
       <p class="note">The terminal shows:</p>
