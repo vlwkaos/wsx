@@ -67,21 +67,14 @@ export function nextWords(detail) {
   const main = detail.default_branch ?? "the default branch";
   const asked = detail.approvals?.[0];
   if (asked) return `The manager asks: ${asked.label}.`;
-  if (detail.phase === "brief") {
-    switch (detail.state) {
-      case "briefed": return "Answer the questions below and the build starts by itself, or Start it as it is.";
-      case "failed": return "The worker returned no brief. Reply to ask again.";
-      case "stopped": return "The worker stopped. Reply to resume the brief.";
-      case "closed": return "Closed before the build.";
-      default: return "The worker writes the brief. The build starts by itself unless the brief has questions for you.";
-    }
-  }
   switch (detail.state) {
-    case "blocked": if (detail.waiting) return `${detail.waiting}. It goes on by itself once there is space.`;
-      return detail.asks?.length
-      ? `The worker waits for you to let it ${askWords(detail.asks)}, or to answer.`
-      : "The worker waits for your answer.";
-    case "stopped": return "The worker stopped. Add a message to resume it.";
+    case "waiting": switch (detail.waiting?.on) {
+      case "disk": return `${detail.waiting.reason}. It goes on by itself once there is space.`;
+      case "hand": return "You work on it by hand in its session. Commit, then hand it back: its checks run and it lands as usual.";
+      case "permission": return `The worker waits for you to let it ${askWords(detail.asks ?? [])}, or to answer.`;
+      default: return detail.waiting?.reason === "stopped by request"
+        ? "The worker stopped. Add a message to resume it." : "The worker waits for your answer.";
+    }
     case "failed": {
       // ^ A check is a shell command; Evidence names them, this sentence only counts them.
       const failed = (detail.checks ?? []).filter((check) => check.exit !== 0).length;
@@ -96,9 +89,7 @@ export function nextWords(detail) {
       if (reason.startsWith("no checks")) return `No checks prove it, so it waits for you. Land it to put it on ${main}.`;
       return `Land it to put it on ${main}.`;
     }
-    case "conflict": return `The worker resolves a conflict with ${main}; it lands when its checks pass.`;
-    case "in_review": return "The pull request waits for review. Check it to see whether it merged.";
-    case "by_hand": return "You work on it by hand in its session. Commit, then hand it back: its checks run and it lands as usual.";
+    case "working": return detail.conflict ? `The worker resolves a conflict with ${main}; it lands when its checks pass.` : "";
     case "landed": case "closed": {
       if (detail.state === "closed" && !detail.landed_commit) return "Closed without landing.";
       if (!detail.deploy?.configured || detail.deploy.deployed) return `On ${main}.`;

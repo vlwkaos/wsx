@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Manager mode, lean core. A task is `working`, `waiting`, `checking`, `ready`, `failed`, `landed` or `closed`; `waiting` names what it waits for (`owner`, `permission`, `disk` or `hand`) with a reason, and replaces `starting`, `blocked`, `stopped`, `conflict` and `by_hand` ([docs/tasks.md](docs/tasks.md) "Store").
+- The manager talks a request through in the chat and sizes it before it starts any task, writes each task prompt complete on its own, runs tasks at once only when they change different files, reviews what it created for lean code and never sends a task back to rebase, and starts one housekeeping task after a request's tasks land. A long plan goes on the project page with a diagram.
+- `tasks.skills: owner` lends workers the owner's skills, and `tasks.workflow` (`build`, `review`, `batch`) holds the project's words for each stage; the defaults name no skill ([docs/tasks.md](docs/tasks.md) "Workflow").
+- To check items say what the task did, where to look (a link when it is a URL or page path) and show the worker's capture, kept with the task at the land; Try, Fail and Pass are icon buttons and the list's sheet is only as high as its rows. An item that names a command goes back to the worker.
+
+### Removed
+
+- The worker brief phase (`task start`, `--no-brief`, `tasks.brief`, `brief.json`, the brief on the task sheet), the `pr` landing policy (`tasks.land.policy`, `tasks.land.remote`), `task revoke`, and the log events only those used. Old log lines of removed kinds are skipped.
+
 ### Added
 
 - Each manager turn's message ends with a ledger summary from the host (open tasks by state, what changed since the last turn, To check, approvals, deploy); the manager reads the full ledger only when it needs more.

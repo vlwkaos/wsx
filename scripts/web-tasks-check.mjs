@@ -3,10 +3,8 @@
 // Chrome DevTools Protocol. Called by `test-web-client.py --part tasks --browser`.
 //   web-tasks-check.mjs <site-url> <code> <project-id> <capture-dir> <home order> <slop-audit.js|""> <plans-id> <restart-file>
 // <home order> is the project names as home must list them, comma-separated. <plans-id> is a
-// project whose #1 waits as briefed (rewritten prompt WORK keys.txt), for the brief journey.
-// <plans-id>'s #1 brief is a real brief (scripts/fixtures/task-brief.json) with an open question
-// that has an indented paragraph and a method with a fenced command; its #2 is ready to land.
-// The project lands by hand and has: #1 and #4 blocked on a host, #2 ready with an item to
+// project whose #1 waits for the owner's answer and whose #2 is ready to land.
+// The project lands by hand and has: #1 and #4 waiting for a host, #2 ready with an item to
 // check, #3 ready, #5 closed after a long report the manager heard of, #6 working (its prompt
 // opens with "Owner asked:"), #7 and #8 landed with an item each to check (#7's summary has two
 // sentences), and two pending approvals: a1 lands #3, a2 discards #4 (shown as
@@ -147,11 +145,8 @@ async function lean(where) {
   if (await count(".task-sheet .story-steps")) await fail(`${where} still has the steps`);
   if ((await nextButtons()).includes("Review")) await fail(`${where} still has a Review button`);
 }
-// The sheet's open sections and the ones folded under the first fold (a brief's Details), by heading.
-const sheetParts = () => evaluate(`(() => { const heads = (nodes) => [...nodes].map((node) => node.textContent.trim());
-  const fold = document.querySelector('.task-sheet details.task-fold');
-  return { open: heads(document.querySelectorAll('.task-sheet .scroll > .task-section:not(.task-fold):not(.timeline) > .task-heading')),
-    details: fold ? heads(fold.querySelectorAll(':scope > .task-section > .task-heading')) : null, folded: fold ? !fold.open : null }; })()`);
+// The sheet's open sections, by heading.
+const openSections = () => evaluate("[...document.querySelectorAll('.task-sheet .scroll > .task-section:not(.task-fold):not(.timeline) > .task-heading')].map((node) => node.textContent.trim())");
 // The reservoir's rows: [chip, title, context, actions], in the order shown.
 const rows = () => evaluate(`[...document.querySelectorAll('.reservoir-list .need')].map((row) => [
   row.querySelector('.task-chip')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, row.querySelector('.row-context')?.textContent ?? '',
@@ -248,8 +243,8 @@ if (uiRow.count !== "6" || uiRow.status !== "#1 needs to reach crates.io" || !/a
 const calmRow = homeRows.at(-1);
 if (calmRow.name !== "calm" || calmRow.count || calmRow.status !== "No tasks yet" || calmRow.state) await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
 const plansRow = homeRows.find((row) => row.name === "plans");
-// ^ #1 waits as briefed; #2, built by the API checks, is ready to land.
-if (plansRow?.status !== "Brief ready #1" || plansRow.count !== "2") await fail(`the plans row reads ${JSON.stringify(plansRow)}`);
+// ^ #1 waits for an answer; #2 is ready to land.
+if (plansRow?.status !== "#1 needs an answer" || plansRow.count !== "2") await fail(`the plans row reads ${JSON.stringify(plansRow)}`);
 // Projects with agent sessions and no task: the sessions in words, and the time of the newest.
 // ^ `quiet` went done while the fixture was built, which can take over a minute.
 const sessionRows = { busy: /^2 working$/, quiet: /^claude in main done (just now|\d+m ago)$/, gone: /^claude in main exited$/ };
@@ -607,7 +602,7 @@ if ((await text(".task-next p")).length) await fail(`an action row repeats the s
 told = await story();
 if (told.next !== "The manager asks: Approve discard #4." || await sheetState() !== "needs you") await fail(`the top of a blocked task with an approval reads ${JSON.stringify(told)}`);
 // ^ No Shared files outside a conflict.
-if ((await sheetParts()).open.includes("Shared files")) await fail("a task that is not in conflict shows Shared files");
+if ((await openSections()).includes("Shared files")) await fail("a task that is not in conflict shows Shared files");
 await shot("task-blocked", ".composer-send");
 await evaluate("[...document.querySelectorAll('.task-next button')].find((node) => node.textContent === 'Deny').click()");
 await until("!document.querySelector('.task-next button[aria-label=\"Approve discard #4\"]')", "the denied approval stayed", 300);
@@ -734,15 +729,12 @@ if (taskReads.length !== 1 || !taskReads[0].endsWith("/api/tasks")) await fail(`
 await evaluate("history.back()");
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Back after a deep link did not close the sheet");
 
-// --- A brief (docs/tasks.md "Brief"): in plans' chat its manager reads "Manager" and ui's
-// "Atlas". The brief's reservoir row with Start, whose chip opens the brief; the sheet with its diagram drawn, then Open questions and Additions
-// and the rest closed under Details; no "brief v" in the top row; Start a normal button beside
-// the story's sentence; indented prose stays prose, a fence stays code; a reply answered as
-// "v2"; then the list cleared one row after
-// another: Start #1, Land #2, Land #1, and then no reservoir with the focus on the composer.
+// --- A task that waits for the owner's answer: in plans' chat its manager reads "Manager" and
+// ui's "Atlas". #1's reservoir row with Answer, whose chip opens its sheet: the story asks for
+// the answer, the field says so, and the answer is a bubble; then the list cleared one row
+// after another: Land #2, Land #1, and then no reservoir with the focus on the composer.
 const plans = Number(plansArg);
-const briefSheet = `#/p/${plans}/t/1`;
-// ^ The actions above spent this device's burst (10, then one per 3 s); this part sends four.
+// ^ The actions above spent this device's burst (10, then one per 3 s); this part sends three.
 await pause(12000);
 await go(`#/p/${plans}`);
 await until("!!document.querySelector('.reservoir-head')", "plans has no reservoir");
@@ -750,72 +742,33 @@ await until("document.querySelectorAll('.log .bubble').length >= 2", "plans' cha
 const plansAuthors = await evaluate("[...document.querySelectorAll('.log .bubble')].map((node) => [node.querySelector('.bubble-author')?.textContent ?? '', node.querySelector('.bubble-tag')?.textContent ?? ''])");
 if (!plansAuthors.some(([author, tag]) => author === "Manager" && tag === "To Atlas") || !plansAuthors.some(([author]) => author === "Atlas")) await fail(`plans' managers read ${JSON.stringify(plansAuthors)}`);
 await openReservoir();
-await until(`!!${rowOf("#1")}`, "the brief has no reservoir row");
-const briefRow = (await rows()).find((row) => row[0] === "#1");
-if (briefRow[2] !== "brief ready" || briefRow[3] !== "Start") await fail(`the brief's row reads ${JSON.stringify(briefRow)}`);
-await shot("brief-row", ".composer-send");
-// ^ The chip opens the task's sheet, the brief first (the chat's chips are the same link).
+await until(`!!${rowOf("#1")}`, "the waiting task has no reservoir row");
+const waitRow = (await rows()).find((row) => row[0] === "#1");
+if (waitRow[2] !== "needs an answer" || waitRow[3] !== "Answer") await fail(`the waiting row reads ${JSON.stringify(waitRow)}`);
 await evaluate(`${rowOf("#1")}.querySelector('.task-chip').click()`);
-await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the brief sheet did not open");
-await lean("the brief sheet");
+await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the waiting task's sheet did not open");
+await lean("the waiting sheet");
 told = await story();
-if (told.next !== "Answer the questions below and the build starts by itself, or Start it as it is.") await fail(`the top of a brief reads ${JSON.stringify(told)}`);
-if (/brief v/i.test(await evaluate("document.querySelector('.task-sheet .bar').textContent"))) await fail("the top row still names the brief version");
-// ^ The diagram is drawn as an image, untitled, before the first titled part.
-await until("!!document.querySelector('.task-sheet .task-diagram .diagram img')", "the brief's diagram did not draw", 30);
-if (!await evaluate("(() => { const diagram = document.querySelector('.task-sheet .task-diagram'); const first = document.querySelector('.task-sheet .scroll > .task-section > .task-heading'); return !!(diagram.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING) && !diagram.querySelector('.task-heading'); })()")) await fail("the diagram is not first or carries a heading");
-// ^ Start sits in the story beside its sentence, sized to its label, not across the line.
-const start = await evaluate(`(() => { const button = [...document.querySelectorAll('.task-sheet .task-next button')].find((node) => node.textContent === 'Start the build');
-  const story = document.querySelector('.task-sheet .story'); const box = button.getBoundingClientRect();
-  return { inStory: story.contains(button), width: box.width, line: story.getBoundingClientRect().width,
-    plain: button.className === 'button', bands: document.querySelectorAll('.task-sheet .scroll > .task-next').length }; })()`);
-if (!start.inStory || start.bands || !start.plain || start.width > start.line * 0.6) await fail(`Start renders as ${JSON.stringify(start)}`);
-const parts = await sheetParts();
-if (parts.open.join() !== "Open questions,Additions" || parts.details?.join() !== "Raw material,Methods and tools,Independent check,Concepts,Rewritten prompt" || !parts.folded) await fail(`the brief reads ${JSON.stringify(parts)}`);
-if (await evaluate("[...document.querySelectorAll('.task-sheet .task-concept')].some((node) => node.open)")) await fail("an addition or a concept is not folded");
-// ^ A model's indented paragraph is prose; the fenced command is the only code; a source is text.
-const rendered = await evaluate(`(() => { const pres = [...document.querySelectorAll('.task-sheet pre')];
-  return { pres: pres.filter((pre) => !pre.closest('.diagram')).length, fenced: pres.filter((pre) => pre.closest('.code-block') && /cargo nextest run/.test(pre.textContent)).length,
-    prose: [...document.querySelectorAll('.task-sheet p')].some((node) => node.textContent.trim() === 'An indented paragraph that is prose, not code.'),
-    sources: document.querySelectorAll('.task-sheet .task-source').length, sourceCode: document.querySelectorAll('.task-sheet .task-source code, .task-sheet code.path').length }; })()`);
-if (rendered.pres !== 1 || rendered.fenced !== 1 || !rendered.prose || !rendered.sources || rendered.sourceCode) await fail(`the brief's text renders as ${JSON.stringify(rendered)}`);
-if ((await nextButtons()).join() !== "Start the build") await fail(`a brief offers ${await nextButtons()}`);
-if (await evaluate("document.querySelector('.task-message .composer-field').placeholder") !== "Reply to the brief") await fail("the sheet's field is not a reply to the brief");
-await shot("brief-sheet", ".composer-send");
-await evaluate("document.querySelector('.task-sheet details.task-fold').open = true");
-await shot("brief-details", ".composer-send");
-await typeInto(".task-message .composer-field", "Why a file? QUESTION REVISE WORK keys2.txt");
+if (told.next !== "The worker waits for your answer.") await fail(`the top of a waiting task reads ${JSON.stringify(told)}`);
+if (await evaluate("document.querySelector('.task-message .composer-field').placeholder") !== "Answer the worker") await fail("the sheet's field does not ask for the answer");
+await shot("waiting-sheet", ".composer-send");
+await typeInto(".task-message .composer-field", "WORK keys.txt");
 await click(".task-message .composer-send");
-await until("document.querySelectorAll('.task-talk .bubble').length === 2", "the sheet's reply got no answer", 60);
-const talk = await evaluate("[...document.querySelectorAll('.task-talk .bubble')].map((node) => ({ side: node.dataset.side, author: node.querySelector('.bubble-author')?.textContent ?? '', tag: node.querySelector('.bubble-tag')?.textContent ?? '', text: node.querySelector('.bubble-box').textContent }))");
-if (talk[0].side !== "out" || talk[1].author !== "#1 worker" || talk[1].tag !== "v2" || talk[0].tag || !talk[1].text.includes("answered: Why a file?")) await fail(`the talk reads ${JSON.stringify(talk)}`);
-if (await count(".task-sheet .label")) await fail("the brief sheet still has a Talk-through label");
-await until("[...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === 'Start the build')", "Start did not come back after the answer", 60);
-await resize([390, 420, 2]);
-await shot("brief-sheet", ".composer-send");
-await resize([390, 844, 2]);
+await until("document.querySelectorAll('.task-talk .bubble').length === 1", "the answer is not a bubble", 60);
+if (await evaluate("document.querySelector('.task-talk .bubble').dataset.side") !== "out") await fail("the answer is not the owner's bubble");
+await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '') === 'needs you' && [...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === 'Land')", "#1 did not get ready after the answer", 120);
 await key("Escape", 27);
-await until(`location.hash === '#/p/${plans}' && !document.querySelector('dialog.task-sheet')`, "Escape did not close the brief sheet");
+await until(`location.hash === '#/p/${plans}' && !document.querySelector('dialog.task-sheet')`, "Escape did not close the waiting sheet");
 // ^ Closing the sheet gives the composer the focus after the next paint: wait for it, or it
 // takes the focus back from the row button pressed below.
-await until("document.activeElement?.classList.contains('composer-field') && !document.activeElement.closest('dialog')", "closing the brief sheet did not focus the composer");
+await until("document.activeElement?.classList.contains('composer-field') && !document.activeElement.closest('dialog')", "closing the sheet did not focus the composer");
 await openReservoir();
-moved = await clearRow("#1", "Start");
-if (`${moved[0]} ${moved[2]}` !== "#2 Land") await fail(`after Start #1 the focus is on ${JSON.stringify(moved)}`);
+await until(`(${rowOf("#1")}?.querySelector('.need-action')?.textContent ?? '') === 'Land'`, "#1's row does not offer Land", 60);
 moved = await clearRow("#2", "Land");
-await until(`(${rowOf("#1")}?.querySelector('.need-action')?.textContent ?? '') === 'Land'`, "#1 did not build its brief", 300);
 moved = await clearRow("#1", "Land");
 await until("!document.querySelector('.reservoir')", "the cleared list still shows the reservoir", 60);
 await until("document.activeElement?.matches('.chat .composer-field')", `with the list cleared the focus is on ${JSON.stringify(await focused())}`, 30);
 await shot("reservoir-cleared", ".composer-send");
-// The built task keeps its brief folded as "Brief v2", after its report.
-await go(briefSheet);
-await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the built task's sheet did not open");
-if ((await text(".task-fold > .fold-head")).at(-1) !== "Brief v2") await fail(`the built task's folds are ${await text(".task-fold > .fold-head")}`);
-await evaluate("[...document.querySelectorAll('.task-sheet details.task-fold')].at(-1).open = true");
-await until("!!document.querySelector('.task-sheet details.task-fold[open] .task-diagram .diagram img')", "the folded brief did not draw its diagram", 30);
-await key("Escape", 27);
-await until("!document.querySelector('dialog.task-sheet')", "Escape did not close the built task");
 
 // --- The task sheet has no link to the worker's terminal, though #6's worker has a session;
 // the project's ⋯ keeps Sessions.
@@ -893,6 +846,6 @@ problems.splice(quietFrom);
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
-console.log(`tasks page: home with the Sessions and Projects tabs in the first screen, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Allow, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, Allow for project, Shared files only in a conflict), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), the brief (reservoir row, Open questions and Additions first, Details closed, indented prose as prose and a fence as code, talk as bubbles with v2, the diagram first, Start as a normal button, Start, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions and Projects tabs in the first screen, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Allow, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, Allow for project, Shared files only in a conflict), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

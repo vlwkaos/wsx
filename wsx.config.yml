@@ -13,11 +13,21 @@ tasks:
   sandbox:
     allowedDomains: [crates.io, index.crates.io, static.crates.io]
     allowWrite: ["~/.cargo/registry", "~/.cargo/git"]
+  # ^ One gate: the same checks a person runs before a release, after each result and each land.
   checks:
     - cargo fmt --all --check
     - cargo build -p wsx -p wsx-daemon
+    - cargo nextest run --workspace --locked
     - python3 -B scripts/test-task.py
-    - python3 -B scripts/test-web-client.py --part tasks --browser
+    - python3 -B scripts/test-web-client.py --browser
+    - python3 -B scripts/runtime-smoke.py
+  checkTimeoutSeconds: 2400
+  # ^ Workers get the owner's skills; the project's words for each stage (docs/tasks.md "Workflow").
+  skills: owner
+  workflow:
+    build: >-
+      Follow CLAUDE.md and AGENTS.md. For a non-trivial change use the owner's develop skill,
+      and run its simplify step on your diff before you finish; prefer removing code to adding it.
   deploy:
     command: sh scripts/deploy-web-live.sh
     auto: true

@@ -11,7 +11,7 @@ const GROUP_MS = 5 * 60_000;
 // Status lines this close together read as one line.
 const LINE_MS = 60_000;
 
-const EVENT_WORDS = { briefed: "brief ready", in_review: "in review", landed: "done" };
+const EVENT_WORDS = { landed: "done" };
 
 // One line written by wsx in its short form: `#3 ready r2: title; summary` → `#3 ready`,
 // `approval a3 (land #5) approved; done` → `Approved land #5`.

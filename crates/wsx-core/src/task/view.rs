@@ -14,16 +14,11 @@ const TITLE_CHARS: usize = 120;
 /// Attention order (knowledge "Manager Mode Attention UX"): what needs the owner first.
 pub fn attention(state: TaskState) -> u8 {
     match state {
-        TaskState::Blocked => 0,
+        TaskState::Waiting => 0,
         TaskState::Failed => 1,
-        TaskState::Conflict => 2,
-        // ^ A brief waits for the owner's start, like an approval request.
-        TaskState::Briefed => 3,
-        TaskState::Ready => 4,
-        TaskState::InReview => 5,
-        TaskState::Checking | TaskState::Working | TaskState::Starting | TaskState::ByHand => 6,
-        TaskState::Stopped => 7,
-        TaskState::Landed | TaskState::Closed => 8,
+        TaskState::Ready => 2,
+        TaskState::Checking | TaskState::Working => 3,
+        TaskState::Landed | TaskState::Closed => 4,
     }
 }
 

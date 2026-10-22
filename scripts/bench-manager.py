@@ -5,7 +5,7 @@
 
 It plays the manager host of docs/tasks.md "Manager" for a throwaway project: a fixture repo,
 a fake `wsx` on PATH that serves a fixture ledger, and five fixed turns (a status question,
-'build X', the owner's answer to a brief's question, an event-only turn and an events turn
+'build X', the owner's go after the manager sized it, an event-only turn and an events turn
 with a review due). The instructions come from crates/wsx/src/task/manager.rs: `before` reads
 them at BEFORE_COMMIT (no ledger summary, rotation on the summed usage, one model), `after`
 from the working copy (ledger summary, rotation on the last call's context, eventModel for
@@ -56,8 +56,8 @@ elif verb == 'new':
     title = args[args.index('--title') + 1] if '--title' in args else 'new task'
     state['created'] = title
     json.dump(state, open(state_file, 'w'))
-    print(json.dumps({'id': 7, 'title': title, 'state': 'briefing', 'message': 'task #7 writes its brief'}))
-elif verb in ('add', 'steer', 'land', 'start', 'allow'):
+    print(json.dumps({'id': 7, 'title': title, 'state': 'working', 'message': 'started task t7'}))
+elif verb in ('add', 'steer', 'land', 'allow'):
     state.setdefault('actions', []).append(args[1:])
     json.dump(state, open(state_file, 'w'))
     print(json.dumps({'ok': True, 'message': '%s done' % verb}))
@@ -113,15 +113,17 @@ def fixture(base):
                                             memo='The CLI is src/cli.py; tests are none yet.')},
         {'id': 2, 'open': False, 'row': row(2, 'Add a config loader', 'closed', 2,
                                             memo='Config is read from bench.yml beside the binary.')},
-        {'id': 3, 'open': True, 'row': row(3, 'Add JSON output', 'working', 1, phase='build', checks=[], summary=None)},
-        {'id': 4, 'open': True, 'row': row(4, 'Fetch release notes', 'blocked', 1, phase='build',
+        {'id': 3, 'open': True, 'row': row(3, 'Add JSON output', 'working', 1, checks=[], summary=None)},
+        {'id': 4, 'open': True, 'row': row(4, 'Fetch release notes', 'waiting', 1,
                                            summary='needs network to api.github.com',
+                                           waiting={'on': 'permission', 'reason': 'needs to reach api.github.com'},
                                            asks=[{'kind': 'network', 'host': 'api.github.com'}])},
-        {'id': 5, 'open': True, 'row': row(5, 'Fix a typo in the README', 'ready', 1, phase='build',
+        {'id': 5, 'open': True, 'row': row(5, 'Fix a typo in the README', 'ready', 1,
                                            checks=[{'command': 'python3 -m py_compile src/cli.py', 'outcome': 'passed'}],
                                            summary='fixed the typo')},
-        {'id': 6, 'open': True, 'row': row(6, 'Add colors to the greeting', 'briefed', 1, phase='brief',
-                                           brief={'version': 1, 'rewritten_prompt': 'Add ANSI colors to the greeting.'})},
+        {'id': 6, 'open': True, 'row': row(6, 'Add colors to the greeting', 'waiting', 1,
+                                           summary='Which colors should the greeting use?',
+                                           waiting={'on': 'owner', 'reason': 'Which colors should the greeting use?'})},
     ]
     state = {'tasks': tasks, 'ledger_extra': {
         'project': 'bench', 'auto_land': True, 'to_check': 1,
@@ -135,10 +137,9 @@ def fixture(base):
 
 def turns(copy, tip):
     """The fixed turns: (author, text, change to the fixture before the turn)."""
-    def briefed(state):
+    def started(state):
         state['tasks'].append({'id': 7, 'open': True, 'row': {
-            'id': 7, 'title': state.get('created') or 'Add a --version flag', 'state': 'briefed', 'revision': 1,
-            'phase': 'brief', 'brief': {'version': 1, 'rewritten_prompt': 'Add a --version flag to src/cli.py.'}},
+            'id': 7, 'title': state.get('created') or 'Add a --version flag', 'state': 'working', 'revision': 0},
             'record': {'id': 7, 'created_by': 'manager', 'working_copy': str(copy), 'base': tip}})
 
     def landed(state):
@@ -147,16 +148,14 @@ def turns(copy, tip):
 
     def ready(state):
         seven = next(t for t in state['tasks'] if t['id'] == 7)
-        seven['row'].update(state='ready', phase='build', summary='added --version with the commit',
+        seven['row'].update(state='ready', revision=1, summary='added --version with the commit',
                             checks=[{'command': 'python3 -m py_compile src/cli.py', 'outcome': 'passed'}])
-        seven['row'].pop('brief', None)
     return [
         ('Owner', 'What is the status of the project?', None, False),
         ('Owner', 'Please add a --version flag to the CLI.', None, False),
-        ('Owner', "About #7's brief question (should --version also print the git commit?): yes, print the "
-                  "short commit too.", briefed, False),
+        ('Owner', 'Yes, go ahead as one task; --version should also print the short git commit.', None, False),
         ('Events', '#5 landed r1: Fix a typo in the README; checks 1 of 1 passed; worker says: fixed the typo',
-         landed, False),
+         lambda state: (landed(state), started(state)), False),
         ('Events', '#7 ready r1: Add a --version flag; checks 1 of 1 passed; worker says: added --version with '
                    'the commit', ready, True),
     ]

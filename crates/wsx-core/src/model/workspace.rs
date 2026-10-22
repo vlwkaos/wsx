@@ -67,18 +67,16 @@ pub struct TaskConfig {
     pub model: String,
     /// Tools beyond the fixed ones, never `Bash(...)`: the sandbox bounds Bash (docs/tasks.md "Permissions").
     pub tools: Vec<String>,
-    /// Whether a new task first returns a brief and waits for `start` (docs/tasks.md "Brief").
-    pub brief: bool,
     pub sandbox: TaskSandbox,
+    /// `tasks.skills: owner` lends workers the owner's skills, as the manager has them.
+    pub owner_skills: bool,
+    pub workflow: TaskWorkflow,
     pub checks: Vec<String>,
     /// Seconds one check may run before its process group is killed.
     pub check_timeout_secs: u64,
     /// Free disk a task needs before an agent turn or its checks; below it the task waits
     /// (docs/tasks.md "Checks, revisions and report").
     pub min_free_gb: u64,
-    pub land_policy: LandPolicy,
-    /// Remote the `pr` policy pushes to.
-    pub land_remote: String,
     /// Whether the manager's land, deploy and release need the owner's approval (only a
     /// release does by default: docs/tasks.md "Approvals").
     pub land_approve: bool,
@@ -120,6 +118,34 @@ pub struct TaskSandbox {
     pub allow_write: Vec<String>,
 }
 
+/// `tasks.workflow`: the project's own words for each fixed stage; wsx's defaults name no
+/// skill. ref: docs/tasks.md "Workflow"
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskWorkflow {
+    /// Added to every worker's instructions.
+    pub build: String,
+    /// Added to the manager's review of a task it created.
+    pub review: String,
+    /// The housekeeping task's prompt after a request's tasks land.
+    pub batch: String,
+}
+
+impl Default for TaskWorkflow {
+    fn default() -> Self {
+        Self {
+            build: "Keep the change lean: reuse what exists, remove what your change makes \
+                    dead, and simplify the diff before you finish."
+                .into(),
+            review: String::new(),
+            batch:
+                "Consolidate the code these tasks changed: merge duplicates, remove dead \
+                    code and layers that do nothing, keep behavior and public interfaces the \
+                    same, and lower the net line count. The checks prove the behavior is unchanged."
+                    .into(),
+        }
+    }
+}
+
 /// A command that serves one task on `$PORT`, the path that answers once it is up, and
 /// the ports it may use.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,15 +153,6 @@ pub struct TaskPreview {
     pub command: String,
     pub ready: String,
     pub ports: (u16, u16),
-}
-
-/// How `wsx task land` brings a task onto the default branch (docs/tasks.md "Landing").
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum LandPolicy {
-    #[default]
-    LocalMerge,
-    Pr,
 }
 
 impl TaskConfig {
@@ -152,13 +169,12 @@ impl Default for TaskConfig {
             adapter: "claude".into(),
             model: "opus".into(),
             tools: Vec::new(),
-            brief: true,
             sandbox: TaskSandbox::default(),
+            owner_skills: false,
+            workflow: TaskWorkflow::default(),
             checks: Vec::new(),
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
             min_free_gb: 5,
-            land_policy: LandPolicy::LocalMerge,
-            land_remote: "origin".into(),
             land_approve: false,
             land_auto: true,
             deploy_approve: false,

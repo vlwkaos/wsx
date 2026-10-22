@@ -15,13 +15,9 @@ Each user message is a small script of words:
   NEEDS_PATH <path>  touch <path>: "Operation not permitted" and blocked unless an allowWrite folder holds it
   RETRY_HOST <host>  a violation, then the same command with allowed_domains that succeeds (no ask)
   MEMO <words> return the rest of the line as the result's memo
-Launched with the brief schema it writes a brief instead and builds nothing:
-  REWRITE <words>  the rewritten prompt is the rest of the line
-  REVISE <words>   (a reply) the rewritten prompt becomes the rest of the line
-  BRIEF_FILE <path>  the brief's other fields come from that JSON file (a real brief), also
-                   for the session's later replies
-  NOBRIEF          end the turn without a brief
-  WAIT <file>      (a build) keep working until <file> exists, at most 10 minutes
+  CAPTURE      (with HV) the item has a page path and a small PNG capture
+  CMDHV        return a Human Verify item that names a command
+  WAIT <file>  keep working until <file> exists, at most 10 minutes
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
 conflict with the line "resolved".
 Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE, and each
@@ -169,52 +165,6 @@ def try_edit(words, allowed, disallowed, denials):
     trace({'edited': name})
 
 
-def brief_source(words, session):
-    """The BRIEF_FILE of this session, kept beside the trace: a reply may run in a new process."""
-    known = TRACE + '.briefs'
-    briefs = json.load(open(known)) if os.path.exists(known) else {}
-    if 'BRIEF_FILE' in words:
-        briefs[session] = words[words.index('BRIEF_FILE') + 1]
-        with open(known, 'w') as out:
-            json.dump(briefs, out)
-    return briefs.get(session)
-
-
-def brief_turn(text, session, allowed, disallowed, current):
-    """One brief turn: a brief whose rewritten prompt comes from REWRITE or REVISE."""
-    words = text.split()
-    source = brief_source(words, session)
-    denials = []
-    try_edit(words, allowed, disallowed, denials)
-    reply = text.startswith('The owner replies to the brief')
-    if 'REVISE' in words:
-        current = rest_of_line(text, 'REVISE')
-    elif 'REWRITE' in words:
-        current = rest_of_line(text, 'REWRITE')
-    if 'NOBRIEF' in words:
-        emit({'type': 'result', 'subtype': 'error_max_turns', 'is_error': True, 'result': '',
-              'session_id': session, 'permission_denials': denials})
-        return current
-    owner = text.split('\n\n')[1] if reply else ''
-    brief = json.load(open(source)) if source else {
-        'diagram': '```mermaid\ngraph LR\n  prompt[Owner prompt] --> brief[Brief] --> build[Build]\n```',
-        'additions': [{'what': 'a regression test', 'why': 'it keeps the fix'}],
-        'raw_material': [{'source': 'README', 'why': 'the fixture'}],
-        'methods': ['git log -p'], 'independent_check': ['the check command exits 0'],
-        'concepts': [{'term': 'Working copy', 'explanation': 'A separate checkout. Nothing else changes.'}],
-        'open_questions': []}
-    brief.update({'rewritten_prompt': current or 'NOOP', 'answer': ('answered: ' + owner) if reply else ''})
-    # ^ QUESTION keeps a brief without questions waiting for the owner; a brief without any
-    # starts its build by itself.
-    if 'QUESTION' in words and not brief.get('open_questions'):
-        brief['open_questions'] = ['Which file should change?']
-    emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'brief',
-          'session_id': session, 'permission_denials': denials,
-          'usage': {'input_tokens': 900, 'output_tokens': 300}, 'total_cost_usd': 0.02,
-          'structured_output': brief})
-    return current
-
-
 def edit_page(settings, section, words):
     # ^ The manager's Bash may write one file, the page: the sandbox's one file entry.
     page = next(path for path in settings['sandbox']['filesystem']['allowWrite'] if path.endswith('/page.md'))
@@ -282,10 +232,8 @@ def main():
     instructions = options.get('--append-system-prompt', '')
     project = instructions.split('wsx project ')[1].split('.')[0] if 'You are the manager' in instructions else None
     session = options.get('--resume') or options.get('--session-id')
-    briefing = 'rewritten_prompt' in str(options.get('--json-schema', ''))
-    rewritten = None
     trace({'launch': True, 'pid': os.getpid(), 'session': session, 'resume': '--resume' in options,
-           'allowed': allowed, 'disallowed': disallowed, 'briefing': briefing, 'instructions': instructions,
+           'allowed': allowed, 'disallowed': disallowed, 'instructions': instructions,
            'schema': '--json-schema' in options, 'model': options.get('--model'),
            'schema_required': json.loads(options['--json-schema']).get('required') if '--json-schema' in options else None,
            'mode': options.get('--permission-mode'), 'settings': json.loads(options.get('--settings', '{}')),
@@ -339,9 +287,6 @@ def main():
                   'usage': {'input_tokens': 10 * len(calls), 'cache_read_input_tokens': sum(calls) - 10 * len(calls),
                             'output_tokens': 5 * len(calls)},
                   'total_cost_usd': round(spent, 6)})
-            continue
-        if briefing:
-            rewritten = brief_turn(text, session, allowed, disallowed, rewritten)
             continue
         words = text.split()
         if 'HUGE' in words:

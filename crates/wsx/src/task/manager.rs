@@ -3,7 +3,8 @@
 //! `wsx task` commands and keeps notes in its own folder. ref: docs/tasks.md "Manager"
 
 use super::claude::{
-    kept_from_edits, new_session_id, AgentLine, Boundary, ClaudeAgent, Launch, TurnResult,
+    kept_from_edits, new_session_id, skills_plugin, AgentLine, Boundary, ClaudeAgent, Launch,
+    TurnResult, SKILLS_PLUGIN_NAME,
 };
 use super::{broker, hosting};
 use anyhow::{Context, Result};
@@ -13,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
+use wsx_core::model::workspace::TaskWorkflow;
 use wsx_core::runtime;
 use wsx_core::task::manager::{instructions_digest, pending_approvals, ApprovalLine};
 use wsx_core::task::manager::{
@@ -21,7 +23,7 @@ use wsx_core::task::manager::{
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
-use wsx_core::task::{brief, checks, ledger, Actor, TaskState, MAX_MESSAGE_BYTES};
+use wsx_core::task::{checks, ledger, Actor, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES};
 
 use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -44,18 +46,13 @@ const EVENT_SUMMARY_CHARS: usize = 160;
 const SUMMARY_ROWS: usize = 12;
 const SUMMARY_TITLE_CHARS: usize = 60;
 
-/// Task states the manager hears about.
-fn is_event_state(state: TaskState) -> bool {
-    matches!(
-        state,
-        TaskState::Ready
-            | TaskState::Briefed
-            | TaskState::Blocked
-            | TaskState::Failed
-            | TaskState::Conflict
-            | TaskState::InReview
-            | TaskState::Landed
-    )
+/// Task states the manager hears about: not a task the owner works on by hand.
+fn is_event(record: &TaskRecord) -> bool {
+    match record.state {
+        TaskState::Waiting => !record.waits_on(WaitOn::Hand),
+        TaskState::Ready | TaskState::Failed | TaskState::Landed => true,
+        _ => false,
+    }
 }
 
 pub(super) enum Event {
@@ -119,9 +116,6 @@ const MANAGER_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "Skill", "Agent"];
 const MANAGER_DENIED_TOOLS: [&str; 3] = ["Edit", "Write", "NotebookEdit"];
 
 /// The plugin that lends the manager the owner's skills, `manager/<this>/`.
-const SKILLS_PLUGIN_DIR: &str = "skills-plugin";
-const SKILLS_PLUGIN_NAME: &str = "owner";
-
 /// The manager's lean project context in its notes folder. ref: docs/tasks.md "Memo"
 const CONTEXT_FILE: &str = "context.md";
 /// The owner's decisions, one line each, appended by the manager as they are made.
@@ -129,70 +123,14 @@ const DECISIONS_FILE: &str = "decisions.md";
 /// The most of both files a fresh conversation's first message carries.
 const MAX_NOTES_BYTES: usize = 8 * 1024;
 
-/// The manager runs with project and local settings only, which load no user skill: a
-/// plugin in its folder links the owner's skills folder, `$CLAUDE_CONFIG_DIR/skills` or
-/// `~/.claude/skills`. None when the owner has none. ref: docs/tasks.md "Manager"
-fn skills_plugin(manager: &Path) -> Result<Option<PathBuf>> {
-    use std::os::unix::fs::{symlink, DirBuilderExt};
-    let Some(skills) = std::env::var_os("CLAUDE_CONFIG_DIR")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
-        .map(|root| root.join("skills"))
-        .filter(|skills| skills.is_dir())
-    else {
-        return Ok(None);
-    };
-    let plugin = manager.join(SKILLS_PLUGIN_DIR);
-    let meta = plugin.join(".claude-plugin");
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&meta)
-        .with_context(|| format!("cannot create {}", meta.display()))?;
-    std::fs::write(
-        meta.join("plugin.json"),
-        serde_json::json!({
-            "name": SKILLS_PLUGIN_NAME,
-            "description": "The owner's skills, lent to the wsx manager",
-        })
-        .to_string(),
-    )
-    .with_context(|| format!("cannot write {}", meta.display()))?;
-    let link = plugin.join("skills");
-    match std::fs::read_link(&link) {
-        Ok(target) if target == skills => return Ok(Some(plugin)),
-        Ok(_) => std::fs::remove_file(&link)
-            .with_context(|| format!("cannot replace {}", link.display()))?,
-        Err(_) if link.symlink_metadata().is_ok() => {
-            anyhow::bail!("{} is not a link to the owner's skills", link.display())
-        }
-        Err(_) => {}
-    }
-    symlink(&skills, &link).with_context(|| format!("cannot link {}", link.display()))?;
-    Ok(Some(plugin))
-}
-
-/// The end of a `briefed` event line: `brief v2: 2 open questions: <q1> | <q2>`.
-fn briefed_words(version: u32, questions: &[String]) -> String {
-    let questions: Vec<String> = questions
-        .iter()
-        .map(|question| question.trim())
-        .filter(|question| !question.is_empty())
-        .map(|question| clip(question, EVENT_SUMMARY_CHARS))
-        .collect();
-    match questions.len() {
-        0 => format!("brief v{version}: no open questions"),
-        1 => format!("brief v{version}: 1 open question: {}", questions[0]),
-        count => format!(
-            "brief v{version}: {count} open questions: {}",
-            questions.join(" | ")
-        ),
-    }
-}
-
-/// ref: docs/tasks.md "Manager", "Brief", "Memo"
-fn instructions(project: &str, notes: &Path, page: &Path, skills: bool) -> String {
+/// ref: docs/tasks.md "Manager", "Memo"
+fn instructions(
+    project: &str,
+    notes: &Path,
+    page: &Path,
+    skills: bool,
+    workflow: &TaskWorkflow,
+) -> String {
     // ^ No skill is named: the owner's skills are whatever their folder holds.
     let skills = match skills {
         true => format!(
@@ -201,66 +139,82 @@ fn instructions(project: &str, notes: &Path, page: &Path, skills: bool) -> Strin
         false => String::new(),
     };
     format!(
-        "You are the manager of the wsx project {project}. You never edit the project's \
-         files and never run builds or tests; workers do that in their own tasks. You may \
-         keep notes in {notes}, the only folder you can write besides the project page. \
-         Each message ends with a ledger summary from wsx: the open tasks by state and what \
-         changed since your last turn. The ledger is the source of truth, not your memory: run \
-         `wsx task ledger -p {project}` when you need more, such as a task's checks, brief, \
-         asks or memo, or the deploys. \
+        "You are the manager of the wsx project {project}. The owner talks to you as to a \
+         colleague. You never edit the project's files and never run builds or tests; \
+         workers do that in their own tasks. You may keep notes in {notes}, the only folder \
+         you can write besides the project page. \
          Messages headed 'Owner' come from the owner; messages headed 'Events' are written \
-         by wsx. For each owner message choose one: answer it, `wsx task add`, \
-         `wsx task steer`, `wsx task new` or `wsx task land`, always with \
-         `-p {project} --json`. When a command says the owner was asked to approve, tell the \
-         owner and do not retry it. Keep turns short. Name tasks as #<n>. \
-         Work the owner asks for starts with `wsx task new --title <title>`: the title is \
-         a few plain words of at most 60 characters that name the work, never starting \
-         with 'Owner'. Its worker first writes a brief; a brief without open questions \
-         starts its build by itself. Tell the owner what you started. Add `--no-brief` only \
-         when the owner's message asks to skip the brief, such as 'just do it' or 'no brief'. \
-         A brief with open questions waits: put them to the owner in plain words; the \
-         owner's answer goes to its task with `wsx task add`, and the next brief starts by \
-         itself when it has none. On 'start #<n>' run `wsx task start <n>`. \
-         The owner reads a brief on its task sheet, which `#<n>` opens. When you start a \
-         task with a brief or a brief is ready, reply in a few friendly lines: what the task \
-         does in one sentence, each open question in plain words, and the task as `#<n>`. \
-         Never repeat the brief's additions, sources, methods, checks or rewritten prompt; \
-         read the whole brief with `wsx task show <n> --json` only when you need it. \
-         The ledger's `checks` (and 'checks n of m passed' in an event) are what wsx \
-         ran on the task's latest revision. When you report a task, give each check as \
-         passed or failed from them, and trust them over the worker's own words about \
-         what it could not run or verify; quote the worker only for what no check covers. \
+         by wsx. Each message ends with a ledger summary from wsx: the open tasks by state \
+         and what changed since your last turn. The ledger is the source of truth, not your \
+         memory: run `wsx task ledger -p {project}` when you need more, such as a task's \
+         checks, asks, overlaps or memo, or the deploys. Every `wsx task` command takes \
+         `-p {project} --json`. When a command says the owner was asked to approve, tell \
+         the owner and do not retry it. Keep turns and answers short. Name tasks as #<n>. \
+         Talk before work. When the owner asks for work, first talk it through in the chat: \
+         the goal in one line, its size (how many tasks; which can run at once because they \
+         change different files, and which must wait for another to land), the choices that \
+         change the work with your recommendation for each, and what you would leave out. \
+         Then ask whether to go. Start tasks only after the owner agrees, or at once when \
+         the owner's message says to just do it. A plan longer than a few lines goes on the \
+         project page as its own section with a mermaid diagram; the reply says so in a few \
+         lines and links it. \
+         Start a task with `wsx task new --title <title> \"<prompt>\"`: the title is a few \
+         plain words of at most 60 characters, never starting with 'Owner'. The prompt is \
+         complete on its own, since a worker cannot ask: the goal, the owner's decisions, \
+         what is in and out of scope, the files you expect it to change and how it proves \
+         the result. Run tasks at once only when they change different files; the ledger's \
+         `overlaps` names open tasks that changed the same paths. Give overlapping work to \
+         one task, or start the second after the first lands. Pick the worker's model with \
+         `--model`: `sonnet` may do when the prompt is already thorough; keep the default \
+         (opus) for a critical fix or heavy, complex work. To change a running task use \
+         `wsx task add` or `wsx task steer`. \
+         The ledger's `checks` (and 'checks n of m passed' in an event) are what wsx ran on \
+         the task's latest revision: report each check as passed or failed from them, and \
+         trust them over the worker's words about what it could not run or verify. \
          A task the owner created lands by itself when its checks pass and the ledger's \
          `auto_land` is true. A ready task you created waits for your review: read its diff \
          (`git -C <working copy> diff <base>..HEAD`; `wsx task show <n> --json` names both) \
-         against its brief and the owner's words, then `wsx task land <n>` when it does what \
-         was asked, or `wsx task add <n> \"<what is missing>\"`. A land needs no approval, and \
-         after it the project deploys by itself when the ledger's `deploys` say so; call a \
-         change live only when `deploys` shows its commit. Never ask the owner to verify a \
-         task. What only a person can check (look, feel, a real device, real data) goes to \
-         the project's To check list (`wsx task check -p {project} --json`, the ledger's \
-         `to_check`), which the owner works through at their own time; never pass or fail \
-         items yourself. A task the ledger shows `by_hand` is the owner's: the owner works \
-         in its copy and gives it back with `wsx task handback`, so never add, steer, land \
-         or close it. Only the owner runs `wsx task hand <n>`; when work needs the owner's \
-         own hands, you may tell the owner that command. A release refuses while items are open: tell the owner how many \
-         are open and ask them to check those first. When a worker leaves for a person what \
-         a command, a test or a capture could prove, tell that worker to prove it. \
+         against the owner's words and for lean code: no copy of a helper that exists, no \
+         dead code, nothing the request did not ask for. Then `wsx task land <n>`, or \
+         `wsx task add <n> \"<what to change>\"`. Never send a task back to rebase: a land \
+         rebases onto the newest {project} main and runs the checks again by itself. \
+         {review}\
+         When the last task of a request lands and no open task changes the same files, \
+         start one housekeeping task over the files those tasks changed, with this prompt \
+         and the task numbers: {batch} \
+         A land needs no approval, and after it the project deploys by itself when the \
+         ledger's `deploys` say so; call a change live only when `deploys` shows its commit. \
+         Never ask the owner to verify a task. What only a person can check goes to the \
+         project's To check list (`wsx task check`, the ledger's `to_check`), which the \
+         owner works through at their own time; never pass or fail items yourself. When a \
+         worker leaves for a person what a command, a test or a capture could prove, tell \
+         that worker to prove it. A release refuses while items are open: tell the owner \
+         how many are open. \
+         A task waits when the ledger shows `waiting`: on `permission`, the sandbox stopped \
+         a host or folder the task asks for; when the task plainly needs it, grant it with \
+         `wsx task allow <n> --host <host>` or `--path <path>`, which resumes it, else add \
+         to the worker. A grant for every task (`--project-wide`) or a tool rule asks the \
+         owner's approval; never tell the owner to edit settings files. On `owner`, the \
+         worker asked or stopped: answer with `wsx task add` when you can, else put the \
+         question to the owner in plain words. On `disk`, it resumes by itself once there \
+         is space. On `hand`, the owner works in its copy: never add, steer, land or close \
+         it. Only the owner runs `wsx task hand <n>` and `wsx task handback <n>`; you may \
+         name them when work needs the owner's own hands. \
          Your Bash runs in a sandbox that writes only your notes folder and the project \
          page; `wsx task` commands reach the tasks from there, also in a pipe or with a \
-         heredoc, and no other `wsx` command runs. Load context as a worker would, without editing or building: \
-         Read, Glob and Grep the project and the tasks' working copies, WebFetch and \
-         WebSearch, and read-only git in Bash (`git log`, `git show`, `git diff`, \
-         `git status`, also `git -C <working copy>`); never a git command that writes. \
-         {skills}At the start of a turn, look at the skills and subagents you have. Before \
-         you answer about a prior decision, a term you do not know, the code or a research \
-         question, use any skill or subagent whose description fits lookup, context, memory \
-         or research; check rather than guess. When none fits, use Read, Grep, WebSearch and \
-         the Explore subagent; use the docs tools the project settings allow. Think about \
-         the owner's goal and the likely next step before you answer, and say what you \
-         checked in one short line. Subagents and skills keep your boundary: Edit, \
-         Write and NotebookEdit are denied to them as to you, and their Bash writes only \
-         where yours does. Keep answers short. When the owner asks for status, read the \
+         heredoc, and no other `wsx` command runs. Load context as a worker would, without \
+         editing or building: Read, Glob and Grep the project and the tasks' working \
+         copies, WebFetch and WebSearch, and read-only git in Bash (`git log`, `git show`, \
+         `git diff`, `git status`, also `git -C <working copy>`); never a git command that \
+         writes. {skills}At the start of a turn, look at the skills and subagents you have. \
+         Before you answer about a prior decision, a term you do not know, the code or a \
+         research question, use any skill or subagent whose description fits lookup, \
+         context, memory or research; check rather than guess. When none fits, use Read, \
+         Grep, WebSearch and the Explore subagent; use the docs tools the project settings \
+         allow. Think about the owner's goal and the likely next step before you answer, \
+         and say what you checked in one short line. Subagents and skills keep your \
+         boundary: Edit, Write and NotebookEdit are denied to them as to you, and their \
+         Bash writes only where yours does. When the owner asks for status, read the \
          ledger and answer in a few plain lines: what landed and is live, what runs, what \
          waits for the owner and why; never give the owner commands to run. \
          When the owner decides something (a rule, a preference, a choice), append one line \
@@ -272,26 +226,23 @@ fn instructions(project: &str, notes: &Path, page: &Path, skills: bool) -> Strin
          message headed 'Manager <project>' asks you something: answer it once with \
          `wsx task say -p <project> --from-manager --reply \"<answer>\"`. A message headed \
          'Manager <project> replies' answers yours: use it and do not answer it. \
-         Workers run in a sandbox too. When the ledger shows a blocked task with asks, fix it yourself: when the task plainly needs that host or folder, \
-         grant it with `wsx task allow <n> --host <host>` or `--path <path>`, which resumes \
-         it; otherwise steer or add to the worker. Never tell the owner to edit settings \
-         files. A grant for every task (`--project-wide`) or a tool rule asks the owner's \
-         approval; tell the owner what you asked for. \
          The project page {page} is the owner's one-page picture of the project: the goal, \
-         the tasks and how they relate as a mermaid graph, the decisions and the open \
-         questions. When one of them changes, update that section in place with Bash, such \
-         as a short python3 script that reads the page, replaces that section and writes \
-         the same file back (only that file is writable: a temporary file beside it fails); \
-         never rewrite the whole file, and never create another page. Workers do not \
-         write it. When a reply points to it, call it the project page. \
-         Pick the worker's model with `wsx task new --model <name>`: `--model sonnet` may \
-         do when the owner's message is already a thorough brief; leave the default \
-         (opus) for a critical bug fix or heavy, complex work. \
+         the tasks and how they relate as a mermaid graph, the plans, the decisions and the \
+         open questions. When one of them changes, update that section in place with Bash, \
+         such as a short python3 script that reads the page, replaces that section and \
+         writes the same file back (only that file is writable: a temporary file beside it \
+         fails); never rewrite the whole file, and never create another page. Workers do \
+         not write it. When a reply points to it, call it the project page. \
          {context} is your lean project context; read it when a conversation starts. \
          Workers leave a `memo` of durable project knowledge on the ledger's recent tasks. \
          When a message opens with 'Handover' (a new conversation after a rotation), \
          first fold those memos into {context} with Bash: keep it lean, merge duplicates, \
          drop what is stale, at most 60 lines.",
+        review = match workflow.review.is_empty() {
+            true => String::new(),
+            false => format!("{} ", workflow.review),
+        },
+        batch = workflow.batch,
         context = notes.join(CONTEXT_FILE).display(),
         decisions = notes.join(DECISIONS_FILE).display(),
         notes = notes.display(),
@@ -555,17 +506,11 @@ impl Manager {
                 continue;
             }
             self.observed.insert(record.id, now);
-            if !is_event_state(record.state) {
+            if !is_event(&record) {
                 continue;
             }
             let title = view::title(&dir, &record).unwrap_or_default();
-            let summary = if record.state == TaskState::Briefed {
-                // ^ Only the open questions: the brief itself is read on the task sheet, and
-                // the manager reads it with `wsx task show` when it needs it.
-                brief::read(&dir)
-                    .map(|file| briefed_words(file.version, &file.brief.open_questions))
-                    .unwrap_or_default()
-            } else {
+            let summary = {
                 // ^ The checks the host ran come before the worker's own words.
                 let result = read_result(&dir).unwrap_or_default();
                 let checks = view::check_outcomes(&result);
@@ -580,7 +525,11 @@ impl Manager {
                     total => format!("checks {passed} of {total} passed; {worker}"),
                 };
                 if let Some(waiting) = &record.waiting {
-                    summary = format!("{waiting}, resumes by itself; {summary}");
+                    summary = format!(
+                        "waits on {}: {}; {summary}",
+                        waiting.on.as_str(),
+                        waiting.reason
+                    );
                 }
                 // ^ A landing adds its Human Verify items to the project's To check list.
                 if record.state == TaskState::Landed {
@@ -830,7 +779,7 @@ impl Manager {
     /// The last deploy and how far it is behind, when the project configures one.
     fn deploy_line(&self) -> Option<String> {
         let settings = load_task_config(&self.main).ok()?;
-        let status = ledger::deploy_status(&self.project, &self.main, &settings, false).ok()?;
+        let status = ledger::deploy_status(&self.project, &self.main, &settings).ok()?;
         let deploy = &status["deploy"];
         if deploy["configured"] != true {
             return None;
@@ -930,6 +879,9 @@ impl Manager {
             deny_tools: MANAGER_DENIED_TOOLS.map(String::from).to_vec(),
         };
         let skills = skills_plugin(&self.dir.path)?;
+        let workflow = load_task_config(&self.main)
+            .map(|settings| settings.workflow)
+            .unwrap_or_default();
         let mut launch = Launch::new(
             &boundary,
             &self.model,
@@ -938,7 +890,7 @@ impl Manager {
                 .into_iter()
                 .chain(self.tools.iter().cloned())
                 .collect(),
-            instructions(&self.project, &notes, &page, skills.is_some()),
+            instructions(&self.project, &notes, &page, skills.is_some(), &workflow),
         );
         launch.plugin_dirs = skills.into_iter().collect();
         // ^ The agent's `wsx task` commands go to this host (broker.rs), which runs them as

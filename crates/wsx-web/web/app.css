@@ -587,7 +587,6 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
    narrow screen; no band of their own. */
 .task-next { flex: 0 1 auto; min-width: 0; margin-left: auto; display: flex; flex-direction: column; gap: var(--space-2); overflow-wrap: anywhere; }
 .task-next .actions { padding: 0; justify-content: flex-end; }
-.task-diagram { padding-top: var(--space-4); }
 .task-approval { flex-basis: 100%; }
 .project-page { padding-top: var(--space-3); }
 .project-page .facts-line { padding: 0 var(--space-4) var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
@@ -622,14 +621,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .timeline-list li { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: var(--space-3); }
 .timeline-what { font-weight: var(--font-weight-medium); }
 .timeline-more { grid-column: 2; color: var(--color-muted); overflow-wrap: anywhere; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
-/* The brief: lists of short items, concepts folded to their term, the talk-through as turns. */
-.task-brief-list { margin: 0; padding-inline-start: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); overflow-wrap: anywhere; }
-.task-source { overflow-wrap: anywhere; font-weight: var(--font-weight-medium); }
-.task-concepts { display: flex; flex-direction: column; }
-.task-concept-term { display: flex; align-items: center; gap: var(--space-1); min-height: var(--size-control); cursor: pointer; list-style: none; font-weight: var(--font-weight-medium); }
-.task-concept-term::-webkit-details-marker { display: none; }
-.task-concept[open] > .task-concept-term .icon { transform: rotate(90deg); }
-.task-concept-body { padding-inline-start: var(--space-4); }
+/* The messages to the worker, as bubbles. */
 .task-talk { padding: var(--space-4) var(--space-4) 0; display: flex; flex-direction: column; gap: var(--space-3); }
 /* A section's name in plain case: the content under it speaks for the rest. */
 .task-heading { padding: var(--space-4) var(--space-4) var(--space-1); font-size: var(--font-size-sm); font-weight: var(--font-weight-strong); }

@@ -1008,8 +1008,6 @@ async fn task_act(
             by: wsx_core::task::Actor::Owner,
         },
         "land" => HostRequest::Land {},
-        // ^ The owner's own start: direct actions bypass the manager and its approval.
-        "start" => HostRequest::Start,
         _ => return Err(Fault::not_found()),
     };
     act_budget(&app, &device)?;

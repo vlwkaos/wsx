@@ -175,9 +175,6 @@ pub enum ApprovalAction {
     Release,
     /// `close --discard`
     Discard,
-    /// `start`: build a briefed task. Only requests from before `start` stopped asking
-    /// (docs/tasks.md "Approvals"); they still decode and run.
-    Start,
     /// `allow`: a project-wide grant or a tool rule the manager asked for.
     Grant,
 }

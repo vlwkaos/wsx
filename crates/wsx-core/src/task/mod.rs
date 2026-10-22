@@ -5,7 +5,6 @@
 //! host runs it is the only writer; the CLI writes only before the host starts
 //! and after it has exited.
 
-pub mod brief;
 pub mod checks;
 pub mod copy;
 pub mod ledger;
@@ -26,22 +25,13 @@ pub const MAX_RULE_BYTES: usize = 256;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
-    Starting,
+    /// An agent turn runs, also one that resolves a landing conflict.
     Working,
-    /// The brief is written; the task waits for the owner's `start` or a reply.
-    Briefed,
-    Blocked,
+    /// Nothing runs until what `TaskRecord::waiting` names happens.
+    Waiting,
     Checking,
     Ready,
     Failed,
-    Stopped,
-    /// A landing rebase conflicted; the worker is resolving it.
-    Conflict,
-    /// A pull request carries the task (`pr` landing policy).
-    InReview,
-    /// The owner works in the working copy by hand; no agent turn, check or landing runs
-    /// until `handback`. ref: docs/tasks.md "By hand"
-    ByHand,
     /// The revision is on the default branch.
     Landed,
     Closed,
@@ -55,31 +45,48 @@ impl TaskState {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Starting => "starting",
             Self::Working => "working",
-            Self::Briefed => "briefed",
-            Self::Blocked => "blocked",
+            Self::Waiting => "waiting",
             Self::Checking => "checking",
             Self::Ready => "ready",
             Self::Failed => "failed",
-            Self::Stopped => "stopped",
-            Self::Conflict => "conflict",
-            Self::InReview => "in_review",
-            Self::ByHand => "by_hand",
             Self::Landed => "landed",
             Self::Closed => "closed",
         }
     }
 }
 
-/// Whether the worker still writes the brief (read-only turns) or builds.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// What a `waiting` task waits for. ref: docs/tasks.md "Store"
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Phase {
-    Brief,
-    /// Records from before the brief phase build from the start.
-    #[default]
-    Build,
+pub enum WaitOn {
+    /// An answer: the worker asked, was stopped, or its host restarted during a turn.
+    Owner,
+    /// A grant for what the sandbox stopped (`TaskRecord` asks are in `result.json`).
+    Permission,
+    /// `tasks.minFreeGb` of free disk; the host resumes by itself.
+    Disk,
+    /// The owner works in the working copy; nothing runs until `handback`.
+    /// ref: docs/tasks.md "By hand"
+    Hand,
+}
+
+impl WaitOn {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Permission => "permission",
+            Self::Disk => "disk",
+            Self::Hand => "hand",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Waiting {
+    pub on: WaitOn,
+    /// What it waits for, in plain words.
+    pub reason: String,
 }
 
 /// A host or a path an agent needs, or a tool rule: what a block asks for and what a
@@ -150,8 +157,6 @@ pub struct TaskRecord {
     /// Tools beyond the fixed ones (`tasks.agent.tools`). Records from before the sandbox
     /// may hold `Bash(...)` rules; the launch drops them.
     pub tools: Vec<String>,
-    #[serde(default)]
-    pub phase: Phase,
     /// `tasks.sandbox` as it was when the task was created.
     #[serde(default)]
     pub sandbox: crate::model::workspace::TaskSandbox,
@@ -170,11 +175,6 @@ pub struct TaskRecord {
     pub paths: Vec<String>,
     #[serde(default)]
     pub paths_total: u32,
-    /// The pull request of the `pr` landing policy, and the revision last pushed to it.
-    #[serde(default)]
-    pub pr_url: Option<String>,
-    #[serde(default)]
-    pub pr_revision: Option<u32>,
     /// `task new --title`; without one the title comes from the prompt (`view::title`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -185,10 +185,9 @@ pub struct TaskRecord {
     /// landing by itself (docs/tasks.md "Landing").
     #[serde(default)]
     pub created_by: Actor,
-    /// Why the task waits for something other than a person, such as free disk; the host
-    /// resumes it by itself.
+    /// Set exactly while the state is `waiting`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub waiting: Option<String>,
+    pub waiting: Option<Waiting>,
     pub created_unix_ms: u64,
     pub updated_unix_ms: u64,
 }
@@ -199,8 +198,6 @@ pub enum MessageKind {
     Prompt,
     Steer,
     Add,
-    /// A verdict note from before M4f; old logs only.
-    Verify,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,17 +230,8 @@ pub enum LogEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         asks: Vec<Access>,
     },
-    /// A tool rule allowed before grants; old logs only.
-    Allowed {
-        tool: String,
-    },
     /// `project`: kept for every task of the project (`grants.json`).
     Granted {
-        access: Access,
-        project: bool,
-        by: Actor,
-    },
-    Revoked {
         access: Access,
         project: bool,
         by: Actor,
@@ -280,16 +268,6 @@ pub enum LogEvent {
     Closed {
         discarded: bool,
     },
-    /// A per-task verdict from before M4f; old logs only, shown nowhere.
-    Verified {
-        #[serde(default)]
-        revision: u32,
-    },
-    /// `land --skip-verify` from before M4f; old logs only.
-    VerifySkipped {
-        #[serde(default)]
-        revision: u32,
-    },
     Conflict {
         onto: String,
         paths: Vec<String>,
@@ -300,31 +278,6 @@ pub enum LogEvent {
     },
     Landed {
         commit: String,
-    },
-    /// A revision was pushed to the task's pull request.
-    InReview {
-        url: String,
-        revision: u32,
-    },
-    /// The pull request was closed without a merge.
-    PrClosed {
-        url: String,
-    },
-    /// A brief turn returned brief `version` (saved in `brief.json`), with the worker's
-    /// answer to the owner's reply when the turn was a talk-through.
-    Brief {
-        version: u32,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        answer: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        usage: Option<TurnUsage>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        denials: Vec<String>,
-    },
-    /// The task builds without a brief: `by` is `flag` (`--no-brief`) or `config` (`tasks.brief: false`).
-    BriefSkipped {
-        by: String,
-        actor: String,
     },
     /// The task waits for free disk before a turn or its checks (`tasks.minFreeGb`).
     DiskWait {
@@ -339,14 +292,6 @@ pub enum LogEvent {
     /// The worker ran checks with `wsx task check-run`; no revision is recorded.
     CheckRun {
         results: Vec<CheckResult>,
-    },
-    /// The build of brief `version` started; `prompt` is its rewritten prompt. `auto`: the
-    /// brief had no open questions, so it started by itself.
-    Started {
-        version: u32,
-        prompt: String,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        auto: bool,
     },
     /// The owner took the task over by hand; `dropped` queued messages were not sent.
     Hand {
@@ -402,6 +347,15 @@ pub struct LogEntry {
     pub event: LogEvent,
 }
 
+impl TaskRecord {
+    /// Whether the task waits for `on`.
+    pub fn waits_on(&self, on: WaitOn) -> bool {
+        self.waiting
+            .as_ref()
+            .is_some_and(|waiting| waiting.on == on)
+    }
+}
+
 fn default_check_timeout_secs() -> u64 {
     crate::model::workspace::DEFAULT_CHECK_TIMEOUT_SECS
 }
@@ -446,15 +400,8 @@ pub enum HostRequest {
         project: bool,
         by: Actor,
     },
-    Revoke {
-        access: Access,
-        project: bool,
-        by: Actor,
-    },
     Stop,
-    /// Build the brief's rewritten prompt.
-    Start,
-    /// Land the ready revision. Fields of older callers (`skip_verify`) are ignored.
+    /// Land the ready revision.
     Land {},
     Close {
         discard: bool,

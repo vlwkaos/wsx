@@ -18,11 +18,11 @@ use std::{
 use wsx_core::config::project::load_task_config;
 use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
-    self, brief, call_host_waiting, call_socket, checks, copy, ledger,
+    self, call_host_waiting, call_socket, checks, copy, ledger,
     manager::{pending_approvals, ApprovalLine, ManagerEvent, ManagerRequest, ManagerResponse},
     owner,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
-    view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
+    view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
 };
 
 const SUMMARY_CHARS: usize = 240;
@@ -79,21 +79,27 @@ fn stage(record: &TaskRecord) -> &'static str {
         return "working";
     }
     match record.state {
-        TaskState::Starting
-        | TaskState::Working
-        | TaskState::Checking
-        | TaskState::Conflict
-        | TaskState::InReview
         // ^ The owner works on it: not a need of the owner, and not done.
-        | TaskState::ByHand => "working",
-        TaskState::Briefed
-        | TaskState::Blocked
-        | TaskState::Failed
-        | TaskState::Stopped
-        | TaskState::Ready => "needs_you",
+        TaskState::Waiting if record.waits_on(WaitOn::Hand) => "working",
+        TaskState::Working | TaskState::Checking => "working",
+        TaskState::Waiting | TaskState::Failed | TaskState::Ready => "needs_you",
         TaskState::Landed => "done",
         TaskState::Closed => "closed",
     }
+}
+
+/// A working task whose turn resolves a landing conflict: its last conflict came after its
+/// last revision.
+fn resolving_conflict(dir: &TaskDir) -> bool {
+    let log = dir.read_log().unwrap_or_default();
+    log.iter()
+        .rev()
+        .find_map(|entry| match entry.event {
+            LogEvent::Conflict { .. } => Some(true),
+            LogEvent::Revision { .. } => Some(false),
+            _ => None,
+        })
+        .unwrap_or(false)
 }
 
 fn manager_reviews(record: &TaskRecord) -> bool {
@@ -144,11 +150,13 @@ pub fn overview(scope: &Scope) -> Value {
             json!({
                 "id": record.id, "title": title, "state": record.state, "stage": stage(record),
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
+                "waiting": record.waiting,
+                "conflict": record.state == TaskState::Working && resolving_conflict(dir),
             }),
         ));
         let result = matches!(
             record.state,
-            TaskState::Blocked | TaskState::Failed | TaskState::Ready | TaskState::Stopped
+            TaskState::Waiting | TaskState::Failed | TaskState::Ready
         )
         .then(|| view::read_result(dir))
         .flatten()
@@ -161,11 +169,12 @@ pub fn overview(scope: &Scope) -> Value {
             })
         };
         let (rank, mut row) = match record.state {
-            TaskState::Blocked => (0, item("blocked")),
-            // ^ A brief waits for the owner's start, ranked with approval requests.
-            TaskState::Briefed => (2, item("brief")),
+            TaskState::Waiting if record.waits_on(WaitOn::Hand) => {
+                working += 1;
+                continue;
+            }
+            TaskState::Waiting => (0, item("waiting")),
             TaskState::Failed => (1, item("failed")),
-            TaskState::Stopped => (1, item("stopped")),
             TaskState::Ready if manager_reviews(record) => {
                 working += 1;
                 continue;
@@ -175,29 +184,18 @@ pub fn overview(scope: &Scope) -> Value {
                 row["reason"] = json!(land_reason(dir, record));
                 (3, row)
             }
-            TaskState::Starting
-            | TaskState::Working
-            | TaskState::Checking
-            | TaskState::Conflict
-            | TaskState::InReview
-            | TaskState::ByHand => {
+            TaskState::Working | TaskState::Checking => {
                 working += 1;
                 continue;
             }
             TaskState::Landed | TaskState::Closed => continue,
         };
-        if record.state == TaskState::Blocked {
+        if let Some(waiting) = &record.waiting {
+            row["waiting"] = json!(waiting);
             row["denials"] = result["denials"].clone();
-            row["asks"] = result["asks"].clone();
-            row["waiting"] = json!(record.waiting);
-        }
-        // ^ A brief's card reads as its build prompt.
-        if let Some(file) = (record.state == TaskState::Briefed)
-            .then(|| brief::read(dir))
-            .flatten()
-        {
-            row["summary"] = json!(view::clip(&file.brief.rewritten_prompt, SUMMARY_CHARS));
-            row["brief_version"] = json!(file.version);
+            if waiting.on == WaitOn::Permission {
+                row["asks"] = result["asks"].clone();
+            }
         }
         needs.push((rank, record.updated_unix_ms, row));
     }
@@ -290,7 +288,6 @@ fn resolutions(
                     mode: task::MessageKind::Add,
                     ..
                 } if blocked => format!("#{id} got an answer"),
-                LogEvent::Allowed { tool } => format!("#{id} allowed {tool}"),
                 LogEvent::Granted {
                     access,
                     project,
@@ -407,7 +404,7 @@ fn deployed(scope: &Scope, landed: Option<&str>) -> Value {
     if settings.deploy_command.is_none() {
         return json!({ "configured": false });
     }
-    let Ok(status) = ledger::deploy_status(&scope.name, &scope.path, &settings, false) else {
+    let Ok(status) = ledger::deploy_status(&scope.name, &scope.path, &settings) else {
         return json!({ "configured": true });
     };
     let deploy = &status["deploy"];
@@ -420,7 +417,7 @@ fn deployed(scope: &Scope, landed: Option<&str>) -> Value {
     json!({ "configured": true, "deployed": has_landed, "behind": deploy["behind"] })
 }
 
-/// One task: its report, brief, talk, timeline (the History fold), overlaps and the actions
+/// One task: its report, talk, timeline (the History fold), overlaps and the actions
 /// its state allows.
 pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     let dir = open_task(scope, task)?;
@@ -447,15 +444,12 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     summary["project"] = json!(scope.project);
     summary["created_unix_ms"] = json!(record.created_unix_ms);
     summary["default_branch"] = json!(record.default_branch);
-    summary["pr_url"] = json!(record.pr_url);
     summary["result"] = result["result"].clone();
     summary["denials"] = result["denials"].clone();
     summary["waiting"] = json!(record.waiting);
     summary["asks"] = result["asks"].clone();
     summary["checks"] = result["checks"].clone();
     summary["report"] = json!(report);
-    summary["phase"] = json!(record.phase);
-    summary["brief"] = json!(brief::read(&dir));
     summary["talk"] = talk(&log);
     summary["timeline"] = timeline(&log);
     summary["overlaps"] = if record.state.is_open() {
@@ -464,6 +458,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
         json!([])
     };
     summary["stage"] = json!(stage(&record));
+    summary["conflict"] = json!(record.state == TaskState::Working && resolving_conflict(&dir));
     if record.state == TaskState::Ready {
         summary["land_reason"] = json!(land_reason(&dir, &record));
     }
@@ -504,46 +499,33 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
 /// The actions a task's state allows. The host still decides; this only picks buttons.
 /// `hand` takes a build over in its working copy (docs/tasks.md "By hand").
 fn actions(record: &TaskRecord) -> Vec<&'static str> {
-    let mut actions = match record.state {
-        TaskState::Starting | TaskState::Working | TaskState::Checking => vec!["steer", "add"],
-        TaskState::Blocked => vec!["add", "allow"],
-        // ^ An add to a brief is a talk-through turn; the worker answers and may revise it.
-        TaskState::Briefed => vec!["start", "add"],
-        TaskState::Ready => vec!["land", "add"],
-        TaskState::Failed | TaskState::Conflict | TaskState::Stopped => vec!["add"],
-        TaskState::InReview => vec!["land", "add"],
-        TaskState::ByHand => vec!["handback"],
-        TaskState::Landed | TaskState::Closed => vec![],
+    let on = record.waiting.as_ref().map(|waiting| waiting.on);
+    let mut actions = match (record.state, on) {
+        (TaskState::Waiting, Some(WaitOn::Hand)) => return vec!["handback"],
+        (TaskState::Waiting, Some(WaitOn::Permission)) => vec!["add", "allow"],
+        (TaskState::Working | TaskState::Checking, _) => vec!["steer", "add"],
+        (TaskState::Ready, _) => vec!["land", "add"],
+        (TaskState::Waiting | TaskState::Failed, _) => vec!["add"],
+        (TaskState::Landed | TaskState::Closed, _) => return vec![],
     };
-    let handable = !matches!(
-        record.state,
-        TaskState::Starting | TaskState::Checking | TaskState::ByHand
-    ) && record.state.is_open()
-        && record.phase == task::Phase::Build;
-    if handable {
+    if record.state != TaskState::Checking {
         actions.push("hand");
     }
     actions
 }
 
-/// The owner's messages to the worker after the prompt, in order, with the worker's answers
-/// to the brief (`version`): replies to the brief and later adds read as one conversation.
+/// The messages the owner or the manager added or steered after the prompt, in order.
 fn talk(log: &[task::LogEntry]) -> Value {
-    let mut rows = Vec::new();
-    for entry in log {
-        match &entry.event {
+    let rows: Vec<Value> = log
+        .iter()
+        .filter_map(|entry| match &entry.event {
             LogEvent::Message {
                 mode: MessageKind::Add | MessageKind::Steer,
                 text,
-            } => rows.push(json!({ "from": "owner", "text": text, "unix_ms": entry.unix_ms })),
-            LogEvent::Brief {
-                version, answer, ..
-            } if !answer.is_empty() => rows.push(json!({
-                "from": "worker", "text": answer, "version": version, "unix_ms": entry.unix_ms,
-            })),
-            _ => {}
-        }
-    }
+            } => Some(json!({ "from": "owner", "text": text, "unix_ms": entry.unix_ms })),
+            _ => None,
+        })
+        .collect();
     json!(rows)
 }
 
@@ -688,8 +670,8 @@ fn manager_name(path: &Path) -> Option<String> {
 }
 
 /// A worker's report for each events line that carries a worker result (`#3 ready r2: …`):
-/// the full summary of the result logged before the events message, or the brief's open
-/// questions. ref: docs/web-client.md "Project screen"
+/// the full summary of the result logged before the events message.
+/// ref: docs/web-client.md "Project screen"
 fn worker_reports(
     scope: &Scope,
     text: &str,
@@ -712,7 +694,7 @@ fn worker_reports(
         else {
             continue;
         };
-        if !matches!(state, "ready" | "failed" | "blocked" | "briefed" | "landed") {
+        if !matches!(state, "ready" | "failed" | "waiting" | "landed") {
             continue;
         }
         let Ok(dir) = open_task(scope, id) else {
@@ -722,46 +704,21 @@ fn worker_reports(
             .entry(id)
             .or_insert_with(|| dir.read_log().unwrap_or_default());
         let before = log.iter().rev().filter(|entry| entry.unix_ms <= at);
-        let report = if state == "briefed" {
-            let version = before.clone().find_map(|entry| match &entry.event {
-                LogEvent::Brief { version, .. } => Some(*version),
+        let report = before
+            .clone()
+            .find_map(|entry| match &entry.event {
+                LogEvent::Result {
+                    status, summary, ..
+                } => Some((status.clone(), summary.clone())),
                 _ => None,
+            })
+            .map(|(status, summary)| match state {
+                "failed" => ("failed".to_string(), summary),
+                // ^ Ready waits for a land by hand; landed is the task done.
+                "ready" => ("ready".to_string(), summary),
+                "landed" => ("done".to_string(), summary),
+                _ => (status, summary),
             });
-            brief::read(&dir)
-                .filter(|file| Some(file.version) == version)
-                // ^ The chat names the brief's open questions; the sheet holds the rest.
-                .map(|file| {
-                    let questions: Vec<String> = file
-                        .brief
-                        .open_questions
-                        .iter()
-                        .map(|question| question.trim())
-                        .filter(|question| !question.is_empty())
-                        .map(|question| format!("- {question}"))
-                        .collect();
-                    let summary = match questions.is_empty() {
-                        true => "No open questions.".to_string(),
-                        false => format!("Open questions:\n\n{}", questions.join("\n")),
-                    };
-                    (format!("brief v{}", file.version), summary)
-                })
-        } else {
-            before
-                .clone()
-                .find_map(|entry| match &entry.event {
-                    LogEvent::Result {
-                        status, summary, ..
-                    } => Some((status.clone(), summary.clone())),
-                    _ => None,
-                })
-                .map(|(status, summary)| match state {
-                    "failed" => ("failed".to_string(), summary),
-                    // ^ Ready waits for a land by hand; landed is the task done.
-                    "ready" => ("ready".to_string(), summary),
-                    "landed" => ("done".to_string(), summary),
-                    _ => (status, summary),
-                })
-        };
         if let Some((head, summary)) = report.filter(|(_, summary)| !summary.trim().is_empty()) {
             reports.push(json!({
                 "task": id, "state": state, "revision": revision, "head": head, "summary": summary,
@@ -850,14 +807,13 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
                 .check()
                 .map_err(|reason| Fault::new(400, "invalid_grant", reason))?;
         }
-        HostRequest::Land { .. } | HostRequest::Start => {}
+        HostRequest::Land { .. } => {}
         // ^ They open and close the hand session: `hand`, not this, runs them.
         HostRequest::Hand
         | HostRequest::Handback
         | HostRequest::Status
         | HostRequest::Stop
-        | HostRequest::Close { .. }
-        | HostRequest::Revoke { .. } => {
+        | HostRequest::Close { .. } => {
             return Err(Fault::new(400, "unsupported", "not a web action"));
         }
     }
@@ -1138,14 +1094,10 @@ fn notice(scope: &Scope, watch: &mut Watch) {
         if first || before == Some(now) {
             continue;
         }
-        let words = match record.state {
-            TaskState::Briefed => "brief ready",
-            state => state.as_str(),
-        };
-        let change = (Some(record.id), words.to_string());
+        let change = (Some(record.id), record.state.as_str().to_string());
         match record.state {
-            // ^ A brief waits for the owner's start, so it is sent at once like a block.
-            TaskState::Blocked | TaskState::Conflict | TaskState::Briefed => {
+            // ^ Hands at work need no push; every other wait is sent at once.
+            TaskState::Waiting if !record.waits_on(WaitOn::Hand) => {
                 Batch::add(&mut watch.urgent, scope, change)
             }
             TaskState::Ready | TaskState::Failed | TaskState::Landed => {

@@ -1,9 +1,7 @@
 // Canonical per-project configuration and legacy .gtrconfig migration.
 // ref: README.md#project-configuration
 
-use crate::model::workspace::{
-    DefaultSessionConfig, LandPolicy, ProjectConfig, TaskConfig, TaskSandbox,
-};
+use crate::model::workspace::{DefaultSessionConfig, ProjectConfig, TaskConfig, TaskSandbox};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -105,11 +103,25 @@ struct TasksFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     manager: Option<TaskManagerFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    brief: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     sandbox: Option<TaskSandboxFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     preview: Option<TaskPreviewFile>,
+    /// `owner` or `none`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skills: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workflow: Option<TaskWorkflowFile>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct TaskWorkflowFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    build: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    batch: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -170,10 +182,6 @@ struct TaskLandFile {
     approve: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     auto: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    policy: Option<LandPolicy>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    remote: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -185,9 +193,6 @@ struct TaskAgentFile {
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<String>>,
-    // ^ Removed; read only to refuse it with the reason.
-    #[serde(rename = "briefTools", skip_serializing_if = "Option::is_none")]
-    brief_tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -364,15 +369,31 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         if let Some(tools) = agent.tools {
             config.tools = validate_tools(tools, "tasks.agent.tools")?;
         }
-        if agent.brief_tools.is_some() {
-            return Err("tasks.agent.briefTools was removed: a brief turn runs Bash read-only in the sandbox; remove it".into());
-        }
     }
     if let Some(sandbox) = file.sandbox {
         config.sandbox = validate_sandbox(sandbox)?;
     }
-    if let Some(brief) = file.brief {
-        config.brief = brief;
+    config.owner_skills = match file.skills.as_deref() {
+        None | Some("none") => false,
+        Some("owner") => true,
+        Some(other) => return Err(format!("tasks.skills must be owner or none, not {other:?}")),
+    };
+    if let Some(workflow) = file.workflow {
+        let text = |value: Option<String>, field: &str, default: &mut String| {
+            let Some(value) = value else { return Ok(()) };
+            if value.len() > MAX_DEFAULT_COMMAND_BYTES
+                || value.chars().any(|c| c.is_control() && c != '\n')
+            {
+                return Err(format!(
+                    "tasks.workflow.{field} must be at most {MAX_DEFAULT_COMMAND_BYTES} bytes of text"
+                ));
+            }
+            *default = value.trim().to_string();
+            Ok(())
+        };
+        text(workflow.build, "build", &mut config.workflow.build)?;
+        text(workflow.review, "review", &mut config.workflow.review)?;
+        text(workflow.batch, "batch", &mut config.workflow.batch)?;
     }
     config.checks = validate_list(file.checks, "tasks.checks", MAX_DEFAULT_COMMAND_BYTES)?;
     if let Some(preview) = file.preview {
@@ -493,17 +514,6 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
         if let Some(auto) = land.auto {
             config.land_auto = auto;
-        }
-        if let Some(policy) = land.policy {
-            config.land_policy = policy;
-        }
-        if let Some(remote) =
-            validate_optional_text(land.remote, "tasks.land.remote", MAX_TASK_WORD_BYTES)?
-        {
-            if remote.starts_with('-') || remote.contains(char::is_whitespace) {
-                return Err("tasks.land.remote must be one remote name".into());
-            }
-            config.land_remote = remote;
         }
     }
     Ok(config)

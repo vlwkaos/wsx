@@ -71,18 +71,17 @@ export function withChips(project) {
   return chipWords.get(project);
 }
 
-// What each Needs-you item is, in words; a ready task says why it did not land by itself.
-const KIND_WORDS = { blocked: "needs an answer", failed: "failed", stopped: "stopped", brief: "brief ready" };
-const KIND_TONE = { blocked: "attention", failed: "danger", stopped: "attention", approval: "attention", brief: "attention", land: "accent" };
-// One open item in words, as the owner would read it: "#4 needs an answer", "Approve land #3",
-// "Brief ready #2".
-const NEED_WORDS = { blocked: "needs an answer", failed: "failed", stopped: "was stopped", land: "is ready to land" };
+// What a waiting task waits for, in words: "needs to reach crates.io", "waits for disk
+// space", "stopped", "needs an answer" (docs/tasks.md "Store").
+const waitWords = (item) => item.asks?.length ? `needs to ${askWords(item.asks)}`
+  : item.waiting?.on === "disk" ? "waits for disk space"
+  : item.waiting?.reason === "stopped by request" ? "stopped" : "needs an answer";
+const KIND_TONE = { waiting: "attention", failed: "danger", approval: "attention", land: "accent" };
+// One open item in words, as the owner would read it: "#4 needs an answer", "Approve land #3".
 export const needWords = (item) => item.kind === "approval" ? item.label
-  : item.kind === "brief" ? `Brief ready #${item.task}`
-  : item.kind === "blocked" && item.waiting ? `#${item.task} waits for disk space`
-  : item.kind === "blocked" && item.asks?.length ? `#${item.task} needs to ${askWords(item.asks)}`
-  : `#${item.task} ${NEED_WORDS[item.kind]}`;
-// What a blocked task asks for, never a command: "reach crates.io and write ~/.cargo"
+  : item.kind === "waiting" ? `#${item.task} ${waitWords(item)}`
+  : `#${item.task} ${item.kind === "land" ? "is ready to land" : "failed"}`;
+// What a waiting task asks for, never a command: "reach crates.io and write ~/.cargo"
 // (docs/web-client.md "Tasks"). A grant body names one ask.
 export function askWords(asks) {
   const words = asks.map((ask) => ask.kind === "network" ? `reach ${ask.host}` : `write ${ask.path}`);
@@ -174,7 +173,7 @@ function NeedRow({ project, item, index, onActing, onFailed }) {
     if (text) run("add", { text });
   };
   // ^ One grant per ask; the host resumes the task with the last one.
-  const asks = item.kind === "blocked" ? item.asks ?? [] : [];
+  const asks = item.kind === "waiting" ? item.asks ?? [] : [];
   const grant = async () => {
     draft.busy = true;
     draft.error = "";
@@ -192,9 +191,9 @@ function NeedRow({ project, item, index, onActing, onFailed }) {
   const button = (label, onClick, extra = {}) => html`
     <button class="button need-action" type="button" disabled=${draft.busy} onClick=${onClick} ...${extra}>${label}</button>`;
   let actions = null;
-  if (acting && item.kind === "blocked" && asks.length) {
+  if (acting && asks.length) {
     actions = button("Allow", grant, { "aria-label": `Allow #${item.task} to ${askWords(asks)}` });
-  } else if (acting && ["blocked", "failed", "stopped"].includes(item.kind)) {
+  } else if (acting && ["waiting", "failed"].includes(item.kind)) {
     actions = button("Answer", open, { "aria-expanded": draft.field === "answer", "aria-label": `Answer #${item.task}` });
   } else if (acting && item.kind === "approval" && draft.running) {
     // ^ The approved action runs until its decision settles the row; it may take minutes.
@@ -205,14 +204,12 @@ function NeedRow({ project, item, index, onActing, onFailed }) {
       if (!draft.error) { draft.running = true; refresh(); }
     };
     actions = html`${button("Deny", () => run("deny"), { "aria-label": `Deny: ${item.label}` })}${button("Approve", approve, { "aria-label": item.label })}`;
-  } else if (acting && item.kind === "brief") {
-    actions = button("Start", () => run("start"), { "aria-label": `Start the build of #${item.task}` });
   } else if (acting && item.kind === "land") {
     actions = button("Land", () => run("land"), { "aria-label": `Land #${item.task}` });
   }
   // ^ An approval reads as the action it asks for, never as its id (docs/web-client.md "Tasks").
   const context = item.kind === "approval" ? item.title ?? item.commit ?? ""
-    : asks.length ? `needs to ${askWords(asks)}` : item.kind === "land" ? item.reason : KIND_WORDS[item.kind];
+    : item.kind === "waiting" ? waitWords(item) : item.kind === "land" ? item.reason : "failed";
   const label = item.kind === "approval" ? item.label : item.title;
   const body = html`
     <span class="row-label">${label}</span>
@@ -238,29 +235,18 @@ function NeedRow({ project, item, index, onActing, onFailed }) {
     </li>`;
 }
 
-// What a working task does when it is more than work: a conflict or a pull request.
-const WORKING_WORDS = { conflict: "resolving a conflict", in_review: "pull request open", by_hand: "by hand" };
+// What a working task does when it is more than work: a conflict, or the owner's hands.
+const workingWords = (task) => task.conflict ? "resolving a conflict" : task.waiting?.on === "hand" ? "by hand" : "";
 
-// A working task in the reservoir: its chip and title; the chip pulses. A pull request has Check.
-function RunningRow({ project, task }) {
-  const [busy, setBusy] = useState(false);
-  const check = async () => {
-    setBusy(true);
-    try { await act(project, { task: task.id }, "land"); } catch (failure) { toast(`#${task.id}: ${failure.message}`, { failure: true }); }
-    setBusy(false);
-  };
-  return html`
-    <li class="need">
-      <div class="row-link">
-        <${TaskChip} project=${project} id=${task.id} />
-        <a class="row-main row-open" href=${taskLink(project, task.id)}><span class="row-label">${task.title}</span>
-          ${WORKING_WORDS[task.state] && html`<span class="row-context">${WORKING_WORDS[task.state]}</span>`}</a>
-        ${task.state === "in_review" && can("task_act") && html`<span class="row-actions">
-          <button class="button need-action" type="button" disabled=${busy} onClick=${check}
-            aria-label=${`Check the pull request of #${task.id}`}>Check</button></span>`}
-      </div>
-    </li>`;
-}
+// A working task in the reservoir: its chip and title; the chip pulses.
+const RunningRow = ({ project, task }) => html`
+  <li class="need">
+    <div class="row-link">
+      <${TaskChip} project=${project} id=${task.id} />
+      <a class="row-main row-open" href=${taskLink(project, task.id)}><span class="row-label">${task.title}</span>
+        ${workingWords(task) && html`<span class="row-context">${workingWords(task)}</span>`}</a>
+    </div>
+  </li>`;
 
 // The To check list in one row: its count, opening the list's sheet.
 const CheckingRow = ({ project, count }) => html`
