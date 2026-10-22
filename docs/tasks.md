@@ -135,7 +135,7 @@ There is no verdict per task: a task the checks prove lands, and what needs a pe
 - `check pass <id>...` or `--all` marks open items `passed`; an unknown or settled id refuses the whole call.
 - `check fail <id> --note <text>` starts a task titled "Fix: <check>" whose prompt holds the check, `pass_if`, the note and the original `report.md` path; the new record has `fixes: c<n>`, and the item gets `state: failed`, the note and `fix_task`.
 - Both refuse with `WSX_TASK_ACTOR=manager`: checking is the owner's.
-- Log lines of removed kinds (`brief`, `verified`, `in_review` and others from before) are skipped when a log is read.
+- A log line that does not parse (a last line cut by a crash) is skipped when a log is read.
 
 ## By hand
 
@@ -284,7 +284,7 @@ tasks:
 
 `tasks.manager.name` is the name the owner reads for the manager: the web chat's author and typing bubble ("Atlas is typing"), another project's chat, the TUI row (`task-manager (Atlas)`) and `wsx task manager --json` (`name`). It is trimmed, one line without control characters, at most 64 bytes; empty is no name, and without one the manager reads "Manager" (the TUI keeps `(manager)`). Inside, the manager stays `manager`: the session label `task-manager`, the provider, `WSX_TASK_ACTOR` and `from: manager:<project>`; the name is not in its instructions. The name is the manager's address for a later talk between managers by name.
 
-Defaults: adapter `claude`, worker and manager model `opus` (`task new --model` overrides the worker's), no extra tools, no owner skills, the default workflow words, an empty sandbox list, no checks, `minFreeGb: 5` (0..=100000), `deploy.auto: false`, no preview (`ready` defaults to `/`, `ports` to `9100-9199`, above 1023). `tasks.agent.tools` and `tasks.manager.tools` refuse `Bash(...)` (the sandbox replaces it) and bare `Edit`, `Write`, `NotebookEdit`, `MultiEdit` (they would skip the classifier). A removed setting (`brief`, `land.policy`, `land.remote`, `agent.briefTools`) is an unknown field and refused. An `Edit(<path>)` or `Write(<path>)` rule in `tasks.manager.tools` gives the manager no file tool: they are denied by name. `allowedDomains` are host names with an optional `*.`; `allowWrite` paths are absolute or `~/`, below the root or home, without `.` or `..`. Up to 64 tools, 64 checks and 64 entries per sandbox list; `checkTimeoutSeconds` is 1..86400; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.
+Defaults: adapter `claude`, worker and manager model `opus` (`task new --model` overrides the worker's), no extra tools, no owner skills, the default workflow words, an empty sandbox list, no checks, `minFreeGb: 5` (0..=100000), `deploy.auto: false`, no preview (`ready` defaults to `/`, `ports` to `9100-9199`, above 1023). `tasks.agent.tools` and `tasks.manager.tools` refuse `Bash(...)` (the sandbox replaces it) and bare `Edit`, `Write`, `NotebookEdit`, `MultiEdit` (they would skip the classifier). An `Edit(<path>)` or `Write(<path>)` rule in `tasks.manager.tools` gives the manager no file tool: they are denied by name. `allowedDomains` are host names with an optional `*.`; `allowWrite` paths are absolute or `~/`, below the root or home, without `.` or `..`. Up to 64 tools, 64 checks and 64 entries per sandbox list; `checkTimeoutSeconds` is 1..86400; a tool or model is at most 256 bytes and a check 16 KiB. `task new` refuses a config that does not parse.
 
 ## Verify
 

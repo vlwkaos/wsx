@@ -1,6 +1,6 @@
 # Deferred live Codex reporting diagnosis
 
-Status: unresolved and explicitly deferred from the 0.29.1 release gate by user approval. This is separate from the verified removed-reporter ENOENT repair. See [agent reporting](agent-reporting.md) and [candidate audit](release-0.29.1-audit.md).
+Status: unresolved and explicitly deferred from the 0.29.1 release gate by user approval. This is separate from the verified removed-reporter ENOENT repair. See [agent reporting](agent-reporting.md); the candidate audit is `git show v0.29.1:docs/release-0.29.1-audit.md`.
 
 ## Known evidence
 
