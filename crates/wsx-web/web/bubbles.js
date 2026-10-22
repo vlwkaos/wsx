@@ -1,7 +1,7 @@
 // The manager chat as messages: one bubble per owner message, manager reply and worker
 // report, each with its author and time, and task changes as grouped muted lines
 // (docs/web-client.md "Project screen").
-import { clock, firstSentence, html, useLayoutEffect, useRef, useState } from "./lib.js";
+import { clock, firstSentence, Fold, html, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
 import { TaskChip } from "./tasks.js";
@@ -93,23 +93,7 @@ function Sentence({ id, text, words }) {
       ${open ? html`<${Markdown} text=${text} words=${words} prose />` : html`<p class="prose">${words(sentence)}</p>`}
     </div>
     ${sentence !== text.trim() && html`
-      <button class="link-action bubble-more" type="button" aria-expanded=${open} aria-controls=${id} onClick=${() => setOpen(!open)}>
-        ${open ? "Show less" : "Show all"}
-      </button>`}`;
-}
-
-// A long message folds after about twelve lines; "Show all" opens it.
-function Fold({ id, children }) {
-  const body = useRef();
-  const [open, setOpen] = useState(false);
-  const [long, setLong] = useState(false);
-  useLayoutEffect(() => {
-    if (!open) setLong(body.current.scrollHeight > body.current.clientHeight + 1);
-  });
-  return html`
-    <div class="bubble-body" id=${id} ref=${body} data-clamped=${!open && long ? "" : undefined} data-open=${open ? "" : undefined}>${children}</div>
-    ${(long || open) && html`
-      <button class="link-action bubble-more" type="button" aria-expanded=${open} aria-controls=${id} onClick=${() => setOpen(!open)}>
+      <button class="link-action fold-more" type="button" aria-expanded=${open} aria-controls=${id} onClick=${() => setOpen(!open)}>
         ${open ? "Show less" : "Show all"}
       </button>`}`;
 }
@@ -129,11 +113,11 @@ export function Bubble({ project, row, words, names }) {
     body = html`
       <p class="bubble-head"><${TaskChip} project=${project} id=${report.task} />${" "}<span class="bubble-state">· ${report.head}</span></p>
       ${report.state === "landed" ? html`<${Sentence} id=${id} text=${report.summary} words=${words} />`
-        : html`<${Fold} id=${id}><${Markdown} text=${report.summary} words=${words} prose /></${Fold}>`}`;
+        : html`<${Fold} id=${id} kind="bubble-body"><${Markdown} text=${report.summary} words=${words} prose /></${Fold}>`}`;
   } else if (out) {
-    body = html`<${Fold} id=${id}><p class="prose">${words(row.entry.text)}</p></${Fold}><${Attachments} files=${row.entry.attachments} />`;
+    body = html`<${Fold} id=${id} kind="bubble-body"><p class="prose">${words(row.entry.text)}</p></${Fold}><${Attachments} files=${row.entry.attachments} />`;
   } else {
-    body = html`<${Fold} id=${id}><${Markdown} text=${row.entry.text} words=${words} prose /></${Fold}>`;
+    body = html`<${Fold} id=${id} kind="bubble-body"><${Markdown} text=${row.entry.text} words=${words} prose /></${Fold}>`;
   }
   return html`
     <article class="bubble" data-side=${out ? "out" : "in"} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null}

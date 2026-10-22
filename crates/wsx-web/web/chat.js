@@ -1,7 +1,7 @@
 // Chat: the agent's own saved conversation as a typed timeline, what the agent does
 // now, the messages that wait for it, and the composer (docs/web-client.md "Chat").
 import { api, resolve } from "./api.js";
-import { bytes, elapsed, html, Icon, useCallback, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
+import { bytes, elapsed, Fold, html, Icon, useCallback, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, events, shows, stateOf, state, touch } from "./store.js";
 import { Markdown } from "./markdown.js";
 
@@ -196,22 +196,10 @@ function Steps({ items, live }) {
 // A compaction summary, where the conversation was compacted. Its start stays open, so
 // a session continued after a compaction still says what it is about.
 function Summary({ id, text }) {
-  const body = useRef();
-  const [open, setOpen] = useState(false);
-  const [long, setLong] = useState(false);
-  useLayoutEffect(() => {
-    if (!open) setLong(body.current.scrollHeight > body.current.clientHeight + 1);
-  }, [text, open]);
   return html`
     <section class="summary" aria-labelledby=${`${id}-label`}>
       <p class="summary-label" id=${`${id}-label`}>Summary of the earlier conversation</p>
-      <div class="summary-body" id=${`${id}-body`} ref=${body} data-clamped=${!open && long ? "" : undefined} data-open=${open ? "" : undefined}>
-        <${Markdown} text=${text} />
-      </div>
-      ${(long || open) && html`
-        <button class="link-action" type="button" aria-expanded=${open} aria-controls=${`${id}-body`} onClick=${() => setOpen(!open)}>
-          ${open ? "Show less" : "Show full summary"}
-        </button>`}
+      <${Fold} id=${`${id}-body`} kind="summary-body" more="Show full summary"><${Markdown} text=${text} /></${Fold}>
     </section>`;
 }
 
@@ -622,7 +610,7 @@ export function Chat({ session, onModel }) {
           : html`
             <article key=${block.id} class=${block.kind === "user" ? "message message-user" : "message"} data-kind=${block.kind}>
               ${block.text && (block.kind === "user" ? html`<p class="prose">${block.text}</p>`
-                : html`<${Markdown} text=${block.text} files=${block.attachments} />`)}
+                : html`<${Fold} id=${`message-${block.id}`}><${Markdown} text=${block.text} files=${block.attachments} /></${Fold}>`)}
               <${Attachments} files=${block.attachments} />
               ${block === lastUserBlock && delivery && !sent.length ? html`<p class="note" role="status">${delivery}</p>` : null}
             </article>`)}

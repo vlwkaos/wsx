@@ -389,8 +389,10 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
          needs that host, run the command again with the host listed. Keep file edits in \
          this working copy. \
          When you cannot continue, return status blocked and say what you need; when the \
-         sandbox or a permission stops a host or a path you need, name that host or path.",
+         sandbox or a permission stops a host or a path you need, name that host or path. \
+         Write the summary and the report by this rule. {presentation}",
         record.branch,
+        presentation = wsx_core::integration::PRESENTATION.trim_end(),
         build = workflow.build,
         checks = check_run_note(record),
     )

@@ -216,6 +216,14 @@ fn install_in(target: IntegrationTarget, root: &Path) -> io::Result<InstallResul
             false,
         ));
     }
+    if target == IntegrationTarget::Claude {
+        prepared.push((
+            root.join("output-styles")
+                .join(format!("{}.md", assets::OUTPUT_STYLE_NAME)),
+            assets::output_style(),
+            false,
+        ));
+    }
     if target == IntegrationTarget::Hermes {
         let directory = asset.parent().expect("Hermes asset has a parent");
         prepared.push((

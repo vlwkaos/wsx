@@ -63,6 +63,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/events", get(events))
             .route("/api/presence", post(presence))
             .route("/api/sessions", post(session_start))
+            .route("/api/sessions/{session}", delete(session_remove))
             .route("/api/chat/{session}/timeline", get(timeline))
             .route("/api/chat/{session}/send", post(send))
             .route("/api/chat/{session}/commands", get(commands))
@@ -623,6 +624,58 @@ async fn events(
     Ok(Sse::new(ReceiverStream::new(receiver))
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(25)))
         .into_response())
+}
+
+/// Closes a session the site reaches, as `wsx session delete` does (docs/web-client.md
+/// "Removing a session"). A device that may start sessions may remove them. A task's
+/// worker and the manager belong to their host and close with it.
+async fn session_remove(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(session): UrlPath<u64>,
+) -> Outcome<Json<Value>> {
+    need(&app, Panel::Chat)?;
+    allow(&app, Capability::SessionStart, "removing a session")?;
+    blocking(|| {
+        let snapshot = chat::snapshot(&app.client)?;
+        let target = chat::target(&snapshot, &app.site.access, session)?;
+        let provider = target
+            .pane
+            .agent
+            .as_ref()
+            .map(|agent| agent.provider.as_str());
+        let task_label = target
+            .label
+            .strip_prefix("task-")
+            .is_some_and(|rest| rest == "manager" || rest.parse::<u32>().is_ok());
+        if matches!(provider, Some("task" | "manager")) || task_label {
+            return Err(Fault::new(
+                409,
+                "task_session",
+                "this session belongs to a task; close the task instead",
+            ));
+        }
+        let revision = snapshot
+            .sessions
+            .iter()
+            .find(|candidate| candidate.id == target.session_id)
+            .map(|candidate| candidate.revision)
+            .ok_or_else(Fault::not_found)?;
+        match chat::call(
+            &app.client,
+            &Daemon::SessionClose {
+                session_id: target.session_id,
+                expected_revision: revision,
+            },
+        )? {
+            DaemonResponse::Ack { .. } => Ok(Json(json!({ "removed": session }))),
+            _ => Err(Fault::new(
+                502,
+                "daemon_protocol",
+                "unexpected close response",
+            )),
+        }
+    })
 }
 
 #[derive(Deserialize)]

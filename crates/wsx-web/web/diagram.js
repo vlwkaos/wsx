@@ -110,6 +110,8 @@ function useScheme() {
 const ZOOM_STEP = 1.5;
 // Diagram text is drawn at the body size; shown smaller than this it is hard to read.
 const MIN_TEXT_PX = 10;
+// A left-to-right flowchart's header, which can be drawn top to bottom instead.
+const SIDEWAYS = /^(\s*(?:flowchart|graph)\s+)(LR|RL)\b/m;
 
 // Full screen: drag to move, pinch or the two buttons to zoom. The page itself never zooms.
 function Viewer({ diagram, onClose }) {
@@ -173,21 +175,36 @@ function Viewer({ diagram, onClose }) {
 export function Diagram({ source, fallback }) {
   const scheme = useScheme();
   const [diagram, setDiagram] = useState(null);
+  const [turned, setTurned] = useState(null);
   const [open, setOpen] = useState(false);
   useEffect(() => {
     let current = true;
     setDiagram(null);
+    setTurned(null);
     drawn(source, scheme).then((result) => { if (current) setDiagram(result); });
     return () => { current = false; };
   }, [source, scheme]);
   // The whole diagram shows first: it is scaled down to the column, never up. Only when
   // that would make its text smaller than MIN_TEXT_PX does it stay larger and scroll
-  // sideways in its own block, with a fade on the side that holds more.
+  // sideways in its own block, with a fade on the side that holds more. Before that, a
+  // sideways flowchart is drawn top to bottom, and shown so when that fits (as Pygmalion does).
   const frame = useRef();
   // Safari does not focus a tapped button, so the way back is kept here.
   const opener = useRef();
-  const [scale, setScale] = useState(null);
+  const [width, setWidth] = useState(null);
   const [more, setMore] = useState("");
+  const readable = Math.min(1, MIN_TEXT_PX / parseFloat(token("font-size-md")));
+  const narrow = (drawing) => width != null && drawing.width * readable > width;
+  const sideways = diagram?.width && narrow(diagram) && SIDEWAYS.test(source);
+  useEffect(() => {
+    if (!sideways || turned) return undefined;
+    let current = true;
+    drawn(source.replace(SIDEWAYS, "$1TD"), scheme).then((result) => { if (current) setTurned(result); });
+    return () => { current = false; };
+  }, [sideways, turned, source, scheme]);
+  const upright = sideways && turned?.width && !narrow(turned);
+  const shown = upright ? turned : diagram;
+  const scale = width == null || !shown?.width ? null : Math.min(1, Math.max(width / shown.width, readable));
   const edges = () => {
     const node = frame.current;
     if (!node) return;
@@ -195,10 +212,7 @@ export function Diagram({ source, fallback }) {
   };
   useLayoutEffect(() => {
     if (!frame.current || !diagram?.width) return undefined;
-    const fit = () => {
-      const readable = Math.min(1, MIN_TEXT_PX / parseFloat(token("font-size-md")));
-      setScale(Math.min(1, Math.max(frame.current.clientWidth / diagram.width, readable)));
-    };
+    const fit = () => setWidth(frame.current.clientWidth);
     fit();
     const observer = new ResizeObserver(fit);
     observer.observe(frame.current);
@@ -211,10 +225,11 @@ export function Diagram({ source, fallback }) {
     <div class="diagram">
       <div class="diagram-scroll" ref=${frame} data-more=${more || null} onScroll=${edges}>
         <button class="diagram-open" type="button" ref=${opener} aria-label="Open the diagram full screen" onClick=${() => setOpen(true)}>
-          <img src=${diagram.url} alt="Diagram"
-            width=${Math.round(diagram.width * (scale ?? 1))} height=${Math.round(diagram.height * (scale ?? 1))} />
+          <img src=${shown.url} alt="Diagram"
+            width=${Math.round(shown.width * (scale ?? 1))} height=${Math.round(shown.height * (scale ?? 1))} />
         </button>
       </div>
-      ${open && html`<${Viewer} diagram=${diagram} onClose=${() => { setOpen(false); opener.current.focus(); }} />`}
+      ${upright && html`<p class="note">Drawn top to bottom to fit this screen</p>`}
+      ${open && html`<${Viewer} diagram=${shown} onClose=${() => { setOpen(false); opener.current.focus(); }} />`}
     </div>`;
 }

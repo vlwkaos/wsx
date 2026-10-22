@@ -1776,10 +1776,12 @@ capabilities = ["terminal_view"]
         settle('resume')
         assert steady(owner, 'POST', resume_chat + '/send', {'text': 'in the second'})[0] == 200
         said('echo: in the second')
-        shown = [(item['kind'], item['text']) for item in resume_timeline()['items']]
+        # ^ One read: an item that arrives between two reads would move the divider.
+        items = resume_timeline()['items']
+        shown = [(item['kind'], item['text']) for item in items]
         divider = shown.index(('notice', 'New conversation'))
         assert ('assistant', 'echo: after the exit') in shown[:divider] and ('assistant', 'echo: in the second') in shown[divider:], shown
-        assert all(item['id'].startswith('earlier-') for item in resume_timeline()['items'][:divider] if item['kind'] != 'notice')
+        assert all(item['id'].startswith('earlier-') for item in items[:divider] if item['kind'] != 'notice'), items[:divider]
         # The same conversation started again by hand reads as continued.
         settle('resume')
         assert steady(owner, 'POST', resume_chat + '/send', {'text': 'leave now'})[0] == 200
@@ -2159,7 +2161,8 @@ capabilities = ["terminal_view"]
         for method, target, body in (('GET', '/api/files?project=1&path=', None), ('GET', '/api/file?project=1&path=notes.txt', None),
                                      ('PUT', '/api/file', write),
                                      ('GET', '/api/push', None),
-                                     ('POST', '/api/sessions', {'project': projects['project2'], 'label': 'new'})):
+                                     ('POST', '/api/sessions', {'project': projects['project2'], 'label': 'new'}),
+                                     ('DELETE', '/api/sessions/%d' % sessions['family'], None)):
             status, body = family.request(method, target, body)
             assert status == 403 and body['error']['code'] == 'capability_denied', (target, status, body)
         # The other project's session does not exist for this site, in any route.
@@ -2505,6 +2508,22 @@ capabilities = ["terminal_view"]
         assert root.request('POST', '/api/sessions', {'label': 'no project'})[0] == 422
         ok('session start: site command, granted project and worktree, cleaned label; ungranted project and foreign worktree refused')
 
+        # --- session_start also removes: wsxd closes the session; a task's own session stays.
+        removed = created['id']
+        status, body = root.request('DELETE', '/api/sessions/%d' % removed)
+        assert status == 200 and body == {'removed': removed}, (status, body)
+        assert all(s['id'] != removed for s in call('snapshot')['data']['sessions'])
+        assert root.request('DELETE', '/api/sessions/%d' % removed)[0] == 404
+        assert root.request('DELETE', '/api/sessions/%d' % sessions['family'])[0] == 404, 'an ungranted project'
+        status, body = root.request('POST', '/api/sessions', {'project': projects['project'], 'label': 'task-7'})
+        assert status == 200, body
+        worker = body['session_id']
+        status, body = root.request('DELETE', '/api/sessions/%d' % worker)
+        assert status == 409 and body['error']['code'] == 'task_session', (status, body)
+        kept = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == worker)
+        assert call('session_close', {'session_id': worker, 'expected_revision': kept['revision']})['type'] == 'ack'
+        ok('session remove: closed in wsxd, then gone; a task-<n> session refused; an ungranted one does not exist')
+
         # --- The web server never starts wsxd; it reports the gap and recovers.
         assert call('shutdown')['type'] == 'ack'
         daemon.wait(timeout=5)
@@ -2699,7 +2718,7 @@ def task_journey(args):
                  'approval requests in ui', timeout=30)
             # #5: a long report the manager hears of (one worker bubble, folded), then closed.
             # #6: works until the run ends; its prompt opens as the manager's prompts do.
-            long_report = 'WORK c.txt\n' + '\n'.join('line %d of the report' % n for n in range(1, 31))
+            long_report = 'WORK c.txt\n' + '\n\n'.join('line %d of the report' % n for n in range(1, 41))
             assert js('task', 'new', long_report, '-p', 'ui')['id'] == 5
             wait(lambda: js('task', 'show', 5, '-p', 'ui')['state'] == 'ready', 'ui #5')
             wait(lambda: any('#5 ready r1' in e.get('text', '') for e in js('task', 'chat', '-p', 'ui')['entries']),

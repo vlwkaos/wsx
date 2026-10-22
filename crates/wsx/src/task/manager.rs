@@ -149,7 +149,8 @@ fn instructions(
          memory: run `wsx task ledger -p {project}` when you need more, such as a task's \
          checks, asks, overlaps or memo, or the deploys. Every `wsx task` command takes \
          `-p {project} --json`. When a command says the owner was asked to approve, tell \
-         the owner and do not retry it. Keep turns and answers short. Name tasks as #<n>. \
+         the owner and do not retry it. Keep turns short. Name tasks as #<n>. \
+         Present every reply to the owner by this rule. {presentation} \
          Talk before work. When the owner asks for work, first talk it through in the chat: \
          the goal in one line, its size (how many tasks; which can run at once because they \
          change different files, and which must wait for another to land), the choices that \
@@ -243,6 +244,7 @@ fn instructions(
             false => format!("{} ", workflow.review),
         },
         batch = workflow.batch,
+        presentation = wsx_core::integration::PRESENTATION.trim_end(),
         context = notes.join(CONTEXT_FILE).display(),
         decisions = notes.join(DECISIONS_FILE).display(),
         notes = notes.display(),

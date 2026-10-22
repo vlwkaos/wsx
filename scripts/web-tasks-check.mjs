@@ -212,8 +212,8 @@ await pair();
 const chat = `#/p/${project}`;
 const page = (n) => `#/p/${project}/t/${n}`;
 
-// The tabs to the inbox and the projects: each one link in the bar, inside the first screen.
-const TABS = "Home,Sessions,Projects,Settings";
+// The tabs: each one link in the bar, inside the first screen. Home lists the projects.
+const TABS = "Home,Sessions,Settings";
 async function tabsInView() {
   const bar = phone() ? ".tabbar a" : ".rail-tabs a";
   if ((await text(bar)).join() !== TABS) await fail(`the tabs at ${size[0]}x${size[1]} are ${await text(bar)}`);
@@ -278,18 +278,18 @@ const still = await inboxMarks();
 await send("Emulation.setEmulatedMedia", { features: [] });
 if (still.some((mark) => mark.animated) || !still.some((mark) => mark.running)) await fail(`an inbox mark moves under reduced motion: ${JSON.stringify(still)}`);
 await shot("sessions");
-// Projects, one tap from home: a project opens its worktrees, not its chat; the plain
-// worktree is listed like any other, with no Adopted list.
+// A project's worktrees are in its chat's ⋯ menu; the plain worktree is listed like any
+// other, with no Adopted list.
 await click(".tabbar a[href='#/']");
 await until("location.hash === '#/' && !!document.querySelector('.home-row')", "the Home tab did not return home");
-await click(".tabbar a[href='#/projects']");
-await until("location.hash === '#/projects' && document.querySelectorAll('.row-open').length >= 3", "the Projects tab did not open the projects");
-await evaluate(`[...document.querySelectorAll('.row-open')].find((node) => node.querySelector('.row-label').textContent === 'ui').click()`);
-await until(`location.hash === '#/p/${project}/sessions' && !!document.querySelector('.worktree')`, "a project in Projects did not open its worktrees");
+await go(chat);
+await click(".more-button");
+await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Sessions').click()");
+await until(`location.hash === '#/p/${project}/sessions' && !!document.querySelector('.worktree')`, "the ⋯ menu did not open the worktrees");
 await plainWorktree("the worktree list");
 await shot("project-worktrees");
 await evaluate("document.querySelector('.bar a.icon-button').click()");
-await until("location.hash === '#/projects'", "Back from the worktrees did not return to Projects");
+await until(`location.hash === ${JSON.stringify(chat)}`, "Back from the worktrees did not return to the chat");
 // A row opens the project's chat.
 await go("#/");
 await until("!!document.querySelector('.home-row')", "home did not come back");
@@ -327,9 +327,9 @@ const head = await evaluate(`${report}.querySelector('.bubble-head').textContent
 if (head !== "#5 · ready") await fail(`the report's header reads ${head}`);
 if (!(await evaluate(`${report}.querySelector('.bubble-body').hasAttribute('data-clamped')`))) await fail("the long report is not folded");
 await shot("project", ".composer-send");
-await evaluate(`${report}.querySelector('.bubble-more').click()`);
+await evaluate(`${report}.querySelector('.fold-more').click()`);
 await until(`${report}.querySelector('.bubble-body').hasAttribute('data-open') && /line 30 of the report/.test(${report}.textContent)`, "Show all did not open the report");
-await evaluate(`${report}.querySelector('.bubble-more').click()`);
+await evaluate(`${report}.querySelector('.fold-more').click()`);
 // The chat opens at its newest message; scrolled up, it shows Jump to latest.
 await until(atEnd, "the manager chat did not open at its end");
 await evaluate("document.querySelector('.log').scrollTop = 0");
@@ -340,13 +340,13 @@ await until(`!document.querySelector('.jump') && ${atEnd}`, "Jump to latest did 
 // rest. No muted line repeats the landing.
 await until(`!!${workerBubble(7)} && !!${workerBubble(8)}`, "the landed tasks have no worker bubbles");
 const done = await evaluate(`({ head: ${workerBubble(7)}.querySelector('.bubble-head').textContent.trim().replace(/\\s+/g, ' '),
-  body: ${workerBubble(7)}.querySelector('.bubble-body').textContent.trim(), more: !!${workerBubble(7)}.querySelector('.bubble-more'),
-  short: !!${workerBubble(8)}.querySelector('.bubble-more') })`);
+  body: ${workerBubble(7)}.querySelector('.bubble-body').textContent.trim(), more: !!${workerBubble(7)}.querySelector('.fold-more'),
+  short: !!${workerBubble(8)}.querySelector('.fold-more') })`);
 if (done.head !== "#7 · done" || done.body !== "did: WORK d.txt HV done." || !done.more || done.short) await fail(`the done bubble reads ${JSON.stringify(done)}`);
 if (await evaluate("[...document.querySelectorAll('.status-line')].some((node) => /#[78] (landed|done)/.test(node.textContent))")) await fail("a muted line repeats a landing");
-await evaluate(`${workerBubble(7)}.querySelector('.bubble-more').click()`);
+await evaluate(`${workerBubble(7)}.querySelector('.fold-more').click()`);
 await until(`/More words follow/.test(${workerBubble(7)}.querySelector('.bubble-body').textContent)`, "Show all did not open the done bubble");
-await evaluate(`${workerBubble(7)}.querySelector('.bubble-more').click()`);
+await evaluate(`${workerBubble(7)}.querySelector('.fold-more').click()`);
 await until(atEnd, "the done bubble moved the chat");
 
 // --- The reservoir: one line over the composer that names the running task (its pulsing chip
@@ -781,7 +781,7 @@ await click(".more-button");
 if (!(await text(".more-menu a")).includes("Sessions")) await fail(`the ⋯ menu lost Sessions: ${await text(".more-menu a")}`);
 await click(".more-button");
 
-// --- Narrow and wide: the tabs in the first screen, Projects to the worktrees.
+// --- Narrow and wide: the tabs in the first screen, the ⋯ menu to the worktrees.
 for (const next of [[320, 568, 2], [1280, 800, 1]]) {
   await resize(next);
   await go("#/");
@@ -789,12 +789,13 @@ for (const next of [[320, 568, 2], [1280, 800, 1]]) {
   await tabsInView();
   await shot("home");
   // ^ On a wide screen the rail keeps the list it was reached from.
-  await click(`${phone() ? ".tabbar" : ".rail-tabs"} a[href='#/projects']`);
-  await until(`location.hash === '#/projects' && !!document.querySelector('${phone() ? "" : ".rail "}.row-open')`, "the Projects tab did not open");
-  await evaluate(`[...document.querySelectorAll('.row-open')].find((node) => node.querySelector('.row-label').textContent === 'ui').click()`);
-  await until(`location.hash === '#/p/${project}/sessions' && !!document.querySelector('.worktree')`, "Projects did not open the worktrees");
+  await go(chat);
+  await until("!!document.querySelector('.composer-field')", "the chat did not open");
+  await click(".more-button");
+  await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Sessions').click()");
+  await until(`location.hash === '#/p/${project}/sessions' && !!document.querySelector('.worktree')`, "the ⋯ menu did not open the worktrees");
   await plainWorktree(`the worktree list at ${size[0]}x${size[1]}`);
-  if (!phone() && (await text(".rail-tabs a[aria-current=page]")).join() !== "Projects") await fail("the rail does not keep Projects for the worktrees");
+  if (!phone() && (await text(".rail-tabs a[aria-current=page]")).join() !== "Home") await fail("the rail does not keep Home for the worktrees");
   await shot("project-worktrees");
   await go(chat);
   await until("!!document.querySelector('.composer-field')", "the chat did not come back");
@@ -846,6 +847,6 @@ problems.splice(quietFrom);
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
-console.log(`tasks page: home with the Sessions and Projects tabs in the first screen, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Allow, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, Allow for project, Shared files only in a conflict), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, a folded worker report, grouping), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Allow, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, Allow for project, Shared files only in a conflict), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

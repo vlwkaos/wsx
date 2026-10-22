@@ -249,6 +249,11 @@ pub(crate) fn json_config(
                 "error",
                 Some("overloaded|authentication_failed|oauth_org_not_allowed|account_on_hold|billing_error|invalid_request|model_not_found|server_error|max_output_tokens|unknown"),
             )?;
+            // ^ The owner's own choice of style stays; only a missing one becomes wsx's.
+            root.as_object_mut()
+                .unwrap()
+                .entry("outputStyle")
+                .or_insert_with(|| json!(super::assets::OUTPUT_STYLE_NAME));
         }
         IntegrationTarget::Codex => {
             let hooks = hooks(&mut root)?;
