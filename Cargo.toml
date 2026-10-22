@@ -8,7 +8,7 @@ members = [
     "crates/wsx-web",
     "tools/xtask",
 ]
-exclude = ["vendor/asched", "vendor/herdr", "vendor/portable-pty"]
+exclude = ["vendor/asched", "vendor/portable-pty"]
 
 [workspace.package]
 version = "0.31.0"

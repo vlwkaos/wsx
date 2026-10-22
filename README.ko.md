@@ -119,7 +119,7 @@ copy:
   include: [.env.example]
   exclude: [target]
 git:
-  subtrees: [vendor/asched, vendor/herdr]
+  subtrees: [vendor/asched]
 worktree:
   branchPrefix: feature/
   defaultSession:

@@ -11,7 +11,6 @@ This is a Cargo workspace with separate branch CI and stable `v*` tag publicatio
 - **Require exact-commit branch CI before tagging.** Push the release commit, wait for every required branch-CI matrix job on that exact SHA, then create and push only the annotated `vX.Y.Z` tag after the irreversible-action confirmation. Watch the exact tag run and verify crates.io, GitHub assets, and the Homebrew tap.
 - **Ship adjacent universal binaries.** The release workflow uses `scripts/package-companion.sh` with Rust 1.96.1, both macOS targets, and Zig 0.15.2. It verifies one universal archive containing adjacent `wsx` and `wsxd` plus notices, then uses Homebrew itself on Apple Silicon and Intel runners to build, pour, test, and merge native bottle metadata before the final tap push.
 - **Binary releases are archive/Homebrew only.** `wsx-terminal`, `wsx-daemon`, `wsx-web`, and `wsx` remain unpublished because the pinned Ghostty source is workspace-vendored and runtime requires adjacent `wsx`/`wsxd`. Publish only `wsx-core`; never advertise `cargo install wsx`.
-- **Herdr provenance.** `vendor/herdr` is the squashed official `v0.8.2` subtree at commit `9eb521456ac0d19d3ab3d9d7cea3cca10baa8a4c`. It is reference-only: keep it excluded from the workspace, runtime, archives, and install instructions.
 
 ## Working in this repo as an agent
 

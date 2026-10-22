@@ -6,7 +6,6 @@ copy:
 git:
   subtrees:
     - vendor/asched
-    - vendor/herdr
 # Manager mode (docs/tasks.md "Permissions"). Workers build and test inside Claude's sandbox;
 # the checks need a PTY or Chrome, which the sandbox cannot give, so the host runs them outside it.
 tasks:
