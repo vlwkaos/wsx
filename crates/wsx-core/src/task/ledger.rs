@@ -22,7 +22,8 @@ const MEMO_CHARS: usize = 600;
 /// The ledger of one project. ref: docs/tasks.md "Ledger"
 pub fn build(project_name: &str, main: &Path) -> Result<Value> {
     let settings = load_task_config(main).map_err(|error| anyhow::anyhow!(error))?;
-    let tasks = project_tasks(&super::store::project_id(project_name, main))?;
+    let project_id = super::store::project_id(project_name, main);
+    let tasks = project_tasks(&project_id)?;
     let records: Vec<&TaskRecord> = tasks
         .iter()
         .filter_map(|(_, record)| record.as_ref().ok())
@@ -79,7 +80,6 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
     open.sort_by_key(|(order, id, _)| (*order, *id));
     recent.sort_by_key(|(updated, _)| std::cmp::Reverse(*updated));
     recent.truncate(RECENT_TASKS);
-    let project_id = super::store::project_id(project_name, main);
     let mut ledger = json!({
         "project": project_name,
         // ^ A ready task lands by itself unless this is false (docs/tasks.md "Landing").

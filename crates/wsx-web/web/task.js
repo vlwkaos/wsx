@@ -3,7 +3,7 @@
 // the worker and its history (docs/web-client.md "Task sheet").
 import { api } from "./api.js";
 import { clock, html, Icon, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
-import { can, events, useStore } from "./store.js";
+import { can, events, readMap, useStore, writeMap } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { grow, isolate, release } from "./chat.js";
 import { announce, askWords, grantBody, loadTasks, taskStage, TaskChip, withChips } from "./tasks.js";
@@ -113,12 +113,12 @@ function Talk({ project, talk, words }) {
 
 // Unsent messages to a task, kept on this device by `<project>/<task>`.
 const DRAFTS_KEY = "wsx-task-drafts";
-const readDrafts = () => { try { return JSON.parse(localStorage.getItem(DRAFTS_KEY)) ?? {}; } catch { return {}; } };
+const readDrafts = () => readMap(DRAFTS_KEY);
 function keepDraft(key, text) {
   const all = readDrafts();
   if (text) all[key] = text;
   else delete all[key];
-  try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(all)); } catch { /* kept in the field only */ }
+  writeMap(DRAFTS_KEY, all);
 }
 
 // The task's message field: an add (an answer after the turn), or a steer into a running turn.

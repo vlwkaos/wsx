@@ -89,11 +89,18 @@ export function stateOf(session) {
 export const sessionLink = (session, tab) =>
   `#/s/${session.id}/${tab ?? (isAgent(session) && shows("chat") ? "chat" : "terminal")}`;
 
+// A map kept per device. A private window, cleared site data or a broken value reads as
+// empty, and a write that fails keeps the page working without it.
+export function readMap(key) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? {}; } catch { return {}; }
+}
+export function writeMap(key, map) {
+  try { localStorage.setItem(key, JSON.stringify(map)); } catch { /* kept in memory only */ }
+}
+
 // "Seen" is per device: the state a session had when its chat was last opened here.
 const SEEN_KEY = "wsx-seen";
-function seen() {
-  try { return JSON.parse(localStorage.getItem(SEEN_KEY)) ?? {}; } catch { return {}; }
-}
+const seen = () => readMap(SEEN_KEY);
 export const isNew = (session) => seen()[session.id] !== session.state_since_unix_ms;
 export function markSeen(session) {
   const known = seen();
@@ -101,7 +108,7 @@ export function markSeen(session) {
   // Forget sessions that no longer exist, so the record stays small.
   const kept = Object.fromEntries(state.sessions.filter((other) => other.id in known).map((other) => [other.id, known[other.id]]));
   kept[session.id] = session.state_since_unix_ms;
-  try { localStorage.setItem(SEEN_KEY, JSON.stringify(kept)); } catch { /* a private window shows "new" again */ }
+  writeMap(SEEN_KEY, kept);
 }
 
 // Routes: #/ (home: the projects with task_view, else the inbox), #/sessions (the inbox),

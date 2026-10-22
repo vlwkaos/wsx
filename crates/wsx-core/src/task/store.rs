@@ -130,7 +130,7 @@ pub fn parse_task_number(value: &str) -> Result<u32> {
     }
 }
 
-fn create_private_dir(path: &Path) -> Result<()> {
+pub(super) fn create_private_dir(path: &Path) -> Result<()> {
     match DirBuilder::new().mode(0o700).create(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => require_real_dir(path),

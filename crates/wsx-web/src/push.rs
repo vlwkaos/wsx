@@ -131,7 +131,7 @@ impl Push {
     }
 
     pub fn topics(&self, device_id: &str) -> Vec<Topic> {
-        let subscriptions = self.subscriptions.lock().unwrap_or_else(|l| l.into_inner());
+        let subscriptions = crate::locked(&self.subscriptions);
         subscriptions
             .iter()
             .find(|subscription| subscription.device_id == device_id)
@@ -159,7 +159,7 @@ impl Push {
             "push endpoint origin is not allowed by this site"
         );
         receiver_keys(&input.keys)?;
-        let mut subscriptions = self.subscriptions.lock().unwrap_or_else(|l| l.into_inner());
+        let mut subscriptions = crate::locked(&self.subscriptions);
         subscriptions.retain(|subscription| subscription.device_id != device_id);
         if !topics.is_empty() {
             subscriptions.push(Subscription {
@@ -175,7 +175,7 @@ impl Push {
     }
 
     pub fn unsubscribe(&self, device_id: &str) {
-        let mut subscriptions = self.subscriptions.lock().unwrap_or_else(|l| l.into_inner());
+        let mut subscriptions = crate::locked(&self.subscriptions);
         let before = subscriptions.len();
         subscriptions.retain(|subscription| subscription.device_id != device_id);
         if subscriptions.len() != before {
@@ -194,7 +194,7 @@ impl Push {
         except: &[String],
     ) -> usize {
         let targets: Vec<Subscription> = {
-            let mut subscriptions = self.subscriptions.lock().unwrap_or_else(|l| l.into_inner());
+            let mut subscriptions = crate::locked(&self.subscriptions);
             // A revoked device loses its subscription with its credential.
             let before = subscriptions.len();
             subscriptions.retain(|subscription| paired.contains(&subscription.device_id));

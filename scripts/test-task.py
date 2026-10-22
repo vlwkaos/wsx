@@ -577,6 +577,7 @@ def run(wsx, wsxd, work, owned):
     assert [(i['task'], i['where'], i['capture']) for i in kept] == [(shot, '/#/x', 'captures/r1-1.png')], kept
     stored = Path(show(shot)['report']).parent / 'captures' / 'r1-1.png'
     assert stored.read_bytes().startswith(b'\x89PNG'), stored
+    assert stored.parent.stat().st_mode & 0o777 == 0o700, oct(stored.parent.stat().st_mode)
     js('task', 'check', 'pass', kept[0]['id'])
     # No checks: nothing proves the work, so a ready task waits for a land by hand.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', '').replace(
@@ -922,6 +923,14 @@ def run(wsx, wsxd, work, owned):
     older = json.loads(state_file.read_text())
     assert older['agent_session'] and older.pop('instructions'), older
     state_file.write_text(json.dumps(older))
+    # A fresh conversation opens with the notes; a linked notes file is not read.
+    notes = manager_log.parent / 'notes'
+    notes.mkdir(exist_ok=True)
+    (notes / 'decisions.md').write_text('- 2026-10-22 keep the store in sqlite\n')
+    outside = manager_log.parent.parent / 'outside-context.md'
+    outside.write_text('SECRET-OUTSIDE\n')
+    (notes / 'context.md').unlink(missing_ok=True)
+    (notes / 'context.md').symlink_to(outside)
     changed = js('task', 'say', 'STATUS after the change')
     reply_to(changed['id'])
     fresh = [t for t in traces() if t.get('launch') and t.get('manager')][-1]
@@ -929,8 +938,11 @@ def run(wsx, wsxd, work, owned):
     rotated = [e for e in manager_entries() if e['kind'] == 'rotated']
     assert rotated[-1].get('reason') == "the manager's instructions changed", rotated
     opened = turn_with('STATUS after the change')['message']
-    assert opened.startswith('Handover (this is a new conversation') and 'You: noted events' in opened, opened
+    # ^ The notes come first, then the handover.
+    assert opened.startswith("The owner's decisions") and '\n\nHandover (this is a new conversation' in opened and 'You: noted events' in opened, opened
     assert "fold the ledger's memos into your context first" in opened, opened
+    assert 'keep the store in sqlite' in opened and 'SECRET-OUTSIDE' not in opened, opened
+    (notes / 'context.md').unlink()
     # ^ The config named no manager model since the restart: the manager defaults to opus.
     assert fresh['model'] == 'opus', fresh
     resumed = js('task', 'say', 'STATUS again')

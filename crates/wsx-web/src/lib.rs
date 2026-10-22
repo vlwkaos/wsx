@@ -32,6 +32,11 @@ use std::{
 /// How long open event streams and terminals may keep a stopping server.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
+/// A lock that a panicked holder left poisoned still guards whole state: take it.
+pub(crate) fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|lock| lock.into_inner())
+}
+
 pub(crate) struct App {
     site: site::Site,
     devices: devices::Devices,
@@ -69,7 +74,7 @@ pub(crate) struct Page {
 impl App {
     /// The devices with an open page that shows `project` now.
     pub(crate) fn showing(&self, project: u64) -> Vec<String> {
-        let pages = self.pages.lock().unwrap_or_else(|lock| lock.into_inner());
+        let pages = crate::locked(&self.pages);
         pages
             .values()
             .filter(|page| page.streams > 0 && page.project == Some(project))
@@ -80,7 +85,7 @@ impl App {
     /// The pinned root of a granted project. The caller checked the grant.
     fn root(&self, project: &Path) -> std::io::Result<Arc<sandbox::Root>> {
         let path = std::fs::canonicalize(project)?;
-        let mut roots = self.roots.lock().unwrap_or_else(|lock| lock.into_inner());
+        let mut roots = crate::locked(&self.roots);
         if let Some(root) = roots.get(&path) {
             return Ok(root.clone());
         }

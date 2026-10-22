@@ -51,6 +51,10 @@ impl Fault {
     pub fn not_found() -> Self {
         Self::new(404, "not_found", "not found in this site's projects")
     }
+    /// wsxd answered with a response the request never gets.
+    pub fn protocol(what: &str) -> Self {
+        Self::new(502, "daemon_protocol", what)
+    }
 }
 
 pub type Outcome<T> = Result<T, Fault>;
@@ -82,11 +86,7 @@ pub fn call(client: &Client, request: &Request) -> Outcome<Response> {
 pub fn snapshot(client: &Client) -> Outcome<Snapshot> {
     match call(client, &Request::Snapshot)? {
         Response::Snapshot(snapshot) => Ok(snapshot),
-        _ => Err(Fault::new(
-            502,
-            "daemon_protocol",
-            "unexpected snapshot response",
-        )),
+        _ => Err(Fault::protocol("unexpected snapshot response")),
     }
 }
 
@@ -211,11 +211,7 @@ pub fn exchange_view(exchange: &AgentExchange) -> Value {
 pub fn exchanges(client: &Client, pane: Option<PaneId>) -> Outcome<Vec<AgentExchange>> {
     match call(client, &Request::AgentExchangeList { pane_id: pane })? {
         Response::AgentExchanges(list) => Ok(list),
-        _ => Err(Fault::new(
-            502,
-            "daemon_protocol",
-            "unexpected exchange list",
-        )),
+        _ => Err(Fault::protocol("unexpected exchange list")),
     }
 }
 
@@ -475,12 +471,7 @@ impl Chat {
                 metadata.mtime(),
                 metadata.len(),
             );
-            let known = self
-                .produced
-                .lock()
-                .unwrap_or_else(|lock| lock.into_inner())
-                .get(&key)
-                .cloned();
+            let known = crate::locked(&self.produced).get(&key).cloned();
             let entry = match known {
                 Some(None) => continue,
                 Some(Some(hash)) => media.by_hash(&hash),
@@ -491,9 +482,7 @@ impl Chat {
                 None => {
                     let name = relative.file_name().unwrap_or_default().to_string_lossy();
                     let entry = media.ingest(file, &name).ok();
-                    self.produced
-                        .lock()
-                        .unwrap_or_else(|lock| lock.into_inner())
+                    crate::locked(&self.produced)
                         .insert(key, entry.as_ref().map(|entry| entry.hash.clone()));
                     let Some(entry) = entry else {
                         continue;
@@ -718,10 +707,7 @@ impl Chat {
         }
         let now = crate::devices::now_unix_ms();
         {
-            let mut resuming = self
-                .resuming
-                .lock()
-                .unwrap_or_else(|lock| lock.into_inner());
+            let mut resuming = crate::locked(&self.resuming);
             if resuming
                 .get(&session)
                 .is_some_and(|since| now.saturating_sub(*since) < RESUME_WAIT_MS)
@@ -744,10 +730,7 @@ impl Chat {
             .map(drop)
         });
         if let Err(fault) = typed {
-            self.resuming
-                .lock()
-                .unwrap_or_else(|lock| lock.into_inner())
-                .remove(&session);
+            crate::locked(&self.resuming).remove(&session);
             return Err(fault);
         }
         app.queue.notice(
@@ -788,12 +771,7 @@ impl Chat {
             }
             return false;
         };
-        let resumed = self
-            .resuming
-            .lock()
-            .unwrap_or_else(|lock| lock.into_inner())
-            .remove(&session)
-            .is_some();
+        let resumed = crate::locked(&self.resuming).remove(&session).is_some();
         let line = match app
             .queue
             .see_conversation(session, &agent.provider, session_ref)
@@ -811,10 +789,7 @@ impl Chat {
     /// Deliver the oldest waiting message of a session when the agent can take it.
     /// Returns whether the queue changed.
     pub fn deliver_queued(&self, app: &App, target: &Target) -> bool {
-        let _one = self
-            .delivering
-            .lock()
-            .unwrap_or_else(|lock| lock.into_inner());
+        let _one = crate::locked(&self.delivering);
         let session = target.session_id.0;
         let settled = self.settle_rounds(app, target);
         let Some(queued) = app.queue.next(session) else {
@@ -825,10 +800,7 @@ impl Chat {
         });
         if !ready {
             // ^ An agent started again for this message that never reported fails it, with why.
-            let mut resuming = self
-                .resuming
-                .lock()
-                .unwrap_or_else(|lock| lock.into_inner());
+            let mut resuming = crate::locked(&self.resuming);
             let stale = resuming.get(&session).is_some_and(|since| {
                 crate::devices::now_unix_ms().saturating_sub(*since) >= RESUME_WAIT_MS
             });
@@ -989,11 +961,7 @@ impl Chat {
         };
         match call(client, &request)? {
             Response::AgentExchange { exchange, .. } => Ok(exchange_view(&exchange)),
-            _ => Err(Fault::new(
-                502,
-                "daemon_protocol",
-                "unexpected exchange response",
-            )),
+            _ => Err(Fault::protocol("unexpected exchange response")),
         }
     }
 
@@ -1038,11 +1006,7 @@ impl Chat {
             },
         )? {
             Response::AgentExchange { exchange, .. } => Ok(exchange_view(&exchange)),
-            _ => Err(Fault::new(
-                502,
-                "daemon_protocol",
-                "unexpected exchange response",
-            )),
+            _ => Err(Fault::protocol("unexpected exchange response")),
         }
     }
 }
@@ -1204,10 +1168,10 @@ fn shell_words(argv: &[String]) -> String {
 /// The most items of the conversation before the current one a full timeline begins with.
 const EARLIER_ITEMS: usize = 60;
 
-/// The server's notices among the conversation's items, each before the first item saved
-/// after it. A partial answer (`from`) gets only the notices from its first item on.
 const NEW_CONVERSATION: &str = "New conversation";
 
+/// The server's notices among the conversation's items, each before the first item saved
+/// after it. A partial answer (`from`) gets only the notices from its first item on.
 fn with_notices(
     mut items: Vec<Value>,
     notices: Vec<crate::queue::Notice>,

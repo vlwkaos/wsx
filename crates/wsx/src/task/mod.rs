@@ -111,7 +111,7 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Bring a ready task onto the default branch by the project's landing policy
+    /// Bring a ready task onto the default branch
     Land {
         task: String,
         #[arg(short, long)]
@@ -1011,7 +1011,7 @@ fn send(dir: &TaskDir, request: HostRequest, json: bool) -> Result<()> {
 /// One request to the task's host; a host that does not answer is an error that says how
 /// to restart it.
 fn ask_host(dir: &TaskDir, request: &HostRequest) -> Result<HostResponse> {
-    // ^ A pr landing pushes and calls gh on the host before it answers.
+    // ^ A landing rebases the branch on the host before it answers.
     let timeout = if matches!(request, HostRequest::Land { .. }) {
         LAND_TIMEOUT
     } else {
@@ -1595,7 +1595,7 @@ fn actor() -> Actor {
     }
 }
 
-/// What `allow` and `revoke` name: one tool rule, host or folder.
+/// What `allow` names: one tool rule, host or folder.
 #[derive(clap::Args)]
 pub struct AccessArgs {
     /// A tool rule that is not Bash, such as WebSearch

@@ -385,8 +385,6 @@ div.steps .steps-summary { cursor: default; }
   background: var(--color-surface); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-sheet);
 }
 .app:not([data-wide]) .composer:focus-within .composer-row { border-color: var(--color-accent); }
-/* The paperclip is drawn 12 px inside its 44 px button: it lines up with the field's text. */
-.app:not([data-wide]) .composer-row > .icon-button:first-child { margin-left: calc(-1 * var(--space-3)); }
 .app:not([data-wide]) .composer-input { order: -1; flex-basis: 100%; }
 .app:not([data-wide]) .composer-field, .app:not([data-wide]) .composer-mirror { min-height: 0; padding: 0; }
 .app:not([data-wide]) .composer-row > .icon-button,
@@ -623,8 +621,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .task-overlaps { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); overflow-wrap: anywhere; }
 .fold-head { display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; min-height: var(--size-control); padding-block: 0; }
 .fold-head::-webkit-details-marker { display: none; }
-.task-fold[open] > .fold-head .icon { transform: rotate(90deg); }
-.timeline[open] > .fold-head .icon { transform: rotate(90deg); }
+:is(.task-fold, .timeline)[open] > .fold-head .icon { transform: rotate(90deg); }
 .timeline-list { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); }
 .timeline-list li { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: var(--space-3); }
 .timeline-what { font-weight: var(--font-weight-medium); }
@@ -658,7 +655,6 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .file-body .actions { border-top: var(--border-width) solid var(--color-hairline); }
 .file-markdown { padding: var(--space-4); container-type: inline-size; }
 .file-source { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.file-source[hidden] { display: none; }
 
 /* Hook: .options, .facts, .pair-form, .sheet, .notice — settings, pairing, dialog, notices. */
 .options { display: flex; flex-direction: column; }

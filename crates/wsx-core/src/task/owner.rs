@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 /// Set to `manager` for the manager's agent; its commands then ask instead of acting.
 pub const ACTOR_ENV: &str = "WSX_TASK_ACTOR";
 pub const HOST_TIMEOUT: Duration = Duration::from_secs(15);
-/// A landing under the `pr` policy pushes and calls gh before the host answers.
+/// A landing rebases the branch onto the default branch before the host answers.
 pub const LAND_TIMEOUT: Duration = Duration::from_secs(300);
 const MANAGER_START_WAIT: Duration = Duration::from_secs(10);
 /// Most characters of an action's answer kept in its decision.

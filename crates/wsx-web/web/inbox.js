@@ -31,7 +31,8 @@ export function SessionRow({ session, now, current, place }) {
       setRemoving(false);
     }
   };
-  const removable = can("session_start");
+  // ^ The owner's hand session of a task closes with its handback (docs/tasks.md "By hand").
+  const removable = can("session_start") && !/^task-\d+-hand$/.test(session.label);
   // Remove is filled only while the row is slid open, so closed rows show no red buttons.
   const slid = (event) => event.currentTarget.toggleAttribute("data-open", event.currentTarget.scrollLeft > 0);
   return html`

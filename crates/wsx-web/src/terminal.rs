@@ -62,7 +62,7 @@ fn error_frame(code: &str, message: &str) -> Value {
     json!({ "type": "error", "code": code, "message": message })
 }
 
-fn frames(message: TerminalRawServerMessage) -> Vec<Frame> {
+fn frames(message: TerminalRawServerMessage, input: bool) -> Vec<Frame> {
     match message {
         TerminalRawServerMessage::Replay(replay) => vec![
             Frame::Control(json!({
@@ -77,9 +77,11 @@ fn frames(message: TerminalRawServerMessage) -> Vec<Frame> {
                 json!({ "type": "resized", "rows": rows, "cols": cols }),
             )]
         }
-        TerminalRawServerMessage::ClipboardWrite(bytes) => vec![Frame::Control(
+        // ^ The program sets the device's clipboard only for a device that may type into it.
+        TerminalRawServerMessage::ClipboardWrite(bytes) if input => vec![Frame::Control(
             json!({ "type": "clipboard", "text": String::from_utf8_lossy(&bytes) }),
         )],
+        TerminalRawServerMessage::ClipboardWrite(_) => Vec::new(),
         TerminalRawServerMessage::Exited => vec![Frame::End(json!({ "type": "exited" }))],
         TerminalRawServerMessage::Error(error) => vec![Frame::End(match error.code.as_str() {
             "lease_transferred" | "lease_lost" => json!({ "type": "control_lost" }),
@@ -136,7 +138,7 @@ fn pump(
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => return,
         };
-        for frame in frames(message) {
+        for frame in frames(message, attach.input) {
             let last = matches!(frame, Frame::End(_));
             if updates.blocking_send(frame).is_err() || last {
                 return;

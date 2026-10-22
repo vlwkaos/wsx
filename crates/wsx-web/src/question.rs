@@ -32,7 +32,7 @@ fn screen(client: &Client, pane: PaneId) -> Outcome<Vec<String>> {
         Response::View { mut frames, .. } => frames.pop(),
         _ => None,
     }
-    .ok_or_else(|| Fault::new(502, "daemon_protocol", "the terminal frame is unavailable"))?;
+    .ok_or_else(|| Fault::protocol("the terminal frame is unavailable"))?;
     let mut rows: Vec<String> = frame
         .cells
         .chunks(usize::from(frame.cols).max(1))
@@ -239,13 +239,7 @@ pub fn with_lease<T>(
                 format!("{}: {}", error.code, error.message),
             ))
         }
-        Ok(_) => {
-            return Err(Fault::new(
-                502,
-                "daemon_protocol",
-                "unexpected lease response",
-            ))
-        }
+        Ok(_) => return Err(Fault::protocol("unexpected lease response")),
         Err(error) => {
             return Err(Fault::new(
                 503,

@@ -183,9 +183,29 @@ fn scan(
     found: &mut Vec<(String, String, Source)>,
     skipped: &mut usize,
 ) {
-    for (stem, path) in entries(&root.join("skills")) {
+    // ^ A repository's own `.claude` may hold symlinks to any file of the user, and a listed
+    // description goes to paired devices: there only real files and folders count. The
+    // user's and the plugins' folders are the user's own and often linked.
+    let real = source == Source::Project;
+    let is = |path: &Path, dir: bool| {
+        let meta = if real {
+            fs::symlink_metadata(path)
+        } else {
+            fs::metadata(path)
+        };
+        meta.is_ok_and(|meta| if dir { meta.is_dir() } else { meta.is_file() })
+    };
+    if real && !is(root, true) {
+        return;
+    }
+    let skills = root.join("skills");
+    let skill_entries = match !real || is(&skills, true) {
+        true => entries(&skills),
+        false => Vec::new(),
+    };
+    for (stem, path) in skill_entries {
         let file = path.join("SKILL.md");
-        if !file.is_file() {
+        if !is(&path, true) || !is(&file, false) {
             continue;
         }
         match read_head(&file).and_then(|head| parse(&head, &stem)) {
@@ -196,10 +216,16 @@ fn scan(
         }
     }
     let commands = root.join("commands");
+    if real && !is(&commands, true) {
+        return;
+    }
     for (stem, path) in entries(&commands) {
-        if path.is_dir() {
+        if is(&path, true) {
             // One folder level: `commands/frontend/component.md` is `frontend:component`.
-            for (inner, file) in entries(&path) {
+            for (inner, file) in entries(&path)
+                .into_iter()
+                .filter(|(_, file)| is(file, false))
+            {
                 command_file(
                     &file,
                     &format!("{prefix}{stem}:"),
@@ -209,7 +235,7 @@ fn scan(
                     skipped,
                 );
             }
-        } else {
+        } else if is(&path, false) {
             command_file(&path, prefix, &stem, source, found, skipped);
         }
     }

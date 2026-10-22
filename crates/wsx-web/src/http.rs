@@ -199,7 +199,7 @@ impl Limiter {
         Self(Mutex::new(HashMap::new()))
     }
     fn allow(&self, key: &str, burst: f64, per_minute: f64) -> bool {
-        let mut buckets = self.0.lock().unwrap_or_else(|lock| lock.into_inner());
+        let mut buckets = crate::locked(&self.0);
         let now = Instant::now();
         let (tokens, seen) = buckets.entry(key.to_owned()).or_insert((burst, now));
         *tokens =
@@ -442,7 +442,7 @@ async fn session(State(app): State<Shared>, Paired(device): Paired) -> Json<Valu
             "id": app.assets.build,
             "started_unix": app.started_unix,
         },
-        "upgrade_failed": app.upgrade_failed.lock().unwrap_or_else(|lock| lock.into_inner()).clone(),
+        "upgrade_failed": crate::locked(&app.upgrade_failed).clone(),
     }))
 }
 
@@ -450,7 +450,7 @@ async fn session(State(app): State<Shared>, Paired(device): Paired) -> Json<Valu
 struct StreamSlot(Shared, String);
 impl StreamSlot {
     fn take(app: &Shared, key: String, what: &str) -> Outcome<Self> {
-        let mut streams = app.streams.lock().unwrap_or_else(|lock| lock.into_inner());
+        let mut streams = crate::locked(&app.streams);
         let count = streams.entry(key.clone()).or_insert(0);
         if *count >= MAX_STREAMS_PER_DEVICE {
             return Err(Fault::new(
@@ -465,11 +465,7 @@ impl StreamSlot {
 }
 impl Drop for StreamSlot {
     fn drop(&mut self) {
-        let mut streams = self
-            .0
-            .streams
-            .lock()
-            .unwrap_or_else(|lock| lock.into_inner());
+        let mut streams = crate::locked(&self.0.streams);
         if let Some(count) = streams.get_mut(&self.1) {
             *count = count.saturating_sub(1);
         }
@@ -501,7 +497,7 @@ fn page_id(id: &str) -> Outcome<()> {
 struct PageSlot(Shared, String);
 impl PageSlot {
     fn take(app: &Shared, id: String, device: &str) -> Outcome<Self> {
-        let mut pages = app.pages.lock().unwrap_or_else(|lock| lock.into_inner());
+        let mut pages = crate::locked(&app.pages);
         let page = pages.entry(id.clone()).or_insert_with(|| crate::Page {
             device: device.to_string(),
             streams: 0,
@@ -521,7 +517,7 @@ impl PageSlot {
 }
 impl Drop for PageSlot {
     fn drop(&mut self) {
-        let mut pages = self.0.pages.lock().unwrap_or_else(|lock| lock.into_inner());
+        let mut pages = crate::locked(&self.0.pages);
         if let Some(page) = pages.get_mut(&self.1) {
             page.streams = page.streams.saturating_sub(1);
             if page.streams == 0 {
@@ -546,7 +542,7 @@ async fn presence(
     Json(input): Json<PresenceInput>,
 ) -> Outcome<Json<Value>> {
     page_id(&input.page)?;
-    let mut pages = app.pages.lock().unwrap_or_else(|lock| lock.into_inner());
+    let mut pages = crate::locked(&app.pages);
     let page = pages
         .get_mut(&input.page)
         .filter(|page| page.device == device.id)
@@ -572,11 +568,7 @@ async fn events(
     // The slot is released when the stream task ends, however it ends.
     let slot = StreamSlot::take(&app, device.id, "pages")?;
     let mut source = app.events.subscribe();
-    let first = app
-        .workspace
-        .lock()
-        .unwrap_or_else(|lock| lock.into_inner())
-        .clone();
+    let first = crate::locked(&app.workspace).clone();
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(64);
     tokio::spawn(async move {
         let _page = page;
@@ -644,10 +636,11 @@ async fn session_remove(
             .agent
             .as_ref()
             .map(|agent| agent.provider.as_str());
-        let task_label = target
-            .label
-            .strip_prefix("task-")
-            .is_some_and(|rest| rest == "manager" || rest.parse::<u32>().is_ok());
+        // ^ `task-<n>`, `task-manager` and the owner's `task-<n>-hand` (docs/tasks.md "By hand").
+        let task_label = target.label.strip_prefix("task-").is_some_and(|rest| {
+            let number = rest.strip_suffix("-hand").unwrap_or(rest);
+            rest == "manager" || number.parse::<u32>().is_ok()
+        });
         if matches!(provider, Some("task" | "manager")) || task_label {
             return Err(Fault::new(
                 409,
@@ -669,11 +662,7 @@ async fn session_remove(
             },
         )? {
             DaemonResponse::Ack { .. } => Ok(Json(json!({ "removed": session }))),
-            _ => Err(Fault::new(
-                502,
-                "daemon_protocol",
-                "unexpected close response",
-            )),
+            _ => Err(Fault::protocol("unexpected close response")),
         }
     })
 }
@@ -742,11 +731,7 @@ async fn session_start(
             },
         )? {
             DaemonResponse::Created { id, .. } => Ok(Json(json!({ "session_id": id }))),
-            _ => Err(Fault::new(
-                502,
-                "daemon_protocol",
-                "unexpected create response",
-            )),
+            _ => Err(Fault::protocol("unexpected create response")),
         }
     })
 }
@@ -803,16 +788,7 @@ async fn send(
     Json(input): Json<SendInput>,
 ) -> Outcome<Json<Value>> {
     need(&app, Panel::Chat)?;
-    if !app
-        .limiter
-        .allow(&format!("send:{}", device.id), 10.0, 20.0)
-    {
-        return Err(Fault::new(
-            429,
-            "rate_limited",
-            "too many messages; wait a moment",
-        ));
-    }
+    act_budget(&app, &device)?;
     blocking(|| {
         app.chat
             .submit(&app, session, &input.text, &input.attachments)
@@ -855,16 +831,7 @@ async fn answer(
 ) -> Outcome<Json<Value>> {
     need(&app, Panel::Chat)?;
     // The same budget as messages: an answer is also typed into the agent.
-    if !app
-        .limiter
-        .allow(&format!("send:{}", device.id), 10.0, 20.0)
-    {
-        return Err(Fault::new(
-            429,
-            "rate_limited",
-            "too many messages; wait a moment",
-        ));
-    }
+    act_budget(&app, &device)?;
     blocking(|| app.chat.answer(&app, session, &input).map(Json))
 }
 

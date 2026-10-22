@@ -133,7 +133,7 @@ impl Media {
 
     /// Remove expired entries. Called by the server's sweeper and before each write.
     pub fn sweep(&self) -> usize {
-        let mut index = self.index.lock().unwrap_or_else(|lock| lock.into_inner());
+        let mut index = crate::locked(&self.index);
         let cutoff = now_unix().saturating_sub(self.limits.ttl_seconds);
         let before = index.len();
         while let Some(position) = index.iter().position(|entry| entry.created_unix <= cutoff) {
@@ -189,7 +189,7 @@ impl Media {
         };
         let hash = hex(&upload.hasher.clone().finalize());
         self.sweep();
-        let mut index = self.index.lock().unwrap_or_else(|lock| lock.into_inner());
+        let mut index = crate::locked(&self.index);
         // The same bytes again: keep the entry and restart its TTL, so a file that
         // was just attached is not removed moments later.
         if let Some(existing) = index.iter_mut().find(|entry| entry.hash == hash) {
@@ -238,7 +238,7 @@ impl Media {
 
     /// Look up `<hash>.<ext>`. Returns the entry and the seconds it has left.
     pub fn get(&self, file_name: &str) -> Option<(Entry, u64)> {
-        let index = self.index.lock().unwrap_or_else(|lock| lock.into_inner());
+        let index = crate::locked(&self.index);
         let entry = index
             .iter()
             .find(|entry| entry.file_name() == file_name)?
@@ -248,7 +248,7 @@ impl Media {
     }
 
     pub fn by_hash(&self, hash: &str) -> Option<Entry> {
-        let index = self.index.lock().unwrap_or_else(|lock| lock.into_inner());
+        let index = crate::locked(&self.index);
         let cutoff = now_unix().saturating_sub(self.limits.ttl_seconds);
         index
             .iter()

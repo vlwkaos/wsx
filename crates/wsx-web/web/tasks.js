@@ -4,7 +4,7 @@
 // go straight to wsx.
 import { api } from "./api.js";
 import { html, Icon, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
-import { can, events, leaveFor, shows, state, touch, update, useStore } from "./store.js";
+import { can, events, leaveFor, readMap, shows, state, touch, update, useStore, writeMap } from "./store.js";
 import { Back, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, release, Suggestions, uploadFiles } from "./chat.js";
 import { Bubble, conversation, StatusLine, Typing } from "./bubbles.js";
@@ -334,12 +334,12 @@ function Reservoir({ project, items, tasks, checking }) {
 
 // Unsent manager messages by project, kept on this device.
 const DRAFTS_KEY = "wsx-manager-drafts";
-const readDrafts = () => { try { return JSON.parse(localStorage.getItem(DRAFTS_KEY)) ?? {}; } catch { return {}; } };
+const readDrafts = () => readMap(DRAFTS_KEY);
 function keepDraft(project, text) {
   const all = readDrafts();
   if (text) all[project] = text;
   else delete all[project];
-  try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(all)); } catch { /* kept in the field only */ }
+  writeMap(DRAFTS_KEY, all);
 }
 
 // While the word at the caret is `#` and digits or letters: the tasks that match it.
@@ -462,11 +462,11 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
 
 // When this device last left each project's screen, for "since you left".
 const LEFT_KEY = "wsx-project-left";
-const readLeft = () => { try { return JSON.parse(localStorage.getItem(LEFT_KEY)) ?? {}; } catch { return {}; } };
+const readLeft = () => readMap(LEFT_KEY);
 function noteLeft(project) {
   const all = readLeft();
   all[project] = Date.now();
-  try { localStorage.setItem(LEFT_KEY, JSON.stringify(all)); } catch { /* no line next time */ }
+  writeMap(LEFT_KEY, all);
 }
 // Shorter absences are a glance away, not an absence.
 const AWAY_MS = 60_000;
