@@ -404,52 +404,6 @@ pub fn fast_forward(main: &Path, default_branch: &str, old_tip: &str, commit: &s
     }
 }
 
-const REMOTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-
-fn remote_git(repo: &Path, args: &[&str]) -> Result<()> {
-    let output =
-        crate::git::output_with_timeout_limit(git_cmd(repo).args(args), REMOTE_TIMEOUT, 64 * 1024)
-            .with_context(|| format!("git {} did not finish", args.join(" ")))?;
-    if !output.status.success() {
-        bail!(
-            "git {} exited {}: {}",
-            args.join(" "),
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(())
-}
-
-/// Push the working copy's HEAD to `branch` on `remote`, replacing an earlier push of it.
-pub fn push(working_copy: &Path, remote: &str, branch: &str) -> Result<()> {
-    remote_git(
-        working_copy,
-        &[
-            "push",
-            "--quiet",
-            "--force-with-lease",
-            remote,
-            &format!("HEAD:refs/heads/{branch}"),
-        ],
-    )
-}
-
-/// Fetch `branch` from `remote` and return its remote-tracking ref.
-pub fn fetch(main: &Path, remote: &str, branch: &str) -> Result<String> {
-    let tracking = format!("refs/remotes/{remote}/{branch}");
-    remote_git(
-        main,
-        &[
-            "fetch",
-            "--quiet",
-            remote,
-            &format!("+refs/heads/{branch}:{tracking}"),
-        ],
-    )?;
-    Ok(tracking)
-}
-
 /// Commits on `branch` that `target` does not have.
 pub fn unlanded_commits(main: &Path, branch: &str, target: &str) -> Result<u32> {
     let count = git(

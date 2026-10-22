@@ -26,10 +26,10 @@ use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{overlaps, project_tasks, task_summary, MAX_RESULT_READ_BYTES};
 use wsx_core::task::{
-    brief, call_host, copy, now_unix_ms,
+    call_host, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
     Access, Actor, DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind,
-    Phase, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
+    TaskRecord, TaskState, MAX_MESSAGE_BYTES,
 };
 use wsx_core::{ops, runtime};
 
@@ -46,23 +46,12 @@ pub enum TaskCmd {
         /// Start from this branch, tag or commit instead of the default branch
         #[arg(long, value_name = "REF")]
         from: Option<String>,
-        /// Build at once, without a brief first (logged); only when the owner asks for it
-        #[arg(long)]
-        no_brief: bool,
         /// A short title in plain words (at most 60 characters); default: the prompt's first line
         #[arg(long)]
         title: Option<String>,
         /// The worker's model; default: tasks.agent.model (opus)
         #[arg(long, value_name = "NAME")]
         model: Option<String>,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Build a briefed task against its rewritten prompt
-    Start {
-        task: String,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -107,16 +96,6 @@ pub enum TaskCmd {
     },
     /// Let a task reach a host, write a folder or use a tool (never Bash), and resume it when blocked
     Allow {
-        task: String,
-        #[command(flatten)]
-        access: AccessArgs,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Take back a grant from the task's next turn on
-    Revoke {
         task: String,
         #[command(flatten)]
         access: AccessArgs,
@@ -295,9 +274,7 @@ impl TaskCmd {
             | Self::Steer { json, .. }
             | Self::Add { json, .. }
             | Self::Allow { json, .. }
-            | Self::Revoke { json, .. }
             | Self::Stop { json, .. }
-            | Self::Start { json, .. }
             | Self::Land { json, .. }
             | Self::Hand { json, .. }
             | Self::Handback { json, .. }
@@ -348,7 +325,7 @@ pub enum CheckAction {
         #[arg(long)]
         all: bool,
     },
-    /// The item failed: a new task fixes it (no brief), linked to the item
+    /// The item failed: a new task fixes it, linked to the item
     Fail {
         id: String,
         /// What is wrong; the new task gets it
@@ -362,7 +339,6 @@ pub fn run(command: TaskCmd) -> Result<()> {
         TaskCmd::New {
             prompt,
             from,
-            no_brief,
             title,
             model,
             project,
@@ -370,17 +346,11 @@ pub fn run(command: TaskCmd) -> Result<()> {
         } => new(
             prompt,
             from.as_deref(),
-            no_brief,
             title.as_deref(),
             model.as_deref(),
             project.as_deref(),
             json,
         ),
-        TaskCmd::Start {
-            task,
-            project,
-            json,
-        } => send(&open(project.as_deref(), &task)?, HostRequest::Start, json),
         TaskCmd::List { project, all, json } => list(project.as_deref(), all, json),
         TaskCmd::Show {
             task,
@@ -433,25 +403,6 @@ pub fn run(command: TaskCmd) -> Result<()> {
                 );
             }
             let request = HostRequest::Grant {
-                access,
-                project: project_wide,
-                by: actor(),
-            };
-            owner::prepare_request(&dir.project_id, &request)?;
-            send(&dir, request, json)
-        }
-        TaskCmd::Revoke {
-            task,
-            access,
-            project,
-            json,
-        } => {
-            let dir = open(project.as_deref(), &task)?;
-            let (access, project_wide) = access.into_access();
-            if acting_as_manager() && project_wide {
-                bail!("a project-wide grant is the owner's to revoke; ask the owner");
-            }
-            let request = HostRequest::Revoke {
                 access,
                 project: project_wide,
                 by: actor(),
@@ -690,7 +641,6 @@ fn print_json(value: &serde_json::Value) -> Result<()> {
 fn new(
     prompt: PromptSource,
     from: Option<&str>,
-    no_brief: bool,
     title: Option<&str>,
     model: Option<&str>,
     project: Option<&str>,
@@ -699,7 +649,8 @@ fn new(
     let prompt = prompt.read(MAX_MESSAGE_BYTES)?;
     let title = title.map(wsx_core::task::view::checked_title).transpose()?;
     let model = model.map(wsx_core::task::view::checked_model).transpose()?;
-    let (dir, record, state) = create(prompt, from, no_brief, title, model, None, project)?;
+    let (dir, record, answered) = create(prompt, from, title, model, None, project)?;
+    let state = answered.unwrap_or(TaskState::Working);
     let id = dir.id;
     if json {
         return print_json(&json!({
@@ -715,22 +666,22 @@ fn new(
     println!("task t{id} {}", state.as_str());
     println!("branch:       {}", record.branch);
     println!("working copy: {}", record.working_copy.display());
-    if state == TaskState::Starting {
+    if answered.is_none() {
         println!("the host has not answered yet; check it with `wsx task show {id}`");
     }
     Ok(())
 }
 
-/// Create a task and start its host; `fixes` names the "To check" item it fixes.
+/// Create a task and start its host; `fixes` names the "To check" item it fixes. The state
+/// is none when the host did not answer in time.
 fn create(
     prompt: String,
     from: Option<&str>,
-    no_brief: bool,
     title: Option<String>,
     model: Option<String>,
     fixes: Option<String>,
     project: Option<&str>,
-) -> Result<(TaskDir, TaskRecord, TaskState)> {
+) -> Result<(TaskDir, TaskRecord, Option<TaskState>)> {
     let (config, workspace) = load_full_workspace()?;
     let project = resolve_project(&workspace, project)?;
     let settings = load_task_config(&project.path)
@@ -749,13 +700,6 @@ fn create(
             }
         };
     let now = now_unix_ms();
-    let skipped = if no_brief {
-        Some("flag")
-    } else if !settings.brief {
-        Some("config")
-    } else {
-        None
-    };
     let record = TaskRecord {
         id,
         project: project.name.clone(),
@@ -769,22 +713,15 @@ fn create(
         adapter: settings.adapter,
         model: model.unwrap_or(settings.model),
         tools: settings.tools,
-        phase: if skipped.is_some() {
-            Phase::Build
-        } else {
-            Phase::Brief
-        },
         sandbox: settings.sandbox,
         grants: Vec::new(),
         checks: settings.checks,
         check_timeout_secs: settings.check_timeout_secs,
         agent_session: None,
-        state: TaskState::Starting,
+        state: TaskState::Working,
         revision: 0,
         paths: Vec::new(),
         paths_total: 0,
-        pr_url: None,
-        pr_revision: None,
         title,
         fixes,
         created_by: actor(),
@@ -802,17 +739,6 @@ fn create(
             mode: MessageKind::Prompt,
             text: prompt,
         })?;
-        if let Some(by) = skipped {
-            dir.append(LogEvent::BriefSkipped {
-                by: by.into(),
-                actor: if acting_as_manager() {
-                    "manager"
-                } else {
-                    "owner"
-                }
-                .into(),
-            })?;
-        }
         let exe = std::env::current_exe().context("cannot find the wsx binary")?;
         let argv = vec![
             exe.to_string_lossy().into_owned(),
@@ -837,7 +763,7 @@ fn create(
             "task t{id} did not start; its working copy and branch were removed"
         )));
     }
-    let state = wait_for_host(&dir).map_or(TaskState::Starting, |response| response.state);
+    let state = wait_for_host(&dir).map(|response| response.state);
     Ok((dir, record, state))
 }
 
@@ -890,7 +816,7 @@ fn check(action: Option<CheckAction>, project: Option<&str>, json: bool) -> Resu
     Ok(())
 }
 
-/// A failed item starts a task that fixes it, without a brief, and links both.
+/// A failed item starts a task that fixes it and links both.
 fn fail_check(project: &str, project_id: &str, id: &str, note: &str) -> Result<CheckItem> {
     let note = note.trim();
     if note.is_empty() {
@@ -914,7 +840,6 @@ fn fail_check(project: &str, project_id: &str, id: &str, note: &str) -> Result<C
     let (dir, ..) = create(
         prompt,
         None,
-        true,
         Some(fix_title(&item.check)),
         None,
         Some(item.id.clone()),
@@ -1005,19 +930,15 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
     let report = dir.file(REPORT_FILE);
     let report = report.exists().then_some(report);
-    let brief_text = dir.file(store::BRIEF_TEXT_FILE);
-    let brief_text = brief_text.exists().then_some(brief_text);
     let host = call_host(&dir.socket_path(), &HostRequest::Status, HOST_TIMEOUT).is_ok();
     let mut summary = task_summary(dir, &record);
     if json {
         summary["record"] = serde_json::to_value(&record)?;
         summary["result"] = result.unwrap_or(serde_json::Value::Null);
         summary["report"] = json!(report);
-        summary["brief"] = json!(brief::read(dir));
-        summary["brief_text"] = json!(brief_text);
         summary["log"] = json!(dir.file(store::LOG_FILE));
         summary["host_running"] = json!(host);
-        if record.state == TaskState::ByHand {
+        if record.waits_on(wsx_core::task::WaitOn::Hand) {
             summary["hand"] = json!({
                 "session": hand_label(record.id),
                 "context": hand_context(dir, &record),
@@ -1059,9 +980,6 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
             result["result"]["status"].as_str().unwrap_or_default(),
             result["result"]["summary"].as_str().unwrap_or_default()
         );
-    }
-    if let Some(brief_text) = brief_text {
-        println!("brief:        {}", brief_text.display());
     }
     if let Some(report) = report {
         println!("report:       {}", report.display());
@@ -1121,7 +1039,7 @@ fn ask_host(dir: &TaskDir, request: &HostRequest) -> Result<HostResponse> {
     }
 }
 
-/// The session the owner works in while a task is `by_hand`.
+/// The session the owner works in while a task waits on `hand`.
 fn hand_label(id: u32) -> String {
     format!("task-{id}-hand")
 }
@@ -1170,7 +1088,7 @@ fn hand(dir: &TaskDir, json: bool) -> Result<()> {
             ops::create_session_launch(&load_config()?, &record.working_copy, label.clone(), argv, None)
                 .with_context(|| {
                     format!(
-                        "task t{} is by_hand, but session {label} did not open; work in {} or run `wsx task handback {}`",
+                        "task t{} is worked by hand, but session {label} did not open; work in {} or run `wsx task handback {}`",
                         record.id,
                         record.working_copy.display(),
                         record.id
@@ -1278,7 +1196,6 @@ fn hand_context(dir: &TaskDir, record: &TaskRecord) -> serde_json::Value {
         "branch": record.branch,
         "head": git(&["rev-parse", "HEAD"]),
         "status": status,
-        "brief": existing(store::BRIEF_TEXT_FILE),
         "report": existing(REPORT_FILE),
         "result": existing(RESULT_FILE),
     })
@@ -1481,9 +1398,7 @@ fn deploy(
     let _running = store::lock_deploys(&project_id)?;
     let revision = match commit {
         Some(commit) => commit.to_string(),
-        None => default_ref(&main, &settings, true).map_err(|error| {
-            error.context(format!("nothing was run or recorded for this {name}"))
-        })?,
+        None => default_ref(&main),
     };
     if if_new {
         let tip = copy::resolve_commit(&main, &revision)?;
@@ -1569,7 +1484,7 @@ fn deploy(
 fn deployed(project: Option<&str>, json: bool) -> Result<()> {
     let (project_name, main) = project_entry(project)?;
     let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
-    let mut out = deploy_status(&project_name, &main, &settings, true)?;
+    let mut out = deploy_status(&project_name, &main, &settings)?;
     let default = out["default_branch"]
         .as_str()
         .unwrap_or_default()

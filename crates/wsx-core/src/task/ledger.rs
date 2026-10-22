@@ -4,9 +4,9 @@
 use super::view::{
     attention, check_outcomes, clip, overlaps, project_tasks, read_result, task_summary,
 };
-use super::{brief, checks, copy, store, DeployKind, Phase, TaskRecord};
+use super::{checks, copy, store, DeployKind, TaskRecord, WaitOn};
 use crate::config::project::load_task_config;
-use crate::model::workspace::{LandPolicy, TaskConfig};
+use crate::model::workspace::TaskConfig;
 use crate::ops;
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -67,20 +67,12 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
                 "checks": result.as_ref().map(check_outcomes).unwrap_or_default().into_iter()
                     .map(|(command, outcome)| json!({ "command": command, "outcome": outcome }))
                     .collect::<Vec<_>>(),
-                "pr_url": record.pr_url,
-                "phase": record.phase,
-                // ^ What the task waits for that is not a person, such as free disk.
+                // ^ What a waiting task waits for: the owner, a grant, disk or a person's hands.
                 "waiting": record.waiting,
-                // ^ What a blocked task asks for; the manager may grant it (docs/tasks.md "Permissions").
-                "asks": (record.state == super::TaskState::Blocked)
+                // ^ What it asks to be granted; the manager may grant it (docs/tasks.md "Permissions").
+                "asks": record.waits_on(WaitOn::Permission)
                     .then(|| result.as_ref().map(|r| r["asks"].clone()))
-                    .flatten()
-                    .filter(|asks| asks.as_array().is_some_and(|asks| !asks.is_empty())),
-                // ^ A brief that waits for the owner's start: its version and build prompt.
-                "brief": (record.phase == Phase::Brief).then(|| brief::read(dir)).flatten().map(|file| json!({
-                    "version": file.version,
-                    "rewritten_prompt": clip(&file.brief.rewritten_prompt, SUMMARY_CHARS),
-                })),
+                    .flatten(),
             }),
         ));
     }
@@ -95,7 +87,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         // ^ Open "To check" items: a release waits for them (docs/tasks.md "To check").
         "to_check": checks::open_items(&project_id).map_or(0, |items| items.len()),
         "main": main_checkout(main),
-        "deploys": deploy_status(project_name, main, &settings, false).unwrap_or(Value::Null),
+        "deploys": deploy_status(project_name, main, &settings).unwrap_or(Value::Null),
         "recent": recent.into_iter().map(|(_, row)| row).collect::<Vec<_>>(),
         "open": open.iter().map(|(_, _, row)| row.clone()).collect::<Vec<_>>(),
         "open_omitted": 0,
@@ -147,19 +139,9 @@ fn main_checkout(main: &Path) -> Value {
     })
 }
 
-/// The ref a deploy defaults to and `behind` counts against. Under the `pr` policy the
-/// local default branch can lag the remote, so the remote one is used: fetched first when
-/// `fetch`, else as last fetched.
-pub fn default_ref(main: &Path, settings: &TaskConfig, fetch: bool) -> Result<String> {
-    let default_branch = ops::detect_default_branch(main);
-    match settings.land_policy {
-        LandPolicy::LocalMerge => Ok(format!("refs/heads/{default_branch}")),
-        LandPolicy::Pr if fetch => copy::fetch(main, &settings.land_remote, &default_branch),
-        LandPolicy::Pr => Ok(format!(
-            "refs/remotes/{}/{default_branch}",
-            settings.land_remote
-        )),
-    }
+/// The ref a deploy defaults to and `behind` counts against: the local default branch.
+pub fn default_ref(main: &Path) -> String {
+    format!("refs/heads/{}", ops::detect_default_branch(main))
 }
 
 pub fn kind_name(kind: DeployKind) -> &'static str {
@@ -175,10 +157,9 @@ pub fn deploy_status(
     project_name: &str,
     main: &Path,
     settings: &TaskConfig,
-    fetch: bool,
 ) -> Result<serde_json::Value> {
     let records = store::read_deploys(&store::project_id(project_name, main))?;
-    let default = default_ref(main, settings, fetch)?;
+    let default = default_ref(main);
     let tip = copy::resolve_commit(main, &default).ok();
     let mut out = json!({ "default_branch": default, "tip": tip });
     for kind in [DeployKind::Deploy, DeployKind::Release] {

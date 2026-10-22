@@ -81,7 +81,6 @@ pub fn action_name(action: ApprovalAction) -> &'static str {
         ApprovalAction::Deploy => "deploy",
         ApprovalAction::Release => "release",
         ApprovalAction::Discard => "close --discard",
-        ApprovalAction::Start => "start",
         ApprovalAction::Grant => "allow",
     }
 }
@@ -124,29 +123,24 @@ pub fn approval_label(request: &ApprovalLine) -> String {
     }
 }
 
-/// A grant or revoke for the whole project changes `grants.json` before the task's host
-/// hears of it, so the next agent start of every task has it. Other requests pass.
+/// A grant for the whole project changes `grants.json` before the task's host hears of
+/// it, so the next agent start of every task has it. Other requests pass.
 /// ref: docs/tasks.md "Permissions"
 pub fn prepare_request(project_id: &str, request: &HostRequest) -> Result<()> {
-    let (access, project, grant) = match request {
-        HostRequest::Grant {
-            access, project, ..
-        } => (access, *project, true),
-        HostRequest::Revoke {
-            access, project, ..
-        } => (access, *project, false),
-        _ => return Ok(()),
+    let HostRequest::Grant {
+        access, project, ..
+    } = request
+    else {
+        return Ok(());
     };
     access.check().map_err(anyhow::Error::msg)?;
-    if project {
+    if *project {
         store::change_grants(project_id, |grants| {
             let present = grants.contains(access);
-            if grant && !present {
+            if !present {
                 grants.push(access.clone());
-            } else if !grant && present {
-                grants.retain(|kept| kept != access);
             }
-            grant != present
+            !present
         })?;
     }
     Ok(())
@@ -205,10 +199,6 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
             task.unwrap_or_default().to_string(),
             "--discard".into(),
         ]),
-        // ^ The host refuses a task that is no longer briefed; the outcome records why.
-        ApprovalAction::Start => {
-            argv.extend(["start".into(), task.unwrap_or_default().to_string()]);
-        }
         ApprovalAction::Grant => {
             let grant = grant.context("the request names no grant")?;
             argv.extend(["allow".into(), task.unwrap_or_default().to_string()]);

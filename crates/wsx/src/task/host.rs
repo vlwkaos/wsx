@@ -14,16 +14,14 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::git::{git_cmd, output_with_timeout_limit};
-use wsx_core::model::workspace::LandPolicy;
 use wsx_core::runtime;
 use wsx_core::task::{
-    brief::{self, Brief, BriefFile},
     checks,
     copy::{self, Rebase},
     now_unix_ms, report,
-    store::{self, TaskDir, BRIEF_FILE, BRIEF_TEXT_FILE, REPORT_FILE, RESULT_FILE},
-    view, Access, Actor, CheckResult, HostRequest, HostResponse, LogEvent, MessageKind, Phase,
-    TaskRecord, TaskState, WorkerResult, MAX_MESSAGE_BYTES,
+    store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
+    view, Access, Actor, CheckResult, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord,
+    TaskState, WaitOn, Waiting, WorkerResult, MAX_MESSAGE_BYTES,
 };
 
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -67,7 +65,7 @@ struct Host {
     turn_active: bool,
     /// Adds sent during a turn or a check, delivered when it ends.
     pending: VecDeque<String>,
-    /// A grant, a revoke or a phase change takes effect when the agent next starts.
+    /// A grant takes effect when the agent next starts.
     restart_needed: bool,
     stop_requested: bool,
     /// The result of the latest turn, until its checks end.
@@ -144,7 +142,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
                 .unwrap_or_else(|_| broker::refused("the task host is closing".into()))
         })
     });
-    // ^ A pr landing pushes and calls gh, each bounded by 120 s.
+    // ^ A land answers after its rebase, bounded by git's own timeouts.
     std::thread::spawn(move || {
         hosting::serve(
             listener,
@@ -163,10 +161,11 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
     if let (true, Some(binary)) = (host.reexec, &host.binary) {
         let error = binary.exec();
         host.say(&format!("cannot start the new wsx: {error}"));
+        let reason = format!("cannot start the replaced wsx binary: {error}");
         host.log(LogEvent::Stopped {
-            reason: format!("cannot start the replaced wsx binary: {error}"),
+            reason: reason.clone(),
         });
-        host.set_state(TaskState::Stopped);
+        host.wait(WaitOn::Owner, reason);
     }
     host.report_agent(false);
     result
@@ -245,19 +244,18 @@ impl Host {
 
     fn resume_state(&mut self) -> Result<()> {
         match self.record.state {
-            TaskState::Starting => {
+            // ^ A new task: no conversation yet, so its first turn has not run.
+            TaskState::Working if self.record.agent_session.is_none() => {
                 let prompt = self.dir.prompt()?.context("the task log has no prompt")?;
-                match self.record.phase {
-                    Phase::Brief => self.start_turn(&brief_request(&prompt)),
-                    Phase::Build => self.start_turn(&prompt),
-                }
+                self.start_turn(&prompt);
             }
             TaskState::Working | TaskState::Checking => {
                 // ^ A restarted pane cannot rejoin a turn of the process it lost.
+                let reason = "the host restarted during a turn".to_string();
                 self.log(LogEvent::Stopped {
-                    reason: "the host restarted during a turn".into(),
+                    reason: reason.clone(),
                 });
-                self.set_state(TaskState::Stopped);
+                self.wait(WaitOn::Owner, reason);
             }
             state => {
                 self.set_state(state);
@@ -268,13 +266,10 @@ impl Host {
 
     fn handle(&mut self, request: HostRequest) -> HostResponse {
         // ^ While the owner works by hand nothing else writes the copy or its conversation.
-        let held = self.record.state == TaskState::ByHand
+        let held = self.record.waits_on(WaitOn::Hand)
             && matches!(
                 request,
-                HostRequest::Steer { .. }
-                    | HostRequest::Add { .. }
-                    | HostRequest::Start
-                    | HostRequest::Land {}
+                HostRequest::Steer { .. } | HostRequest::Add { .. } | HostRequest::Land {}
             );
         let message = match request {
             _ if held => Err(self.by_hand_refusal()),
@@ -286,13 +281,7 @@ impl Host {
                 project,
                 by,
             } => self.grant(access, project, by),
-            HostRequest::Revoke {
-                access,
-                project,
-                by,
-            } => self.revoke(access, project, by),
             HostRequest::Stop => self.stop(),
-            HostRequest::Start => self.start(false),
             HostRequest::Land {} => self.land(false),
             HostRequest::Hand => self.hand(),
             HostRequest::Handback => self.handback(),
@@ -351,11 +340,6 @@ impl Host {
 
     fn deliver_or_queue(&mut self, text: String) -> String {
         self.check_retries = 0;
-        // ^ Before the build, an add is a talk-through: the worker answers and may revise the brief.
-        let text = match self.record.phase {
-            Phase::Brief => talk_request(&text),
-            Phase::Build => text,
-        };
         if self.turn_active || self.record.state == TaskState::Checking {
             self.pending.push_back(text);
             "queued until the current turn ends".into()
@@ -387,7 +371,10 @@ impl Host {
             .filter(|ask| !self.record.grants.contains(ask) && !project_grants.contains(ask))
             .map(Access::describe)
             .collect();
-        let blocked = self.record.state == TaskState::Blocked && !self.turn_active;
+        // ^ A task that waits for a grant or an answer resumes; disk and hands wait on.
+        let blocked = (self.record.waits_on(WaitOn::Permission)
+            || self.record.waits_on(WaitOn::Owner))
+            && !self.turn_active;
         if blocked && !open.is_empty() {
             self.save();
             return Ok(format!("may now {what}; still asks to {}", open.join(", ")));
@@ -405,21 +392,6 @@ impl Host {
         }
         self.save();
         Ok(format!("may now {what} from the next turn"))
-    }
-
-    fn revoke(&mut self, access: Access, project: bool, by: Actor) -> Result<String> {
-        self.record.grants.retain(|kept| *kept != access);
-        self.log(LogEvent::Revoked {
-            access: access.clone(),
-            project,
-            by,
-        });
-        self.restart_needed = true;
-        self.save();
-        Ok(format!(
-            "may no longer {} from the next turn",
-            access.describe()
-        ))
     }
 
     /// A refused write as the folder to grant: `~/.cargo` for a hidden folder in home,
@@ -487,7 +459,7 @@ impl Host {
         self.log(LogEvent::Stopped {
             reason: "stopped by request".into(),
         });
-        self.set_state(TaskState::Stopped);
+        self.wait(WaitOn::Owner, "stopped by request".into());
         Ok(if dropped == 0 {
             "stopped; the next add resumes the same conversation".into()
         } else {
@@ -508,22 +480,11 @@ impl Host {
     /// ref: docs/tasks.md "By hand"
     fn hand(&mut self) -> Result<String> {
         let state = self.record.state;
-        if self.record.phase != Phase::Build
-            || !state.is_open()
-            || matches!(
-                state,
-                TaskState::Starting | TaskState::Briefed | TaskState::Checking | TaskState::ByHand
-            )
-        {
+        if !state.is_open() || state == TaskState::Checking || self.record.waits_on(WaitOn::Hand) {
             bail!(
-                "task t{} is {}{}; a build that is not starting or checking is worked by hand",
+                "task t{} is {}; an open task that is not checking is worked by hand",
                 self.record.id,
-                state.as_str(),
-                if self.record.phase == Phase::Brief {
-                    " in its brief"
-                } else {
-                    ""
-                }
+                self.state_words()
             );
         }
         if let Some(agent) = self.agent.take() {
@@ -538,7 +499,7 @@ impl Host {
             by: Actor::Owner,
             dropped,
         });
-        self.set_waiting(TaskState::ByHand, None);
+        self.wait(WaitOn::Hand, "the owner works on it by hand".into());
         Ok(match dropped {
             0 => "the owner works on it by hand".into(),
             n => format!("the owner works on it by hand; dropped {n} queued message(s)"),
@@ -548,11 +509,11 @@ impl Host {
     /// The owner's commits become the next revision: its checks run and the task becomes
     /// ready or failed as after a worker result, so auto land and the close after it apply.
     fn handback(&mut self) -> Result<String> {
-        if self.record.state != TaskState::ByHand {
+        if !self.record.waits_on(WaitOn::Hand) {
             bail!(
                 "task t{} is {}; only a task worked by hand is handed back",
                 self.record.id,
-                self.record.state.as_str()
+                self.state_words()
             );
         }
         let changes = copy::tracked_changes(&self.record.working_copy)?;
@@ -586,7 +547,7 @@ impl Host {
         self.last_result = Some(result);
         // ^ A failed check of the owner's work goes back to the owner, not to the worker.
         self.check_retries = MAX_CHECK_RETRIES;
-        self.record.state = TaskState::Working;
+        self.set_state(TaskState::Working);
         self.start_checks();
         Ok(format!(
             "handed back with {commits} commit(s); the checks run on the next revision"
@@ -612,35 +573,9 @@ impl Host {
             .unwrap_or(0))
     }
 
-    /// Build the latest brief's rewritten prompt. The agent restarts with the build's
-    /// tools and result schema and resumes the conversation, so it keeps what it read.
-    /// `auto`: the brief has no open questions, so the host starts it (docs/tasks.md "Brief").
-    fn start(&mut self, auto: bool) -> Result<String> {
-        if self.record.phase != Phase::Brief || self.record.state != TaskState::Briefed {
-            bail!(
-                "task t{} is {}; only a briefed task starts",
-                self.record.id,
-                self.record.state.as_str()
-            );
-        }
-        let file = brief::read(&self.dir).context("the task has no readable brief")?;
-        let prompt = file.brief.rewritten_prompt.trim().to_string();
-        self.check_retries = 0;
-        self.record.phase = Phase::Build;
-        self.restart_needed = true;
-        self.log(LogEvent::Started {
-            version: file.version,
-            prompt: prompt.clone(),
-            auto,
-        });
-        self.say(&format!("build of brief v{} started", file.version));
-        self.start_turn(&build_request(file.version, &prompt));
-        Ok(format!("started the build of brief v{}", file.version))
-    }
-
     fn start_turn(&mut self, text: &str) {
         // ^ Every path that starts a turn ends here: none runs while the owner works by hand.
-        if self.record.state == TaskState::ByHand {
+        if self.record.waits_on(WaitOn::Hand) {
             self.say("by hand: no agent turn starts until handback");
             return;
         }
@@ -659,9 +594,7 @@ impl Host {
             // and execs it once the caller has its answer; the new host resumes the agent.
             self.dir.write_file(HANDOFF_FILE, text.as_bytes())?;
             self.reexec = true;
-            if self.record.state != TaskState::Conflict {
-                self.set_state(TaskState::Working);
-            }
+            self.set_state(TaskState::Working);
             self.say("the wsx binary was replaced: the host restarts with it");
             return Ok(());
         }
@@ -688,6 +621,7 @@ impl Host {
                     &self.record,
                     &project_grants,
                     &hosting::real_socket_path(&self.dir.broker_path()),
+                    &self.dir.path,
                 )?,
                 &session,
                 resume,
@@ -703,10 +637,7 @@ impl Host {
         self.turn_active = true;
         self.stops.clear();
         self.reached.clear();
-        // ^ A conflict turn shows as `conflict` until its result, so lists say why it runs.
-        if self.record.state != TaskState::Conflict {
-            self.set_state(TaskState::Working);
-        }
+        self.set_state(TaskState::Working);
         Ok(())
     }
 
@@ -749,10 +680,6 @@ impl Host {
 
     fn on_result(&mut self, turn: TurnResult) {
         self.turn_active = false;
-        if self.record.phase == Phase::Brief {
-            self.on_brief(turn);
-            return;
-        }
         let mut result = turn
             .structured
             .and_then(|value| serde_json::from_value::<WorkerResult>(value).ok())
@@ -793,7 +720,13 @@ impl Host {
                 denials: turn.denials,
                 asks: self.last_asks.clone(),
             });
-            self.set_state(TaskState::Blocked);
+            // ^ What the sandbox stopped is granted; anything else is the owner's to answer.
+            if self.last_asks.is_empty() {
+                self.wait(WaitOn::Owner, first_line(&result.summary).to_string());
+            } else {
+                let asks: Vec<String> = self.last_asks.iter().map(Access::describe).collect();
+                self.wait(WaitOn::Permission, format!("needs to {}", asks.join(", ")));
+            }
             // ^ A worker stopped by a full disk continues once there is space again.
             self.wait_for_disk(DiskWait::Turn(
                 "The disk was full; there is space again. Continue the task where it stopped."
@@ -828,76 +761,6 @@ impl Host {
         self.start_checks();
     }
 
-    /// A brief turn ended: save the brief and wait for the owner, or fail with the reason.
-    /// Edits the worker tried are denied and logged with the brief.
-    fn on_brief(&mut self, turn: TurnResult) {
-        let saved = match turn.structured {
-            Some(value) => serde_json::from_value::<Brief>(value)
-                .map_err(|error| format!("the brief does not parse: {error}"))
-                .and_then(|brief| brief.check().map(|()| brief))
-                .and_then(|brief| self.save_brief(brief).map_err(|error| format!("{error:#}"))),
-            None if turn.text.is_empty() => Err(format!(
-                "the agent ended with {} and no brief",
-                turn.subtype
-            )),
-            None => Err(turn.text),
-        };
-        match saved {
-            Ok((version, answer, questions)) => {
-                self.say(&format!("brief v{version} ready"));
-                self.log(LogEvent::Brief {
-                    version,
-                    answer,
-                    usage: Some(turn.usage),
-                    denials: turn.denials,
-                });
-                self.set_state(TaskState::Briefed);
-                // ^ Nothing to ask: build at once. A message that waits is a talk-through
-                // the worker answers first.
-                if questions == 0 && self.pending.is_empty() {
-                    if let Err(error) = self.start(true) {
-                        self.say(&format!("cannot start the build: {error:#}"));
-                    }
-                }
-            }
-            Err(reason) => {
-                self.say(&format!("no brief: {}", first_line(&reason)));
-                self.log(LogEvent::Result {
-                    status: "failed".into(),
-                    summary: reason,
-                    usage: Some(turn.usage),
-                    denials: turn.denials,
-                });
-                self.set_state(TaskState::Failed);
-            }
-        }
-        self.deliver_pending();
-    }
-
-    /// Write `brief.json` and `brief.md` as the next version; returns it, the answer and
-    /// the number of open questions.
-    fn save_brief(&self, brief: Brief) -> Result<(u32, String, usize)> {
-        let version = brief::read(&self.dir).map_or(1, |file| file.version + 1);
-        let answer = brief.answer.trim().to_string();
-        let questions = brief
-            .open_questions
-            .iter()
-            .filter(|question| !question.trim().is_empty())
-            .count();
-        let file = BriefFile { version, brief };
-        let bytes = serde_json::to_vec_pretty(&file)?;
-        if bytes.len() > brief::MAX_BRIEF_BYTES {
-            bail!("the brief is larger than {} bytes", brief::MAX_BRIEF_BYTES);
-        }
-        let title = view::title(&self.dir, &self.record).unwrap_or_default();
-        self.dir.write_file(BRIEF_FILE, &bytes)?;
-        self.dir.write_file(
-            BRIEF_TEXT_FILE,
-            brief::render(self.record.id, &title, &file).as_bytes(),
-        )?;
-        Ok((version, answer, questions))
-    }
-
     /// Hold `what` while less than `tasks.minFreeGb` is free: the task shows the reason and
     /// resumes by itself, without spending a check retry. True when it waits.
     /// ref: docs/tasks.md "Checks, revisions and report"
@@ -915,7 +778,7 @@ impl Host {
         self.log(LogEvent::DiskWait { free_mb, min_gb });
         let reason = disk_full(free_mb, min_gb);
         self.say(&reason);
-        self.set_waiting(TaskState::Blocked, Some(reason));
+        self.wait(WaitOn::Disk, reason);
         true
     }
 
@@ -926,7 +789,6 @@ impl Host {
         let Some(what) = self.disk_wait.take() else {
             return;
         };
-        self.set_waiting(self.record.state, None);
         match what {
             DiskWait::Turn(text) => self.start_turn(&text),
             DiskWait::Checks => self.start_checks(),
@@ -942,9 +804,18 @@ impl Host {
             .map(|free_mb| (free_mb, min_gb))
     }
 
-    fn set_waiting(&mut self, state: TaskState, waiting: Option<String>) {
-        self.record.waiting = waiting;
-        self.set_state(state);
+    /// Wait for `on`: nothing runs until it happens. ref: docs/tasks.md "Store"
+    fn wait(&mut self, on: WaitOn, reason: String) {
+        self.record.waiting = Some(Waiting { on, reason });
+        self.set_state(TaskState::Waiting);
+    }
+
+    /// "ready", or "waiting (the owner works on it by hand)".
+    fn state_words(&self) -> String {
+        match &self.record.waiting {
+            Some(waiting) => format!("waiting ({})", waiting.reason),
+            None => self.record.state.as_str().into(),
+        }
     }
 
     /// `wsx task check-run [<n>...]` from the worker: the declared checks (all, or by number)
@@ -957,10 +828,7 @@ impl Host {
             [task, sub, numbers @ ..] if task == "task" && sub == "check-run" => numbers,
             _ => return refuse("a worker may run only `wsx task check-run [<n>...]`".into()),
         };
-        if self.record.phase != Phase::Build {
-            return refuse("checks run once the build has started".into());
-        }
-        if self.record.state == TaskState::ByHand {
+        if self.record.waits_on(WaitOn::Hand) {
             return refuse(format!("{:#}", self.by_hand_refusal()));
         }
         let checks = &self.record.checks;
@@ -1032,7 +900,7 @@ impl Host {
     }
 
     fn start_checks(&mut self) {
-        if self.record.state == TaskState::ByHand {
+        if self.record.waits_on(WaitOn::Hand) {
             return;
         }
         if self.wait_for_disk(DiskWait::Checks) {
@@ -1059,10 +927,7 @@ impl Host {
             self.wait_for_disk(DiskWait::Checks);
             if self.disk_wait.is_none() {
                 self.disk_wait = Some(DiskWait::Checks);
-                self.set_waiting(
-                    TaskState::Blocked,
-                    Some("Disk full: a check ran out of space".into()),
-                );
+                self.wait(WaitOn::Disk, "Disk full: a check ran out of space".into());
             }
             return;
         }
@@ -1187,7 +1052,7 @@ impl Host {
         log.iter()
             .rev()
             .find_map(|entry| match &entry.event {
-                LogEvent::Result { usage, .. } | LogEvent::Brief { usage, .. } => usage.as_ref(),
+                LogEvent::Result { usage, .. } => usage.as_ref(),
                 _ => None,
             })
             .map_or(0, |usage| usage.session_cost_micro_usd)
@@ -1220,11 +1085,6 @@ impl Host {
     /// Land the current revision on the default branch (docs/tasks.md "Landing").
     /// `auto`: the checks of this revision just passed, so the task is not yet `ready`.
     fn land(&mut self, auto: bool) -> Result<String> {
-        let settings =
-            load_task_config(&self.record.project_path).map_err(|error| anyhow::anyhow!(error))?;
-        if settings.land_policy == LandPolicy::Pr {
-            return self.land_pr(auto, &settings.land_remote);
-        }
         self.require_ready(auto)?;
         self.require_committed()?;
         let working_copy = self.record.working_copy.clone();
@@ -1240,7 +1100,6 @@ impl Host {
                     onto: tip.clone(),
                     paths: paths.clone(),
                 });
-                self.set_state(TaskState::Conflict);
                 self.start_turn(&format!(
                     "Landing needs branch {branch} rebased onto {tip} (the current {default}). \
                      Run `git rebase {tip}`, resolve the conflicts in {paths}, `git add` them and \
@@ -1291,95 +1150,6 @@ impl Host {
             );
         }
         Ok(())
-    }
-
-    /// `pr` policy: push and open a pull request, then on a later land read whether it merged.
-    fn land_pr(&mut self, auto: bool, remote: &str) -> Result<String> {
-        let Some(url) = self.record.pr_url.clone() else {
-            self.require_ready(auto)?;
-            self.require_committed()?;
-            copy::push(&self.record.working_copy, remote, &self.record.branch)?;
-            let title = view::title(&self.dir, &self.record)
-                .unwrap_or_else(|| format!("Task t{}", self.record.id));
-            let title: String = title.chars().take(PR_TITLE_CHARS).collect();
-            let report_path = self.dir.file(REPORT_FILE);
-            let created = run_gh(
-                &self.record.working_copy,
-                &[
-                    "pr",
-                    "create",
-                    "--base",
-                    &self.record.default_branch,
-                    "--head",
-                    &self.record.branch,
-                    "--title",
-                    &title,
-                    "--body-file",
-                    &report_path.to_string_lossy(),
-                ],
-            )?;
-            let url = created
-                .lines()
-                .rev()
-                .map(str::trim)
-                .find(|line| line.starts_with("https://") || line.starts_with("http://"))
-                .with_context(|| {
-                    format!("gh pr create printed no URL; the branch was pushed to {remote}")
-                })?
-                .to_string();
-            return Ok(self.pushed(url, "opened"));
-        };
-        let ready = auto || self.record.state == TaskState::Ready;
-        if !ready && self.record.state != TaskState::InReview {
-            bail!(
-                "task t{} is {}; land it again when it is ready or in review",
-                self.record.id,
-                self.record.state.as_str()
-            );
-        }
-        let view = run_gh(
-            &self.record.working_copy,
-            &["pr", "view", &url, "--json", "state,mergeCommit"],
-        )?;
-        let view: serde_json::Value =
-            serde_json::from_str(&view).context("gh pr view did not print JSON")?;
-        match view["state"].as_str().unwrap_or_default() {
-            "MERGED" => {
-                let commit = view["mergeCommit"]["oid"]
-                    .as_str()
-                    .filter(|oid| !oid.is_empty())
-                    .context("gh reports the PR merged but names no merge commit")?
-                    .to_string();
-                self.landed(&commit);
-                Ok(format!("{url} merged as {commit:.12}; landed"))
-            }
-            "CLOSED" => {
-                self.log(LogEvent::PrClosed { url: url.clone() });
-                self.set_state(TaskState::InReview);
-                Ok(format!(
-                    "{url} was closed without a merge; reopen it, or close the task with --discard"
-                ))
-            }
-            _ if ready && self.record.pr_revision != Some(self.record.revision) => {
-                self.require_committed()?;
-                copy::push(&self.record.working_copy, remote, &self.record.branch)?;
-                Ok(self.pushed(url, "updated"))
-            }
-            state => Ok(format!("{url} is still {}", state.to_ascii_lowercase())),
-        }
-    }
-
-    /// Record that the current revision is on the pull request at `url`.
-    fn pushed(&mut self, url: String, verb: &str) -> String {
-        let revision = self.record.revision;
-        self.record.pr_url = Some(url.clone());
-        self.record.pr_revision = Some(revision);
-        self.log(LogEvent::InReview {
-            url: url.clone(),
-            revision,
-        });
-        self.set_state(TaskState::InReview);
-        format!("{verb} {url} with r{revision}")
     }
 
     fn default_tip(&self) -> Result<String> {
@@ -1555,6 +1325,9 @@ impl Host {
     fn set_state(&mut self, state: TaskState) {
         let changed = self.record.state != state;
         self.record.state = state;
+        if state != TaskState::Waiting {
+            self.record.waiting = None;
+        }
         self.save();
         if changed {
             self.say(&format!("state {}", state.as_str()));
@@ -1584,15 +1357,17 @@ impl Host {
         let Some(pane_id) = self.record.pane_id else {
             return;
         };
-        let state = match self.record.state {
-            TaskState::Starting
-            | TaskState::Working
-            | TaskState::Checking
-            | TaskState::Conflict => runtime::AgentState::Working,
-            TaskState::Blocked | TaskState::Briefed => runtime::AgentState::Blocked,
-            TaskState::Ready | TaskState::InReview | TaskState::Landed => runtime::AgentState::Done,
-            TaskState::Failed => runtime::AgentState::Error,
-            TaskState::Stopped | TaskState::ByHand | TaskState::Closed => runtime::AgentState::Idle,
+        let state = match (
+            self.record.state,
+            self.record.waiting.as_ref().map(|w| w.on),
+        ) {
+            (TaskState::Working | TaskState::Checking, _) => runtime::AgentState::Working,
+            (TaskState::Waiting, Some(WaitOn::Permission | WaitOn::Owner)) => {
+                runtime::AgentState::Blocked
+            }
+            (TaskState::Waiting, _) | (TaskState::Closed, _) => runtime::AgentState::Idle,
+            (TaskState::Ready | TaskState::Landed, _) => runtime::AgentState::Done,
+            (TaskState::Failed, _) => runtime::AgentState::Error,
         };
         if let Some(problem) = hosting::report_pane(pane_id, "task", state, attached) {
             self.say(&problem);
@@ -1608,30 +1383,6 @@ fn disk_full(free_mb: u64, min_gb: u64) -> String {
     )
 }
 
-const PR_TITLE_CHARS: usize = 72;
-const GH_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// Run `gh` in `cwd` and return its stdout.
-fn run_gh(cwd: &Path, args: &[&str]) -> Result<String> {
-    let mut command = std::process::Command::new("gh");
-    command
-        .args(args)
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::null())
-        .env("GH_PROMPT_DISABLED", "1");
-    let label = args[..2.min(args.len())].join(" ");
-    let output = output_with_timeout_limit(&mut command, GH_TIMEOUT, 256 * 1024)
-        .with_context(|| format!("gh {label} did not finish"))?;
-    if !output.status.success() {
-        bail!(
-            "gh {label} exited {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
 fn check_message(text: &str) -> Result<()> {
     if text.trim().is_empty() {
         bail!("the message is empty");
@@ -1640,52 +1391,6 @@ fn check_message(text: &str) -> Result<()> {
         bail!("the message is larger than the limit of {MAX_MESSAGE_BYTES} bytes");
     }
     Ok(())
-}
-
-/// The first turn of a task with a brief: the owner's request and what the brief must answer.
-/// ref: docs/tasks.md "Brief"
-fn brief_request(prompt: &str) -> String {
-    format!(
-        "Before anything is built, write a brief for this task. Change no file: only read, \
-         search and run read-only commands.\n\n\
-         The owner asks:\n\n{prompt}\n\n\
-         Answer as a top professional in this field would, for this repository:\n\
-         1. additions: what a top professional would do here that the owner is not asking for, \
-         and why it matters here.\n\
-         2. raw_material: the rawest primary sources they would start from instead of what was \
-         already digested: code paths, logs, specs, data, upstream docs. Give paths or links, not \
-         summaries, and check that they exist.\n\
-         3. methods: the specific methods and tools they would use, by name.\n\
-         4. independent_check: what, other than you or the owner, would show the result is \
-         right: a test, a real run, a measurement, a reference implementation, a standard.\n\
-         5. concepts: each term or technique the owner is likely new to here, in two or three \
-         plain sentences; none when there is none.\n\
-         6. rewritten_prompt: the owner's request rewritten to ask for exactly that. It becomes \
-         the build prompt, so it must be complete on its own.\n\
-         7. open_questions: only the questions whose answer changes the work.\n\
-         8. diagram: a small diagram of the flow or structure the task changes, as one \
-         ```mermaid fenced block, or a ```text block when Mermaid does not fit; about 15 \
-         lines at most.\n\
-         Leave answer empty. Write for the owner: short sentences and plain words."
-    )
-}
-
-/// An owner's reply to a brief.
-fn talk_request(text: &str) -> String {
-    format!(
-        "The owner replies to the brief:\n\n{text}\n\n\
-         Answer the owner in `answer`: explain, and teach a concept when they ask about one. \
-         Then return the whole brief again, revised where the reply changes it. Still change no file."
-    )
-}
-
-/// The first build turn after `start`.
-fn build_request(version: u32, prompt: &str) -> String {
-    format!(
-        "The owner approved brief v{version}. The build starts now; you may edit files. \
-         Build this:\n\n{prompt}\n\n\
-         Commit your changes with git before you finish, and return the result."
-    )
 }
 
 fn first_line(text: &str) -> &str {

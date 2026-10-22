@@ -5,7 +5,7 @@ import { isAgent, listedSessions, stateOf, useStore } from "./store.js";
 import { needTone, needWords } from "./tasks.js";
 
 // The order of need kinds, most urgent first, as the server ranks them.
-const URGENCY = { blocked: 0, conflict: 1, failed: 1, approval: 2, brief: 2, verify: 3, land: 4, review: 4 };
+const URGENCY = { waiting: 0, failed: 1, approval: 2, land: 3 };
 
 // Projects with needs first, by their most urgent kind and then their oldest need of that
 // kind; then the rest by their last activity (tasks, manager or agent sessions), newest first.

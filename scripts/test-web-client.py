@@ -2557,7 +2557,6 @@ capabilities = ["terminal_view"]
 # ^ `minFreeGb: 0`: tasks must not wait on this machine's free disk. `approve: true` keeps
 # the manager's land an approval request for the journey.
 TASK_CONFIG = '''tasks:
-  brief: false
   minFreeGb: 0
   land: { auto: false, approve: true }
   agent:
@@ -2616,7 +2615,7 @@ def task_journey(args):
         # ^ Its own TMPDIR: the task host sockets' folder goes away with the run.
         # `calm` has no task and no session: home lists it last. With --browser, `busy`, `quiet` and
         # `gone` have agent sessions and no task: home words their rows from the sessions.
-        # `plans` builds with a brief first (docs/tasks.md "Brief"): its tasks wait as briefed.
+        # `plans` has a task that waits for the owner's answer and one ready to land.
         home, state, project, other, calm, plans, bin_dir, tmp = (work / name for name in ('h', 's', 'demo', 'ui', 'calm', 'plans', 'bin', 't'))
         for folder in (home, state, project, other, calm, plans, bin_dir, tmp):
             folder.mkdir(mode=0o700)
@@ -2653,8 +2652,7 @@ def task_journey(args):
                     assert os.path.realpath(top) == os.path.realpath(folder), ('fixture git escaped', folder, top)
                     # ^ ui's manager has a name (docs/tasks.md "Config"); the others read "Manager".
                     (folder / 'wsx.config.yml').write_text(
-                        TASK_CONFIG.replace('  brief: false\n', '') if folder == plans
-                        else TASK_CONFIG.replace('{ model: fake-manager }', '{ name: Atlas, model: fake-manager }') if folder == other
+                        TASK_CONFIG.replace('{ model: fake-manager }', '{ name: Atlas, model: fake-manager }') if folder == other
                         else TASK_CONFIG)
                     (folder / 'README').write_text('fixture\n')
                 subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', *argv],
@@ -2681,27 +2679,19 @@ def task_journey(args):
         assert js('task', 'new', 'NEEDS_HOST crates.io WORK m.txt', '-p', 'demo')['id'] == 1
         assert js('task', 'new', 'WORK a.txt HV', '-p', 'demo')['id'] == 2
         assert js('task', 'new', 'WORK b.txt', '-p', 'demo')['id'] == 3
-        wait_state(1, 'blocked')
+        wait_state(1, 'waiting')
         wait_state(2, 'ready')
         wait_state(3, 'ready')
-        # Two briefs in `plans`: #1 for the page, #2 for the API. #1 is a real brief
-        # (scripts/fixtures/task-brief.json) with an open question whose second paragraph a model
-        # indented by four spaces, and a method with a fenced command.
-        real_brief = json.loads((Path(__file__).parent / 'fixtures' / 'task-brief.json').read_text())
-        real_brief['open_questions'] = ['Keep the old list?\n\n    An indented paragraph that is prose, not code.', *real_brief['open_questions']]
-        real_brief['methods'] = [*real_brief['methods'], 'Run the check:\n\n```sh\ncargo nextest run\n```']
-        brief_file = work / 'brief.json'
-        brief_file.write_text(json.dumps(real_brief))
-        assert js('task', 'new', 'Let me jump between projects from the keyboard, without the mouse REWRITE WORK keys.txt\nBRIEF_FILE %s QUESTION' % brief_file,
-                  '-p', 'plans')['id'] == 1
-        assert js('task', 'new', 'QUESTION REWRITE WORK two.txt', '-p', 'plans')['id'] == 2
-        for n in (1, 2):
-            wait(lambda: js('task', 'show', n, '-p', 'plans')['state'] == 'briefed', 'plans #%d briefed' % n)
+        # `plans`: #1 waits for the owner (its worker was refused a tool and asks), #2 is ready.
+        assert js('task', 'new', 'Let me jump between projects from the keyboard NEEDS WebSearch NOOP', '-p', 'plans')['id'] == 1
+        assert js('task', 'new', 'WORK two.txt', '-p', 'plans')['id'] == 2
+        for n, state_name in ((1, 'waiting'), (2, 'ready')):
+            wait(lambda: js('task', 'show', n, '-p', 'plans')['state'] == state_name, 'plans #%d %s' % (n, state_name))
         if args.browser:
             # The same store in the second project (`ui`), for the page: the browser acts on it.
             for prompt in ('NEEDS_HOST crates.io WORK m.txt', 'WORK a.txt HV', 'WORK b.txt', 'NEEDS_HOST crates.io WORK n.txt'):
                 js('task', 'new', prompt, '-p', 'ui')
-            for n, state_name in ((1, 'blocked'), (2, 'ready'), (3, 'ready'), (4, 'blocked')):
+            for n, state_name in ((1, 'waiting'), (2, 'ready'), (3, 'ready'), (4, 'waiting')):
                 wait(lambda: js('task', 'show', n, '-p', 'ui')['state'] == state_name, 'ui #%d' % n)
             # a1 lands #3, a2 discards #4: both wait for the owner.
             js('task', 'say', 'RUN wsx task land 3 -p ui --json\nRUN wsx task close 4 --discard -p ui --json', '-p', 'ui')
@@ -2853,8 +2843,9 @@ digest_max_seconds = 6
         # --- Read models: the strip order, the working count, the chip list.
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         kinds = [(item['kind'], item.get('task')) for item in overview['needs']]
-        assert kinds[0] == ('blocked', 1) and sorted(kinds[1:]) == [('land', 2), ('land', 3)], kinds
+        assert kinds[0] == ('waiting', 1) and sorted(kinds[1:]) == [('land', 2), ('land', 3)], kinds
         assert overview['needs'][0]['asks'] == [{'kind': 'network', 'host': 'crates.io'}], overview['needs'][0]
+        assert overview['needs'][0]['waiting'] == {'on': 'permission', 'reason': 'needs to reach crates.io'}, overview['needs'][0]
         assert overview['needs'][1]['reason'] == 'ready to land' and overview['working'] == 0 and overview['to_check'] == 0, overview
         # Three states for the owner; the store's own states stay in the record.
         assert {row['id']: row['stage'] for row in overview['tasks']} == {1: 'needs_you', 2: 'needs_you', 3: 'needs_you'}
@@ -2875,7 +2866,7 @@ digest_max_seconds = 6
         kinds = [entry['kind'] for entry in detail['timeline']['entries']]
         assert kinds[:2] == ['created', 'message'] and 'result' in kinds and 'revision' in kinds, kinds
         assert 'verification' not in detail and detail['overlaps'] == []
-        ok('read models: three stages, needs-you order (blocked, then land with its reason), denials, report sections, timeline, actions by state')
+        ok('read models: three stages, needs-you order (waiting, then land with its reason), denials, report sections, timeline, actions by state')
 
         # --- Fixed actions go straight to the task host.
         def act(n, action, body, site=owner, project=demo):
@@ -2927,7 +2918,7 @@ digest_max_seconds = 6
         # By hand (docs/tasks.md "By hand"): the owner's own pane in the task's copy; the
         # worker gets nothing until Hand back, which checks the work as a new revision.
         status, body = act(4, 'hand', {})
-        assert status == 200 and body['state'] == 'by_hand' and body['session'] == 'task-4-hand', body
+        assert status == 200 and body['state'] == 'waiting' and body['session'] == 'task-4-hand', body
         handed = steady(owner, 'GET', '/api/tasks/%d/t/4' % demo)[1]
         assert handed['stage'] == 'working' and handed['actions'] == ['handback'], handed['actions']
         assert all(item.get('task') != 4 for item in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['needs'])
@@ -3085,32 +3076,16 @@ digest_max_seconds = 6
             assert steady(plain, 'GET', route)[0] == 403, route
         ok('brief: the ledger with deploys and the main checkout; refusals: task_act and task_view per site, ungranted project 404, actions hidden without task_act')
 
-        # --- A task brief (docs/tasks.md "Brief"): a need ranked with approvals, its sections, a
-        # talk-through as reply and answer, Start, and nothing built before it.
+        # --- A task that waits for the owner's answer: the need, its actions, and an add that
+        # resumes it. No brief and no start route are left.
         planned = ids['plans']
         view = steady(owner, 'GET', '/api/tasks/%d' % planned)[1]
-        assert [(item['kind'], item['task']) for item in view['needs']] == [('brief', 1), ('brief', 2)], view['needs']
-        assert view['needs'][1]['summary'] == 'WORK two.txt' and view['needs'][1]['brief_version'] == 1, view['needs'][1]
-        detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % planned)[1]
-        assert detail['phase'] == 'brief' and detail['actions'] == ['start', 'add'] and detail['talk'] == [], detail
-        assert detail['brief']['version'] == 1 and detail['brief']['brief']['rewritten_prompt'] == 'WORK two.txt', detail['brief']
-        assert steady(viewer, 'POST', '/api/tasks/%d/t/2/start' % planned, {})[0] == 403
-        assert steady(owner, 'POST', '/api/tasks/%d/t/2/add' % planned, {'text': 'Why two? QUESTION REVISE WORK three.txt'})[0] == 200
-
-        def plan_detail(test, label):
-            return wait(lambda: (current := steady(owner, 'GET', '/api/tasks/%d/t/2' % planned)[1]) and test(current) and current, label)
-        detail = plan_detail(lambda d: d['state'] == 'briefed' and d['brief']['version'] == 2, 'brief v2')
-        assert [(row['from'], row['text']) for row in detail['talk']] == [
-            ('owner', 'Why two? QUESTION REVISE WORK three.txt'), ('worker', 'answered: Why two? QUESTION REVISE WORK three.txt')], detail['talk']
-        assert not (work / 'plans-t2' / 'two.txt').exists() and not (work / 'plans-t2' / 'three.txt').exists()
-        status, started_build = steady(owner, 'POST', '/api/tasks/%d/t/2/start' % planned, {})
-        assert status == 200 and started_build['message'] == 'started the build of brief v2', started_build
-        detail = plan_detail(lambda d: d['state'] == 'ready', '#2 built')
-        assert detail['phase'] == 'build' and 'start' not in detail['actions'] and len(detail['talk']) == 2, detail
-        assert (work / 'plans-t2' / 'three.txt').exists()
-        status, refused = steady(owner, 'POST', '/api/tasks/%d/t/2/start' % planned, {})
-        assert status == 409 and 'only a briefed task starts' in refused['error']['message'], refused
-        ok('task brief: a need with the rewritten prompt, sections and actions, a talk-through as reply and answer, Start builds the revised prompt, a second Start refused, viewers cannot start')
+        assert [(item['kind'], item['task']) for item in view['needs']] == [('waiting', 1), ('land', 2)], view['needs']
+        assert view['needs'][0]['waiting']['on'] == 'owner' and 'asks' not in view['needs'][0], view['needs'][0]
+        detail = steady(owner, 'GET', '/api/tasks/%d/t/1' % planned)[1]
+        assert detail['actions'] == ['add', 'hand'] and detail['talk'] == [] and 'brief' not in detail and 'phase' not in detail, detail
+        assert steady(owner, 'POST', '/api/tasks/%d/t/1/start' % planned, {})[0] == 404
+        ok('a waiting task: its need and reason, add and hand, no brief or start')
         if args.browser:
             # #5's long report: one worker bubble's data, its full summary, on the events message.
             reports = [r for e in steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]['entries'] for r in e.get('reports', [])]
@@ -3128,7 +3103,7 @@ digest_max_seconds = 6
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
             # Home's order by its rule: needs first (most urgent kind, then the oldest need of it),
             # then the last activity, newest first (docs/web-client.md "Home").
-            urgency = {'blocked': 0, 'failed': 1, 'stopped': 1, 'approval': 2, 'brief': 2, 'land': 3}
+            urgency = {'waiting': 0, 'failed': 1, 'approval': 2, 'land': 3}
             def home_key(name):
                 view = steady(owner, 'GET', '/api/tasks/%d' % ids[name])[1]
                 if not view['needs']:
@@ -3136,8 +3111,8 @@ digest_max_seconds = 6
                 rank = min(urgency[item['kind']] for item in view['needs'])
                 return (0, rank, min(item['unix_ms'] for item in view['needs'] if urgency[item['kind']] == rank))
             home_order = sorted((name for name in ids if name in ('ui', 'demo', 'plans', 'calm')), key=home_key)
-            # ^ A brief ranks with approval requests, so `plans` comes before demo's land.
-            assert home_order == ['ui', 'plans', 'demo', 'calm'], home_order
+            # ^ ui and plans have a waiting task, demo only tasks to land.
+            assert sorted(home_order[:2]) == ['plans', 'ui'] and home_order[2:] == ['demo', 'calm'], home_order
             # ^ Projects with sessions and no task follow by their newest session (created in this order).
             home_order[-1:-1] = ['busy', 'quiet', 'gone']
             # The page asks for a server with another build by writing this file: the owner's
@@ -3197,13 +3172,13 @@ digest_max_seconds = 6
 
         first = js('task', 'new', 'NEEDS_HOST x.example NOOP', '-p', 'demo')['id']
         second = js('task', 'new', 'NEEDS_HOST x.example NOOP', '-p', 'demo')['id']
-        wait_state(first, 'blocked')
-        wait_state(second, 'blocked')
-        merged = new_pushes(1, 'blocked push')
+        wait_state(first, 'waiting')
+        wait_state(second, 'waiting')
+        merged = new_pushes(1, 'waiting push')
         time.sleep(4)
         assert len(pushes()) == baseline + 1, pushes()[baseline:]
         assert merged[0]['title'] == owner_name + ': demo' and merged[0]['url'] == '#/p/%d' % demo, merged
-        assert merged[0]['body'] == '#%d blocked · #%d blocked' % (first, second) and merged[0]['tag'].endswith('-now'), merged
+        assert merged[0]['body'] == '#%d waiting · #%d waiting' % (first, second) and merged[0]['tag'].endswith('-now'), merged
         baseline += 1
         for n in (first, second):
             assert act(n, 'allow', {'host': 'x.example'})[0] == 200
@@ -3239,40 +3214,27 @@ digest_max_seconds = 6
         assert steady(owner, 'POST', '/api/presence', {'page': page, 'project': demo})[0] == 200
         assert steady(viewer, 'POST', '/api/presence', {'page': page, 'project': None})[0] == 404
         hidden = js('task', 'new', 'NEEDS_HOST y.example NOOP', '-p', 'demo')['id']
-        wait_state(hidden, 'blocked')
+        wait_state(hidden, 'waiting')
         other = js('task', 'new', 'NEEDS_HOST y.example NOOP', '-p', 'ui')['id']
-        wait(lambda: js('task', 'show', other, '-p', 'ui')['state'] == 'blocked', 'ui blocked')
+        wait(lambda: js('task', 'show', other, '-p', 'ui')['state'] == 'waiting', 'ui waiting')
         elsewhere = new_pushes(1, 'push for the other project')
         time.sleep(4)
         assert len(pushes()) == baseline + 1 and elsewhere[0]['title'] == owner_name + ': ui', pushes()[baseline:]
-        assert elsewhere[0]['body'] == '#%d blocked' % other and elsewhere[0]['url'] == '#/p/%d/t/%d' % (ids['ui'], other), elsewhere
+        assert elsewhere[0]['body'] == '#%d waiting' % other and elsewhere[0]['url'] == '#/p/%d/t/%d' % (ids['ui'], other), elsewhere
         baseline += 1
         # The page goes away: its presence goes with its stream.
         shown.connection.close()
         time.sleep(1)
         later = js('task', 'new', 'NEEDS_HOST z.example NOOP', '-p', 'demo')['id']
-        wait_state(later, 'blocked')
-        assert new_pushes(1, 'push after the page closed')[0]['body'] == '#%d blocked' % later
+        wait_state(later, 'waiting')
+        assert new_pushes(1, 'push after the page closed')[0]['body'] == '#%d waiting' % later
         baseline += 1
         # An approval request reads as its action, never as its id.
         js('task', 'say', 'RUN wsx task land %d -p demo --json' % steady_ids[0], '-p', 'demo')
         asked = new_pushes(1, 'approval push')
         assert asked[0]['body'] == 'Approve land #%d' % steady_ids[0] and asked[0]['tag'].endswith('-now'), asked
         baseline += 1
-        # A brief waits for the owner's start: it is sent at once, like a block.
-        # ^ plans' manager runs first: a manager's first start takes existing tasks without events.
-        js('task', 'manager', '-p', 'plans')
-        planned_late = js('task', 'new', 'QUESTION REWRITE NOOP', '-p', 'plans')['id']
-        briefed_push = new_pushes(1, 'brief push')
-        assert briefed_push[0]['body'] == '#%d brief ready' % planned_late and briefed_push[0]['tag'].endswith('-now'), briefed_push
-        assert briefed_push[0]['url'] == '#/p/%d/t/%d' % (ids['plans'], planned_late), briefed_push
-        # ^ The chat names a brief's open questions only; the sheet holds the brief.
-        def late_brief():
-            entries = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['plans'])[1]['entries']
-            return next((r for e in entries for r in e.get('reports', []) if r['task'] == planned_late), None)
-        said = wait(late_brief, 'the chat reports the late brief', timeout=30)
-        assert said['head'] == 'brief v1' and said['summary'] == 'Open questions:\n\n- Which file should change?', said
-        ok('task push: blocked merged in one, ready as one digest, the digest cap, the shown project skipped for that device, presence ends with the stream, an approval named by its action, a brief at once, tasks topic needs task_view')
+        ok('task push: waiting merged in one, ready as one digest, the digest cap, the shown project skipped for that device, presence ends with the stream, an approval named by its action, tasks topic needs task_view')
         success = True
     finally:
         for process in reversed(STARTED):

@@ -9,10 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
-use wsx_core::config::project::tool_refusal;
-use wsx_core::task::{
-    brief, copy, store, worker_result_schema, Access, Phase, TaskRecord, TurnUsage,
-};
+use wsx_core::config::project::{load_task_config, tool_refusal};
+use wsx_core::model::workspace::TaskWorkflow;
+use wsx_core::task::{copy, store, worker_result_schema, Access, TaskRecord, TurnUsage};
 
 /// Longest stdout line the host reads; a longer one (a huge tool result) is skipped.
 const MAX_LINE_BYTES: u64 = 4 * 1024 * 1024;
@@ -82,8 +81,6 @@ pub struct Launch {
     pub settings: Value,
     /// `--allowedTools`: never a Bash rule; the sandbox bounds Bash.
     pub tools: Vec<String>,
-    /// `--disallowedTools`
-    pub disallowed: Vec<String>,
     /// JSON Schema of the final result, when the turn must end with structured output.
     pub schema: Option<Value>,
     pub instructions: String,
@@ -110,12 +107,57 @@ pub struct Boundary {
     pub deny_tools: Vec<String>,
 }
 
+const SKILLS_PLUGIN_DIR: &str = "skills-plugin";
+pub(super) const SKILLS_PLUGIN_NAME: &str = "owner";
+
+/// An agent runs with project and local settings only, which load no user skill: a plugin
+/// in its folder links the owner's skills folder, `$CLAUDE_CONFIG_DIR/skills` or
+/// `~/.claude/skills`. None when the owner has none. ref: docs/tasks.md "Manager", "Workflow"
+pub(super) fn skills_plugin(folder: &Path) -> Result<Option<PathBuf>> {
+    use std::os::unix::fs::{symlink, DirBuilderExt};
+    let Some(skills) = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
+        .map(|root| root.join("skills"))
+        .filter(|skills| skills.is_dir())
+    else {
+        return Ok(None);
+    };
+    let plugin = folder.join(SKILLS_PLUGIN_DIR);
+    let meta = plugin.join(".claude-plugin");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&meta)
+        .with_context(|| format!("cannot create {}", meta.display()))?;
+    std::fs::write(
+        meta.join("plugin.json"),
+        serde_json::json!({
+            "name": SKILLS_PLUGIN_NAME,
+            "description": "The owner's skills, lent to wsx agents",
+        })
+        .to_string(),
+    )
+    .with_context(|| format!("cannot write {}", meta.display()))?;
+    let link = plugin.join("skills");
+    match std::fs::read_link(&link) {
+        Ok(target) if target == skills => return Ok(Some(plugin)),
+        Ok(_) => std::fs::remove_file(&link)
+            .with_context(|| format!("cannot replace {}", link.display()))?,
+        Err(_) if link.symlink_metadata().is_ok() => {
+            anyhow::bail!("{} is not a link to the owner's skills", link.display())
+        }
+        Err(_) => {}
+    }
+    symlink(&skills, &link).with_context(|| format!("cannot link {}", link.display()))?;
+    Ok(Some(plugin))
+}
+
 /// Tools of every role. Edit and Write are not listed: auto mode accepts them in the
 /// working directory and its classifier reviews them elsewhere, while a bare `Write`
 /// rule would allow every path.
 const BASE_TOOLS: [&str; 3] = ["Read", "Glob", "Grep"];
-/// Denied in a brief turn even when a project's settings allow them.
-const BRIEF_DENIED_TOOLS: [&str; 3] = ["Edit", "Write", "NotebookEdit"];
 
 impl Launch {
     pub fn new(boundary: &Boundary, model: &str, tools: Vec<String>, instructions: String) -> Self {
@@ -130,7 +172,6 @@ impl Launch {
             model: model.to_string(),
             settings: settings(boundary),
             tools: allowed,
-            disallowed: Vec::new(),
             schema: None,
             instructions,
             env: Vec::new(),
@@ -139,15 +180,26 @@ impl Launch {
         }
     }
 
-    /// A brief turn reads only and returns a brief; a build turn edits and returns a result.
+    /// A worker edits its working copy and returns a result.
     /// `project_grants` are the project's `grants.json`; the record holds the task's own.
     /// `broker`: the task host's socket for `wsx task check-run` (broker.rs).
-    pub fn worker(record: &TaskRecord, project_grants: &[Access], broker: &Path) -> Result<Self> {
+    /// `folder`: the task's folder, where the owner's skills plugin goes (`tasks.skills`).
+    pub fn worker(
+        record: &TaskRecord,
+        project_grants: &[Access],
+        broker: &Path,
+        folder: &Path,
+    ) -> Result<Self> {
+        let settings = load_task_config(&record.project_path).map_err(anyhow::Error::msg)?;
+        let skills = match settings.owner_skills {
+            true => skills_plugin(folder)?,
+            false => None,
+        };
         let grants: Vec<&Access> = record.grants.iter().chain(project_grants).collect();
         let mut boundary = worker_boundary(record, &grants)?;
         boundary.unix_sockets = vec![broker.display().to_string()];
         // ^ Records from before the sandbox hold Bash rules and bare Edit and Write: drop them.
-        let tools = record
+        let tools: Vec<String> = record
             .tools
             .iter()
             .filter(|tool| tool_refusal(tool).is_none())
@@ -157,14 +209,16 @@ impl Launch {
                 _ => None,
             }))
             .collect();
-        let mut launch = Self::new(&boundary, &record.model, tools, worker_instructions(record));
-        launch.schema = Some(match record.phase {
-            Phase::Brief => {
-                launch.disallowed = BRIEF_DENIED_TOOLS.map(String::from).to_vec();
-                brief::schema()
-            }
-            Phase::Build => worker_result_schema(),
-        });
+        let tools: Vec<String> = skills
+            .as_ref()
+            .map(|_| "Skill".to_string())
+            .into_iter()
+            .chain(tools)
+            .collect();
+        let instructions = worker_instructions(record, &settings.workflow, skills.is_some());
+        let mut launch = Self::new(&boundary, &record.model, tools, instructions);
+        launch.plugin_dirs = skills.into_iter().collect();
+        launch.schema = Some(worker_result_schema());
         launch.env = vec![(
             super::broker::BROKER_ENV.into(),
             broker.as_os_str().to_owned(),
@@ -213,37 +267,30 @@ fn settings(boundary: &Boundary) -> Value {
 }
 
 /// A worker writes its working copy and the git paths its commits need in the main
-/// repository; a brief turn writes nothing. ref: docs/tasks.md "Permissions"
+/// repository. ref: docs/tasks.md "Permissions"
 fn worker_boundary(record: &TaskRecord, grants: &[&Access]) -> Result<Boundary> {
     let (common, admin) = copy::git_dirs(&record.working_copy)?;
     let default_ref = format!("refs/heads/{}", record.default_branch);
-    let mut deny_writes = vec![
+    let deny_writes = [
         common.join("hooks"),
         common.join("config"),
         common.join(&default_ref),
         common.join("logs").join(&default_ref),
     ];
-    let mut writes: Vec<String> = Vec::new();
-    match record.phase {
-        Phase::Brief => deny_writes.insert(0, record.working_copy.clone()),
-        Phase::Build => {
-            writes.extend(
-                [
-                    common.join("objects"),
-                    admin,
-                    common.join("refs/heads/wsx"),
-                    common.join("logs/refs/heads/wsx"),
-                ]
-                .iter()
-                .map(|path| path.display().to_string()),
-            );
-            writes.extend(record.sandbox.allow_write.iter().cloned());
-            writes.extend(grants.iter().filter_map(|grant| match grant {
-                Access::Write { path } => Some(path.clone()),
-                _ => None,
-            }));
-        }
-    }
+    let mut writes: Vec<String> = [
+        common.join("objects"),
+        admin,
+        common.join("refs/heads/wsx"),
+        common.join("logs/refs/heads/wsx"),
+    ]
+    .iter()
+    .map(|path| path.display().to_string())
+    .collect();
+    writes.extend(record.sandbox.allow_write.iter().cloned());
+    writes.extend(grants.iter().filter_map(|grant| match grant {
+        Access::Write { path } => Some(path.clone()),
+        _ => None,
+    }));
     let mut domains = record.sandbox.allowed_domains.clone();
     for grant in grants {
         if let Access::Network { host } = grant {
@@ -309,17 +356,23 @@ fn config_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// The same text in both phases: Claude records the system prompt of a conversation's
-/// first request and reuses it on every resume (`--system-prompt-snapshot`), so the
-/// phase is said in the user messages.
-fn worker_instructions(record: &TaskRecord) -> String {
+/// Claude records the system prompt of a conversation's first request and reuses it on
+/// every resume (`--system-prompt-snapshot`): what changes is said in the user messages.
+fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: bool) -> String {
+    // ^ No skill is named: the owner's skills are whatever their folder holds.
+    let skills = match skills {
+        true => format!(
+            "The owner's skills are yours with the Skill tool as `{SKILLS_PLUGIN_NAME}:<name>`: \
+             at the start, look at them and follow any whose description fits the work, such \
+             as a development workflow, a simplification or a test skill. "
+        ),
+        false => String::new(),
+    };
     format!(
         "You are a task worker in a separate working copy on branch {}. \
          Nobody reads your terminal: work without asking questions. \
-         A task may start with a brief: while a message asks for the brief, only read, \
-         search and run read-only commands, change no file, and return the brief in the \
-         requested structure. When a message says the build starts, build it and commit \
-         your changes with git before you finish. Build and test what you change. \
+         Build what the prompt asks and commit your changes with git before you finish. \
+         Build and test what you change. {skills}{build} \
          Prove what you can: each check a command, a test or a capture shows goes to \
          `evidence` with that command or the capture's path. Put in `human_verify` only \
          what needs a person: how it looks or feels, a real device, real data; never a \
@@ -338,6 +391,7 @@ fn worker_instructions(record: &TaskRecord) -> String {
          When you cannot continue, return status blocked and say what you need; when the \
          sandbox or a permission stops a host or a path you need, name that host or path.",
         record.branch,
+        build = workflow.build,
         checks = check_run_note(record),
     )
 }
@@ -405,9 +459,6 @@ impl ClaudeAgent {
         }
         if !launch.tools.is_empty() {
             command.arg("--allowedTools").args(&launch.tools);
-        }
-        if !launch.disallowed.is_empty() {
-            command.arg("--disallowedTools").args(&launch.disallowed);
         }
         for dir in &launch.plugin_dirs {
             command.arg("--plugin-dir").arg(dir);
