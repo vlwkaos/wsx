@@ -556,6 +556,12 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
   border-top: 0; border-left: var(--border-width) solid var(--color-hairline); border-radius: 0;
 }
 .app[data-wide] .task-sheet-top { display: none; }
+/* A sheet of a short list (To check) is as high as its rows, up to 85%, on the visible bottom. */
+.task-sheet[data-fit] {
+  margin: var(--viewport-height, 100dvh) 0 0 0; height: auto; max-height: calc(var(--viewport-height, 100dvh) * 0.85);
+  transform: translateY(-100%);
+}
+.app[data-wide] .task-sheet[data-fit] { margin: 0; height: 100%; max-height: none; transform: none; }
 /* Home: one row per project, what needs the owner first. */
 .count {
   flex: 0 0 auto; min-width: calc(var(--space-4) * 1.25); padding: 0 var(--space-1); border-radius: var(--space-4);
@@ -595,8 +601,16 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .check-item + .check-item { border-top: var(--border-width) solid var(--color-hairline); }
 .check-line { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3) var(--column-inset, var(--space-4)); }
 .check-words { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); overflow-wrap: anywhere; }
+.check-task, .check-pass { font-size: var(--font-size-sm); color: var(--color-muted); }
 .check-what { font-weight: var(--font-weight-medium); }
-.check-pass { font-size: var(--font-size-sm); color: var(--color-muted); }
+/* Try, Fail and Pass: icons with their names in the label and a tooltip, at the row's top. */
+.check-acts { flex: 0 0 auto; display: flex; gap: var(--space-1); margin-top: calc(-1 * var(--space-2)); }
+.check-act { background: var(--color-raised); color: var(--color-text); }
+.check-capture { display: block; margin-top: var(--space-1); }
+.check-capture img {
+  display: block; max-width: 100%; max-height: calc(var(--size-rail) * 0.5);
+  border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
+}
 .check-item[data-state="passed"] .check-what, .check-item[data-state="failed"] .check-what { color: var(--color-muted); }
 .check-all { justify-content: flex-end; padding: var(--space-3) var(--column-inset, var(--space-4)); }
 .task-overlaps { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); overflow-wrap: anywhere; }

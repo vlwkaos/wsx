@@ -884,20 +884,40 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
     Ok(json!({ "ok": true, "state": response.state, "message": response.message }))
 }
 
-/// The open "To check" items with their task's title, oldest first.
+/// The open "To check" items, oldest first, each with its task's title and what the task
+/// did (the first sentence of its worker's summary, when it is not the title).
 pub fn checks(scope: &Scope) -> Outcome<Value> {
     let items = checks::open_items(&scope.store).map_err(internal)?;
     let rows: Vec<Value> = items
         .iter()
         .map(|item| {
             let mut row = json!(item);
-            row["title"] = json!(open_task(scope, item.task)
-                .ok()
-                .and_then(|dir| view::readable_title(&dir, &dir.read_record().ok()?)));
+            let dir = open_task(scope, item.task).ok();
+            let title = dir
+                .as_ref()
+                .and_then(|dir| view::readable_title(dir, &dir.read_record().ok()?));
+            let did = dir
+                .as_ref()
+                .and_then(view::summary_sentence)
+                .filter(|sentence| Some(sentence) != title.as_ref());
+            row["title"] = json!(title);
+            row["did"] = json!(did);
             row
         })
         .collect();
     Ok(json!({ "open": rows }))
+}
+
+/// The capture kept with an item, as its image. ref: docs/tasks.md "To check"
+pub fn check_capture(scope: &Scope, id: &str) -> Outcome<(Vec<u8>, &'static str)> {
+    let items = checks::read(&scope.store).map_err(internal)?;
+    let item = items
+        .iter()
+        .find(|item| item.id == id)
+        .ok_or_else(Fault::not_found)?;
+    let name = item.capture.as_deref().ok_or_else(Fault::not_found)?;
+    let dir = open_task(scope, item.task).map_err(|_| Fault::not_found())?;
+    checks::read_capture(&dir, name).map_err(|_| Fault::not_found())
 }
 
 /// Pass or fail an item as the owner, through `wsx task check` so a fail starts its task

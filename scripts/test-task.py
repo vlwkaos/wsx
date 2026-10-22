@@ -573,6 +573,19 @@ def run(wsx, wsxd, work, owned):
     conflicts = [n for n in (a1, a2) if any(e['kind'] == 'conflict' for e in log(n))]
     assert len(conflicts) == 1 and git('show', 'main:x.txt') == 'resolved', conflicts
     assert len(js('task', 'check')['open']) == 3
+    # An item keeps where to look and its capture, copied into the task folder before the copy
+    # goes. An item that names a command goes back to the worker once; its next result has none.
+    shot = js('task', 'new', 'WORK cap.txt HV CAPTURE')['id']
+    command = js('task', 'new', 'WORK cmd.txt CMDHV')['id']
+    for n in (shot, command):
+        assert wait_state(n, 'landed', 'ready', 'failed')['state'] == 'landed'
+        wait_closed(n)
+    assert [e['kind'] for e in log(command)].count('result') == 2, log(command)
+    kept = [i for i in js('task', 'check')['open'] if i['task'] in (shot, command)]
+    assert [(i['task'], i['where'], i['capture']) for i in kept] == [(shot, '/#/x', 'captures/r1-1.png')], kept
+    stored = Path(show(shot)['report']).parent / 'captures' / 'r1-1.png'
+    assert stored.read_bytes().startswith(b'\x89PNG'), stored
+    js('task', 'check', 'pass', kept[0]['id'])
     # No checks: nothing proves the work, so a ready task waits for a land by hand.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', '').replace(
         '  checks:\n    - "test ! -e broken.txt"\n', ''))

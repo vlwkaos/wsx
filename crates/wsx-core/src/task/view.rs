@@ -97,14 +97,16 @@ pub fn readable_title(dir: &TaskDir, record: &TaskRecord) -> Option<String> {
     if record.title.is_some() {
         return title(dir, record);
     }
+    summary_sentence(dir).or_else(|| title(dir, record))
+}
+
+/// The first sentence of the worker's latest summary, at most 120 characters.
+pub fn summary_sentence(dir: &TaskDir) -> Option<String> {
     let summary = read_result(dir)
-        .and_then(|file| Some(file.get("result")?.get("summary")?.as_str()?.to_string()));
-    summary
-        .as_deref()
-        .map(first_sentence)
+        .and_then(|file| Some(file.get("result")?.get("summary")?.as_str()?.to_string()))?;
+    Some(first_sentence(&summary))
         .filter(|sentence| !sentence.is_empty())
         .map(|sentence| clip(&sentence, TITLE_CHARS))
-        .or_else(|| title(dir, record))
 }
 
 /// A worker model named by `task new --model`: one word of at most 256 bytes, as

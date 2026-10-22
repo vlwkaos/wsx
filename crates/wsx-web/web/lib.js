@@ -14,6 +14,10 @@ const ICONS = {
   down: "M10 4v12M5 11l5 5 5-5",
   send: "M10 16V4M5 9l5-5 5 5",
   plus: "M10 4.5v11M4.5 10h11",
+  pass: "M4.5 10.5 8 14l7.5-8",
+  fail: "M5.5 5.5l9 9M14.5 5.5l-9 9",
+  play: "M7 4.5v11l8.5-5.5z",
+  open: "M11 4.5h4.5V9M15.5 4.5 9 11M8 5.5H5.5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V12",
 };
 // A line icon. The control around it carries the accessible name.
 export const Icon = ({ name }) => html`

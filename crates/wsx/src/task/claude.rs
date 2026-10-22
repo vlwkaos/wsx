@@ -322,7 +322,10 @@ fn worker_instructions(record: &TaskRecord) -> String {
          your changes with git before you finish. Build and test what you change. \
          Prove what you can: each check a command, a test or a capture shows goes to \
          `evidence` with that command or the capture's path. Put in `human_verify` only \
-         what needs a person: how it looks or feels, a real device, real data. \
+         what needs a person: how it looks or feels, a real device, real data; never a \
+         command, which you run yourself. Each item says in plain words what to look at, \
+         `where` (a URL, a page path or the screen), `capture` (the path of an image of it \
+         in this working copy, or empty) and `pass_if`. \
          Before you finish a build, put in the result's memo a short, lean memo of durable \
          project knowledge a later task needs, a few lines at most: when you learned a \
          project convention, a gotcha or a decision and its reason, the memo must say it. \

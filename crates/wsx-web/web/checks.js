@@ -8,7 +8,7 @@ import { loadTasks, TaskChip } from "./tasks.js";
 // Try: start the task's preview, or find the running one, then a link to open it. A link
 // the person opens keeps popup blockers out of the way. Only for projects with
 // `tasks.preview` (docs/tasks.md "Preview").
-export function TryButton({ project, task }) {
+export function TryButton({ project, task, icon = false }) {
   const store = useStore();
   const [state, setState] = useState({ busy: false, url: null, error: "" });
   if (!store.tasks[project]?.preview || !can("task_act")) return null;
@@ -21,17 +21,28 @@ export function TryButton({ project, task }) {
       setState({ busy: false, url: null, error: failure.message });
     }
   };
+  const label = icon ? "icon-button check-act" : "button need-action";
   return html`
     ${state.url
-      ? html`<a class="button need-action" href=${state.url} target="_blank" rel="noopener" aria-label=${`Open the preview of #${task}`}>Open</a>`
-      : html`<button class="button need-action" type="button" disabled=${state.busy} onClick=${start}
-          aria-label=${`Try #${task} on a preview`}>${state.busy ? "Starting…" : "Try"}</button>`}
+      ? html`<a class=${label} href=${state.url} target="_blank" rel="noopener" title="Open the preview"
+          aria-label=${`Open the preview of #${task}`}>${icon ? html`<${Icon} name="open" />` : "Open"}</a>`
+      : html`<button class=${label} type="button" disabled=${state.busy} onClick=${start} title="Try it on a preview"
+          aria-label=${`Try #${task} on a preview`}>${icon ? html`<${Icon} name="play" />` : state.busy ? "Starting…" : "Try"}</button>`}
     ${state.error && html`<span class="error" role="alert">${state.error}</span>`}`;
 }
 
-// One item: its task, the check and when it passes, with Pass and Fail. A fail needs a note,
-// which goes to the task that fixes it. `revision` is the task's current one: an item of an
-// older revision names its own.
+// Where a person looks: a link when it is a URL or a page path, else the words.
+function Place({ where }) {
+  if (!where) return null;
+  const link = /^(https?:\/\/|\/|#)/.test(where);
+  return html`<p class="check-pass">Look at ${link
+    ? html`<a href=${where} target="_blank" rel="noopener">${where}</a>`
+    : where}</p>`;
+}
+
+// One item: its task and what the task did, the check, where to look, its capture and when it
+// passes, with Try, Fail and Pass as icons. A fail needs a note, which goes to the task that
+// fixes it. `revision` is the task's current one: an item of an older revision names its own.
 export function CheckRow({ project, item, revision, onChanged }) {
   const [failing, setFailing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -58,23 +69,30 @@ export function CheckRow({ project, item, revision, onChanged }) {
   };
   const acting = can("task_act") && item.state === "open";
   const older = revision != null && item.revision !== revision ? ` (r${item.revision})` : "";
+  const capture = `api/tasks/${project}/checks/${item.id}/capture`;
   return html`
     <li class="check-item" data-state=${item.state}>
       <div class="check-line">
         <${TaskChip} project=${project} id=${item.task} />
         <div class="check-words">
+          ${(item.did ?? item.title) && html`<p class="check-task">${item.did ?? item.title}</p>`}
           <p class="check-what">${item.check}${older}</p>
           <p class="check-pass">Passes if ${item.pass_if}</p>
+          <${Place} where=${item.where} />
+          ${item.capture && html`
+            <a class="check-capture" href=${capture} target="_blank" rel="noopener" aria-label=${`Capture of: ${item.check}`}>
+              <img src=${capture} alt="" loading="lazy" />
+            </a>`}
           ${item.state === "failed" && html`<p class="check-pass">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
           ${item.state === "passed" && html`<p class="check-pass">Passed</p>`}
         </div>
         ${acting && !failing && html`
-          <span class="row-actions">
-            <${TryButton} project=${project} task=${item.task} />
-            <button class="button need-action" type="button" disabled=${busy} aria-label=${`Fail: ${item.check}`}
-              onClick=${() => setFailing(true)}>Fail</button>
-            <button class="button need-action" type="button" disabled=${busy} aria-label=${`Pass: ${item.check}`}
-              onClick=${() => decide("pass")}>Pass</button>
+          <span class="check-acts">
+            <${TryButton} project=${project} task=${item.task} icon />
+            <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy} title="Fail"
+              aria-label=${`Fail: ${item.check}`} onClick=${() => setFailing(true)}><${Icon} name="fail" /></button>
+            <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Pass"
+              aria-label=${`Pass: ${item.check}`} onClick=${() => decide("pass")}><${Icon} name="pass" /></button>
           </span>`}
       </div>
       ${failing && html`
