@@ -2,17 +2,20 @@
 //! checks at their own time and before a public release.
 //! ref: docs/tasks.md "To check"
 
-use super::store::{ensure_project_dir, open_locked, project_dir, read_bounded};
+use super::store::{ensure_project_dir, open_locked, project_dir, read_bounded, TaskDir};
 use super::{now_unix_ms, HumanVerify};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
+use std::path::Path;
 
 pub const CHECKS_FILE: &str = "checks.jsonl";
 const MAX_CHECKS_BYTES: u64 = 4 * 1024 * 1024;
 /// Longest note on a failed item.
 pub const MAX_NOTE_BYTES: usize = super::MAX_MESSAGE_BYTES;
+const MAX_CAPTURE_BYTES: u64 = 2 * 1024 * 1024;
+const CAPTURES: &str = "captures";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +35,12 @@ pub struct CheckItem {
     pub revision: u32,
     pub commit: String,
     pub check: String,
+    /// Where a person looks (see `HumanVerify`).
+    #[serde(default, rename = "where", skip_serializing_if = "String::is_empty")]
+    pub place: String,
+    /// The capture kept in the task folder, such as `captures/r3-1.png`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<String>,
     pub pass_if: String,
     pub state: CheckState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,6 +114,7 @@ pub fn change(
 }
 
 /// Add the Human Verify items of a landed revision as open items, once per task and revision.
+/// Each `capture` is already the name kept in the task folder, or empty.
 pub fn collect(
     project_id: &str,
     task: u32,
@@ -131,6 +141,8 @@ pub fn collect(
                 revision,
                 commit: commit.to_string(),
                 check: item.check.clone(),
+                place: item.place.clone(),
+                capture: Some(item.capture.clone()).filter(|name| !name.is_empty()),
                 pass_if: item.pass_if.clone(),
                 state: CheckState::Open,
                 note: None,
@@ -199,5 +211,63 @@ pub fn state_name(state: CheckState) -> &'static str {
         CheckState::Open => "open",
         CheckState::Passed => "passed",
         CheckState::Failed => "failed",
+    }
+}
+
+/// Keep a worker's capture in the task folder as `captures/r<revision>-<index>.<ext>`: a PNG,
+/// JPEG or WebP image of at most 2 MiB inside the working copy.
+pub fn keep_capture(
+    dir: &TaskDir,
+    working_copy: &Path,
+    revision: u32,
+    index: usize,
+    path: &str,
+) -> Result<String> {
+    let root = working_copy.canonicalize()?;
+    let source = root
+        .join(path)
+        .canonicalize()
+        .with_context(|| format!("no file {path} in the working copy"))?;
+    if !source.starts_with(&root) {
+        bail!("{path} is outside the working copy");
+    }
+    let bytes = read_bounded(&source, MAX_CAPTURE_BYTES)?;
+    let (ext, _) =
+        capture_type(&bytes).with_context(|| format!("{path} is not a PNG, JPEG or WebP image"))?;
+    std::fs::create_dir_all(dir.file(CAPTURES))?;
+    let name = format!("{CAPTURES}/r{revision}-{index}.{ext}");
+    dir.write_file(&name, &bytes)?;
+    Ok(name)
+}
+
+/// A kept capture's bytes and media type. Only names `keep_capture` writes are read.
+pub fn read_capture(dir: &TaskDir, name: &str) -> Result<(Vec<u8>, &'static str)> {
+    let file = name
+        .strip_prefix(CAPTURES)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .filter(|file| {
+            !file.is_empty()
+                && file
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+                && !file.starts_with('.')
+        })
+        .with_context(|| format!("{name} is not a kept capture"))?;
+    let bytes = read_bounded(&dir.file(CAPTURES).join(file), MAX_CAPTURE_BYTES)?;
+    let (_, media) = capture_type(&bytes).context("the capture is not an image")?;
+    Ok((bytes, media))
+}
+
+/// The image type by its first bytes.
+fn capture_type(head: &[u8]) -> Option<(&'static str, &'static str)> {
+    let at = |offset: usize, magic: &[u8]| head.get(offset..offset + magic.len()) == Some(magic);
+    if at(0, b"\x89PNG\r\n\x1a\n") {
+        Some(("png", "image/png"))
+    } else if at(0, b"\xff\xd8\xff") {
+        Some(("jpg", "image/jpeg"))
+    } else if at(0, b"RIFF") && at(8, b"WEBP") {
+        Some(("webp", "image/webp"))
+    } else {
+        None
     }
 }

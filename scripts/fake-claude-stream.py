@@ -47,9 +47,11 @@ import json
 import os
 import select
 import signal
+import struct
 import subprocess
 import sys
 import time
+import zlib
 
 TRACE = os.environ.get('FAKE_CLAUDE_TRACE') or os.path.join(os.getcwd(), '..', 'fake-claude.trace')
 
@@ -129,6 +131,15 @@ def sandbox_stops(words, settings):
             tool_result('p1', '', False)
     trace({'sandbox_stopped': stopped, 'words': words})
     return stopped
+
+
+def png_chunk(kind, data):
+    return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+
+
+# ^ A real 1x1 PNG, so a browser draws the capture.
+PIXEL = (b'\x89PNG\r\n\x1a\n' + png_chunk(b'IHDR', struct.pack('>IIBBBBB', 1, 1, 8, 0, 0, 0, 0))
+         + png_chunk(b'IDAT', zlib.compress(b'\x00\x80')) + png_chunk(b'IEND', b''))
 
 
 def own_repo():
@@ -405,13 +416,23 @@ def main():
                            env=dict(os.environ, GIT_AUTHOR_NAME='fake', GIT_AUTHOR_EMAIL='fake@example.invalid',
                                     GIT_COMMITTER_NAME='fake', GIT_COMMITTER_EMAIL='fake@example.invalid'))
         status = 'blocked' if blocked else 'done'
+        # ^ CAPTURE leaves a small PNG for the item; CMDHV names a command, which wsx sends back.
+        verify = []
+        if 'HV' in words:
+            verify.append({'check': 'open the file', 'where': '/#/x' if 'CAPTURE' in words else '',
+                           'capture': 'shot.png' if 'CAPTURE' in words else '', 'pass_if': 'it has text'})
+            if 'CAPTURE' in words:
+                with open('shot.png', 'wb') as out:
+                    out.write(PIXEL)
+        if 'CMDHV' in words:
+            verify.append({'check': 'run `wsx task list`', 'where': '', 'capture': '', 'pass_if': 'it lists the task'})
         summary = 'did: ' + text + (' | steers: ' + '; '.join(steers) if steers else '')
         emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': summary,
               'session_id': session, 'permission_denials': denials,
               'structured_output': {'status': status, 'summary': summary,
                                     'decisions': [{'choice': 'fake choice', 'reason': 'fixture'}],
                                     'evidence': [{'check': 'the fixture ran', 'proof': 'fake-claude-stream.py'}] if status == 'done' else [],
-                                    'human_verify': [{'check': 'open the file', 'pass_if': 'it has text'}] if 'HV' in words else [],
+                                    'human_verify': verify,
                                     'left_open': ['nothing real'], 'notes': '',
                                     'memo': rest_of_line(text, 'MEMO') if 'MEMO' in words else ''}})
 

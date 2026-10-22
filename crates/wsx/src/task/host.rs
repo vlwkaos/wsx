@@ -801,6 +801,30 @@ impl Host {
             ));
             return;
         }
+        // ^ A command is the worker's to run: an item that names one goes back once, within
+        // the check retries. ref: docs/tasks.md "To check"
+        let commands: Vec<&str> = result
+            .human_verify
+            .iter()
+            .filter(|item| item.names_command())
+            .map(|item| item.check.as_str())
+            .collect();
+        if result.status == "done"
+            && !commands.is_empty()
+            && self.pending.is_empty()
+            && self.check_retries < MAX_CHECK_RETRIES
+        {
+            self.check_retries += 1;
+            self.say("human_verify names a command: sent back to the worker");
+            let text = format!(
+                "These human_verify items name a command: {}. A command is yours to run: run \
+                 it, put what it shows in evidence, and keep in human_verify only what a person \
+                 looks at or feels, in plain words with where to look. Then finish as before.",
+                commands.join(" | ")
+            );
+            self.start_turn(&text);
+            return;
+        }
         self.start_checks();
     }
 
@@ -1389,6 +1413,22 @@ impl Host {
             if !verify.iter().any(|known| known.check == item.check) {
                 verify.push(item);
             }
+        }
+        for (index, item) in verify.iter_mut().enumerate() {
+            if item.capture.is_empty() {
+                continue;
+            }
+            let kept = checks::keep_capture(
+                &self.dir,
+                &self.record.working_copy,
+                self.record.revision,
+                index + 1,
+                &item.capture,
+            );
+            if let Err(error) = &kept {
+                self.say(&format!("capture not kept: {error:#}"));
+            }
+            item.capture = kept.unwrap_or_default();
         }
         if let Err(error) = checks::collect(
             &self.record.project_id,

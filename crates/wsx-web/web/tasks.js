@@ -543,10 +543,11 @@ function More({ project }) {
     </div>`;
 }
 
-// A task or the project page over the chat, about 85% of the height: Back, Escape, a tap
+// A task or the project page over the chat, about 85% of the height (a `fit` sheet only as
+// high as its content): Back, Escape, a tap
 // beside it or a swipe down on its top closes it, and the chat under it keeps its scroll and
 // its draft.
-function Sheet({ label, onClose, children }) {
+function Sheet({ label, fit = false, onClose, children }) {
   const dialog = useRef();
   const drag = useRef(null);
   useEffect(() => {
@@ -573,7 +574,7 @@ function Sheet({ label, onClose, children }) {
     if (moved > 80) onClose();
   };
   return html`
-    <dialog class="task-sheet" ref=${dialog} aria-label=${label} onCancel=${cancel} onClick=${backdrop}>
+    <dialog class="task-sheet" data-fit=${fit || undefined} ref=${dialog} aria-label=${label} onCancel=${cancel} onClick=${backdrop}>
       <div class="task-sheet-top" onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${up}>
         <span class="sheet-grip" aria-hidden="true"></span>
       </div>
@@ -697,7 +698,7 @@ export function Manager({ project: id, task, page, checks }) {
           ${(grip) => html`<${ProjectPage} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}
         </${Sheet}>`}
       ${checks && html`
-        <${Sheet} key="checks" label="To check" onClose=${() => leaveFor(`#/p/${id}`)}>
+        <${Sheet} key="checks" label="To check" fit onClose=${() => leaveFor(`#/p/${id}`)}>
           ${(grip) => html`<${ChecksPage} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}
         </${Sheet}>`}
     </div>`;

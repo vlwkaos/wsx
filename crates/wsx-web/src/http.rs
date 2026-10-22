@@ -86,7 +86,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/tasks/{project}/checks", get(tasks_checks))
             .route(
                 "/api/tasks/{project}/checks/{id}/{decision}",
-                post(task_check),
+                post(task_check).get(check_capture),
             )
             .route("/api/media", put(media_put))
             .route("/api/files", get(files_list))
@@ -1056,6 +1056,21 @@ async fn tasks_checks(
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
     blocking(|| crate::tasks::checks(&crate::tasks::scope(&app, project)?)).map(Json)
+}
+
+/// The capture kept with a "To check" item: `GET .../checks/<id>/capture`.
+async fn check_capture(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath((project, id, part)): UrlPath<(u64, String, String)>,
+) -> Outcome<Response> {
+    tasks_allowed(&app, false)?;
+    if part != "capture" {
+        return Err(Fault::not_found());
+    }
+    let (bytes, media) =
+        blocking(|| crate::tasks::check_capture(&crate::tasks::scope(&app, project)?, &id))?;
+    Ok(typed(media, bytes))
 }
 
 /// Pass or fail one "To check" item, or pass them all (`all/pass`).

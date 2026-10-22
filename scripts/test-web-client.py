@@ -2718,7 +2718,7 @@ def task_journey(args):
             js('task', 'new', 'Owner asked: keep a worker busy WAIT ' + str(work / 'release'), '-p', 'ui')
             wait(lambda: js('task', 'show', 6, '-p', 'ui')['state'] == 'working', 'ui #6 working')
             # #7 and #8 landed with an item each to check; the manager hears of both ("#7 · done").
-            for n, prompt in ((7, 'WORK d.txt HV done. More words follow'), (8, 'WORK e.txt HV')):
+            for n, prompt in ((7, 'WORK d.txt HV done. More words follow'), (8, 'WORK e.txt HV CAPTURE')):
                 assert js('task', 'new', prompt, '-p', 'ui')['id'] == n
                 wait(lambda: js('task', 'show', n, '-p', 'ui')['state'] == 'ready', 'ui #%d' % n)
                 assert js('task', 'land', n, '-p', 'ui')['state'] == 'landed'
@@ -2869,7 +2869,7 @@ digest_max_seconds = 6
         detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
         assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'add', 'hand'], detail['actions']
         assert detail['land_reason'] == 'ready to land' and detail['to_check'] == [] and detail['fixes'] is None, detail
-        assert detail['result']['human_verify'] == [{'check': 'open the file', 'pass_if': 'it has text'}]
+        assert detail['result']['human_verify'] == [{'check': 'open the file', 'where': '', 'capture': '', 'pass_if': 'it has text'}]
         headings = [line for line in detail['report'].splitlines() if line.startswith('## ')]
         assert headings == ['## Summary', '## Changes', '## Evidence', '## To check', '## Left open'], headings
         kinds = [entry['kind'] for entry in detail['timeline']['entries']]
@@ -2901,6 +2901,10 @@ digest_max_seconds = 6
         listed = steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']
         assert [(i['id'], i['task'], i['title'], i['check'], i['state']) for i in listed] == [
             ('c1', 2, 'did: WORK a.txt HV', 'open the file', 'open')], listed
+        # ^ The title is already the worker's sentence; an item without a capture has no image.
+        assert listed[0]['did'] is None and 'capture' not in listed[0] and 'where' not in listed[0], listed
+        assert steady(owner, 'GET', '/api/tasks/%d/checks/c1/capture' % demo)[0] == 404
+        assert steady(owner, 'GET', '/api/tasks/%d/checks/c99/capture' % demo)[0] == 404
         landed = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
         assert landed['stage'] == 'done' and [i['id'] for i in landed['to_check']] == ['c1'] and landed['actions'] == [], landed
         status, body = act(1, 'allow', {'host': 'crates.io'})

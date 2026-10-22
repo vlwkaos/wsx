@@ -116,7 +116,10 @@ The worker proves what it can: its result has `evidence` (`{check, proof}`, the 
 
 ## To check
 
-There is no verdict per task: a task the checks prove lands, and what needs a person waits in one list per project, `tasks/<project-id>/checks.jsonl`. When a task lands, its host adds the `human_verify` items of the landed revision as `{id: c<n>, task, revision, commit, check, pass_if, state: open, note, fix_task, unix_ms}`, once per task and revision, before it sets `landed` (items of a revision whose landing conflicted are kept when the resolving turn leaves them out). The file only grows, under a lock: a later line with the same id is the item's current row.
+There is no verdict per task: a task the checks prove lands, and what needs a person waits in one list per project, `tasks/<project-id>/checks.jsonl`. When a task lands, its host adds the `human_verify` items of the landed revision as `{id: c<n>, task, revision, commit, check, where, capture, pass_if, state: open, note, fix_task, unix_ms}`, once per task and revision, before it sets `landed` (items of a revision whose landing conflicted are kept when the resolving turn leaves them out). The file only grows, under a lock: a later line with the same id is the item's current row.
+
+- A worker's item is `{check, where, capture, pass_if}`: what a person looks at or feels in plain words, where (a URL, a page path or the screen), the path of an image of it in the working copy (or empty) and when it passes. At the land the host copies each capture, a PNG, JPEG or WebP image of at most 2 MiB inside the working copy, to `captures/r<revision>-<n>.<ext>` in the task folder, before the copy goes; another file is dropped with a line in the pane.
+- An item whose check or `pass_if` holds a code span names a command, which is the worker's to run. A `done` result with one goes back to the worker before the checks, within the check retries: it runs the command, puts what it shows in evidence and keeps only what a person checks.
 
 - `wsx task check` lists the open items; `show --json` has the task's items as `to_check`; the ledger counts them.
 - `check pass <id>...` or `--all` marks open items `passed`; an unknown or settled id refuses the whole call.

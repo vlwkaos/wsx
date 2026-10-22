@@ -579,7 +579,20 @@ pub struct Evidence {
 #[serde(default)]
 pub struct HumanVerify {
     pub check: String,
+    /// Where a person looks: a URL, a page path such as `/#/p/wsx/checks`, or a screen name.
+    #[serde(rename = "where")]
+    pub place: String,
+    /// A capture of it: the image's path in the working copy, kept with the task at the land.
+    pub capture: String,
     pub pass_if: String,
+}
+
+impl HumanVerify {
+    /// An item that names a command (a code span) is for the worker to run, not a person.
+    /// ref: docs/tasks.md "To check"
+    pub fn names_command(&self) -> bool {
+        self.check.contains('`') || self.pass_if.contains('`')
+    }
 }
 
 /// JSON Schema given to the adapter for `WorkerResult`.
@@ -602,7 +615,12 @@ pub fn worker_result_schema() -> serde_json::Value {
             "summary": text,
             "decisions": { "type": "array", "items": pair("choice", "reason") },
             "evidence": { "type": "array", "items": pair("check", "proof") },
-            "human_verify": { "type": "array", "items": pair("check", "pass_if") },
+            "human_verify": { "type": "array", "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["check", "where", "capture", "pass_if"],
+                "properties": { "check": text, "where": text, "capture": text, "pass_if": text },
+            } },
             "left_open": { "type": "array", "items": text },
             "notes": text,
             "memo": text,
