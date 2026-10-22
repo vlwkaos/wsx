@@ -11,10 +11,11 @@ import socket
 import subprocess
 import sys
 import time
-import weakref
+
+import wsxd_client
+from wsxd_client import PROTOCOL, recv_line
 
 ROOT = Path(__file__).resolve().parents[1]
-PROTOCOL = 16
 # ^ Plugin manifest commands must be absolute even when the scratch root is relative.
 WORK = Path(os.environ.get("WSX_SMOKE_WORK", ROOT / ".work" / "runtime-smoke")).resolve()
 if WORK.exists():
@@ -113,23 +114,6 @@ DAEMON = Path(os.environ.get("WSX_SMOKE_DAEMON", ROOT / "target" / "debug" / "ws
 WSX = Path(os.environ.get("WSX_SMOKE_WSX", ROOT / "target" / "debug" / "wsx"))
 
 
-RECV_BUFFERS = weakref.WeakKeyDictionary()
-
-
-def recv_line(client):
-    data = RECV_BUFFERS.get(client, b"")
-    while b"\n" not in data:
-        chunk = client.recv(65536)
-        if not chunk:
-            raise RuntimeError("wsxd closed response")
-        data += chunk
-        if len(data) > 32 * 1024 * 1024:
-            raise RuntimeError("oversized response")
-    line, remainder = data.split(b"\n", 1)
-    RECV_BUFFERS[client] = remainder
-    return json.loads(line)
-
-
 def raw_call(payload):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(5)
@@ -139,17 +123,7 @@ def raw_call(payload):
 
 
 def call(method, params=None):
-    request = {"method": method}
-    if params is not None:
-        request["params"] = params
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(5)
-        client.connect(str(SOCKET))
-        client.sendall(json.dumps({"method": "hello", "params": {"protocol": PROTOCOL}}).encode() + b"\n")
-        hello = recv_line(client)
-        assert hello["type"] == "hello", hello
-        client.sendall(json.dumps(request).encode() + b"\n")
-        return recv_line(client)
+    return wsxd_client.call(SOCKET, method, params)
 
 
 def wsx(*args, extra_env=None, pane_id=None):
@@ -758,11 +732,7 @@ assert call("terminal_release", {"pane_id": pane_id, "client_id": 21})["type"] =
 project = next(item for item in call("snapshot")["data"]["projects"] if item["id"] == project_id)
 assert isinstance(project["last_terminal_active_unix_ms"], int), project
 
-with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as terminal:
-    terminal.settimeout(2)
-    terminal.connect(str(SOCKET))
-    terminal.sendall(json.dumps({"method": "hello", "params": {"protocol": PROTOCOL}}).encode() + b"\n")
-    assert recv_line(terminal)["type"] == "hello"
+with wsxd_client.connect(SOCKET, 2) as terminal:
     terminal.sendall(json.dumps({
         "method": "terminal_subscribe",
         "params": {
@@ -830,11 +800,7 @@ exit_session_id = exit_effect["data"]["id"]
 exit_snapshot = call("snapshot")["data"]
 exit_session = next(item for item in exit_snapshot["sessions"] if item["id"] == exit_session_id)
 exit_pane_id = exit_session["focused_pane"]
-with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as terminal:
-    terminal.settimeout(2)
-    terminal.connect(str(SOCKET))
-    terminal.sendall(json.dumps({"method": "hello", "params": {"protocol": PROTOCOL}}).encode() + b"\n")
-    assert recv_line(terminal)["type"] == "hello"
+with wsxd_client.connect(SOCKET, 2) as terminal:
     terminal.sendall(json.dumps({
         "method": "terminal_subscribe",
         "params": {
@@ -883,11 +849,7 @@ stuck_session_id = stuck_sync["data"]["id"]
 stuck_session = next(
     item for item in call("snapshot")["data"]["sessions"] if item["id"] == stuck_session_id
 )
-with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as terminal:
-    terminal.settimeout(3)
-    terminal.connect(str(SOCKET))
-    terminal.sendall(json.dumps({"method": "hello", "params": {"protocol": PROTOCOL}}).encode() + b"\n")
-    assert recv_line(terminal)["type"] == "hello"
+with wsxd_client.connect(SOCKET, 3) as terminal:
     terminal.sendall(json.dumps({
         "method": "terminal_subscribe",
         "params": {

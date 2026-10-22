@@ -266,7 +266,7 @@ impl Chat {
     }
 
     /// The typed timeline of the provider's saved conversation, the latest exchange
-    /// for the pane, and what the agent is doing now (docs/web-client.md "Timeline").
+    /// for the pane, and what the agent is doing now (docs/web-client-chat.md "Timeline").
     /// `from` is the id and time of an item the page has. When that item is still in
     /// the timeline the answer starts there and names it in `from`: everything before
     /// it is unchanged on the page. A record without its own id is named by position,
@@ -281,7 +281,7 @@ impl Chat {
             .ok()
             .and_then(|path| Root::pin(&path).ok());
         // ^ The pane's agent, or the conversation it last had when the agent is gone, so the chat
-        // outlives the agent (docs/web-client.md "Conversations").
+        // outlives the agent (docs/web-client-chat.md "Conversations").
         let conversations = app.queue.conversations(session);
         let remembered = conversations.last();
         let (provider, session_ref) = match target.pane.agent.as_ref() {
@@ -503,7 +503,7 @@ impl Chat {
     /// Take one message from the page into the session's queue, and deliver the oldest
     /// waiting one now when the agent can take it. Every message goes through the queue, so
     /// the server keeps it until the conversation shows it and sends it again once when the
-    /// agent did not take it (docs/web-client.md "Queue and Stop").
+    /// agent did not take it (docs/web-client-chat.md "Queue and Stop").
     pub fn submit(
         &self,
         app: &App,
@@ -672,8 +672,8 @@ impl Chat {
 
     /// The pane's agent is gone: type the provider's resume command for the conversation the
     /// pane last had into its idle shell, so a message goes to the same conversation once the
-    /// agent reports again. At most once a minute per session. ref: docs/web-client.md
-    /// "Conversations"
+    /// agent reports again. At most once a minute per session. ref:
+    /// docs/web-client-chat.md "Conversations"
     fn resume(&self, app: &App, snapshot: &Snapshot, target: &Target) -> Outcome<()> {
         let session = target.session_id.0;
         let refuse = |message: &str| Fault::new(409, "no_agent", message.to_string());
@@ -746,7 +746,7 @@ impl Chat {
     /// Remember the conversation of the session's agent and say in the chat when it ends or
     /// changes: "Claude exited.", "Same conversation, continued", "New conversation". A server
     /// that just started (`first`) only remembers. Returns whether the chat changed.
-    /// ref: docs/web-client.md "Conversations"
+    /// ref: docs/web-client-chat.md "Conversations"
     pub fn follow_conversation(
         &self,
         app: &App,
@@ -872,7 +872,7 @@ impl Chat {
         let snapshot = snapshot(client)?;
         let target = target(&snapshot, &site.access, session)?;
         let agent = attached_agent(&target)?;
-        // ^ docs/web-client.md "Commands": a message that is one of the agent's commands
+        // ^ docs/web-client-chat.md "Commands": a message that is one of the agent's commands
         // is typed as written, because an agent runs a command only at the start of its input.
         // A `!` line is Claude's shell mode, which also starts only at the start of the input.
         let shell =

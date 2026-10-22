@@ -9,7 +9,7 @@ MARKDOWN_IT_VERSION=14.3.2
 MARKDOWN_IT_SHA512='sHHjZ5fJKlgrG4qns2YwVcdNep35h5fERrfkD2YNsb9UFk0UIHarbiTaHKVMlPuWAoiilyK8Fv/jAm11slsY7Q=='
 HIGHLIGHT_VERSION=11.11.1
 HIGHLIGHT_SHA512='VEPdHzwelZ12hEX18BHduqxMZGolcUsrbeokHYxOUIm8X2+M7nx5QPtPeQgRxR9XjhdLv4/7DD5BWOlSrJ3k7Q=='
-# docs/web-client.md "Markdown": toml is hljs "ini", html is "xml".
+# docs/web-client-chat.md "Markdown": toml is hljs "ini", html is "xml".
 LANGUAGES='rust typescript javascript python bash json ini yaml diff xml css sql go'
 
 root=$(cd "$(dirname "$0")/.." && pwd)

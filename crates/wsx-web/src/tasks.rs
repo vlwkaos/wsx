@@ -1,4 +1,4 @@
-//! A project's tasks and its manager on the web. ref: docs/web-client.md "Tasks"
+//! A project's tasks and its manager on the web. ref: docs/web-client-tasks.md
 //! ^ Reads go through `wsx_core::task`; actions go to the task host's or the manager's
 //! socket. `scope` is the only code that maps a page's project id to a task store, so a
 //! project outside the grant answers 404 like every other route.
@@ -71,7 +71,7 @@ fn internal(error: anyhow::Error) -> Fault {
     Fault::new(500, "task_store", format!("{error:#}"))
 }
 
-/// The three states the owner sees (docs/web-client.md "Tasks"); the store keeps the rest.
+/// The three states the owner sees (docs/web-client-tasks.md); the store keeps the rest.
 /// A ready task waits for a land by hand: auto land is off, there are no checks, or it stopped.
 /// One the manager created waits for the manager's review, not the owner.
 fn stage(record: &TaskRecord) -> &'static str {
@@ -215,7 +215,7 @@ pub fn overview(scope: &Scope) -> Value {
     needs.sort_by_key(|(rank, order, _)| (*rank, *order));
     listed.sort_by_key(|(order, recent, _)| (*order, *recent));
     listed.truncate(TASKS_LISTED);
-    // ^ The latest manager entry and reply, for the home row (docs/web-client.md "Home").
+    // ^ The latest manager entry and reply, for the home row (docs/web-client-tasks.md "Home").
     let tail = ManagerDir::existing(&scope.store)
         .ok()
         .flatten()
@@ -660,7 +660,7 @@ fn manager_name(path: &Path) -> String {
 
 /// A worker's report for each events line that carries a worker result (`#3 ready r2: …`):
 /// the full summary of the result logged before the events message.
-/// ref: docs/web-client.md "Project screen"
+/// ref: docs/web-client-tasks.md "Project screen"
 fn worker_reports(
     scope: &Scope,
     text: &str,
@@ -1056,7 +1056,7 @@ impl Batch {
 }
 
 /// Turn new task states and approval requests into waiting notifications
-/// (docs/web-client.md "Task notifications").
+/// (docs/web-client-tasks.md "Task notifications").
 fn notice(scope: &Scope, watch: &mut Watch) {
     let first = !watch.seen.contains_key(&scope.project);
     let seen = watch.seen.entry(scope.project).or_default();

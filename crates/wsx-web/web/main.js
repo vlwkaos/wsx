@@ -59,7 +59,7 @@ function followViewport() {
     const keyboard = typing && viewport.scale <= 1.01 && document.documentElement.clientHeight - viewport.height > 120;
     document.body.toggleAttribute("data-keyboard", keyboard);
     // Little visible height, with the keyboard up or on a short screen: the `/` list keeps
-    // to fewer rows so the conversation stays in view (docs/web-client.md "Commands").
+    // to fewer rows so the conversation stays in view (docs/web-client-chat.md "Commands").
     document.body.toggleAttribute("data-short", viewport.height < SHORT_HEIGHT);
   };
   // The focus has moved only after focusout, and the keyboard closes over about 300 ms.

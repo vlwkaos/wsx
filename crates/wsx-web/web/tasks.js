@@ -1,6 +1,6 @@
 // Manager mode on a project: the manager chat as messages with short task chips, what needs
 // the owner and what runs in one reservoir over the composer, the `#` task picker, and a
-// task's or the project page's sheet over the chat (docs/web-client.md "Tasks"). Fixed actions
+// task's or the project page's sheet over the chat (docs/web-client-tasks.md). Fixed actions
 // go straight to wsx.
 import { api } from "./api.js";
 import { html, Icon, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
@@ -35,7 +35,7 @@ export async function loadTasks(project, { missing = false } = {}) {
   } catch { /* the next tasks event brings it */ }
 }
 
-// The three states the owner sees, and the tone that repeats each (docs/web-client.md "Tasks");
+// The three states the owner sees, and the tone that repeats each (docs/web-client-tasks.md);
 // the server maps the store's states to them. Working has its own color.
 const STAGES = {
   working: ["working", "working"], needs_you: ["needs you", "attention"], done: ["done", "muted"], closed: ["closed", "muted"],
@@ -82,7 +82,7 @@ export const needWords = (item) => item.kind === "approval" ? item.label
   : item.kind === "waiting" ? `#${item.task} ${waitWords(item)}`
   : `#${item.task} ${item.kind === "land" ? "is ready to land" : "failed"}`;
 // What a waiting task asks for, never a command: "reach crates.io and write ~/.cargo"
-// (docs/web-client.md "Tasks"). A grant body names one ask.
+// (docs/web-client-tasks.md). A grant body names one ask.
 export function askWords(asks) {
   const words = asks.map((ask) => ask.kind === "network" ? `reach ${ask.host}` : `write ${ask.path}`);
   return words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
@@ -207,7 +207,7 @@ function NeedRow({ project, item, index, onActing, onFailed }) {
   } else if (acting && item.kind === "land") {
     actions = button("Land", () => run("land"), { "aria-label": `Land #${item.task}` });
   }
-  // ^ An approval reads as the action it asks for, never as its id (docs/web-client.md "Tasks").
+  // ^ An approval reads as the action it asks for, never as its id (docs/web-client-tasks.md).
   const context = item.kind === "approval" ? item.title ?? item.commit ?? ""
     : item.kind === "waiting" ? waitWords(item) : item.kind === "land" ? item.reason : "failed";
   const label = item.kind === "approval" ? item.label : item.title;
@@ -258,7 +258,7 @@ const CheckingRow = ({ project, count }) => html`
     </div>
   </li>`;
 
-// The decision list, pinned over the composer (docs/web-client.md "Project screen"). Closed it
+// The decision list, pinned over the composer (docs/web-client-tasks.md "Project screen"). Closed it
 // is one line: "2 need you · #6 <title> +1 more · 5 to check". Open, every item that waits for
 // the owner in the server's order, each with its one action, then the tasks that run and the
 // To check row. Done tasks are not in it, and with nothing in it there is no list. A cleared
@@ -644,7 +644,7 @@ export function Manager({ project: id, task, page, checks }) {
   const typing = Boolean(chat?.busy);
   const names = { manager: chat?.manager.name, peers: chat?.peers };
   const stopped = chat && !chat.running && entries.at(-1)?.kind === "stopped";
-  // ^ The manager's state only when it matters: typing or stopped (docs/web-client.md "Project screen").
+  // ^ The manager's state only when it matters: typing or stopped (docs/web-client-tasks.md "Project screen").
   const managerWord = typing ? "typing" : stopped ? "stopped" : "";
   return html`
     <div class="page manager">

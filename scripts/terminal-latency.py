@@ -8,14 +8,14 @@ from pathlib import Path
 import pty
 import select
 import shutil
-import socket
 import struct
 import subprocess
 import sys
 import termios
 import time
 import fcntl
-import weakref
+
+import wsxd_client
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = Path(os.environ.get("WSX_LATENCY_WORK", ROOT / ".work" / "terminal-latency"))
@@ -25,38 +25,13 @@ PROJECT = WORK / "project"
 HOME = WORK / "home"
 STATE = WORK / "state"
 SOCKET = STATE / "wsx" / "wsx.sock"
-PROTOCOL = 16
 WARMUPS = 8
 # A 100-sample population keeps empirical p95 from being decided by one
 # scheduling stall on shared CI runners while preserving the 16.7 ms metric.
 SAMPLES = 100
 BUDGET_MS = 16.7
-BUFFERS = weakref.WeakKeyDictionary()
-
-
-def recv_line(client):
-    data = BUFFERS.get(client, b"")
-    while b"\n" not in data:
-        chunk = client.recv(65536)
-        if not chunk:
-            raise RuntimeError("wsxd closed response")
-        data += chunk
-    line, remainder = data.split(b"\n", 1)
-    BUFFERS[client] = remainder
-    return json.loads(line)
-
-
 def call(method, params=None):
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(5)
-        client.connect(str(SOCKET))
-        client.sendall(json.dumps({"method": "hello", "params": {"protocol": PROTOCOL}}).encode() + b"\n")
-        assert recv_line(client)["type"] == "hello"
-        request = {"method": method}
-        if params is not None:
-            request["params"] = params
-        client.sendall(json.dumps(request).encode() + b"\n")
-        return recv_line(client)
+    return wsxd_client.call(SOCKET, method, params)
 
 
 def set_size(fd, rows=24, cols=80):

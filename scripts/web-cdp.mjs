@@ -1,9 +1,19 @@
 // A headless Chrome driven over the Chrome DevTools Protocol with Node's built-in
-// WebSocket. Shared by web-browser-check.mjs and web-terminal-check.mjs.
+// WebSocket. Shared by web-browser-check.mjs, web-tasks-check.mjs and web-terminal-check.mjs.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+export const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// The phone layout audit of the ui-view-standards skill (scripts/mobile-audit.js, or the file
+// WSX_MOBILE_AUDIT names), or null when there is none.
+export function mobileAudit() {
+  const file = process.env.WSX_MOBILE_AUDIT ?? fileURLToPath(new URL("./mobile-audit.js", import.meta.url));
+  return { file, source: fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null };
+}
 
 // captures: directory for screenshots. prefix: file name prefix. timeoutSeconds: whole-run limit.
 export async function launch({ captures, prefix, timeoutSeconds }) {
@@ -121,8 +131,16 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
     fs.writeFileSync(path.join(captures, `${prefix}${name}.png`), image);
     return image;
   }
+  const go = (hash) => evaluate(`location.hash = ${JSON.stringify(hash)}`);
+  const text = (selector) => evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].map((node) => node.textContent.trim().replace(/\\s+/g, ' '))`);
+  const count = (selector) => evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length`);
+  // options: more Input.dispatchKeyEvent fields, such as modifiers.
+  async function key(name, keyCode, options = {}) {
+    await send("Input.dispatchKeyEvent", { type: "keyDown", key: name, code: name, windowsVirtualKeyCode: keyCode, ...options });
+    await send("Input.dispatchKeyEvent", { type: "keyUp", key: name, code: name, windowsVirtualKeyCode: keyCode, ...options });
+  }
   return {
-    send, evaluate, until, viewport, capture, fail, problems,
+    send, evaluate, until, viewport, capture, fail, problems, go, text, count, key,
     cleanup: async () => { socket.close(); await cleanup(); },
   };
 }

@@ -1,5 +1,5 @@
 //! The slash commands a session's agent takes, for the chat's `/` list
-//! (docs/web-client.md "Commands"). Names and one-line descriptions only: a file
+//! (docs/web-client-chat.md "Commands"). Names and one-line descriptions only: a file
 //! body never leaves this module.
 //! ^ Claude's folders and plugin layout: https://code.claude.com/docs/en/skills and
 //! https://code.claude.com/docs/en/commands. Codex: developers.openai.com/codex/cli/slash-commands.

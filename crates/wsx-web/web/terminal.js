@@ -1,5 +1,5 @@
 // Terminal view of one session: xterm.js on the pane's raw byte stream over one WebSocket.
-// Contract: docs/web-client.md "Terminal". Input behaviour follows remotty's Terminal.tsx.
+// Contract: docs/web-client-terminal.md. Input behaviour follows remotty's Terminal.tsx.
 // ^ wsxd's own emulator already answers terminal queries, so this one must stay silent.
 import { add, fill, h } from "./dom.js";
 import { can, state as store, touch as touchDevice } from "./store.js";
@@ -125,7 +125,7 @@ export function terminalView(mount, current, tools) {
   const noticeAction = h("button", { type: "button", class: "button-primary", hidden: true });
   const notice = h("div", { class: "terminal-notice", role: "status", hidden: true }, noticeText, noticeAction);
   const host = h("div", { class: "terminal-host" });
-  // ^ While the screen is scrolled back, one tap returns to the newest output (docs/web-client.md "Terminal").
+  // ^ While the screen is scrolled back, one tap returns to the newest output (docs/web-client-terminal.md).
   const jump = h("button", { type: "button", class: "jump", hidden: true, onclick: () => { term?.scrollToBottom(); jump.hidden = true; } },
     icon("down"), "Jump to latest");
   const stage = h("div", { class: "terminal-stage" }, notice, host, jump);

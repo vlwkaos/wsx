@@ -1,4 +1,4 @@
-// Markdown in agent messages (docs/web-client.md "Markdown").
+// Markdown in agent messages (docs/web-client-chat.md "Markdown").
 // ^ markdown-it only parses: this file builds the page's nodes from its token list.
 // No HTML string from a message is ever given to the DOM, raw HTML in a message stays
 // text, and a message cannot load a remote resource.
@@ -159,7 +159,7 @@ function blocks(tokens, files, words) {
 
 // One parse per text: a timeline refresh that brings the same message reuses the nodes.
 // `words`, when given, turns a text run into nodes (task chips); keep it the same function.
-// `prose` reads indented lines as text, not code (docs/web-client.md "Markdown").
+// `prose` reads indented lines as text, not code (docs/web-client-chat.md "Markdown").
 export function Markdown({ text, files, words, prose = false }) {
   const granted = files?.filter((file) => file.image).map((file) => file.hash).join() ?? "";
   return useMemo(() => {

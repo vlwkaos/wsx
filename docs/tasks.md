@@ -169,7 +169,7 @@ The owner can take a build over and work on it directly, with the worker's conte
 
 ## Project page
 
-`tasks/<project-id>/page.md` is the owner's one-page picture of the project: the goal, the tasks and how they relate as a mermaid graph, the plans, the decisions and the open questions. A plan longer than a few lines goes here as its own section with a mermaid diagram, and the chat reply links it. The manager host creates it with those sections when it is missing (0600; an existing page stays). The manager edits it with Bash, which may write that one file (its real path in `allowWrite`; see Permissions): its instructions say to update a section in place when it changes (a short script that reads the page, replaces the section and writes the same file back), never to rewrite the whole file or create another page, and to call it "the project page" in a reply. Workers do not write it: the state folder is denied to their file tools and outside their sandbox. The web client shows it ([web-client.md](web-client.md) "Project page").
+`tasks/<project-id>/page.md` is the owner's one-page picture of the project: the goal, the tasks and how they relate as a mermaid graph, the plans, the decisions and the open questions. A plan longer than a few lines goes here as its own section with a mermaid diagram, and the chat reply links it. The manager host creates it with those sections when it is missing (0600; an existing page stays). The manager edits it with Bash, which may write that one file (its real path in `allowWrite`; see Permissions): its instructions say to update a section in place when it changes (a short script that reads the page, replaces the section and writes the same file back), never to rewrite the whole file or create another page, and to call it "the project page" in a reply. Workers do not write it: the state folder is denied to their file tools and outside their sandbox. The web client shows it ([web-client-tasks.md](web-client-tasks.md) "Project page").
 
 ## Ledger
 
@@ -205,7 +205,7 @@ One manager per project runs as hidden `wsx task manager-host <project-id>` in a
 - The first turn of every fresh conversation opens with the manager's notes: `notes/decisions.md` newest line first, then `notes/context.md`, at most 8 KiB together. After a rotation a handover follows: the last 4 owner messages and replies, each at most 600 characters.
 - A worker conversation is never rotated: it holds the task's work, and its rules that matter at run time (sandbox, tools) come with each start.
 
-The web client shows the manager chat, the tasks, their reports and their fixed actions, and notifies about them: [web-client.md](web-client.md) "Tasks".
+The web client shows the manager chat, the tasks, their reports and their fixed actions, and notifies about them: [web-client-tasks.md](web-client-tasks.md).
 
 ## Managers talk
 

@@ -31,7 +31,7 @@ pub enum Topic {
     Blocked,
     Done,
     Error,
-    /// Task attention and digests (docs/web-client.md "Task notifications").
+    /// Task attention and digests (docs/web-client-tasks.md "Task notifications").
     Tasks,
 }
 

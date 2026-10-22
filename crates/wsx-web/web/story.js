@@ -1,6 +1,6 @@
 // Show-me context: where the project stands (from the ledger) and what happens next to one
 // task (from the record and the result), in plain words written by wsx, never by a model
-// (docs/web-client.md "Project brief and task story").
+// (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
 import { firstSentence, html, useEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
@@ -25,7 +25,7 @@ function deployWords(status, kind, default_branch) {
 const FACTS_EVERY_MS = 2000;
 
 // The deploy, the release and the main checkout in words, at the top of the project page
-// (docs/web-client.md "Project page"). Read when it opens and as tasks change.
+// (docs/web-client-tasks.md "Project page"). Read when it opens and as tasks change.
 export function ProjectFacts({ project, overview }) {
   const [ledger, setLedger] = useState(null);
   const timer = useRef(null);
@@ -101,7 +101,7 @@ export function nextWords(detail) {
 
 // The top of the task sheet: one sentence of what changed (More shows the whole summary and
 // what the worker decided), and what the owner should know next with the task's actions beside
-// it (docs/web-client.md "Task sheet").
+// it (docs/web-client-tasks.md "Task sheet").
 export function TaskStory({ detail, words, children }) {
   const [more, setMore] = useState(false);
   const summary = (detail.result?.summary ?? "").trim();

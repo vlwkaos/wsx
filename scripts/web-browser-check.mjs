@@ -6,22 +6,18 @@
 // Each capture is saved with the slop audit of /ui-view-standards beside it.
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { launch } from "./web-cdp.mjs";
+import { launch, mobileAudit, pause } from "./web-cdp.mjs";
 
 const [mode, siteUrl, code, ...rest] = process.argv.slice(2);
 //   restart <site-url> <code> <capture-dir> <signal-dir> [slop-audit.js]   (the caller restarts the server)
 const [emptyUrl, emptyCode, sessionsJson, captures, auditPath] = mode === "tour" ? rest
   : mode === "restart" ? [null, null, "{}", rest[0], rest[2]] : [null, null, "{}", ...rest];
 const ids = JSON.parse(sessionsJson);
-const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = await launch({
+const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key } = await launch({
   captures, prefix: "", timeoutSeconds: mode === "tour" ? 420 : 100,
 });
-const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
-// The phone layout audit of the ui-view-standards skill (scripts/mobile-audit.js, or WSX_MOBILE_AUDIT).
-const mobilePath = process.env.WSX_MOBILE_AUDIT ?? fileURLToPath(new URL("./mobile-audit.js", import.meta.url));
-const mobileSource = fs.existsSync(mobilePath) ? fs.readFileSync(mobilePath, "utf8") : null;
+const mobileSource = mobileAudit().source;
 const SIZES = [[320, 568, 2], [390, 844, 2], [1280, 800, 1]];
 let size = SIZES[0];
 const phone = () => size[0] < 600;
@@ -85,16 +81,9 @@ async function steadyOnFocus(selector, label) {
     await fail(`${label} zooms or scrolls the page on focus at ${size[0]} px: ${JSON.stringify(seen)}`);
   }
 }
-const go = (hash) => evaluate(`location.hash = ${JSON.stringify(hash)}`);
-const text = (selector) => evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].map((node) => node.textContent.trim().replace(/\\s+/g, ' '))`);
-const count = (selector) => evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length`);
 // Type into the composer as an input event does.
 const typeInto = (value) => evaluate(`(() => { const field = document.querySelector('.composer-field'); field.focus();
   field.value = ${JSON.stringify(value)}; field.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-async function key(name, keyCode, options = {}) {
-  await send("Input.dispatchKeyEvent", { type: "keyDown", key: name, code: name, windowsVirtualKeyCode: keyCode, ...options });
-  await send("Input.dispatchKeyEvent", { type: "keyUp", key: name, code: name, windowsVirtualKeyCode: keyCode, ...options });
-}
 async function pair(url, pairingCode) {
   await send("Page.navigate", { url });
   await until("!!document.querySelector('#pair-code')", "pairing form did not render");
@@ -1007,7 +996,7 @@ await evaluate("delete document.documentElement.dataset.scheme");
 await typeInto("Please check the notes");
 await evaluate("document.querySelector('.composer .button-primary').click()");
 // ^ Every message goes through the session's queue: one the agent cannot take waits there,
-// with wsxd's reason (docs/web-client.md "Queue and Stop").
+// with wsxd's reason (docs/web-client-chat.md "Queue and Stop").
 const failedRow = "[...document.querySelectorAll('.queued[data-failed]')].find((row) => row.querySelector('.queued-text').textContent === 'Please check the notes')";
 const notDelivered = `${failedRow}?.querySelector('.queued-reason')?.textContent ?? ''`;
 await until(`(${notDelivered}).startsWith('Not delivered to the agent: prompt was not sent because fresh empty input was not observed')`, "a failed delivery did not say so");

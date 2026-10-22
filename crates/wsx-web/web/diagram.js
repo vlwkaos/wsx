@@ -1,4 +1,4 @@
-// Mermaid diagrams in agent messages (docs/web-client.md "Diagrams").
+// Mermaid diagrams in agent messages (docs/web-client-chat.md "Diagrams").
 // ^ The page's CSP has no 'unsafe-inline' and stays that way. Mermaid draws into the
 // page to measure text, so while it draws, a `style` attribute it sets goes through
 // the CSSOM, and its CSS is adopted as a constructed style sheet. The finished SVG is

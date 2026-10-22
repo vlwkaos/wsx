@@ -1,4 +1,4 @@
-/* Terminal fonts (docs/web-client.md "Terminal fonts"), loaded only when a terminal
+/* Terminal fonts (docs/web-client-terminal.md "Terminal fonts"), loaded only when a terminal
    opens. Files and licenses: web/vendor/fonts, rebuilt by scripts/vendor-fonts.sh.
    The file names carry the upstream version, so they are cached for good. */
 @font-face {

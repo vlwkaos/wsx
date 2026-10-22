@@ -1,4 +1,4 @@
-//! Messages a person sent while the agent was working (docs/web-client.md "Queue").
+//! Messages a person sent while the agent was working (docs/web-client-chat.md "Queue and Stop").
 //! ^ wsxd allows one active exchange per pane. The web server keeps what cannot be
 //! delivered yet, per session and in order, and the event observer delivers it.
 //! The file is owner-only site state and survives a restart of the server.
@@ -76,7 +76,7 @@ pub enum Settled {
 }
 
 /// What the server did on its own for a session's chat, shown in the conversation where it
-/// happened (docs/web-client.md "Queue and Stop"), such as a message sent again.
+/// happened (docs/web-client-chat.md "Queue and Stop"), such as a message sent again.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notice {
     pub at_unix_ms: u64,
@@ -84,7 +84,7 @@ pub struct Notice {
 }
 
 /// One agent conversation a session's pane held, so the chat outlives the agent and keeps the
-/// earlier conversation readable (docs/web-client.md "Conversations").
+/// earlier conversation readable (docs/web-client-chat.md "Conversations").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Conversation {
     pub provider: String,
@@ -395,7 +395,7 @@ impl Queue {
 
     /// The next message to deliver: the oldest one that did not fail and was not
     /// delivered. A failed message does not hold back the ones after it
-    /// (docs/web-client.md "Queue and Stop").
+    /// (docs/web-client-chat.md "Queue and Stop").
     pub fn next(&self, session: u64) -> Option<Queued> {
         self.list(session)
             .into_iter()

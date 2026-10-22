@@ -133,7 +133,7 @@ Separate `agent_exchange_*_stashing_draft` request variants make old daemons rej
 
 An agent runs a slash command (`/compact`) only when it is the start of its input, and every round normally starts with the line `[wsx exchange N, round R, access]`. A create or continue request with `command: true` types its prompt as written, without that line. wsxd accepts it only for one line of at most 256 bytes that starts with `/` and a letter or digit, or with `!` and a command (a shell line, daemon revision 30, capability `exchange_shell`); anything else is `invalid_prompt`. A daemon that does this reports the capability `exchange_command` (daemon revision 27). An older daemon ignores the field, so a client must check the capability before it sends a command.
 
-A command round is an ordinary exchange round: it has an id, a round number, a deadline, writer claims, cancellation, the `pty_delivery` evidence and the state observed from the pane's lifecycle. What it gives up is correlation: the agent cannot tell which exchange the line belongs to, so an adapter that binds native turns by the envelope (Pi) does not bind it, and the round never reaches `request_bound`. `/clear` and `/new` start a new provider conversation; the session follows the transcript the agent's hooks report next. The CLI does not send commands; the web chat does (`docs/web-client.md` "Commands").
+A command round is an ordinary exchange round: it has an id, a round number, a deadline, writer claims, cancellation, the `pty_delivery` evidence and the state observed from the pane's lifecycle. What it gives up is correlation: the agent cannot tell which exchange the line belongs to, so an adapter that binds native turns by the envelope (Pi) does not bind it, and the round never reaches `request_bound`. `/clear` and `/new` start a new provider conversation; the session follows the transcript the agent's hooks report next. The CLI does not send commands; the web chat does (`docs/web-client-chat.md` "Commands").
 
 ## Native request-bound receipts
 
@@ -205,7 +205,7 @@ A round is delivered when wsxd typed it into the agent's terminal; that is not y
 - Until a round is taken, the agent's lifecycle reports do not move it: Working, Blocked and Done belong to another prompt's turn. A detached agent still interrupts it. A command round follows the lifecycle as before: Claude's `/compact` starts no `UserPromptSubmit` (checked with Claude Code on 2026-10-21, where a chat round's prompt reached the hook as `[wsx exchange 7, round 1, writer]\n…`).
 - An agent without the capability keeps the lifecycle evidence of the sections above.
 
-The web client sends a message whose round was not taken again once ([web-client.md](web-client.md) "Queue and Stop").
+The web client sends a message whose round was not taken again once ([web-client-chat.md](web-client-chat.md) "Queue and Stop").
 
 ## Delivery failure
 

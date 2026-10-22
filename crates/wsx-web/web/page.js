@@ -1,6 +1,6 @@
 // The project page: the deploy, the release and the main checkout in words, then one markdown
 // file with a mermaid graph that the manager keeps up to date with the Edit tool, shown in the
-// sheet over the chat (docs/tasks.md "Project page", docs/web-client.md "Project page").
+// sheet over the chat (docs/tasks.md "Project page", docs/web-client-tasks.md "Project page").
 import { api } from "./api.js";
 import { ago, html, Icon, useEffect, useNow, useRef, useState } from "./lib.js";
 import { events, useStore } from "./store.js";

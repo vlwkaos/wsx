@@ -1,6 +1,6 @@
 #!/bin/sh
 # Rebuilds the terminal fonts in crates/wsx-web/web/vendor/fonts from pinned upstream
-# releases (docs/web-client.md "Terminal fonts"):
+# releases (docs/web-client-terminal.md "Terminal fonts"):
 #   JetBrains Mono 2.304 (SIL OFL 1.1): regular, bold, italic, as upstream woff2.
 #   Symbols Nerd Font Mono 3.4.0 (MIT): upstream ttf, and a woff2 made from it here.
 # The woff2 is the same tables in a WOFF2 container, compressed with Node's own

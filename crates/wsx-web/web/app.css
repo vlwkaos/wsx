@@ -458,7 +458,7 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .chips li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Hook: .bubble, .status-line, .reservoir, .more, .task-chip — manager mode on a project
-   (docs/web-client.md "Project screen"). Each message is one bubble with its author and time;
+   (docs/web-client-tasks.md "Project screen"). Each message is one bubble with its author and time;
    task changes are muted lines; what is open is one panel over the composer, bounded so the
    conversation keeps the height. */
 .manager .chat { --strip-share: 0.4; }
@@ -488,7 +488,7 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .bubble[data-pending] .bubble-box { color: var(--color-muted); }
 .bubble-head { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1); font-size: var(--font-size-sm); }
 .bubble-state { color: var(--color-muted); }
-/* Hook: .fold — one screen of the chat, then "Show all" (docs/web-client.md "One screen").
+/* Hook: .fold — one screen of the chat, then "Show all" (docs/web-client.md "Screens").
    `--screen-height` is the log's own height; the room keeps the author line and the button in view. */
 .fold:not([data-open]) { max-height: max(calc(6 * var(--font-size-md) * var(--line-height-prose)), calc(var(--screen-height, 100svh) - 3 * var(--size-control))); overflow: hidden; }
 .fold[data-clamped] {
@@ -599,7 +599,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .task-body { padding: 0 var(--space-4); max-width: calc(var(--size-prose) + 2 * var(--space-4)); }
 /* A closed fold says what it holds: "4 checks passed", "2 open". */
 .fold-note { font-weight: normal; color: var(--color-muted); }
-/* Hook: .check-list — the To check list (docs/web-client.md "To check"): each item with its
+/* Hook: .check-list — the To check list (docs/web-client-tasks.md "To check"): each item with its
    task, the check and when it passes, then Pass and Fail. */
 .check-intro { padding: var(--space-3) var(--column-inset, var(--space-4)) 0; font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
 .check-list { list-style: none; margin: 0; padding: 0; }
@@ -635,7 +635,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .app:not([data-wide]) .task-message .task-steer + .composer-send { margin-left: var(--space-2); }
 
 .visually-hidden { position: absolute; width: var(--border-width); height: var(--border-width); overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-/* Hook: .story — where a task stands, in words (docs/web-client.md "Task sheet"): one sentence
+/* Hook: .story — where a task stands, in words (docs/web-client-tasks.md "Task sheet"): one sentence
    of what changed, and what the owner should know next. */
 .story { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere; }
 .story .link-action { align-self: flex-start; }

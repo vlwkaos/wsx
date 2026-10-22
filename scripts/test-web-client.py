@@ -24,6 +24,8 @@ import threading
 import time
 import zlib
 
+import wsxd_client
+
 ROOT = Path(__file__).resolve().parents[1]
 
 # A fixture agent: reports as Claude, records what the PTY delivered, and writes
@@ -46,7 +48,7 @@ def report(state, attached=True, compacting=False):
  global taken
  with socket.socket(socket.AF_UNIX) as client:
   client.connect(os.environ['WSX_SOCKET']); stream = client.makefile('rb')
-  client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
+  client.sendall(b'{"method":"hello","params":{"protocol":@PROTOCOL@}}\n'); stream.readline()
   params = {'pane_id':pane,'runtime_generation':generation,'provider':provider,'state':state,'attached':attached,
     'session_ref':{'kind':'id','value':conversation,'transcript_path':str(history)},
     'capabilities':{'prompt':True,'lifecycle':True,'prompt_receipts':provider == 'claude'}}
@@ -840,20 +842,10 @@ def web_journey(args):
         chart = work / 'chart-source.png'
         chart.write_bytes(png(12, 40))
         actor = work / 'actor.py'
-        actor.write_text(ACTOR)
+        actor.write_text(wsxd_client.fixture(ACTOR))
 
         def call(method, params=None):
-            with socket.socket(socket.AF_UNIX) as client:
-                client.settimeout(5)
-                client.connect(str(path))
-                stream = client.makefile('rb')
-                client.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
-                stream.readline()
-                request = {'method': method}
-                if params is not None:
-                    request['params'] = params
-                client.sendall(json.dumps(request).encode() + b'\n')
-                return json.loads(stream.readline())
+            return wsxd_client.call(path, method, params)
 
         def wait(test, label, timeout=8):
             deadline = time.monotonic() + timeout
@@ -897,7 +889,7 @@ def web_journey(args):
                 link.settimeout(10)
                 link.connect(str(path))
                 lines = link.makefile('rb')
-                link.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
+                link.sendall(wsxd_client.HELLO)
                 lines.readline()
                 link.sendall(json.dumps({'method': 'terminal_subscribe', 'params': {
                     'pane_id': pane, 'client_id': 77, 'takeover': False, 'rows': 12, 'cols': 100}}).encode() + b'\n')
@@ -1702,7 +1694,7 @@ capabilities = ["terminal_view"]
         rows = events.expect('workspace')['sessions']
         assert next(row for row in rows if row['id'] == sessions['owner'])['state_since_unix_ms'] == began, rows
         assert [item['text'] for item in timeline()['queue']] == ['queued one', 'queued two']
-        # ^ A message held for more than 10 s brings the end of the screen (docs/web-client.md "Timeline").
+        # ^ A message held for more than 10 s brings the end of the screen (docs/web-client-chat.md "Timeline").
         screen = wait(lambda: timeline()['screen'], 'screen of a held message', timeout=15)
         assert 0 < len(screen) <= 8 and any(row.startswith('❯') for row in screen), screen
         open_gate('result')
@@ -1741,7 +1733,7 @@ capabilities = ["terminal_view"]
         assert delivered().count('drop me always') == 2 and 'typed by a person' in [m['text'] for m in messages(owner, sessions['owner'])['messages']]
         assert steady(owner, 'DELETE', chat + '/queue/%d' % always)[0] == 200
         settle('owner')
-        # The chat outlives the agent (docs/web-client.md "Conversations"): Claude exits and its
+        # The chat outlives the agent (docs/web-client-chat.md "Conversations"): Claude exits and its
         # pane is a shell again; a message types `claude --resume` there and goes to the same
         # conversation. A new conversation in the pane keeps the earlier one readable above it.
         (bin_dir / 'claude').write_text('#!/bin/sh\nexec %s %s "%s/resume-${WSX_FIXTURE_CONVERSATION:-fixture}.jsonl" %s %s %s %s\n'
@@ -2097,7 +2089,7 @@ capabilities = ["terminal_view"]
             window.settimeout(5)
             window.connect(str(path))
             lines = window.makefile('rb')
-            window.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
+            window.sendall(wsxd_client.HELLO)
             lines.readline()
             window.sendall(json.dumps({'method': 'terminal_subscribe', 'params': {
                 'pane_id': term_pane, 'client_id': 77, 'takeover': True, 'rows': 12, 'cols': 60}}).encode() + b'\n')
@@ -2624,7 +2616,7 @@ SESSION_AGENT = r'''
 import json, os, socket, sys, time
 with socket.socket(socket.AF_UNIX) as client:
     client.connect(os.environ['WSX_SOCKET']); stream = client.makefile('rb')
-    client.sendall(b'{"method":"hello","params":{"protocol":16}}\n'); stream.readline()
+    client.sendall(b'{"method":"hello","params":{"protocol":@PROTOCOL@}}\n'); stream.readline()
     params = {'pane_id': int(os.environ['WSX_PANE_ID']), 'runtime_generation': os.environ['WSX_RUNTIME_GENERATION'],
               'provider': 'claude', 'state': sys.argv[1], 'capabilities': {'prompt': False, 'lifecycle': True}}
     client.sendall(json.dumps({'method': 'agent_report', 'params': params}).encode() + b'\n')
@@ -2636,7 +2628,7 @@ if sys.argv[2] == 'stay':
 
 def task_journey(args):
     """Tasks and the manager through the web API on an isolated wsxd with the stream-json
-    fake Claude (scripts/fake-claude-stream.py). ref: docs/web-client.md "Tasks"."""
+    fake Claude (scripts/fake-claude-stream.py). ref: docs/web-client-tasks.md."""
     wsx, wsxd = args.wsx.resolve(), args.daemon.resolve()
     if not wsx.is_file() or not wsxd.is_file() or wsx.parent != wsxd.parent:
         raise RuntimeError('build adjacent wsx/wsxd first')
@@ -2773,17 +2765,10 @@ def task_journey(args):
             # Sessions without tasks, oldest first: an agent that exited (`gone`), one done
             # (`quiet`), two working (`busy`).
             agent_script = work / 'session-agent.py'
-            agent_script.write_text(SESSION_AGENT)
+            agent_script.write_text(wsxd_client.fixture(SESSION_AGENT))
 
             def call(method, params):
-                with socket.socket(socket.AF_UNIX) as client:
-                    client.settimeout(5)
-                    client.connect(str(path))
-                    stream = client.makefile('rb')
-                    client.sendall(b'{"method":"hello","params":{"protocol":16}}\n')
-                    stream.readline()
-                    client.sendall(json.dumps({'method': method, 'params': params}).encode() + b'\n')
-                    return json.loads(stream.readline())
+                return wsxd_client.call(path, method, params)
             snapshot = call('snapshot', None)['data']
             names = {item['id']: Path(item['path']).name for item in snapshot['projects']}
             worktrees = {names[item['project_id']]: item['id'] for item in snapshot['worktrees']}
@@ -3150,7 +3135,7 @@ digest_max_seconds = 6
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
             # Home's order by its rule: needs first (most urgent kind, then the oldest need of it),
-            # then the last activity, newest first (docs/web-client.md "Home").
+            # then the last activity, newest first (docs/web-client-tasks.md "Home").
             urgency = {'waiting': 0, 'failed': 1, 'approval': 2, 'land': 3}
             def home_key(name):
                 view = steady(owner, 'GET', '/api/tasks/%d' % ids[name])[1]
