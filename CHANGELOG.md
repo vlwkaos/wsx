@@ -1,5 +1,11 @@
 # Changelog
 
+### Fixed
+
+- On iOS the terminal's key row no longer blurs the terminal, so the keyboard does not flicker on each `^J`, Enter or arrow.
+- In the web chat, the first message of a new conversation no longer shows above its "New conversation" line.
+- A task check with more than 8 KiB of output (a test run) runs to its end; the task host keeps the last 8 KiB.
+
 ## [Unreleased]
 
 ### Changed
@@ -9,12 +15,18 @@
 - `tasks.skills: owner` lends workers the owner's skills, and `tasks.workflow` (`build`, `review`, `batch`) holds the project's words for each stage; the defaults name no skill ([docs/tasks.md](docs/tasks.md) "Workflow").
 - To check items say what the task did, where to look (a link when it is a URL or page path) and show the worker's capture, kept with the task at the land; Try, Fail and Pass are icon buttons and the list's sheet is only as high as its rows. An item that names a command goes back to the worker.
 
+- With `task_view` the web's tabs are Home, Sessions and Settings: Sessions lists shells with their project, and a project's worktrees are in its chat's menu ([docs/web-client.md](docs/web-client.md) "Screens").
+- Chat messages fold at one screen of the device instead of about 12 lines, in the session chat, the manager's bubbles and the compaction summary; a left-to-right flowchart too wide to read is drawn top to bottom when that fits.
+- The manager and the workers present replies by one rule: the answer first, assumptions on the first line, structure as a diagram or a table, each fact once, about one phone screen ([docs/agent-reporting.md](docs/agent-reporting.md) "Output style").
+
 ### Removed
 
 - The worker brief phase (`task start`, `--no-brief`, `tasks.brief`, `brief.json`, the brief on the task sheet), the `pr` landing policy (`tasks.land.policy`, `tasks.land.remote`), `task revoke`, and the log events only those used. Old log lines of removed kinds are skipped.
 
 ### Added
 
+- A session row in the web slides left to show Remove, which closes the session (`DELETE api/sessions/<id>`, with `session_start`); a task's session is refused.
+- `wsx agent install claude` writes the Claude output style `wsx` and selects it when no style is chosen.
 - Each manager turn's message ends with a ledger summary from the host (open tasks by state, what changed since the last turn, To check, approvals, deploy); the manager reads the full ledger only when it needs more.
 - `tasks.manager.eventModel` (default `off`): a turn of only events, with no review due, runs on that model; the host switches the running process with `set_model`. It is off because the switch writes the conversation into the other model's cache and cost more on `scripts/bench-manager.py`, a real-Claude benchmark of five fixed manager turns.
 - Manager mode, seventh part: one short path from a request to a running change ([docs/tasks.md](docs/tasks.md)).
