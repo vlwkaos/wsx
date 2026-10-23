@@ -61,6 +61,26 @@ fn screen(client: &Client, pane: PaneId) -> Outcome<Vec<String>> {
 /// (docs/web-client-chat.md "Timeline"). `None` when the screen cannot be read.
 pub fn tail(client: &Client, pane: PaneId, count: usize) -> Option<Vec<String>> {
     let mut rows = screen(client, pane).ok()?;
+    // ^ Claude draws its editor between two borders with a footer under it: the rows above
+    // the editor say what holds it. A screen without that box is taken from its end.
+    let border = |row: &String| {
+        let row = row.trim();
+        row.chars().count() >= 8 && row.chars().all(|character| matches!(character, '─' | '━'))
+    };
+    let borders: Vec<usize> = (0..rows.len())
+        .filter(|&index| border(&rows[index]))
+        .collect();
+    if let [.., top, bottom] = borders[..] {
+        if rows[top + 1..bottom]
+            .first()
+            .is_some_and(|row| row.trim_start().starts_with('❯'))
+        {
+            rows.truncate(top);
+            while rows.last().is_some_and(|row| row.trim().is_empty()) {
+                rows.pop();
+            }
+        }
+    }
     Some(rows.split_off(rows.len().saturating_sub(count)))
 }
 
