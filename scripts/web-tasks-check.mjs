@@ -52,7 +52,7 @@ const keyboard = (height) => evaluate(`(() => {
 // besides the bounded strip and the suggestion list, and the page itself never scrolls.
 async function sound(label) {
   const seen = await evaluate(`(() => {
-    const free = (node) => node.closest('.code-block pre, .table-wrap, .diagram');
+    const free = (node) => node.closest('.code-block pre, .table-wrap, .diagram, .since p');
     const wide = [...document.querySelectorAll('#app *')].filter((node) => !free(node) && node.getBoundingClientRect().right > innerWidth + 0.5);
     const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .reservoir, .slash, .task-sheet')
       && /auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1);
@@ -113,6 +113,17 @@ async function oneWorkingColor(where, least) {
     return { working, count: nodes.length, off: nodes.filter((node) => paint(node) !== working).map((node) => node.className || node.tagName),
       accentRunning: document.querySelectorAll('.mark[data-running]:not([data-tone=working])').length }; })()`);
   if (seen.count < least || seen.off.length || seen.accentRunning) await fail(`${where}: working states do not share one color: ${JSON.stringify(seen)}`);
+}
+
+// A manager's bubble uses the column: wider than the old 88% cap, with its box (border, background) kept.
+async function managerWidth(where) {
+  const seen = await evaluate(`(() => { const log = document.querySelector('.log'), style = getComputedStyle(log);
+    const column = log.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const box = [...document.querySelectorAll('.log .bubble[data-side=in] .bubble-box')].sort((a, b) => b.getBoundingClientRect().width - a.getBoundingClientRect().width)[0];
+    const look = getComputedStyle(box);
+    return { column, width: box.getBoundingClientRect().width, border: look.borderTopWidth, edge: look.borderTopColor, fill: look.backgroundColor }; })()`);
+  if (!(seen.width > 0.88 * seen.column + 1 && seen.width <= seen.column)) await fail(`${where}: a manager bubble is ${seen.width}px in a ${seen.column}px column`);
+  if (parseFloat(seen.border) < 1 || seen.edge === "rgba(0, 0, 0, 0)" || seen.fill === "rgba(0, 0, 0, 0)") await fail(`${where}: the bubble lost its box: ${JSON.stringify(seen)}`);
 }
 
 async function pair() {
@@ -372,14 +383,36 @@ if (await count(".tabbar")) await fail("the chat shows the bottom bar");
 if (await count(".adopted")) await fail("the project chat shows the Adopted list");
 
 // "Since you left": this device left the project two hours ago; the line names what happened.
+// It sits in one compact line and goes by itself once the newest reply is on screen or the owner
+// sends. The log is scrolled to its top first, so no reply is on screen when the line appears.
+const scrollLogToTop = () => evaluate("document.querySelector('.log').scrollTop = 0");
+async function comeBack() {
+  await until("!document.querySelector('.since')", "an old since line is still shown");
+  await scrollLogToTop();
+  await pause(300);
+  await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 })); document.dispatchEvent(new Event('visibilitychange'))`);
+  await until("/Since you left: .*#1 #2 #3 #4.* started.* repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')", "no since-you-left line");
+}
 await go("#/");
 // ^ The chat notes the time it closes at: set the earlier time after home replaced it.
 await until("!!document.querySelector('.home-row') && !document.querySelector('.composer-field')", "home did not replace the chat");
 await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 }))`);
 await go(chat);
-await until("/Since you left: .*#1 #2 #3 #4.* started.* repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')", "no since-you-left line");
+await until("!!document.querySelector('.log .bubble')", "the chat shows no bubble");
+await comeBack();
+const sinceBox = await evaluate("(() => { const line = document.querySelector('.since'); const p = line.querySelector('p').getBoundingClientRect(), b = line.querySelector('button').getBoundingClientRect();"
+  + " return { height: line.getBoundingClientRect().height, inline: b.top < p.bottom && b.bottom > p.top }; })()");
+if (sinceBox.height > 40 || !sinceBox.inline) await fail(`the since line is not one compact line: ${JSON.stringify(sinceBox)}`);
+await shot("since");
+await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
+await until("!document.querySelector('.since')", "the since line stayed after the newest reply was on screen");
+await comeBack();
 await evaluate("[...document.querySelectorAll('.since button')].find((node) => node.title === 'Dismiss').click()");
 await until("!document.querySelector('.since')", "Dismiss did not close the line");
+// ^ The chat opens at its end again for what follows.
+await go("#/");
+await go(chat);
+await until("!!document.querySelector('.log .bubble') && !!document.querySelector('.reservoir-head')", "the chat did not come back");
 
 // --- The chat reads like a messaging app: no cards, no tray, no strip, no Explain; the
 // header names the manager only when it matters.
@@ -400,6 +433,7 @@ await until(`!!${report}`, "the long report has no worker bubble");
 const head = await evaluate(`${report}.querySelector('.bubble-head').textContent.trim().replace(/\\s+/g, ' ')`);
 if (head !== "#5 · ready") await fail(`the report's header reads ${head}`);
 if (!(await evaluate(`/line 30 of the report/.test(${report}.textContent) && !${report}.querySelector('button.link-action')`))) await fail("the long report is not shown whole");
+await managerWidth("the phone chat");
 await shot("project", ".composer-send");
 // The chat opens at its newest message; scrolled up, it shows Jump to latest.
 await until(atEnd, "the manager chat did not open at its end");
@@ -522,8 +556,10 @@ await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelecto
 // --- A turn of the manager: two messages group on the right; while it runs a typing bubble
 // ends the chat and the header says "typing"; the reply edits the page (with a link to it),
 // has short chips (the same task twice as two plain chips) and a table that scrolls inside it.
+await comeBack();
 await typeInto(".composer-field", "SLOW TABLE");
 await click(".composer-send");
+await until("!document.querySelector('.since')", "the since line stayed after the owner sent a message");
 // ^ A send in flight ignores another tap: the field clears when the server has the message.
 await until("document.querySelector('.composer-field').value === ''", "the first message was not sent");
 await typeInto(".composer-field", "PAGE Goal Ship the chat");
@@ -980,6 +1016,7 @@ for (const next of [[320, 568, 2], [1280, 800, 1]]) {
 await go(chat);
 await until("!!document.querySelector('.reservoir-head')", "the ui chat did not come back");
 await resize([1280, 800, 1]);
+await managerWidth("the wide chat");
 await shot("project", ".composer-send");
 await followEnd("1280 px");
 await go(page(3));

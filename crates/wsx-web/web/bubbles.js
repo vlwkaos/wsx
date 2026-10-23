@@ -115,6 +115,7 @@ export function Bubble({ project, row, words, names }) {
   }
   return html`
     <article class="bubble" data-side=${out ? "out" : "in"} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null}
+      data-at=${row.pending ? null : row.at}
       data-pending=${row.pending ? "" : null} aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}`}>
       ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${authorName(row.author, names)}</p>`}
       <div class="bubble-box">${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>
