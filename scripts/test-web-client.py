@@ -3334,7 +3334,8 @@ digest_max_seconds = 6
         def line(n, what, project='demo'):
             row = next(row for row in steady(owner, 'GET', '/api/tasks/%d' % ids[project])[1]['tasks'] if row['id'] == n)
             what = 'needs you: ' + row['waiting']['reason'] if what == 'asks' else what
-            return '#%d %s: %s' % (n, row['title'], what)
+            title = row['title'] if len(row['title']) <= 60 else row['title'][:60] + '…'  # cut as the push cuts it
+            return '#%d %s: %s' % (n, title, what)
         assert merged[0]['body'] == line(first, 'asks') + '\n' + line(second, 'asks') and merged[0]['tag'].endswith('-now'), merged
         needs = sum(len(overview['needs']) for overview in steady(owner, 'GET', '/api/tasks')[1])
         assert merged[0]['badge'] == needs and needs >= 2, (merged[0], needs)
