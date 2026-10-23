@@ -233,12 +233,16 @@ def turn(text):
    record('assistant', [{'type':'tool_use','id':call,'name':'AskUserQuestion','input':{'questions':[{'question':question,
      'options':[{'label':choice} for choice in choices]}]}}])
    head = [' 1. An earlier list in the answer', ' 2. is not a choice', '', ' ' + question]
+  # ^ Claude Code 2.1.309 at 40 columns wraps its hint line (a real capture, 2026-10-23).
+  hint = [' Esc to cancel'] if 'permission' in body else ['Enter to select · ↑/↓ to navigate · Esc', 'to cancel']
   cursor = 0
   def draw():
    global dialog
-   dialog = head + [(' ❯ ' if index == cursor else '   ') + '%d. %s' % (index + 1, choice) for index, choice in enumerate(choices)] + ['', ' Esc to cancel']
+   dialog = head + [(' ❯ ' if index == cursor else '   ') + '%d. %s' % (index + 1, choice) for index, choice in enumerate(choices)] + [''] + hint
    paint()
-  draw(); report('blocked')
+  # ^ Claude has no hook for a dialog: it reports Working from PreToolUse, and wsxd reads
+  # the dialog from the screen (docs/agent-reporting.md).
+  draw(); report('working')
   while True:
    data = os.read(0, 4096)
    with trace.with_suffix('.answers').open('a') as out: out.write(json.dumps({'keys': data.hex()})+'\n')

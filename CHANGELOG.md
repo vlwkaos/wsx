@@ -9,6 +9,7 @@
 - A task check with more than 8 KiB of output (a test run) runs to its end; the task host keeps the last 8 KiB.
 - A web chat message to an idle Claude with a draft is delivered again. Claude Code 2.1.3xx draws up to seven footer rows under its editor, and wsxd looked for the editor only in the last eight rows, so it answered "Claude input editor is not visibly idle" or "fresh empty input was not observed".
 - The web chat's "The terminal shows:" rows are the rows above Claude's editor, such as what it is working on, instead of the editor and its footer.
+- A Claude question (AskUserQuestion or a permission dialog) in a narrow pane, such as the web terminal at phone size, is seen as blocked, so the web chat shows the question. Claude wraps its hint line there ("… Esc" / "to cancel"), and wsxd matched it only within one row, so the agent stayed working.
 
 ### Changed
 

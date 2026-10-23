@@ -757,7 +757,8 @@ if (!(await evaluate("[...document.querySelectorAll('.question-option, .question
 await sound("answered question");
 await shot("chat-question-sent");
 await until("!document.querySelector('.question') && [...document.querySelectorAll('.message:not(.message-user) .markdown')].some((node) => node.textContent === 'You chose: Use a bearer token')", "the answer did not reach the agent, or the sheet stayed");
-if (!(await count(".composer"))) await fail("the composer did not return after the answer");
+// ^ Claude ends the turn after the answer; the composer returns with that report.
+await until("!!document.querySelector('.composer')", "the composer did not return after the answer");
 
 // A drawn diagram follows the scheme, and markdown reads in both.
 await diagrams(true);
