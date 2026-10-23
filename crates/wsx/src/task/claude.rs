@@ -219,10 +219,15 @@ impl Launch {
         let mut launch = Self::new(&boundary, &record.model, tools, instructions);
         launch.plugin_dirs = skills.into_iter().collect();
         launch.schema = Some(worker_result_schema());
-        launch.env = vec![(
-            super::broker::BROKER_ENV.into(),
-            broker.as_os_str().to_owned(),
-        )];
+        launch.env = record
+            .env
+            .iter()
+            .map(|(name, value)| (name.clone(), value.into()))
+            .chain([(
+                super::broker::BROKER_ENV.into(),
+                broker.as_os_str().to_owned(),
+            )])
+            .collect();
         launch.path_prefix = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf));

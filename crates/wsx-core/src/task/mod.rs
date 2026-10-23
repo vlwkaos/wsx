@@ -164,6 +164,9 @@ pub struct TaskRecord {
     #[serde(default)]
     pub grants: Vec<Access>,
     pub checks: Vec<String>,
+    /// `tasks.env` as it was when the task was created: the worker's and the checks'.
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
     #[serde(default = "default_check_timeout_secs")]
     pub check_timeout_secs: u64,
     /// The adapter's own conversation ID, used to resume after a stop.

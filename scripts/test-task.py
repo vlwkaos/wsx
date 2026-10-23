@@ -225,7 +225,9 @@ def run(wsx, wsxd, work, owned):
     for bad, word in (('  brief: true\n', 'unknown field `brief`'), ('  land: { policy: pr }\n', 'unknown field `policy`'),
                       ('  skills: everyone\n', 'tasks.skills must be owner or none'),
                       ('  workflow: { build: "a\\u0007b" }\n', 'tasks.workflow.build must be'),
-                      ('  workflow: { idle: "a\\u0007b" }\n', 'tasks.workflow.idle must be')):
+                      ('  workflow: { idle: "a\\u0007b" }\n', 'tasks.workflow.idle must be'),
+                      ('  env: { WSX_SOCKET: x }\n', 'tasks.env: wsx sets WSX_SOCKET itself'),
+                      ('  env: { "A-B": x }\n', 'is not a variable name')):
         (project / 'wsx.config.yml').write_text('tasks:\n' + bad)
         refused = cli('task', 'new', 'WORK a.txt', ok=False).stderr
         assert word in refused, refused
@@ -1124,18 +1126,22 @@ def run(wsx, wsxd, work, owned):
 
     # 27. The worker runs the checks itself through its host's broker, outside its sandbox and
     # as after its result; any other command is refused (docs/tasks.md "Checks, revisions and report").
+    # `tasks.env` reaches the worker and every check run, so both build with the same settings.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace(
-        '    - "test ! -e broken.txt"\n', '    - "test ! -e broken.txt"\n    - "echo second check"\n'))
+        '    - "test ! -e broken.txt"\n', '    - "test ! -e broken.txt"\n    - "test \\"$TASK_PROBE\\" = \\"a b\\""\n'
+    ) + '  env: { TASK_PROBE: "a b" }\n')
     git('commit', '-q', '-am', 'two checks')
     cr = js('task', 'new', 'CHECKRUN WORK cr.txt')['id']
     assert wait_state(cr, 'ready', 'failed')['state'] == 'ready'
     ran = next(t for t in traces() if 'check_run' in t)
     code, said = ran['check_run']
-    assert code == 0 and 'check 1 `test ! -e broken.txt`: exit 0' in said and 'check 2 `echo second check`: exit 0' in said, ran
+    assert code == 0 and 'check 1 `test ! -e broken.txt`: exit 0' in said and 'check 2 `test "$TASK_PROBE" = "a b"`: exit 0' in said, ran
     assert ran['check_run_other'][0] == 2 and 'check-run' in ran['check_run_other'][1], ran
     assert [len(e['results']) for e in log(cr) if e['kind'] == 'check_run'] == [2]
     worker_launch = launches_in(cr)[0]
-    assert '1. `test ! -e broken.txt` 2. `echo second check`' in worker_launch['instructions']
+    assert '1. `test ! -e broken.txt` 2. `test "$TASK_PROBE" = "a b"`' in worker_launch['instructions']
+    assert worker_launch['task_probe'] == 'a b' and launch['task_probe'] is None, worker_launch
+    assert all(c['exit'] == 0 for c in show(cr)['result']['checks']), show(cr)['result']
     sockets = worker_launch['settings']['sandbox']['network']['allowUnixSockets']
     assert len(sockets) == 1 and Path(sockets[0]).is_socket() and len(sockets[0]) < 104, sockets
     assert 'WSX_TASK_BROKER' in worker_launch['wsx_env'], worker_launch['wsx_env']

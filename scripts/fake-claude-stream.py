@@ -238,6 +238,7 @@ def main():
            'mode': options.get('--permission-mode'), 'settings': json.loads(options.get('--settings', '{}')),
            'wsx_env': sorted(name for name in os.environ if name.startswith('WSX_')),
            'git_optional_locks': os.environ.get('GIT_OPTIONAL_LOCKS'),
+           'task_probe': os.environ.get('TASK_PROBE'),
            'manager': project is not None, 'actor': os.environ.get('WSX_TASK_ACTOR'),
            'plugin_dir': options.get('--plugin-dir'),
            'cwd': os.getcwd()})

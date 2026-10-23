@@ -788,6 +788,7 @@ fn create(
         sandbox: settings.sandbox,
         grants: Vec::new(),
         checks: settings.checks,
+        env: settings.env,
         check_timeout_secs: settings.check_timeout_secs,
         agent_session: None,
         state: TaskState::Working,

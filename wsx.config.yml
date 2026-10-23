@@ -11,7 +11,13 @@ git:
 tasks:
   sandbox:
     allowedDomains: [crates.io, index.crates.io, static.crates.io]
-    allowWrite: ["~/.cargo/registry", "~/.cargo/git"]
+    # ^ wsx-terminal's build script runs Zig, which writes its global cache even when warm.
+    allowWrite: ["~/.cargo/registry", "~/.cargo/git", "~/.cache/zig"]
+  # ^ Incremental builds leave every rebuild's object files behind; without them a task copy
+  # stays about 2.5 GB, so 3 GB free is one task's build (docs/tasks.md "Config", "Build output").
+  env:
+    CARGO_INCREMENTAL: "0"
+  minFreeGb: 3
   # ^ One gate: the same checks a person runs before a release, after each result and each land.
   checks:
     - cargo fmt --all --check
