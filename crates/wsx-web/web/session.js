@@ -1,6 +1,6 @@
 // A session owns the full height: one top row (back, label with its state in words,
 // Chat | Terminal), then the chat or the terminal.
-import { html, useEffect, useRef, useState } from "./lib.js";
+import { html, Loading, useEffect, useRef, useState } from "./lib.js";
 import { can, isAgent, markSeen, replaceRoute, sessionLink, shows, stateOf, useStore } from "./store.js";
 import { Back } from "./ui.js";
 import { Chat } from "./chat.js";
@@ -29,7 +29,7 @@ export function Session({ id, tab }) {
     return html`
       <div class="page">
         <header class="bar"><${Back} fallback="#/" /></header>
-        <p class="empty">${!store.daemon ? "wsx is not running on the host." : store.loaded ? "This session is closed." : "Loading…"}</p>
+        ${store.daemon && !store.loaded ? html`<${Loading} />` : html`<p class="empty">${!store.daemon ? "wsx is not running on the host." : "This session is closed."}</p>`}
       </div>`;
   }
   const status = stateOf(session);
@@ -39,7 +39,7 @@ export function Session({ id, tab }) {
         <${Back} fallback="#/" />
         <div class="bar-title">
           <span class="bar-label">${session.label}</span>
-          <span class="bar-state" data-tone=${status.tone}>${status.word}${model && html`<span class="bar-model" title="Model"> · ${model}</span>`}</span>
+          <span class="bar-state" data-tone=${status.tone}>${status.key === "working" && html`<span class="pulse" aria-hidden="true"></span>`}${status.word}${model && html`<span class="bar-model" title="Model"> · ${model}</span>`}</span>
         </div>
         <div class="bar-tools" ref=${tools}></div>
         ${tabs.length > 1 && html`

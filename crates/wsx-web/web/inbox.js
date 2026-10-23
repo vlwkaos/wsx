@@ -1,7 +1,7 @@
 // Inbox: every session by what it needs: your answer, nothing yet, a look, or nothing at all.
 // The home screen without task_view; with it, the Sessions tab (#/sessions) beside home.
 import { api } from "./api.js";
-import { elapsed, html, Icon, useNow, useState } from "./lib.js";
+import { elapsed, html, Icon, Loading, useNow, useState } from "./lib.js";
 import { can, isNew, listedSessions, sessionLink, shows, stateOf, useStore } from "./store.js";
 import { toast } from "./ui.js";
 
@@ -101,7 +101,7 @@ export function Inbox({ rail }) {
   if (!store.daemon) {
     body = html`<p class="empty">wsx is not running on the host. Sessions return when it starts.</p>`;
   } else if (!store.loaded) {
-    body = html`<p class="empty">Loading…</p>`;
+    body = html`<${Loading} />`;
   } else if (!sessions.length) {
     body = html`
       <p class="empty">No session is open.

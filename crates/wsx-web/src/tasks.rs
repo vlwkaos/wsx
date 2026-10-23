@@ -235,9 +235,23 @@ pub fn overview(scope: &Scope) -> Value {
         .map(|record| record.updated_unix_ms)
         .chain(tail.last().map(|entry| entry.unix_ms))
         .max();
+    // ^ The manager's turn runs now: the home row shows typing dots (docs/web-client-tasks.md "Home").
+    let busy = ManagerDir::existing(&scope.store)
+        .ok()
+        .flatten()
+        .and_then(|dir| {
+            call_socket::<_, ManagerResponse>(
+                &dir.socket_path(),
+                &ManagerRequest::Status,
+                STATUS_TIMEOUT,
+            )
+            .ok()
+        })
+        .is_some_and(|status| status.busy);
     let settings = load_task_config(&scope.path).ok();
     json!({
         "project": scope.project,
+        "busy": busy,
         "needs": needs.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
         "working": working,
         // ^ What the owner checks of landed tasks (docs/tasks.md "To check").

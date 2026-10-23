@@ -165,3 +165,70 @@ export function useFollowEnd() {
   useLayoutEffect(settle);
   return { log, away, scrolled, toEnd };
 }
+
+// Motion that script drives (a list that reorders, a view that leaves) reads the same tokens
+// as the stylesheet and is off where the user asked for less motion (docs/web-client.md "Motion").
+export function motion() {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
+  const style = getComputedStyle(document.documentElement);
+  const token = style.getPropertyValue("--motion-duration").trim();
+  const duration = parseFloat(token) * (token.endsWith("ms") ? 1 : 1000);
+  return duration > 0 ? { duration, easing: style.getPropertyValue("--motion-easing").trim() || "ease" } : null;
+}
+
+// One placeholder for a screen that waits for its data. Its words are for a screen reader.
+export const Loading = () => html`
+  <div class="loading" role="status">
+    <span class="visually-hidden">Loading…</span>
+    <span class="skeleton" aria-hidden="true"></span><span class="skeleton" aria-hidden="true"></span>
+  </div>`;
+
+// Holds `value` for one motion duration after it turns empty, so the view can fade out.
+// Returns [value to show, true while it leaves].
+export function useExit(value) {
+  const last = useRef(value);
+  const [, renew] = useState(0);
+  if (value) last.current = value;
+  useEffect(() => {
+    const how = motion();
+    if (value || !last.current) return undefined;
+    if (!how) { last.current = null; return undefined; }
+    const timer = setTimeout(() => { last.current = null; renew((count) => count + 1); }, how.duration);
+    return () => clearTimeout(timer);
+  }, [value]);
+  return value ? [value, false] : [last.current, Boolean(last.current)];
+}
+
+// FLIP for a keyed list: rows glide to their new place, new rows fade in, and a row that
+// went fades out where it was. Each child of `list` carries its key in `data-key`. The first
+// render is left to the stylesheet's fade, so a screen arriving animates once.
+export function useFlip(list) {
+  const before = useRef(null);
+  useLayoutEffect(() => {
+    const parent = list.current;
+    if (!parent) return;
+    const how = motion();
+    const rows = [...parent.children].filter((row) => !row.hasAttribute("data-ghost"));
+    const now = new Map(rows.map((row) => [row.dataset.key, { top: row.offsetTop, row, copy: null }]));
+    const past = before.current;
+    if (how && past) {
+      const timing = { duration: how.duration, easing: how.easing };
+      for (const [key, entry] of now) {
+        const old = past.get(key);
+        if (!old) entry.row.animate([{ opacity: 0 }, { opacity: 1 }], timing);
+        else if (old.top !== entry.top) entry.row.animate([{ transform: `translateY(${old.top - entry.top}px)` }, { transform: "none" }], timing);
+      }
+      for (const [key, old] of past) {
+        if (now.has(key)) continue;
+        const ghost = old.copy;
+        ghost.setAttribute("data-ghost", "");
+        ghost.setAttribute("aria-hidden", "true");
+        parent.append(ghost);
+        const at = `translateY(${old.top}px)`;
+        ghost.animate([{ transform: at, opacity: 1 }, { transform: at, opacity: 0 }], timing).finished.then(() => ghost.remove(), () => ghost.remove());
+      }
+    }
+    for (const entry of now.values()) entry.copy = how ? entry.row.cloneNode(true) : null;
+    before.current = now;
+  });
+}

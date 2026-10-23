@@ -1,7 +1,7 @@
 // The project's To check list: what only a person can check of the landed tasks, passed or
 // failed at the owner's own time (docs/tasks.md "To check", docs/web-client-tasks.md "To check").
 import { api } from "./api.js";
-import { html, Icon, useEffect, useRef, useState } from "./lib.js";
+import { html, Icon, Loading, useEffect, useRef, useState } from "./lib.js";
 import { can, useStore } from "./store.js";
 import { loadTasks, TaskChip } from "./tasks.js";
 
@@ -147,7 +147,7 @@ export function ChecksPage({ project, onClose, grip }) {
       <div class="scroll">
         <p class="check-intro">What only a person can check of the tasks that landed. A release waits for these; a fail starts a task that fixes it.</p>
         ${failure && html`<p class="error" role="alert">${failure}</p>`}
-        ${!items ? (!failure && html`<p class="empty">Loading…</p>`)
+        ${!items ? (!failure && html`<${Loading} />`)
           : !items.length ? html`<p class="empty">Nothing to check.</p>`
           : html`
             <ul class="check-list" aria-label="Items to check">

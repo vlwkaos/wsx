@@ -1,6 +1,6 @@
 // Home with task_view: one row per granted project, what needs the owner first
 // (docs/web-client-tasks.md "Home"). A row opens the project's manager chat.
-import { ago, html, useNow } from "./lib.js";
+import { ago, html, Loading, useFlip, useNow, useRef } from "./lib.js";
 import { isAgent, listedSessions, stateOf, useStore } from "./store.js";
 import { needTone, needWords } from "./tasks.js";
 
@@ -58,7 +58,7 @@ function statusLine({ overview, first, agents }, now) {
   if (overview?.last_reply) return { text: overview.last_reply };
   if (sessions) return sessions;
   // ^ Until its tasks are read, a project's row claims nothing about them.
-  if (!overview) return { text: "Loading…" };
+  if (!overview) return { text: "Loading…", loading: true };
   return { text: overview.tasks.length ? "Nothing needs you" : "No tasks yet" };
 }
 
@@ -66,30 +66,35 @@ export function Home({ rail }) {
   const store = useStore();
   const now = useNow(true);
   const [, , open] = location.hash.split("/");
+  const list = useRef();
+  useFlip(list);
   let body;
   if (!store.daemon) body = html`<p class="empty">wsx is not running on the host.</p>`;
-  else if (!store.loaded) body = html`<p class="empty">Loading…</p>`;
+  else if (!store.loaded) body = html`<${Loading} />`;
   else if (!store.projects.length) body = html`<p class="empty">wsx manages no project that this site may reach.</p>`;
   else {
     body = html`
-      <ul class="rows home-rows" aria-label="Projects">
+      <ul class="rows home-rows" aria-label="Projects" ref=${list}>
         ${homeOrder(store.projects, store.tasks, listedSessions(store.sessions).filter(isAgent)).map((row) => {
           const status = statusLine(row, now);
           const count = row.needs.length;
           const working = row.overview?.working ?? 0;
           const last = row.last;
           return html`
-            <li class="row" key=${row.project.id}>
+            <li class="row" key=${row.project.id} data-key=${row.project.id}>
               <a class="row-link home-row" href=${`#/p/${row.project.id}`} aria-current=${rail && Number(open) === row.project.id ? "page" : null}>
                 <span class="row-main">
                   <span class="row-work">
                     <span class="row-label">${row.project.name}</span>
-                    ${count ? html`<span class="count" data-tone="attention" aria-label=${`${count} ${count === 1 ? "needs" : "need"} you`}>${count}</span>` : null}
+                    ${count ? html`<span class="count" key=${count} data-tone="attention" aria-label=${`${count} ${count === 1 ? "needs" : "need"} you`}>${count}</span>` : null}
                   </span>
-                  <span class="row-context" data-tone=${status.tone ?? null}>${status.text}</span>
+                  <span class="row-context" key=${status.text} data-tone=${status.tone ?? null} data-loading=${status.loading ? "" : null}>
+                    ${row.overview?.busy ? html`<span class="row-typing" role="img" aria-label="Manager is typing"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></span>` : null}${status.text}
+                  </span>
                 </span>
                 <span class="row-state">
-                  ${working ? html`<span data-tone="working">${working} working</span>` : null}
+                  ${working || status.key === "working" ? html`<span class="pulse" aria-hidden="true"></span>` : null}
+                  ${working ? html`<span data-tone="working" class="working-count">${working} working</span>` : null}
                   ${last ? html`<span class="time">${ago(now - last)}</span>` : null}
                 </span>
               </a>

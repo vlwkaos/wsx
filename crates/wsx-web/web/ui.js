@@ -1,5 +1,5 @@
 // Notices, the confirmation dialog, and the device's light or dark choice.
-import { html, Icon, useEffect, useState } from "./lib.js";
+import { html, Icon, useEffect, useExit, useState } from "./lib.js";
 import { backTarget, can, goBack, parseRoute, reloadForBuild, state, useStore } from "./store.js";
 
 // A theme with a dark scheme is dark unless this device chose light (docs/web-themes.md).
@@ -26,10 +26,11 @@ export function setScheme(value) {
 // not hide it (docs/web-client.md "Notices").
 const TOAST_MS = 4000;
 let toasts = [];
+let lastId = 0;
 const watchers = new Set();
 const changed = () => { for (const watcher of watchers) watcher(); };
 export function toast(text, { failure = false } = {}) {
-  const entry = { text, failure };
+  const entry = { text, failure, id: ++lastId };
   toasts = [...toasts.filter((other) => other.failure), entry];
   changed();
   if (!failure) {
@@ -44,6 +45,7 @@ const dismiss = (entry) => {
   changed();
 };
 
+const OFFLINE = { text: "Connection lost. Reconnecting…" };
 // A lost connection stays until it is back; then the newest failure, else the newest outcome.
 export function Notices() {
   const store = useStore();
@@ -54,13 +56,16 @@ export function Notices() {
     return () => watchers.delete(watcher);
   }, []);
   const shown = toasts.findLast((entry) => entry.failure) ?? toasts.at(-1);
+  // ^ One notice at a time; it slides out when it goes (docs/web-client.md "Motion").
+  const [notice, leaving] = useExit(!store.online ? OFFLINE : shown);
   return html`
     <div class="notices" role="status" aria-live="polite">
-      ${!store.online ? html`<p class="notice" data-tone="attention">Connection lost. Reconnecting…</p>`
-        : shown && html`
-          <p class="notice" data-tone=${shown.failure ? "danger" : null} role=${shown.failure ? "alert" : null}>
-            <span class="notice-text">${shown.text}</span>
-            ${shown.failure && html`<button class="icon-button" type="button" title="Dismiss" aria-label="Dismiss" onClick=${() => dismiss(shown)}><${Icon} name="fail" /></button>`}
+      ${notice === OFFLINE ? html`<p class="notice" key="offline" data-tone="attention" data-offline="" data-leaving=${leaving ? "" : null}>${OFFLINE.text}</p>`
+        : notice && html`
+          <p class="notice" key=${notice.id} data-tone=${notice.failure ? "danger" : null} data-leaving=${leaving ? "" : null} role=${notice.failure ? "alert" : null}>
+            <span class="notice-text">${notice.text}</span>
+            ${notice.failure && html`<button class="icon-button" type="button" title="Dismiss" aria-label="Dismiss" onClick=${() => dismiss(notice)}><${Icon} name="fail" /></button>`}
+            ${!notice.failure && html`<span class="notice-timer" aria-hidden="true"></span>`}
           </p>`}
     </div>
     ${store.newBuild && html`<button class="build-pill" type="button" onClick=${reloadForBuild}>New version · Reload</button>`}`;

@@ -2,7 +2,7 @@
 // the owner, then the report folded (Changes, Evidence, To check, Left open), the messages to
 // the worker and its history (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
-import { clock, html, Icon, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
+import { clock, html, Icon, Loading, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, events, readMap, useStore, writeMap } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { grow, isolate, release } from "./chat.js";
@@ -210,7 +210,7 @@ export function TaskPage({ project, task, onClose, grip }) {
         ${detail && html`<span class="bar-state" data-tone=${taskStage(detail)[1]}>${taskStage(detail)[0]}</span>`}
       </div>
     </header>`;
-  if (!detail) return html`<div class="page">${top}<p class=${failure ? "error empty" : "empty"}>${failure || "Loading…"}</p></div>`;
+  if (!detail) return html`<div class="page">${top}${failure ? html`<p class="error empty">${failure}</p>` : html`<${Loading} />`}</div>`;
 
   const actions = detail.actions;
   const trial = detail.trial;

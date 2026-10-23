@@ -1,6 +1,6 @@
 // Projects: every project this site may reach. A project opens its worktrees and
 // their sessions (with task_view too, not its chat); Files and New session stay on each row.
-import { html, useNow } from "./lib.js";
+import { html, Loading, useNow } from "./lib.js";
 import { can, listedSessions, shows, stateOf, useStore } from "./store.js";
 import { NewSession, SessionRow } from "./inbox.js";
 import { Back } from "./ui.js";
@@ -20,7 +20,7 @@ export function Projects({ rail }) {
   const [, , open] = location.hash.split("/");
   let body;
   if (!store.daemon) body = html`<p class="empty">wsx is not running on the host.</p>`;
-  else if (!store.loaded) body = html`<p class="empty">Loading…</p>`;
+  else if (!store.loaded) body = html`<${Loading} />`;
   else if (!store.projects.length) body = html`<p class="empty">wsx manages no project that this site may reach.</p>`;
   else {
     body = html`
@@ -60,7 +60,7 @@ export function Project({ id, back = "#/projects" }) {
     return html`
       <div class="page">
         <header class="bar"><${Back} fallback=${back} /></header>
-        <p class="empty">${!store.daemon ? "wsx is not running on the host." : store.loaded ? "This project is not available." : "Loading…"}</p>
+        ${store.daemon && !store.loaded ? html`<${Loading} />` : html`<p class="empty">${!store.daemon ? "wsx is not running on the host." : "This project is not available."}</p>`}
       </div>`;
   }
   const worktrees = [...project.worktrees].sort((left, right) => Number(right.main) - Number(left.main));

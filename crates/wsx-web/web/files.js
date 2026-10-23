@@ -1,6 +1,6 @@
 // Files: browse one granted project; edit text when the site allows it.
 import { api } from "./api.js";
-import { html, useEffect, useState } from "./lib.js";
+import { html, Loading, useEffect, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { can, useStore } from "./store.js";
 import { Back, toast } from "./ui.js";
@@ -67,7 +67,7 @@ export function Files({ project }) {
   useEffect(() => { open("", false); }, [project]);
 
   const parts = path ? path.split("/") : [];
-  let body = html`<p class="empty">Loading…</p>`;
+  let body = html`<${Loading} />`;
   const markdown = Boolean(view?.file && !view.binary && isMarkdown(path));
   if (view?.error) body = html`<p class="error" role="alert">${view.error}</p>`;
   else if (view?.file) {

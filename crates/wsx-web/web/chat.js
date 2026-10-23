@@ -1,7 +1,7 @@
 // Chat: the agent's own saved conversation as a typed timeline, what the agent does
 // now, the messages that wait for it, and the composer (docs/web-client-chat.md).
 import { api, resolve } from "./api.js";
-import { bytes, elapsed, html, Icon, useCallback, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
+import { bytes, elapsed, html, Icon, useCallback, useEffect, useExit, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, events, readMap, shows, stateOf, state, touch, writeMap } from "./store.js";
 import { Markdown } from "./markdown.js";
 
@@ -508,6 +508,7 @@ export function Chat({ session, onModel }) {
   const [failure, setFailure] = useState("");
   // New items keep the reader at the end only when the reader is at the end.
   const { log, away, scrolled, toEnd } = useFollowEnd();
+  const [jump, leaving] = useExit(away);
   const generation = useRef(0);
   // The timeline the page shows, one request at a time, and whether a change came during it.
   const shown = useRef(null);
@@ -634,7 +635,7 @@ export function Chat({ session, onModel }) {
             ${can("chat_send") && html`<button class="link-action" type="button" onClick=${() => act("cancel")}>Stop</button>`}
           </div>`}
       </div>
-      ${away && html`<button class="jump" type="button" onClick=${toEnd}><${Icon} name="down" />Jump to latest</button>`}
+      ${jump && html`<button class="jump" type="button" data-leaving=${leaving ? "" : null} tabIndex=${leaving ? -1 : null} onClick=${toEnd}><${Icon} name="down" />Jump to latest</button>`}
       </div>
       ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
       ${waiting.length ? html`
