@@ -1,7 +1,7 @@
 // The manager chat as messages: one bubble per owner message, manager reply and worker
 // report, each with its author and time, and task changes as grouped muted lines
 // (docs/web-client-tasks.md "Project screen").
-import { clock, firstSentence, Fold, html, useState } from "./lib.js";
+import { clock, html } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
 import { TaskChip } from "./tasks.js";
@@ -84,20 +84,6 @@ export function conversation(entries, resolutions) {
   return joined;
 }
 
-// A done task's report: its first sentence, and the whole summary on Show all.
-function Sentence({ id, text, words }) {
-  const [open, setOpen] = useState(false);
-  const sentence = firstSentence(text);
-  return html`
-    <div class="bubble-body" id=${id}>
-      ${open ? html`<${Markdown} text=${text} words=${words} prose />` : html`<p class="prose">${words(sentence)}</p>`}
-    </div>
-    ${sentence !== text.trim() && html`
-      <button class="link-action fold-more" type="button" aria-expanded=${open} aria-controls=${id} onClick=${() => setOpen(!open)}>
-        ${open ? "Show less" : "Show all"}
-      </button>`}`;
-}
-
 // `names`: the manager's and its peers' names as the server resolves them (docs/tasks.md "Config").
 const authorName = (author, names) => author === "owner" ? "You" : author === "manager" ? names.manager
   : author.startsWith("peer:") ? names.peers[author.slice(5)] : `#${author.slice(7)} worker`;
@@ -112,12 +98,11 @@ export function Bubble({ project, row, words, names }) {
     const { report } = row;
     body = html`
       <p class="bubble-head"><${TaskChip} project=${project} id=${report.task} />${" "}<span class="bubble-state">· ${report.head}</span></p>
-      ${report.state === "landed" ? html`<${Sentence} id=${id} text=${report.summary} words=${words} />`
-        : html`<${Fold} id=${id} kind="bubble-body"><${Markdown} text=${report.summary} words=${words} prose /></${Fold}>`}`;
+      <div class="bubble-body" id=${id}><${Markdown} text=${report.summary} words=${words} prose /></div>`;
   } else if (out) {
-    body = html`<${Fold} id=${id} kind="bubble-body"><p class="prose">${words(row.entry.text)}</p></${Fold}><${Attachments} files=${row.entry.attachments} />`;
+    body = html`<div class="bubble-body" id=${id}><p class="prose">${words(row.entry.text)}</p></div><${Attachments} files=${row.entry.attachments} />`;
   } else {
-    body = html`<${Fold} id=${id} kind="bubble-body"><${Markdown} text=${row.entry.text} words=${words} prose /></${Fold}>`;
+    body = html`<div class="bubble-body" id=${id}><${Markdown} text=${row.entry.text} words=${words} prose /></div>`;
   }
   return html`
     <article class="bubble" data-side=${out ? "out" : "in"} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null}

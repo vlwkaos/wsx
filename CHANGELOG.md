@@ -1,12 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
 ### Fixed
 
 - On iOS the terminal's key row no longer blurs the terminal, so the keyboard does not flicker on each `^J`, Enter or arrow.
 - In the web chat, the first message of a new conversation no longer shows above its "New conversation" line.
 - A task check with more than 8 KiB of output (a test run) runs to its end; the task host keeps the last 8 KiB.
-
-## [Unreleased]
+- A web chat message to an idle Claude with a draft is delivered again. Claude Code 2.1.3xx draws up to seven footer rows under its editor, and wsxd looked for the editor only in the last eight rows, so it answered "Claude input editor is not visibly idle" or "fresh empty input was not observed".
 
 ### Changed
 
@@ -16,7 +17,7 @@
 - To check items say what the task did, where to look (a link when it is a URL or page path) and show the worker's capture, kept with the task at the land; Try, Fail and Pass are icon buttons and the list's sheet is only as high as its rows. An item that names a command goes back to the worker.
 
 - With `task_view` the web's tabs are Home, Sessions and Settings: Sessions lists shells with their project, and a project's worktrees are in its chat's menu ([docs/web-client.md](docs/web-client.md) "Screens").
-- Chat messages fold at one screen of the device instead of about 12 lines, in the session chat, the manager's bubbles and the compaction summary; a left-to-right flowchart too wide to read is drawn top to bottom when that fits.
+- Chat messages no longer fold: the session chat, the manager's bubbles, a done task's report and the compaction summary always show whole. A left-to-right flowchart too wide to read is drawn top to bottom when that fits.
 - The manager and the workers present replies by one rule: the answer first, assumptions on the first line, structure as a diagram or a table, each fact once, about one phone screen ([docs/agent-reporting.md](docs/agent-reporting.md) "Output style").
 
 ### Removed

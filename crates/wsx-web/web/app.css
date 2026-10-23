@@ -301,7 +301,6 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
    keeps it apart from the agent's messages. Closed, it shows about eight lines. */
 .summary { max-width: var(--size-prose); min-width: 0; padding-inline-start: var(--space-3); border-inline-start: var(--border-width) solid var(--color-hairline); }
 .summary-label { margin: 0 0 var(--space-1); font-size: var(--font-size-sm); color: var(--color-muted); }
-.fold.summary-body:not([data-open]) { max-height: calc(8 * var(--font-size-md) * var(--line-height-prose)); }
 .steps { font-size: var(--font-size-sm); color: var(--color-muted); max-width: var(--size-prose); }
 /* The hit area is 44 px high; the row still draws at its text height. */
 .steps-summary {
@@ -488,14 +487,6 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .bubble[data-pending] .bubble-box { color: var(--color-muted); }
 .bubble-head { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1); font-size: var(--font-size-sm); }
 .bubble-state { color: var(--color-muted); }
-/* Hook: .fold — one screen of the chat, then "Show all" (docs/web-client.md "Screens").
-   `--screen-height` is the log's own height; the room keeps the author line and the button in view. */
-.fold:not([data-open]) { max-height: max(calc(6 * var(--font-size-md) * var(--line-height-prose)), calc(var(--screen-height, 100svh) - 3 * var(--size-control))); overflow: hidden; }
-.fold[data-clamped] {
-  -webkit-mask-image: linear-gradient(to bottom, black 85%, transparent);
-  mask-image: linear-gradient(to bottom, black 85%, transparent);
-}
-.fold-more { min-height: var(--size-control); }
 /* Wide content scrolls inside its bubble, never the page. */
 .bubble .markdown > :is(.code-block, .table-wrap, .diagram-failed) { align-self: stretch; width: auto; min-width: 0; max-width: 100%; }
 .bubble .markdown > .diagram { width: 100%; min-width: 0; }

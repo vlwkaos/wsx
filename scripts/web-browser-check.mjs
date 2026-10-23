@@ -504,33 +504,21 @@ async function markdown() {
   await until("/^(Copied|Copy failed)$/.test(document.querySelector('.code-head button').textContent)", "Copy did not answer");
 }
 
-// A compacted conversation: the start of its summary is open, marked as a summary, and
-// the rest opens and closes with one control.
+// A compacted conversation: its summary is marked as a summary and shown whole, without
+// Claude's fixed words around it.
 async function summary(light = false) {
   await openSession("compacted");
   await until("!!document.querySelector('.summary .markdown h2') && document.querySelectorAll('.message').length === 2", "the compacted conversation did not render");
-  const closed = await evaluate(`(() => { const body = document.querySelector('.summary-body'); const button = document.querySelector('.summary button');
+  const seen = await evaluate(`(() => { const body = document.querySelector('.summary-body');
     return { first: document.querySelector('.log > :not(.note)').className, label: document.querySelector('.summary-label').textContent,
-      heading: body.querySelector('h2').textContent, height: body.clientHeight, full: body.scrollHeight, clamped: body.hasAttribute('data-clamped'),
-      line: parseFloat(getComputedStyle(body).lineHeight), button: button?.textContent.trim(), expanded: button?.getAttribute('aria-expanded'),
-      text: body.textContent }; })()`);
-  if (closed.first !== "summary" || closed.label !== "Summary of the earlier conversation" || closed.heading !== "Goal"
-    || !closed.clamped || closed.full <= closed.height || closed.height < closed.line * 6 || closed.height > closed.line * 9
-    || closed.button !== "Show full summary" || closed.expanded !== "false" || /continued from a previous|If you need specific/.test(closed.text)) {
-    await fail(`the summary does not open at its start: ${JSON.stringify(closed)}`);
+      heading: body.querySelector('h2').textContent, last: [...body.querySelectorAll('li')].at(-1)?.textContent,
+      buttons: document.querySelectorAll('.summary button').length, text: body.textContent }; })()`);
+  if (seen.first !== "summary" || seen.label !== "Summary of the earlier conversation" || seen.heading !== "Goal"
+    || seen.last !== "Step 12 of the fix is done." || seen.buttons || /continued from a previous|If you need specific/.test(seen.text)) {
+    await fail(`the summary is not shown whole: ${JSON.stringify(seen)}`);
   }
   await sound("compacted conversation");
   await shot(light ? "chat-summary-light" : "chat-summary");
-  if (light) return;
-  await evaluate("document.querySelector('.summary button').click()");
-  await until("document.querySelector('.summary button').getAttribute('aria-expanded') === 'true'", "Show full summary did not open it");
-  const open = await evaluate(`(() => { const body = document.querySelector('.summary-body');
-    return { height: body.clientHeight, full: body.scrollHeight, button: document.querySelector('.summary button').textContent.trim(),
-      last: [...body.querySelectorAll('li')].at(-1)?.textContent }; })()`);
-  if (open.full > open.height + 1 || open.button !== "Show less" || open.last !== "Step 12 of the fix is done.") await fail(`the full summary is not shown: ${JSON.stringify(open)}`);
-  await shot("chat-summary-open");
-  await evaluate("document.querySelector('.summary button').click()");
-  await until("document.querySelector('.summary-body').hasAttribute('data-clamped')", "Show less did not close the summary");
 }
 
 // A mermaid block is drawn by the lazily loaded library and shown as an image; the page's
