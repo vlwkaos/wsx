@@ -555,6 +555,87 @@ await resize([390, 420, 2]);
 await shot("project-short", ".composer-send");
 await resize([390, 844, 2]);
 
+// --- Following the end (docs/web-client-chat.md "Following the end"). A reply arrives the way
+// another device's message does (not the composer, which goes to the end).
+const say = (words) => evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ text: ${JSON.stringify(words)} }) }).then((response) => response.status)`);
+const fromEnd = () => evaluate("(() => { const log = document.querySelector('.log'); return Math.round(log.scrollHeight - log.scrollTop - log.clientHeight); })()");
+const drawnDiagrams = "document.querySelectorAll('.log .bubble .diagram img').length";
+// The manager answers with a diagram; the bubble shows "Drawing the diagram…" first.
+async function diagramReply() {
+  const before = await evaluate(drawnDiagrams);
+  if (await say("DIAGRAM") !== 200) await fail("the message for a diagram reply was not taken");
+  await until(`${drawnDiagrams} > ${before} && !document.querySelector('.log .typing')`, "the reply with a diagram did not arrive", 60);
+  await evaluate("Promise.all([...document.querySelectorAll('.log .diagram img')].map((image) => image.decode()))");
+  await pause(300);
+}
+const toLatest = async (where) => {
+  await evaluate("document.querySelector('.jump')?.click()");
+  await until(atEnd, `${where}: Jump to latest did not return to the end`);
+};
+// The probe is the first bubble wholly in view; its distance from the screen's top must not change.
+const probe = "document.querySelector('[data-follow-probe]').getBoundingClientRect().top";
+async function followEnd(where) {
+  // (a) At the end, a reply whose diagram draws after it shows: still at the end.
+  await toLatest(where);
+  await diagramReply();
+  if (await fromEnd() > 2) await fail(`${where}: a diagram that drew late left the chat ${await fromEnd()} px above its end`);
+  for (let more = 0; more < 4 && await evaluate("(() => { const log = document.querySelector('.log'); return log.scrollHeight < log.clientHeight * 3; })()"); more++) await diagramReply();
+  // (b, c) Scrolled up: rows below, a late diagram below, the "Since you left" line above, rows
+  // inserted above (as older messages would be) and removed again keep the bubble in view where it is.
+  const drift = [];
+  for (const anchoring of ["auto", "none"]) {
+    // ^ iOS Safari has no CSS scroll anchoring: with it off, Chrome scrolls as Safari does.
+    await evaluate(`document.querySelector('.log').style.overflowAnchor = '${anchoring}'`);
+    await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight - log.clientHeight * 2; })()");
+    await pause(200);
+    const start = await evaluate(`(() => { const top = document.querySelector('.log').getBoundingClientRect().top;
+      document.querySelector('[data-follow-probe]')?.removeAttribute('data-follow-probe');
+      const bubble = [...document.querySelectorAll('.log > .bubble')].find((node) => node.getBoundingClientRect().top > top + 20);
+      bubble.setAttribute('data-follow-probe', ''); return ${probe}; })()`);
+    const moved = async (step) => drift.push(`${anchoring} ${step} ${Math.round((await evaluate(probe)) - start)}`);
+    await diagramReply();
+    await moved("reply below");
+    await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 }))`);
+    await evaluate("document.dispatchEvent(new Event('visibilitychange'))");
+    await until("!!document.querySelector('.since')", `${where}: no since-you-left line`);
+    await pause(300);
+    await moved("since line");
+    await evaluate("document.querySelector('.since button[title=Dismiss]').click()");
+    await pause(300);
+    await moved("since dismissed");
+    await evaluate(`(() => { const log = document.querySelector('.log');
+      for (let n = 0; n < 5; n++) {
+        const row = Object.assign(document.createElement('p'), { className: 'note', textContent: 'an older message' });
+        row.setAttribute('data-older', '');
+        log.prepend(row);
+      } })()`);
+    await pause(200);
+    await moved("rows above");
+    await evaluate("document.querySelectorAll('.log > [data-older]').forEach((node) => node.remove())");
+    await pause(200);
+    await moved("rows above removed");
+    if (await evaluate(atEnd) || !(await count(".jump"))) drift.push(`${anchoring}: the reader was moved to the end`);
+  }
+  await evaluate("document.querySelector('.log').style.overflowAnchor = ''");
+  console.log(`following the end, ${where}: ${drift.join(", ")}`);
+  if (drift.some((line) => !/ -?[0-2]$/.test(line))) await fail(`${where}: the bubble in view moved: ${drift.join(", ")}`);
+  // (d) On a phone with the composer focused and the keyboard up: a late diagram keeps the end.
+  await toLatest(where);
+  if (phone()) {
+    await evaluate("document.querySelector('.composer-field').focus()");
+    await keyboard(420);
+    await pause(300);
+    const keyboardUp = await fromEnd();
+    await diagramReply();
+    const replied = await fromEnd();
+    await evaluate("document.activeElement.blur()");
+    await keyboard(null);
+    if (keyboardUp > 2 || replied > 2) await fail(`${where}: with the keyboard up the chat is ${keyboardUp} px, after a reply ${replied} px above its end`);
+  }
+}
+await followEnd("390 px");
+
 // --- The task sheet of #2: the stage, one sentence of what changed and the one action; the
 // report folded (Changes, Evidence, To check, Left open) and History folded. No verdict, no
 // Asked, no revision number. Land, then its item is live under To check.
@@ -802,6 +883,7 @@ await go(chat);
 await until("!!document.querySelector('.reservoir-head')", "the ui chat did not come back");
 await resize([1280, 800, 1]);
 await shot("project", ".composer-send");
+await followEnd("1280 px");
 await go(page(3));
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the sheet did not open on a wide screen");
 const panel = await evaluate("(() => { const r = document.querySelector('dialog.task-sheet').getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), height: Math.round(r.height) }; })()");

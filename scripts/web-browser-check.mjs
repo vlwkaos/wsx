@@ -558,6 +558,11 @@ async function diagrams(light = false) {
   }
   if (!seen.failed || !seen.source.includes("A -->") || seen.left || seen.sheets) await fail(`the broken diagram or the page after drawing is wrong: ${JSON.stringify(seen)}`);
   if (!seen.kept) await fail("the service worker did not keep the diagram library after its first use");
+  // The diagrams drew after the conversation showed at its end: it is still at its end
+  // (docs/web-client-chat.md "Following the end").
+  await pause(100);
+  const end = await evaluate("(() => { const log = document.querySelector('.log'); return log.scrollHeight - log.scrollTop - log.clientHeight; })()");
+  if (end > 2) await fail(`the conversation is ${end} px above its end after its diagrams drew`);
   await sound("diagrams");
   await evaluate("document.querySelector('.log').scrollTop = 0");
   await shot(light ? "chat-diagrams-light" : "chat-diagrams");

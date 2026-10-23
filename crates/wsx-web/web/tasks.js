@@ -590,7 +590,7 @@ export function Manager({ project: id, task, page, checks }) {
   const [chat, setChat] = useState(null);
   const [failure, setFailure] = useState("");
   const [sent, setSent] = useState(null);
-  const { log, atEnd, away, scrolled, toEnd } = useFollowEnd();
+  const { log, away, scrolled, toEnd } = useFollowEnd();
   const field = useRef();
   const loading = useRef(false);
   const again = useRef(false);
@@ -689,7 +689,7 @@ export function Manager({ project: id, task, page, checks }) {
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
         <${Reservoir} project=${id} items=${items} tasks=${overview?.tasks ?? []} checking=${overview?.to_check ?? 0} />
         ${can("task_act") && html`<${ManagerComposer} project=${id} busy=${typing} field=${field}
-          onSent=${(message) => { atEnd.current = true; setSent(message); load(); }} />`}
+          onSent=${(message) => { toEnd(); setSent(message); load(); }} />`}
       </div>
       ${task != null && html`
         <${Sheet} key=${`t${task}`} label=${`Task #${task}`} onClose=${() => leaveFor(`#/p/${id}`)}>

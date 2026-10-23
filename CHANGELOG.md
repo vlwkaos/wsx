@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- The web chat and the manager chat no longer jump. A diagram or an image that draws after its message shows keeps a reader at the end, and a reader who scrolled up stays on the same message when rows arrive below, the "Since you left" line opens above, or the keyboard opens. Only *Jump to latest* and the reader's own send go to the end.
 - The manager chat shows "New conversation" once. The line has no id, so each read of the chat while the manager worked returned it again, and the page added another copy each time.
 - On iOS the terminal's key row no longer blurs the terminal, so the keyboard does not flicker on each `^J`, Enter or arrow.
 - In the web chat, the first message of a new conversation no longer shows above its "New conversation" line.

@@ -29,6 +29,7 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   RUN <command>  run that shell command (the wsx task commands it names) and quote its output
   SCRIPT         (a line) run the rest of the message as one shell script, heredocs too
   TABLE          answer with a wide markdown table that names #4 twice and #2
+  DIAGRAM        answer with a tall mermaid diagram, drawn after the bubble shows
   PAGE <section> <words>  replace that section of the project page (its sandbox entry names it)
   STATUS         answer from `wsx task ledger`
   SLOW           take about 3 s
@@ -196,6 +197,9 @@ def manager_turn(text, project, settings):
         cell = 'a long cell that keeps going ' * 4
         replies.append('Where things stand:\n\n| Task | State | Note |\n|---|---|---|\n'
                        '| #4 | blocked | %s |\n| #4 | asks | %s |\n| #2 | ready | %s |' % (cell, cell, cell))
+    if 'DIAGRAM' in text.split():
+        steps = ' --> '.join('S%d[step %d]' % (n, n) for n in range(8))
+        replies.append('The plan:\n\n```mermaid\nflowchart TD\n  %s\n```' % steps)
     if 'STATUS' in text.split():
         ledger = json.loads(subprocess.run(['wsx', 'task', 'ledger', '-p', project], capture_output=True,
                                            text=True, check=True).stdout)

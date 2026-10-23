@@ -507,7 +507,7 @@ export function Chat({ session, onModel }) {
   useEffect(() => { if (data?.model) onModel?.(data.model); }, [data?.model]);
   const [failure, setFailure] = useState("");
   // New items keep the reader at the end only when the reader is at the end.
-  const { log, atEnd, away, scrolled, toEnd } = useFollowEnd();
+  const { log, away, scrolled, toEnd } = useFollowEnd();
   const generation = useRef(0);
   // The timeline the page shows, one request at a time, and whether a change came during it.
   const shown = useRef(null);
@@ -660,6 +660,6 @@ export function Chat({ session, onModel }) {
           ${terminalLink}
         </div>`
       : html`${held}${can("chat_send") && html`<${Composer} session=${session} working=${Boolean(working) || waiting.some((queued) => !queued.failed)}
-        onSent=${() => { atEnd.current = true; load(); }} />`}`}
+        onSent=${() => { toEnd(); load(); }} />`}`}
     </div>`;
 }
