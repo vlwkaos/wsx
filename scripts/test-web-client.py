@@ -125,6 +125,16 @@ def claude_compact():
  # ^ Long enough for the test to read the working row while it compacts.
  time.sleep(1.5)
  report('done')
+def steered(text):
+ global leaf, sequence, taken
+ sequence += 1; entry = 'queued-'+str(sequence)
+ stamp = time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime()) + '.%03dZ' % (time.time() % 1 * 1000)
+ with history.open('a') as out:
+  out.write(json.dumps({'type':'attachment','uuid':entry,'parentUuid':leaf,'sessionId':conversation,'timestamp':stamp,
+    'attachment':{'type':'queued_command','prompt':text,'commandMode':'prompt','origin':{'kind':'human'}}})+'\n')
+ leaf = entry
+ with trace.open('a') as out: out.write(json.dumps({'steered':text})+'\n')
+ taken = {'kind':'other'}; report('working')
 class Stopped(Exception): pass
 def gate(name):
  # The test opens each gate, so it can read the timeline between two records.
@@ -136,7 +146,14 @@ def gate(name):
    data = os.read(0,4096)
    if b'\x03' in data:
     report('idle'); raise Stopped()
-   draft += data.decode(errors='replace'); paint()
+   # ^ Claude takes a line entered while it works at its next step and saves it as a
+   # queued_command, after UserPromptSubmit (Claude Code 2.1.309, a real capture).
+   typed = data.decode(errors='replace').replace('\x1b[200~', '').replace('\x1b[201~', '')
+   if '\r' in typed and provider == 'claude':
+    draft += typed.split('\r')[0]
+    if draft.strip(): steered(draft)
+    draft = ''; paint(); continue
+   draft += typed; paint()
  trace.with_suffix('.'+name).unlink()
 def turn(text):
  global taken
@@ -874,7 +891,8 @@ def web_journey(args):
 
         def traces(name):
             file = work / (name + '.trace')
-            return [json.loads(line)['received'] for line in file.read_text().splitlines()] if file.exists() else []
+            entries = [json.loads(line) for line in file.read_text().splitlines()] if file.exists() else []
+            return [entry['received'] for entry in entries if 'received' in entry]
 
         def settle(name):
             """Wait until the fixture agent can take the next message."""
@@ -1715,6 +1733,23 @@ capabilities = ["terminal_view"]
         wait(lambda: messages(owner, sessions['owner'])['messages'][-1]['text'] == 'echo: queued two', 'queued turn')
         assert timeline()['queue'] == [] and not queue_file.exists() or json.loads(queue_file.read_text())['sessions'] == {}
         assert timeline()['screen'] is None
+        settle('owner')
+        # Send now: a waiting message typed into the working Claude, which takes it at its next
+        # step (docs/web-client-chat.md "Queue and Stop"). The conversation shows it, so it leaves.
+        assert send('use tool')[0] == 200
+        wait(lambda: timeline()['working'], 'working turn for a steer')
+        steer = send('steer this turn')[1]['queued']['id']
+        assert [item['text'] for item in timeline()['queue']] == ['steer this turn']
+        assert steady(owner, 'POST', chat + '/queue/%d/steer' % steer, {})[0] == 200
+        wait(lambda: any(item['kind'] == 'user' and item['text'] == 'steer this turn' for item in timeline()['items']), 'steered message in the conversation')
+        wait(lambda: timeline()['queue'] == [], 'steered message left the queue')
+        assert steady(owner, 'POST', chat + '/queue/%d/steer' % steer, {})[0] == 404
+        open_gate('result')
+        open_gate('answer')
+        wait(lambda: timeline()['working'] is None, 'steered turn ended')
+        # Not during a turn: the agent takes a message as usual, so there is nothing to steer.
+        status, refused = steady(owner, 'POST', chat + '/queue/999/steer', {})
+        assert status == 404, (status, refused)
         settle('owner')
         # A queued message the agent drops stays, with its text, until the conversation shows it;
         # Send again delivers it once more, and then it leaves the queue.

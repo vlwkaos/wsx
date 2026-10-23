@@ -188,13 +188,16 @@ function NeedRow({ project, item, index, onActing, onFailed }) {
     draft.busy = false;
     refresh();
   };
-  const button = (label, onClick, extra = {}) => html`
-    <button class="button need-action" type="button" disabled=${draft.busy} onClick=${onClick} ...${extra}>${label}</button>`;
+  // ^ Icons, so the title and what the item waits for keep the row's width; the name is the
+  // button's title and, with what it acts on, its accessible name.
+  const button = (label, icon, tone, onClick, extra = {}) => html`
+    <button class="button icon-button need-action" type="button" title=${label} data-tone=${tone} disabled=${draft.busy}
+      onClick=${onClick} ...${extra}><${Icon} name=${icon} /></button>`;
   let actions = null;
   if (acting && asks.length) {
-    actions = button("Allow", grant, { "aria-label": `Allow #${item.task} to ${askWords(asks)}` });
+    actions = button("Allow", "pass", "accent", grant, { "aria-label": `Allow #${item.task} to ${askWords(asks)}` });
   } else if (acting && ["waiting", "failed"].includes(item.kind)) {
-    actions = button("Answer", open, { "aria-expanded": draft.field === "answer", "aria-label": `Answer #${item.task}` });
+    actions = button("Answer", "reply", null, open, { "aria-expanded": draft.field === "answer", "aria-label": `Answer #${item.task}` });
   } else if (acting && item.kind === "approval" && draft.running) {
     // ^ The approved action runs until its decision settles the row; it may take minutes.
     actions = html`<span class="row-context" role="status">Running…</span>`;
@@ -203,9 +206,9 @@ function NeedRow({ project, item, index, onActing, onFailed }) {
       await run("approve");
       if (!draft.error) { draft.running = true; refresh(); }
     };
-    actions = html`${button("Deny", () => run("deny"), { "aria-label": `Deny: ${item.label}` })}${button("Approve", approve, { "aria-label": item.label })}`;
+    actions = html`${button("Deny", "fail", "danger", () => run("deny"), { "aria-label": `Deny: ${item.label}` })}${button("Approve", "pass", "accent", approve, { "aria-label": item.label })}`;
   } else if (acting && item.kind === "land") {
-    actions = button("Land", () => run("land"), { "aria-label": `Land #${item.task}` });
+    actions = button("Land", "land", "accent", () => run("land"), { "aria-label": `Land #${item.task}` });
   }
   // ^ An approval reads as the action it asks for, never as its id (docs/web-client-tasks.md).
   const context = item.kind === "approval" ? item.title ?? item.commit ?? ""
@@ -499,7 +502,7 @@ function SinceLine({ project }) {
   return html`
     <div class="since" role="status">
       <p>Since you left: ${parts.map((part, index) => html`${index ? " · " : ""}${part}`)}</p>
-      <button class="link-action" type="button" onClick=${() => setSince(null)}>Dismiss</button>
+      <button class="icon-button" type="button" title="Dismiss" aria-label="Dismiss" onClick=${() => setSince(null)}><${Icon} name="fail" /></button>
     </div>`;
 }
 

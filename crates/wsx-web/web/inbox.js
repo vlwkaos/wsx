@@ -50,7 +50,7 @@ export function SessionRow({ session, now, current, place }) {
         </span>
       </a>
       ${removable && html`<button class="row-remove" type="button" disabled=${removing} onClick=${remove}
-        aria-label=${`Remove session ${session.label}`}>Remove</button>`}
+        aria-label=${`Remove session ${session.label}`} title="Remove"><${Icon} name="fail" /></button>`}
     </li>`;
 }
 

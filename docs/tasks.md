@@ -216,6 +216,10 @@ A manager may reach the manager of another registered project, and nothing else 
 - `--reply` answers such a message (`from: "manager-reply:<project>"`). Each delivered message from a manager allows one reply to it, and a reply allows none, so no two managers answer each other in a loop.
 - Every other command with `-p <other>`, and `--from-manager` to its own project, is refused by the broker. A manager creates and changes tasks only in its own project.
 
+## Recap
+
+After `tasks.manager.recapMinutes` (default 60, `0` is off, at most 1440) with no message and no turn, and only when a message other than a recap request came since the last recap, the manager host logs a message from `recap` that asks the manager for a recap. The request is fixed text written by wsx: a recap for someone back after two weeks with a faint memory of the project, the goal first, then what landed and what it changed, what waits for the owner and why, what runs, and the open decisions as a table, read from the ledger and the notes, with no task started. The manager answers in an ordinary turn. The web does not show the request and tags the answer "Recap". A quiet project gets one recap, not one per period.
+
 ## Memo
 
 Durable project knowledge moves from workers to the manager, kept small:
@@ -279,7 +283,7 @@ tasks:
   deploy: { command: "sh deploy.sh", approve: false, public: false, auto: true }
   release: { command: "sh release.sh", approve: true }
   preview: { command: "npm run serve -- --port $PORT", ready: /health, ports: 9100-9199 }
-  manager: { name: Atlas, adapter: claude, model: opus, eventModel: off, rotateTokens: 150000, tools: [] }   # never Bash rules; eventModel: a model or off
+  manager: { name: Atlas, adapter: claude, model: opus, eventModel: off, rotateTokens: 150000, recapMinutes: 60, tools: [] }   # never Bash rules; eventModel: a model or off
 ```
 
 `tasks.manager.name` is the name the owner reads for the manager: the web chat's author and typing bubble ("Atlas is typing"), another project's chat, the TUI row (`task-manager (Atlas)`) and `wsx task manager --json` (`name`). It is trimmed, one line without control characters, at most 64 bytes; empty is no name, and without one the manager reads "Manager" (the TUI keeps `(manager)`). Inside, the manager stays `manager`: the session label `task-manager`, the provider, `WSX_TASK_ACTOR` and `from: manager:<project>`; the name is not in its instructions. The name is the manager's address for a later talk between managers by name.

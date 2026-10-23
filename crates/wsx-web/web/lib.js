@@ -18,6 +18,10 @@ const ICONS = {
   fail: "M5.5 5.5l9 9M14.5 5.5l-9 9",
   play: "M7 4.5v11l8.5-5.5z",
   open: "M11 4.5h4.5V9M15.5 4.5 9 11M8 5.5H5.5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V12",
+  copy: "M7.5 7.5h8v8h-8zM12.5 4.5h-8v8",
+  retry: "M15.5 10a5.5 5.5 0 1 1-1.6-3.9M15.5 4v3.5H12",
+  reply: "M8.5 5.5 4 10l4.5 4.5M4.5 10H12a4 4 0 0 1 4 4v1",
+  land: "M10 4v9M6 9.5l4 4 4-4M4.5 16h11",
 };
 // A line icon. The control around it carries the accessible name.
 export const Icon = ({ name }) => html`

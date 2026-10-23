@@ -1319,6 +1319,8 @@ def run(wsx, wsxd, work, owned):
     other.mkdir(mode=0o700)
     git('init', '-q', '-b', 'main', cwd=other)
     (other / 'README').write_text('other\n')
+    # ^ A recap one quiet minute after its last message (docs/tasks.md "Recap").
+    (other / 'wsx.config.yml').write_text('tasks:\n  manager:\n    recapMinutes: 1\n')
     git('add', '.', cwd=other)
     git('commit', '-q', '-m', 'start', cwd=other)
     with open(config_dir / 'config-v2.toml', 'a') as registry:
@@ -1348,6 +1350,14 @@ def run(wsx, wsxd, work, owned):
     text = reply_to(crossing['id'])['text']
     assert 'a manager acts only in its own project' in text and "messages another project's manager" in text, text
     assert "is for a project's manager" in cli('task', 'say', '-p', 'other', '--from-manager', 'hello', ok=False).stderr
+    # 33. Recap: once the other project is quiet for its minute, wsx asks its manager for one
+    # recap, and the manager answers it in the chat.
+    recap = wait(lambda: next((e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'recap'), None),
+                 'the recap request after a quiet minute', 120)
+    assert 'two weeks' in recap['text'] and 'Start no task' in recap['text'], recap
+    wait(lambda: next((e for e in other_entries() if e['kind'] == 'reply' and recap['id'] in e['to']), None),
+         'the manager answers the recap', 60)
+    assert [e['from'] for e in other_entries() if e['kind'] == 'message'].count('recap') == 1
 
 
 if __name__ == '__main__':

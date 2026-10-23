@@ -64,7 +64,8 @@ const post = (id, text, attachments) => api(`api/chat/${id}/send`, {
 });
 
 // Copy a message's text, so a message the agent never took is not lost (docs/web-client-chat.md "Queue and Stop").
-function CopyText({ text, label }) {
+// `icon`: a copy icon where the row has little room.
+function CopyText({ text, label, icon = false }) {
   const [said, setSaid] = useState("");
   const copy = async () => {
     try {
@@ -75,6 +76,10 @@ function CopyText({ text, label }) {
     }
     setTimeout(() => setSaid(""), 2000);
   };
+  if (icon) {
+    return html`<button class="icon-button" type="button" aria-label=${said || label} title=${said || "Copy"} aria-live="polite" onClick=${copy}>
+      <${Icon} name=${said === "Copied" ? "pass" : said ? "fail" : "copy"} /></button>`;
+  }
   return html`<button class="link-action" type="button" aria-label=${label} aria-live="polite" onClick=${copy}>${said || "Copy"}</button>`;
 }
 
@@ -587,13 +592,15 @@ export function Chat({ session, onModel }) {
   const blocked = status.key === "blocked";
   const lastUserBlock = list.findLast?.((block) => block.kind === "user");
   const terminalLink = shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`;
-  // A hold the chat cannot name: the server sends the end of the screen (docs/web-client-chat.md "Timeline").
+  // A hold the chat cannot name: the server sends the rows above the agent's editor, closed
+  // until asked for (docs/web-client-chat.md "Timeline").
   const held = data?.screen?.length ? html`
-    <section class="question" aria-label="The terminal shows">
-      <p class="note">The terminal shows:</p>
-      <pre class="question-screen" tabindex="0">${data.screen.join("\n")}</pre>
-      ${terminalLink}
-    </section>` : null;
+    <details class="held">
+      <summary class="held-head"><${Icon} name="chevron" /><span>What the terminal shows</span>${!blocked && terminalLink}</summary>
+      <pre class="held-screen" tabindex="0">${data.screen.join("\n")}</pre>
+    </details>` : null;
+  // ^ A working Claude takes a waiting message at its next step (docs/web-client-chat.md "Queue and Stop").
+  const steers = Boolean(working) && session.agent?.provider === "claude" && can("chat_send");
 
   return html`
     <div class="chat">
@@ -635,16 +642,19 @@ export function Chat({ session, onModel }) {
           ${waiting.map((queued) => html`
             <li key=${queued.id} class="queued" data-failed=${queued.failed ? "" : null}>
               <span class="queued-text">${queued.text || `${queued.attachments.length} files`}</span>
-              ${queued.text && html`<${CopyText} text=${queued.text} label=${`Copy waiting message: ${queued.text.slice(0, 40)}`} />`}
-              ${queued.failed && html`<button class="link-action" type="button"
-                onClick=${() => act(`queue/${queued.id}/retry`)}>Send again</button>`}
-              <button class="link-action" type="button" aria-label=${`Remove waiting message: ${queued.text.slice(0, 40)}`}
-                onClick=${() => act(`queue/${queued.id}`, "DELETE")}>Remove</button>
+              ${steers && !queued.failed && html`<button class="icon-button" type="button" title="Send now"
+                aria-label=${`Send now, Claude takes it at its next step: ${queued.text.slice(0, 40)}`}
+                onClick=${() => act(`queue/${queued.id}/steer`)}><${Icon} name="send" /></button>`}
+              ${queued.text && html`<${CopyText} icon text=${queued.text} label=${`Copy waiting message: ${queued.text.slice(0, 40)}`} />`}
+              ${queued.failed && html`<button class="icon-button" type="button" title="Send again"
+                aria-label=${`Send again: ${queued.text.slice(0, 40)}`} onClick=${() => act(`queue/${queued.id}/retry`)}><${Icon} name="retry" /></button>`}
+              <button class="icon-button" type="button" title="Remove" aria-label=${`Remove waiting message: ${queued.text.slice(0, 40)}`}
+                onClick=${() => act(`queue/${queued.id}`, "DELETE")}><${Icon} name="fail" /></button>
               ${queued.failed && html`<p class="queued-reason" role="alert">Not delivered to the agent: ${inWords(queued.failed)}</p>`}
             </li>`)}
         </ul>` : null}
       ${blocked && data?.question ? html`<${Question} session=${session} question=${data.question} onAnswered=${load} />`
-      : blocked ? held ?? html`
+      : blocked ? html`${held}
         <div class="attention" role="status">
           <span>Waiting for your answer.</span>
           ${terminalLink}

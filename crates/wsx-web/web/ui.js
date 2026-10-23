@@ -60,7 +60,7 @@ export function Notices() {
         : shown && html`
           <p class="notice" data-tone=${shown.failure ? "danger" : null} role=${shown.failure ? "alert" : null}>
             <span class="notice-text">${shown.text}</span>
-            ${shown.failure && html`<button class="link-action" type="button" onClick=${() => dismiss(shown)}>Dismiss</button>`}
+            ${shown.failure && html`<button class="icon-button" type="button" title="Dismiss" aria-label="Dismiss" onClick=${() => dismiss(shown)}><${Icon} name="fail" /></button>`}
           </p>`}
     </div>
     ${store.newBuild && html`<button class="build-pill" type="button" onClick=${reloadForBuild}>New version · Reload</button>`}`;

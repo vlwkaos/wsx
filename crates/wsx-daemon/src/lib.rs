@@ -2563,6 +2563,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             | Request::AgentExchangeContinue { .. }
             | Request::AgentExchangeContinueStashingDraft { .. }
             | Request::AgentExchangeContinueKeyed { .. }
+            | Request::AgentSteer { .. }
     ))
     .then(|| lock(&daemon.mutation_lock));
     if !matches!(&request, Request::Hello { .. } | Request::LifecycleStatus)
@@ -2971,6 +2972,11 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             expected_revision,
             takeover,
         } => cancel_agent_exchange(daemon, exchange_id, expected_revision, takeover),
+        Request::AgentSteer {
+            pane_id,
+            text,
+            takeover,
+        } => steer_agent(daemon, pane_id, &text, takeover),
         Request::PluginList => Ok(Response::Plugins(lock(&daemon.state).plugins.clone())),
         Request::PluginReload => {
             let mut state = lock(&daemon.state);
@@ -3176,6 +3182,7 @@ fn capabilities() -> Capabilities {
         daemon_restart: true,
         exchange_command: true,
         exchange_shell: true,
+        agent_steer: true,
     }
 }
 
@@ -5147,6 +5154,11 @@ fn claude_editor(observation: &AgentTerminalObservation) -> Option<&str> {
     {
         return None;
     }
+    claude_input(observation)
+}
+
+/// The text of Claude's input line, at work or idle; `Some("")` when it is empty.
+fn claude_input(observation: &AgentTerminalObservation) -> Option<&str> {
     let lines: Vec<_> = observation.text.lines().collect();
     let border = |line: &str| {
         let line = line.trim();
@@ -6153,6 +6165,80 @@ fn report_agent_exchange_receipt_with_binding(
         exchange: response,
         frame: None,
     })
+}
+
+/// docs/agent-orchestration.md "Steer": a working Claude takes a message typed into its input
+/// line at its next step, fires `UserPromptSubmit` for it at once and saves it as a
+/// `queued_command` (Claude Code 2.1.309). No exchange: the turn that runs keeps its round.
+fn steer_agent(
+    daemon: &Arc<Daemon>,
+    pane_id: PaneId,
+    text: &str,
+    takeover: bool,
+) -> Result<Response, ApiError> {
+    if text.trim().is_empty() || text.len() > MAX_AGENT_EXCHANGE_PROMPT_BYTES {
+        return Err(api(
+            "invalid_request",
+            "a steer message must have text and fit an exchange prompt",
+        ));
+    }
+    let operation_lock = terminal_operation_lock(daemon, pane_id);
+    let _operation = lock(&operation_lock);
+    let runtime = {
+        let mut state = lock(&daemon.state);
+        let agent = state
+            .persisted
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .ok_or_else(|| api("not_found", "pane not found"))?
+            .agent
+            .clone()
+            .filter(|agent| agent.attached)
+            .ok_or_else(|| api("agent_unavailable", "pane has no attached agent"))?;
+        if agent.provider != "claude" {
+            return Err(api(
+                "steer_unsupported",
+                "only Claude takes a message during its turn",
+            ));
+        }
+        if agent.state != AgentState::Working {
+            return Err(api("agent_not_working", "the agent is not at work"));
+        }
+        // ^ A round still waiting to be taken would read this prompt's receipt as its own
+        // refusal (receive_prompt).
+        if state.persisted.agent_exchanges.iter().any(|exchange| {
+            exchange.pane_id == pane_id
+                && matches!(
+                    exchange.state,
+                    AgentExchangeState::Submitted | AgentExchangeState::Delivered
+                )
+        }) {
+            return Err(api("exchange_busy", "a delivered message is not taken yet"));
+        }
+        let runtime = state
+            .runtimes
+            .get(&pane_id)
+            .filter(|runtime| !runtime.exited())
+            .cloned()
+            .ok_or_else(|| api("terminal_unavailable", "pane has no live terminal"))?;
+        let observation = runtime
+            .agent_observation()
+            .map_err(|_| api("editor_unavailable", "cannot observe Claude's input line"))?;
+        // ^ Typed text in the input line would be sent with this message.
+        if claude_input(&observation) != Some("") {
+            return Err(api(
+                "editor_unavailable",
+                "Claude's input line is not empty",
+            ));
+        }
+        take_terminal_lease(&mut state, pane_id, takeover)?;
+        runtime
+    };
+    deliver_agent_exchange(&runtime, text, Instant::now() + AGENT_EXCHANGE_WRITE_LIMIT)
+        .map_err(terminal_api)?;
+    let revision = lock(&daemon.state).revision;
+    Ok(Response::Ack { revision })
 }
 
 fn cancel_agent_exchange(

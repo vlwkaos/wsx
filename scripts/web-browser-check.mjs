@@ -967,12 +967,12 @@ if (stream.bytes > 65_536) await fail(`each change still fetches the whole timel
 await openSession("done");
 await until("!!document.querySelector('.composer-field:not([disabled])')", "the done session's composer is not ready");
 // A waiting message that was not delivered: by the composer, its reason in words on a line
-// of its own in the danger colour, with Send again and Remove.
+// of its own in the danger colour, with Copy, Send again and Remove as icons.
 await until("!!document.querySelector('.queued[data-failed] .queued-reason')", "the failed waiting message does not show");
 const stuck = await evaluate(`(() => { const row = document.querySelector('.queued[data-failed]'); const reason = row.querySelector('.queued-reason');
   const box = (node) => node.getBoundingClientRect();
   return { reason: reason.textContent, color: getComputedStyle(reason).color, danger: getComputedStyle(document.documentElement).getPropertyValue('--color-danger').trim(),
-    actions: [...row.querySelectorAll('button')].map((button) => button.textContent).join(), own: box(reason).top >= box(row.querySelector('.queued-text')).bottom - 1,
+    actions: [...row.querySelectorAll('button')].map((button) => button.title).join(), own: box(reason).top >= box(row.querySelector('.queued-text')).bottom - 1,
     whole: reason.scrollWidth <= reason.clientWidth, above: box(row).bottom <= box(document.querySelector('.composer')).top + 1 }; })()`);
 // A delivered message of the conversation never reads as not delivered.
 if (await evaluate("[...document.querySelectorAll('.log .message-user:not([data-pending]) .note')].some((note) => note.textContent.includes('Not delivered'))")) await fail("a delivered message says it was not delivered");
@@ -993,7 +993,7 @@ await sound("message not delivered");
 await shot("chat-not-delivered");
 const round = () => evaluate(`fetch(new URL('api/chat/${ids.done}/timeline', document.baseURI)).then((r) => r.json()).then((data) => data.exchange.round)`);
 const before = await round();
-await evaluate(`[...${failedRow}.querySelectorAll('button')].find((button) => button.textContent === 'Send again').click()`);
+await evaluate(`[...${failedRow}.querySelectorAll('button')].find((button) => button.title === 'Send again').click()`);
 await until(`fetch(new URL('api/chat/${ids.done}/timeline', document.baseURI)).then((r) => r.json()).then((data) => data.exchange.round === ${before + 1})`, "Send again did not send the message again");
 await until(`(${notDelivered}).startsWith('Not delivered')`, "the message sent again did not keep its reason");
 

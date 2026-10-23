@@ -102,6 +102,9 @@ pub struct TaskConfig {
     pub manager_event_model: Option<String>,
     /// Context size after which the manager's next turn starts a fresh conversation.
     pub manager_rotate_tokens: u64,
+    /// Quiet minutes after which the manager writes the owner a recap; 0 is off.
+    /// ref: docs/tasks.md "Recap"
+    pub manager_recap_minutes: u64,
     /// Tools the manager gets beyond its read-only ones (`tasks.manager.tools`), never
     /// `Bash(...)` or a bare file tool.
     pub manager_tools: Vec<String>,
@@ -190,6 +193,7 @@ impl Default for TaskConfig {
             // more than the turn saved (scripts/bench-manager.py, docs/tasks.md "Manager").
             manager_event_model: None,
             manager_rotate_tokens: 150_000,
+            manager_recap_minutes: 60,
             manager_tools: Vec::new(),
         }
     }

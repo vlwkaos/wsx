@@ -29,6 +29,12 @@ use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 /// Events within this long of each other, or during a turn, become one message.
 const EVENT_QUIET: Duration = Duration::from_secs(3);
+/// What wsx asks after a quiet period. The reply is the recap the owner reads.
+const RECAP_REQUEST: &str = "The project has been quiet. Write the owner a recap for someone who comes back \
+after two weeks with a faint memory of it. Start with the goal in one line. Then what landed since the last recap \
+and what it changed for the owner, what waits for the owner now and why, and what runs. End with the open \
+decisions as a table. Read the ledger and your notes for it. Start no task and change nothing. Use plain words: \
+name a task by its number and what it does.";
 const EVENT_TITLE_CHARS: usize = 80;
 /// A message in a handover: one line, clipped, so a quote never reads as a new message.
 fn one_line(text: &str) -> String {
@@ -101,6 +107,12 @@ struct Manager {
     /// Event lines not yet logged as a message, and when the last one came.
     pending_events: Vec<String>,
     last_event: Option<Instant>,
+    /// `tasks.manager.recapMinutes` as a duration; `None` is off.
+    recap_quiet: Option<Duration>,
+    /// When a message was logged or a turn ran last, and whether a message other than a
+    /// recap request came since the last recap.
+    last_activity: Instant,
+    since_recap: bool,
     /// The file this host runs from, and whether it must exec its replacement.
     binary: Option<hosting::Binary>,
     reexec: bool,
@@ -283,6 +295,10 @@ pub fn run(project_id: &str) -> Result<()> {
         observed_decisions: 0,
         pending_events: Vec::new(),
         last_event: None,
+        recap_quiet: (settings.manager_recap_minutes > 0)
+            .then(|| Duration::from_secs(settings.manager_recap_minutes * 60)),
+        last_activity: Instant::now(),
+        since_recap: false,
         binary: hosting::Binary::capture(),
         reexec: false,
         owed: Owed::default(),
@@ -345,12 +361,17 @@ impl Manager {
                     self.on_agent(line)
                 }
                 Event::Agent(..) => {}
-                Event::Tick => self.watch_tasks(),
+                Event::Tick => {
+                    self.watch_tasks();
+                    self.ask_recap();
+                }
                 Event::Sent { to, text, reply } => self.log(ManagerEvent::Sent { to, text, reply }),
             }
             if self.turn.is_none() {
                 self.flush_events();
                 self.next_turn();
+            } else {
+                self.last_activity = Instant::now();
             }
             if self.reexec {
                 std::thread::sleep(Duration::from_millis(200));
@@ -404,6 +425,15 @@ impl Manager {
                 _ => Vec::new(),
             })
             .collect();
+        // ^ A message other than a recap request after the last recap is news for the next one.
+        self.since_recap = log
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.event {
+                ManagerEvent::Message { from, .. } => Some(*from != Author::Recap),
+                _ => None,
+            })
+            .unwrap_or(false);
         for entry in log {
             if let ManagerEvent::Message { id, from, text } = entry.event {
                 if !delivered.contains(&id) {
@@ -581,8 +611,30 @@ impl Manager {
             from: from.clone(),
             text: text.clone(),
         })?;
+        self.last_activity = Instant::now();
+        self.since_recap = from != Author::Recap;
         self.enqueue(id, from, text);
         Ok(id)
+    }
+
+    /// After `recapMinutes` with no message and no turn, and only when a message came since
+    /// the last recap, ask the manager for one. ref: docs/tasks.md "Recap"
+    fn ask_recap(&mut self) {
+        let due = self.recap_quiet.is_some_and(|quiet| {
+            self.since_recap
+                && self.turn.is_none()
+                && self.queue.is_empty()
+                && self.pending_events.is_empty()
+                && self.last_activity.elapsed() >= quiet
+        });
+        if !due {
+            return;
+        }
+        if let Err(error) = self.accept(Author::Recap, RECAP_REQUEST.into()) {
+            self.say(&format!("cannot ask for a recap: {error:#}"));
+            // ^ Not again every second: the next try waits a whole quiet period.
+            self.last_activity = Instant::now();
+        }
     }
 
     /// Owner messages go first, then other managers', then events.
@@ -591,6 +643,7 @@ impl Manager {
             Author::Owner => 0,
             Author::Manager { .. } => 1,
             Author::Events => 2,
+            Author::Recap => 3,
         };
         let at = self
             .queue
@@ -630,6 +683,7 @@ impl Manager {
             let heading = match &author {
                 Author::Owner => "Owner".to_string(),
                 Author::Events => "Events".to_string(),
+                Author::Recap => "Recap request from wsx".to_string(),
                 Author::Manager {
                     project,
                     reply: false,

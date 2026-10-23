@@ -234,6 +234,12 @@ wsxd reads the end of Claude's screen to see a dialog or a ready editor, because
 
 Both were found with a real Claude 2.1.296 on 2026-10-13 (`scripts/web-real-agent-check.py --scenario answers`).
 
+## Steer
+
+`AgentSteer {pane_id, text, takeover}` (revision 33, capability `agent_steer`) types a message into a working Claude. Claude takes a line entered while it works at its next step, fires `UserPromptSubmit` for it at once, and saves it as an `attachment` of type `queued_command` with the words in `prompt` (Claude Code 2.1.309, checked on 2026-10-23 with a turn that ran `sleep 8`). It is not an exchange: the running turn keeps its round, and the reply answers both.
+
+wsxd refuses with `steer_unsupported` for another provider, `agent_not_working` when the agent is not at work, `exchange_busy` while a delivered round waits to be taken (its receipt would read this prompt as its own refusal), and `editor_unavailable` when Claude's input line is not empty, because typed text would go with the message. The timeline shows a `queued_command` from a person (`origin.kind: "human"`) as the person's message.
+
 ## Claude's empty editor
 
 Draft stashing needs an editor that is visibly idle. A fresh Claude shows a suggestion in its empty editor, such as `❯ Try "fix typecheck errors"`. Claude draws it dimmed; text a person typed is not dimmed. After a turn, Claude 2.1.300 may instead suggest a next prompt in plain words, such as `❯ commit the scout skill in dotfiles`, also dimmed. The editor line counts as empty when every character of that line is dimmed in the terminal frame, whatever its words. wsxd then sends no Ctrl+S, because Ctrl+S on an empty editor restores an older stash. After a stash, an editor that shows a dimmed suggestion again counts as emptied. A line that starts with `Try "` and is not dimmed is still refused as ambiguous.

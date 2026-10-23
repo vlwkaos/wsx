@@ -48,7 +48,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Revision 32 hands off a pane whose program exited as its last screen, without a PTY, and
 // keeps the step and error of a rolled-back handoff as `last_handoff_error`
 // (docs/daemon-live-upgrade.md "Exited panes", "A failed handoff").
-pub const DAEMON_REVISION: u32 = 32;
+// Revision 33 types a message into a working Claude for its next step, outside any exchange
+// (`AgentSteer`, capability `agent_steer`; docs/agent-orchestration.md "Steer").
+pub const DAEMON_REVISION: u32 = 33;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -519,6 +521,15 @@ pub enum Request {
         #[serde(default)]
         takeover: bool,
     },
+    /// Type a message into a working Claude, which takes it at its next step. Not an
+    /// exchange: the turn that runs keeps its round. docs/agent-orchestration.md "Steer".
+    AgentSteer {
+        pane_id: PaneId,
+        text: String,
+        /// As for an exchange: take the pane from a live terminal controller.
+        #[serde(default)]
+        takeover: bool,
+    },
     PluginList,
     PluginReload,
     PluginReviewCancel {
@@ -749,6 +760,7 @@ mod tests {
         assert!(!capabilities.daemon_restart);
         assert!(!capabilities.exchange_command);
         assert!(!capabilities.exchange_shell);
+        assert!(!capabilities.agent_steer);
     }
 
     #[test]

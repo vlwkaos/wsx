@@ -140,7 +140,7 @@ const openSections = () => evaluate("[...document.querySelectorAll('.task-sheet 
 // The reservoir's rows: [chip, title, context, actions], in the order shown.
 const rows = () => evaluate(`[...document.querySelectorAll('.reservoir-list .need')].map((row) => [
   row.querySelector('.task-chip')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, row.querySelector('.row-context')?.textContent ?? '',
-  [...row.querySelectorAll('.need-action')].map((node) => node.textContent.trim()).join('+')])`);
+  [...row.querySelectorAll('.need-action')].map((node) => node.title).join('+')])`);
 const rowOf = (label) => `[...document.querySelectorAll('.reservoir-list .need')].find((row) => ((row.querySelector('.task-chip')?.textContent.trim() ?? '') + ' ' + row.querySelector('.row-label').textContent).trim().startsWith(${JSON.stringify(label)}))`;
 // The closed line as read: "6 need you · #6 <title> +1 more".
 const reservoirWords = () => evaluate("document.querySelector('.reservoir-head')?.textContent.trim().replace(/\\s+/g, ' ') ?? ''");
@@ -150,7 +150,7 @@ async function openReservoir() {
 }
 // The focus after a row cleared: [chip, label] of the row whose action has it, or the head.
 const focused = () => evaluate(`(() => { const node = document.activeElement; const row = node?.closest('.reservoir .need');
-  if (row) return [row.querySelector('.task-chip')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, node.textContent.trim()];
+  if (row) return [row.querySelector('.task-chip')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, node.title || node.textContent.trim()];
   if (node?.classList.contains('reservoir-head')) return ['head'];
   return node?.matches('.chat .composer-field') ? ['composer'] : [node?.tagName ?? 'none']; })()`);
 // One action in a row, then that row leaves and the focus is on the next row's action (on the
@@ -161,7 +161,7 @@ async function clearRow(label, action, attempts = 300) {
   const key = await evaluate(`${rowOf(label)}.dataset.key`);
   if (!key) await fail(`the row ${label} has no item key`);
   // ^ As a pointer or a key press does, the button takes the focus before it acts.
-  await evaluate(`(() => { const button = [...${rowOf(label)}.querySelectorAll('.need-action')].find((node) => node.textContent.trim() === ${JSON.stringify(action)});
+  await evaluate(`(() => { const button = [...${rowOf(label)}.querySelectorAll('.need-action')].find((node) => node.title === ${JSON.stringify(action)});
     button.focus(); button.click(); })()`);
   await until(`!document.querySelector('.reservoir .need[data-key=${JSON.stringify(key)}]')`, `${action} did not clear the row ${label} (${key})`, attempts);
   // ^ After the last row the reservoir goes and the composer has the focus.
@@ -294,7 +294,7 @@ await go("#/");
 await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 }))`);
 await go(chat);
 await until("/Since you left: .*#1 #2 #3 #4.* started.* repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')", "no since-you-left line");
-await evaluate("[...document.querySelectorAll('.since button')].find((node) => node.textContent === 'Dismiss').click()");
+await evaluate("[...document.querySelectorAll('.since button')].find((node) => node.title === 'Dismiss').click()");
 await until("!document.querySelector('.since')", "Dismiss did not close the line");
 
 // --- The chat reads like a messaging app: no cards, no tray, no strip, no Explain; the
@@ -393,7 +393,7 @@ await until(`!${rowOf("Approve land #3")} && !${rowOf("#3")}`, "the reservoir ke
 await until("[...document.querySelectorAll('.status-line')].some((node) => /Approved land #3/.test(node.textContent))", "the approval left no muted line", 300);
 await until(`!!${workerBubble(3)}`, "the landing of #3 has no done bubble", 300);
 if (await evaluate("[...document.querySelectorAll('.status-line')].some((node) => /#3 landed/.test(node.textContent))")) await fail("a muted line repeats the landing of #3");
-await until(`(${rowOf("#1")}?.querySelector('.need-action')?.textContent ?? '') === 'Land'`, "#1 is not ready to land after Allow", 300);
+await until(`(${rowOf("#1")}?.querySelector('.need-action')?.title ?? '') === 'Land'`, "#1 is not ready to land after Allow", 300);
 moved = await clearRow("#1", "Land");
 if (!(await evaluate(atEnd)) || await count(".jump")) await fail("acting in the reservoir moved the chat");
 if (await count(".need-card, .tray")) await fail("an action brought back a card or the tray");
@@ -745,7 +745,7 @@ await until(`location.hash === '#/p/${plans}' && !document.querySelector('dialog
 // takes the focus back from the row button pressed below.
 await until("document.activeElement?.classList.contains('composer-field') && !document.activeElement.closest('dialog')", "closing the sheet did not focus the composer");
 await openReservoir();
-await until(`(${rowOf("#1")}?.querySelector('.need-action')?.textContent ?? '') === 'Land'`, "#1's row does not offer Land", 60);
+await until(`(${rowOf("#1")}?.querySelector('.need-action')?.title ?? '') === 'Land'`, "#1's row does not offer Land", 60);
 moved = await clearRow("#2", "Land");
 moved = await clearRow("#1", "Land");
 await until("!document.querySelector('.reservoir')", "the cleared list still shows the reservoir", 60);

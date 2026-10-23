@@ -605,6 +605,46 @@ impl Chat {
         )
     }
 
+    /// Type a waiting message into the working Claude now: it takes the message at its next
+    /// step (docs/web-client-chat.md "Queue and Stop"). It then leaves the queue as a
+    /// delivered message does without a round, when the conversation shows its words.
+    pub fn steer(&self, app: &App, session: u64, id: u64) -> Outcome<Value> {
+        let _one = crate::locked(&self.delivering);
+        let snapshot = snapshot(&app.client)?;
+        if !snapshot.capabilities.agent_steer {
+            return Err(Fault::new(
+                409,
+                "daemon_upgrade_required",
+                "wsxd must be upgraded before a message can be sent during a turn",
+            ));
+        }
+        let target = target(&snapshot, &app.site.access, session)?;
+        let queued = app
+            .queue
+            .list(session)
+            .into_iter()
+            .find(|queued| {
+                queued.id == id && queued.failed.is_none() && queued.delivered_unix_ms.is_none()
+            })
+            .ok_or_else(|| Fault::new(404, "not_found", "this message is no longer waiting"))?;
+        let text = prompt_of(&app.site, &app.media, &queued.text, &queued.attachments)?;
+        match call(
+            &app.client,
+            &Request::AgentSteer {
+                pane_id: target.pane.id,
+                text,
+                takeover: true,
+            },
+        )? {
+            Response::Ack { .. } => app.queue.delivered(session, id, None),
+            _ => return Err(Fault::protocol("unexpected steer response")),
+        };
+        crate::events::history_changed(app, session);
+        Ok(
+            json!({ "queue": app.queue.list(session).iter().map(|queued| queued_view(queued, &app.media)).collect::<Vec<_>>() }),
+        )
+    }
+
     /// Settle the rounds that carried delivered messages. A taken one leaves the queue when the
     /// agent reports prompt receipts (its words may never show, as after a compaction), else it
     /// stops being watched and waits for the conversation to show it. One the agent did not
