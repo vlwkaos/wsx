@@ -4,7 +4,7 @@
 use super::view::{
     attention, check_outcomes, clip, overlaps, project_tasks, read_result, task_summary,
 };
-use super::{checks, copy, store, DeployKind, TaskRecord, WaitOn};
+use super::{checks, copy, store, DeployKind, DeployRecord, TaskRecord, WaitOn};
 use crate::config::project::load_task_config;
 use crate::model::workspace::TaskConfig;
 use crate::ops;
@@ -70,6 +70,8 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
                     .collect::<Vec<_>>(),
                 // ^ What a waiting task waits for: the owner, a grant, disk or a person's hands.
                 "waiting": record.waiting,
+                // ^ Held for the owner to try before it lands (docs/tasks.md "Hold and trial").
+                "hold": record.hold,
                 // ^ What it asks to be granted; the manager may grant it (docs/tasks.md "Permissions").
                 "asks": record.waits_on(WaitOn::Permission)
                     .then(|| result.as_ref().map(|r| r["asks"].clone()))
@@ -158,7 +160,8 @@ pub fn deploy_status(
     main: &Path,
     settings: &TaskConfig,
 ) -> Result<serde_json::Value> {
-    let records = store::read_deploys(&store::project_id(project_name, main))?;
+    let project_id = store::project_id(project_name, main);
+    let records = store::read_deploys(&project_id)?;
     let default = default_ref(main);
     let tip = copy::resolve_commit(main, &default).ok();
     let mut out = json!({ "default_branch": default, "tip": tip });
@@ -191,5 +194,29 @@ pub fn deploy_status(
             }),
         };
     }
+    out["trial"] = trial_status(&project_id, &records);
     Ok(out)
+}
+
+/// The project's trial: `null`, or `{task, revision, commit, by, unix_ms, stage}` with
+/// `stage` `preparing` (rebase and checks), `deploying` or `live` (its deploy succeeded).
+/// ref: docs/tasks.md "Hold and trial"
+pub fn trial_status(project_id: &str, records: &[DeployRecord]) -> Value {
+    let Ok(Some(trial)) = store::read_trial(project_id) else {
+        return Value::Null;
+    };
+    let live = records.iter().any(|record| {
+        record.trial == Some(trial.task)
+            && record.exit == Some(0)
+            && Some(&record.commit) == trial.commit.as_ref()
+            && record.unix_ms >= trial.unix_ms
+    });
+    let stage = match (&trial.commit, live) {
+        (None, _) => "preparing",
+        (Some(_), false) => "deploying",
+        (Some(_), true) => "live",
+    };
+    let mut value = json!(trial);
+    value["stage"] = json!(stage);
+    value
 }

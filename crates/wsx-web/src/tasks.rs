@@ -114,6 +114,9 @@ fn land_reason(dir: &TaskDir, record: &TaskRecord) -> String {
     if let Some(Some(reason)) = stopped {
         return format!("could not land: {}", view::clip(&reason, SUMMARY_CHARS));
     }
+    if let Some(hold) = &record.hold {
+        return format!("try it first: {hold}");
+    }
     if record.manager_reviews() {
         return "the manager reviews it".into();
     }
@@ -147,6 +150,7 @@ pub fn overview(scope: &Scope) -> Value {
                 "id": record.id, "title": title, "state": record.state, "stage": stage(record),
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
                 "waiting": record.waiting,
+                "hold": record.hold,
                 "conflict": record.state == TaskState::Working && resolving_conflict(dir),
             }),
         ));
@@ -231,6 +235,7 @@ pub fn overview(scope: &Scope) -> Value {
         .map(|record| record.updated_unix_ms)
         .chain(tail.last().map(|entry| entry.unix_ms))
         .max();
+    let settings = load_task_config(&scope.path).ok();
     json!({
         "project": scope.project,
         "needs": needs.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
@@ -243,7 +248,12 @@ pub fn overview(scope: &Scope) -> Value {
         "last_reply": last_reply,
         "last_unix_ms": last_unix_ms,
         // ^ Tasks can be tried on a preview link (docs/tasks.md "Preview").
-        "preview": load_task_config(&scope.path).is_ok_and(|settings| settings.preview.is_some()),
+        "preview": settings.as_ref().is_some_and(|settings| settings.preview.is_some()),
+        // ^ A ready task can be tried on the live site, and which one is (docs/tasks.md "Hold and trial").
+        "try_live": settings.as_ref().is_some_and(|settings| {
+            settings.deploy_command.is_some() && !settings.deploy_public
+        }),
+        "trial": ledger::trial_status(&scope.store, &store::read_deploys(&scope.store).unwrap_or_default()),
     })
 }
 
@@ -465,6 +475,17 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
         _ => None,
     });
     summary["deploy"] = deployed(scope, landed.as_deref());
+    summary["hold"] = json!(record.hold);
+    let trial = ledger::trial_status(
+        &scope.store,
+        &store::read_deploys(&scope.store).unwrap_or_default(),
+    );
+    // ^ The project's trial when it is this task's; `try_live` says whether one can start.
+    summary["trial"] = if trial["task"] == json!(task) {
+        trial
+    } else {
+        Value::Null
+    };
     summary["landed_commit"] = json!(landed);
     summary["approvals"] = json!(approvals
         .iter()
@@ -492,13 +513,18 @@ fn actions(record: &TaskRecord) -> Vec<&'static str> {
         (TaskState::Waiting, Some(WaitOn::Hand)) => return vec!["handback"],
         (TaskState::Waiting, Some(WaitOn::Permission)) => vec!["add", "allow"],
         (TaskState::Working | TaskState::Checking, _) => vec!["steer", "add"],
-        (TaskState::Ready, _) => vec!["land", "add"],
+        (TaskState::Ready, _) => vec!["land", "add", "trial"],
         (TaskState::Waiting | TaskState::Failed, _) => vec!["add"],
         (TaskState::Landed | TaskState::Closed, _) => return vec![],
     };
     if record.state != TaskState::Checking {
         actions.push("hand");
     }
+    actions.push(if record.hold.is_some() {
+        "unhold"
+    } else {
+        "hold"
+    });
     actions
 }
 
@@ -797,9 +823,17 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
                 .map_err(|reason| Fault::new(400, "invalid_grant", reason))?;
         }
         HostRequest::Land { .. } => {}
-        // ^ They open and close the hand session: `hand`, not this, runs them.
+        HostRequest::Hold { reason, .. } => {
+            if let Some(reason) = reason {
+                view::checked_hold(reason)
+                    .map_err(|error| Fault::new(400, "invalid_hold", error.to_string()))?;
+            }
+        }
+        // ^ They open and close the hand session or the trial slot: `run_task`, not this,
+        // runs them.
         HostRequest::Hand
         | HostRequest::Handback
+        | HostRequest::Trial
         | HostRequest::Status
         | HostRequest::Stop
         | HostRequest::Close { .. } => {
@@ -897,9 +931,15 @@ pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> O
 
 /// `wsx task <command> <task>`: `preview` starts a preview or answers the running one
 /// (`{url, port, until_unix_ms}`); `hand` and `handback` open and close the hand session the
-/// way the CLI does (docs/tasks.md "By hand").
+/// way the CLI does (docs/tasks.md "By hand"); `trial` and `trial_end` take and free the
+/// trial slot (docs/tasks.md "Hold and trial").
 pub fn run_task(scope: &Scope, command: &str, task: u32) -> Outcome<Value> {
-    run_wsx(scope, vec!["task".into(), command.into(), task.to_string()])
+    let mut argv = vec!["task".into(), command.into(), task.to_string()];
+    if command == "trial_end" {
+        argv[1] = "trial".into();
+        argv.push("--end".into());
+    }
+    run_wsx(scope, argv)
 }
 
 /// Run `wsx <argv> -p <project> --json` as the owner and return its JSON answer.

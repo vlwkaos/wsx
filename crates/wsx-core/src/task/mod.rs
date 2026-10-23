@@ -185,6 +185,10 @@ pub struct TaskRecord {
     /// landing by itself (docs/tasks.md "Landing").
     #[serde(default)]
     pub created_by: Actor,
+    /// Why the owner tries this task before it lands. A held task never lands by itself.
+    /// ref: docs/tasks.md "Hold and trial"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<String>,
     /// Set exactly while the state is `waiting`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<Waiting>,
@@ -304,6 +308,20 @@ pub enum LogEvent {
         by: Actor,
         commits: u32,
     },
+    /// The task is held for the owner to try (`reason`), or no longer (`None`).
+    Hold {
+        reason: Option<String>,
+        by: Actor,
+    },
+    /// Revision `revision` at `commit` goes to the live site for the owner to try.
+    Trial {
+        revision: u32,
+        commit: String,
+    },
+    /// The live site no longer runs this task's trial.
+    TrialEnded {
+        reason: String,
+    },
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -355,9 +373,10 @@ impl TaskRecord {
             .is_some_and(|waiting| waiting.on == on)
     }
 
-    /// A ready task the manager created waits for the manager's review, not the owner's.
+    /// A ready task the manager created waits for the manager's review, not the owner's;
+    /// a held one waits for the owner.
     pub fn manager_reviews(&self) -> bool {
-        self.state == TaskState::Ready && self.created_by == Actor::Manager
+        self.state == TaskState::Ready && self.created_by == Actor::Manager && self.hold.is_none()
     }
 }
 
@@ -379,6 +398,23 @@ pub struct DeployRecord {
     pub exit: Option<i32>,
     pub unix_ms: u64,
     pub duration_ms: u64,
+    /// The task whose trial this deploy put on the live site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial: Option<u32>,
+}
+
+/// `tasks/<project-id>/trial.json`: the one task whose unlanded revision the live site runs
+/// for the owner to try. `commit` is known once a rebase onto the default branch passed its
+/// checks. ref: docs/tasks.md "Hold and trial"
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Trial {
+    pub task: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    pub by: Actor,
+    pub unix_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,8 +442,20 @@ pub enum HostRequest {
         by: Actor,
     },
     Stop,
-    /// Land the ready revision.
-    Land {},
+    /// Land the ready revision. `tried`: the owner passed its trial, so its Human Verify
+    /// items are not added to "To check".
+    Land {
+        #[serde(default)]
+        tried: bool,
+    },
+    /// Hold the task for the owner to try (`reason`), or release it (`None`).
+    Hold {
+        reason: Option<String>,
+        by: Actor,
+    },
+    /// Put the ready revision on the live site for the owner to try; the trial slot is
+    /// already claimed for this task.
+    Trial,
     Close {
         discard: bool,
     },

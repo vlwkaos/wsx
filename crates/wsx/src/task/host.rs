@@ -7,6 +7,7 @@
 use super::broker;
 use super::claude::{new_session_id, AgentLine, ClaudeAgent, Launch, TurnResult};
 use super::hosting;
+use super::trial;
 use anyhow::{bail, Context, Result};
 use std::collections::VecDeque;
 use std::path::Path;
@@ -82,8 +83,8 @@ struct Host {
     /// The file this host runs from, and whether it must exec its replacement.
     binary: Option<hosting::Binary>,
     reexec: bool,
-    /// A `land` waits for the checks of its rebased revision.
-    landing: bool,
+    /// A `land` or a `trial` waits for the checks of its rebased revision.
+    after_rebase: Option<AfterRebase>,
     disk_wait: Option<DiskWait>,
     /// The Human Verify items of the revision whose landing conflicted: the turn that
     /// resolves it rarely repeats them, and they still need a person.
@@ -125,7 +126,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         check_retries: 0,
         binary: hosting::Binary::capture(),
         reexec: false,
-        landing: false,
+        after_rebase: None,
         disk_wait: None,
         carried_verify: Vec::new(),
         started: Instant::now(),
@@ -269,7 +270,10 @@ impl Host {
         let held = self.record.waits_on(WaitOn::Hand)
             && matches!(
                 request,
-                HostRequest::Steer { .. } | HostRequest::Add { .. } | HostRequest::Land {}
+                HostRequest::Steer { .. }
+                    | HostRequest::Add { .. }
+                    | HostRequest::Land { .. }
+                    | HostRequest::Trial
             );
         let message = match request {
             _ if held => Err(self.by_hand_refusal()),
@@ -282,7 +286,9 @@ impl Host {
                 by,
             } => self.grant(access, project, by),
             HostRequest::Stop => self.stop(),
-            HostRequest::Land {} => self.land(false),
+            HostRequest::Land { tried } => self.land(false, tried),
+            HostRequest::Hold { reason, by } => self.hold(reason, by),
+            HostRequest::Trial => self.trial(),
             HostRequest::Hand => self.hand(),
             HostRequest::Handback => self.handback(),
             HostRequest::Close { discard } => {
@@ -290,6 +296,7 @@ impl Host {
                     agent.stop();
                 }
                 self.turn_active = false;
+                self.end_trial("the task closed");
                 self.log(LogEvent::Closed { discarded: discard });
                 // ^ A landed task keeps `landed`: its work is on the default branch.
                 if self.record.state != TaskState::Landed || discard {
@@ -335,7 +342,112 @@ impl Host {
             mode: MessageKind::Add,
             text: text.clone(),
         });
+        // ^ The answer is a new revision, so the one on trial is no longer what lands.
+        self.end_trial("a message went to the worker");
         Ok(self.deliver_or_queue(text))
+    }
+
+    /// Hold the task for the owner to try before it lands, or release it.
+    fn hold(&mut self, reason: Option<String>, by: Actor) -> Result<String> {
+        if !self.record.state.is_open() {
+            bail!("task t{} is {}", self.record.id, self.state_words());
+        }
+        let reason = reason.as_deref().map(view::checked_hold).transpose()?;
+        if self.record.hold == reason {
+            return Ok("unchanged".into());
+        }
+        self.record.hold = reason.clone();
+        self.save();
+        let message = match &reason {
+            Some(reason) => format!("held for the owner to try: {reason}"),
+            None => "no longer held".into(),
+        };
+        self.log(LogEvent::Hold { reason, by });
+        self.say(&message);
+        Ok(message)
+    }
+
+    /// Put the ready revision on the live site: rebased onto the default branch first, so
+    /// the owner tries what would land. The caller claimed the trial slot.
+    fn trial(&mut self) -> Result<String> {
+        self.require_ready(false)?;
+        self.require_committed()?;
+        let tip = self.default_tip()?;
+        let head = copy::resolve_commit(&self.record.working_copy, "HEAD")?;
+        if copy::is_ancestor(&self.record.working_copy, &tip, &head)? {
+            return self.start_trial();
+        }
+        match copy::rebase(&self.record.working_copy, &tip)? {
+            Rebase::Conflict(paths) => {
+                self.end_trial("the rebase onto the default branch conflicted");
+                Ok(self.resolve_conflict(&tip, &paths))
+            }
+            Rebase::Done => {
+                self.after_rebase = Some(AfterRebase::Trial);
+                self.start_checks();
+                Ok(format!(
+                    "rebased onto {} at {tip:.12}; checks run on the new revision and it goes live when they pass",
+                    self.record.default_branch
+                ))
+            }
+        }
+    }
+
+    /// Name the current revision in the trial slot and deploy it in a `wsx task deploy` of
+    /// its own, which outlives this host.
+    fn start_trial(&mut self) -> Result<String> {
+        let commit = copy::resolve_commit(&self.record.working_copy, "HEAD")?;
+        let revision = self.record.revision;
+        if !trial::set_commit(&self.record.project_id, self.record.id, revision, &commit)? {
+            bail!("the trial of t{} ended before it started", self.record.id);
+        }
+        self.log(LogEvent::Trial {
+            revision,
+            commit: commit.clone(),
+        });
+        let id = self.record.id.to_string();
+        let started = store::follow_up_log(&self.record.project_id).and_then(|log| {
+            hosting::spawn_wsx(
+                &[
+                    "task",
+                    "deploy",
+                    "-p",
+                    &self.record.project,
+                    "--trial",
+                    &id,
+                    "--json",
+                ],
+                log,
+            )
+        });
+        if let Err(error) = started {
+            self.end_trial("its deploy did not start");
+            return Err(error);
+        }
+        Ok(format!(
+            "r{revision} at {commit:.12} deploys to the live site for the owner to try"
+        ))
+    }
+
+    /// End this task's trial, if it holds the slot, and deploy the default branch again.
+    fn end_trial(&self, reason: &str) {
+        let ended = trial::end(
+            &self.record.project_id,
+            &self.record.project,
+            Some(self.record.id),
+            reason,
+            true,
+        );
+        match ended {
+            Ok(Some(_)) => {
+                self.log(LogEvent::TrialEnded {
+                    reason: reason.to_string(),
+                });
+                self.say(&format!("trial ended: {reason}"));
+            }
+            Ok(None) => {}
+            Err(error) => self.say(&format!("cannot end the trial: {error:#}")),
+        }
     }
 
     fn deliver_or_queue(&mut self, text: String) -> String {
@@ -492,6 +604,7 @@ impl Host {
             agent.stop();
         }
         self.turn_active = false;
+        self.end_trial("the owner took it by hand");
         let dropped = self.pending.len() as u32;
         self.pending.clear();
         self.disk_wait = None;
@@ -938,7 +1051,7 @@ impl Host {
                 } else {
                     TaskState::Failed
                 };
-                let landing = std::mem::take(&mut self.landing);
+                let after_rebase = self.after_rebase.take();
                 // ^ Readers act on the state: the result and report must be complete before it.
                 self.write_result(&result, &results);
                 self.write_report(state);
@@ -949,15 +1062,14 @@ impl Host {
                     .iter()
                     .filter(|check| check.exit != Some(0))
                     .collect();
-                match landing {
+                match after_rebase {
                     // ^ A worker that says done but fails a check gets the failure back,
                     // bounded, before the task fails. ref: docs/tasks.md "Checks, revisions and report"
-                    false
-                        if state == TaskState::Failed
-                            && result.status == "done"
-                            && !failed.is_empty()
-                            && self.pending.is_empty()
-                            && self.check_retries < MAX_CHECK_RETRIES =>
+                    None if state == TaskState::Failed
+                        && result.status == "done"
+                        && !failed.is_empty()
+                        && self.pending.is_empty()
+                        && self.check_retries < MAX_CHECK_RETRIES =>
                     {
                         self.check_retries += 1;
                         let attempt = self.check_retries;
@@ -976,24 +1088,34 @@ impl Host {
                     // checks to prove it; it goes from checking to landed without a stop at
                     // ready. A message that waits for the worker comes first: its answer is a
                     // new revision, which lands in turn. ref: docs/tasks.md "Landing"
-                    false
-                        if state == TaskState::Ready
-                            && !results.is_empty()
-                            && self.record.created_by == Actor::Owner
-                            && self.pending.is_empty()
-                            && self.auto_land() =>
+                    None if state == TaskState::Ready
+                        && !results.is_empty()
+                        && self.record.created_by == Actor::Owner
+                        && self.record.hold.is_none()
+                        && self.pending.is_empty()
+                        && self.auto_land() =>
                     {
-                        let landed = self.land(true);
+                        let landed = self.land(true, false);
                         self.finish_landing(landed, state);
                     }
-                    false => self.set_state(state),
-                    true => {
+                    None => self.set_state(state),
+                    Some(AfterRebase::Land { tried }) => {
                         let finished = if state == TaskState::Ready {
-                            self.fast_forward()
+                            self.fast_forward(tried)
                         } else {
                             Err(anyhow::anyhow!("checks failed on the rebased revision"))
                         };
                         self.finish_landing(finished, state);
+                    }
+                    Some(AfterRebase::Trial) => {
+                        self.set_state(state);
+                        if state == TaskState::Ready {
+                            if let Err(error) = self.start_trial() {
+                                self.say(&format!("the trial did not start: {error:#}"));
+                            }
+                        } else {
+                            self.end_trial("checks failed on the rebased revision");
+                        }
                     }
                 }
             }
@@ -1070,43 +1192,29 @@ impl Host {
 
     /// Land the current revision on the default branch (docs/tasks.md "Landing").
     /// `auto`: the checks of this revision just passed, so the task is not yet `ready`.
-    fn land(&mut self, auto: bool) -> Result<String> {
+    /// `tried`: the owner passed this task's trial.
+    fn land(&mut self, auto: bool, tried: bool) -> Result<String> {
         self.require_ready(auto)?;
         self.require_committed()?;
+        if tried && !self.on_trial()? {
+            bail!(
+                "no trial of t{} runs; land it without --tried",
+                self.record.id
+            );
+        }
         let working_copy = self.record.working_copy.clone();
         let tip = self.default_tip()?;
         let head = copy::resolve_commit(&working_copy, "HEAD")?;
         if copy::is_ancestor(&working_copy, &tip, &head)? {
-            return self.fast_forward();
+            return self.fast_forward(tried);
         }
         match copy::rebase(&working_copy, &tip)? {
             Rebase::Conflict(paths) => {
                 self.carried_verify = self.current_result().human_verify;
-                self.log(LogEvent::Conflict {
-                    onto: tip.clone(),
-                    paths: paths.clone(),
-                });
-                self.start_turn(&format!(
-                    "Landing needs branch {branch} rebased onto {tip} (the current {default}). \
-                     Run `git rebase {tip}`, resolve the conflicts in {paths}, `git add` them and \
-                     `git rebase --continue`, then report.",
-                    branch = self.record.branch,
-                    default = self.record.default_branch,
-                    paths = paths.join(", "),
-                ));
-                Ok(format!(
-                    "the rebase onto {} conflicted in {}; the worker is resolving it{}",
-                    self.record.default_branch,
-                    paths.join(", "),
-                    if self.auto_land() {
-                        ", and the task lands when its checks pass"
-                    } else {
-                        ". Land again when the task is ready"
-                    }
-                ))
+                Ok(self.resolve_conflict(&tip, &paths))
             }
             Rebase::Done => {
-                self.landing = true;
+                self.after_rebase = Some(AfterRebase::Land { tried });
                 self.start_checks();
                 Ok(format!(
                     "rebased onto {} at {tip:.12}; checks run on the new revision and it lands when they pass",
@@ -1114,6 +1222,41 @@ impl Host {
                 ))
             }
         }
+    }
+
+    /// Log a rebase conflict and start the worker turn that resolves it.
+    fn resolve_conflict(&mut self, tip: &str, paths: &[String]) -> String {
+        self.log(LogEvent::Conflict {
+            onto: tip.to_string(),
+            paths: paths.to_vec(),
+        });
+        self.start_turn(&format!(
+            "Landing needs branch {branch} rebased onto {tip} (the current {default}). \
+             Run `git rebase {tip}`, resolve the conflicts in {paths}, `git add` them and \
+             `git rebase --continue`, then report.",
+            branch = self.record.branch,
+            default = self.record.default_branch,
+            paths = paths.join(", "),
+        ));
+        format!(
+            "the rebase onto {} conflicted in {}; the worker is resolving it{}",
+            self.record.default_branch,
+            paths.join(", "),
+            if self.auto_land() && self.record.hold.is_none() {
+                ", and the task lands when its checks pass"
+            } else {
+                ". Act again when the task is ready"
+            }
+        )
+    }
+
+    /// Whether the trial slot holds this task's current revision.
+    fn on_trial(&self) -> Result<bool> {
+        Ok(
+            store::read_trial(&self.record.project_id)?.is_some_and(|trial| {
+                trial.task == self.record.id && trial.revision == Some(self.record.revision)
+            }),
+        )
     }
 
     fn require_ready(&self, auto: bool) -> Result<()> {
@@ -1145,7 +1288,7 @@ impl Host {
         )
     }
 
-    fn fast_forward(&mut self) -> Result<String> {
+    fn fast_forward(&mut self, tried: bool) -> Result<String> {
         let tip = self.default_tip()?;
         let head = copy::resolve_commit(&self.record.working_copy, "HEAD")?;
         copy::fast_forward(
@@ -1154,7 +1297,7 @@ impl Host {
             &tip,
             &head,
         )?;
-        self.landed(&head);
+        self.landed(&head, tried);
         Ok(format!(
             "landed r{} on {} at {head:.12}",
             self.record.revision, self.record.default_branch
@@ -1162,8 +1305,29 @@ impl Host {
     }
 
     /// The revision is on the default branch: its Human Verify items join the project's
-    /// "To check" list before readers see `landed` (docs/tasks.md "To check").
-    fn landed(&mut self, commit: &str) {
+    /// "To check" list before readers see `landed` (docs/tasks.md "To check"), unless the
+    /// owner tried them on the live site. A trial of this task ends.
+    fn landed(&mut self, commit: &str, tried: bool) {
+        if tried {
+            self.carried_verify.clear();
+        } else {
+            self.collect_verify(commit);
+        }
+        self.log(LogEvent::Landed {
+            commit: commit.to_string(),
+        });
+        self.end_trial(if tried {
+            "the owner passed it and it landed"
+        } else {
+            "it landed"
+        });
+        self.write_report(TaskState::Landed);
+        self.set_state(TaskState::Landed);
+        self.after_landing();
+    }
+
+    /// Add the revision's Human Verify items, with their captures, to "To check".
+    fn collect_verify(&mut self, commit: &str) {
         let mut verify = self.current_result().human_verify;
         for item in std::mem::take(&mut self.carried_verify) {
             if !verify.iter().any(|known| known.check == item.check) {
@@ -1195,12 +1359,6 @@ impl Host {
         ) {
             self.say(&format!("cannot add the items to check: {error:#}"));
         }
-        self.log(LogEvent::Landed {
-            commit: commit.to_string(),
-        });
-        self.write_report(TaskState::Landed);
-        self.set_state(TaskState::Landed);
-        self.after_landing();
     }
 
     /// Deploy the default branch when the project deploys by itself, then close this task:
@@ -1367,6 +1525,13 @@ fn disk_full(free_mb: u64, min_gb: u64) -> String {
         "Disk full: {:.1} GB free of the {min_gb} GB a task needs",
         free_mb as f64 / 1024.0
     )
+}
+
+/// What a land or a trial does after the checks of its rebased revision pass.
+#[derive(Clone, Copy)]
+enum AfterRebase {
+    Land { tried: bool },
+    Trial,
 }
 
 fn check_message(text: &str) -> Result<()> {

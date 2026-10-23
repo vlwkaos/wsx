@@ -1313,7 +1313,91 @@ def run(wsx, wsxd, work, owned):
     assert not keep.exists() and not keep_sessions() and git('branch', '--list', 'feat/keep')
     git('branch', '-D', 'feat/keep')
 
-    # 32. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
+    # 32. Hold and trial (docs/tasks.md "Hold and trial"): a held task waits for the owner while
+    # pipeline work lands; its trial puts the rebased revision on the live site, holds the
+    # default branch's deploys, and ends on Pass (it lands), End, or a message to the worker.
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', '') + """  deploy:
+    command: 'echo "$WSX_DEPLOY_COMMIT" >> ../trial-deploy.log'
+    auto: true
+  release:
+    command: 'echo released >> ../trial-release.log'
+""")
+    git('commit', '-q', '-am', 'hold and trial')
+    live_log = base / 'trial-deploy.log'
+
+    def live():
+        return live_log.read_text().split()[-1] if live_log.exists() else None
+
+    def trial():
+        return js('task', 'deployed')['trial']
+
+    held = js('task', 'new', '--hold', 'try the held page', 'WORK held.txt HV')
+    assert held['hold'] == 'try the held page', held
+    held = held['id']
+    assert wait_state(held, 'ready', 'failed')['state'] == 'ready'
+    time.sleep(1.5)
+    assert show(held)['state'] == 'ready' and not main_has('held.txt'), 'a held task landed by itself'
+    assert [e['reason'] for e in log(held) if e['kind'] == 'hold'] == ['try the held page']
+    assert next(r for r in js('task', 'ledger')['open'] if r['id'] == held)['hold'] == 'try the held page'
+    first = js('task', 'new', 'WORK pipe1.txt')['id']
+    wait_closed(first)
+    wait(lambda: live() == git('rev-parse', 'main'), 'the pipeline land deploys', 60)
+    # The trial rebases onto the newest main and checks it before it goes live.
+    started = js('task', 'trial', held)
+    assert started['ok'] and 'rebased onto main' in started['message'], started
+    wait(lambda: (trial() or {}).get('stage') == 'live', 'the trial goes live', 60)
+    tried = trial()
+    assert tried['task'] == held and live() == tried['commit'], (tried, live())
+    assert subprocess.run(['git', 'merge-base', '--is-ancestor', 'main', tried['commit']], cwd=project, env=env).returncode == 0
+    assert [e['commit'] for e in log(held) if e['kind'] == 'trial'] == [tried['commit']]
+    assert 'already runs' in js('task', 'trial', held)['message']
+    # Pipeline work lands meanwhile; its deploy waits, and a deploy by hand is refused.
+    second = js('task', 'new', 'WORK pipe2.txt')['id']
+    wait_closed(second)
+    time.sleep(2)
+    assert live() == tried['commit'] and main_has('pipe2.txt'), live()
+    assert 'runs the trial of #%d' % held in follow_up.read_text()
+    assert 'end it first' in cli('task', 'deploy', ok=False).stderr
+    # ^ A release also waits for open To check items, which it checks first.
+    released = cli('task', 'release', ok=False).stderr
+    assert 'end it first' in released or 'to check are open' in released, released
+    assert not (base / 'trial-release.log').exists()
+    other_held = js('task', 'new', '--hold', 'second', 'WORK held2.txt')['id']
+    assert wait_state(other_held, 'ready', 'failed')['state'] == 'ready'
+    assert 'runs the trial of #%d' % held in cli('task', 'trial', other_held, ok=False).stderr
+    # Only the owner passes a trial; Pass lands it without To check items and deploys main.
+    refused = subprocess.run([str(wsx), 'task', 'land', str(held), '--tried'], cwd=project, env=manager_env,
+                             capture_output=True, text=True)
+    assert refused.returncode != 0 and 'only the owner' in refused.stderr, refused.stderr
+    assert 'no trial of t%d runs' % other_held in cli('task', 'land', other_held, '--tried', ok=False).stdout
+    land(held, '--tried')
+    wait_closed(held)
+    assert main_has('held.txt') and trial() is None
+    assert not [item for item in js('task', 'check')['open'] if item['task'] == held]
+    wait(lambda: live() == git('rev-parse', 'main'), 'main deploys after the pass', 60)
+    assert [e['reason'] for e in log(held) if e['kind'] == 'trial_ended'] == ['the owner passed it and it landed']
+    # End frees the live site; a message to the worker ends the trial too.
+    for ending in ('end', 'add'):
+        js('task', 'trial', other_held)
+        wait(lambda: (trial() or {}).get('stage') == 'live', 'the second trial goes live', 60)
+        assert live() != git('rev-parse', 'main')
+        if ending == 'end':
+            assert js('task', 'trial', other_held, '--end')['ended'] is True
+        else:
+            js('task', 'add', other_held, 'WORK more.txt')
+        assert trial() is None
+        wait(lambda: live() == git('rev-parse', 'main'), 'main deploys after the trial ends', 60)
+        if ending == 'add':
+            assert wait_state(other_held, 'ready', 'failed')['state'] == 'ready'
+    assert [e['reason'] for e in log(other_held) if e['kind'] == 'trial_ended'] == [
+        'ended without a decision', 'a message went to the worker']
+    js('task', 'hold', other_held, '--off')
+    assert 'hold' not in show(other_held)['record']
+    js('task', 'close', other_held, '--discard')
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
+    git('commit', '-q', '-am', 'no trial')
+
+    # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     # ledger and messages its manager, which answers once; nothing else crosses projects.
     other = base / 'other'
     other.mkdir(mode=0o700)
@@ -1350,7 +1434,7 @@ def run(wsx, wsxd, work, owned):
     text = reply_to(crossing['id'])['text']
     assert 'a manager acts only in its own project' in text and "messages another project's manager" in text, text
     assert "is for a project's manager" in cli('task', 'say', '-p', 'other', '--from-manager', 'hello', ok=False).stderr
-    # 33. Recap: once the other project is quiet for its minute, wsx asks its manager for one
+    # 34. Recap: once the other project is quiet for its minute, wsx asks its manager for one
     # recap, and the manager answers it in the chat.
     recap = wait(lambda: next((e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'recap'), None),
                  'the recap request after a quiet minute', 120)

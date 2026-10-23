@@ -71,6 +71,20 @@ pub const MAX_TITLE_CHARS: usize = 60;
 const MAX_MODEL_BYTES: usize = 256;
 
 /// A `--title` as given, trimmed; refused when empty, too long or with control characters.
+const MAX_HOLD_CHARS: usize = 240;
+
+/// Why a task is held: one line in plain words. ref: docs/tasks.md "Hold and trial"
+pub fn checked_hold(reason: &str) -> Result<String> {
+    let reason = reason.trim();
+    if reason.is_empty()
+        || reason.chars().count() > MAX_HOLD_CHARS
+        || reason.chars().any(char::is_control)
+    {
+        anyhow::bail!("a hold reason is one line of 1 to {MAX_HOLD_CHARS} characters");
+    }
+    Ok(reason.to_string())
+}
+
 pub fn checked_title(title: &str) -> Result<String> {
     let title = title.trim();
     if title.is_empty() {
