@@ -208,9 +208,11 @@ impl Binary {
         Some(Self { path, identity })
     }
 
-    /// True when another file is now at the path. A missing file is not followed.
+    /// True when another file is now at the path. A missing file is not followed, and
+    /// neither is one put there while a trial runs: it may be the trial's build.
     pub fn replaced(&self) -> bool {
         runtime::binary_identity(&self.path).is_ok_and(|now| now != self.identity)
+            && !wsx_core::task::store::any_trial()
     }
 
     /// Replace this process with the file now at the path and the same arguments; the

@@ -3,14 +3,16 @@
 A task is one headless worker on its own branch and working copy. The caller never types into it. Every action is one CLI call; `--json` works on all of them. No wsxd protocol change.
 
 ```sh
-wsx task new "<prompt>" -p <project> [--from <ref>] [--title <words>] [--model <name>] --json   # or `-` (stdin) or --prompt-file <path>
+wsx task new "<prompt>" -p <project> [--from <ref>] [--title <words>] [--model <name>] [--hold <why>] --json   # or `-` (stdin) or --prompt-file <path>
 wsx task list -p <project> [--all] --json
 wsx task show <n> -p <project> --json            # record, result.json, report path, host_running, socket
 wsx task steer <n> "<text>" --json               # into the running turn
 wsx task add <n> "<text>" --json                 # after the turn (queued while one runs)
 wsx task allow <n> --host <host> | --path <path> | "<rule>" [--project-wide] --json   # grant; resumes a waiting task
 wsx task stop <n> --json                         # interrupt; the next add resumes the conversation
-wsx task land <n> --json                         # rebase, check, fast-forward (a ready task lands by itself by default)
+wsx task land <n> [--tried] --json               # rebase, check, fast-forward (a ready task lands by itself by default)
+wsx task hold <n> "<why>" | --off --json         # the owner tries it before it lands; see Hold and trial
+wsx task trial <n> [--end] --json                # its revision on the live site before it lands
 wsx task hand <n> --json                         # owner only: work on the task by hand; see By hand
 wsx task handback <n> --json                     # owner only: its commits are checked as the next revision
 wsx task preview <n> [--stop] --json             # a link to try the task (tasks.preview); see Preview
@@ -29,8 +31,8 @@ wsx task close <n> [--discard] --json
 
 | File | Content | Limit |
 |---|---|---|
-| `task.json` | id, project, base, branch `wsx/t<n>`, working copy, pane, adapter, model, tools, checks, agent session, state, revision, `created_by` (`owner` or `manager`), `waiting` (`{on, reason}` while the state is `waiting`) | 64 KiB |
-| `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress), `blocked{denials, asks}`, `granted{access, project, by}`, `result`, `checks`, `check_retry`, `check_run`, `disk_wait{free_mb, min_gb}`, `revision`, `preview{url, port}`, `hand{by, dropped}`, `handback{by, commits}`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
+| `task.json` | id, project, base, branch `wsx/t<n>`, working copy, pane, adapter, model, tools, checks, agent session, state, revision, `created_by` (`owner` or `manager`), `hold` (why the owner tries it first), `waiting` (`{on, reason}` while the state is `waiting`) | 64 KiB |
+| `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress), `blocked{denials, asks}`, `granted{access, project, by}`, `result`, `checks`, `check_retry`, `check_run`, `disk_wait{free_mb, min_gb}`, `revision`, `preview{url, port}`, `hand{by, dropped}`, `handback{by, commits}`, `hold{reason, by}`, `trial{revision, commit}`, `trial_ended{reason}`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
 | `result.json` | latest worker result and check results, `denials`, and `asks` of a block | 256 KiB |
 | `report.md` | report of the latest revision | |
 | `captures/` | the To check captures kept at the land (see To check) | 2 MiB each |
@@ -61,13 +63,13 @@ wsx task close <n> [--discard] --json
 
 1. starts the adapter and sends the prompt;
 2. prints one progress line per agent step to its terminal (watch it in wsx like any session);
-3. serves its control socket (see Store): one JSON request per connection (`status`, `steer`, `add`, `allow`, `stop`, `land`, `hand`, `handback`, `close`), one JSON answer `{ok, state, message}`;
+3. serves its control socket (see Store): one JSON request per connection (`status`, `steer`, `add`, `allow`, `stop`, `land`, `hold`, `trial`, `hand`, `handback`, `close`), one JSON answer `{ok, state, message}`;
 4. reports its pane through `AgentReport` with provider `task`: working and checking as Working, waiting on the owner or a permission as Blocked, ready as Done, failed as Error, waiting on disk or hands as Idle;
 5. keeps running through `wsx daemon restart` (live handoff), because it is a pane process.
 
 A host restarted by a cold daemon start logs `stopped` for a running turn and waits on the owner; the next add resumes. A new task's host starts the first turn with the prompt.
 
-A host follows a deploy of wsx. It records the identity (device, inode, size, modification time) of the file it was started as (its argv[0], which `task new` and `say` make absolute). Before each agent turn (an add, a resuming grant, a check retry, delivered queued messages) a task host that finds another file there writes the turn's text to `handoff.txt` (0600), sets `working`, answers its caller and execs that file with the same arguments: the pane and pid stay, and the new host starts the turn with the new launch, resuming the same conversation. The manager host does the same before its next turn; its messages stay logged and undelivered, so the new host queues them again. `wsx task` actions (CLI and web) retry the connect for up to 3 s while the socket is gone. Install by replacing the file (`cargo install`, `install`, `mv`, a package manager): macOS kills a process that execs an executable overwritten in place, and that host then stays down until `wsx session restart task-<n>`. A host started before this release has no such check: restart it once.
+A host follows a deploy of wsx. It records the identity (device, inode, size, modification time) of the file it was started as (its argv[0], which `task new` and `say` make absolute). Before each agent turn (an add, a resuming grant, a check retry, delivered queued messages) a task host that finds another file there writes the turn's text to `handoff.txt` (0600), sets `working`, answers its caller and execs that file with the same arguments: the pane and pid stay, and the new host starts the turn with the new launch, resuming the same conversation. While a trial of any project holds a live site (a `trial.json` in the store), no host follows: the new file may be the trial's build, and the hosts follow the build that replaces it when the trial ends. The manager host does the same before its next turn; its messages stay logged and undelivered, so the new host queues them again. `wsx task` actions (CLI and web) retry the connect for up to 3 s while the socket is gone. Install by replacing the file (`cargo install`, `install`, `mv`, a package manager): macOS kills a process that execs an executable overwritten in place, and that host then stays down until `wsx session restart task-<n>`. A host started before this release has no such check: restart it once.
 
 ## Claude adapter
 
@@ -161,11 +163,23 @@ The owner can take a build over and work on it directly, with the worker's conte
 4. fast-forward the default branch: `git merge --ff-only` in the checkout that has it checked out, refused with the changed files named when that checkout has tracked changes; `git update-ref` with the old tip as guard when no checkout has it;
 5. add the To check items, log `landed{commit}` and set `landed`. After a rebase the task goes from `checking` straight to `landed`, or to `ready` with `land_stopped`.
 
-**Auto land** (`tasks.land.auto`, default `true`): when the checks of a result pass and at least one check is declared, the host lands at once, without an owner or a manager and without approval; the task goes from `checking` to `landed` (or to `working` on a conflict) without a stop at `ready`. A landing that stops (a dirty main checkout, uncommitted work) logs `land_stopped` and leaves the task `ready`. With no checks nothing proves the work, so the task waits `ready` for a land by hand; so does every ready task with `auto: false`, and an old `ready` task when its host restarts.
+**Auto land** (`tasks.land.auto`, default `true`): when the checks of a result pass, at least one check is declared and the task is not held (see Hold and trial), the host lands at once, without an owner or a manager and without approval; the task goes from `checking` to `landed` (or to `working` on a conflict) without a stop at `ready`. A landing that stops (a dirty main checkout, uncommitted work) logs `land_stopped` and leaves the task `ready`. With no checks nothing proves the work, so the task waits `ready` for a land by hand; so does every ready task with `auto: false`, and an old `ready` task when its host restarts.
 
 **Manager review.** A task the manager created (`created_by: manager`) never lands by itself. It waits `ready`, with or without checks, and its event asks the manager to review: the manager reads `git -C <working copy> diff <base>..HEAD` against the owner's words and for lean code (and `tasks.workflow.review`), then runs `wsx task land <n>` or `wsx task add <n> "<what is missing>"`. The manager never sends a task back to rebase: the land rebases and checks again. The web shows such a task as working ("the manager reviews it"), not as a need of the owner.
 
 **After a land** the host starts two detached `wsx task` commands, each in a session of its own with its output in `tasks/<project-id>/follow-up.log` (emptied past 4 MiB): `deploy --if-new` when `tasks.deploy.auto` is on (see Deploy and release), then `close <n>`, which removes the working copy, its build and the branch. The task stays `landed` (its log ends with `closed`), and the task folder and `refs/wsx/task/<n>/r<k>` stay.
+
+## Hold and trial
+
+Some work the owner wants to try before it lands: a larger piece handed over, a long branch, a change that is costly to undo. The manager tells this apart from pipeline work by judgment and holds such a task (`new --hold`, `hold <n> "<why>"`); the owner holds or releases one in the web.
+
+- **Hold.** `hold` (one line, at most 240 characters) is on the record and in the ledger. A held task never lands by itself, also when the owner created it, and the manager lands it only on the owner's word. A held task the manager created is the owner's need, not the manager's review. `hold <n> --off` releases it; a ready task then waits for a land by hand.
+- **Trial.** `trial <n>` puts a ready revision on the live site (`tasks.deploy.command`) before it lands. It refuses without a deploy command, with `tasks.deploy.public: true`, and for a manager when `tasks.deploy.approve` is on. The project has one slot, `tasks/<project-id>/trial.json` `{task, revision, commit, by, unix_ms}`, taken under `trial.lock`; a second task's trial is refused until the first ends.
+  1. The host rebases the branch onto the default branch tip when it lacks it, and the checks run on the new revision (a conflict starts the worker turn that resolves it and ends the trial). The trial goes live with the revision the owner would land: the host names its commit in the slot, logs `trial{revision, commit}` and starts `wsx task deploy --trial <n>`, which records `trial: <n>` in `deploys.jsonl`.
+  2. While the slot is taken, the default branch does not deploy: the `deploy --if-new` after a land answers that it waits, and `deploy` and `release` by hand refuse. Lands go on. Hosts do not follow a replaced wsx binary (see Host), because it may be the trial's build.
+  3. It ends when the owner passes it (`land <n> --tried`, owner only, the web's *Pass and land*): the task lands without adding its Human Verify items to To check. It also ends on `trial <n> --end`, on an `add` (the web's *Fail* sends the owner's note this way), on `hand`, on `close`, on failed checks after the rebase and when its deploy fails. The task logs `trial_ended{reason}` and `deploy --if-new` deploys the default branch tip again.
+- `deployed` and the ledger's `deploys` carry `trial`: `null`, or the slot with `stage` `preparing` (rebase and checks), `deploying` or `live` (its deploy succeeded).
+- A live site cannot always roll back: a stored format, a migration or a newer daemon may stay. Such a change goes to a preview instead (see Preview). For wsx itself, `scripts/deploy-web-live.sh` replaces the binaries and restarts the web server only, so a trial runs its web and CLI against the running daemon. A `wsx daemon restart` during a trial would start its daemon, and the default branch's build cannot take that daemon back: wsxd refuses a handoff to an older build ("handoff target is not newer", checked from the dev build to 0.31.0). The terminals stay, and the newer daemon runs until a cold restart.
 
 ## Project page
 

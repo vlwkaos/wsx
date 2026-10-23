@@ -144,6 +144,9 @@ function NeedRow({ project, item, index, onActing, onFailed }) {
   const [, renew] = useState(0);
   const field = useRef();
   const acting = can("task_act");
+  const overview = useStore().tasks[project];
+  // ^ This task's trial on the live site (docs/tasks.md "Hold and trial").
+  const trial = overview?.trial?.task === item.task ? overview.trial : null;
   const refresh = () => renew((count) => count + 1);
   useEffect(() => { if (draft.field) field.current?.focus(); }, [draft.field]);
   const run = async (action, body) => {
@@ -207,12 +210,19 @@ function NeedRow({ project, item, index, onActing, onFailed }) {
       if (!draft.error) { draft.running = true; refresh(); }
     };
     actions = html`${button("Deny", "fail", "danger", () => run("deny"), { "aria-label": `Deny: ${item.label}` })}${button("Approve", "pass", "accent", approve, { "aria-label": item.label })}`;
+  } else if (acting && item.kind === "land" && trial?.stage === "live") {
+    actions = html`${button("Fail: tell the worker", "reply", "danger", open, { "aria-expanded": draft.field === "answer", "aria-label": `Fail #${item.task}: tell the worker what is wrong` })}${button("Pass and land", "pass", "accent", () => run("pass"), { "aria-label": `Pass #${item.task} and land it` })}`;
+  } else if (acting && item.kind === "land" && trial) {
+    actions = html`<span class="row-context" role="status">Going live…</span>`;
+  } else if (acting && item.kind === "land" && item.hold && overview?.try_live && !overview.trial) {
+    actions = html`${button("Try live", "play", null, () => run("trial"), { "aria-label": `Try #${item.task} on the live site` })}${button("Land", "land", "accent", () => run("land"), { "aria-label": `Land #${item.task}` })}`;
   } else if (acting && item.kind === "land") {
     actions = button("Land", "land", "accent", () => run("land"), { "aria-label": `Land #${item.task}` });
   }
   // ^ An approval reads as the action it asks for, never as its id (docs/web-client-tasks.md).
   const context = item.kind === "approval" ? item.title ?? item.commit ?? ""
-    : item.kind === "waiting" ? waitWords(item) : item.kind === "land" ? item.reason : "failed";
+    : item.kind === "waiting" ? waitWords(item)
+    : item.kind === "land" ? (trial?.stage === "live" ? "on the live site: try it" : item.reason) : "failed";
   const label = item.kind === "approval" ? item.label : item.title;
   const body = html`
     <span class="row-label">${label}</span>

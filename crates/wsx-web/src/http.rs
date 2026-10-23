@@ -1003,7 +1003,10 @@ async fn task_act(
 ) -> Outcome<Json<Value>> {
     use wsx_core::task::HostRequest;
     tasks_allowed(&app, true)?;
-    if matches!(action.as_str(), "preview" | "hand" | "handback") {
+    if matches!(
+        action.as_str(),
+        "preview" | "hand" | "handback" | "trial" | "trial_end"
+    ) {
         act_budget(&app, &device)?;
         let scope = blocking(|| crate::tasks::scope(&app, project))?;
         // ^ A preview waits for its command to answer, up to minutes.
@@ -1030,7 +1033,17 @@ async fn task_act(
             project: input.project,
             by: wsx_core::task::Actor::Owner,
         },
-        "land" => HostRequest::Land {},
+        "land" => HostRequest::Land { tried: false },
+        // ^ Pass on a trial: the owner tried it on the live site.
+        "pass" => HostRequest::Land { tried: true },
+        "hold" => HostRequest::Hold {
+            reason: Some(input.text.unwrap_or_else(|| "the owner holds it".into())),
+            by: wsx_core::task::Actor::Owner,
+        },
+        "unhold" => HostRequest::Hold {
+            reason: None,
+            by: wsx_core::task::Actor::Owner,
+        },
         _ => return Err(Fault::not_found()),
     };
     act_budget(&app, &device)?;

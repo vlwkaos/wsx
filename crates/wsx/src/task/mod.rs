@@ -8,6 +8,7 @@ mod hosting;
 mod ledger;
 pub mod manager;
 mod preview;
+mod trial;
 
 use crate::cli::{
     existing_daemon_snapshot, load_config, load_full_workspace, resolve_project, PromptSource,
@@ -51,6 +52,9 @@ pub enum TaskCmd {
         /// The worker's model; default: tasks.agent.model (opus)
         #[arg(long, value_name = "NAME")]
         model: Option<String>,
+        /// Hold the task for the owner to try before it lands, and say why
+        #[arg(long, value_name = "WHY")]
+        hold: Option<String>,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -114,6 +118,33 @@ pub enum TaskCmd {
     /// Bring a ready task onto the default branch
     Land {
         task: String,
+        /// The owner passed its trial: its Human Verify items are not added to To check
+        #[arg(long)]
+        tried: bool,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Hold a task for the owner to try before it lands, or release it with --off
+    Hold {
+        task: String,
+        /// Why the owner should try it first
+        #[arg(required_unless_present = "off", conflicts_with = "off")]
+        reason: Option<String>,
+        #[arg(long)]
+        off: bool,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Put a ready task's revision on the live site to try before it lands, or end the trial
+    Trial {
+        task: String,
+        /// End the trial and deploy the default branch again
+        #[arg(long)]
+        end: bool,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -163,6 +194,9 @@ pub enum TaskCmd {
         /// Only when the default branch tip is not deployed yet, after a running deploy ends
         #[arg(long, conflicts_with = "commit")]
         if_new: bool,
+        /// Deploy the revision in this task's trial slot (the task host starts it)
+        #[arg(long, hide = true, value_name = "TASK", conflicts_with_all = ["commit", "if_new"])]
+        trial: Option<u32>,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -275,6 +309,8 @@ impl TaskCmd {
             | Self::Allow { json, .. }
             | Self::Stop { json, .. }
             | Self::Land { json, .. }
+            | Self::Hold { json, .. }
+            | Self::Trial { json, .. }
             | Self::Hand { json, .. }
             | Self::Handback { json, .. }
             | Self::Check { json, .. }
@@ -340,6 +376,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             from,
             title,
             model,
+            hold,
             project,
             json,
         } => new(
@@ -347,6 +384,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             from.as_deref(),
             title.as_deref(),
             model.as_deref(),
+            hold,
             project.as_deref(),
             json,
         ),
@@ -421,10 +459,15 @@ pub fn run(command: TaskCmd) -> Result<()> {
         } => check(action, project.as_deref(), json),
         TaskCmd::Land {
             task,
+            tried,
             project,
             json,
         } => {
             let dir = open(project.as_deref(), &task)?;
+            // ^ Only the owner tries a trial, so only the owner passes one.
+            if tried && acting_as_manager() {
+                bail!("only the owner passes a trial; ask the owner to try it");
+            }
             let record = dir.read_record()?;
             let settings = load_task_config(&record.project_path)
                 .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
@@ -438,8 +481,28 @@ pub fn run(command: TaskCmd) -> Result<()> {
                     json,
                 );
             }
-            send(&dir, HostRequest::Land {}, json)
+            send(&dir, HostRequest::Land { tried }, json)
         }
+        TaskCmd::Hold {
+            task,
+            reason,
+            off: _,
+            project,
+            json,
+        } => send(
+            &open(project.as_deref(), &task)?,
+            HostRequest::Hold {
+                reason,
+                by: actor(),
+            },
+            json,
+        ),
+        TaskCmd::Trial {
+            task,
+            end,
+            project,
+            json,
+        } => trial_command(&open(project.as_deref(), &task)?, end, json),
         TaskCmd::Close {
             task,
             discard,
@@ -481,6 +544,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
         TaskCmd::Deploy {
             commit,
             if_new,
+            trial,
             project,
             json,
         } => deploy(
@@ -488,6 +552,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             project.as_deref(),
             commit.as_deref(),
             if_new,
+            trial,
             json,
         ),
         TaskCmd::Release {
@@ -499,6 +564,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             project.as_deref(),
             commit.as_deref(),
             false,
+            None,
             json,
         ),
         TaskCmd::Deployed { project, json } => deployed(project.as_deref(), json),
@@ -642,13 +708,18 @@ fn new(
     from: Option<&str>,
     title: Option<&str>,
     model: Option<&str>,
+    hold: Option<String>,
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let prompt = prompt.read(MAX_MESSAGE_BYTES)?;
     let title = title.map(wsx_core::task::view::checked_title).transpose()?;
     let model = model.map(wsx_core::task::view::checked_model).transpose()?;
-    let (dir, record, answered) = create(prompt, from, title, model, None, project)?;
+    let hold = hold
+        .as_deref()
+        .map(wsx_core::task::view::checked_hold)
+        .transpose()?;
+    let (dir, record, answered) = create(prompt, from, title, model, None, hold, project)?;
     let state = answered.unwrap_or(TaskState::Working);
     let id = dir.id;
     if json {
@@ -658,6 +729,7 @@ fn new(
             "state": state,
             "branch": record.branch,
             "base": record.base,
+            "hold": record.hold,
             "working_copy": record.working_copy,
             "task_dir": dir.path,
         }));
@@ -679,6 +751,7 @@ fn create(
     title: Option<String>,
     model: Option<String>,
     fixes: Option<String>,
+    hold: Option<String>,
     project: Option<&str>,
 ) -> Result<(TaskDir, TaskRecord, Option<TaskState>)> {
     let (config, workspace) = load_full_workspace()?;
@@ -724,6 +797,7 @@ fn create(
         title,
         fixes,
         created_by: actor(),
+        hold: hold.clone(),
         waiting: None,
         created_unix_ms: now,
         updated_unix_ms: now,
@@ -738,6 +812,12 @@ fn create(
             mode: MessageKind::Prompt,
             text: prompt,
         })?;
+        if hold.is_some() {
+            dir.append(LogEvent::Hold {
+                reason: hold,
+                by: record.created_by,
+            })?;
+        }
         let exe = std::env::current_exe().context("cannot find the wsx binary")?;
         let argv = vec![
             exe.to_string_lossy().into_owned(),
@@ -842,6 +922,7 @@ fn fail_check(project: &str, project_id: &str, id: &str, note: &str) -> Result<C
         Some(fix_title(&item.check)),
         None,
         Some(item.id.clone()),
+        None,
         Some(project),
     )?;
     checks::fail(project_id, id, note, dir.id).with_context(|| {
@@ -987,7 +1068,11 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
 }
 
 fn send(dir: &TaskDir, request: HostRequest, json: bool) -> Result<()> {
-    let response = ask_host(dir, &request)?;
+    report_response(dir, ask_host(dir, &request)?, json)
+}
+
+/// Print a host's answer; a refusal is an error.
+fn report_response(dir: &TaskDir, response: HostResponse, json: bool) -> Result<()> {
     if json {
         print_json(&serde_json::to_value(&response)?)?;
     } else {
@@ -1011,8 +1096,8 @@ fn send(dir: &TaskDir, request: HostRequest, json: bool) -> Result<()> {
 /// One request to the task's host; a host that does not answer is an error that says how
 /// to restart it.
 fn ask_host(dir: &TaskDir, request: &HostRequest) -> Result<HostResponse> {
-    // ^ A landing rebases the branch on the host before it answers.
-    let timeout = if matches!(request, HostRequest::Land { .. }) {
+    // ^ A landing or a trial rebases the branch on the host before it answers.
+    let timeout = if matches!(request, HostRequest::Land { .. } | HostRequest::Trial) {
         LAND_TIMEOUT
     } else {
         HOST_TIMEOUT
@@ -1219,6 +1304,14 @@ fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
     }
     // ^ A preview runs in the working copy: it stops before the copy goes.
     preview::stop(dir).with_context(|| format!("task t{} is unchanged", record.id))?;
+    // ^ The host ends its trial on close; this covers a host that no longer runs.
+    trial::end(
+        &dir.project_id,
+        &record.project,
+        Some(record.id),
+        "the task closed",
+        false,
+    )?;
     // ^ The host is the writer while it runs: ask it to close and wait for it to exit.
     let socket = dir.socket_path();
     if call_host(&socket, &HostRequest::Close { discard }, HOST_TIMEOUT).is_ok() {
@@ -1331,6 +1424,7 @@ fn deploy(
     project: Option<&str>,
     commit: Option<&str>,
     if_new: bool,
+    trial: Option<u32>,
     json: bool,
 ) -> Result<()> {
     let name = kind_name(kind);
@@ -1369,9 +1463,35 @@ fn deploy(
     }
     // ^ One deploy or release at a time per project; a later one waits here.
     let _running = store::lock_deploys(&project_id)?;
-    let revision = match commit {
-        Some(commit) => commit.to_string(),
-        None => default_ref(&main),
+    // ^ While a trial holds the live site, only its own deploy runs; the default branch
+    // deploys when it ends. ref: docs/tasks.md "Hold and trial"
+    let live_trial = store::read_trial(&project_id)?;
+    let skip = |message: String| -> Result<()> {
+        if json {
+            return print_json(&json!({ "kind": kind, "skipped": true, "message": message }));
+        }
+        println!("{message}");
+        Ok(())
+    };
+    let revision = match (trial, &live_trial) {
+        (Some(task), Some(live)) if live.task == task && live.commit.is_some() => {
+            live.commit.clone().unwrap_or_default()
+        }
+        (Some(task), _) => return skip(format!("the trial of #{task} ended; nothing was run")),
+        (None, Some(live)) if if_new => {
+            return skip(format!(
+                "the live site runs the trial of #{}; the default branch deploys when it ends",
+                live.task
+            ))
+        }
+        (None, Some(live)) => bail!(
+            "the live site runs the trial of #{task}; end it first (`wsx task trial {task} --end`). Nothing was run",
+            task = live.task
+        ),
+        (None, None) => match commit {
+            Some(commit) => commit.to_string(),
+            None => default_ref(&main),
+        },
     };
     if if_new {
         let tip = copy::resolve_commit(&main, &revision)?;
@@ -1421,8 +1541,19 @@ fn deploy(
         exit,
         unix_ms: now_unix_ms(),
         duration_ms,
+        trial,
     };
     store::append_deploy(&project_id, &record)?;
+    // ^ A trial whose deploy failed ends, and the default branch deploys again.
+    if let (Some(task), false) = (trial, status.as_ref().is_ok_and(|status| status.success())) {
+        trial::end(
+            &project_id,
+            &project_name,
+            Some(task),
+            "its deploy failed",
+            false,
+        )?;
+    }
     removed.with_context(|| {
         format!(
             "the {name} was recorded, but its copy {} remains",
@@ -1449,6 +1580,68 @@ fn deploy(
         bail!("tasks.{name}.command failed ({status}); the failure is recorded and nothing else changed");
     }
     Ok(())
+}
+
+/// `wsx task trial <n>`: take the project's trial slot and have the host put the ready
+/// revision on the live site; `--end` frees the slot and deploys the default branch again.
+/// ref: docs/tasks.md "Hold and trial"
+fn trial_command(dir: &TaskDir, end: bool, json: bool) -> Result<()> {
+    let record = dir.read_record()?;
+    if end {
+        let ended = trial::end(
+            &dir.project_id,
+            &record.project,
+            Some(record.id),
+            "ended without a decision",
+            false,
+        )?;
+        let message = match ended {
+            Some(_) => "the trial ended; the default branch deploys again",
+            None => "no trial of this task runs",
+        };
+        if json {
+            return print_json(&json!({ "ended": ended.is_some(), "message": message }));
+        }
+        println!("t{} {message}", record.id);
+        return Ok(());
+    }
+    let settings = load_task_config(&record.project_path)
+        .map_err(|error| anyhow::anyhow!("{error}; nothing was tried"))?;
+    if settings.deploy_command.is_none() {
+        bail!("tasks.deploy.command is not set: there is no live site to try it on");
+    }
+    if settings.deploy_public {
+        bail!("tasks.deploy.public is on: unlanded work does not go public; try it on a preview");
+    }
+    // ^ A trial changes the live site: a manager that may not deploy alone asks the owner
+    // to start it.
+    if acting_as_manager() && settings.deploy_approve {
+        bail!("tasks.deploy.approve is on: ask the owner to start the trial (Try live)");
+    }
+    if !trial::claim(&record, actor())? {
+        let trial = store::read_trial(&dir.project_id)?;
+        let message = format!(
+            "the trial of t{} already runs{}",
+            record.id,
+            trial
+                .and_then(|trial| trial.commit)
+                .map_or(String::new(), |commit| format!(" at {commit:.12}"))
+        );
+        if json {
+            return print_json(&json!({ "ok": true, "state": record.state, "message": message }));
+        }
+        println!("{message}");
+        return Ok(());
+    }
+    let response = ask_host(dir, &HostRequest::Trial);
+    // ^ A host that refused or did not answer leaves the slot free again.
+    if !response.as_ref().is_ok_and(|response| response.ok) {
+        let _ = store::change_trial(&dir.project_id, |current| match current {
+            Some(trial) if trial.task == record.id && trial.commit.is_none() => (None, ()),
+            other => (other, ()),
+        });
+    }
+    report_response(dir, response?, json)
 }
 
 /// The last successful deploy and release and how many default-branch commits each lacks.

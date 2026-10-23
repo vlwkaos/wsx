@@ -194,6 +194,22 @@ fn instructions(
          `wsx task add <n> \"<what to change>\"`. Never send a task back to rebase: a land \
          rebases onto the newest {project} main and runs the checks again by itself. \
          {review}\
+         Tell two kinds of work apart by judgment, not by a rule. Pipeline work (a fix, a \
+         small change, work the owner queues and moves on from) lands as above. Work the \
+         owner wants to be sure of is held: they hand over a larger piece or a long branch, \
+         say they want to be sure or to try it, or it changes what is costly to undo. Start \
+         it with `wsx task new --hold \"<why, one line>\"`, hold a running task that turns \
+         out so with `wsx task hold <n> \"<why>\"`, and release it with `wsx task hold <n> \
+         --off` when it no longer needs it. When unsure, hold. Say in one line which kind \
+         you chose and why, and change it when the owner says. A held task never lands by \
+         itself, and you land it only when the owner says so. Review it as above, then tell \
+         the owner in a few lines what to try: on the live site (Try live, `wsx task trial \
+         <n>`: its revision goes live and other deploys wait until the trial ends) or on a \
+         preview (`wsx task preview <n>`) when the change is one the live site cannot roll \
+         back from, such as a daemon, a stored format or a migration. The owner passes it, \
+         which lands it, or says what is wrong, which ends the trial. For a long held task, \
+         read each revision as it arrives, keep its section of the project page current and \
+         tell the owner when it drifts from the plan. \
          When the last task of a request lands and no open task changes the same files, \
          start one housekeeping task over the files those tasks changed, with this prompt \
          and the task numbers: {batch} \
@@ -554,6 +570,12 @@ impl Manager {
                         waiting.reason
                     );
                 }
+                if let Some(hold) = record.hold.as_ref().filter(|_| record.state.is_open()) {
+                    summary.push_str(&format!(
+                        "; held for the owner: {}",
+                        clip(hold, EVENT_SUMMARY_CHARS)
+                    ));
+                }
                 // ^ A landing adds its Human Verify items to the project's To check list.
                 if record.state == TaskState::Landed {
                     let open = checks::open_items(&self.dir.project_id).map_or(0, |items| {
@@ -817,15 +839,24 @@ impl Manager {
             0 => String::new(),
             failed => format!(", {failed} failed since"),
         };
+        // ^ A trial holds the live site; the default branch deploys when it ends.
+        let trial = &status["trial"];
+        let trial = match trial["task"].as_u64() {
+            Some(task) => format!(
+                "; the live site runs the trial of #{task} ({})",
+                trial["stage"].as_str().unwrap_or("?")
+            ),
+            None => String::new(),
+        };
         Some(match deploy["commit"].as_str() {
             Some(commit) => format!(
-                "deploy: {} live, {} commit(s) behind{failed}",
+                "deploy: {} live, {} commit(s) behind{failed}{trial}",
                 &commit[..commit.len().min(7)],
                 deploy["behind"]
                     .as_u64()
                     .map_or("?".into(), |n| n.to_string())
             ),
-            None => format!("deploy: none yet{failed}"),
+            None => format!("deploy: none yet{failed}{trial}"),
         })
     }
 

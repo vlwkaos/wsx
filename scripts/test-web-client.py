@@ -2938,7 +2938,7 @@ digest_max_seconds = 6
         everything = steady(owner, 'GET', '/api/tasks')[1]
         assert sorted(item['project'] for item in everything) == sorted(ids.values()), everything
         detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
-        assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'add', 'hand'], detail['actions']
+        assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'add', 'trial', 'hand', 'hold'], detail['actions']
         assert detail['land_reason'] == 'ready to land' and detail['to_check'] == [] and detail['fixes'] is None, detail
         assert detail['result']['human_verify'] == [{'check': 'open the file', 'where': '', 'capture': '', 'pass_if': 'it has text'}]
         headings = [line for line in detail['report'].splitlines() if line.startswith('## ')]
@@ -2961,6 +2961,36 @@ digest_max_seconds = 6
         assert act(1, 'allow', {'tool': 'Bash(make:*)'})[0] == 422  # no tool rules from the web
         assert act(1, 'allow', {'host': 'a.example', 'path': '~/.x'})[0] == 400
         assert act(2, 'explode', {})[0] == 404 and act(99, 'add', {'text': 'hi'})[0] == 404
+        # ^ A second device of the owner: these steps keep to their own request budget.
+        trier = Site(ports['owner'], '')
+        code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
+        status, headers, body = trier.request('POST', '/api/pair', {'code': code.lower(), 'name': 'trier'}, raw=True)
+        assert status == 200, body
+        trier.cookie = headers['set-cookie'].split(';')[0]
+        # Hold and trial (docs/tasks.md "Hold and trial"): the owner holds #2, tries it on the
+        # live site, ends the trial and releases the hold. Pass needs a running trial.
+        status, body = act(2, 'pass', {}, site=trier)
+        assert status == 409 and 'no trial of t2 runs' in body['error']['message'], body
+        assert act(2, 'hold', {'text': 'two\nlines'}, site=trier)[0] == 400
+        assert act(2, 'hold', {}, site=trier)[0] == 200
+        held = steady(trier, 'GET', '/api/tasks/%d/t/2' % demo)[1]
+        assert held['hold'] == 'the owner holds it' and held['land_reason'] == 'try it first: the owner holds it', held
+        assert held['actions'] == ['land', 'add', 'trial', 'hand', 'unhold'] and held['trial'] is None, held['actions']
+        overview = steady(trier, 'GET', '/api/tasks/%d' % demo)[1]
+        assert overview['try_live'] is True and overview['trial'] is None, overview
+        assert act(2, 'trial', {}, site=trier)[0] == 200
+        # ^ The CLI polls: the device's request budget stays for the steps that follow.
+        wait(lambda: (js('task', 'deployed', '-p', 'demo')['trial'] or {}).get('stage') == 'live',
+             'the trial of #2 goes live')
+        assert steady(trier, 'GET', '/api/tasks/%d/t/2' % demo)[1]['trial']['stage'] == 'live'
+        assert steady(trier, 'GET', '/api/tasks/%d' % demo)[1]['trial']['task'] == 2
+        status, body = act(3, 'trial', {}, site=trier)
+        assert status == 409 and 'runs the trial of #2' in body['error']['message'], body
+        assert act(2, 'trial_end', {}, site=trier)[0] == 200
+        assert steady(trier, 'GET', '/api/tasks/%d' % demo)[1]['trial'] is None
+        assert act(2, 'unhold', {}, site=trier)[0] == 200
+        assert steady(trier, 'GET', '/api/tasks/%d/t/2' % demo)[1]['hold'] is None
+        ok('hold and trial: hold and release, Try live goes live, one trial per project, End frees the site')
         status, body = act(1, 'land', {})
         assert status == 409 and body['error']['code'] == 'refused', body
         status, body = act(2, 'land', {})
@@ -3163,7 +3193,7 @@ digest_max_seconds = 6
         assert [(item['kind'], item['task']) for item in view['needs']] == [('waiting', 1), ('land', 2)], view['needs']
         assert view['needs'][0]['waiting']['on'] == 'owner' and 'asks' not in view['needs'][0], view['needs'][0]
         detail = steady(owner, 'GET', '/api/tasks/%d/t/1' % planned)[1]
-        assert detail['actions'] == ['add', 'hand'] and detail['talk'] == [] and 'brief' not in detail and 'phase' not in detail, detail
+        assert detail['actions'] == ['add', 'hand', 'hold'] and detail['talk'] == [] and 'brief' not in detail and 'phase' not in detail, detail
         assert steady(owner, 'POST', '/api/tasks/%d/t/1/start' % planned, {})[0] == 404
         ok('a waiting task: its need and reason, add and hand, no brief or start')
         if args.browser:

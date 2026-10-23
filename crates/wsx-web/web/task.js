@@ -11,6 +11,12 @@ import { Bubble } from "./bubbles.js";
 import { TaskStory } from "./story.js";
 import { CheckRow, TryButton } from "./checks.js";
 
+const TRIAL_WORDS = {
+  preparing: "Going live: rebasing onto the default branch and checking",
+  deploying: "Going live: deploying",
+  live: "On the live site now: try it, then Pass, or send the worker what is wrong",
+};
+
 const short = (commit) => (commit ?? "").slice(0, 8);
 const MESSAGE_WORDS = { prompt: "Asked", steer: "Steered", add: "Added" };
 
@@ -207,6 +213,7 @@ export function TaskPage({ project, task, onClose, grip }) {
   if (!detail) return html`<div class="page">${top}<p class=${failure ? "error empty" : "empty"}>${failure || "Loading…"}</p></div>`;
 
   const actions = detail.actions;
+  const trial = detail.trial;
   const acting = can("task_act");
   const busy = Boolean(act.busy);
   const button = (label, onClick, extra = {}) => html`
@@ -227,19 +234,28 @@ export function TaskPage({ project, task, onClose, grip }) {
     actions.includes("allow") && asks.length > 0 && html`
       ${button("Allow", () => grant(false), { "aria-label": `Allow #${task} to ${askWords(asks)}` })}
       ${button("Allow for project", () => grant(true), { "aria-label": `Allow every task of this project to ${askWords(asks)}` })}`,
-    actions.includes("land") && button(act.busy === "land" ? "Landing…" : "Land", () => act.run("land", `api/tasks/${project}/t/${task}/land`, {})),
+    // ^ A trial: this revision on the live site before it lands (docs/tasks.md "Hold and trial").
+    // Pass lands it; a message to the worker fails it; End only frees the live site.
+    trial && html`<p class="task-approval" role="status">${TRIAL_WORDS[trial.stage]}</p>`,
+    trial?.stage === "live" && actions.includes("land") && button(act.busy === "pass" ? "Landing…" : "Pass and land", () => act.run("pass", `api/tasks/${project}/t/${task}/pass`, {})),
+    trial && button(act.busy === "trial_end" ? "Ending…" : "End trial", () => act.run("trial_end", `api/tasks/${project}/t/${task}/trial_end`, {})),
+    !trial && detail.hold && actions.includes("trial") && overview?.try_live && !overview.trial && button(act.busy === "trial" ? "Starting…" : "Try live", () => act.run("trial", `api/tasks/${project}/t/${task}/trial`, {})),
+    !trial && actions.includes("land") && button(act.busy === "land" ? "Landing…" : "Land", () => act.run("land", `api/tasks/${project}/t/${task}/land`, {})),
     // ^ By hand: the owner's own session in the task's copy, with the worker's conversation.
     actions.includes("hand") && button(act.busy === "hand" ? "Opening…" : "Work by hand", () => act.run("hand", `api/tasks/${project}/t/${task}/hand`, {})),
     actions.includes("handback") && button(act.busy === "handback" ? "Handing back…" : "Hand back", () => act.run("handback", `api/tasks/${project}/t/${task}/handback`, {})),
     store.tasks[project]?.preview && detail.state !== "closed" && html`<${TryButton} project=${project} task=${task} />`,
+    actions.includes("hold") && button(act.busy === "hold" ? "Holding…" : "Hold for me", () => act.run("hold", `api/tasks/${project}/t/${task}/hold`, {})),
+    actions.includes("unhold") && button(act.busy === "unhold" ? "Releasing…" : "Release hold", () => act.run("unhold", `api/tasks/${project}/t/${task}/unhold`, {})),
   ].filter(Boolean) : [];
+  const held = detail.hold && html`<p class="task-approval">Held for you to try: ${detail.hold}</p>`;
   const report = sections(detail.report);
   const entries = detail.timeline.entries;
   return html`
     <div class="page task-page">
       ${top}
       <div class="scroll">
-        <${TaskStory} detail=${detail} words=${words}>${buttons.length ? html`
+        <${TaskStory} detail=${detail} words=${words}>${held}${buttons.length ? html`
           <div class="task-next" role="group" aria-label="Actions">
             <div class="actions">${buttons}</div>
           </div>` : null}</${TaskStory}>
