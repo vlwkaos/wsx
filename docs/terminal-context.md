@@ -44,6 +44,14 @@ Worktree previews show each session's sorted, deduplicated pane listener ports o
 
 `TerminalLayout` still owns title/content rectangles. Top/bottom title placement, compact/expanded sidebars, mobile layout, cursor projection and mouse coordinates retain the existing contract. The title background never paints terminal content. Session and pane previews share this projection. No daemon revision, wire field or lease behavior changes.
 
+## Claude in a pane
+
+wsxd starts each pane with `CLAUDE_CODE_NO_FLICKER=1` unless the daemon's environment already has that variable; a shell that sets it later wins too. Claude then uses its full-screen renderer ([Claude Code docs](https://code.claude.com/docs/en/fullscreen)), which draws on the alternate screen.
+
+Why: Claude's inline renderer redraws its live area at the new width on every resize, and the rows already in the scrollback cannot be erased, so a reply taller than the screen leaves a full copy in the scrollback each time ([anthropics/claude-code#103181](https://github.com/anthropics/claude-code/issues/103181), seen with Claude Code 2.1.308 on 2026-10-23). A phone at Fit size and a desktop window resize a pane often. Clearing the scrollback on resize was rejected: Claude reprints only part of a long conversation, so the rest would be lost.
+
+What changes: the conversation scrolls inside Claude (wheel, PgUp/PgDn; a drag in the web terminal sends wheel reports), not in the pane's scrollback. `Ctrl+O` then `[` writes it to the scrollback when needed. Select-to-copy inside Claude copies to the host's clipboard. `runtime-smoke.py` checks the variable in a new pane.
+
 ## Verification
 
 ```sh

@@ -30,6 +30,7 @@ TERMINAL_HELPER = WORK / "terminal-helper.sh"
 TERMINAL_HELPER.write_text(
     "#!/bin/sh\n"
     "printf 'wsx-smoke:%s\\n' \"$$\"\n"
+    "printf 'claude-renderer:%s\\n' \"${CLAUDE_CODE_NO_FLICKER-unset}\"\n"
     "while IFS= read -r line; do\n"
     "  case $line in\n"
     "    __WSX_REPORT__:*)\n"
@@ -83,6 +84,8 @@ PLUGIN.chmod(0o700)
 }))
 (PLUGIN_DIR / "recorder.json").chmod(0o600)
 env = os.environ.copy()
+# ^ wsxd chooses Claude's renderer for its panes only when the owner has not.
+env.pop("CLAUDE_CODE_NO_FLICKER", None)
 env.update({
     "HOME": str(HOME),
     "XDG_STATE_HOME": str(STATE),
@@ -1079,10 +1082,12 @@ while time.monotonic() < deadline:
     frames = response["data"]["frames"]
     if frames:
         text = "".join(cell[0] for cell in frames[0]["cells"])
-        if "wsx-smoke" in text:
+        if "wsx-smoke" in text and "claude-renderer:" in text:
             break
     time.sleep(0.05)
 assert "wsx-smoke" in text, text
+# docs/terminal-context.md "Claude in a pane": Claude in a pane uses its full-screen renderer.
+assert "claude-renderer:1" in text, text
 
 snapshot = call("snapshot")["data"]
 session = next(item for item in snapshot["sessions"] if item["id"] == session_id)
