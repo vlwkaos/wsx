@@ -717,7 +717,15 @@ async function others() {
 
 // --- The tour.
 await resize(SIZES[0]);
+// ^ Only the browser's Badging API is stubbed: each count the page sets is recorded, 0 for a clear.
+await send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+  const calls = globalThis.BADGE_CALLS = [];
+  navigator.setAppBadge = (count) => { calls.push(count); return Promise.resolve(); };
+  navigator.clearAppBadge = () => { calls.push(0); return Promise.resolve(); };
+})()` });
 await pair(siteUrl, code);
+// Two sessions ask for input (a question and a permission): the badge says 2.
+await until("globalThis.BADGE_CALLS?.at(-1) === 2", "the app badge does not count the two blocked sessions");
 const background = await evaluate("getComputedStyle(document.body).backgroundColor");
 if (background !== "rgb(10, 11, 13)") await fail(`the page is not dark by default: ${background}`);
 for (const next of SIZES) {
@@ -790,6 +798,8 @@ if (!(await evaluate("[...document.querySelectorAll('.question-option, .question
 await sound("answered question");
 await shot("chat-question-sent");
 await until("!document.querySelector('.question') && [...document.querySelectorAll('.message:not(.message-user) .markdown')].some((node) => node.textContent === 'You chose: Use a bearer token')", "the answer did not reach the agent, or the sheet stayed");
+// The answered session no longer needs the owner: the badge drops to 1.
+await until("globalThis.BADGE_CALLS.at(-1) === 1", "the app badge did not drop after the answer");
 // ^ Claude ends the turn after the answer; the composer returns with that report.
 await until("!!document.querySelector('.composer')", "the composer did not return after the answer");
 

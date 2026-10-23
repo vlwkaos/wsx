@@ -40,17 +40,25 @@ self.addEventListener("fetch", (event) => {
   );
 });
 
+// The app badge: what needs the owner, counted by the server. Where the browser has no
+// Badging API (Android, Firefox), or the call fails, the notification still shows.
+function showBadge(count) {
+  if (!Number.isInteger(count) || !("setAppBadge" in navigator)) return Promise.resolve();
+  return (count > 0 ? navigator.setAppBadge(count) : navigator.clearAppBadge()).catch(() => {});
+}
+
 self.addEventListener("push", (event) => {
   let data = {};
   try { data = event.data.json(); } catch { /* an unreadable push still must show something */ }
-  event.waitUntil(
+  event.waitUntil(Promise.all([
     self.registration.showNotification(data.title ?? "wsx", {
       body: data.body ?? "An agent changed state.",
       tag: data.tag,
       icon: "__WSX_ICON__",
       data: { session_id: data.session_id, url: data.url },
     }),
-  );
+    showBadge(data.badge),
+  ]));
 });
 
 // Open the session the notification is about, in an existing window when one is open.

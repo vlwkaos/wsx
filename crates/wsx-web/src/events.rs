@@ -139,8 +139,12 @@ fn observe(app: Arc<App>) {
         let Ok(snapshot) = chat::snapshot(&app.client) else {
             continue;
         };
-        crate::tasks::watch(app, &snapshot, &mut tasks);
         let targets = chat::targets(&snapshot, &app.site.access);
+        // ^ What needs the owner across projects, as the page counts it: each push carries it
+        // for the app badge (docs/web-client.md "PWA and push").
+        crate::tasks::watch(app, &snapshot, &mut tasks);
+        let badge = chat::blocked_count(&targets) + tasks.needs();
+        crate::tasks::flush(app, &mut tasks, badge);
         if changed {
             if let Ok(exchanges) = chat::exchanges(&app.client, None) {
                 for exchange in exchanges.iter().filter(|exchange| {
@@ -174,15 +178,7 @@ fn observe(app: Arc<App>) {
             // A transition is the only trigger: the first sight of a session, or a
             // server restart, never notifies.
             if history_changed && !first {
-                let topic = match state {
-                    AgentState::Blocked => Some((Topic::Blocked, "needs your input")),
-                    AgentState::Done => Some((Topic::Done, "finished")),
-                    AgentState::Error => Some((Topic::Error, "stopped with an error")),
-                    _ => None,
-                };
-                if let Some((topic, words)) = topic {
-                    notify(app, topic, session, target.label, words);
-                }
+                notify(app, target, state, badge);
             }
             if app.events.receiver_count() > 0 {
                 let stamp = chat::history_stamp(target.pane);
@@ -269,14 +265,34 @@ fn publish(app: &App, message: Message) {
     let _ = app.events.send(message);
 }
 
-fn notify(app: &Arc<App>, topic: Topic, session: u64, label: &str, words: &str) {
-    let label: String = label.chars().take(60).collect();
+/// An agent notice: the project, worktree and session in the title; the state and one
+/// line of the turn in the body (docs/web-client.md "PWA and push").
+fn notify(app: &Arc<App>, target: &chat::Target, state: AgentState, badge: usize) {
+    let (topic, words) = match state {
+        AgentState::Blocked => (Topic::Blocked, "Needs your input"),
+        AgentState::Done => (Topic::Done, "Finished"),
+        AgentState::Error => (Topic::Error, "Stopped with an error"),
+        _ => return,
+    };
+    let session = target.session_id.0;
+    let clip = |text: &str| wsx_core::task::view::clip(text, 60);
+    let title = format!(
+        "{} › {}: {}",
+        clip(&target.project.name),
+        clip(target.branch),
+        clip(target.label)
+    );
+    let body = match chat::notice_line(target, state) {
+        Some(line) => format!("{words}: {line}"),
+        None => words.to_owned(),
+    };
     let payload = json!({
         "kind": topic,
-        "title": app.site.name,
-        "body": format!("{label} {words}"),
+        "title": title,
+        "body": body,
         "session_id": session,
         "tag": format!("wsx-{}-{session}", app.site.id),
+        "badge": badge,
     });
     deliver(app, topic, payload, Vec::new());
 }
