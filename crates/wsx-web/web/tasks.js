@@ -486,14 +486,16 @@ const AWAY_MS = 60_000;
 const SINCE_WORDS = [["landed", "landed"], ["blocked", "blocked"], ["conflict", "conflicted"], ["revised", "got a new revision"], ["started", "started"]];
 
 // "Since you left": what the task logs say happened while this device was away from the
-// project, on opening it or on coming back to it. Nothing runs while away.
-function SinceLine({ project }) {
+// project, on opening it or on coming back to it. Nothing runs while away. It goes by itself
+// once the newest reply that came while away has been on screen, or the owner sent a message.
+// `reply` is the time of the newest message that is not the owner's.
+function SinceLine({ project, reply, sent }) {
   const [since, setSince] = useState(null);
   useEffect(() => {
     const ask = () => {
       const left = readLeft()[project];
       if (left && Date.now() - left > AWAY_MS) {
-        api(`api/tasks/${project}/since`, { query: { after: left } }).then(setSince, () => {});
+        api(`api/tasks/${project}/since`, { query: { after: left } }).then((data) => setSince({ ...data, left }), () => {});
       }
     };
     const changed = () => (document.visibilityState === "hidden" ? noteLeft(project) : ask());
@@ -504,6 +506,16 @@ function SinceLine({ project }) {
       noteLeft(project);
     };
   }, [project]);
+  useEffect(() => { if (sent) setSince(null); }, [sent]);
+  const left = since?.left;
+  useEffect(() => {
+    if (!left || !reply || reply <= left) return undefined;
+    const bubble = document.querySelector(`.log .bubble[data-side="in"][data-at="${reply}"]`);
+    if (!bubble) return undefined;
+    const watch = new IntersectionObserver((seen) => { if (seen.some((one) => one.isIntersecting)) setSince(null); }, { root: bubble.closest(".log") });
+    watch.observe(bubble);
+    return () => watch.disconnect();
+  }, [left, reply]);
   if (!since) return null;
   const parts = SINCE_WORDS.filter(([key]) => since.tasks[key]?.length).map(([key, words]) => html`
     <span key=${key}>${since.tasks[key].map((id) => html`<a href=${taskLink(project, id)}>#${id}</a> `)}${words}</span>`);
@@ -674,7 +686,7 @@ export function Manager({ project: id, task, page, checks }) {
         <div class="bar-tools"><${More} project=${project} /></div>
       </header>
       <div class="chat">
-        <${SinceLine} project=${id} />
+        <${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "bubble" && row.author !== "owner")?.at} sent=${sent} />
         <div class="log-wrap">
           <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation with the manager" tabindex="0">
             ${cut.current ? html`<p class="note">Older messages are not shown.</p>` : null}

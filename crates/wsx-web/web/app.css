@@ -506,11 +506,13 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
    conversation keeps the height. */
 .manager .chat { --strip-share: 0.4; }
 .since {
-  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
-  padding: var(--space-2) var(--column-inset, var(--space-4)); font-size: var(--font-size-sm);
+  flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-1) var(--column-inset, var(--space-4)); font-size: var(--font-size-sm);
   background: var(--color-surface); border-bottom: var(--border-width) solid var(--color-hairline);
 }
-.since p { min-width: 0; overflow-wrap: anywhere; }
+/* One line: a long list is cut with an ellipsis, the dismiss button stays beside it. */
+.since p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.since .icon-button { flex: none; margin-block: calc(-1 * var(--space-2)); }
 .since a { color: var(--color-accent); }
 .need-action { min-height: var(--size-control); display: inline-flex; align-items: center; padding: 0 var(--space-3); text-decoration: none; font-size: var(--font-size-sm); }
 .need-action.icon-button { width: var(--size-control); padding: 0; justify-content: center; }
@@ -519,6 +521,8 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 /* A message: author and time outside the box, the box itself the boundary. The owner's on the
    right on the raised color, the others' on the left on the surface with a hairline. */
 .bubble { display: flex; flex-direction: column; gap: var(--space-1); max-width: min(88%, var(--size-prose)); min-width: 0; align-self: flex-start; }
+/* The manager's bubbles use the whole column, a small gap short of the right edge. */
+.bubble[data-side="in"] { max-width: calc(100% - var(--space-4)); }
 .bubble[data-side="out"] { align-self: flex-end; align-items: flex-end; }
 .bubble:not([data-first]) { margin-top: calc(var(--space-1) - var(--space-3)); }
 .bubble-author, .bubble-time, .bubble-tag { font-size: var(--font-size-sm); color: var(--color-muted); padding-inline: var(--space-1); }
