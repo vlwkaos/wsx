@@ -87,7 +87,8 @@ div.row-link { cursor: default; }
 .row-slide::-webkit-scrollbar { display: none; }
 .row-slide > .row-link { flex: 0 0 100%; scroll-snap-align: start; }
 .row-remove {
-  flex: 0 0 auto; scroll-snap-align: end; min-height: var(--size-row); padding: 0 calc(var(--space-4) * 1.5);
+  flex: 0 0 auto; scroll-snap-align: end; min-height: var(--size-row); min-width: var(--size-row); padding: 0 var(--space-4);
+  display: inline-flex; align-items: center; justify-content: center;
   border: 0; background: none; color: var(--color-danger); font-weight: var(--font-weight-medium); cursor: pointer;
 }
 .row-slide[data-open] .row-remove { background: var(--color-danger); color: var(--color-bg); }
@@ -430,6 +431,21 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
   scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent;
 }
 .question-options { display: flex; flex-direction: column; gap: var(--space-2); }
+/* Hook: .held — the rows above the agent's editor while something the chat cannot name holds
+   it. Closed until asked for; open, its rows run edge to edge with no gap around them. */
+.held { flex: 0 0 auto; background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
+.held-head {
+  display: flex; align-items: center; gap: var(--space-2); min-height: var(--size-control); padding: 0 var(--column-inset);
+  list-style: none; cursor: pointer; font-size: var(--font-size-sm); color: var(--color-muted);
+}
+.held-head::-webkit-details-marker { display: none; }
+.held-head > span { flex: 1; min-width: 0; }
+.held[open] > .held-head .icon { transform: rotate(90deg); }
+.held-screen {
+  margin: 0; padding: var(--space-2) var(--column-inset); max-height: calc(var(--size-control) * 4); overflow: auto;
+  background: var(--color-bg); color: var(--color-muted); font-family: var(--font-terminal); font-size: var(--font-size-sm);
+  line-height: 1.2; white-space: pre; scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent;
+}
 .question-option { width: 100%; display: flex; align-items: center; justify-content: flex-start; gap: var(--space-3); padding: var(--space-2) var(--space-3); text-align: left; font-weight: inherit; }
 .question-key { flex: 0 0 auto; color: var(--color-muted); font-variant-numeric: tabular-nums; }
 .question-label { min-width: 0; overflow-wrap: anywhere; }
@@ -469,6 +485,7 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .since p { min-width: 0; overflow-wrap: anywhere; }
 .since a { color: var(--color-accent); }
 .need-action { min-height: var(--size-control); display: inline-flex; align-items: center; padding: 0 var(--space-3); text-decoration: none; font-size: var(--font-size-sm); }
+.need-action.icon-button { width: var(--size-control); padding: 0; justify-content: center; }
 .need-form { display: flex; gap: var(--space-2); padding: 0 var(--space-4) var(--space-2); }
 .need-error { padding: 0 var(--space-4) var(--space-2); }
 /* A message: author and time outside the box, the box itself the boundary. The owner's on the

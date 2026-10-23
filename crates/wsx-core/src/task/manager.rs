@@ -20,6 +20,8 @@ pub enum Author {
         project: String,
         reply: bool,
     },
+    /// wsx asks for a recap after a quiet period (docs/tasks.md "Recap").
+    Recap,
 }
 
 impl From<Author> for String {
@@ -27,6 +29,7 @@ impl From<Author> for String {
         match author {
             Author::Owner => "owner".into(),
             Author::Events => "events".into(),
+            Author::Recap => "recap".into(),
             Author::Manager {
                 project,
                 reply: false,
@@ -53,6 +56,7 @@ impl TryFrom<String> for Author {
         match text.as_str() {
             "owner" => Ok(Self::Owner),
             "events" => Ok(Self::Events),
+            "recap" => Ok(Self::Recap),
             _ => match (
                 text.strip_prefix("manager:"),
                 text.strip_prefix("manager-reply:"),

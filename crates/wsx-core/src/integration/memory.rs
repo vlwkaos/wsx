@@ -718,8 +718,20 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
         "codex" => kind == "compacted",
         _ => matches!(kind, "compaction" | "branch_summary"),
     };
+    // ^ A message the person typed while Claude worked is saved, once a turn takes it, as an
+    // `attachment` of type `queued_command` with the words in `prompt` (Claude Code 2.1.309).
+    let queued = (provider == "claude" && kind == "attachment")
+        .then(|| record.get("attachment"))
+        .flatten()
+        .filter(|attachment| {
+            attachment.get("type").and_then(Value::as_str) == Some("queued_command")
+                && attachment.pointer("/origin/kind").and_then(Value::as_str) == Some("human")
+        })
+        .and_then(|attachment| attachment.get("prompt")?.as_str());
     let role = if summary {
         "summary"
+    } else if queued.is_some() {
+        "user"
     } else {
         message.get("role").and_then(Value::as_str).unwrap_or(kind)
     };
@@ -750,6 +762,8 @@ fn node(provider: &str, record: &Value) -> Option<Node> {
             .to_owned()
     } else if summary {
         claude_summary(&content_text(message.get("content")))
+    } else if let Some(queued) = queued {
+        queued.to_owned()
     } else if visible {
         content_text(message.get("content"))
     } else {

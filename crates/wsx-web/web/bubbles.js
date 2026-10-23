@@ -27,13 +27,18 @@ export function shortLine(line) {
 // says too ("#3 landed", "Approved land #3") shows once; lines close together join.
 export function conversation(entries, resolutions) {
   const rows = [];
+  // ^ wsx's recap request is not shown; the manager's answer to it is tagged Recap
+  // (docs/tasks.md "Recap").
+  const recaps = new Set(entries.filter((entry) => entry.kind === "message" && entry.from === "recap").map((entry) => entry.id));
   entries.forEach((entry, index) => {
     const at = entry.unix_ms ?? 0;
     const key = entry.id != null ? `${entry.kind}-${entry.id}` : `n${index}`;
     if (entry.kind === "message" && entry.from === "owner") {
       rows.push({ kind: "bubble", at, key, author: "owner", entry });
+    } else if (entry.kind === "message" && entry.from === "recap") {
+      return;
     } else if (entry.kind === "reply") {
-      rows.push({ kind: "bubble", at, key, author: "manager", entry });
+      rows.push({ kind: "bubble", at, key, author: "manager", entry, tag: entry.to?.some((id) => recaps.has(id)) ? "Recap" : null });
     } else if (entry.kind === "message" && /^manager(-reply)?:/.test(entry.from ?? "")) {
       // ^ Another project's manager wrote (docs/tasks.md "Managers talk").
       const [from, peer] = entry.from.split(/:(.*)/s);

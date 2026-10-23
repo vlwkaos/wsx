@@ -56,6 +56,8 @@ const MAX_MANAGER_NAME_BYTES: usize = 64;
 const MAX_TASK_LIST_ITEMS: usize = 64;
 const MAX_CHECK_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 const MIN_ROTATE_TOKENS: u64 = 1_000;
+/// One day: a recap after a longer quiet would come after the owner is back.
+const MAX_RECAP_MINUTES: u64 = 1_440;
 const MAX_ROTATE_TOKENS: u64 = 2_000_000;
 const TASK_ADAPTERS: &[&str] = &["claude"];
 const BARE_FILE_TOOLS: &[&str] = &["Edit", "Write", "NotebookEdit", "MultiEdit"];
@@ -157,6 +159,8 @@ struct TaskManagerFile {
     event_model: Option<String>,
     #[serde(rename = "rotateTokens", skip_serializing_if = "Option::is_none")]
     rotate_tokens: Option<u64>,
+    #[serde(rename = "recapMinutes", skip_serializing_if = "Option::is_none")]
+    recap_minutes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<String>>,
 }
@@ -486,6 +490,14 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
                 ));
             }
             config.manager_rotate_tokens = tokens;
+        }
+        if let Some(minutes) = manager.recap_minutes {
+            if minutes > MAX_RECAP_MINUTES {
+                return Err(format!(
+                    "tasks.manager.recapMinutes must be 0 (off) to {MAX_RECAP_MINUTES}"
+                ));
+            }
+            config.manager_recap_minutes = minutes;
         }
         if let Some(tools) = manager.tools {
             config.manager_tools = validate_tools(tools, "tasks.manager.tools")?;

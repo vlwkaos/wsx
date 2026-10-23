@@ -71,6 +71,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/chat/{session}/answer", post(answer))
             .route("/api/chat/{session}/queue/{id}", delete(queue_remove))
             .route("/api/chat/{session}/queue/{id}/retry", post(queue_retry))
+            .route("/api/chat/{session}/queue/{id}/steer", post(queue_steer))
             .route("/api/tasks", get(tasks_all))
             .route("/api/tasks/{project}", get(tasks_overview))
             .route("/api/tasks/{project}/chat", get(tasks_chat))
@@ -812,6 +813,17 @@ async fn queue_retry(
 ) -> Outcome<Json<Value>> {
     need(&app, Panel::Chat)?;
     blocking(|| app.chat.edit_queue(&app, session, id, true).map(Json))
+}
+
+// The same budget as messages: a steer is typed into the agent.
+async fn queue_steer(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    UrlPath((session, id)): UrlPath<(u64, u64)>,
+) -> Outcome<Json<Value>> {
+    need(&app, Panel::Chat)?;
+    act_budget(&app, &device)?;
+    blocking(|| app.chat.steer(&app, session, id).map(Json))
 }
 
 async fn cancel(

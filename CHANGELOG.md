@@ -13,6 +13,9 @@
 
 ### Changed
 
+- The web chat's **Send now** puts a waiting message into a working Claude's turn: Claude takes it at its next step (wsxd `AgentSteer`, daemon revision 33). A message typed into Claude while it works shows in the chat as the person's message.
+- The manager writes the owner a recap after an hour with no message and no turn, once per quiet period and only when something happened (`tasks.manager.recapMinutes`, default 60, 0 off). The web tags it "Recap".
+- Web: the terminal rows of a held chat are closed under "What the terminal shows" and run edge to edge when opened; waiting messages, decision rows, session Remove and notice Dismiss use icons, so their text keeps the row.
 - Manager mode, lean core. A task is `working`, `waiting`, `checking`, `ready`, `failed`, `landed` or `closed`; `waiting` names what it waits for (`owner`, `permission`, `disk` or `hand`) with a reason, and replaces `starting`, `blocked`, `stopped`, `conflict` and `by_hand` ([docs/tasks.md](docs/tasks.md) "Store").
 - The manager talks a request through in the chat and sizes it before it starts any task, writes each task prompt complete on its own, runs tasks at once only when they change different files, reviews what it created for lean code and never sends a task back to rebase, and starts one housekeeping task after a request's tasks land. A long plan goes on the project page with a diagram.
 - `tasks.skills: owner` lends workers the owner's skills, and `tasks.workflow` (`build`, `review`, `batch`) holds the project's words for each stage; the defaults name no skill ([docs/tasks.md](docs/tasks.md) "Workflow").

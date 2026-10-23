@@ -480,6 +480,8 @@ pub struct Capabilities {
     pub exchange_command: bool,
     // ^ docs/agent-orchestration.md "Commands": a command round may also be a `!` shell line.
     pub exchange_shell: bool,
+    // ^ docs/agent-orchestration.md "Steer": types a message into a working Claude.
+    pub agent_steer: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
