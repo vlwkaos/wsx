@@ -224,7 +224,8 @@ def run(wsx, wsxd, work, owned):
     # ^ The brief and the pr policy are gone; tasks.skills and tasks.workflow are checked.
     for bad, word in (('  brief: true\n', 'unknown field `brief`'), ('  land: { policy: pr }\n', 'unknown field `policy`'),
                       ('  skills: everyone\n', 'tasks.skills must be owner or none'),
-                      ('  workflow: { build: "a\\u0007b" }\n', 'tasks.workflow.build must be')):
+                      ('  workflow: { build: "a\\u0007b" }\n', 'tasks.workflow.build must be'),
+                      ('  workflow: { idle: "a\\u0007b" }\n', 'tasks.workflow.idle must be')):
         (project / 'wsx.config.yml').write_text('tasks:\n' + bad)
         refused = cli('task', 'new', 'WORK a.txt', ok=False).stderr
         assert word in refused, refused
@@ -746,7 +747,7 @@ def run(wsx, wsxd, work, owned):
                  'for lean code', 'Never send a task back to rebase', 'Check the fixture rule.',
                  'start one housekeeping task', 'Fold the fixture tasks.',
                  '`sonnet` may do', 'critical fix or heavy, complex work',
-                 'fold those memos into', '/manager/notes/context.md', 'waits for your review',
+                 "carries it as 'memo:'", 'fold each memo into', 'in case one was missed', '/manager/notes/context.md', 'waits for your review',
                  'never give the owner commands to run', '/manager/notes/decisions.md', 'starts with that file and',
                  '--from-manager --reply', 'use it and do not answer it',
                  'also in a pipe or with a heredoc', 'report each check as passed or failed from them',
@@ -947,14 +948,24 @@ def run(wsx, wsxd, work, owned):
     assert not turn_with('STATUS again')['message'].startswith('Handover')
     for n in (first, second, unseen):
         js('task', 'close', n, '--discard')
+    # 21b. Memo (docs/tasks.md "Memo"): each task that leaves brings its worker's memo to the
+    # manager in its event, also past the ledger's 10 recent tasks.
+    memo_tasks = [js('task', 'new', 'WORK m%d.txt MEMO lesson %d kept' % (i, i))['id'] for i in range(11)]
+    for n in memo_tasks:
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
+        js('task', 'close', n, '--discard')
+    for i, n in enumerate(memo_tasks):
+        wait(lambda: events_with('#%d closed r1' % n, 'memo: lesson %d kept' % i), 'memo of t%d in its event' % n)
+    assert len(js('task', 'ledger')['recent']) == 10
 
     # 22. Approvals: what the manager may not do alone becomes a request the owner decides.
     # ^ By default the manager lands alone: only what goes public or is lost asks.
-    free = js('task', 'new', 'WORK free.txt')['id']
+    free = js('task', 'new', 'WORK free.txt MEMO landing brings it')['id']
     assert wait_state(free, 'ready', 'failed')['state'] == 'ready'
     landed_alone = js('task', 'say', 'RUN wsx task land %d -p demo --json' % free)
     assert 'owner was asked' not in reply_to(landed_alone['id'])['text'] and main_has('free.txt')
     wait_closed(free)
+    wait(lambda: events_with('#%d landed' % free, 'memo: landing brings it'), 'the land event carries the memo')
     (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text().replace(
         '  land: { auto: false }\n', '  land: { auto: false, approve: true }\n'))
     git('commit', '-q', '-am', 'land asks')
@@ -1404,7 +1415,8 @@ def run(wsx, wsxd, work, owned):
     git('init', '-q', '-b', 'main', cwd=other)
     (other / 'README').write_text('other\n')
     # ^ A recap one quiet minute after its last message (docs/tasks.md "Recap").
-    (other / 'wsx.config.yml').write_text('tasks:\n  manager:\n    recapMinutes: 1\n')
+    other_config = 'tasks:\n  minFreeGb: 0\n  manager:\n    recapMinutes: 1\n'
+    (other / 'wsx.config.yml').write_text(other_config)
     git('add', '.', cwd=other)
     git('commit', '-q', '-m', 'start', cwd=other)
     with open(config_dir / 'config-v2.toml', 'a') as registry:
@@ -1434,6 +1446,20 @@ def run(wsx, wsxd, work, owned):
     text = reply_to(crossing['id'])['text']
     assert 'a manager acts only in its own project' in text and "messages another project's manager" in text, text
     assert "is for a project's manager" in cli('task', 'say', '-p', 'other', '--from-manager', 'hello', ok=False).stderr
+
+    def other_tasks():
+        return js('task', 'list', '--all', '-p', 'other')['tasks']
+
+    def other_state(n, *states):
+        return wait(lambda: (current := js('task', 'show', n, '-p', 'other'))['state'] in states and current,
+                    'other t%s %s' % (n, states), 60)
+
+    # ^ A task lands in the other project while its manager runs: the land event carries the memo.
+    other_land = js('task', 'new', '-p', 'other', 'WORK o.txt MEMO other lesson')['id']
+    if other_state(other_land, 'ready', 'landed', 'failed')['state'] == 'ready':
+        js('task', 'land', other_land, '-p', 'other')
+    wait(lambda: any(e['kind'] == 'message' and e['from'] == 'events' and '#%d landed' % other_land in e['text']
+                     and 'memo: other lesson' in e['text'] for e in other_entries()), 'the other land event', 60)
     # 34. Recap: once the other project is quiet for its minute, wsx asks its manager for one
     # recap, and the manager answers it in the chat.
     recap = wait(lambda: next((e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'recap'), None),
@@ -1442,6 +1468,35 @@ def run(wsx, wsxd, work, owned):
     wait(lambda: next((e for e in other_entries() if e['kind'] == 'reply' and recap['id'] in e['to']), None),
          'the manager answers the recap', 60)
     assert [e['from'] for e in other_entries() if e['kind'] == 'message'].count('recap') == 1
+    # 35. Idle task (docs/tasks.md "Workflow"): with tasks.workflow.idle empty, the recap after a
+    # land starts no task. With it set, the next recap starts exactly one, as the manager; a
+    # later quiet period with no new land starts none.
+    assert [t['id'] for t in other_tasks()] == [other_land], other_tasks()
+    idle_text = 'WORK idle.txt MEMO knowledge folded'
+    (other / 'wsx.config.yml').write_text(other_config + '  workflow:\n    idle: "%s"\n' % idle_text)
+    git('commit', '-q', '-am', 'idle task', cwd=other)
+
+    def recaps():
+        return [e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'recap']
+
+    def idle_tasks():
+        return [t for t in other_tasks() if t.get('title') == 'Consolidate project knowledge']
+
+    nudge = js('task', 'say', '-p', 'other', 'STATUS')
+    wait(lambda: next((e for e in other_entries() if e['kind'] == 'reply' and nudge['id'] in e['to']), None),
+         'the other manager answers', 60)
+    wait(lambda: len(recaps()) == 2, 'the second recap', 120)
+    idle = wait(idle_tasks, 'the idle task', 30)
+    assert len(idle) == 1 and len(other_tasks()) == 2, other_tasks()
+    idle_shown = other_state(idle[0]['id'], 'ready', 'failed')
+    # ^ The manager's own task: it waits for the manager's review, never lands by itself.
+    assert idle_shown['state'] == 'ready' and idle_shown['record']['created_by'] == 'manager', idle_shown
+    prompt = json.loads(Path(idle_shown['log']).read_text().splitlines()[1])
+    assert prompt['kind'] == 'message' and prompt['text'] == idle_text, prompt
+    js('task', 'close', idle[0]['id'], '--discard', '-p', 'other')
+    wait(lambda: len(recaps()) == 3, 'the third recap', 120)
+    time.sleep(3)
+    assert len(idle_tasks()) == 1 and len(other_tasks()) == 2, other_tasks()
 
 
 if __name__ == '__main__':

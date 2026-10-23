@@ -131,6 +131,9 @@ pub struct TaskWorkflow {
     pub review: String,
     /// The housekeeping task's prompt after a request's tasks land.
     pub batch: String,
+    /// The prompt of the task the manager host starts at an idle recap after a land; empty
+    /// is off.
+    pub idle: String,
 }
 
 impl Default for TaskWorkflow {
@@ -145,6 +148,7 @@ impl Default for TaskWorkflow {
                     code and layers that do nothing, keep behavior and public interfaces the \
                     same, and lower the net line count. The checks prove the behavior is unchanged."
                     .into(),
+            idle: String::new(),
         }
     }
 }

@@ -70,14 +70,23 @@ else:
 '''
 
 
+def unescape(literal):
+    """A Rust string literal's text: line continuations joined, escapes resolved."""
+    return re.sub(r'\\\n\s*', '', literal).replace('\\"', '"').replace('\\\\', '\\')
+
+
 def instructions(source, project, notes, page):
     """The manager's instructions as instructions() in that manager.rs formats them."""
     body = source.split('fn instructions(', 1)[1]
     literal = re.search(r'format!\(\s*"(You are the manager(?:[^"\\]|\\.)*)"', body, re.S).group(1)
-    text = re.sub(r'\\\n\s*', '', literal).replace('\\"', '"').replace('\\\\', '\\')
-    values = {'project': project, 'notes': notes, 'page': page, 'skills': '',
+    # ^ The default workflow words (no review, the default batch) and the shared presentation rule.
+    workflow = (ROOT / 'crates/wsx-core/src/model/workspace.rs').read_text()
+    batch = re.search(r'batch:\s*"((?:[^"\\]|\\.)*)"', workflow, re.S).group(1)
+    values = {'project': project, 'notes': notes, 'page': page, 'skills': '', 'review': '',
+              'batch': unescape(batch),
+              'presentation': (ROOT / 'crates/wsx-core/integrations/common/presentation.md').read_text().rstrip(),
               'context': notes + '/context.md', 'decisions': notes + '/decisions.md'}
-    text = re.sub(r'(?<!\{)\{(\w+)\}(?!\})', lambda m: values[m.group(1)], text)
+    text = re.sub(r'(?<!\{)\{(\w+)\}(?!\})', lambda m: values[m.group(1)], unescape(literal))
     return text.replace('{{', '{').replace('}}', '}')
 
 

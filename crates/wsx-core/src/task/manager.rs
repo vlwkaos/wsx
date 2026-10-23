@@ -168,6 +168,11 @@ pub struct ManagerState {
     pub turn_seen: Option<BTreeMap<u32, Seen>>,
     /// The conversation's last `session_cost_micro_usd`, which a resumed process counts on from.
     pub session_cost_micro_usd: u64,
+    /// The last task the host started with `tasks.workflow.idle`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_task: Option<u32>,
+    /// A task other than the idle task landed since the idle task was started.
+    pub landed_since_idle: bool,
 }
 
 /// A stable digest of an agent's instructions, to tell whether a conversation began with them.

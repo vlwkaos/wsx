@@ -1,6 +1,7 @@
 /target/
 .work/
-/knowledge/sessions/
+# ^ Task Context settlements carry machine paths; memo session files land with the change.
+/knowledge/sessions/*/session-task-context-*.md
 *.tar.gz
 *.sha256
 *.pem

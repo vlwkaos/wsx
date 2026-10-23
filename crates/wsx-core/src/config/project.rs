@@ -124,6 +124,8 @@ struct TaskWorkflowFile {
     review: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     batch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    idle: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -393,6 +395,7 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         text(workflow.build, "build", &mut config.workflow.build)?;
         text(workflow.review, "review", &mut config.workflow.review)?;
         text(workflow.batch, "batch", &mut config.workflow.batch)?;
+        text(workflow.idle, "idle", &mut config.workflow.idle)?;
     }
     config.checks = validate_list(file.checks, "tasks.checks", MAX_DEFAULT_COMMAND_BYTES)?;
     if let Some(preview) = file.preview {
