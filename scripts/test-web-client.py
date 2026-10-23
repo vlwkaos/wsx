@@ -3330,9 +3330,12 @@ digest_max_seconds = 6
         assert len(pushes()) == baseline + 1, pushes()[baseline:]
         assert merged[0]['title'] == owner_name + ': demo' and merged[0]['url'] == '#/p/%d' % demo, merged
         # Each task by number and title with its ask in one line; the badge counts every project's needs.
-        def asks(n, host, project='demo'):
-            return '#%d NEEDS_HOST %s NOOP: needs you: %s' % (n, host, js('task', 'show', n, '-p', project)['waiting']['reason'])
-        assert merged[0]['body'] == asks(first, 'x.example') + '\n' + asks(second, 'x.example') and merged[0]['tag'].endswith('-now'), merged
+        # The oracle is the overview the page shows: each task's shown title and its wait reason.
+        def line(n, what, project='demo'):
+            row = next(row for row in steady(owner, 'GET', '/api/tasks/%d' % ids[project])[1]['tasks'] if row['id'] == n)
+            what = 'needs you: ' + row['waiting']['reason'] if what == 'asks' else what
+            return '#%d %s: %s' % (n, row['title'], what)
+        assert merged[0]['body'] == line(first, 'asks') + '\n' + line(second, 'asks') and merged[0]['tag'].endswith('-now'), merged
         needs = sum(len(overview['needs']) for overview in steady(owner, 'GET', '/api/tasks')[1])
         assert merged[0]['badge'] == needs and needs >= 2, (merged[0], needs)
         baseline += 1
@@ -3343,14 +3346,14 @@ digest_max_seconds = 6
         digest = new_pushes(1, 'digest push')
         time.sleep(4)
         assert len(pushes()) == baseline + 1, pushes()[baseline:]
-        assert digest[0]['body'] == '#%d NEEDS_HOST x.example NOOP: ready for review\n#%d NEEDS_HOST x.example NOOP: ready for review' % (first, second), digest
+        assert digest[0]['body'] == line(first, 'ready for review') + '\n' + line(second, 'ready for review'), digest
         assert digest[0]['tag'].endswith('-digest'), digest
         baseline += 1
         # A failed task names the check that failed.
         broken = js('task', 'new', 'WORK broken.txt', '-p', 'demo')['id']
         wait_state(broken, 'failed')
         failed = new_pushes(1, 'failed digest')
-        assert failed[0]['body'] == '#%d WORK broken.txt: failed: test ! -e broken.txt failed' % broken, failed
+        assert failed[0]['body'] == line(broken, 'failed: test ! -e broken.txt failed'), failed
         baseline += 1
         # The cap: a task finishes every 2 s, so the 3 s quiet time never comes; the digest
         # goes out 6 s after the first, with what came until then. The tasks start first and
@@ -3366,11 +3369,11 @@ digest_max_seconds = 6
             time.sleep(max(0, 2 * (k + 1) - (time.monotonic() - started_at)))
         capped = new_pushes(1, 'capped digest')
         first_ready = capped[0]['body']
-        assert 2 <= len(first_ready.split('\n')) <= 5 and all(re.fullmatch(r'#\d+ NOOP: ready for review', line) for line in first_ready.split('\n')), capped
-        assert first_ready.startswith('#%d NOOP' % steady_ids[0]) and '#%d NOOP' % steady_ids[-1] not in first_ready, capped
+        assert 2 <= len(first_ready.split('\n')) <= 5 and first_ready.startswith(line(steady_ids[0], 'ready for review') + '\n'), capped
+        assert line(steady_ids[-1], 'ready for review') not in first_ready, capped
         baseline += 1
         rest = new_pushes(1, 'digest after the cap')
-        assert '#%d NOOP: ready for review' % steady_ids[-1] in rest[0]['body'], rest
+        assert line(steady_ids[-1], 'ready for review') in rest[0]['body'].split('\n'), rest
         baseline += 1
         # A page of this device shows demo: no push for demo, a push for ui.
         page = 'page-owner-1'
@@ -3387,14 +3390,14 @@ digest_max_seconds = 6
         elsewhere = new_pushes(1, 'push for the other project')
         time.sleep(4)
         assert len(pushes()) == baseline + 1 and elsewhere[0]['title'] == owner_name + ': ui', pushes()[baseline:]
-        assert elsewhere[0]['body'] == asks(other, 'y.example', 'ui') and elsewhere[0]['url'] == '#/p/%d/t/%d' % (ids['ui'], other), elsewhere
+        assert elsewhere[0]['body'] == line(other, 'asks', 'ui') and elsewhere[0]['url'] == '#/p/%d/t/%d' % (ids['ui'], other), elsewhere
         baseline += 1
         # The page goes away: its presence goes with its stream.
         shown.connection.close()
         time.sleep(1)
         later = js('task', 'new', 'NEEDS_HOST z.example NOOP', '-p', 'demo')['id']
         wait_state(later, 'waiting')
-        assert new_pushes(1, 'push after the page closed')[0]['body'] == asks(later, 'z.example')
+        assert new_pushes(1, 'push after the page closed')[0]['body'] == line(later, 'asks')
         baseline += 1
         # An approval request reads as its action, never as its id.
         js('task', 'say', 'RUN wsx task land %d -p demo --json' % steady_ids[0], '-p', 'demo')
