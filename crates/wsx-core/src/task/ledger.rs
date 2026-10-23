@@ -17,7 +17,7 @@ const MAX_LEDGER_BYTES: usize = 16 * 1024;
 const RECENT_TASKS: usize = 10;
 const SUMMARY_CHARS: usize = 240;
 const TITLE_CHARS: usize = 80;
-const MEMO_CHARS: usize = 600;
+pub const MEMO_CHARS: usize = 600;
 
 /// The ledger of one project. ref: docs/tasks.md "Ledger"
 pub fn build(project_name: &str, main: &Path) -> Result<Value> {
@@ -36,7 +36,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         let title = clip(summary["title"].as_str().unwrap_or_default(), TITLE_CHARS);
         if !record.state.is_open() {
             let mut row = json!({ "id": record.id, "title": title, "state": record.state, "revision": record.revision });
-            // ^ The worker's memo; the manager folds it into its notes on rotation (docs/tasks.md "Memo").
+            // ^ The worker's memo, also in its land or close event (docs/tasks.md "Memo").
             if let Some(memo) = read_result(dir)
                 .as_ref()
                 .and_then(|r| {

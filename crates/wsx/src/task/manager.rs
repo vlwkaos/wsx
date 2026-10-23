@@ -36,6 +36,8 @@ and what it changed for the owner, what waits for the owner now and why, and wha
 decisions as a table. Read the ledger and your notes for it. Start no task and change nothing. Use plain words: \
 name a task by its number and what it does.";
 const EVENT_TITLE_CHARS: usize = 80;
+/// The title of the task `tasks.workflow.idle` starts.
+const IDLE_TITLE: &str = "Consolidate project knowledge";
 /// A message in a handover: one line, clipped, so a quote never reads as a new message.
 fn one_line(text: &str) -> String {
     clip(
@@ -56,7 +58,7 @@ const SUMMARY_TITLE_CHARS: usize = 60;
 fn is_event(record: &TaskRecord) -> bool {
     match record.state {
         TaskState::Waiting => !record.waits_on(WaitOn::Hand),
-        TaskState::Ready | TaskState::Failed | TaskState::Landed => true,
+        TaskState::Ready | TaskState::Failed | TaskState::Landed | TaskState::Closed => true,
         _ => false,
     }
 }
@@ -65,6 +67,8 @@ pub(super) enum Event {
     Request(ManagerRequest, Sender<ManagerResponse>),
     Agent(u64, Option<AgentLine>),
     Tick,
+    /// `wsx task new` with `tasks.workflow.idle` ended: the task number or the error.
+    IdleStarted(Result<u32, String>),
     /// The agent's `say --from-manager` reached another project's manager.
     Sent {
         to: String,
@@ -265,10 +269,11 @@ fn instructions(
          fails); never rewrite the whole file, and never create another page. Workers do \
          not write it. When a reply points to it, call it the project page. \
          {context} is your lean project context; read it when a conversation starts. \
-         Workers leave a `memo` of durable project knowledge on the ledger's recent tasks. \
-         When a message opens with 'Handover' (a new conversation after a rotation), \
-         first fold those memos into {context} with Bash: keep it lean, merge duplicates, \
-         drop what is stale, at most 60 lines.",
+         Workers leave a `memo` of durable project knowledge; the event of a task that \
+         lands or closes carries it as 'memo:'. In that turn, fold each memo into {context} \
+         with Bash: keep it lean, merge duplicates, drop what is stale, at most 60 lines. \
+         When a message opens with 'Handover' (a new conversation after a rotation), first \
+         fold the memos on the ledger's recent tasks the same way, in case one was missed.",
         review = match workflow.review.is_empty() {
             true => String::new(),
             false => format!("{} ", workflow.review),
@@ -380,6 +385,17 @@ impl Manager {
                 Event::Tick => {
                     self.watch_tasks();
                     self.ask_recap();
+                }
+                Event::IdleStarted(Ok(id)) => {
+                    self.say(&format!("started idle task #{id}"));
+                    self.state.idle_task = Some(id);
+                    self.save();
+                }
+                Event::IdleStarted(Err(error)) => {
+                    self.say(&format!("cannot start the idle task: {error}"));
+                    // ^ The next idle period tries again.
+                    self.state.landed_since_idle = true;
+                    self.save();
                 }
                 Event::Sent { to, text, reply } => self.log(ManagerEvent::Sent { to, text, reply }),
             }
@@ -548,6 +564,9 @@ impl Manager {
             if !is_event(&record) {
                 continue;
             }
+            if record.state == TaskState::Landed && self.state.idle_task != Some(record.id) {
+                self.state.landed_since_idle = true;
+            }
             let title = view::title(&dir, &record).unwrap_or_default();
             let summary = {
                 // ^ The checks the host ran come before the worker's own words.
@@ -575,6 +594,15 @@ impl Manager {
                         "; held for the owner: {}",
                         clip(hold, EVENT_SUMMARY_CHARS)
                     ));
+                }
+                // ^ The worker's memo reaches the manager when its task leaves, never later:
+                // the ledger lists only the last few. ref: docs/tasks.md "Memo"
+                if !record.state.is_open() {
+                    let memo = result["result"]["memo"].as_str().unwrap_or_default();
+                    let memo = memo.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if !memo.is_empty() {
+                        summary.push_str(&format!("; memo: {}", clip(&memo, ledger::MEMO_CHARS)));
+                    }
                 }
                 // ^ A landing adds its Human Verify items to the project's To check list.
                 if record.state == TaskState::Landed {
@@ -657,6 +685,36 @@ impl Manager {
             // ^ Not again every second: the next try waits a whole quiet period.
             self.last_activity = Instant::now();
         }
+        self.start_idle();
+    }
+
+    /// At an idle recap, when a task landed since the last idle task started and that task
+    /// is not open, start one task with `tasks.workflow.idle` as the manager would, so it
+    /// waits for the manager's review. A quiet project gets one. ref: docs/tasks.md "Workflow"
+    fn start_idle(&mut self) {
+        if !self.state.landed_since_idle {
+            return;
+        }
+        let prompt = load_task_config(&self.main)
+            .map(|settings| settings.workflow.idle)
+            .unwrap_or_default();
+        let open = self.state.idle_task.is_some_and(|id| {
+            store::TaskDir::open(&self.dir.project_id, id)
+                .and_then(|dir| dir.read_record())
+                .is_ok_and(|record| record.state.is_open())
+        });
+        if prompt.is_empty() || open {
+            return;
+        }
+        let Ok(exe) = std::env::current_exe() else {
+            return self.say("cannot find the wsx binary for the idle task");
+        };
+        self.state.landed_since_idle = false;
+        self.save();
+        let (project, events) = (self.project.clone(), self.events.clone());
+        std::thread::spawn(move || {
+            let _ = events.send(Event::IdleStarted(new_task(&exe, &project, &prompt)));
+        });
     }
 
     /// Owner messages go first, then other managers', then events.
@@ -1125,6 +1183,38 @@ impl Manager {
             }
         }
     }
+}
+
+/// `wsx task new -p <project> --title <IDLE_TITLE> -` as the manager; the new task's number.
+fn new_task(exe: &Path, project: &str, prompt: &str) -> Result<u32, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(exe)
+        .args([
+            "task", "new", "-p", project, "--title", IDLE_TITLE, "--json", "-",
+        ])
+        .env(ACTOR_ENV, "manager")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("cannot run wsx task new: {error}"))?;
+    // ^ Dropped after the write, so the child reads the end of its input.
+    let written = child
+        .stdin
+        .take()
+        .map(|mut stdin| stdin.write_all(prompt.as_bytes()));
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("cannot run wsx task new: {error}"))?;
+    if !output.status.success() || !matches!(written, Some(Ok(()))) {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .ok()
+        .and_then(|value| value["id"].as_u64())
+        .and_then(|id| u32::try_from(id).ok())
+        .ok_or_else(|| "wsx task new printed no task number".into())
 }
 
 /// The end of a notes file, at most `MAX_NOTES_READ` bytes: the newest lines are last.

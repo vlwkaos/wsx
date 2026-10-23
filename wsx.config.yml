@@ -27,6 +27,14 @@ tasks:
     build: >-
       Follow CLAUDE.md and AGENTS.md. For a non-trivial change use the owner's develop skill,
       and run its simplify step on your diff before you finish; prefer removing code to adding it.
+      Keep the change lean: reuse what exists, remove what your change makes dead, and simplify
+      the diff before you finish.
+      Before you report done, run owner:memo to save durable lessons of this task into
+      knowledge/sessions/ and commit those files with your change.
+    # ^ At an idle recap after a land, the manager host starts one task with this prompt.
+    idle: >-
+      Run owner:dream on this branch to consolidate knowledge/sessions into knowledge/coding,
+      knowledge/domain, plan and history, prune duplicates and stale entries, and commit the result.
   deploy:
     command: sh scripts/deploy-web-live.sh
     auto: true
