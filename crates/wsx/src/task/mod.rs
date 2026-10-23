@@ -25,7 +25,9 @@ use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
 use wsx_core::task::manager::{ApprovalAction, ApprovalLine, GrantAsk, ManagerEvent};
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::store::ManagerDir;
-use wsx_core::task::view::{overlaps, project_tasks, task_summary, MAX_RESULT_READ_BYTES};
+use wsx_core::task::view::{
+    checked_files, overlaps, project_tasks, task_summary, MAX_RESULT_READ_BYTES,
+};
 use wsx_core::task::{
     call_host, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
@@ -55,6 +57,9 @@ pub enum TaskCmd {
         /// Hold the task for the owner to try before it lands, and say why
         #[arg(long, value_name = "WHY")]
         hold: Option<String>,
+        /// A glob of the paths it expects to change, relative to the checkout (repeatable)
+        #[arg(long, value_name = "GLOB")]
+        files: Vec<String>,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -92,6 +97,9 @@ pub enum TaskCmd {
         task: String,
         #[command(flatten)]
         text: PromptSource,
+        /// Add a glob of the paths it expects to change (repeatable)
+        #[arg(long, value_name = "GLOB")]
+        files: Vec<String>,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -377,6 +385,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             title,
             model,
             hold,
+            files,
             project,
             json,
         } => new(
@@ -385,6 +394,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             title.as_deref(),
             model.as_deref(),
             hold,
+            files,
             project.as_deref(),
             json,
         ),
@@ -407,12 +417,14 @@ pub fn run(command: TaskCmd) -> Result<()> {
         TaskCmd::Add {
             task,
             text,
+            files,
             project,
             json,
         } => {
             let dir = open(project.as_deref(), &task)?;
             let text = text.read(MAX_MESSAGE_BYTES)?;
-            send(&dir, HostRequest::Add { text }, json)
+            let files = checked_files(&dir.read_record()?.files, &files)?;
+            send(&dir, HostRequest::Add { text, files }, json)
         }
         TaskCmd::Allow {
             task,
@@ -703,12 +715,14 @@ fn print_json(value: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn new(
     prompt: PromptSource,
     from: Option<&str>,
     title: Option<&str>,
     model: Option<&str>,
     hold: Option<String>,
+    files: Vec<String>,
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
@@ -719,7 +733,8 @@ fn new(
         .as_deref()
         .map(wsx_core::task::view::checked_hold)
         .transpose()?;
-    let (dir, record, answered) = create(prompt, from, title, model, None, hold, project)?;
+    let files = checked_files(&[], &files)?;
+    let (dir, record, answered) = create(prompt, from, title, model, None, hold, files, project)?;
     let state = answered.unwrap_or(TaskState::Working);
     let id = dir.id;
     if json {
@@ -745,6 +760,7 @@ fn new(
 
 /// Create a task and start its host; `fixes` names the "To check" item it fixes. The state
 /// is none when the host did not answer in time.
+#[allow(clippy::too_many_arguments)]
 fn create(
     prompt: String,
     from: Option<&str>,
@@ -752,6 +768,7 @@ fn create(
     model: Option<String>,
     fixes: Option<String>,
     hold: Option<String>,
+    files: Vec<String>,
     project: Option<&str>,
 ) -> Result<(TaskDir, TaskRecord, Option<TaskState>)> {
     let (config, workspace) = load_full_workspace()?;
@@ -795,6 +812,7 @@ fn create(
         revision: 0,
         paths: Vec::new(),
         paths_total: 0,
+        files,
         title,
         fixes,
         created_by: actor(),
@@ -924,6 +942,7 @@ fn fail_check(project: &str, project_id: &str, id: &str, note: &str) -> Result<C
         None,
         Some(item.id.clone()),
         None,
+        Vec::new(),
         Some(project),
     )?;
     checks::fail(project_id, id, note, dir.id).with_context(|| {

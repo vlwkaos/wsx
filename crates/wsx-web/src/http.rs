@@ -1019,6 +1019,7 @@ async fn task_act(
     let request = match action.as_str() {
         "add" => HostRequest::Add {
             text: input.text.ok_or_else(|| missing("text"))?,
+            files: Vec::new(),
         },
         "steer" => HostRequest::Steer {
             text: input.text.ok_or_else(|| missing("text"))?,

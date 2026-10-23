@@ -178,6 +178,10 @@ pub struct TaskRecord {
     pub paths: Vec<String>,
     #[serde(default)]
     pub paths_total: u32,
+    /// `task new --files` and `task add --files`: the globs of the paths it expects to
+    /// change; overlaps use them with `paths` (docs/tasks.md "Store").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
     /// `task new --title`; without one the title comes from the prompt (`view::title`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -437,6 +441,9 @@ pub enum HostRequest {
     },
     Add {
         text: String,
+        /// More expected path globs (`task add --files`), already checked.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<String>,
     },
     /// Add a grant and resume a blocked task. A project grant is already in `grants.json`.
     Grant {

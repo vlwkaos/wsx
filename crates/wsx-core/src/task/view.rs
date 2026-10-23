@@ -85,6 +85,36 @@ pub fn checked_hold(reason: &str) -> Result<String> {
     Ok(reason.to_string())
 }
 
+/// At most this many expected path globs per task, each at most this many bytes.
+pub const MAX_FILES: usize = 64;
+const MAX_FILE_BYTES: usize = 256;
+
+/// `globs` added to `kept`: each relative to the checkout, without `..`, a valid glob.
+/// ref: docs/tasks.md "Store"
+pub fn checked_files(kept: &[String], globs: &[String]) -> Result<Vec<String>> {
+    let mut files = kept.to_vec();
+    for glob in globs {
+        let glob = glob.trim().trim_start_matches("./");
+        if glob.is_empty() || glob.len() > MAX_FILE_BYTES {
+            anyhow::bail!("--files '{glob}' is empty or longer than {MAX_FILE_BYTES} bytes");
+        }
+        if glob.starts_with('/') || glob.split('/').any(|part| part == "..") {
+            anyhow::bail!("--files '{glob}' is not relative to the checkout or has '..'");
+        }
+        if glob.chars().any(char::is_control) {
+            anyhow::bail!("--files '{glob}' has control characters");
+        }
+        glob::Pattern::new(glob).map_err(|error| anyhow::anyhow!("--files '{glob}': {error}"))?;
+        if !files.iter().any(|kept| kept == glob) {
+            files.push(glob.to_string());
+        }
+    }
+    if files.len() > MAX_FILES {
+        anyhow::bail!("a task has at most {MAX_FILES} --files globs");
+    }
+    Ok(files)
+}
+
 pub fn checked_title(title: &str) -> Result<String> {
     let title = title.trim();
     if title.is_empty() {
@@ -239,26 +269,35 @@ pub fn project_tasks(project_id: &str) -> Result<Vec<(TaskDir, Result<TaskRecord
         .collect()
 }
 
-/// The other open tasks that changed a path this task changed. Paths are capped per
-/// record, so `complete` is false when either side kept fewer paths than it changed.
+/// The other open tasks whose paths meet this task's. A task's paths are the ones its
+/// revisions changed plus its declared `files` globs; `declared` marks a meeting found only
+/// through a glob. Changed paths are capped per record, so `complete` is false when either
+/// side kept fewer paths than it changed. ref: docs/tasks.md "Store"
 pub fn overlaps(record: &TaskRecord, others: &[&TaskRecord], with_paths: bool) -> Value {
     let mine: std::collections::HashSet<&str> = record.paths.iter().map(String::as_str).collect();
     let rows: Vec<_> = others
         .iter()
         .filter(|other| other.id != record.id && other.state.is_open())
         .filter_map(|other| {
-            let common: Vec<&str> = other
+            let mut common: Vec<&str> = other
                 .paths
                 .iter()
                 .map(String::as_str)
                 .filter(|path| mine.contains(path))
                 .collect();
+            let declared = common.is_empty();
+            if declared {
+                common = declared_meetings(record, other);
+            }
             if common.is_empty() {
                 return None;
             }
             let complete = record.paths.len() as u32 == record.paths_total
                 && other.paths.len() as u32 == other.paths_total;
             let mut row = json!({ "id": other.id, "count": common.len(), "complete": complete });
+            if declared {
+                row["declared"] = json!(true);
+            }
             if with_paths {
                 row["paths"] = json!(common.iter().take(OVERLAP_PATHS_SHOWN).collect::<Vec<_>>());
             }
@@ -266,4 +305,56 @@ pub fn overlaps(record: &TaskRecord, others: &[&TaskRecord], with_paths: bool) -
         })
         .collect();
     json!(rows)
+}
+
+/// This task's paths and globs that meet one of `other`'s through a declared glob.
+fn declared_meetings<'a>(record: &'a TaskRecord, other: &TaskRecord) -> Vec<&'a str> {
+    fn entries(task: &TaskRecord) -> impl Iterator<Item = (&str, bool)> {
+        let globs = task.files.iter().map(|glob| (glob.as_str(), true));
+        globs.chain(task.paths.iter().map(|path| (path.as_str(), false)))
+    }
+    entries(record)
+        .filter(|&(mine, my_glob)| {
+            entries(other).any(|(their, their_glob)| (my_glob || their_glob) && meet(mine, their))
+        })
+        .map(|(mine, _)| mine)
+        .collect()
+}
+
+/// Whether two path globs can name a common path. A literal also covers what is under it
+/// (`docs` meets `docs/tasks.md`); two wildcard globs meet when their literal heads and
+/// tails agree, which can report a meeting that no real path makes.
+fn meet(a: &str, b: &str) -> bool {
+    const WILD: [char; 3] = ['*', '?', '['];
+    let under = |path: &str, dir: &str| {
+        path == dir
+            || path
+                .strip_prefix(dir)
+                .is_some_and(|rest| rest.starts_with('/'))
+    };
+    let matches = |glob: &str, path: &str| {
+        let options = glob::MatchOptions {
+            require_literal_separator: true,
+            ..Default::default()
+        };
+        let head = &glob[..glob.find(WILD).unwrap_or(glob.len())];
+        glob::Pattern::new(glob).is_ok_and(|pattern| {
+            std::iter::successors(Some(path), |path| path.rsplit_once('/').map(|(dir, _)| dir))
+                .any(|path| pattern.matches_with(path, options))
+        }) || under(head.trim_end_matches('/'), path)
+    };
+    match (a.contains(WILD), b.contains(WILD)) {
+        (false, false) => under(a, b) || under(b, a),
+        (true, false) => matches(a, b),
+        (false, true) => matches(b, a),
+        (true, true) => {
+            let (head_a, head_b) = (&a[..a.find(WILD).unwrap()], &b[..b.find(WILD).unwrap()]);
+            let (tail_a, tail_b) = (
+                &a[a.rfind(WILD).unwrap() + 1..],
+                &b[b.rfind(WILD).unwrap() + 1..],
+            );
+            (head_a.starts_with(head_b) || head_b.starts_with(head_a))
+                && (tail_a.ends_with(tail_b) || tail_b.ends_with(tail_a))
+        }
+    }
 }
