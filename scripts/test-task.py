@@ -490,6 +490,62 @@ def run(wsx, wsxd, work, owned):
     assert rows[y1]['overlaps'] == [] and rows[x2]['overlaps'][0]['id'] == x1
     assert show(x2)['overlaps'] == [{'id': x1, 'count': 1, 'complete': True, 'paths': ['x.txt']}]
 
+    # 14b. Declared `--files` globs overlap before any revision; disjoint ones do not; bad ones
+    # create no task (docs/tasks.md "Store").
+    gate = work / 'files-gate'
+    d1 = js('task', 'new', 'WAIT %s' % gate, '--files', 'src/*.rs', '--files', 'docs/a.md')['id']
+    d2 = js('task', 'new', 'WAIT %s' % gate, '--files', 'src/**/*.rs')['id']
+    d3 = js('task', 'new', 'WAIT %s' % gate, '--files', 'web/*.js')['id']
+    assert show(d1)['record']['files'] == ['src/*.rs', 'docs/a.md'] and show(d1)['record']['revision'] == 0
+    rows = {row['id']: row for row in js('task', 'list')['tasks']}
+    assert rows[d1]['overlaps'] == [{'id': d2, 'count': 1, 'complete': True, 'declared': True}], rows[d1]
+    assert rows[d3]['overlaps'] == [] and rows[x1]['overlaps'] == [{'id': x2, 'count': 1, 'complete': True}]
+    assert show(d2)['overlaps'] == [{'id': d1, 'count': 1, 'complete': True, 'declared': True,
+                                     'paths': ['src/**/*.rs']}]
+    # `add --files` extends; a declared glob meets another task's changed path.
+    js('task', 'add', d3, '--files', '*.txt', 'also the text files')
+    assert show(d3)['record']['files'] == ['web/*.js', '*.txt']
+    ledger_rows = {row['id']: row for row in js('task', 'ledger')['open']}
+    assert ledger_rows[d3]['overlaps'] == [{'id': n, 'count': 1, 'complete': True, 'declared': True}
+                                           for n in (x1, y1, x2)], ledger_rows[d3]
+    assert {'id': d3, 'count': 1, 'complete': True, 'declared': True} in ledger_rows[x1]['overlaps']
+    last = max(row['id'] for row in js('task', 'list', '--all')['tasks'])
+    for bad in ('/abs/*.rs', '../x', 'a/../b', 'x' * 257, '[', ''):
+        refused = cli('task', 'new', 'WORK no.txt', '--files', bad, ok=False)
+        assert '--files' in refused.stderr, (bad, refused.stderr)
+    many = [arg for n in range(65) for arg in ('--files', 'f%d' % n)]
+    assert 'at most 64' in cli('task', 'new', 'WORK no.txt', *many, ok=False).stderr
+    assert '--files' in cli('task', 'add', d1, '--files', '../up', 'x', ok=False).stderr
+    assert max(row['id'] for row in js('task', 'list', '--all')['tasks']) == last
+
+    # 14c. The ledger lists the project's other worktrees with their flags, never a task's copy.
+    git('worktree', 'add', '-q', '-b', 'stray-merged', str(base / 'stray-merged'))
+    git('worktree', 'add', '-q', '-b', 'stray-dirty', str(base / 'stray-dirty'))
+    (base / 'stray-dirty/new.txt').write_text('ahead\n')
+    git('add', 'new.txt', cwd=base / 'stray-dirty')
+    git('commit', '-q', '-m', 'ahead', cwd=base / 'stray-dirty')
+    (base / 'stray-dirty/README').write_text('edited\n')
+    git('worktree', 'add', '-q', '-b', 'stray-gone', str(base / 'stray-gone'))
+    shutil.rmtree(base / 'stray-gone')
+    ledger = js('task', 'ledger')
+    strays = {Path(row['path']).name: row for row in ledger['stray_worktrees']}
+    assert set(strays) == {'stray-merged', 'stray-dirty', 'stray-gone'}, ledger['stray_worktrees']
+    flags = lambda name: {k: strays[name][k] for k in ('branch', 'merged_into_main', 'dirty', 'missing', 'sessions')}
+    assert flags('stray-merged') == {'branch': 'stray-merged', 'merged_into_main': True, 'dirty': False,
+                                     'missing': False, 'sessions': 0}, strays
+    assert flags('stray-dirty') == {'branch': 'stray-dirty', 'merged_into_main': False, 'dirty': True,
+                                    'missing': False, 'sessions': 0}, strays
+    assert flags('stray-gone') == {'branch': 'stray-gone', 'merged_into_main': True, 'dirty': False,
+                                   'missing': True, 'sessions': 0}, strays
+    assert ledger['stray_worktrees_omitted'] == 0
+    for name in ('stray-merged', 'stray-dirty'):
+        git('worktree', 'remove', '--force', str(base / name))
+    git('worktree', 'prune')
+    git('branch', '-D', 'stray-merged', 'stray-dirty', 'stray-gone')
+    assert js('task', 'ledger')['stray_worktrees'] == []
+    for n in (d1, d2, d3):
+        js('task', 'close', n, '--discard')
+
     def land(n, *flags, ok=True):
         return json.loads(cli('task', 'land', n, *flags, '--json', ok=ok).stdout)
 
@@ -746,6 +802,7 @@ def run(wsx, wsxd, work, owned):
     for rule in ('Talk before work', 'Then ask whether to go', 'Start tasks only after the owner agrees',
                  'own section with a mermaid diagram', 'complete on its own, since a worker cannot ask',
                  'Run tasks at once only when they change different files', '`overlaps` names open tasks',
+                 'in every task new', 'never delete a worktree yourself',
                  'for lean code', 'Never send a task back to rebase', 'Check the fixture rule.',
                  'start one housekeeping task', 'Fold the fixture tasks.',
                  '`sonnet` may do', 'critical fix or heavy, complex work',

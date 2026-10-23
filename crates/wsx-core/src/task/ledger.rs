@@ -7,10 +7,10 @@ use super::view::{
 use super::{checks, copy, store, DeployKind, DeployRecord, TaskRecord, WaitOn};
 use crate::config::project::load_task_config;
 use crate::model::workspace::TaskConfig;
-use crate::ops;
+use crate::{ops, runtime};
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The whole ledger fits in this many bytes of JSON.
 const MAX_LEDGER_BYTES: usize = 16 * 1024;
@@ -18,6 +18,7 @@ const RECENT_TASKS: usize = 10;
 const SUMMARY_CHARS: usize = 240;
 const TITLE_CHARS: usize = 80;
 pub const MEMO_CHARS: usize = 600;
+const STRAY_WORKTREES: usize = 20;
 
 /// The ledger of one project. ref: docs/tasks.md "Ledger"
 pub fn build(project_name: &str, main: &Path) -> Result<Value> {
@@ -82,6 +83,12 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
     open.sort_by_key(|(order, id, _)| (*order, *id));
     recent.sort_by_key(|(updated, _)| std::cmp::Reverse(*updated));
     recent.truncate(RECENT_TASKS);
+    let copies: Vec<&Path> = records
+        .iter()
+        .filter(|record| record.state.is_open())
+        .map(|record| record.working_copy.as_path())
+        .collect();
+    let (strays, stray_omitted) = stray_worktrees(main, &copies);
     let mut ledger = json!({
         "project": project_name,
         // ^ A ready task lands by itself unless this is false (docs/tasks.md "Landing").
@@ -89,6 +96,8 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         // ^ Open "To check" items: a release waits for them (docs/tasks.md "To check").
         "to_check": checks::open_items(&project_id).map_or(0, |items| items.len()),
         "main": main_checkout(main),
+        "stray_worktrees": strays,
+        "stray_worktrees_omitted": stray_omitted,
         "deploys": deploy_status(project_name, main, &settings).unwrap_or(Value::Null),
         "recent": recent.into_iter().map(|(_, row)| row).collect::<Vec<_>>(),
         "open": open.iter().map(|(_, _, row)| row.clone()).collect::<Vec<_>>(),
@@ -139,6 +148,95 @@ fn main_checkout(main: &Path) -> Value {
         "branch": git(&["rev-parse", "--abbrev-ref", "HEAD"]).map(|branch| branch.trim().to_string()),
         "changed_files": git(&["status", "--porcelain"]).map(|status| status.lines().count()),
     })
+}
+
+/// The project's worktrees, from git and wsxd, that are neither the main checkout nor an
+/// open task's working copy: the owner's cleanup candidates. Nothing here deletes one.
+/// ref: docs/tasks.md "Ledger"
+fn stray_worktrees(main: &Path, copies: &[&Path]) -> (Vec<Value>, usize) {
+    let same = |a: &Path, b: &Path| {
+        a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+    };
+    let mut found: Vec<(PathBuf, String)> = crate::git::worktree::list_worktrees(main)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| (entry.path, entry.branch))
+        .collect();
+    // ^ wsxd keeps a worktree it knows with its sessions, also after git forgot it.
+    let snapshot = runtime::Client::new(runtime::default_socket_path())
+        .call(&runtime::Request::Snapshot)
+        .ok()
+        .and_then(|response| match response {
+            runtime::Response::Snapshot(snapshot) => Some(snapshot),
+            _ => None,
+        });
+    if let Some(snapshot) = &snapshot {
+        let project = snapshot
+            .projects
+            .iter()
+            .find(|project| same(&project.path, main));
+        for worktree in snapshot
+            .worktrees
+            .iter()
+            .filter(|worktree| project.is_some_and(|project| project.id == worktree.project_id))
+        {
+            if !found.iter().any(|(path, _)| same(path, &worktree.path)) {
+                found.push((worktree.path.clone(), worktree.branch.clone()));
+            }
+        }
+    }
+    found.retain(|(path, _)| !same(path, main) && !copies.iter().any(|copy| same(path, copy)));
+    found.sort();
+    let omitted = found.len().saturating_sub(STRAY_WORKTREES);
+    let default = default_ref(main);
+    let rows = found
+        .into_iter()
+        .take(STRAY_WORKTREES)
+        .map(|(path, branch)| {
+            let missing = !path.is_dir();
+            let succeeds = |dir: &Path, args: &[&str]| {
+                crate::git::git_cmd(dir)
+                    .args(args)
+                    .output()
+                    .ok()
+                    .filter(|output| output.status.success())
+                    .map(|output| output.stdout)
+            };
+            // ^ A detached worktree is judged by its own HEAD, so it needs its folder.
+            let merged = if branch != "HEAD" {
+                let tip = format!("refs/heads/{branch}");
+                succeeds(main, &["merge-base", "--is-ancestor", &tip, &default]).is_some()
+            } else {
+                !missing
+                    && succeeds(&path, &["merge-base", "--is-ancestor", "HEAD", &default]).is_some()
+            };
+            let dirty = !missing
+                && succeeds(&path, &["status", "--porcelain"]).is_some_and(|out| !out.is_empty());
+            let sessions = snapshot.as_ref().map_or(0, |snapshot| {
+                snapshot
+                    .worktrees
+                    .iter()
+                    .filter(|worktree| same(&worktree.path, &path))
+                    .map(|worktree| {
+                        snapshot
+                            .sessions
+                            .iter()
+                            .filter(|session| session.worktree_id == worktree.id)
+                            .count()
+                    })
+                    .sum::<usize>()
+            });
+            json!({
+                "path": path,
+                "branch": branch,
+                "merged_into_main": merged,
+                "dirty": dirty,
+                "missing": missing,
+                "sessions": sessions,
+            })
+        })
+        .collect();
+    (rows, omitted)
 }
 
 /// The ref a deploy defaults to and `behind` counts against: the local default branch.

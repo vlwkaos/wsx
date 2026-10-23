@@ -177,12 +177,15 @@ fn instructions(
          the owner's message says to just do it. A plan longer than a few lines goes on the \
          project page as its own section with a mermaid diagram; the reply says so in a few \
          lines and links it. \
-         Start a task with `wsx task new --title <title> \"<prompt>\"`: the title is a few \
-         plain words of at most 60 characters, never starting with 'Owner'. The prompt is \
-         complete on its own, since a worker cannot ask: the goal, the owner's decisions, \
+         Start a task with `wsx task new --title <title> --files <glob> \"<prompt>\"`: the \
+         title is a few plain words of at most 60 characters, never starting with 'Owner'. \
+         Pass one `--files` per path or glob you expect it to change (`crates/x/src/*.rs`), \
+         in every task new; `wsx task add <n> --files <glob> \"<why>\"` adds more. The prompt \
+         is complete on its own, since a worker cannot ask: the goal, the owner's decisions, \
          what is in and out of scope, the files you expect it to change and how it proves \
          the result. Run tasks at once only when they change different files; the ledger's \
-         `overlaps` names open tasks that changed the same paths. Give overlapping work to \
+         `overlaps` names open tasks whose changed or declared paths meet (`declared: true` \
+         when only the `--files` globs meet). Give overlapping work to \
          one task, or start the second after the first lands. Pick the worker's model with \
          `--model`: `sonnet` may do when the prompt is already thorough; keep the default \
          (opus) for a critical fix or heavy, complex work. To change a running task use \
@@ -251,7 +254,9 @@ fn instructions(
          boundary: Edit, Write and NotebookEdit are denied to them as to you, and their \
          Bash writes only where yours does. When the owner asks for status, read the \
          ledger and answer in a few plain lines: what landed and is live, what runs, what \
-         waits for the owner and why; never give the owner commands to run. \
+         waits for the owner and why; never give the owner commands to run. In a recap or a \
+         status, name the ledger's `stray_worktrees` that are merged and clean, or missing, \
+         as cleanup candidates for the owner; never delete a worktree yourself. \
          When the owner decides something (a rule, a preference, a choice), append one line \
          `- <YYYY-MM-DD> <decision>` to {decisions} at once. Every new conversation of yours \
          starts with that file and {context}. \

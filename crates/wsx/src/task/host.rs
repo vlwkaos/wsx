@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::git::{git_cmd, output_with_timeout_tail};
 use wsx_core::runtime;
+use wsx_core::task::view::checked_files;
 use wsx_core::task::{
     checks,
     copy::{self, Rebase},
@@ -279,7 +280,7 @@ impl Host {
             _ if held => Err(self.by_hand_refusal()),
             HostRequest::Status => Ok("".to_string()),
             HostRequest::Steer { text } => self.steer(text),
-            HostRequest::Add { text } => self.add(text),
+            HostRequest::Add { text, files } => self.add(text, files),
             HostRequest::Grant {
                 access,
                 project,
@@ -336,8 +337,12 @@ impl Host {
         Ok("steered the running turn".into())
     }
 
-    fn add(&mut self, text: String) -> Result<String> {
+    fn add(&mut self, text: String, files: Vec<String>) -> Result<String> {
         check_message(&text)?;
+        if !files.is_empty() {
+            self.record.files = checked_files(&self.record.files, &files)?;
+            self.save();
+        }
         self.log(LogEvent::Message {
             mode: MessageKind::Add,
             text: text.clone(),

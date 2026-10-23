@@ -814,7 +814,7 @@ fn message(text: &str, what: &str) -> Outcome<String> {
 /// One request to a task's host. The host's refusal is a 409 with its reason.
 pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
     match &request {
-        HostRequest::Steer { text } | HostRequest::Add { text } => {
+        HostRequest::Steer { text } | HostRequest::Add { text, .. } => {
             message(text, "the message")?;
         }
         HostRequest::Grant { access, .. } => {
